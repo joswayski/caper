@@ -3,17 +3,21 @@
 //!
 //! The message composers (`Composer::formatted`) are formatted, as web's,
 //! desktop's and Linux's: the buffer holds the draft's Markdown source, the
-//! layout shows it with its delimiters hidden and its runs bold and italic,
-//! and the caret and selection keep to visible places. Each typed edit goes
-//! through the shared `composer::edit` (`shared/messages/composer.rs`), so the
+//! layout shows it with its delimiters hidden and its runs styled (bold,
+//! italic, underline, strikethrough, a spoiler's background and a quote's
+//! bar), and the caret and selection keep to visible places. Each typed
+//! edit goes through the shared `composer::edit`
+//! (`shared/messages/composer.rs`), so the
 //! style web carries between keys follows `shared/messages/composer-cases.json`
 //! and markers typed by hand stay as typed. Programmatic writes (drafts,
 //! inserted emoji, dictation, UIA's SetValue) and an IME's committed text keep
 //! the source they write; each of those, a placed caret and leaving the field
 //! end the carried style. Arrows, Backspace and Delete step over visible
-//! graphemes, Ctrl+B and Ctrl+I toggle a selection's style, and Copy and Cut
-//! take the visible text. Other fields edit their text as typed.
+//! graphemes, Ctrl+B, Ctrl+I and Ctrl+U toggle a selection's style (the
+//! shared `composer::toggle`, as web's toolbar), and Copy and Cut take the
+//! visible text. Other fields edit their text as typed.
 use crate::gfx::{self, Gfx, fill_round, rect};
+use crate::icons::{self, Icon};
 use caper_client::formatting::{self, normalized_selection, projection, source_runs};
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -45,6 +49,10 @@ pub struct Composer {
     pub inset: (f32, f32),
     /// Room under the text inside the box (the main composer's link card).
     pub inset_bottom: f32,
+    /// The laid-out spoilers and quote blocks (UTF-16 start and length in
+    /// the layout's text), drawn under the text.
+    pub(crate) spoilers: Vec<(u32, u32)>,
+    pub(crate) quotes: Vec<(u32, u32)>,
     /// What typing left in a formatted composer; `None` in plain fields.
     pub(crate) rich: Option<Typing>,
     /// A typed high surrogate waiting for its low half (formatted only).
@@ -59,28 +67,69 @@ pub(crate) struct Snapshot {
     anchor: usize,
 }
 
-/// The two selection actions, shared by the channel and thread boxes.
+/// The selection's formatting actions, shared by the channel and thread
+/// boxes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Style {
     Bold,
     Italic,
+    Underline,
+    Strikethrough,
+    Quote,
+    Spoiler,
 }
 
 impl Style {
+    /// The toolbar's buttons in order, as web's; a divider comes before
+    /// Quote.
+    pub const ALL: [Style; 6] = [
+        Self::Bold,
+        Self::Italic,
+        Self::Underline,
+        Self::Strikethrough,
+        Self::Quote,
+        Self::Spoiler,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Bold => "Bold",
             Self::Italic => "Italic",
+            Self::Underline => "Underline",
+            Self::Strikethrough => "Strikethrough",
+            Self::Quote => "Quote",
+            Self::Spoiler => "Spoiler",
         }
     }
 
-    pub fn marker(self) -> &'static str {
+    /// Its style bit in the shared grammar.
+    pub fn bit(self) -> i32 {
         match self {
-            Self::Bold => "**",
-            Self::Italic => "_",
+            Self::Bold => formatting::BOLD,
+            Self::Italic => formatting::ITALIC,
+            Self::Underline => formatting::UNDERLINE,
+            Self::Strikethrough => formatting::STRIKETHROUGH,
+            Self::Quote => formatting::QUOTE,
+            Self::Spoiler => formatting::SPOILER,
+        }
+    }
+
+    pub fn icon(self) -> Icon {
+        match self {
+            Self::Bold => Icon::Bold,
+            Self::Italic => Icon::Italic,
+            Self::Underline => Icon::Underline,
+            Self::Strikethrough => Icon::Strikethrough,
+            Self::Quote => Icon::TextQuote,
+            Self::Spoiler => Icon::EyeOff,
         }
     }
 }
+
+/// The toolbar's buttons, and the divider before Quote (web's 1px rule
+/// with 4px on each side).
+const FORMAT_BUTTON: f32 = 36.0;
+const FORMAT_DIVIDER: f32 = 9.0;
 
 /// What typing left: the source, the caret the last key left, and the style
 /// web carries to a key typed there next (`composer::edit`'s `pending`).
@@ -132,13 +181,13 @@ impl Typing {
 
 /// A formatted source as shown: the visible text, each source offset's
 /// visible offset, each visible offset's source caret (just before the next
-/// visible character, or the source's end), and the bold and italic runs.
-/// Offsets are UTF-16.
+/// visible character, or the source's end), and the styled runs with their
+/// style bits. Offsets are UTF-16.
 struct Shown {
     visible: Vec<u16>,
     to_visible: Vec<usize>,
     to_source: Vec<usize>,
-    styles: Vec<(usize, usize, bool, bool)>,
+    styles: Vec<(usize, usize, i32)>,
 }
 
 fn shown(text: &[u16]) -> Shown {
@@ -166,9 +215,8 @@ fn shown(text: &[u16]) -> Shown {
             }
             at += units.len();
         }
-        if !run.hidden && (run.bold || run.italic) {
-            s.styles
-                .push((start, s.visible.len() - start, run.bold, run.italic));
+        if !run.hidden && run.style != 0 {
+            s.styles.push((start, s.visible.len() - start, run.style));
         }
     }
     s.to_visible.push(s.visible.len());
@@ -631,9 +679,10 @@ impl Composer {
         }
     }
 
-    /// Bold (`**`) or italic (`_`) on, or off, for a formatted composer's
-    /// selection. False when nothing changed.
-    pub fn toggle(&mut self, marker: &str) -> bool {
+    /// `style` on, or off, for a formatted composer's selection, through
+    /// the shared toggle (web's toolbar). False when nothing changed,
+    /// including when the selection can't take it (it would split a link).
+    pub fn toggle(&mut self, style: Style) -> bool {
         if self.rich.is_none() || self.composing || !self.comp.is_empty() {
             return false;
         }
@@ -641,7 +690,7 @@ impl Composer {
         let current = self.source();
         let (a, b) = self.selection();
         let (next, start, end) =
-            formatting::toggle(&current, self.scalar(a), self.scalar(b), marker);
+            formatting::toggle(&current, self.scalar(a), self.scalar(b), style.bit());
         if next == current || next.chars().count() > MAX_LENGTH {
             return false;
         }
@@ -656,7 +705,18 @@ impl Composer {
         true
     }
 
-    /// Room above the editor for a selection's Bold/Italic actions.
+    /// Whether the selection has `style` anywhere: its toolbar button is
+    /// pressed, and toggling removes it.
+    pub fn pressed(&self, style: Style) -> bool {
+        if self.rich.is_none() {
+            return false;
+        }
+        let (a, b) = self.selection();
+        let styles = formatting::selection_styles(&self.source(), self.scalar(a), self.scalar(b));
+        styles & style.bit() != 0
+    }
+
+    /// Room above the editor for a selection's formatting toolbar.
     pub fn format_height(&self) -> f32 {
         let (caret, anchor) = self.shown_ends();
         if self.rich.is_some()
@@ -671,12 +731,15 @@ impl Composer {
         }
     }
 
+    /// A toolbar button, in the box's coordinates, while the toolbar shows.
     pub fn format_rect(&self, style: Style) -> Option<(f32, f32, f32, f32)> {
+        let k = Style::ALL.iter().position(|s| *s == style)?;
+        let divider = if k >= 4 { FORMAT_DIVIDER } else { 0.0 };
         (self.format_height() > 0.0).then_some((
-            PAD + if style == Style::Italic { 40.0 } else { 0.0 },
+            PAD + k as f32 * FORMAT_BUTTON + divider,
             PAD,
-            36.0,
-            36.0,
+            FORMAT_BUTTON,
+            FORMAT_BUTTON,
         ))
     }
 
@@ -699,21 +762,35 @@ impl Composer {
         let layout = g.layout(&d, format, width)?;
         crate::emoji::apply(&layout, &String::from_utf16_lossy(&d), size, 1.2)?;
         let caret = self.shown_ends().0;
+        let (mut spoilers, mut quotes) = (Vec::new(), Vec::new());
         unsafe {
             if self.rich.is_some() {
                 // Runs after the composition move past it.
                 let comp = self.comp.len();
                 let at = |p: usize| if comp > 0 && p >= caret { p + comp } else { p };
-                for (start, len, bold, italic) in shown(&self.text).styles {
+                for (start, len, style) in shown(&self.text).styles {
+                    let (a, b) = (at(start), at(start + len));
                     let range = DWRITE_TEXT_RANGE {
-                        startPosition: at(start) as u32,
-                        length: (at(start + len) - at(start)) as u32,
+                        startPosition: a as u32,
+                        length: (b - a) as u32,
                     };
-                    if bold {
+                    if style & formatting::BOLD != 0 {
                         layout.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range)?;
                     }
-                    if italic {
+                    if style & formatting::ITALIC != 0 {
                         layout.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range)?;
+                    }
+                    if style & formatting::UNDERLINE != 0 {
+                        layout.SetUnderline(true, range)?;
+                    }
+                    if style & formatting::STRIKETHROUGH != 0 {
+                        layout.SetStrikethrough(true, range)?;
+                    }
+                    if style & formatting::SPOILER != 0 {
+                        gfx::join_range(&mut spoilers, a, b - a);
+                    }
+                    if style & formatting::QUOTE != 0 {
+                        gfx::join_range(&mut quotes, a, b - a);
                     }
                 }
             }
@@ -727,15 +804,20 @@ impl Composer {
                 )?;
             }
         }
+        if !quotes.is_empty() {
+            gfx::indent_quotes(&layout, &d, &quotes)?;
+        }
+        self.spoilers = spoilers;
+        self.quotes = quotes;
         self.text_h = gfx::metrics(&layout).height.max(LINE);
         self.layout = Some(layout);
         Ok(self.text_h)
     }
 
     /// Editing keys every text field shares: caret movement, deletion,
-    /// select all, cut and paste, and a formatted composer's Ctrl+B and
-    /// Ctrl+I. Enter, Escape and copy belong to the caller. False when `vk`
-    /// is not one of them.
+    /// select all, cut and paste, and a formatted composer's Ctrl+B, Ctrl+I
+    /// and Ctrl+U. Enter, Escape and copy belong to the caller. False when
+    /// `vk` is not one of them.
     pub fn edit_key(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
@@ -810,10 +892,13 @@ impl Composer {
                 self.insert(&t);
             }
             _ if rich && ctrl && vk == VIRTUAL_KEY('B' as u16) => {
-                self.toggle("**");
+                self.toggle(Style::Bold);
             }
             _ if rich && ctrl && vk == VIRTUAL_KEY('I' as u16) => {
-                self.toggle("_");
+                self.toggle(Style::Italic);
+            }
+            _ if rich && ctrl && vk == VIRTUAL_KEY('U' as u16) => {
+                self.toggle(Style::Underline);
             }
             _ if rich && ctrl && vk == VIRTUAL_KEY('Z' as u16) => self.undo(shift),
             _ if rich && ctrl && vk == VIRTUAL_KEY('Y' as u16) => self.undo(true),
@@ -838,6 +923,31 @@ impl Composer {
                     crate::text::draw(dc, l, ox, oy, brush);
                 }
             } else if let Some(l) = &self.layout {
+                // A quote's bar beside its indented lines, and a spoiler's
+                // background (its text stays visible while drafting).
+                for &(s, n) in &self.quotes {
+                    if let Some((top, bottom)) = gfx::range_extent(l, s, n) {
+                        dc.FillRectangle(
+                            &rect(ox, oy + top, ox + gfx::QUOTE_BAR, oy + bottom),
+                            &g.brushes.border,
+                        );
+                    }
+                }
+                for &(s, n) in &self.spoilers {
+                    for m in gfx::range_rects(l, s, n) {
+                        fill_round(
+                            dc,
+                            rect(
+                                ox + m.left - 1.0,
+                                oy + m.top,
+                                ox + m.left + m.width + 1.0,
+                                oy + m.top + m.height,
+                            ),
+                            4.0,
+                            &g.brushes.border,
+                        );
+                    }
+                }
                 let (caret, anchor) = self.shown_ends();
                 let (a, b) = (caret.min(anchor), caret.max(anchor));
                 if b > a && self.comp.is_empty() {
@@ -944,32 +1054,47 @@ impl Composer {
                 crate::theme::RADIUS,
                 &g.brushes.composer,
             );
-            for style in [Style::Bold, Style::Italic] {
+            // The selection's toolbar, as web's: one group of buttons with a
+            // divider before Quote; a pressed button (the selection has
+            // its style) is lit.
+            if let (Some((x0, y0, _, h)), Some((x1, _, w1, _))) = (
+                self.format_rect(Style::Bold),
+                self.format_rect(Style::Spoiler),
+            ) {
+                fill_round(
+                    dc,
+                    rect(x0, y0, x1 + w1, y0 + h),
+                    crate::theme::RADIUS,
+                    &g.brushes.hover,
+                );
+                let dx = x0 + 4.0 * FORMAT_BUTTON + (FORMAT_DIVIDER - 1.0) / 2.0;
+                dc.FillRectangle(
+                    &rect(dx, y0 + (h - 18.0) / 2.0, dx + 1.0, y0 + (h + 18.0) / 2.0),
+                    &g.brushes.border,
+                );
+            }
+            for style in Style::ALL {
                 if let Some((x, y, w, h)) = self.format_rect(style) {
-                    fill_round(
-                        dc,
-                        rect(x, y, x + w, y + h),
-                        crate::theme::RADIUS,
-                        &g.brushes.hover,
-                    );
-                    let label = if style == Style::Bold { "B" } else { "I" };
-                    let l = g.layout(&gfx::wide(label), &g.formats.composer, w)?;
-                    let range = DWRITE_TEXT_RANGE {
-                        startPosition: 0,
-                        length: 1,
-                    };
-                    if style == Style::Bold {
-                        l.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range)?;
-                    } else {
-                        l.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range)?;
+                    let pressed = self.pressed(style);
+                    if pressed {
+                        fill_round(
+                            dc,
+                            rect(x, y, x + w, y + h),
+                            crate::theme::RADIUS,
+                            &g.brushes.border,
+                        );
                     }
-                    let m = gfx::metrics(&l);
-                    crate::text::draw(
+                    let inset = (w - 17.0) / 2.0;
+                    icons::draw(
                         dc,
-                        &l,
-                        x + (w - m.width) / 2.0,
-                        y + (h - m.height) / 2.0,
-                        &g.brushes.text,
+                        style.icon(),
+                        rect(x + inset, y + inset, x + w - inset, y + h - inset),
+                        if pressed {
+                            crate::theme::TEXT
+                        } else {
+                            crate::theme::TEXT_MUTED
+                        },
+                        1.0,
                     );
                 }
             }
@@ -1147,20 +1272,67 @@ mod tests {
             c.insert(&[unit]);
         }
         c.select_shown(8, 12);
-        assert!(c.toggle("**"));
+        assert!(!c.pressed(Style::Bold));
+        assert!(c.toggle(Style::Bold));
         assert_eq!(source(&c), "make it **bold**");
         assert_eq!(String::from_utf16(&c.copied()).unwrap(), "bold");
-        assert!(c.toggle("**"));
+        assert!(c.pressed(Style::Bold) && !c.pressed(Style::Italic));
+        assert!(c.toggle(Style::Bold));
         assert_eq!(source(&c), "make it bold");
+        // Ctrl+U underlines.
+        let hwnd = windows::Win32::Foundation::HWND::default();
+        assert!(c.edit_key(hwnd, VIRTUAL_KEY('U' as u16), true, false, true));
+        assert_eq!(source(&c), "make it __bold__");
+        assert!(c.pressed(Style::Underline));
         // Plain fields have no styles.
         let mut plain = Composer::default();
         plain.insert(&wide("x"));
         plain.anchor = 0;
-        assert!(!plain.toggle("**"));
+        assert!(!plain.toggle(Style::Bold));
+        assert!(!plain.pressed(Style::Bold));
         // An IME's commit and an inserted emoji keep their source.
         let mut c = Composer::formatted();
         c.commit(&wide("**"));
         assert_eq!((source(&c), c.caret), ("**".to_owned(), 2));
+    }
+
+    /// The toolbar toggles every style as web's does (the shared cases
+    /// generated from web), over the box's own UTF-16 selection; a refused
+    /// toggle leaves the draft alone.
+    #[test]
+    fn toolbar_toggles_follow_the_shared_cases() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../shared/messages/toggle-cases.json"
+        ))
+        .unwrap();
+        let cases = cases["cases"].as_array().unwrap();
+        assert!(cases.len() > 20);
+        for case in cases {
+            let text = case["text"].as_str().unwrap();
+            let style = match case["style"].as_str().unwrap() {
+                "bold" => Style::Bold,
+                "italic" => Style::Italic,
+                "underline" => Style::Underline,
+                "strikethrough" => Style::Strikethrough,
+                "spoiler" => Style::Spoiler,
+                "quote" => Style::Quote,
+                other => panic!("unknown style {other}"),
+            };
+            let (from, to) = (
+                case["from"].as_u64().unwrap() as usize,
+                case["to"].as_u64().unwrap() as usize,
+            );
+            let mut c = Composer::formatted();
+            c.set_text(wide(text));
+            c.select_shown(from, to);
+            let changed = c.toggle(style);
+            let expected = case["result"].as_str().unwrap_or(text);
+            assert_eq!(
+                (source(&c), changed),
+                (expected.to_owned(), expected != text),
+                "{text:?} {style:?} {from}..{to}"
+            );
+        }
     }
 
     #[test]
@@ -1168,7 +1340,7 @@ mod tests {
         let mut c = Composer::formatted();
         c.set_text(wide("left word right"));
         c.select_shown(9, 5);
-        assert!(c.toggle("**"));
+        assert!(c.toggle(Style::Bold));
         assert_eq!(source(&c), "left **word** right");
         assert_eq!(c.shown_ends(), (5, 9));
         assert_eq!(c.copied(), wide("word"));

@@ -21,7 +21,8 @@ typedef struct {
 } CaperMobileInts;
 
 // Five values per visible span: utf16 start, utf16 end, utf8 start, utf8 end,
-// style bits (1 bold, 2 italic).
+// style bits (1 bold, 2 italic, 4 underline, 8 strikethrough, 16 spoiler,
+// 32 quote).
 CaperMobileInts caper_mobile_format_spans(const uint8_t *utf8, size_t len);
 // Five values per link: utf16 start, utf16 end, utf8 start, utf8 end, scheme
 // (8 https://, 7 http://, 0 www.).
@@ -39,6 +40,13 @@ CaperMobileInts caper_mobile_history_diff_spans(const uint8_t *before, size_t be
 // pending style, then the edited text's UTF-16 code units.
 CaperMobileInts caper_mobile_composer_edit(const uint8_t *previous, size_t previous_len, const uint8_t *next,
                                            size_t next_len, int32_t start, int32_t end, int32_t continuing);
+// A toolbar style toggle (shared/messages/composer.rs) for the UTF-16 selection
+// start..end: the new UTF-16 start and end, then the new text's UTF-16 code
+// units, or none when the selection cannot take that style.
+CaperMobileInts caper_mobile_composer_toggle(const uint8_t *utf8, size_t len, int32_t start, int32_t end,
+                                             int32_t style);
+// The style bits any visible character of the UTF-16 selection start..end has.
+int32_t caper_mobile_selection_styles(const uint8_t *utf8, size_t len, int32_t start, int32_t end);
 // Loads shared/emoji/catalog.json as the app ships it; false when the bytes are not a catalog.
 bool caper_mobile_emoji_catalog(const uint8_t *json, size_t len);
 // The `:` token with the caret at UTF-16 offset `caret`: its UTF-16 source range, then its query.

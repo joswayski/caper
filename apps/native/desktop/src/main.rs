@@ -30786,10 +30786,11 @@ fn draft_layout(
                     format,
                 );
             } else {
-                if style.bold {
-                    format.font_id.family = egui::FontFamily::Name("Satoshi Bold".into());
+                apply_style(&mut format, style.style);
+                // A draft's spoiler stays readable, marked by its background.
+                if style.style & formatting::SPOILER != 0 && background == Color32::TRANSPARENT {
+                    format.background = BORDER;
                 }
-                format.italics = style.italic;
                 job.append(&text[start..end], gap, format);
                 gap = 0.0;
             }
@@ -30799,7 +30800,77 @@ fn draft_layout(
         .iter()
         .map(|range| range.start)
         .collect();
-    layout_inline_links(ui, job, &starts)
+    // Galley characters are source scalars, hidden delimiters included.
+    let quoted: Vec<_> = styles
+        .iter()
+        .filter(|run| !run.hidden && run.style & formatting::QUOTE != 0)
+        .map(|run| text[..run.range.start].chars().count()..text[..run.range.end].chars().count())
+        .collect();
+    if !quoted.is_empty() {
+        job.wrap.max_width = (job.wrap.max_width - QUOTE_INDENT).max(1.0);
+    }
+    let mut galley = layout_inline_links(ui, job, &starts);
+    indent_quotes(&mut galley, &quoted);
+    galley
+}
+
+/// A quoted line's bar and the text's indent past it: web's 3px bar and
+/// 12px padding.
+const QUOTE_BAR: f32 = 3.0;
+const QUOTE_INDENT: f32 = 15.0;
+
+/// Bold, italics, underline and strikethrough of style bits `style`;
+/// decorations take the text's color.
+fn apply_style(format: &mut egui::TextFormat, style: i32) {
+    if style & formatting::BOLD != 0 {
+        format.font_id.family = egui::FontFamily::Name("Satoshi Bold".into());
+    }
+    format.italics |= style & formatting::ITALIC != 0;
+    if style & formatting::UNDERLINE != 0 {
+        format.underline = Stroke::new(1.0_f32, format.color);
+    }
+    if style & formatting::STRIKETHROUGH != 0 {
+        format.strikethrough = Stroke::new(1.0_f32, format.color);
+    }
+}
+
+/// Moves each row whose first visible character is in `quoted` (galley
+/// character ranges) right by `QUOTE_INDENT`, wrapped rows included, and
+/// draws the quote bar at its left, so consecutive quoted rows form one
+/// block. Lay the job out `QUOTE_INDENT` narrower first. Glyphs and mesh move
+/// together, keeping caret, selection and hit-testing geometry.
+fn indent_quotes(galley: &mut std::sync::Arc<egui::Galley>, quoted: &[std::ops::Range<usize>]) {
+    if quoted.is_empty() {
+        return;
+    }
+    let galley_mut = std::sync::Arc::make_mut(galley);
+    let mut offset = 0;
+    for row in &mut galley_mut.rows {
+        let first = row
+            .glyphs
+            .iter()
+            .position(|glyph| glyph.chr != '\u{200b}')
+            .map(|index| offset + index);
+        offset += row.char_count_including_newline().0;
+        if !first.is_some_and(|first| quoted.iter().any(|range| range.contains(&first))) {
+            continue;
+        }
+        let inner = std::sync::Arc::make_mut(&mut row.row);
+        for glyph in &mut inner.glyphs {
+            glyph.pos.x += QUOTE_INDENT;
+        }
+        inner.size.x += QUOTE_INDENT;
+        inner.visuals.mesh.translate(egui::vec2(QUOTE_INDENT, 0.0));
+        inner.visuals.mesh.add_colored_rect(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(QUOTE_BAR, inner.size.y)),
+            BORDER,
+        );
+        inner.visuals.mesh_bounds = inner.visuals.mesh.calc_bounds();
+        galley_mut.rect = galley_mut.rect.union(row.rect());
+        galley_mut.mesh_bounds = galley_mut
+            .mesh_bounds
+            .union(row.visuals.mesh_bounds.translate(row.pos.to_vec2()));
+    }
 }
 
 /// Link ranges in galley scalar coordinates, not wire byte offsets: each hidden
@@ -30993,6 +31064,8 @@ fn linked_text(ui: &mut egui::Ui, message: &str, text: &str) {
 /// laid-out glyphs, one per wrapped row; only the first takes keyboard focus.
 /// The hover/focus state of the last pass picks each pill's fill. A link opens
 /// in the system browser and takes the click, so the row does nothing else.
+/// Quoted lines are indented past a bar (`indent_quotes`); a spoiler keeps
+/// its room but hides its text, links and pills until clicked.
 ///
 /// `edited` adds a grouped row's "(edited)" marker right after the text.
 fn rich_text(
@@ -31022,22 +31095,45 @@ fn append_formatted(
     range: std::ops::Range<usize>,
     mut gap: f32,
     base: &egui::TextFormat,
-    styles: &[(std::ops::Range<usize>, bool, bool)],
+    styles: &[(std::ops::Range<usize>, i32)],
+    spoilers: &[(std::ops::Range<usize>, bool)],
 ) {
-    for (style, bold, italic) in styles {
-        let start = range.start.max(style.start);
-        let end = range.end.min(style.end);
+    for (style_range, style) in styles {
+        let start = range.start.max(style_range.start);
+        let end = range.end.min(style_range.end);
         if start >= end {
             continue;
         }
         let mut format = base.clone();
-        if *bold {
-            format.font_id.family = egui::FontFamily::Name("Satoshi Bold".into());
+        apply_style(&mut format, *style);
+        if let Some(background) = spoiler_background(spoilers, start) {
+            format.background = background;
+            if background == BORDER {
+                // Hidden: the text keeps its room but does not show.
+                format.color = Color32::TRANSPARENT;
+                format.underline = Stroke::NONE;
+                format.strikethrough = Stroke::NONE;
+            }
         }
-        format.italics |= *italic;
         job.append(&text[start..end], gap, format);
         gap = 0.0;
     }
+}
+
+/// The background of a message's spoiler at byte `at`, if `at` is in one of
+/// `spoilers` (ranges and whether they were revealed): `BORDER` while hidden,
+/// web's faint white once revealed.
+fn spoiler_background(spoilers: &[(std::ops::Range<usize>, bool)], at: usize) -> Option<Color32> {
+    spoilers
+        .iter()
+        .find(|(range, _)| range.contains(&at))
+        .map(|(_, revealed)| {
+            if *revealed {
+                Color32::from_white_alpha(15)
+            } else {
+                BORDER
+            }
+        })
 }
 
 /// [`rich_text`] cut to `max_rows` wrapped rows, ending in an ellipsis
@@ -31062,20 +31158,52 @@ fn rich_text_rows(
         .map(|run| {
             let start = offset;
             offset += run.text.len();
-            (start..offset, run.bold, run.italic)
+            (start..offset, run.style())
         })
+        .collect();
+    // Neighbouring spoiler runs, such as one with a bold word, reveal
+    // together; revealed stays for this view only (egui memory).
+    let mut spoilers: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
+    for (range, style) in &styles {
+        if style & formatting::SPOILER == 0 {
+            continue;
+        }
+        match spoilers.last_mut() {
+            Some((last, _)) if last.end == range.start => last.end = range.end,
+            _ => spoilers.push((range.clone(), false)),
+        }
+    }
+    for (range, revealed) in &mut spoilers {
+        let id = ui.make_persistent_id(("spoiler", message, range.start));
+        *revealed = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+    }
+    // Links and mentions inside a hidden spoiler cannot be activated.
+    let concealed = |range: &std::ops::Range<usize>| {
+        spoilers.iter().any(|(spoiler, revealed)| {
+            !revealed && spoiler.start < range.end && range.start < spoiler.end
+        })
+    };
+    let characters = |range: &std::ops::Range<usize>| {
+        text[..range.start].chars().count()..text[..range.end].chars().count()
+    };
+    let quoted: Vec<_> = styles
+        .iter()
+        .filter(|(_, style)| style & formatting::QUOTE != 0)
+        .map(|(range, _)| characters(range))
         .collect();
     let pills = mentions::highlights(text, mentions);
     let ranges: Vec<_> = pills.iter().map(|(range, _)| range.clone()).collect();
     let runs = message_runs(text, &ranges);
-    let linked = runs.iter().any(|run| matches!(run, Run::Link(..)));
+    let linked = runs
+        .iter()
+        .any(|run| matches!(run, Run::Link(range, _) if !concealed(range)));
     let emojis = emoji::inline(text);
     if pills.is_empty()
         && !linked
         && !edited
         && emojis.is_empty()
         && max_rows == usize::MAX
-        && !formatted.iter().any(|r| r.bold || r.italic)
+        && !formatted.iter().any(|r| r.style() != 0)
     {
         let (position, galley, response) =
             egui::Label::new(RichText::new(text).font(plain.font_id).color(plain.color))
@@ -31138,7 +31266,7 @@ fn rich_text_rows(
         };
         // Pills keep 2px on either side for their background.
         let mut gap = if is_pill || after_pill { 2.0 } else { 0.0 };
-        if matches!(run, Run::Link(..)) {
+        if matches!(run, Run::Link(..)) && !concealed(range) {
             gap += LINK_ICON_SPACE;
         }
         // Emoji are laid out as invisible glyphs and drawn in color below.
@@ -31148,13 +31276,22 @@ fn rich_text_rows(
             .filter(|(emoji, _)| emoji.start >= range.start && emoji.end <= range.end)
         {
             if start < emoji.start {
-                append_formatted(&mut job, text, start..emoji.start, gap, &format, &styles);
+                append_formatted(
+                    &mut job,
+                    text,
+                    start..emoji.start,
+                    gap,
+                    &format,
+                    &styles,
+                    &spoilers,
+                );
                 gap = 0.0;
             }
             let hidden = |size: f32| egui::TextFormat {
                 font_id: egui::FontId::new(size, format.font_id.family.clone()),
                 color: Color32::TRANSPARENT,
                 valign: egui::Align::Center,
+                background: spoiler_background(&spoilers, emoji.start).unwrap_or(format.background),
                 ..format.clone()
             };
             // The first code point holds the emoji's place; the rest of a
@@ -31173,34 +31310,58 @@ fn rich_text_rows(
             start = emoji.end;
         }
         if start < range.end {
-            append_formatted(&mut job, text, start..range.end, gap, &format, &styles);
+            append_formatted(
+                &mut job,
+                text,
+                start..range.end,
+                gap,
+                &format,
+                &styles,
+                &spoilers,
+            );
         }
         after_pill = is_pill;
     }
-    let (position, galley, response) = if linked {
+    let (position, galley, response) = if linked || !quoted.is_empty() {
         job.wrap.max_width = ui.available_width();
+        if !quoted.is_empty() {
+            job.wrap.max_width = (job.wrap.max_width - QUOTE_INDENT).max(1.0);
+        }
         let starts: Vec<_> = runs
             .iter()
             .filter_map(|run| match run {
-                Run::Link(range, _) => Some(text[..range.start].chars().count()),
+                Run::Link(range, _) if !concealed(range) => {
+                    Some(text[..range.start].chars().count())
+                }
                 _ => None,
             })
             .collect();
-        egui::Label::new(layout_inline_links(ui, job, &starts)).layout_in_ui(ui)
+        let mut galley = layout_inline_links(ui, job, &starts);
+        indent_quotes(&mut galley, &quoted);
+        egui::Label::new(galley).layout_in_ui(ui)
     } else {
         egui::Label::new(job).layout_in_ui(ui)
     };
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), galley.text())
+        // A hidden spoiler is named by its own "Spoiler, reveal" button.
+        let mut label = String::new();
+        let mut written = 0;
+        for (range, _) in spoilers.iter().filter(|(_, revealed)| !revealed) {
+            label.push_str(&text[written..range.start]);
+            label.push_str("Spoiler");
+            written = range.end;
+        }
+        label.push_str(&text[written..]);
+        egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), label)
     });
-    let characters = |range: &std::ops::Range<usize>| {
-        text[..range.start].chars().count()..text[..range.end].chars().count()
-    };
     if ui.is_rect_visible(response.rect) {
         // Paint behind the selectable galley. Wrapped URLs get one rounded
         // background per line, with the icon inside the first piece.
         for run in &runs {
             let Run::Link(range, _) = run else { continue };
+            if concealed(range) {
+                continue;
+            }
             let id = ui.make_persistent_id(("message-link-hot", message, range.start));
             let hot = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
             let rects = inline_link_rects(&galley, characters(range));
@@ -31228,6 +31389,9 @@ fn rich_text_rows(
         let textures = emoji::Textures::shared(ui.ctx());
         let size = INLINE_EMOJI_SCALE * plain.font_id.size;
         for (range, entry) in &emojis {
+            if concealed(range) {
+                continue;
+            }
             let first = range.start + text[range.clone()].chars().next().map_or(0, char::len_utf8);
             if let Some(glyph) = pill_rects(&galley, characters(&(range.start..first))).first() {
                 let center = glyph.translate(position.to_vec2()).center();
@@ -31241,7 +31405,7 @@ fn rich_text_rows(
     }
     let mut body = Body::default();
     for (((range, entry), id), was_hot) in pills.iter().zip(&ids).zip(&hot) {
-        if entry.kind != "user" {
+        if entry.kind != "user" || concealed(range) {
             continue;
         }
         let mut is_hot = false;
@@ -31277,8 +31441,45 @@ fn rich_text_rows(
             ui.ctx().request_repaint();
         }
     }
+    for (range, revealed) in &spoilers {
+        if *revealed {
+            continue;
+        }
+        let id = ui.make_persistent_id(("spoiler", message, range.start));
+        for (row, rect) in pill_rects(&galley, characters(range))
+            .into_iter()
+            .enumerate()
+        {
+            let rect = rect.translate(position.to_vec2());
+            let (piece, sense) = if row == 0 {
+                (id.with("reveal"), egui::Sense::click())
+            } else {
+                (id.with(("reveal", row)), egui::Sense::CLICK)
+            };
+            let target = ui
+                .interact(rect, piece, sense)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if row == 0 {
+                target.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, "Spoiler, reveal")
+                });
+            }
+            if target.has_focus() {
+                ui.painter().rect_stroke(
+                    rect.expand(1.0),
+                    2.0,
+                    Stroke::new(2.0_f32, TERRACOTTA),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if target.clicked() {
+                ui.data_mut(|data| data.insert_temp(id, true));
+                ui.ctx().request_repaint();
+            }
+        }
+    }
     let links = runs.iter().filter_map(|run| match run {
-        Run::Link(range, href) => Some((range, href)),
+        Run::Link(range, href) if !concealed(range) => Some((range, href)),
         _ => None,
     });
     for (index, (range, href)) in links.enumerate() {
@@ -48147,6 +48348,60 @@ mod tests {
         assert!(message_runs("", &[]).is_empty());
     }
 
+    /// Drafts draw underline and strikethrough, mark (not hide) spoilers, and
+    /// indent quoted lines past a bar, keeping one glyph per source scalar.
+    #[test]
+    fn draft_formatting_draws_new_styles_and_quotes() {
+        let context = egui::Context::default();
+        super::configure(&context);
+        let text = "> __u__ ~~s~~\n||secret|| plain";
+        let _ = context.test_pass(egui::RawInput::default(), |ctx| {
+            ctx.root_ui(|root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let galley = super::draft_layout(
+                        ui,
+                        text,
+                        500.0,
+                        &[],
+                        mentions::Specials::default(),
+                        egui::FontId::proportional(13.6),
+                    );
+                    assert_eq!(galley.job.text.chars().count(), text.chars().count());
+                    let format = |token: &str| {
+                        galley
+                            .job
+                            .sections
+                            .iter()
+                            .find(|section| {
+                                &galley.job.text
+                                    [section.byte_range.start.0..section.byte_range.end.0]
+                                    == token
+                            })
+                            .map(|section| section.format.clone())
+                            .unwrap_or_else(|| panic!("{token}"))
+                    };
+                    assert_ne!(format("u").underline, egui::Stroke::NONE);
+                    assert_ne!(format("s").strikethrough, egui::Stroke::NONE);
+                    let secret = format("secret");
+                    assert_eq!(secret.background, super::BORDER);
+                    assert_ne!(secret.color, egui::Color32::TRANSPARENT);
+                    assert_eq!(galley.rows.len(), 2);
+                    let visible_x = |row: usize| {
+                        galley.rows[row]
+                            .glyphs
+                            .iter()
+                            .find(|glyph| glyph.chr != '\u{200b}')
+                            .unwrap()
+                            .pos
+                            .x
+                    };
+                    assert_eq!(visible_x(0), super::QUOTE_INDENT);
+                    assert_eq!(visible_x(1), 0.0);
+                })
+            });
+        });
+    }
+
     #[test]
     fn draft_formatting_hides_marker_glyphs_without_changing_edit_offsets() {
         let context = egui::Context::default();
@@ -48550,6 +48805,125 @@ mod tests {
                 assert_eq!(opened_url(&clicked), Some(href.as_str()));
             }
         }
+    }
+
+    /// Sent messages draw underline, strikethrough and quote blocks, and keep
+    /// a spoiler (with the link inside it) hidden and inert until clicked,
+    /// when its contiguous runs reveal together.
+    #[test]
+    fn message_quotes_decorations_and_spoilers_render_and_reveal() {
+        let context = egui::Context::default();
+        crate::configure(&context);
+        let source = "> quoted __under__ ~~gone~~\n||**secret** https://example.com now|| plain";
+        let visible = "quoted under gone\nsecret https://example.com now plain";
+        // A hidden link and the spoiler text around it can share one section.
+        let containing = |output: &egui::FullOutput, token: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(shape) if shape.galley.job.text == visible => {
+                        shape.galley.job.sections.iter().find_map(|section| {
+                            visible[section.byte_range.start.0..section.byte_range.end.0]
+                                .contains(token)
+                                .then(|| section.format.clone())
+                        })
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no section has {token}"))
+        };
+        let draw = |events| {
+            context.test_pass(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    ctx.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            super::message_body(
+                                ui,
+                                "format-test",
+                                source,
+                                &[],
+                                |_| String::new(),
+                                false,
+                            );
+                        })
+                    });
+                },
+            )
+        };
+        draw(vec![]);
+        let output = draw(vec![]);
+        assert_ne!(
+            section_format(&output, visible, "under").underline,
+            egui::Stroke::NONE
+        );
+        assert_ne!(
+            section_format(&output, visible, "gone").strikethrough,
+            egui::Stroke::NONE
+        );
+        let hidden = section_format(&output, visible, "secret");
+        assert_eq!(
+            (hidden.color, hidden.background),
+            (egui::Color32::TRANSPARENT, super::BORDER)
+        );
+        let link = containing(&output, "https://example.com");
+        assert_eq!(
+            (link.color, link.background),
+            (egui::Color32::TRANSPARENT, super::BORDER)
+        );
+        let galley = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.job.text == visible => {
+                    Some(shape.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(galley.galley.rows.len(), 2);
+        let first = |row: usize| galley.galley.rows[row].glyphs[0].pos.x;
+        assert_eq!(first(0), super::QUOTE_INDENT, "the quoted line is indented");
+        assert_eq!(first(1), 0.0, "the line after the quote is not");
+        // Click the hidden link: it reveals the spoiler and opens nothing.
+        let start = visible.find("https:").unwrap();
+        let chars = visible[..start].chars().count();
+        let at = super::pill_rects(&galley.galley, chars..chars + 1)[0]
+            .translate(galley.pos.to_vec2())
+            .center();
+        draw(vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let clicked = draw(vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert_eq!(opened_url(&clicked), None);
+        let output = draw(vec![]);
+        let revealed = egui::Color32::from_white_alpha(15);
+        let secret = section_format(&output, visible, "secret");
+        assert_eq!((secret.color, secret.background), (MESSAGE_TEXT, revealed));
+        assert_eq!(
+            containing(&output, "https://example.com").background,
+            revealed,
+            "the bold and plain spoiler runs reveal together"
+        );
     }
 
     #[test]

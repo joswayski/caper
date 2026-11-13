@@ -1939,6 +1939,8 @@ impl App {
                         self.embed_activate(i, k);
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
+                    } else if let Some((i, k)) = self.spoiler_at(x, y) {
+                        self.reveal_spoiler(i, k);
                     } else if let Some((id, entry, author)) = self.person_at(x, y) {
                         self.open_profile(id, entry, author, x, y);
                     } else if self.in_history(x, y) {
@@ -2061,6 +2063,7 @@ impl App {
                             || self.edited_at(x, y).is_some()
                             || self.file_at(x, y).is_some()
                             || self.embed_at(x, y).is_some()
+                            || self.spoiler_at(x, y).is_some()
                             || self.person_at(x, y).is_some()
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h

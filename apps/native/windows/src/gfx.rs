@@ -66,6 +66,8 @@ pub struct Brushes {
     pub surface: ID2D1SolidColorBrush,
     pub border_soft: ID2D1SolidColorBrush,
     pub terracotta_bright: ID2D1SolidColorBrush,
+    /// A hidden spoiler's text: at opacity 0, which `text::draw` skips.
+    pub hidden: ID2D1SolidColorBrush,
 }
 
 pub struct Formats {
@@ -233,6 +235,11 @@ impl Gfx {
                 surface: brush(0x151719, 1.0)?,
                 border_soft: brush(theme::BORDER, 0.7)?,
                 terracotta_bright: brush(theme::TERRACOTTA_BRIGHT, 1.0)?,
+                hidden: {
+                    let b = brush(theme::TEXT, 1.0)?;
+                    b.SetOpacity(0.0);
+                    b
+                },
             };
             let fmt = |size: f32, weight: DWRITE_FONT_WEIGHT| {
                 dwrite.CreateTextFormat(
@@ -626,6 +633,94 @@ pub fn range_rects(
         out.truncate(n as usize);
         out
     }
+}
+
+/// A quote block's bar width and the indent of the text beside it, as
+/// web's `.chat-quote` (a 3px border and 12px of padding).
+pub const QUOTE_BAR: f32 = 3.0;
+pub const QUOTE_INDENT: f32 = 12.0;
+
+/// Indents quoted text (`quotes`: UTF-16 start and length in `text`, the
+/// layout's text) by `QUOTE_INDENT`: each line that starts inside a quote,
+/// wrapped ones too, gets leading spacing on its first character. Lines
+/// are taken top-down, since indenting one rewraps only those after it.
+/// Call again after `SetMaxWidth`.
+pub fn indent_quotes(
+    layout: &IDWriteTextLayout,
+    text: &[u16],
+    quotes: &[(u32, u32)],
+) -> Result<()> {
+    let quoted = |p: u32| quotes.iter().any(|&(s, l)| p >= s && p < s + l);
+    let spaced: IDWriteTextLayout1 = layout.cast()?;
+    let one = |p: u32| DWRITE_TEXT_RANGE {
+        startPosition: p,
+        length: 1,
+    };
+    unsafe {
+        spaced.SetCharacterSpacing(
+            0.0,
+            0.0,
+            0.0,
+            DWRITE_TEXT_RANGE {
+                startPosition: 0,
+                length: text.len() as u32,
+            },
+        )?;
+    }
+    if quotes.is_empty() {
+        return Ok(());
+    }
+    // A quoted line's first character always starts a line.
+    let mut indented: Vec<u32> = (0..text.len() as u32)
+        .filter(|&p| quoted(p) && (p == 0 || text[p as usize - 1] == '\n' as u16))
+        .collect();
+    for &p in &indented {
+        unsafe { spaced.SetCharacterSpacing(QUOTE_INDENT, 0.0, 0.0, one(p))? };
+    }
+    // Then each wrapped line inside a quote, the first one still flush.
+    for _ in 0..text.len() {
+        let mut count = 0u32;
+        let mut lines = Vec::new();
+        unsafe {
+            let _ = layout.GetLineMetrics(None, &mut count);
+            lines.resize(count as usize, DWRITE_LINE_METRICS::default());
+            layout.GetLineMetrics(Some(&mut lines[..]), &mut count)?;
+        }
+        let mut start = 0u32;
+        let mut next = None;
+        for line in &lines[..(count as usize).min(lines.len())] {
+            if quoted(start) && !indented.contains(&start) {
+                next = Some(start);
+                break;
+            }
+            start += line.length;
+        }
+        let Some(p) = next else { break };
+        unsafe { spaced.SetCharacterSpacing(QUOTE_INDENT, 0.0, 0.0, one(p))? };
+        indented.push(p);
+    }
+    Ok(())
+}
+
+/// Adds the UTF-16 range `start..start + len` to `out`, joined to the last
+/// range when it follows on: a spoiler with a bold word is one spoiler, and
+/// consecutive quoted lines are one block.
+pub fn join_range(out: &mut Vec<(u32, u32)>, start: usize, len: usize) {
+    let (start, len) = (start as u32, len as u32);
+    if let Some(last) = out.last_mut().filter(|last| last.0 + last.1 == start) {
+        last.1 += len;
+    } else {
+        out.push((start, len));
+    }
+}
+
+/// The top and bottom of the lines `start..start + len` of `layout` covers
+/// (a quote block's bar), relative to the layout origin.
+pub fn range_extent(layout: &IDWriteTextLayout, start: u32, len: u32) -> Option<(f32, f32)> {
+    range_rects(layout, start, len)
+        .iter()
+        .map(|m| (m.top, m.top + m.height))
+        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
 }
 
 /// UTF-16 position under a point relative to the layout origin.

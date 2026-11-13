@@ -1,10 +1,13 @@
 //! The formatted composer, as desktop's (`apps/native/desktop/src/formatting.rs`)
 //! and web's: the buffer holds the draft's Markdown source with its
-//! delimiters hidden and its runs drawn bold and italic. Each typed edit goes
-//! through the shared `composer::edit` (`shared/messages/composer.rs`), which
-//! leaves the source as web's composer would. Backspace and Delete remove
-//! visible characters, Ctrl+B and Ctrl+I toggle a selection's style, and a
-//! selection shows Bold and Italic above the field.
+//! delimiters hidden and its runs drawn in their styles: bold, italic,
+//! underline, strikethrough, spoilers on a #34383B wash and quoted lines
+//! indented beside a bar. Each typed edit goes through the shared
+//! `composer::edit` (`shared/messages/composer.rs`), which leaves the source
+//! as web's composer would. Backspace and Delete remove visible characters,
+//! Ctrl+B, Ctrl+I and Ctrl+U toggle a selection's style, and a selection
+//! shows web's formatting toolbar above the field, whose toggles are the
+//! shared `composer::toggle`.
 //!
 //! A repair joins the user's own undo step: a buffer emits `end-user-action`
 //! before its history closes the step. Undo, redo and programmatic writes
@@ -14,13 +17,72 @@
 //! to the next key. Copy and Cut take the visible text, as desktop's, so a
 //! paste is typed text wherever it lands.
 
-use caper_client::formatting::{self, normalized_selection, projection, source_runs, toggle};
+use caper_client::formatting::{
+    self, BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE, normalized_selection, projection,
+    selection_styles, source_runs, toggle,
+};
 use gtk::{gdk, glib, pango, prelude::*};
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::rc::{Rc, Weak};
 
 /// The longest draft a style toggle may leave, as desktop's.
 const MAX_LENGTH: usize = 4000;
+
+/// A quoted line's indent: web's 3 px bar and 12 px of space.
+const QUOTE_INDENT: i32 = 15;
+
+/// The toolbar, in web's order: each style bit, its name, its Lucide icon's
+/// SVG elements and its shortcut key. A divider comes before Quote.
+const TOOLS: [(i32, &str, &str, Option<char>); 6] = [
+    (
+        BOLD,
+        "Bold",
+        r#"<path d="M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"/>"#,
+        Some('B'),
+    ),
+    (
+        ITALIC,
+        "Italic",
+        r#"<line x1="19" x2="10" y1="4" y2="4"/><line x1="14" x2="5" y1="20" y2="20"/><line x1="15" x2="9" y1="4" y2="20"/>"#,
+        Some('I'),
+    ),
+    (
+        UNDERLINE,
+        "Underline",
+        r#"<path d="M6 4v6a6 6 0 0 0 12 0V4"/><line x1="4" x2="20" y1="20" y2="20"/>"#,
+        Some('U'),
+    ),
+    (
+        STRIKETHROUGH,
+        "Strikethrough",
+        r#"<path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><line x1="4" x2="20" y1="12" y2="12"/>"#,
+        None,
+    ),
+    (
+        QUOTE,
+        "Quote",
+        r#"<path d="M17 6H3"/><path d="M21 12H8"/><path d="M21 18H8"/><path d="M3 12v6"/>"#,
+        None,
+    ),
+    (
+        SPOILER,
+        "Spoiler",
+        r#"<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>"#,
+        None,
+    ),
+];
+
+/// A toolbar button's tooltip, as web's title.
+fn tool_tip(name: &str, key: Option<char>, allowed: bool) -> String {
+    match key {
+        _ if !allowed => {
+            "This selection cannot be formatted without changing its text or link".into()
+        }
+        Some(key) => format!("{name} · Ctrl+{key}"),
+        None => name.into(),
+    }
+}
 
 /// What typing left in a field: its source, the caret the last key left, and
 /// the style web carries to a key typed there next (`composer::edit`'s
@@ -89,12 +151,22 @@ pub fn copied(text: &str, start: usize, end: usize) -> String {
 
 /// A composer field's formatting (`attach`).
 pub struct Rich {
+    me: Weak<Rich>,
     view: glib::WeakRef<gtk::TextView>,
     typing: RefCell<Typing>,
-    /// Hidden delimiters, bold and italic.
-    tags: [gtk::TextTag; 3],
-    /// Bold and Italic over a selection.
+    /// Hidden delimiters, then bold, italic, underline, strikethrough,
+    /// spoiler and quote, in style bit order.
+    tags: [gtk::TextTag; 7],
+    /// The lines a quote covers, from the last restyle.
+    quoted: RefCell<BTreeSet<i32>>,
+    /// The quote blocks' bars, overlaid on the text.
+    bars: RefCell<Vec<gtk::Widget>>,
+    /// A bar update is waiting for the layout.
+    bars_queued: Cell<bool>,
+    /// The formatting toolbar over a selection.
     bar: gtk::Popover,
+    /// Its buttons, in `TOOLS` order.
+    tools: RefCell<Vec<gtk::ToggleButton>>,
     /// Inside a user action (typing, deleting, pasting, an IME commit).
     in_action: Cell<bool>,
     /// While this module writes the buffer or its selection itself.
@@ -141,7 +213,7 @@ fn replace(buffer: &gtk::TextBuffer, from: &str, to: &str) {
     buffer.insert(&mut start, &inserted);
 }
 
-/// Makes `view` a formatted composer. Its selection's Bold and Italic bar
+/// Makes `view` a formatted composer. Its selection's formatting toolbar
 /// belongs to `anchor`, a box holding the field.
 pub fn attach(view: &gtk::TextView, anchor: &gtk::Box) -> Rc<Rich> {
     let buffer = view.buffer();
@@ -149,6 +221,12 @@ pub fn attach(view: &gtk::TextView, anchor: &gtk::Box) -> Rc<Rich> {
         gtk::TextTag::builder().invisible(true).build(),
         gtk::TextTag::builder().weight(700).build(),
         gtk::TextTag::builder().style(pango::Style::Italic).build(),
+        gtk::TextTag::builder()
+            .underline(pango::Underline::Single)
+            .build(),
+        gtk::TextTag::builder().strikethrough(true).build(),
+        gtk::TextTag::builder().background("#34383b").build(),
+        gtk::TextTag::builder().left_margin(QUOTE_INDENT).build(),
     ];
     for tag in &tags {
         buffer.tag_table().add(tag);
@@ -160,27 +238,35 @@ pub fn attach(view: &gtk::TextView, anchor: &gtk::Box) -> Rc<Rich> {
     bar.set_position(gtk::PositionType::Top);
     bar.add_css_class("format-bar");
     bar.set_parent(anchor);
-    let rich = Rc::new(Rich {
+    let rich = Rc::new_cyclic(|me| Rich {
+        me: me.clone(),
         view: view.downgrade(),
         typing: RefCell::new(Typing::new("")),
         tags,
+        quoted: RefCell::default(),
+        bars: RefCell::default(),
+        bars_queued: Cell::new(false),
         bar,
+        tools: RefCell::default(),
         in_action: Cell::new(false),
         applying: Cell::new(false),
         preedit: Cell::new(false),
         ime: Cell::new(false),
     });
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    for (marker, glyph, name, key) in [("**", "B", "Bold", "B"), ("_", "I", "Italic", "I")] {
-        let button: gtk::Button = crate::app::named("GtkButton", name);
-        let label = gtk::Label::new(Some(glyph));
-        label.add_css_class(if marker == "**" {
-            "format-bold"
-        } else {
-            "format-italic"
-        });
-        button.set_child(Some(&label));
-        button.set_tooltip_text(Some(&format!("{name} · Ctrl+{key}")));
+    let row: gtk::Box = crate::app::named("GtkBox", "Message formatting");
+    for (style, name, icon, key) in TOOLS {
+        if style == QUOTE {
+            let divider = gtk::Separator::new(gtk::Orientation::Vertical);
+            divider.add_css_class("format-divider");
+            row.append(&divider);
+        }
+        let button: gtk::ToggleButton = crate::app::named("GtkToggleButton", name);
+        // At its own size: a filled 36px button would scale it up.
+        let image = crate::images::lucide_image(icon, "#b9bcbe", 17);
+        image.set_halign(gtk::Align::Center);
+        image.set_valign(gtk::Align::Center);
+        button.set_child(Some(&image));
+        button.set_tooltip_text(Some(&tool_tip(name, key, true)));
         button.add_css_class("flat");
         // The field keeps the focus and its selection.
         button.set_can_focus(false);
@@ -188,12 +274,27 @@ pub fn attach(view: &gtk::TextView, anchor: &gtk::Box) -> Rc<Rich> {
         let weak: Weak<Rich> = Rc::downgrade(&rich);
         button.connect_clicked(move |_| {
             if let Some(rich) = weak.upgrade() {
-                rich.toggle(marker);
+                rich.toggle(style);
             }
         });
         row.append(&button);
+        rich.tools.borrow_mut().push(button);
     }
     rich.bar.set_child(Some(&row));
+    // Rewrapping moves the quote bars; it changes the text's height.
+    let this = Rc::downgrade(&rich);
+    let watch = move |adjustment: Option<gtk::Adjustment>| {
+        if let Some(adjustment) = adjustment {
+            let this = this.clone();
+            adjustment.connect_changed(move |_| {
+                if let Some(rich) = this.upgrade() {
+                    rich.queue_bars();
+                }
+            });
+        }
+    };
+    watch(view.vadjustment());
+    view.connect_vadjustment_notify(move |view| watch(view.vadjustment()));
 
     let this = rich.clone();
     buffer.connect_begin_user_action(move |_| this.in_action.set(true));
@@ -335,7 +436,9 @@ impl Rich {
         self.show_bar();
     }
 
-    /// Hides delimiters and styles the runs between them.
+    /// Hides delimiters and styles the runs between them. A quote's
+    /// indent covers its whole lines, `> ` included, since a paragraph takes
+    /// its margin from its first character.
     fn restyle(&self, buffer: &gtk::TextBuffer) {
         let (start, end) = buffer.bounds();
         for tag in &self.tags {
@@ -343,15 +446,88 @@ impl Rich {
         }
         let text = text(buffer);
         let mut offset = 0;
+        let mut quoted = BTreeSet::new();
         for run in source_runs(&text) {
             let count = text[run.range].chars().count();
             let (start, end) = (at(buffer, offset), at(buffer, offset + count));
-            for (tag, on) in self.tags.iter().zip([run.hidden, run.bold, run.italic]) {
-                if on {
+            if run.hidden {
+                buffer.apply_tag(&self.tags[0], &start, &end);
+            }
+            for (bit, tag) in self.tags[1..6].iter().enumerate() {
+                if run.style & (1 << bit) != 0 {
                     buffer.apply_tag(tag, &start, &end);
                 }
             }
+            if run.style & QUOTE != 0 {
+                quoted.extend(start.line()..=end.line());
+            }
             offset += count;
+        }
+        for &line in &quoted {
+            if let Some(start) = buffer.iter_at_line(line) {
+                let mut end = start;
+                if !end.ends_line() {
+                    end.forward_to_line_end();
+                }
+                buffer.apply_tag(&self.tags[6], &start, &end);
+            }
+        }
+        self.quoted.replace(quoted);
+        self.queue_bars();
+    }
+
+    /// Places the quote bars once the layout has the restyled lines.
+    fn queue_bars(&self) {
+        if self.bars_queued.replace(true) {
+            return;
+        }
+        let me = self.me.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(rich) = me.upgrade() {
+                rich.bars_queued.set(false);
+                rich.place_bars();
+            }
+        });
+    }
+
+    /// One 3 px bar beside each run of quoted lines.
+    fn place_bars(&self) {
+        let Some(view) = self.view.upgrade() else {
+            return;
+        };
+        let buffer = view.buffer();
+        let mut blocks: Vec<(i32, i32)> = Vec::new();
+        for &line in self.quoted.borrow().iter() {
+            match blocks.last_mut() {
+                Some((_, last)) if *last + 1 == line => *last = line,
+                _ => blocks.push((line, line)),
+            }
+        }
+        let mut bars = self.bars.borrow_mut();
+        while bars.len() > blocks.len() {
+            if let Some(bar) = bars.pop() {
+                view.remove(&bar);
+            }
+        }
+        for (index, (first, last)) in blocks.into_iter().enumerate() {
+            let (Some(top), Some(bottom)) = (buffer.iter_at_line(first), buffer.iter_at_line(last))
+            else {
+                continue;
+            };
+            let (y, _) = view.line_yrange(&top);
+            let (bottom_y, bottom_height) = view.line_yrange(&bottom);
+            let height = (bottom_y + bottom_height - y).max(1);
+            if let Some(bar) = bars.get(index) {
+                bar.set_size_request(3, height);
+                view.move_overlay(bar, 0, y);
+            } else {
+                let bar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                bar.add_css_class("composer-quote-bar");
+                bar.set_can_target(false);
+                bar.set_size_request(3, height);
+                view.add_overlay(&bar, 0, y);
+                bars.push(bar.upcast());
+            }
         }
     }
 
@@ -365,8 +541,9 @@ impl Rich {
         let buffer = view.buffer();
         let control = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
         match key {
-            gdk::Key::b | gdk::Key::B if control => self.toggle("**"),
-            gdk::Key::i | gdk::Key::I if control => self.toggle("_"),
+            gdk::Key::b | gdk::Key::B if control => self.toggle(BOLD),
+            gdk::Key::i | gdk::Key::I if control => self.toggle(ITALIC),
+            gdk::Key::u | gdk::Key::U if control => self.toggle(UNDERLINE),
             // GTK moves arrows through the layout, which leaves out
             // invisible text and can land among hidden delimiters.
             gdk::Key::Left | gdk::Key::Right | gdk::Key::KP_Left | gdk::Key::KP_Right
@@ -417,16 +594,19 @@ impl Rich {
         glib::Propagation::Stop
     }
 
-    /// Bold (`**`) or italic (`_`) on, or off, for the selection.
-    fn toggle(&self, marker: &str) {
+    /// Style bit `style` on, or off, for the selection, as web's toolbar
+    /// (`composer::toggle`).
+    fn toggle(&self, style: i32) {
         let Some(view) = self.view.upgrade() else {
             return;
         };
         let buffer = view.buffer();
         let current = text(&buffer);
         let (insert, bound) = selection(&buffer);
-        let (next, start, end) = toggle(&current, insert.min(bound), insert.max(bound), marker);
+        let (next, start, end) = toggle(&current, insert.min(bound), insert.max(bound), style);
         if next == current || next.chars().count() > MAX_LENGTH {
+            // A refused toggle leaves its button as the selection is.
+            self.show_bar();
             return;
         }
         self.applying.set(true);
@@ -443,17 +623,29 @@ impl Rich {
         self.show_bar();
     }
 
-    /// Bold and Italic over the field while text in it is selected.
+    /// The formatting toolbar over the field while text in it is selected:
+    /// a style's button is pressed when a selected character has it, and
+    /// off when the selection cannot take its toggle.
     fn show_bar(&self) {
         let Some(view) = self.view.upgrade() else {
             return;
         };
         // From the marks: `mark-set` handlers run before the buffer's
         // `has-selection` follows them.
-        let (insert, bound) = selection(&view.buffer());
+        let buffer = view.buffer();
+        let (insert, bound) = selection(&buffer);
         if !(view.has_focus() && view.is_mapped() && insert != bound && !self.preedit.get()) {
             self.bar.popdown();
             return;
+        }
+        let source = text(&buffer);
+        let (start, end) = (insert.min(bound), insert.max(bound));
+        let styles = selection_styles(&source, start, end);
+        for (button, (style, name, _, key)) in self.tools.borrow().iter().zip(TOOLS) {
+            let allowed = formatting::composer::toggle(&source, start, end, style).is_some();
+            button.set_active(styles & style != 0);
+            button.set_sensitive(allowed);
+            button.set_tooltip_text(Some(&tool_tip(name, key, allowed)));
         }
         // Its left edge 8 px above the field's, as desktop's.
         let field = view.parent().unwrap_or_else(|| view.clone().upcast());

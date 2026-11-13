@@ -26,17 +26,25 @@ class FormattingTest {
             var text = case.getValue("text").jsonPrimitive.content
             var caret = formattedMessage(text).original(case.getValue("caret").jsonPrimitive.int)
             var history = FormatEditHistory()
+            var pending = -1
             for (step in case.getValue("steps").jsonArray.map { it.jsonObject }) {
                 if (step.getValue("placed").jsonPrimitive.boolean) {
                     // A tap: a new caret, so no style carries over from the last key.
                     caret = formattedMessage(text).let { it.original(it.displayed(caret)) }
                     history = FormatEditHistory()
+                    pending = -1
                 }
                 val key = step.getValue("key").jsonPrimitive.content
-                val typed = history.edit(text, FormatSelection(text.substring(0, caret) + key + text.substring(caret), caret + key.length, caret + key.length))
+                val next = FormatSelection(text.substring(0, caret) + key + text.substring(caret), caret + key.length, caret + key.length)
+                val note = case.getValue("note").jsonPrimitive.content + ": " + key
+                // The carried style is any style bits, including underline, strikethrough, spoiler and quote.
+                val edit = composerEdit(text, next, pending)
+                pending = edit.pending
+                assertEquals(note, step.getValue("pending").jsonPrimitive.int, pending)
+                val typed = history.edit(text, next)
+                assertEquals(note, edit.selection, typed)
                 text = typed.text
                 caret = typed.start
-                val note = case.getValue("note").jsonPrimitive.content + ": " + key
                 assertEquals(note, step.getValue("text").jsonPrimitive.content, text)
                 assertEquals(note, step.getValue("caret").jsonPrimitive.int, formattedMessage(text).displayed(caret))
             }
@@ -87,14 +95,55 @@ class FormattingTest {
     }
 
     @Test fun `toolbar state follows styles anywhere in the source selection`() {
-        val text = "a **bold** and _it_ c"
+        val text = "a **bold** and _it_ c __u__ ~~s~~ ||x||\n> q"
         // Source offsets; the field hides the delimiters.
-        assertEquals(true, selectionHasStyle(text, 4, 8, bold = true))
-        assertEquals(true, selectionHasStyle(text, 0, 5, bold = true))
-        assertEquals(false, selectionHasStyle(text, 0, 1, bold = true))
-        assertEquals(false, selectionHasStyle(text, 4, 8, bold = false))
-        assertEquals(true, selectionHasStyle(text, 16, 18, bold = false))
-        assertEquals(false, selectionHasStyle(text, 11, 14, bold = false))
+        assertEquals(FormatStyle.BOLD, selectionStyles(text, 4, 8))
+        assertEquals(FormatStyle.BOLD, selectionStyles(text, 0, 5))
+        assertEquals(0, selectionStyles(text, 0, 1))
+        assertEquals(FormatStyle.ITALIC, selectionStyles(text, 16, 18))
+        assertEquals(0, selectionStyles(text, 11, 14))
+        val underline = text.indexOf("u__")
+        assertEquals(FormatStyle.UNDERLINE, selectionStyles(text, underline, underline + 1))
+        assertEquals(FormatStyle.STRIKETHROUGH, selectionStyles(text, text.indexOf("s~~"), text.indexOf("s~~") + 1))
+        assertEquals(FormatStyle.SPOILER, selectionStyles(text, text.indexOf("x||"), text.indexOf("x||") + 1))
+        assertEquals(FormatStyle.QUOTE, selectionStyles(text, text.length - 1, text.length))
+        assertEquals(FormatStyle.UNDERLINE or FormatStyle.STRIKETHROUGH or FormatStyle.SPOILER, selectionStyles(text, underline, text.indexOf("x||") + 1))
+    }
+
+    /** Every toolbar toggle web makes, through the shared toggle (shared/messages/toggle-cases.json). */
+    @Test fun `toolbar toggles follow the shared cases`() {
+        val file = generateSequence(File("").absoluteFile) { it.parentFile }
+            .map { File(it, "shared/messages/toggle-cases.json") }.first { it.isFile }
+        val cases = Json.parseToJsonElement(file.readText()).jsonObject.getValue("cases").jsonArray
+        assertTrue(cases.size > 300)
+        for (case in cases.map { it.jsonObject }) {
+            val text = case.getValue("text").jsonPrimitive.content
+            val style = when (val name = case.getValue("style").jsonPrimitive.content) {
+                "bold" -> FormatStyle.BOLD
+                "italic" -> FormatStyle.ITALIC
+                "underline" -> FormatStyle.UNDERLINE
+                "strikethrough" -> FormatStyle.STRIKETHROUGH
+                "spoiler" -> FormatStyle.SPOILER
+                "quote" -> FormatStyle.QUOTE
+                else -> error(name)
+            }
+            // Visible UTF-16 offsets to the source, as the field maps a selection.
+            val from = case.getValue("from").jsonPrimitive.int
+            val to = case.getValue("to").jsonPrimitive.int
+            val shown = formattedMessage(text).sourceIndices
+            val start = shown.getOrNull(from) ?: text.length
+            val end = if (to > from) shown[to - 1] + 1 else start
+            val result = toggleFormat(text, start, end, style)
+            val label = case.toString()
+            val expected = case.getValue("result").jsonPrimitive.contentOrNull
+            if (expected == null) assertEquals(label, null, result)
+            else {
+                requireNotNull(result) { label }
+                assertEquals(label, expected, result.text)
+                val after = formattedMessage(result.text)
+                assertEquals(label, from to to, after.displayed(result.start) to after.displayed(result.end))
+            }
+        }
     }
 
     @Test fun `edits discard orphan delimiters and retain literal punctuation`() {
@@ -103,22 +152,22 @@ class FormattingTest {
         assertEquals(FormatSelection("a  z", 2, 2), repairFormatEdit("a **bold** z", FormatSelection("a ** z", 4, 4)))
         assertEquals(FormatSelection("**llo** tail", 2, 2), repairFormatEdit("**hello** tail", FormatSelection("**llo** tail", 2, 2)))
         assertEquals(FormatSelection("a *", 3, 3), repairFormatEdit("a **", FormatSelection("a *", 3, 3)))
-        assertEquals(FormatSelection("hello rest", 0, 5), toggleFormat("**hello** rest", 2, 9, "**"))
-        assertEquals("identifier", toggleFormat("identifier", 2, 5, "_").text)
+        assertEquals(null, toggleFormat("identifier", 2, 5, FormatStyle.ITALIC))
+        assertEquals(null, toggleFormat("identifier", 2, 5, FormatStyle.UNDERLINE))
     }
 
     @Test fun `formatting cannot split links but can wrap complete links`() {
         val text = "🙂 https://example.com/a_b?q=one&x=two tail"
         val start = text.indexOf("https:")
         val end = text.indexOf(" tail")
-        for (marker in listOf("**", "_")) {
+        for (style in listOf(FormatStyle.BOLD, FormatStyle.ITALIC, FormatStyle.UNDERLINE, FormatStyle.STRIKETHROUGH, FormatStyle.SPOILER)) {
             for ((a, b) in listOf(start + 2 to start + 2, start + 2 to end, 0 to end - 2, start to end - 1)) {
-                assertEquals(FormatSelection(text, a, b), toggleFormat(text, a, b, marker))
+                assertEquals(null, toggleFormat(text, a, b, style))
             }
-            val wrapped = toggleFormat(text, start, end, marker)
+            val wrapped = requireNotNull(toggleFormat(text, start, end, style))
             assertEquals(text, formattedMessage(wrapped.text).text)
-            assertEquals(linkSegments(text).filter { it.href != null }.map { it.href },
-                linkSegments(wrapped.text).filter { it.href != null }.map { it.href })
+            // Links are found in the displayed runs, as rendering finds them.
+            assertEquals(linkSegments(text).filter { it.href != null }.map { it.href }, messageLinkRanges(wrapped.text).map { it.href })
         }
     }
 
@@ -133,7 +182,11 @@ class FormattingTest {
             val text = fields.getValue("text").jsonPrimitive.content
             val expected = fields.getValue("runs").jsonArray.map {
                 val run = it.jsonObject
-                FormattedRun(run.getValue("text").jsonPrimitive.content, run.getValue("bold").jsonPrimitive.boolean, run.getValue("italic").jsonPrimitive.boolean)
+                // Styles other than bold and italic are listed only when present.
+                fun bit(name: String, style: Int) = if (run[name]?.jsonPrimitive?.boolean == true) style else 0
+                FormattedRun(run.getValue("text").jsonPrimitive.content,
+                    bit("bold", FormatStyle.BOLD) or bit("italic", FormatStyle.ITALIC) or bit("underline", FormatStyle.UNDERLINE) or
+                        bit("strikethrough", FormatStyle.STRIKETHROUGH) or bit("spoiler", FormatStyle.SPOILER) or bit("quote", FormatStyle.QUOTE))
             }
             val actual = formattedMessage(text)
             assertEquals(text, expected, actual.runs)
@@ -142,19 +195,11 @@ class FormattingTest {
         }
     }
 
-    @Test fun `mixed formatting preserves content and the other style`() {
-        assertEquals(FormatSelection("**bold plus normal**", 2, 18), toggleFormat("**bold** plus normal", 0, 20, "**"))
-        assertEquals("**one and two**", toggleFormat("**one** and **two**", 0, 19, "**").text)
-        assertEquals("_**bold both**_", toggleFormat("**bold _both_**", 0, 15, "_").text)
-        assertEquals(FormatSelection("a **🙂word** z", 4, 10), toggleFormat("a 🙂word z", 2, 8, "**"))
-        assertEquals(FormatSelection("a 🙂word z", 2, 8), toggleFormat("a **🙂word** z", 4, 10, "**"))
-    }
-
-    @Test fun `toggle removes selected markers and ignores a caret`() {
-        assertEquals(FormatSelection("bold", 0, 4), toggleFormat("**bold**", 0, 8, "**"))
-        assertEquals(FormatSelection("italic", 0, 6), toggleFormat("_italic_", 0, 8, "_"))
-        assertEquals(FormatSelection("ab", 1, 1), toggleFormat("ab", 1, 1, "**"))
-        assertEquals(FormatSelection(" _word_ \n", 2, 6), toggleFormat(" word \n", 0, 7, "_"))
-        assertEquals(" \t", toggleFormat(" \t", 0, 2, "**").text)
+    @Test fun `toolbar toggles keep content and refuse a caret`() {
+        assertEquals(FormatSelection("bold", 0, 4), toggleFormat("**bold**", 2, 6, FormatStyle.BOLD))
+        assertEquals(FormatSelection("a **🙂word** z", 4, 10), toggleFormat("a 🙂word z", 2, 8, FormatStyle.BOLD))
+        assertEquals(FormatSelection("a ||🙂word|| z", 4, 10), toggleFormat("a 🙂word z", 2, 8, FormatStyle.SPOILER))
+        assertEquals(FormatSelection("> quoted", 2, 8), toggleFormat("quoted", 0, 6, FormatStyle.QUOTE))
+        assertEquals(null, toggleFormat("ab", 1, 1, FormatStyle.BOLD))
     }
 }

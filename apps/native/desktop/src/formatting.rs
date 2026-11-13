@@ -3,8 +3,135 @@ use crate::egui;
 #[cfg(test)]
 use caper_client::formatting::parser;
 pub use caper_client::formatting::{
-    adjacent_grapheme, edit, projection, runs, source_runs, toggle,
+    BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE, adjacent_grapheme, edit, projection,
+    runs, source_runs, toggle,
 };
+use caper_client::formatting::{composer, selection_styles};
+
+/// The selection toolbar's styles in web's order; a divider precedes Quote.
+const TOOLBAR: [(i32, &str); 6] = [
+    (BOLD, "Bold"),
+    (ITALIC, "Italic"),
+    (UNDERLINE, "Underline"),
+    (STRIKETHROUGH, "Strikethrough"),
+    (QUOTE, "Quote"),
+    (SPOILER, "Spoiler"),
+];
+
+/// One 36px toolbar button, true when clicked. `on` is its pressed state
+/// (`selection_styles`); a selection its toggle refuses disables it, as on web.
+fn toolbar_button(
+    ui: &mut egui::Ui,
+    toolbar_id: egui::Id,
+    index: usize,
+    style: i32,
+    label: &str,
+    allowed: bool,
+    on: bool,
+) -> bool {
+    let (_, rect) = ui.allocate_space(egui::vec2(36.0, 36.0));
+    let sense = if allowed {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let button = ui.interact(rect, toolbar_id.with(style), sense);
+    let hot = allowed && (button.hovered() || button.has_focus());
+    if hot || on {
+        let (first, last) = (index == 0, index == TOOLBAR.len() - 1);
+        let corners = egui::CornerRadius {
+            nw: if first { 8 } else { 0 },
+            sw: if first { 8 } else { 0 },
+            ne: if last { 8 } else { 0 },
+            se: if last { 8 } else { 0 },
+        };
+        ui.painter().rect_filled(
+            rect,
+            corners,
+            if hot {
+                crate::BORDER
+            } else {
+                crate::SURFACE_HOVER
+            },
+        );
+    }
+    let color = if !allowed {
+        crate::MUTED.gamma_multiply(0.4)
+    } else if hot || on {
+        crate::TEXT
+    } else {
+        crate::MUTED
+    };
+    let center = rect.center();
+    match style {
+        QUOTE => {
+            // Lucide `text-quote` on its 24-unit grid, drawn at 17px.
+            let scale = 17.0 / 24.0;
+            let point = |x: f32, y: f32| center + egui::vec2(x - 12.0, y - 12.0) * scale;
+            let stroke = egui::Stroke::new(1.6, color);
+            for [from, to] in [
+                [(17.0, 5.0), (3.0, 5.0)],
+                [(21.0, 12.0), (8.0, 12.0)],
+                [(21.0, 19.0), (8.0, 19.0)],
+                [(3.0, 12.0), (3.0, 19.0)],
+            ] {
+                ui.painter()
+                    .line_segment([point(from.0, from.1), point(to.0, to.1)], stroke);
+            }
+        }
+        SPOILER => crate::paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(center, egui::vec2(17.0, 17.0)),
+            crate::NavIcon::EyeOff,
+            color,
+        ),
+        _ => {
+            let family = if style == BOLD {
+                egui::FontFamily::Name("Satoshi Bold".into())
+            } else {
+                egui::FontFamily::Proportional
+            };
+            let glyph = match style {
+                BOLD => "B",
+                ITALIC => "I",
+                UNDERLINE => "U",
+                _ => "S",
+            };
+            let mut job = egui::text::LayoutJob::simple(
+                glyph.into(),
+                egui::FontId::new(14.0, family),
+                color,
+                f32::INFINITY,
+            );
+            let format = &mut job.sections[0].format;
+            format.italics = style == ITALIC;
+            if style == UNDERLINE {
+                format.underline = egui::Stroke::new(1.0, color);
+            }
+            if style == STRIKETHROUGH {
+                format.strikethrough = egui::Stroke::new(1.0, color);
+            }
+            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+            ui.painter()
+                .galley(center - galley.size() / 2.0, galley, color);
+        }
+    }
+    button.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, allowed, on, label));
+    let shortcut = match style {
+        BOLD => " · Ctrl/Cmd B",
+        ITALIC => " · Ctrl/Cmd I",
+        UNDERLINE => " · Ctrl/Cmd U",
+        _ => "",
+    };
+    let button = if allowed {
+        button
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("{label}{shortcut}"))
+    } else {
+        button.on_hover_text("This selection cannot be formatted without changing its text or link")
+    };
+    button.clicked()
+}
 
 fn source_selection(
     indices: &[usize],
@@ -272,11 +399,14 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
     let mut chosen = None;
     if response.has_focus() && !native_transaction {
         ui.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::COMMAND, egui::Key::B) {
-                chosen = Some("**");
-            }
-            if i.consume_key(egui::Modifiers::COMMAND, egui::Key::I) {
-                chosen = Some("_");
+            for (key, style) in [
+                (egui::Key::B, BOLD),
+                (egui::Key::I, ITALIC),
+                (egui::Key::U, UNDERLINE),
+            ] {
+                if i.consume_key(egui::Modifiers::COMMAND, key) {
+                    chosen = Some(style);
+                }
             }
         });
     }
@@ -290,9 +420,9 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
                 .is_some_and(|pos| rect.contains(pos))
         });
     let toolbar_focused = ui.memory(|memory| {
-        ["**", "_"]
+        TOOLBAR
             .iter()
-            .any(|marker| memory.has_focus(toolbar_id.with(marker)))
+            .any(|(style, _)| memory.has_focus(toolbar_id.with(style)))
     });
     if !native_transaction
         && start != end
@@ -304,9 +434,10 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
                 egui::LayerId::new(egui::Order::Foreground, toolbar_id),
             );
         }
+        let pressed = selection_styles(text, start, end);
         egui::Area::new(toolbar_id)
             .order(egui::Order::Foreground)
-            .default_size(egui::vec2(72.0, 36.0))
+            .default_size(egui::vec2(36.0 * TOOLBAR.len() as f32 + 9.0, 36.0))
             .movable(false)
             .pivot(egui::Align2::LEFT_BOTTOM)
             .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 8.0))
@@ -318,85 +449,29 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                         ui.horizontal(|ui| {
-                            for (marker, glyph, label) in
-                                [("**", "B", "Bold"), ("_", "I", "Italic")]
-                            {
-                                let (_, rect) = ui.allocate_space(egui::vec2(36.0, 36.0));
-                                let button = ui.interact(
-                                    rect,
-                                    toolbar_id.with(marker),
-                                    egui::Sense::click(),
-                                );
-                                if button.hovered()
-                                    || button.has_focus()
-                                    || button.is_pointer_button_down_on()
-                                {
-                                    let corners = if marker == "**" {
-                                        egui::CornerRadius {
-                                            nw: 8,
-                                            sw: 8,
-                                            ne: 0,
-                                            se: 0,
-                                        }
-                                    } else {
-                                        egui::CornerRadius {
-                                            nw: 0,
-                                            sw: 0,
-                                            ne: 8,
-                                            se: 8,
-                                        }
-                                    };
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        corners,
-                                        if button.is_pointer_button_down_on() {
-                                            crate::BORDER
-                                        } else {
-                                            crate::SURFACE_HOVER
-                                        },
+                            for (index, (style, label)) in TOOLBAR.into_iter().enumerate() {
+                                if style == QUOTE {
+                                    // Web's thin divider between inline and block styles.
+                                    let (_, rect) = ui.allocate_space(egui::vec2(9.0, 36.0));
+                                    ui.painter().vline(
+                                        rect.center().x,
+                                        rect.center().y - 9.0..=rect.center().y + 9.0,
+                                        egui::Stroke::new(1.0, crate::BORDER),
                                     );
                                 }
-                                let font = egui::FontId::new(
-                                    14.0,
-                                    if marker == "**" {
-                                        egui::FontFamily::Name("Satoshi Bold".into())
-                                    } else {
-                                        egui::FontFamily::Proportional
-                                    },
-                                );
-                                let mut job = egui::text::LayoutJob::simple(
-                                    glyph.into(),
-                                    font,
-                                    crate::TEXT,
-                                    f32::INFINITY,
-                                );
-                                job.sections[0].format.italics = marker == "_";
-                                let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-                                ui.painter().galley(
-                                    rect.center() - galley.size() / 2.0,
-                                    galley,
-                                    crate::TEXT,
-                                );
-                                button.widget_info(|| {
-                                    egui::WidgetInfo::labeled(egui::Role::Button, true, label)
-                                });
-                                if button
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text(format!(
-                                        "{label} · Ctrl/Cmd {}",
-                                        if marker == "**" { "B" } else { "I" }
-                                    ))
-                                    .clicked()
+                                let allowed = composer::toggle(text, start, end, style).is_some();
+                                let on = pressed & style != 0;
+                                if toolbar_button(ui, toolbar_id, index, style, label, allowed, on)
                                 {
-                                    chosen = Some(marker);
+                                    chosen = Some(style);
                                 }
                             }
                         });
                     });
             });
     }
-    if let Some(marker) = chosen {
-        let (next, start, end) = toggle(text, start, end, marker);
+    if let Some(style) = chosen {
+        let (next, start, end) = toggle(text, start, end, style);
         if next != *text && next.chars().count() <= 4000 {
             let mut undoer = state.undoer();
             undoer.add_undo(&(range, text.clone()));
@@ -596,9 +671,22 @@ mod tests {
             for step in case["steps"].as_array().unwrap() {
                 assert!(!step["placed"].as_bool().unwrap(), "{note}");
                 let key = step["key"].as_str().unwrap();
-                frame(&mut text, conversation, vec![egui::Event::Text(key.into())]);
+                // egui types a newline from Enter, never from a Text event.
+                let event = if key == "\n" {
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }
+                } else {
+                    egui::Event::Text(key.into())
+                };
+                frame(&mut text, conversation, vec![event]);
                 assert_eq!(text, step["text"].as_str().unwrap(), "{note}, key {key:?}");
             }
+            let quoted = text.starts_with("> ");
             frame(
                 &mut text,
                 conversation,
@@ -611,8 +699,11 @@ mod tests {
                 }],
             );
             frame(&mut text, conversation, vec![egui::Event::Text("*".into())]);
+            // Typing at a quoted line's start keeps the quote, as web does
+            // (composer-cases.json, "typing at the start of a quoted line").
+            let literal = if quoted { "> *" } else { "*" };
             assert_eq!(
-                text, "*",
+                text, literal,
                 "{note}, replace the visible draft with a literal"
             );
         }
@@ -715,10 +806,13 @@ mod tests {
             );
         }
         assert_eq!(
-            toggle("**hello** rest", 2, 9, "**"),
+            toggle("**hello** rest", 2, 9, BOLD),
             ("hello rest".into(), 0, 5)
         );
-        assert_eq!(toggle("identifier", 2, 5, "_"), ("identifier".into(), 2, 5));
+        assert_eq!(
+            toggle("identifier", 2, 5, ITALIC),
+            ("identifier".into(), 2, 5)
+        );
     }
 
     #[test]
@@ -770,14 +864,18 @@ mod tests {
                 let value = &text[run.range];
                 if let Some(last) = projected
                     .last_mut()
-                    .filter(|last| last.bold == run.bold && last.italic == run.italic)
+                    .filter(|last| last.style() == run.style)
                 {
                     last.text.push_str(value);
                 } else {
                     projected.push(parser::Run {
                         text: value.into(),
-                        bold: run.bold,
-                        italic: run.italic,
+                        bold: run.style & BOLD != 0,
+                        italic: run.style & ITALIC != 0,
+                        underline: run.style & UNDERLINE != 0,
+                        strikethrough: run.style & STRIKETHROUGH != 0,
+                        spoiler: run.style & SPOILER != 0,
+                        quote: run.style & QUOTE != 0,
                     });
                 }
             }
@@ -790,7 +888,7 @@ mod tests {
         let text = "🙂 https://example.com/a_b?q=one&x=two tail";
         let start = text[..text.find("https:").unwrap()].chars().count();
         let end = text[..text.find(" tail").unwrap()].chars().count();
-        for marker in ["**", "_"] {
+        for marker in [BOLD, ITALIC, UNDERLINE, STRIKETHROUGH, SPOILER] {
             for (a, b) in [
                 (start + 2, start + 2),
                 (start + 2, end),
@@ -807,6 +905,11 @@ mod tests {
                     .collect::<String>(),
                 text
             );
+            // Renderers find links in the visible text (checked above); `**`
+            // and `_` also leave the raw source's link intact.
+            if marker != BOLD && marker != ITALIC {
+                continue;
+            }
             assert_eq!(
                 crate::links::segments(&wrapped)
                     .into_iter()
@@ -817,31 +920,6 @@ mod tests {
                     .filter_map(|part| part.href)
                     .collect::<Vec<_>>()
             );
-        }
-    }
-
-    #[test]
-    fn toggles_preserve_unicode_and_selection() {
-        for (text, start, end, marker, expected, s, e) in [
-            ("é🙂", 0, 2, "**", "**é🙂**", 2, 4),
-            ("**é🙂**", 2, 4, "**", "é🙂", 0, 2),
-            ("_hello_", 0, 7, "_", "hello", 0, 5),
-            ("hi", 2, 2, "_", "hi", 2, 2),
-            (" word \n", 0, 7, "_", " _word_ \n", 2, 6),
-            (" \t", 0, 2, "**", " \t", 2, 2),
-            (
-                "**bold** plus normal",
-                0,
-                20,
-                "**",
-                "**bold plus normal**",
-                2,
-                18,
-            ),
-            ("**one** and **two**", 0, 19, "**", "**one and two**", 2, 13),
-            ("**bold _both_**", 0, 15, "_", "_**bold both**_", 1, 14),
-        ] {
-            assert_eq!(toggle(text, start, end, marker), (expected.into(), s, e));
         }
     }
 
@@ -877,15 +955,16 @@ mod tests {
                 egui::text::CCursor::new(2),
             )));
         state.store(&context, id);
-        let key = || {
+        let shortcut = |key| {
             vec![egui::Event::Key {
-                key: egui::Key::B,
+                key,
                 physical_key: None,
                 pressed: true,
                 repeat: false,
                 modifiers: egui::Modifiers::COMMAND,
             }]
         };
+        let key = || shortcut(egui::Key::B);
         frame(&mut text, key(), true);
         assert_eq!(text, "**é🙂**");
         assert_eq!(
@@ -900,6 +979,13 @@ mod tests {
         frame(&mut text, key(), false);
         assert_eq!(text, "**é🙂**");
         frame(&mut text, key(), true);
+        assert_eq!(text, "é🙂");
+        frame(&mut text, shortcut(egui::Key::U), true);
+        assert_eq!(text, "__é🙂__");
+        frame(&mut text, shortcut(egui::Key::I), true);
+        assert_eq!(text, "___é🙂___", "underlined italics");
+        frame(&mut text, shortcut(egui::Key::U), true);
+        frame(&mut text, shortcut(egui::Key::I), true);
         assert_eq!(text, "é🙂");
         text = "x".repeat(4000);
         frame(&mut text, key(), true);

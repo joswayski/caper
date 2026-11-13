@@ -7,8 +7,8 @@ workspace, so mobile builds never compile the desktop client's media stack.
 
 | Module | Sources | Android | Apple |
 | --- | --- | --- | --- |
-| Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | `MessageFormatting.swift` |
-| Composer typing | `shared/messages/composer.rs` | `data/Formatting.kt` (`composerEdit`) | `MessageFormatting.swift` (`ComposerTyping`) |
+| Message formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | `MessageFormatting.swift` |
+| Composer typing and toolbar toggles | `shared/messages/composer.rs` | `data/Formatting.kt` (`composerEdit`) | `MessageFormatting.swift` (`ComposerTyping`) |
 | Edit-history highlights | `shared/messages/history_diff.rs` | `data/Edits.kt` (`messageDiff`) | `Models.swift` (`messageDiff`) |
 | Emoji autocomplete | `shared/messages/emoji.rs`, searching the catalog the app ships (`emoji_catalog`) | `EmojiAutocomplete.kt`, `ui/EmojiArtwork.kt` | `EmojiAutocomplete.swift`, `EmojiArtwork.swift` |
 | Invite codes | `shared/invites/code.rs` | `data/InviteLinks.kt` (`inviteCode`) | `InviteLinks.swift` (`code(from:)`) |

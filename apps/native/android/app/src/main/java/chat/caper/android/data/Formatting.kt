@@ -1,14 +1,43 @@
 package chat.caper.android.data
 
-internal data class FormattedRun(val text: String, val bold: Boolean, val italic: Boolean)
+/** Style bits of formatted text (shared/messages/formatting.rs). */
+internal object FormatStyle {
+    const val BOLD = 1
+    const val ITALIC = 2
+    const val UNDERLINE = 4
+    const val STRIKETHROUGH = 8
+    const val SPOILER = 16
+    const val QUOTE = 32
+}
+
+internal data class FormattedRun(val text: String, val style: Int) {
+    val bold get() = style and FormatStyle.BOLD != 0
+    val italic get() = style and FormatStyle.ITALIC != 0
+    val underline get() = style and FormatStyle.UNDERLINE != 0
+    val strikethrough get() = style and FormatStyle.STRIKETHROUGH != 0
+    val spoiler get() = style and FormatStyle.SPOILER != 0
+    val quote get() = style and FormatStyle.QUOTE != 0
+}
 internal data class FormattedMessage(val runs: List<FormattedRun>, val sourceIndices: List<Int>) {
     val text: String get() = runs.joinToString("") { it.text }
+    /**
+     * Displayed ranges of neighbouring runs with style [bit]: one quote block (its inner newlines are
+     * quoted, the ones at its edges plain), or one spoiler that reveals together.
+     */
+    fun ranges(bit: Int): List<IntRange> = buildList {
+        var offset = 0
+        var start = -1
+        for (run in runs) {
+            if (run.style and bit != 0) { if (start < 0) start = offset }
+            else if (start >= 0) { add(start until offset); start = -1 }
+            offset += run.text.length
+        }
+        if (start >= 0) add(start until offset)
+    }
     fun displayed(offset: Int): Int = sourceIndices.count { it < offset }
     // At the trailing edge stay inside the closing delimiter, so typing extends the style.
     fun original(offset: Int): Int = sourceIndices.getOrNull(offset) ?: ((sourceIndices.lastOrNull() ?: -1) + 1)
 }
-
-private fun formatSpace(c: Char) = c in "\t\n\u000b\u000c\r \u00a0\u1680\u2028\u2029\u202f\u205f\u3000\ufeff" || c in '\u2000'..'\u200a'
 
 /**
  * The last few results of a parse, keyed on the exact text. One composer keystroke parses the same draft
@@ -36,15 +65,36 @@ private fun parseFormattedMessage(text: String): FormattedMessage {
     for (span in spans.indices step 3) {
         val start = spans[span]
         val end = spans[span + 1]
-        val bold = spans[span + 2] and 1 != 0
-        val italic = spans[span + 2] and 2 != 0
+        val style = spans[span + 2]
         indices.addAll(start until end)
         val value = text.substring(start, end)
         val last = runs.lastOrNull()
-        if (last?.bold == bold && last.italic == italic) runs[runs.lastIndex] = last.copy(text = last.text + value)
-        else runs += FormattedRun(value, bold, italic)
+        if (last?.style == style) runs[runs.lastIndex] = last.copy(text = last.text + value)
+        else runs += FormattedRun(value, style)
     }
     return FormattedMessage(runs, indices)
+}
+
+/**
+ * Links in message [text] as web finds them: in the displayed text of each formatted run, outside
+ * [excluded] (sorted source ranges, the mentions), so hidden delimiters such as `||` never start, join
+ * or end a link. Ranges are in [text]'s source coordinates.
+ */
+internal fun messageLinkRanges(text: String, excluded: List<IntRange> = emptyList()): List<LinkRange> {
+    val formatted = formattedMessage(text)
+    val cuts = excluded.map { formatted.displayed(it.first) until formatted.displayed(it.last + 1) }
+    val links = mutableListOf<LinkRange>()
+    var offset = 0
+    for (run in formatted.runs) {
+        val end = offset + run.text.length
+        val inside = cuts.filter { it.first < end && it.last + 1 > offset }
+            .map { maxOf(it.first, offset) - offset until minOf(it.last + 1, end) - offset }
+        for (link in linkRanges(run.text, inside)) {
+            links += LinkRange(formatted.sourceIndices[offset + link.start], formatted.sourceIndices[offset + link.end - 1] + 1, link.href)
+        }
+        offset = end
+    }
+    return links
 }
 
 internal data class FormatSelection(val text: String, val start: Int, val end: Int)
@@ -106,68 +156,16 @@ internal fun composerEdit(previous: String, next: FormatSelection, continuing: I
 internal fun repairFormatEdit(previous: String, next: FormatSelection): FormatSelection =
     if (previous == next.text) next else composerEdit(previous, next, -1).selection
 
-internal fun toggleFormat(text: String, selectionStart: Int, selectionEnd: Int, marker: String): FormatSelection {
-    var start = selectionStart
-    var end = selectionEnd
-    if (start == end) return FormatSelection(text, start, end)
-    var offset = 0
-    for (segment in linkSegments(text)) {
-        val limit = offset + segment.text.length
-        if (segment.href != null && (start > offset && start < limit || end > offset && end < limit)) {
-            return FormatSelection(text, start, end)
-        }
-        offset = limit
-    }
-    if (start != end) {
-        while (start < end && formatSpace(text[start])) start++
-        while (end > start && formatSpace(text[end - 1])) end--
-        if (start == end) return FormatSelection(text, start, end)
-    }
-    val width = marker.length
-    if (start != end) {
-        val visible = formattedMessage(text).sourceIndices.filter { it >= start && it < end }
-        val first = visible.firstOrNull()
-        val limit = visible.lastOrNull()?.plus(1)
-        if (first != null && limit != null && first >= width && text.substring(first - width, first) == marker && text.substring(limit).startsWith(marker) &&
-            formattedMessage(text.substring(first - width, limit + width)).runs.all { if (marker == "**") it.bold else it.italic }) {
-            start = first; end = limit
-        }
-    }
-    if (start >= width && text.substring(start - width, start) == marker && text.substring(end).startsWith(marker)) {
-        return FormatSelection(text.substring(0, start - width) + text.substring(start, end) + text.substring(end + width), start - width, end - width)
-    }
-    var selected = text.substring(start, end)
-    val runs = formattedMessage(selected).runs
-    fun hasStyle(run: FormattedRun) = if (marker == "**") run.bold else run.italic
-    if (selected.length >= width * 2 && selected.startsWith(marker) && selected.endsWith(marker) && runs.all(::hasStyle)) {
-        return FormatSelection(text.substring(0, start) + selected.substring(width, selected.length - width) + text.substring(end), start, end - width * 2)
-    }
-    if (runs.any(::hasStyle)) {
-        val remaining = mutableListOf<Pair<String, Boolean>>()
-        for (run in runs) {
-            val styled = if (marker == "**") run.italic else run.bold
-            val last = remaining.lastOrNull()
-            if (last?.second == styled) remaining[remaining.lastIndex] = (last.first + run.text) to styled
-            else remaining += run.text to styled
-        }
-        val other = if (marker == "**") "_" else "**"
-        selected = remaining.joinToString("") { (value, styled) -> if (styled) other + value + other else value }
-    }
-    val result = FormatSelection(text.substring(0, start) + marker + selected + marker + text.substring(end), start + width, start + width + selected.length)
-    // Do not promise formatting the wire grammar cannot represent (e.g. italics inside an identifier).
-    if (start != end && formattedMessage(result.text).text != formattedMessage(text).text) return FormatSelection(text, selectionStart, selectionEnd)
-    return result
+/**
+ * The toolbar's [style] toggle (a [FormatStyle] bit) for the source selection, as web's toolbar makes
+ * it (shared/messages/composer.rs, through Rust); null when refused, e.g. it would split a link or
+ * style text the grammar cannot express.
+ */
+internal fun toggleFormat(text: String, start: Int, end: Int, style: Int): FormatSelection? {
+    val result = CaperMobile.composerToggle(text, start, end, style)
+    if (result.isEmpty()) return null
+    return FormatSelection(String(CharArray(result.size - 2) { result[it + 2].toChar() }), result[0], result[1])
 }
 
-/** Some of the selected source text is already bold ([bold]) or italic: the toolbar shows that button pressed (web). */
-internal fun selectionHasStyle(text: String, start: Int, end: Int, bold: Boolean): Boolean {
-    val formatted = formattedMessage(text)
-    val from = formatted.displayed(start)
-    val to = formatted.displayed(end)
-    var offset = 0
-    return formatted.runs.any { run ->
-        val hit = offset < to && offset + run.text.length > from && if (bold) run.bold else run.italic
-        offset += run.text.length
-        hit
-    }
-}
+/** The [FormatStyle] bits any visible character of the source selection has: the toolbar's pressed buttons (web). */
+internal fun selectionStyles(text: String, start: Int, end: Int): Int = CaperMobile.selectionStyles(text, start, end)

@@ -368,6 +368,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     private lazy var blockedToggle = NativeButton("") { [weak self] in self?.toggleBlocked?() }
     private var reactions: [NativeButton] = []
     private var message: ChatMessage?
+    /// Spoiler groups the reader revealed in this row (not persisted).
+    private var revealedSpoilers = Set<Int>()
     private var pending: PendingMessage?
     private var grouped = false
     private var viewerID: String?
@@ -403,6 +405,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         body.isRichText = true; body.drawsBackground = false
         body.textContainerInset = .zero
         body.textContainer?.lineFragmentPadding = 0
+        // Draws spoiler fills and quote bars, as in the composer.
+        body.textContainer?.replaceLayoutManager(DraftLinkLayoutManager())
         body.isHorizontallyResizable = false
         body.isVerticallyResizable = false
         body.layoutManager?.usesFontLeading = false
@@ -447,6 +451,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             guard let self, let message = self.message else { return nil }
             return self.messageMenu?(message, self)
         }
+        body.revealSpoilers = { [weak self] in self?.revealSpoilers($0) }
         setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Message actions") { [weak self] in
             guard let self, self.message != nil else { return false }
             self.controls.showMenu(); return true
@@ -473,6 +478,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
         guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
         let range = body.selectedRange()
+        // Another message, or edited text, hides its spoilers again.
+        if self.message?.id != message.id || self.message?.content.text != message.content.text { revealedSpoilers = [] }
         if self.message?.replyTo != message.replyTo || self.message?.isDeleted != message.isDeleted {
             quote?.removeFromSuperview()
             quote = makeReply?(message)
@@ -549,18 +556,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         avatarAction.setAccessibilityIdentifier("profile-avatar-\(message.id)")
         avatarAction.isHidden = authorAction.isHidden
         timestamp.stringValue = NativePresentation.time(message.createdAt)
-        let text = NSMutableAttributedString(attributedString: NativePresentation.messageText(
-            message.isDeleted ? MessageDeletion.placeholder : message.content.text,
-            mentions: message.isDeleted ? [] : message.content.mentions))
-        if message.isDeleted {
-            text.addAttribute(.foregroundColor, value: NativeStyle.muted, range: NSRange(location: 0, length: text.length))
-        }
-        // Emoji fallback fonts have larger metrics than Satoshi. Use the same
-        // 20-point pitch for measurement and TextKit drawing, not per-glyph height.
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.minimumLineHeight = 20; paragraph.maximumLineHeight = 20
-        text.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
-        body.textStorage?.setAttributedString(text)
+        body.textStorage?.setAttributedString(bodyText(message))
         body.configureMentions(message.isDeleted ? [] : message.content.mentions)
         body.setAccessibilityIdentifier("message-\(message.id)")
         if NSMaxRange(range) <= body.string.utf16.count { body.setSelectedRange(range) }
@@ -594,6 +590,42 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         for button in previousReactions where !reactions.contains(where: { $0 === button }) { button.removeFromSuperview() }
         for button in reactions where button.superview == nil { addSubview(button) }
         needsLayout = true
+    }
+
+    /// The message's text: spoilers the reader has not revealed stay hidden.
+    private func bodyText(_ message: ChatMessage) -> NSAttributedString {
+        let text = NSMutableAttributedString(attributedString: NativePresentation.messageText(
+            message.isDeleted ? MessageDeletion.placeholder : message.content.text,
+            mentions: message.isDeleted ? [] : message.content.mentions))
+        if message.isDeleted {
+            text.addAttribute(.foregroundColor, value: NativeStyle.muted, range: NSRange(location: 0, length: text.length))
+        } else {
+            NativePresentation.concealSpoilers(text, revealed: revealedSpoilers)
+        }
+        // Emoji fallback fonts have larger metrics than Satoshi. Use the same
+        // 20-point pitch for measurement and TextKit drawing, not per-glyph height.
+        // Quoted lines keep their indent.
+        var styles: [(NSRange, NSParagraphStyle?)] = []
+        text.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            styles.append((range, value as? NSParagraphStyle))
+        }
+        for (range, style) in styles {
+            let paragraph = (style?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            paragraph.minimumLineHeight = 20; paragraph.maximumLineHeight = 20
+            text.addAttribute(.paragraphStyle, value: paragraph, range: range)
+        }
+        return text
+    }
+
+    /// Shows the spoiler groups in place: the same glyphs, so the row keeps its height.
+    private func revealSpoilers(_ groups: Set<Int>) {
+        guard let message, !message.isDeleted, !groups.isSubset(of: revealedSpoilers) else { return }
+        revealedSpoilers.formUnion(groups)
+        let range = body.selectedRange()
+        body.textStorage?.setAttributedString(bodyText(message))
+        body.configureMentions(message.content.mentions)
+        if NSMaxRange(range) <= body.string.utf16.count { body.setSelectedRange(range) }
+        NSAccessibility.post(element: body, notification: .valueChanged)
     }
 
     func configure(_ run: BlockedRun, day: String?, toggle: @escaping () -> Void) {
@@ -729,6 +761,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
 @MainActor private final class MessageTextView: NSTextView {
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
     var messageMenu: (() -> NSMenu?)?
+    /// Reveals hidden spoiler groups (a click, or VoiceOver's "Spoiler, reveal").
+    var revealSpoilers: ((Set<Int>) -> Void)?
     private var people: [String: MessageMention] = [:]
 
     // Read-only message bodies are drag sources, never destinations. Let the
@@ -759,12 +793,28 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
                 return true
             })
         }
+        let hidden = NativePresentation.hiddenSpoilers(in: text)
+        if !hidden.isEmpty {
+            actions.insert(NSAccessibilityCustomAction(name: "Spoiler, reveal") { [weak self] in
+                guard let self, let reveal = self.revealSpoilers else { return false }
+                reveal(hidden)
+                return true
+            }, at: 0)
+        }
         setAccessibilityCustomActions(actions)
         window?.invalidateCursorRects(for: self)
     }
 
+    /// VoiceOver reads "Spoiler" in place of each hidden spoiler.
+    override func accessibilityValue() -> Any? {
+        guard let text = textStorage, !NativePresentation.hiddenSpoilers(in: text).isEmpty else { return super.accessibilityValue() }
+        return NativePresentation.spokenText(text)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let start = convert(event.locationInWindow, from: nil)
+        // A click on a hidden spoiler reveals its whole group, and nothing else.
+        if event.clickCount == 1, let group = hiddenSpoiler(at: start) { revealSpoilers?([group]); return }
         let hit = person(at: start)
         super.mouseDown(with: event)
         guard event.clickCount == 1, selectedRange().length == 0, let hit, let window else { return }
@@ -787,9 +837,26 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         return (mention, rect.offsetBy(dx: origin.x, dy: origin.y))
     }
 
+    private func hiddenSpoiler(at point: NSPoint) -> Int? {
+        guard let layoutManager, let textContainer, !string.isEmpty else { return nil }
+        let origin = textContainerOrigin
+        let local = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+        let glyph = layoutManager.glyphIndex(for: local, in: textContainer)
+        guard glyph < layoutManager.numberOfGlyphs,
+              layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer).insetBy(dx: -2, dy: -1).contains(local) else { return nil }
+        return textStorage?.attribute(NativePresentation.hiddenSpoilerAttribute, at: layoutManager.characterIndexForGlyph(at: glyph), effectiveRange: nil) as? Int
+    }
+
     override func resetCursorRects() {
         super.resetCursorRects()
         guard let layoutManager, let textContainer else { return }
+        attributedString().enumerateAttribute(NativePresentation.hiddenSpoilerAttribute, in: NSRange(location: 0, length: string.utf16.count)) { value, range, _ in
+            guard value != nil else { return }
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
+                self.addCursorRect(rect.offsetBy(dx: self.textContainerOrigin.x, dy: self.textContainerOrigin.y), cursor: .pointingHand)
+            }
+        }
         attributedString().enumerateAttribute(NativePresentation.mentionAttribute, in: NSRange(location: 0, length: string.utf16.count)) { value, range, _ in
             guard let id = value as? String, self.people[id] != nil else { return }
             let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)

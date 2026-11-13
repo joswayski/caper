@@ -105,6 +105,9 @@ pub enum Id {
     File(usize, usize),
     /// Row `i`'s link preview part `k` (a link, image or player).
     Embed(usize, usize),
+    /// Row `i`'s hidden text spoiler `k` (its index in `list::Row::spoilers`),
+    /// a button that reveals it, as web's.
+    Spoiler(usize, usize),
     /// The composer box's Attach files and its staged files' controls.
     BoxPart(crate::uploads::Part),
     /// The thread beside the conversation, and its parts.
@@ -383,6 +386,12 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map(|(action, _)| Id::Control(i, action))
             .chain(a.tools(i).into_iter().map(|t| Id::Tool(i, t.tool)))
             .chain(a.quote_link_rect(i).map(|_| Id::Original(i)))
+            .chain(
+                a.rows
+                    .hidden_spoilers(i)
+                    .into_iter()
+                    .map(move |k| Id::Spoiler(i, k)),
+            )
             .chain(a.edited_rect(i).map(|_| Id::Edited(i)))
             .chain(a.file_ids(i).into_iter().map(move |k| Id::File(i, k)))
             .chain((0..a.embed_parts(i).len()).map(move |k| Id::Embed(i, k)))
@@ -390,13 +399,15 @@ fn children(a: &App, id: Id) -> Vec<Id> {
         Id::Thread => a
             .thread_parts()
             .into_iter()
-            .filter(|p| !matches!(p, TPart::Chip(..) | TPart::Add(_)))
+            .filter(|p| !matches!(p, TPart::Chip(..) | TPart::Add(_) | TPart::Spoiler(..)))
             .map(Id::ThreadPart)
             .collect(),
         Id::ThreadPart(TPart::Row(i)) => a
             .thread_parts()
             .into_iter()
-            .filter(|p| matches!(p, TPart::Chip(r, _) | TPart::Add(r) if *r == i))
+            .filter(|p| {
+                matches!(p, TPart::Chip(r, _) | TPart::Add(r) | TPart::Spoiler(r, _) if *r == i)
+            })
             .map(Id::ThreadPart)
             .collect(),
         _ => Vec::new(),
@@ -421,14 +432,18 @@ fn parent(id: Id) -> Option<Id> {
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
         Id::Older | Id::Newer(_) => Id::History,
-        Id::Original(i) | Id::Edited(i) | Id::File(i, _) | Id::Embed(i, _) => Id::Row(i),
+        Id::Original(i) | Id::Edited(i) | Id::File(i, _) | Id::Embed(i, _) | Id::Spoiler(i, _) => {
+            Id::Row(i)
+        }
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::ProfilePart(_) => Id::Profile,
         Id::Suggestion(_) => Id::Suggest,
         Id::Pick(_) => Id::Picker,
         Id::Gif(_) => Id::Gifs,
         Id::Member(_) => Id::Members,
-        Id::ThreadPart(TPart::Chip(i, _) | TPart::Add(i)) => Id::ThreadPart(TPart::Row(i)),
+        Id::ThreadPart(TPart::Chip(i, _) | TPart::Add(i) | TPart::Spoiler(i, _)) => {
+            Id::ThreadPart(TPart::Row(i))
+        }
         Id::ThreadPart(_) => Id::Thread,
         _ => Id::Root,
     })
@@ -519,6 +534,11 @@ fn exists(a: &App, id: Id) -> bool {
                 && a.box_parts().contains(&p)
         }
         Id::Embed(i, k) => a.dialog.is_none() && a.embed_rect(i, k).is_some(),
+        Id::Spoiler(i, k) => {
+            a.dialog.is_none()
+                && a.visible_rows().contains(&i)
+                && a.rows.hidden_spoilers(i).contains(&k)
+        }
         Id::Thread => a.thread.is_some() && a.dialog.is_none() && a.signin.is_none(),
         Id::ThreadPart(p) => {
             a.dialog.is_none() && a.signin.is_none() && a.thread_parts().contains(&p)
@@ -617,12 +637,12 @@ fn name(a: &App, id: Id) -> String {
             format!("{}. {note}", title.unwrap_or_default())
         }
         Id::History => format!("Messages in {}", c.place()),
-        Id::Row(i) => row_name(c, i, a.rows.row(i).map(|r| r.plain.clone())),
+        Id::Row(i) => row_name(c, i, a.rows.row(i).map(crate::list::Row::spoken)),
         // Each chip as the egui client labels it.
         Id::Control(i, Action::Chip(k)) => chip_name(c, i, k),
         Id::Thread => a.thread_name(),
         Id::ThreadPart(TPart::Row(i)) => a.thread.as_ref().map_or_else(String::new, |t| {
-            row_name(&t.c, i, t.rows.row(i).map(|r| r.plain.clone()))
+            row_name(&t.c, i, t.rows.row(i).map(crate::list::Row::spoken))
         }),
         Id::ThreadPart(TPart::Chip(i, k)) => a
             .thread
@@ -686,6 +706,7 @@ fn name(a: &App, id: Id) -> String {
         Id::File(i, k) => a.file_label(i, k),
         Id::BoxPart(p) => a.box_part_label(p),
         Id::Embed(i, k) => a.embed_label(i, k),
+        Id::Spoiler(..) => "Spoiler, reveal".into(),
         Id::Older => match a.live.as_ref().map(crate::live::Live::older) {
             Some(crate::live::Older::Failed) => "Couldn\u{2019}t load older messages. Retry".into(),
             Some(state) => crate::list::head_label(state).0.into(),
@@ -862,7 +883,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Reply => UIA_TextControlTypeId,
         Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
         Id::Original(_) | Id::Embed(..) => UIA_HyperlinkControlTypeId,
-        Id::Edited(_) | Id::File(..) | Id::BoxPart(_) => UIA_ButtonControlTypeId,
+        Id::Edited(_) | Id::File(..) | Id::Spoiler(..) | Id::BoxPart(_) => UIA_ButtonControlTypeId,
         Id::Tool(..)
         | Id::MenuClose
         | Id::Pick(_)
@@ -1009,6 +1030,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Edited(i) => (28, i),
         Id::File(i, k) => (29, i * 16 + k.min(15)),
         Id::Embed(i, k) => (31, i * 64 + k.min(63)),
+        Id::Spoiler(i, k) => (53, i * 64 + k.min(63)),
         Id::BoxPart(p) => (
             30,
             match p {
@@ -1020,6 +1042,10 @@ fn runtime_id(id: Id) -> [i32; 3] {
                 crate::uploads::Part::Emoji => 1002,
                 crate::uploads::Part::Format(crate::composer::Style::Bold) => 1003,
                 crate::uploads::Part::Format(crate::composer::Style::Italic) => 1004,
+                crate::uploads::Part::Format(crate::composer::Style::Underline) => 1005,
+                crate::uploads::Part::Format(crate::composer::Style::Strikethrough) => 1006,
+                crate::uploads::Part::Format(crate::composer::Style::Quote) => 1007,
+                crate::uploads::Part::Format(crate::composer::Style::Spoiler) => 1008,
                 // A recording's chip has no preview: Play takes its place.
                 crate::uploads::Part::Open(k) | crate::uploads::Part::Play(k) => 1 + 4 * k,
                 crate::uploads::Part::Spoiler(k) => 2 + 4 * k,
@@ -1039,9 +1065,14 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Emoji => (22, 6),
             TPart::Format(crate::composer::Style::Bold) => (22, 7),
             TPart::Format(crate::composer::Style::Italic) => (22, 8),
+            TPart::Format(crate::composer::Style::Underline) => (22, 9),
+            TPart::Format(crate::composer::Style::Strikethrough) => (22, 10),
+            TPart::Format(crate::composer::Style::Quote) => (22, 11),
+            TPart::Format(crate::composer::Style::Spoiler) => (22, 12),
             TPart::Row(i) => (23, i),
             TPart::Chip(i, k) => (24, i * 64 + k.min(62)),
             TPart::Add(i) => (24, i * 64 + 63),
+            TPart::Spoiler(i, k) => (25, i * 64 + k.min(63)),
         },
         Id::Control(i, action) => (
             11,
@@ -1181,6 +1212,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::File(i, k) => a.file_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::BoxPart(p) => a.box_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Embed(i, k) => a.embed_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Spoiler(i, k) => a.spoiler_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Thread => (a.thread_x(), 0.0, crate::thread::THREAD_W, a.h),
         Id::ThreadPart(p) => a.thread_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
@@ -1280,6 +1312,10 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::Settings(p) if p.is_toggle() => pattern == UIA_TogglePatternId,
             Id::Settings(p) if p.is_slider() => pattern == UIA_RangeValuePatternId,
+            // A formatting button is pressed while the selection has its style.
+            Id::BoxPart(crate::uploads::Part::Format(_)) | Id::ThreadPart(TPart::Format(_)) => {
+                pattern == UIA_InvokePatternId || pattern == UIA_TogglePatternId
+            }
             Id::Settings(crate::settings::SPart::Text(_) | crate::settings::SPart::Meter) => false,
             Id::Voice(crate::call::VPart::Status) => false,
             Id::Settings(_)
@@ -1312,6 +1348,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::Edited(_)
             | Id::File(..)
             | Id::Embed(..)
+            | Id::Spoiler(..)
             | Id::BoxPart(_) => pattern == UIA_InvokePatternId,
             Id::Pick(PPart::Category(_)) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
@@ -1750,6 +1787,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::File(i, k) => a.file_activate(i, k, false),
                 Id::BoxPart(p) => a.box_activate(p),
                 Id::Embed(i, k) => a.embed_activate(i, k),
+                Id::Spoiler(i, k) => a.reveal_spoiler(i, k),
                 Id::ThreadPart(p) => a.thread_activate(p),
                 Id::ProfilePart(p) => a.profile_activate(p),
                 Id::Suggestion(k) => a.suggest_accept(Some(k)),
@@ -1848,6 +1886,7 @@ impl IToggleProvider_Impl for Node_Impl {
             }
             match id {
                 Id::ThreadPart(p) => a.thread_activate(p),
+                Id::BoxPart(p) => a.box_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
                 Id::Dialog(p) => a.dialog_activate(p),
                 _ => {}
@@ -1862,6 +1901,10 @@ impl IToggleProvider_Impl for Node_Impl {
             let on = match id {
                 Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.checked(p)),
                 Id::Dialog(_) => a.dialog.as_ref().is_some_and(|d| d.private),
+                Id::BoxPart(crate::uploads::Part::Format(style)) => a.composer.pressed(style),
+                Id::ThreadPart(TPart::Format(style)) => {
+                    a.thread.as_ref().is_some_and(|t| t.composer.pressed(style))
+                }
                 _ => a.thread.as_ref().is_some_and(|t| t.broadcast),
             };
             Ok(if on { ToggleState_On } else { ToggleState_Off })

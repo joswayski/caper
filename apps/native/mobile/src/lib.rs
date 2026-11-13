@@ -40,9 +40,9 @@ mod c_abi;
 #[cfg(feature = "jni")]
 mod jni;
 
-/// Style bits in a formatting span.
-pub const BOLD: i32 = 1;
-pub const ITALIC: i32 = 2;
+/// Style bits in a formatting span: 1 bold, 2 italic, 4 underline, 8
+/// strikethrough, 16 spoiler, 32 quote.
+pub use formatting::{BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
 
 /// Converts increasing byte offsets in one string to UTF-16 offsets.
 struct Utf16Cursor<'a> {
@@ -76,19 +76,19 @@ fn offset(value: usize) -> i32 {
 }
 
 /// The visible source ranges of formatted message text, in order; the gaps
-/// are its hidden `**` / `_` delimiters. Each span is `[utf16_start,
+/// are its hidden delimiters. Each span is `[utf16_start,
 /// utf16_end, flags]`, or `[utf16_start, utf16_end, utf8_start, utf8_end,
 /// flags]` with `utf8`. Adjacent spans may share a style.
 pub fn format_spans(text: &str, utf8: bool) -> Vec<i32> {
     let mut out = Vec::new();
     let mut cursor = Utf16Cursor::new(text);
-    formatting::visit_runs(text, |range, bold, italic| {
+    formatting::visit_runs(text, |range, style| {
         out.push(offset(cursor.at(range.start)));
         out.push(offset(cursor.at(range.end)));
         if utf8 {
             out.extend([offset(range.start), offset(range.end)]);
         }
-        out.push(if bold { BOLD } else { 0 } | if italic { ITALIC } else { 0 });
+        out.push(style);
     });
     out
 }
@@ -216,6 +216,28 @@ pub fn composer_edit(
     out
 }
 
+/// A toolbar style toggle (`composer::toggle`) for the UTF-16 selection
+/// `start..end` of `text`: `[start, end]` and then the new text's UTF-16 code
+/// units, or nothing when the selection cannot take that change.
+pub fn composer_toggle(text: &str, start: i32, end: i32, style: i32) -> Vec<i32> {
+    let unit = |value: i32| scalar(text, usize::try_from(value).unwrap_or_default());
+    composer::toggle(text, unit(start), unit(end), style).map_or_else(
+        Vec::new,
+        |(next, start, end)| {
+            let mut out = vec![offset(utf16(&next, start)), offset(utf16(&next, end))];
+            out.extend(next.encode_utf16().map(i32::from));
+            out
+        },
+    )
+}
+
+/// The style bits any visible character of the UTF-16 selection
+/// `start..end` has (`composer::selection_styles`).
+pub fn selection_styles(text: &str, start: i32, end: i32) -> i32 {
+    let unit = |value: i32| scalar(text, usize::try_from(value).unwrap_or_default());
+    composer::selection_styles(text, unit(start), unit(end))
+}
+
 /// The host's catalog search, from the bytes it ships (`emoji_catalog`).
 static EMOJI: std::sync::OnceLock<emoji::Search> = std::sync::OnceLock::new();
 
@@ -334,23 +356,25 @@ mod tests {
         assert!(cases.len() > 10);
         for case in cases {
             let text = case["text"].as_str().unwrap();
-            let expected: Vec<(String, bool, bool)> = formatting::runs(text)
+            let expected: Vec<(String, i32)> = formatting::runs(text)
                 .into_iter()
-                .map(|run| (run.text, run.bold, run.italic))
+                .map(|run| {
+                    let style = run.style();
+                    (run.text, style)
+                })
                 .collect();
             for (utf8, width) in [(false, 3), (true, 5)] {
                 let spans = format_spans(text, utf8);
-                let mut runs: Vec<(String, bool, bool)> = Vec::new();
+                let mut runs: Vec<(String, i32)> = Vec::new();
                 for span in spans.chunks(width) {
                     let value = utf16(text, span[0]..span[1]);
                     if utf8 {
                         assert_eq!(value, text[span[2] as usize..span[3] as usize]);
                     }
                     let style = span[width - 1];
-                    let (bold, italic) = (style & BOLD != 0, style & ITALIC != 0);
                     match runs.last_mut() {
-                        Some(last) if last.1 == bold && last.2 == italic => last.0 += &value,
-                        _ => runs.push((value, bold, italic)),
+                        Some(last) if last.1 == style => last.0 += &value,
+                        _ => runs.push((value, style)),
                     }
                 }
                 assert_eq!(runs, expected, "{text}");

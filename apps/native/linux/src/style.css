@@ -2464,7 +2464,9 @@ button.history-button {
   min-height: 8px;
 }
 
-/* Bold and Italic over a composer's selection (`composing`), as desktop's. */
+/* The formatting toolbar over a composer's selection (`composing`), as
+   web's: muted Lucide icons, a divider before Quote, pressed styles on the
+   border colour. */
 popover.format-bar > contents {
   background: @caper_surface;
   border: 1px solid @caper_border;
@@ -2487,16 +2489,41 @@ popover.format-bar button:last-child {
   border-radius: 0 8px 8px 0;
 }
 
-popover.format-bar button:hover {
-  background: @caper_surface_hover;
+popover.format-bar button:hover,
+popover.format-bar button:checked {
+  background: @caper_border;
 }
 
-.format-bold {
-  font-weight: 700;
+popover.format-bar button:disabled {
+  opacity: 0.4;
 }
 
-.format-italic {
-  font-style: italic;
+popover.format-bar separator.format-divider {
+  min-width: 1px;
+  min-height: 18px;
+  margin: 9px 4px;
+  background: @caper_border;
+}
+
+/* A quoted line's bar in the composer: its 15 px indent holds the bar and
+   12 px of space. */
+.composer-quote-bar {
+  min-width: 3px;
+  background: @caper_border;
+}
+
+/* A hidden spoiler's link (`markup`): its text stays the colour of its
+   #34383B wash, without a link's underline. */
+label.body link.spoiler,
+label.body link.spoiler:hover {
+  color: @caper_border;
+  text-decoration: none;
+}
+
+/* A quote block in a message: web's 3 px bar and 12 px indent. */
+label.message-quote {
+  border-left: 3px solid @caper_border;
+  padding-left: 12px;
 }
 
 /* What Copy image did, under the image menu's items. */

@@ -159,7 +159,29 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate, UITextView
     var plainText: String { LinkPills.plain(text ?? "") }
     /// A tapped person pill: its user id.
     var openMention: ((String) -> Void)?
+    /// A tapped hidden spoiler: its group.
+    var revealSpoiler: ((Int) -> Void)?
+    private let spoilerTaps = SpoilerTapDelegate()
     static let mentionScheme = "caper-mention"
+
+    /// The hidden spoiler group under `point`, if any.
+    func hiddenSpoiler(at point: CGPoint) -> Int? {
+        guard let text = attributedText, text.length > 0, let position = closestPosition(to: point) else { return nil }
+        let offset = self.offset(from: beginningOfDocument, to: position)
+        for index in [offset, offset - 1] where index >= 0 && index < text.length {
+            guard let group = text.attribute(NativePresentation.hiddenSpoilerAttribute, at: index, effectiveRange: nil) as? Int,
+                  let start = self.position(from: beginningOfDocument, offset: index),
+                  let end = self.position(from: start, offset: 1),
+                  let range = textRange(from: start, to: end) else { continue }
+            if selectionRects(for: range).contains(where: { $0.rect.insetBy(dx: -2, dy: -2).contains(point) }) { return group }
+        }
+        return nil
+    }
+
+    @objc private func spoilerTapped(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, let group = hiddenSpoiler(at: gesture.location(in: self)) else { return }
+        revealSpoiler?(group)
+    }
 
     static func mentionID(_ url: URL) -> String? {
         url.scheme == mentionScheme ? URLComponents(url: url, resolvingAgainstBaseURL: false)?.path : nil
@@ -200,6 +222,10 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate, UITextView
         translatesAutoresizingMaskIntoConstraints = false
         setContentCompressionResistancePriority(.required, for: .vertical)
         accessibilityTraits.insert(.staticText)
+        // A tap on a hidden spoiler reveals it; anywhere else the text view's own gestures act.
+        let reveal = UITapGestureRecognizer(target: self, action: #selector(spoilerTapped(_:)))
+        reveal.delegate = spoilerTaps
+        addGestureRecognizer(reveal)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -208,17 +234,24 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate, UITextView
         let range = textElement.elementRange
         guard let paragraph = textElement as? NSTextParagraph,
               paragraph.attributedString.length > 0 else { return NSTextLayoutFragment(textElement: textElement, range: range) }
-        var hasPill = false
-        paragraph.attributedString.enumerateAttribute(.caperLinkPill, in: NSRange(location: 0, length: paragraph.attributedString.length)) { value, _, stop in
-            if value != nil { hasPill = true; stop.pointee = true }
-        }
-        return hasPill ? LinkPillFragment(textElement: textElement, range: range) : NSTextLayoutFragment(textElement: textElement, range: range)
+        return LinkPillFragment.decorates(paragraph.attributedString) ? LinkPillFragment(textElement: textElement, range: range) : NSTextLayoutFragment(textElement: textElement, range: range)
     }
 
     override func copy(_ sender: Any?) {
         guard let range = selectedTextRange, let selected = text(in: range) else { return super.copy(sender) }
         UIPasteboard.general.string = LinkPills.plain(selected)
     }
+}
+
+/// Begins a message text's spoiler tap only over a hidden spoiler, alongside
+/// the text view's own gestures.
+private final class SpoilerTapDelegate: NSObject, UIGestureRecognizerDelegate {
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let view = gestureRecognizer.view as? MessageTextView else { return false }
+        return view.hiddenSpoiler(at: gestureRecognizer.location(in: view)) != nil
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }
 
 /// A row's link into its thread.
@@ -293,6 +326,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private var bottom: NSLayoutConstraint!
     private var avatarWidth: NSLayoutConstraint!
     private var state: MessageRowState?
+    /// Spoiler groups the reader revealed in this row's text (not persisted).
+    private var revealedSpoilers = Set<Int>()
     private var authorTaps: [UITapGestureRecognizer] = []
     var retry: (() -> Void)?
 
@@ -368,6 +403,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             guard let self, let messageID = self.state?.messageID, !messageID.isEmpty else { return }
             self.host?.openMention(messageID, id)
         }
+        body.revealSpoiler = { [weak self] group in self?.reveal([group]) }
         chips.toggle = { [weak self] emoji in self?.toggle(emoji) }
         chips.showReactors = { [weak self] emoji in
             guard let self, let id = self.state?.messageID, !id.isEmpty else { return }
@@ -440,6 +476,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(_ row: MessageRowState) {
+        // Another message, or new text, hides its spoilers again.
+        if state?.id != row.id || state?.text != row.text { revealedSpoilers = [] }
         state = row
         authorTaps.forEach { $0.isEnabled = row.authorProfile && !row.pending }
         // SwiftUI's grouped rows read about 4pt further apart than their 2pt padding.
@@ -529,25 +567,45 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             note.text = "This message was deleted."
         } else {
             body.isHidden = row.text.isEmpty
-            body.attributedText = row.text.isEmpty ? nil : Self.render(row)
+            body.attributedText = row.text.isEmpty ? nil : Self.render(row, revealed: revealedSpoilers)
             note.isHidden = true
             note.text = nil
             note.textColor = UIKitStyle.muted
         }
         self.alpha = row.pending && row.pendingError == nil ? 0.6 : 1
-        body.accessibilityLabel = row.grouped ? "\(row.authorName), \(timeText): \(body.plainText)" : body.plainText
         body.accessibilityIdentifier = "message-text-\(row.id)"
-        // "Message actions" and the rest belong to the whole row, as SwiftUI's:
-        // every element that can stand for it carries them, so rows without
-        // text (files, voice, GIFs, deleted) keep them too.
-        let rowActions = actions(for: row)
-        [header, body, note, gutter].forEach { $0.accessibilityCustomActions = rowActions }
+        describeBody(row, timeText: timeText)
         // A grouped row without text has no header or body to name it; its
         // gutter reads "Author, time", like SwiftUI's.
         let gutterSpeaks = row.grouped && body.isHidden
         gutter.isAccessibilityElement = gutterSpeaks
         gutter.accessibilityElementsHidden = !gutterSpeaks
         gutter.accessibilityLabel = gutterSpeaks ? "\(row.authorName), \(timeText)" : nil
+    }
+
+    /// The text's VoiceOver label ("Spoiler" for each hidden one) and the
+    /// row's actions, which follow the links and spoilers it shows.
+    private func describeBody(_ row: MessageRowState, timeText: String) {
+        let shown = body.attributedText ?? NSAttributedString()
+        let spoken = LinkPills.plain(NativePresentation.spokenText(shown))
+        body.accessibilityLabel = row.grouped ? "\(row.authorName), \(timeText): \(spoken)" : spoken
+        // UITextView would otherwise read its whole text, hidden spoilers included.
+        body.accessibilityValue = NativePresentation.hiddenSpoilers(in: shown).isEmpty ? nil : ""
+        // "Message actions" and the rest belong to the whole row, as SwiftUI's:
+        // every element that can stand for it carries them, so rows without
+        // text (files, voice, GIFs, deleted) keep them too.
+        let rowActions = actions(for: row)
+        [header, body, note, gutter].forEach { $0.accessibilityCustomActions = rowActions }
+    }
+
+    /// Shows the spoiler groups, in place: the same glyphs, so the row keeps its height.
+    private func reveal(_ groups: Set<Int>) {
+        guard let state, !state.deleted, !state.text.isEmpty, !groups.isSubset(of: revealedSpoilers) else { return }
+        revealedSpoilers.formUnion(groups)
+        body.attributedText = Self.render(state, revealed: revealedSpoilers)
+        let timeText = state.inPins ? Self.fullDate(state.createdAt) : NativePresentation.time(state.createdAt)
+        describeBody(state, timeText: timeText)
+        UIAccessibility.post(notification: .layoutChanged, argument: body)
     }
 
     private var chipsWidth: CGFloat = 0
@@ -670,8 +728,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
-    /// Plain runs in the body colour; pills and links keep their own.
-    private static func render(_ row: MessageRowState) -> NSAttributedString {
+    /// Plain runs in the body colour; pills and links keep their own. Spoilers
+    /// not in `revealed` stay hidden, without links or pills.
+    private static func render(_ row: MessageRowState, revealed: Set<Int>) -> NSAttributedString {
         // Satoshi 14 at the reader's text size, as SwiftUI's custom fonts scale.
         let size = UIFontMetrics.default.scaledValue(for: 14)
         let text = NSMutableAttributedString(attributedString: NativePresentation.messageText(row.text, size: size, mentions: row.mentions))
@@ -681,6 +740,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         text.enumerateAttribute(.link, in: NSRange(location: 0, length: text.length)) { value, range, _ in
             if value != nil { text.addAttribute(.foregroundColor, value: UIKitStyle.link, range: range) }
         }
+        // Before the link symbols, so a hidden link gets none.
+        NativePresentation.concealSpoilers(text, revealed: revealed)
         LinkPills.decorate(text, size: size)
         // Resolved people open their card; after the link pills, which they never get.
         guard !row.pending else { return text }
@@ -708,6 +769,12 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             })
         }
         let shown = body.attributedText ?? NSAttributedString()
+        let hidden = NativePresentation.hiddenSpoilers(in: shown)
+        if !hidden.isEmpty {
+            actions.append(UIAccessibilityCustomAction(name: "Spoiler, reveal") { [weak self] _ in
+                self?.reveal(hidden); return true
+            })
+        }
         shown.enumerateAttribute(.link, in: NSRange(location: 0, length: shown.length)) { value, range, _ in
             guard let url = value as? URL else { return }
             if let id = MessageTextView.mentionID(url) {

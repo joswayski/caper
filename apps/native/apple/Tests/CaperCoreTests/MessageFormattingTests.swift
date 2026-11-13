@@ -273,10 +273,10 @@ final class MessageFormattingTests: XCTestCase {
             XCTAssertEqual(result.text, expected)
             XCTAssertEqual(result.selection, NSRange(location: expectedCaret, length: 0))
         }
-        let result = MessageFormatting.toggle("**hello** rest", selection: NSRange(location: 2, length: 7), marker: "**")
+        let result = MessageFormatting.toggle("**hello** rest", selection: NSRange(location: 2, length: 7), style: .bold)
         XCTAssertEqual(result?.text, "hello rest")
         XCTAssertEqual(result?.selection, NSRange(location: 0, length: 5))
-        XCTAssertNil(MessageFormatting.toggle("identifier", selection: NSRange(location: 2, length: 3), marker: "_"))
+        XCTAssertNil(MessageFormatting.toggle("identifier", selection: NSRange(location: 2, length: 3), style: .italic))
     }
 
     private struct Fixtures: Decodable {
@@ -305,40 +305,84 @@ final class MessageFormattingTests: XCTestCase {
         let text = "🙂 https://example.com/a_b?q=one&x=two tail"
         let source = text as NSString
         let start = source.range(of: "https:").location, end = source.range(of: " tail").location
-        for marker in ["**", "_"] {
+        for item in MessageFormattingAction.all {
+            // An empty selection, or one splitting the link, takes no style.
             for (a, b) in [(start + 2, start + 2), (start + 2, end), (0, end - 2), (start, end - 1)] {
-                let selection = NSRange(location: a, length: b - a)
-                let result = try XCTUnwrap(MessageFormatting.toggle(text, selection: selection, marker: marker))
-                XCTAssertEqual(result.text, text)
-                XCTAssertEqual(result.selection, selection)
+                XCTAssertNil(MessageFormatting.toggle(text, selection: NSRange(location: a, length: b - a), style: item.style), item.title)
             }
-            let result = try XCTUnwrap(MessageFormatting.toggle(text, selection: NSRange(location: start, length: end - start), marker: marker))
-            XCTAssertEqual(MessageFormatting.runs(result.text).map(\.text).joined(), text)
-            XCTAssertEqual(MessageLinks.segments(in: result.text).compactMap(\.href), MessageLinks.segments(in: text).compactMap(\.href))
+            let whole = MessageFormatting.toggle(text, selection: NSRange(location: start, length: end - start), style: item.style)
+            if item.style == .bold { XCTAssertNotNil(whole) }
+            guard let result = whole else { continue }
+            XCTAssertEqual(MessageFormatting.runs(result.text).map(\.text).joined(), text, item.title)
+            XCTAssertEqual(MessageLinks.segments(in: result.text).compactMap(\.href), MessageLinks.segments(in: text).compactMap(\.href), item.title)
         }
     }
 
-    func testToggleSelectionFixtures() throws {
-        let fixtures: [(String, NSRange, String, String, NSRange)] = [
-            ("hello", NSRange(location: 0, length: 5), "**", "**hello**", NSRange(location: 2, length: 5)),
-            ("**hello**", NSRange(location: 2, length: 5), "**", "hello", NSRange(location: 0, length: 5)),
-            ("**hello**", NSRange(location: 0, length: 9), "**", "hello", NSRange(location: 0, length: 5)),
-            ("_hello_", NSRange(location: 1, length: 5), "_", "hello", NSRange(location: 0, length: 5)),
-            ("_hello_", NSRange(location: 0, length: 7), "_", "hello", NSRange(location: 0, length: 5)),
-            ("🙂 hi", NSRange(location: 3, length: 2), "_", "🙂 _hi_", NSRange(location: 4, length: 2)),
-            ("", NSRange(location: 0, length: 0), "**", "", NSRange(location: 0, length: 0)),
-            ("_x_", NSRange(location: 0, length: 3), "**", "**_x_**", NSRange(location: 2, length: 3)),
-            (" word \n", NSRange(location: 0, length: 7), "_", " _word_ \n", NSRange(location: 2, length: 4)),
-            (" \t", NSRange(location: 0, length: 2), "**", " \t", NSRange(location: 2, length: 0)),
-            ("**bold** plus normal", NSRange(location: 0, length: 20), "**", "**bold plus normal**", NSRange(location: 2, length: 16)),
-            ("**one** and **two**", NSRange(location: 0, length: 19), "**", "**one and two**", NSRange(location: 2, length: 11)),
-            ("**bold _both_**", NSRange(location: 0, length: 15), "_", "_**bold both**_", NSRange(location: 1, length: 13)),
-        ]
-        for (text, selection, marker, expected, expectedSelection) in fixtures {
-            let result = try XCTUnwrap(MessageFormatting.toggle(text, selection: selection, marker: marker))
-            XCTAssertEqual(result.text, expected)
-            XCTAssertEqual(result.selection, expectedSelection)
+    /// Every toolbar toggle web makes, through the shared toggle; see
+    /// shared/messages/toggle-cases.json. Cases give visible UTF-16 offsets,
+    /// mapped to the source as shared/messages/composer.rs's test does.
+    func testToolbarTogglesFollowTheSharedCases() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("shared/messages/toggle-cases.json"))) as! [String: Any]
+        let cases = json["cases"] as! [[String: Any]]
+        XCTAssertGreaterThan(cases.count, 300)
+        let styles: [String: MessageStyle] = ["bold": .bold, "italic": .italic, "underline": .underline,
+                                              "strikethrough": .strikethrough, "spoiler": .spoiler, "quote": .quote]
+        for fixture in cases {
+            let text = fixture["text"] as! String
+            let style = try XCTUnwrap(styles[fixture["style"] as! String])
+            let from = fixture["from"] as! Int, to = fixture["to"] as! Int
+            let shown = MessageFormatting.projection(text)
+            let start = from < shown.sourceIndices.count ? shown.sourceIndices[from] : shown.sourceLength
+            let end = to > from ? shown.sourceIndices[to - 1] + 1 : start
+            let result = MessageFormatting.toggle(text, selection: NSRange(location: start, length: end - start), style: style)
+            let note = "\(fixture)"
+            guard let expected = fixture["result"] as? String else {
+                XCTAssertNil(result, note)
+                continue
+            }
+            let toggled = try XCTUnwrap(result, note)
+            XCTAssertEqual(toggled.text, expected, note)
+            // The selection keeps its visible place.
+            let after = MessageFormatting.projection(toggled.text)
+            XCTAssertEqual(after.displayed(toggled.selection.location), from, note)
+            XCTAssertEqual(after.displayed(NSMaxRange(toggled.selection)), to, note)
         }
-        XCTAssertNil(MessageFormatting.toggle("x", selection: NSRange(location: NSNotFound, length: 0), marker: "_"))
+    }
+
+    func testToggleRefusesInvalidSelections() {
+        XCTAssertNil(MessageFormatting.toggle("x", selection: NSRange(location: NSNotFound, length: 0), style: .italic))
+        XCTAssertNil(MessageFormatting.toggle("x", selection: NSRange(location: 0, length: 2), style: .bold))
+        XCTAssertNil(MessageFormatting.toggle("", selection: NSRange(location: 0, length: 0), style: .bold))
+    }
+
+    /// The pressed toolbar buttons: every style any visible selected character has.
+    func testSelectionStylesAreThePressedButtons() {
+        let text = "**a** __b__ ~~c~~ ||d||\n> e"
+        let source = text as NSString
+        func styles(_ visible: String) -> MessageStyle {
+            MessageFormatting.selectionStyles(text, selection: source.range(of: visible))
+        }
+        XCTAssertEqual(styles("a"), .bold)
+        XCTAssertEqual(styles("b"), .underline)
+        XCTAssertEqual(styles("c"), .strikethrough)
+        XCTAssertEqual(styles("d"), .spoiler)
+        XCTAssertEqual(styles("e"), .quote)
+        XCTAssertEqual(MessageFormatting.selectionStyles(text, selection: NSRange(location: 0, length: source.length)),
+                       [.bold, .underline, .strikethrough, .spoiler, .quote])
+        XCTAssertEqual(MessageFormatting.selectionStyles(text, selection: NSRange(location: 2, length: 0)), [], "a caret presses nothing")
+    }
+
+    func testRunsCarryEveryStyle() {
+        let runs = MessageFormatting.runs("__u__ ~~s~~ ||p||\n> q")
+        XCTAssertEqual(runs.map(\.text).joined(), "u s p\nq")
+        XCTAssertTrue(runs.contains { $0.text == "u" && $0.underline })
+        XCTAssertTrue(runs.contains { $0.text == "s" && $0.strikethrough })
+        XCTAssertTrue(runs.contains { $0.text == "p" && $0.spoiler })
+        XCTAssertTrue(runs.contains { $0.text == "q" && $0.quote })
+        let blocks = MessageFormatting.quoteBlocks(runs)
+        XCTAssertEqual(blocks.map { $0.quote }, [false, true])
+        XCTAssertEqual(MessageFormatting.stackedBlocks(runs).map { $0.range }, [0..<5, 6..<7], "the newline before a quote block is its edge")
     }
 }

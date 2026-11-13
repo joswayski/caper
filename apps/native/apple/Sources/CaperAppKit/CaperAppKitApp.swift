@@ -115,8 +115,14 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             editMenu.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
         }
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "B — Bold", action: #selector(ComposerTextView.formatBold(_:)), keyEquivalent: "b")
-        editMenu.addItem(withTitle: "I — Italic", action: #selector(ComposerTextView.formatItalic(_:)), keyEquivalent: "i")
+        // The composer's formatting, in the toolbar's order; Bold, Italic and
+        // Underline keep their Command shortcuts.
+        for item in MessageFormattingAction.all {
+            if item.style == .quote { editMenu.addItem(.separator()) }
+            let entry = editMenu.addItem(withTitle: ComposerTextView.formatMenuTitle(item),
+                                         action: ComposerTextView.formatSelector(item.style), keyEquivalent: item.key ?? "")
+            entry.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
+        }
         edit.submenu = editMenu; menu.addItem(edit)
         NSApp.mainMenu = menu
     }

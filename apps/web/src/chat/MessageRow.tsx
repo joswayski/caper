@@ -7,7 +7,7 @@ import { emojiAsset, emojiCode } from "./emoji.ts";
 import { ForwardCard } from "./Forwarding.tsx";
 import { ReplyContext } from "./Replies.tsx";
 import LinkedText from "./LinkedText.tsx";
-import FormattedText from "./FormattedText.tsx";
+import FormattedText, { QuoteBlock, quoteBlocks } from "./FormattedText.tsx";
 import { formattedRuns } from "./formatting.ts";
 import {
   attachmentsOf,
@@ -88,11 +88,14 @@ export function MessageText({
   const runs = formattedRuns(message.content.text);
   const displayed = runs.map((run) => run.text).join("");
   let offset = 0;
-  return mentionSegments(displayed, message.content.mentions).map((segment, part) => {
+  const segments = mentionSegments(displayed, message.content.mentions).map((segment) => {
     const start = offset;
     offset += segment.text.length;
+    return { segment, start, end: offset };
+  });
+  const part = (segment: (typeof segments)[number]["segment"], start: number, end: number) => {
     const content = (
-      <FormattedText key={part} runs={runs} range={{ start, end: offset }}>
+      <FormattedText key={start} runs={runs} range={{ start, end }}>
         {segment.mention ? undefined : (text) => <LinkedText text={text} formatted={false} />}
       </FormattedText>
     );
@@ -101,7 +104,7 @@ export function MessageText({
     if (!user)
       return (
         <span
-          key={part}
+          key={start}
           className="chat-mention"
           title={
             feedbackAliases.some((alias) => segment.text.slice(1).toLowerCase() === alias)
@@ -115,7 +118,7 @@ export function MessageText({
     return (
       <button
         type="button"
-        key={part}
+        key={start}
         className="chat-mention chat-mention-person"
         aria-haspopup="dialog"
         aria-label={`Open profile for ${mentionNames.get(user.id) ?? `@${user.username}`}`}
@@ -127,7 +130,15 @@ export function MessageText({
         {content}
       </button>
     );
-  });
+  };
+  // A mention never holds a newline, so it never crosses a quote's edge.
+  return quoteBlocks(runs).map((block) => (
+    <QuoteBlock key={block.start} quote={block.quote}>
+      {segments
+        .filter(({ start, end }) => start < block.end && end > block.start)
+        .map(({ segment, start, end }) => part(segment, Math.max(start, block.start), Math.min(end, block.end)))}
+    </QuoteBlock>
+  ));
 }
 
 export function PinMarker({

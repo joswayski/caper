@@ -30,8 +30,15 @@ pub struct Row {
     pub plain: String,
     pub plain16: Vec<u16>,
     pub mentions: Vec<(u32, u32)>,
-    /// Links: UTF-16 start, length and address.
+    /// Links: UTF-16 start, length and address. Those inside a hidden
+    /// spoiler are left out, as are its mentions, until it is revealed.
     pub links: Vec<(u32, u32, String)>,
+    /// Spoilers (neighbouring spoiler runs joined): UTF-16 start, length
+    /// and whether it is still hidden (`spoiler_key` not in `revealed`).
+    pub spoilers: Vec<(u32, u32, bool)>,
+    /// Quote blocks (consecutive quoted lines joined): UTF-16 start and
+    /// length, indented by `gfx::indent_quotes`.
+    pub quotes: Vec<(u32, u32)>,
     pub header: Option<Header>,
     pub text_y: f32,
     pub picture_y: f32,
@@ -72,6 +79,24 @@ pub struct Row {
     /// "Pinned by …" above the message's header.
     pub pin: Option<IDWriteTextLayout>,
     pub pin_y: f32,
+}
+
+impl Row {
+    /// The text screen readers read in the row's name: `plain`, with each
+    /// hidden spoiler as "Spoiler" (its own button reveals it).
+    pub fn spoken(&self) -> String {
+        let mut out = Vec::with_capacity(self.plain16.len());
+        let mut at = 0;
+        for &(s, l, hidden) in &self.spoilers {
+            if hidden {
+                out.extend_from_slice(&self.plain16[at..s as usize]);
+                out.extend("Spoiler".encode_utf16());
+                at = (s + l) as usize;
+            }
+        }
+        out.extend_from_slice(&self.plain16[at..]);
+        String::from_utf16_lossy(&out)
+    }
 }
 
 /// What a click on a row's controls does.
@@ -197,6 +222,9 @@ impl Rows {
             None => self.rows[i] = Some(build(g, c, i, self.width)?),
             Some(r) if (r.width - self.width).abs() > 0.01 => {
                 unsafe { r.text.SetMaxWidth(self.width)? };
+                if !r.quotes.is_empty() {
+                    gfx::indent_quotes(&r.text, &r.plain16, &r.quotes)?;
+                }
                 r.width = self.width;
                 place(r, &c.messages[i]);
             }
@@ -358,22 +386,30 @@ fn text_range(start: usize, len: usize) -> DWRITE_TEXT_RANGE {
     }
 }
 
+/// The key in a message's `revealed` set of its text spoiler starting at
+/// UTF-16 offset `start`.
+pub fn spoiler_key(start: u32) -> String {
+    format!("spoiler:{start}")
+}
+
 fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
     let m = &c.messages[i];
     let (plain, spans, hrefs) = c.plain(i);
     let plain16 = gfx::wide(&plain);
     let text = g.layout(&plain16, &g.formats.message, width)?;
     let mut mentions = Vec::new();
-    let links = hrefs
-        .into_iter()
-        .map(|(s, l, href)| (s as u32, l as u32, href))
-        .collect();
+    let mut spoiled = Vec::new();
+    let mut quotes = Vec::new();
     unsafe {
         for &(s, l, k) in &spans {
             let r = text_range(s, l);
             match k {
                 SpanKind::Bold => text.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r)?,
                 SpanKind::Italic => text.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r)?,
+                SpanKind::Underline => text.SetUnderline(true, r)?,
+                SpanKind::Strikethrough => text.SetStrikethrough(true, r)?,
+                SpanKind::Spoiler => gfx::join_range(&mut spoiled, s, l),
+                SpanKind::Quote => gfx::join_range(&mut quotes, s, l),
                 SpanKind::Link => text.SetDrawingEffect(&g.brushes.link, r)?,
                 SpanKind::Mention => {
                     text.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r)?;
@@ -382,10 +418,36 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
             }
         }
     }
+    let spoilers: Vec<(u32, u32, bool)> = spoiled
+        .into_iter()
+        .map(|(s, l)| (s, l, !m.revealed.contains(&spoiler_key(s))))
+        .collect();
+    // A hidden spoiler's text, links and mentions can't be seen or used.
+    let hidden = |p: u32, n: u32| {
+        spoilers
+            .iter()
+            .any(|&(s, l, hidden)| hidden && p < s + l && s < p + n)
+    };
+    mentions.retain(|&(s, l)| !hidden(s, l));
+    let links = hrefs
+        .into_iter()
+        .map(|(s, l, href)| (s as u32, l as u32, href))
+        .filter(|&(s, l, _)| !hidden(s, l))
+        .collect();
+    for &(s, l, hidden) in &spoilers {
+        if hidden {
+            unsafe {
+                text.SetDrawingEffect(&g.brushes.hidden, text_range(s as usize, l as usize))?
+            };
+        }
+    }
     if m.deleted {
         unsafe { text.SetDrawingEffect(&g.brushes.muted, text_range(0, plain16.len()))? };
     }
     emoji::apply(&text, &plain, 15.0, INLINE_EMOJI_SCALE)?;
+    if !quotes.is_empty() {
+        gfx::indent_quotes(&text, &plain16, &quotes)?;
+    }
     let edited = if m.edited_inline {
         let l = g.layout(&gfx::wide("(edited)"), &g.formats.edited, 10_000.0)?;
         let w = gfx::metrics(&l).widthIncludingTrailingWhitespace;
@@ -507,6 +569,8 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         plain16,
         mentions,
         links,
+        spoilers,
+        quotes,
         header,
         text_y: 0.0,
         picture_y: 0.0,
@@ -849,6 +913,53 @@ impl Rows {
         Some(Who::Mention(start as usize, end as usize))
     }
 
+    /// Row `i`'s hidden spoiler under (x, y), in row-local DIPs as
+    /// `who_at`: its index in `Row::spoilers`.
+    pub fn spoiler_at(&self, i: usize, grouped: bool, x: f32, y: f32) -> Option<usize> {
+        let row = self.row(i)?;
+        let (tx, ty) = (x - BODY_X, y - (content_top(grouped) + row.text_y));
+        row.spoilers.iter().position(|&(s, l, hidden)| {
+            hidden
+                && gfx::range_rects(&row.text, s, l).iter().any(|m| {
+                    tx >= m.left && tx < m.left + m.width && ty >= m.top && ty < m.top + m.height
+                })
+        })
+    }
+
+    /// The bounds of row `i`'s spoiler `k` relative to the row's top-left.
+    pub fn spoiler_rect(&self, i: usize, grouped: bool, k: usize) -> Option<Common::D2D_RECT_F> {
+        let row = self.row(i)?;
+        let &(s, l, _) = row.spoilers.get(k)?;
+        let (dx, dy) = (BODY_X, content_top(grouped) + row.text_y);
+        gfx::range_rects(&row.text, s, l)
+            .iter()
+            .map(|m| {
+                rect(
+                    dx + m.left,
+                    dy + m.top,
+                    dx + m.left + m.width,
+                    dy + m.top + m.height,
+                )
+            })
+            .reduce(|a, b| {
+                rect(
+                    a.left.min(b.left),
+                    a.top.min(b.top),
+                    a.right.max(b.right),
+                    a.bottom.max(b.bottom),
+                )
+            })
+    }
+
+    /// Row `i`'s hidden spoilers, by index in `Row::spoilers`.
+    pub fn hidden_spoilers(&self, i: usize) -> Vec<usize> {
+        self.row(i).map_or_else(Vec::new, |row| {
+            (0..row.spoilers.len())
+                .filter(|&k| row.spoilers[k].2)
+                .collect()
+        })
+    }
+
     pub fn quote_link(&self, i: usize) -> Option<Common::D2D_RECT_F> {
         let row = self.row(i)?;
         let q = row.quote.as_ref()?;
@@ -1130,6 +1241,25 @@ pub fn draw_row(
                 );
             }
         };
+        // Quote blocks: web's 3px border bar beside the indented lines.
+        for &(s, l) in &row.quotes {
+            if let Some((t, b)) = gfx::range_extent(&row.text, s, l) {
+                dc.FillRectangle(
+                    &rect(BODY_X, ty + t, BODY_X + gfx::QUOTE_BAR, ty + b),
+                    &g.brushes.border,
+                );
+            }
+        }
+        // A hidden spoiler is a border-coloured block (its text is drawn
+        // invisible); a revealed one keeps a faint background.
+        for &(s, l, hidden) in &row.spoilers {
+            let brush = if hidden {
+                &g.brushes.border
+            } else {
+                &g.brushes.hover
+            };
+            fill(s, l, brush, 1.0, 4.0);
+        }
         for &(s, l) in &row.mentions {
             fill(s, l, &g.brushes.mention, 2.0, 4.0);
         }

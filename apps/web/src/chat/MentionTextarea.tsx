@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useId,
   useImperativeHandle,
@@ -14,7 +15,8 @@ import { Decoration, DecorationSet, EditorView } from "prosemirror-view";
 import { history, undo, redo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap } from "prosemirror-commands";
-import { Bold, Italic } from "lucide-react";
+import { Bold, EyeOff, Italic, Strikethrough, TextQuote, Underline } from "lucide-react";
+import type { FormatStyle } from "./formatting.ts";
 import { emojiSegments } from "./emoji.ts";
 import { emojiName } from "./reactors.ts";
 import { draftMentionSegments, type MentionCandidate } from "./mentions.ts";
@@ -104,7 +106,7 @@ export default function MentionTextarea({
   };
   const track = useRef(trackSelection);
   track.current = trackSelection;
-  const format = (style: "bold" | "italic") => {
+  const format = (style: FormatStyle) => {
     const editor = view.current;
     if (!editor || editor.composing || disabled || readOnly) return;
     editor.focus();
@@ -317,10 +319,10 @@ export default function MentionTextarea({
         aria-disabled={disabled || undefined}
         aria-readonly={readOnly || undefined}
         aria-label={props["aria-label"] ?? placeholder ?? "Message"}
-        aria-keyshortcuts="Control+B Meta+B Control+I Meta+I"
+        aria-keyshortcuts="Control+B Meta+B Control+I Meta+I Control+U Meta+U"
         aria-description={
           props["aria-description"] ??
-          "Select text to format it. Control or Command B for bold, I for italic. Formatting cannot split a link."
+          "Select text to format it. Control or Command B for bold, I for italic, U for underline. Formatting cannot split a link."
         }
         aria-describedby={
           name ? [props["aria-describedby"], tooltipId].filter(Boolean).join(" ") : props["aria-describedby"]
@@ -333,9 +335,10 @@ export default function MentionTextarea({
           close();
           if (!event.nativeEvent.isComposing && !event.altKey && (event.metaKey || event.ctrlKey)) {
             const key = event.key.toLowerCase();
-            if (key === "b" || key === "i") {
+            const style = ({ b: "bold", i: "italic", u: "underline" } as const)[key as "b" | "i" | "u"];
+            if (style && !event.shiftKey) {
               event.preventDefault();
-              format(key === "b" ? "bold" : "italic");
+              format(style);
               return;
             }
           }
@@ -430,32 +433,40 @@ export default function MentionTextarea({
           >
             {(
               [
-                ["bold", "Bold", Bold],
-                ["italic", "Italic", Italic],
+                ["bold", "Bold", Bold, "B"],
+                ["italic", "Italic", Italic, "I"],
+                ["underline", "Underline", Underline, "U"],
+                ["strikethrough", "Strikethrough", Strikethrough, undefined],
+                ["quote", "Quote", TextQuote, undefined],
+                ["spoiler", "Spoiler", EyeOff, undefined],
               ] as const
-            ).map(([style, label, Icon]) => {
+            ).map(([style, label, Icon, shortcut]) => {
               const state = view.current!.state;
               const allowed = formatComposer(style)(state);
               return (
-                <button
-                  key={style}
-                  type="button"
-                  aria-label={label}
-                  aria-pressed={state.doc.rangeHasMark(
-                    state.selection.from,
-                    state.selection.to,
-                    state.schema.marks[style],
-                  )}
-                  title={
-                    allowed
-                      ? `${label} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl+"}${label[0]})`
-                      : "This selection cannot be formatted without changing its text or link"
-                  }
-                  disabled={!allowed}
-                  onClick={() => format(style)}
-                >
-                  <Icon size={17} aria-hidden="true" />
-                </button>
+                <Fragment key={style}>
+                  {style === "quote" && <span className="chat-format-divider" aria-hidden="true" />}
+                  <button
+                    type="button"
+                    aria-label={label}
+                    aria-pressed={state.doc.rangeHasMark(
+                      state.selection.from,
+                      state.selection.to,
+                      state.schema.marks[style],
+                    )}
+                    title={
+                      !allowed
+                        ? "This selection cannot be formatted without changing its text or link"
+                        : shortcut
+                          ? `${label} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl+"}${shortcut})`
+                          : label
+                    }
+                    disabled={!allowed}
+                    onClick={() => format(style)}
+                  >
+                    <Icon size={17} aria-hidden="true" />
+                  </button>
+                </Fragment>
               );
             })}
           </div>

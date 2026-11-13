@@ -2455,6 +2455,64 @@ button.chat-mention-card-avatar {
     height: 44px;
   }
 }
+.chat-format-divider {
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border);
+}
+/* Quotes: a neutral bar beside each quoted line, in messages and drafts. */
+.chat-quote {
+  display: inline-block;
+  box-sizing: border-box;
+  width: 100%;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  vertical-align: top;
+}
+.chat-quote-draft {
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+/* A spoiler hides its text until activated; drafts show it, marked. */
+.chat-text-spoiler {
+  border-radius: 4px;
+  background: var(--surface-hover);
+}
+.chat-text-spoiler[role="button"] {
+  background: var(--border);
+  cursor: pointer;
+}
+.chat-text-spoiler[role="button"]:hover {
+  background: #44494d;
+}
+.chat-text-spoiler[role="button"]:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 1px;
+}
+.chat-text-spoiler[role="button"] > span {
+  opacity: 0;
+}
+.chat-text-spoiler[data-revealed] {
+  animation: chat-text-spoiler-reveal var(--motion-fast) var(--ease-out);
+}
+@keyframes chat-text-spoiler-reveal {
+  from {
+    background: var(--border);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-text-spoiler[data-revealed] {
+    animation: none;
+  }
+}
+.chat-spoiler-draft {
+  border-radius: 4px;
+  background: var(--border);
+}
 /* The bundled Satoshi faces are upright; allow oblique synthesis only for message emphasis. */
 .chat-italic {
   font-style: italic;

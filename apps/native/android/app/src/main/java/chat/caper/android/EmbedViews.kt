@@ -46,7 +46,7 @@ import androidx.media3.ui.PlayerView
 import chat.caper.android.data.embedFrame
 import chat.caper.android.data.embedPlayUrl
 import chat.caper.android.data.embedPlayerNavigation
-import chat.caper.android.data.linkRanges
+import chat.caper.android.data.messageLinkRanges
 import chat.caper.android.data.previewLink
 import chat.caper.android.model.ChatEmbed
 import chat.caper.android.model.EmbedBlock
@@ -208,12 +208,15 @@ private val EmbedMediaShape = RoundedCornerShape(6.dp)
     }
 }
 
-/** Body text: plain, line breaks kept, links found by the shared rules (`data/Links.kt`), at most 8 lines. */
+/** Body text: message formatting, line breaks kept, links found by the shared rules (`data/Links.kt`), at most 8 lines. */
 @Composable private fun EmbedText(text: String) {
-    val links = remember(text) { linkRanges(text) }
-    if (links.isEmpty()) return Text(text, color = Text, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 8, overflow = TextOverflow.Ellipsis)
+    val links = remember(text) { messageLinkRanges(text) }
+    if (links.isEmpty() && chat.caper.android.data.formattedMessage(text).text == text) return Text(text, color = Text, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 8, overflow = TextOverflow.Ellipsis)
     val uriHandler = LocalUriHandler.current
-    val annotated = remember(text, links, uriHandler) { messageText(text, emptyList(), links = links, openLink = { openExternalLink(uriHandler, it) }) }
+    var revealed by remember(text) { mutableStateOf(emptySet<Int>()) }
+    val annotated = remember(text, links, uriHandler, revealed) {
+        messageText(text, emptyList(), links = links, openLink = { openExternalLink(uriHandler, it) }, revealed = revealed, reveal = { revealed = revealed + it })
+    }
     MessageLinkText(annotated, color = Text, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 8)
 }
 

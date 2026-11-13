@@ -190,7 +190,7 @@ import chat.caper.android.data.directUnread
 import chat.caper.android.data.collapsesFor
 import chat.caper.android.data.groupBlocked
 import chat.caper.android.data.groupsWithPrevious
-import chat.caper.android.data.linkRanges
+import chat.caper.android.data.messageLinkRanges
 import chat.caper.android.data.resendLabel
 import chat.caper.android.data.resendSecondsLeft
 import chat.caper.android.data.mainDirects
@@ -3102,7 +3102,7 @@ private val quickReactions = listOf("👍", "❤️", "😂")
     val links = if (message.deletedAt != null) emptyList() else
         listOfNotNull(message, message.forward?.message).filter { it.deletedAt == null }.flatMap { linkedMessage ->
             val text = linkedMessage.content.text
-            linkRanges(text, highlightedMentions(text, linkedMessage.content.mentions).map { it.start until it.end })
+            messageLinkRanges(text, highlightedMentions(text, linkedMessage.content.mentions).map { it.start until it.end })
                 .map { link -> text.substring(link.start, link.end) to link.href }
         }.distinct()
     val own = state.chatAuthorId ?: state.account?.id
@@ -3607,27 +3607,31 @@ internal const val DELETED_REPLY = "Original message was deleted."
             if (deleted) Text(DELETED_MESSAGE, color = TextMuted, fontSize = 14.sp, lineHeight = 21.sp, fontStyle = FontStyle.Italic)
             else if (text.isNotEmpty() || inlineEdited) {
                 // Pending messages have emphasis but no mention or link actions.
-                val links = remember(text, mentions, pending) { if (pending) emptyList() else linkRanges(text, mentions.map { it.start until it.end }) }
-                if (mentions.isEmpty() && links.isEmpty() && !inlineEdited) Text(remember(text) { messageText(text, emptyList()) }, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+                val links = remember(text, mentions, pending) { if (pending) emptyList() else messageLinkRanges(text, mentions.map { it.start until it.end }) }
+                // Spoilers this row has revealed, by index; tapping one shows it until the row leaves.
+                var revealed by remember(text) { mutableStateOf(emptySet<Int>()) }
+                val blocks = remember(text) { chat.caper.android.data.formattedMessage(text).runs.any { it.spoiler || it.quote } }
+                if (mentions.isEmpty() && links.isEmpty() && !inlineEdited && !blocks) Text(remember(text) { messageText(text, emptyList()) }, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
                 else {
                     // Pills and links are link annotations: their tap is consumed before the row's long-press handler sees it.
                     val open by rememberUpdatedState(openMention)
                     val history by rememberUpdatedState(openHistory)
                     val uriHandler = LocalUriHandler.current
                     val linked = if (openMention == null) null else entries
-                    val annotated = remember(text, mentions, linked, links, inlineEdited, uriHandler) {
-                        messageText(text, mentions, linked, links, { user -> open?.invoke(user) }, { openExternalLink(uriHandler, it) }, if (inlineEdited) ({ history() }) else null)
+                    val annotated = remember(text, mentions, linked, links, inlineEdited, uriHandler, revealed) {
+                        messageText(text, mentions, linked, links, { user -> open?.invoke(user) }, { openExternalLink(uriHandler, it) }, if (inlineEdited) ({ history() }) else null,
+                            revealed) { revealed = revealed + it }
                     }
-                    val people = linked?.let { mentions.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
+                    // Nothing inside a hidden spoiler can be opened, from the text or from TalkBack.
+                    val people = linked?.let { mentions.filterNot { inHiddenSpoiler(text, revealed, it.start, it.end) }.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
+                    val shownLinks = links.filterNot { inHiddenSpoiler(text, revealed, it.start, it.end) }
                     // TalkBack also reaches each pill, link and the inline "(edited)" through labelled custom actions.
                     MessageLinkText(
                         annotated,
-                        if (people.isEmpty() && links.isEmpty() && !inlineEdited) Modifier else Modifier.semantics {
-                            customActions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } } +
-                                links.map { link -> CustomAccessibilityAction("Open link ${text.substring(link.start, link.end)}") { openExternalLink(uriHandler, link.href); true } } +
-                                listOfNotNull(if (inlineEdited) CustomAccessibilityAction("Open message history") { history(); true } else null)
-                        },
                         color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
+                        actions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } } +
+                            shownLinks.map { link -> CustomAccessibilityAction("Open link ${text.substring(link.start, link.end)}") { openExternalLink(uriHandler, link.href); true } } +
+                            listOfNotNull(if (inlineEdited) CustomAccessibilityAction("Open message history") { history(); true } else null),
                     )
                 }
             }
@@ -3800,16 +3804,21 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
  * Message text: resolved mentions as pills (text #F3F4F5, one weight step bolder, terracotta at 24%),
  * then [links] (found outside the mentions, `data/Links.kt`) in baby-blue rounded pills.
  * Inline icon placeholders are presentation only; message actions use the original content text.
- * URL backgrounds are drawn by [MessageLinkText]; mention backgrounds remain span styles.
+ * URL backgrounds, quote bars and spoiler backgrounds are drawn by [MessageLinkText]; mention backgrounds remain span styles.
+ * Spoilers stay hidden, with their links and mentions inert, until tapped ([reveal] with the spoiler's index);
+ * [revealed] lists the ones this view shows.
  * [openHistory] appends a grouped row's "(edited)" marker right after the text.
  */
 internal fun messageText(
     text: String, mentions: List<MentionSpan>, entries: List<MessageMention>? = null, links: List<LinkRange> = emptyList(),
     open: (MessageMention) -> Unit = {}, openLink: (String) -> Unit = {}, openHistory: (() -> Unit)? = null,
+    revealed: Set<Int> = emptySet(), reveal: (Int) -> Unit = {},
 ) = buildAnnotatedString {
     val formatted = chat.caper.android.data.formattedMessage(text)
-    val rendered = formatted.text
-    val renderedLinks = links.map { it.copy(start = formatted.displayed(it.start), end = formatted.displayed(it.end)) }
+    val quotes = formatted.ranges(chat.caper.android.data.FormatStyle.QUOTE)
+    val rendered = quoteBreaks(formatted.text, quotes)
+    val shownLinks = links.filterNot { inHiddenSpoiler(text, revealed, it.start, it.end) }
+    val renderedLinks = shownLinks.map { it.copy(start = formatted.displayed(it.start), end = formatted.displayed(it.end)) }
     var cursor = 0
     renderedLinks.forEach { link ->
         append(rendered.substring(cursor, link.start))
@@ -3823,27 +3832,47 @@ internal fun messageText(
     fun renderedOffset(offset: Int) = offset + renderedLinks.count { it.start < offset }
     fun displayed(offset: Int) = renderedOffset(formatted.displayed(offset))
     mentions.forEach { span ->
+        if (inHiddenSpoiler(text, revealed, span.start, span.end)) return@forEach
         // With [entries], a person's pill is a link (focusable, Enter-activatable; 32% while hovered, focused or pressed).
         val user = entries?.let { mentionedUser(span, it) }
         if (user == null) addStyle(MentionPill, displayed(span.start), displayed(span.end))
         else addLink(LinkAnnotation.Clickable("mention:${span.name}", MentionPillLink) { open(user) }, displayed(span.start), displayed(span.end))
     }
     // Only http(s) URLs reach here, and they open outside the app.
-    links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openLink(link.href) }, displayed(link.start), displayed(link.end)) }
+    shownLinks.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openLink(link.href) }, displayed(link.start), displayed(link.end)) }
     var runOffset = 0
     formatted.runs.forEach { run ->
-        addStyle(SpanStyle(
-            fontWeight = if (run.bold) FontWeight.Bold else null,
-            fontStyle = if (run.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
-        ), renderedOffset(runOffset), renderedOffset(runOffset + run.text.length))
+        run.spanStyle()?.let { addStyle(it, renderedOffset(runOffset), renderedOffset(runOffset + run.text.length)) }
         runOffset += run.text.length
     }
+    formatted.ranges(chat.caper.android.data.FormatStyle.SPOILER).forEachIndexed { index, range ->
+        val start = renderedOffset(range.first)
+        val end = renderedOffset(range.last + 1)
+        if (index in revealed) addStringAnnotation(SpoilerText, SPOILER_SHOWN, start, end)
+        else {
+            addStringAnnotation(SpoilerText, SPOILER_HIDDEN, start, end)
+            addStyle(SpanStyle(color = Color.Transparent), start, end)
+            addLink(LinkAnnotation.Clickable(SpoilerReveal, HiddenSpoiler) { reveal(index) }, start, end)
+        }
+    }
+    val built = toAnnotatedString().text
+    quotes.forEach { addQuoteBlock(built, renderedOffset(it.first), renderedOffset(it.last + 1)) }
     openHistory?.let { history ->
         append(" ")
         withLink(LinkAnnotation.Clickable("edited", EditedMarker) { history() }) { append("(edited)") }
     }
 }
 
+/** Whether source range [start]..[end] of message [text] touches a spoiler (by index) not in [revealed]. */
+internal fun inHiddenSpoiler(text: String, revealed: Set<Int>, start: Int, end: Int): Boolean {
+    val formatted = chat.caper.android.data.formattedMessage(text)
+    val from = formatted.displayed(start)
+    val to = formatted.displayed(end)
+    return formatted.ranges(chat.caper.android.data.FormatStyle.SPOILER)
+        .withIndex().any { (index, range) -> index !in revealed && from <= range.last && to > range.first }
+}
+
+private val HiddenSpoiler = TextLinkStyles(SpanStyle(color = Color.Transparent), focusedStyle = SpanStyle(color = Color.Transparent, background = TerracottaWash))
 private val MentionPill = SpanStyle(color = Text, fontWeight = FontWeight.Medium, background = Terracotta.copy(alpha = 0.24f))
 private val MentionPillActive = SpanStyle(background = Terracotta.copy(alpha = 0.32f))
 private val MentionPillLink = TextLinkStyles(MentionPill, focusedStyle = MentionPillActive, hoveredStyle = MentionPillActive, pressedStyle = MentionPillActive)

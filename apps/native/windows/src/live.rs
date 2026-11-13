@@ -5196,17 +5196,17 @@ pub fn conversation(
 }
 
 /// Message text as styled runs, as the egui client draws it: the shared
-/// bold/italic grammar (`shared/messages/formatting.rs`) removes its markers
+/// grammar (`shared/messages/formatting.rs`) removes its markers
 /// first; then, in the text that remains, the mentions the server resolved
 /// (`caper_client::mentions`) become pills and links
 /// (`shared/messages/links.rs`) are found between them.
 pub fn spans(text: &str, mentions: &[core::Mention]) -> Vec<Span> {
     let mut visible = String::with_capacity(text.len());
     let mut styles = Vec::new();
-    crate::formatting::visit_runs(text, |range, bold, italic| {
+    crate::formatting::visit_runs(text, |range, style| {
         let start = visible.len();
         visible.push_str(&text[range]);
-        styles.push((start..visible.len(), bold, italic));
+        styles.push((start..visible.len(), style));
     });
     let pills: Vec<_> = caper_client::mentions::highlights(&visible, mentions)
         .into_iter()
@@ -5230,7 +5230,7 @@ pub fn spans(text: &str, mentions: &[core::Mention]) -> Vec<Span> {
         gap = end;
     }
     let mut out = Vec::new();
-    for (range, bold, italic) in styles {
+    for (range, style) in styles {
         let mut cuts = vec![range.start, range.end];
         for span in pills.iter().chain(links.iter().map(|(link, _)| link)) {
             for edge in [span.start, span.end] {
@@ -5245,8 +5245,7 @@ pub fn spans(text: &str, mentions: &[core::Mention]) -> Vec<Span> {
             let (start, end) = (piece[0], piece[1]);
             out.push(Span::Rich {
                 text: visible[start..end].to_owned(),
-                bold,
-                italic,
+                style,
                 mention: pills.iter().any(|p| p.contains(&start)),
                 href: links
                     .iter()
@@ -5283,8 +5282,7 @@ pub fn message(
         spans: if deleted {
             vec![Span::Rich {
                 text: "This message was deleted.".into(),
-                bold: false,
-                italic: true,
+                style: crate::formatting::ITALIC,
                 mention: false,
                 href: None,
             }]
@@ -5575,7 +5573,7 @@ mod tests {
         let shared = message(&broadcast, 0, false, None);
         assert!(shared.thread_context && shared.thread_replies.is_none());
         assert!(
-            matches!(&row.spans[..], [Span::Rich { text, italic: true, .. }] if text == "This message was deleted.")
+            matches!(&row.spans[..], [Span::Rich { text, style: crate::formatting::ITALIC, .. }] if text == "This message was deleted.")
         );
     }
     fn shown(spans: &[Span]) -> Vec<(String, bool, bool, Option<String>)> {
@@ -5583,12 +5581,13 @@ mod tests {
             .iter()
             .map(|s| match s {
                 Span::Rich {
-                    text,
-                    bold,
-                    italic,
-                    href,
-                    ..
-                } => (text.clone(), *bold, *italic, href.clone()),
+                    text, style, href, ..
+                } => (
+                    text.clone(),
+                    style & crate::formatting::BOLD != 0,
+                    style & crate::formatting::ITALIC != 0,
+                    href.clone(),
+                ),
                 _ => panic!("live messages are rich runs"),
             })
             .collect()
@@ -5604,6 +5603,26 @@ mod tests {
         assert!(link.1, "the link keeps the bold around it");
         assert!(runs.iter().any(|r| r.0 == "this" && r.2 && !r.1));
         assert!(runs.iter().any(|r| r.0 == "see " && r.1 && r.3.is_none()));
+    }
+
+    #[test]
+    fn every_style_bit_reaches_its_run() {
+        use crate::formatting::{QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
+        let runs: Vec<(String, i32)> = spans("__u__ ~~s~~ ||x||\n> q", &[])
+            .into_iter()
+            .map(|s| match s {
+                Span::Rich { text, style, .. } => (text, style),
+                _ => panic!("live messages are rich runs"),
+            })
+            .collect();
+        for (text, style) in [
+            ("u", UNDERLINE),
+            ("s", STRIKETHROUGH),
+            ("x", SPOILER),
+            ("q", QUOTE),
+        ] {
+            assert!(runs.contains(&(text.to_owned(), style)), "{text}: {runs:?}");
+        }
     }
 
     #[test]

@@ -76,7 +76,10 @@ Invoke and SelectionItem. The media viewer replaces the tree while open: its
 window, title, image and buttons are named, and its buttons support Invoke.
 The composer supports Value and Text/Text2 (value,
 caret, selection, bounds); each message row supports Text over its plain
-text, and selecting a range selects it in the history.
+text, and selecting a range selects it in the history. A selection's
+formatting buttons support Invoke and Toggle (on while the selection has
+that style), and a message's hidden spoiler is a button named "Spoiler,
+reveal".
 
 ## Build and run
 
