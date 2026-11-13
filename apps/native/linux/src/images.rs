@@ -372,6 +372,24 @@ impl Images {
     }
 }
 
+/// A Lucide icon the shared set lacks, from its SVG elements (`elements`),
+/// stroked in `color` (`#rrggbb`). Screen readers skip it, as `icon_image`.
+pub fn lucide_image(elements: &str, color: &str, size: i32) -> gtk::Image {
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" \
+         fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" stroke-linecap=\"round\" \
+         stroke-linejoin=\"round\">{elements}</svg>"
+    );
+    let image = gtk::Image::builder()
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    if let Some(texture) = render_svg(svg.as_bytes(), ICON_EDGE) {
+        image.set_paintable(Some(&texture));
+    }
+    image.set_pixel_size(size);
+    image
+}
+
 fn render_svg(svg: &[u8], edge: u32) -> Option<gdk::Texture> {
     let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(edge, edge)?;

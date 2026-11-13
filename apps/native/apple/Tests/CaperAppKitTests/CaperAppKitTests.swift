@@ -3388,7 +3388,7 @@ import XCTest
         composer.menuItems["B — Bold"].hover(); italic.hover(); italic.click()
         XCTAssertEqual(composer.value as? String, "_menu style_")
         app.menuBars.menuBarItems["Edit"].click(); app.menuBars.menuItems["B — Bold"].click()
-        XCTAssertEqual(composer.value as? String, "_**menu style**_", "The Edit menu formats the same native selection")
+        XCTAssertEqual(composer.value as? String, "**_menu style_**", "The Edit menu formats the same native selection, as web's toolbar nests it")
         composer.typeKey(.rightArrow, modifierFlags: [])
         composer.typeText(" tail")
         XCTAssertEqual(composer.value as? String, "**_menu style_** **_tail_**", "Both styles continue across whitespace, as in web")

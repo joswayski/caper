@@ -68,8 +68,8 @@ pub struct Row {
     /// The uploaded picture loaded, so a row redraws once it arrives.
     pub picture_ready: bool,
     pub time: String,
-    /// Pango markup for the text.
-    pub markup: String,
+    /// The text, block by block (`markup::Body`).
+    pub markup: crate::markup::Body,
     pub pending: bool,
     pub edited: bool,
     /// "Pinned by …".
@@ -125,7 +125,7 @@ pub struct Original {
     pub author: String,
     pub person: Author,
     pub avatar: crate::images::Avatar,
-    pub markup: String,
+    pub markup: crate::markup::Body,
     pub edited: bool,
     /// "👍 2  🎉 1".
     pub reactions: String,
@@ -148,13 +148,15 @@ impl Original {
             person: message.author.clone(),
             avatar: author_avatar(&message.author),
             markup: if deleted {
-                "<span foreground=\"#b9bcbe\"><i>This message was deleted.</i></span>".into()
+                crate::markup::Body::notice(
+                    "<span foreground=\"#b9bcbe\"><i>This message was deleted.</i></span>",
+                )
             } else if message.content.text.is_empty()
                 && message.content.attachments.iter().any(|file| file.voice)
             {
-                "<span foreground=\"#b9bcbe\">Voice message</span>".into()
+                crate::markup::Body::notice("<span foreground=\"#b9bcbe\">Voice message</span>")
             } else {
-                crate::markup::message(&message.content.text, &message.content.mentions)
+                crate::markup::Body::message(&message.content.text, &message.content.mentions)
             },
             edited: message.edited_at.is_some() && !deleted,
             reactions: if deleted {
@@ -228,27 +230,10 @@ impl Original {
         }
         root.append(&line);
         if !self.markup.is_empty() {
-            let body = gtk::Label::builder()
-                .xalign(0.0)
-                .wrap(true)
-                .wrap_mode(pango::WrapMode::WordChar)
-                .selectable(true)
-                .css_classes(["body"])
-                .build();
-            body.set_markup(&self.markup);
-            let (handler, anchor) = (handler.clone(), body.clone());
-            body.connect_activate_link(move |_, uri| {
-                if let Some(id) = uri.strip_prefix(crate::markup::PERSON) {
-                    handler(Action::Profile {
-                        id: id.to_owned(),
-                        author: None,
-                        anchor: anchor.clone().upcast(),
-                    });
-                    return glib::Propagation::Stop;
-                }
-                glib::Propagation::Proceed
-            });
-            root.append(&body);
+            let body = crate::markup::View::default();
+            body.connect_link(profile_link(handler));
+            body.set(&self.markup);
+            root.append(&body.root);
         }
         if let Some(view) = crate::content::view(images, &self.content, handler) {
             root.append(&view);
@@ -283,21 +268,7 @@ impl Row {
         if let Some((_, notice, _)) = &self.blocked_run {
             return notice.clone();
         }
-        // Tags out first: links (`<a>`) are GtkLabel markup, which Pango's
-        // parser rejects. Text is escaped, so every `<` opens a tag.
-        let mut plain = String::with_capacity(self.markup.len());
-        let mut tag = false;
-        for c in self.markup.chars() {
-            match c {
-                '<' => tag = true,
-                '>' if tag => tag = false,
-                c if !tag => plain.push(c),
-                _ => {}
-            }
-        }
-        let text = pango::parse_markup(&plain, '\0')
-            .map(|(_, text, _)| text.to_string())
-            .unwrap_or_default();
+        let text = self.markup.plain();
         let files = self.content.attachments.len() + usize::from(self.content.gif.is_some());
         let mut parts = vec![self.author.clone(), self.time.clone()];
         parts.extend((!text.trim().is_empty()).then(|| text.trim().to_owned()));
@@ -323,7 +294,7 @@ impl Row {
             avatar: author_avatar(author),
             picture_ready: false,
             time: String::new(),
-            markup: String::new(),
+            markup: crate::markup::Body::default(),
             pending: false,
             edited: false,
             pinned_by: None,
@@ -474,10 +445,10 @@ pub fn mark_arrivals(
 
 /// Message markup by id, rebuilt only when the text or its mentions change.
 #[derive(Default)]
-pub struct Markup(HashMap<String, (String, Vec<Mention>, String)>);
+pub struct Markup(HashMap<String, (String, Vec<Mention>, crate::markup::Body)>);
 
 impl Markup {
-    fn text(&mut self, message: &Message) -> String {
+    fn text(&mut self, message: &Message) -> crate::markup::Body {
         let content = &message.content;
         if let Some((text, mentions, markup)) = self.0.get(&message.id)
             && *text == content.text
@@ -485,7 +456,7 @@ impl Markup {
         {
             return markup.clone();
         }
-        let markup = crate::markup::message(&content.text, &content.mentions);
+        let markup = crate::markup::Body::message(&content.text, &content.mentions);
         self.0.insert(
             message.id.clone(),
             (
@@ -502,10 +473,11 @@ impl Markup {
     }
 }
 
-fn body(message: &Message, markup: &mut Markup) -> String {
-    const MUTED: &str = "<span foreground=\"#b9bcbe\"><i>";
+fn body(message: &Message, markup: &mut Markup) -> crate::markup::Body {
     if message.is_deleted() {
-        return format!("{MUTED}This message was deleted.</i></span>");
+        return crate::markup::Body::notice(
+            "<span foreground=\"#b9bcbe\"><i>This message was deleted.</i></span>",
+        );
     }
     markup.text(message)
 }
@@ -835,7 +807,7 @@ pub fn build<'a>(
             picture_ready: viewer.images.picture_ready(&avatar),
             avatar,
             time: String::new(),
-            markup: crate::markup::message(draft.text, &[]),
+            markup: crate::markup::Body::message(draft.text, &[]),
             pending: true,
             edited: false,
             pinned_by: None,
@@ -952,6 +924,23 @@ pub enum Action {
 
 pub type Handler = Rc<dyn Fn(Action)>;
 
+/// A message body's links: a mention pill opens the person's profile card
+/// beside its label; other links open as GTK opens them.
+fn profile_link(handler: &Handler) -> impl Fn(&gtk::Label, &str) -> glib::Propagation + 'static {
+    let handler = handler.clone();
+    move |label, uri| {
+        if let Some(id) = uri.strip_prefix(crate::markup::PERSON) {
+            handler(Action::Profile {
+                id: id.to_owned(),
+                author: None,
+                anchor: label.clone().upcast(),
+            });
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    }
+}
+
 /// One recycled row's widgets and the row it shows.
 struct Widgets {
     root: gtk::Box,
@@ -980,7 +969,7 @@ struct Widgets {
     edited: gtk::Button,
     edited_inline: gtk::Button,
     pinned: gtk::Label,
-    body: gtk::Label,
+    body: crate::markup::View,
     content: gtk::Box,
     forward: gtk::Box,
     notice: gtk::Label,
@@ -1255,13 +1244,7 @@ fn build_widgets() -> Widgets {
     let edited_inline = marker();
     edited_inline.set_halign(gtk::Align::Start);
     let pinned = label("pinned");
-    let body = gtk::Label::builder()
-        .xalign(0.0)
-        .wrap(true)
-        .wrap_mode(pango::WrapMode::WordChar)
-        .selectable(true)
-        .css_classes(["body"])
-        .build();
+    let body = crate::markup::View::default();
     let notice = label("notice");
     notice.set_label(caper_client::mentions::FEEDBACK_NOTICE);
     let reactions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -1296,7 +1279,7 @@ fn build_widgets() -> Widgets {
     header.append(&pinned);
     content.append(&header);
     let extra = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&body);
+    content.append(&body.root);
     content.append(&edited_inline);
     content.append(&extra);
     let forward = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -1552,16 +1535,7 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
             return;
         }
         gesture.set_state(gtk::EventSequenceState::Claimed);
-        let selected = widgets.body.selection_bounds().map(|(start, end)| {
-            let (start, end) = (start.min(end), start.max(end));
-            widgets
-                .body
-                .text()
-                .chars()
-                .skip(start as usize)
-                .take((end - start) as usize)
-                .collect::<String>()
-        });
+        let selected = widgets.body.selected();
         menu_handler(Action::Menu {
             id,
             anchor: root.clone(),
@@ -1602,18 +1576,7 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
         target.add_controller(click);
         target.set_cursor_from_name(Some("pointer"));
     }
-    let (handler_link, anchor) = (handler.clone(), widgets.body.clone());
-    widgets.body.connect_activate_link(move |_, uri| {
-        if let Some(id) = uri.strip_prefix(crate::markup::PERSON) {
-            handler_link(Action::Profile {
-                id: id.to_owned(),
-                author: None,
-                anchor: anchor.clone().upcast(),
-            });
-            return glib::Propagation::Stop;
-        }
-        glib::Propagation::Proceed
-    });
+    widgets.body.connect_link(profile_link(handler));
     let click = gtk::GestureClick::new();
     let (weak, jump) = (Rc::downgrade(widgets), handler.clone());
     click.connect_released(move |_, _, _, _| {
@@ -1807,8 +1770,8 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     widgets
         .pinned
         .set_label(row.pinned_by.as_deref().unwrap_or_default());
-    widgets.body.set_markup(&row.markup);
-    widgets.body.set_visible(!row.markup.is_empty());
+    widgets.body.set(&row.markup);
+    widgets.body.root.set_visible(!row.markup.is_empty());
     while let Some(child) = widgets.content.first_child() {
         widgets.content.remove(&child);
     }
@@ -1982,7 +1945,7 @@ mod tests {
             avatar: crate::images::Avatar::new("Maya", Some(31), &None, &None),
             picture_ready: false,
             time: String::new(),
-            markup: text.into(),
+            markup: crate::markup::Body::notice(text),
             pending: false,
             edited: false,
             pinned_by: None,
@@ -2052,13 +2015,18 @@ mod tests {
             username: Some("maya".into()),
         };
         // A mention pill and a link: both `<a>` tags.
-        message.markup = crate::markup::message("hi @maya, see www.caper.chat", &[maya]);
-        assert!(message.markup.contains("<a href"));
+        message.markup =
+            crate::markup::Body::message("hi @maya, see www.caper.chat ||the end||", &[maya]);
+        assert!(
+            message.markup.blocks(&Default::default())[0]
+                .1
+                .contains("<a href")
+        );
         assert_eq!(
             message.accessible_label(),
-            "Maya, 2:15 AM, hi @maya, see www.caper.chat"
+            "Maya, 2:15 AM, hi @maya, see www.caper.chat Spoiler, reveal"
         );
-        message.markup.clear();
+        message.markup = crate::markup::Body::default();
         message.edited = true;
         message.pending = true;
         assert_eq!(message.accessible_label(), "Maya, 2:15 AM, edited, sending");
@@ -2094,7 +2062,7 @@ mod tests {
             mine: true,
             summary: "You reacted with :thumbs-up:".into(),
         });
-        new[4].markup = "edited".into();
+        new[4].markup = crate::markup::Body::notice("edited");
         new[4].picture_ready = true;
         assert_eq!(
             diff(&old, &new),

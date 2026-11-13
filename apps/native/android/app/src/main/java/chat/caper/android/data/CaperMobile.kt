@@ -13,7 +13,10 @@ internal object CaperMobile {
     /** New destination file; 0 success, 1 unsupported, 2 malformed, 3 I/O failure. */
     @JvmStatic external fun cleanMetadata(source: String, destination: String, contentType: String): Int
 
-    /** `[start, end, style]` per visible span of formatted text; style bit 1 is bold, 2 italic. */
+    /**
+     * `[start, end, style]` per visible span of formatted text; style bits ([FormatStyle]) are 1 bold,
+     * 2 italic, 4 underline, 8 strikethrough, 16 spoiler and 32 quote.
+     */
     @JvmStatic external fun formatSpans(text: String): IntArray
 
     /** `[start, end, scheme]` per link: scheme 8 is `https://`, 7 `http://`, 0 `www.`. */
@@ -33,6 +36,16 @@ internal object CaperMobile {
      * text's UTF-16 units. [start] and [end] are offsets into [next].
      */
     @JvmStatic external fun composerEdit(previous: String, next: String, start: Int, end: Int, continuing: Int): IntArray
+
+    /**
+     * A toolbar toggle of [style] (one [FormatStyle] bit) for the selection [start]..[end] of [text]
+     * (shared/messages/composer.rs): `[start, end]` and then the new text's UTF-16 units, or empty
+     * when the selection cannot take that change.
+     */
+    @JvmStatic external fun composerToggle(text: String, start: Int, end: Int, style: Int): IntArray
+
+    /** The [FormatStyle] bits any visible character of the selection [start]..[end] of [text] has. */
+    @JvmStatic external fun selectionStyles(text: String, start: Int, end: Int): Int
 
     /** Loads the catalog.json asset's bytes for [emojiSuggestions]; false when they are not a catalog. */
     @JvmStatic external fun emojiCatalog(json: ByteArray): Boolean

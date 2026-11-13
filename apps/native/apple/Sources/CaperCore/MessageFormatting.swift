@@ -1,10 +1,74 @@
 import Foundation
 @_implementationOnly import CaperMobile
 
+/// Style bits of formatted message text (shared/messages/formatting.rs).
+public struct MessageStyle: OptionSet, Sendable {
+    public let rawValue: Int32
+    public init(rawValue: Int32) { self.rawValue = rawValue }
+    public static let bold = MessageStyle(rawValue: 1)
+    public static let italic = MessageStyle(rawValue: 2)
+    public static let underline = MessageStyle(rawValue: 4)
+    public static let strikethrough = MessageStyle(rawValue: 8)
+    public static let spoiler = MessageStyle(rawValue: 16)
+    public static let quote = MessageStyle(rawValue: 32)
+}
+
+/// One button of the formatting toolbar (and the composer menus), in web's order.
+public struct MessageFormattingAction: Sendable {
+    public let style: MessageStyle
+    /// The accessible name.
+    public let title: String
+    /// SF Symbol, matching web's Lucide icon.
+    public let symbol: String
+    /// The lowercase Command shortcut, if any.
+    public let key: String?
+    /// Quote and Spoiler follow the other styles after a divider.
+    public var block: Bool { style == .quote || style == .spoiler }
+
+    public static let all: [MessageFormattingAction] = [
+        .init(style: .bold, title: "Bold", symbol: "bold", key: "b"),
+        .init(style: .italic, title: "Italic", symbol: "italic", key: "i"),
+        .init(style: .underline, title: "Underline", symbol: "underline", key: "u"),
+        .init(style: .strikethrough, title: "Strikethrough", symbol: "strikethrough", key: nil),
+        .init(style: .quote, title: "Quote", symbol: "text.quote", key: nil),
+        .init(style: .spoiler, title: "Spoiler", symbol: "eye.slash", key: nil),
+    ]
+
+    /// The action for a Command shortcut (B, I or U).
+    public static func shortcut(_ key: String) -> MessageFormattingAction? {
+        all.first { $0.key == key.lowercased() }
+    }
+}
+
 struct FormattedMessageRun: Equatable, Decodable {
     var text: String
-    let bold: Bool
-    let italic: Bool
+    let style: MessageStyle
+    var bold: Bool { style.contains(.bold) }
+    var italic: Bool { style.contains(.italic) }
+    var underline: Bool { style.contains(.underline) }
+    var strikethrough: Bool { style.contains(.strikethrough) }
+    var spoiler: Bool { style.contains(.spoiler) }
+    var quote: Bool { style.contains(.quote) }
+
+    init(text: String, style: MessageStyle) {
+        self.text = text
+        self.style = style
+    }
+
+    private enum CodingKeys: String, CodingKey { case text, bold, italic, underline, strikethrough, spoiler, quote }
+
+    /// The shared fixtures list `bold` and `italic`, and the other styles only when true.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        var style: MessageStyle = []
+        let keys: [(CodingKeys, MessageStyle)] = [(.bold, .bold), (.italic, .italic), (.underline, .underline),
+                                                  (.strikethrough, .strikethrough), (.spoiler, .spoiler), (.quote, .quote)]
+        for (key, bit) in keys {
+            if try container.decodeIfPresent(Bool.self, forKey: key) == true { style.insert(bit) }
+        }
+        self.style = style
+    }
 }
 
 /// The style web carries from one typed key to the next one typed at the caret
@@ -126,10 +190,10 @@ public enum MessageFormatting {
             for span in stride(from: 0, to: spans.len, by: 5) {
                 let values = spans.data.advanced(by: span)
                 let value = String(decoding: UnsafeBufferPointer(rebasing: bytes[Int(values[2])..<Int(values[3])]), as: UTF8.self)
-                let bold = values[4] & 1 != 0, italic = values[4] & 2 != 0
+                let style = MessageStyle(rawValue: values[4])
                 sourceIndices.append(contentsOf: Int(values[0])..<Int(values[1]))
-                if let last = result.last, last.bold == bold, last.italic == italic { result[result.count - 1].text += value }
-                else { result.append(.init(text: value, bold: bold, italic: italic)) }
+                if let last = result.last, last.style == style { result[result.count - 1].text += value }
+                else { result.append(.init(text: value, style: style)) }
             }
             return Projection(runs: result, sourceIndices: sourceIndices, sourceLength: text.utf16.count)
         }
@@ -160,59 +224,52 @@ public enum MessageFormatting {
         }
     }
 
-    public static func toggle(_ text: String, selection: NSRange, marker: String) -> (text: String, selection: NSRange)? {
-        let source = text as NSString, width = (marker as NSString).length
-        guard ["**", "_"].contains(marker), selection.location >= 0, selection.location <= source.length,
-              selection.length >= 0, selection.length <= source.length - selection.location else { return nil }
-        guard selection.length > 0 else { return (text, selection) }
-        var start = selection.location, end = NSMaxRange(selection)
+    /// Displayed-text UTF-16 ranges of quoted and unquoted runs, in order (web's quoteBlocks).
+    static func quoteBlocks(_ runs: [FormattedMessageRun]) -> [(range: Range<Int>, quote: Bool)] {
+        var blocks: [(range: Range<Int>, quote: Bool)] = []
         var offset = 0
-        for segment in MessageLinks.segments(in: text) {
-            let limit = offset + segment.text.utf16.count
-            if segment.href != nil, (start > offset && start < limit) || (end > offset && end < limit) {
-                return (text, selection)
-            }
-            offset = limit
+        for run in runs {
+            let end = offset + run.text.utf16.count
+            if let last = blocks.last, last.quote == run.quote { blocks[blocks.count - 1].range = last.range.lowerBound..<end }
+            else { blocks.append((offset..<end, run.quote)) }
+            offset = end
         }
-        if start != end {
-            let whitespace = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{feff}")).subtracting(CharacterSet(charactersIn: "\u{85}"))
-            while start < end, let scalar = UnicodeScalar(source.character(at: start)), whitespace.contains(scalar) { start += 1 }
-            while end > start, let scalar = UnicodeScalar(source.character(at: end - 1)), whitespace.contains(scalar) { end -= 1 }
-            if start == end { return (text, NSRange(location: start, length: 0)) }
+        return blocks
+    }
+
+    /// Whether a source selection is a valid UTF-16 range of `text`.
+    private static func valid(_ selection: NSRange, in text: String) -> Bool {
+        selection.location != NSNotFound && selection.location >= 0 && selection.length >= 0
+            && selection.length <= text.utf16.count - selection.location
+    }
+
+    /// Turns `style` on or off for the selection as web's toolbar does, through
+    /// the shared composer (shared/messages/composer.rs `toggle`): the new
+    /// draft and its selection, or nil when the selection cannot take that
+    /// style (an empty selection, part of a link, part of a word for italic or
+    /// underline, or a change that would not survive its own Markdown).
+    public static func toggle(_ text: String, selection: NSRange, style: MessageStyle) -> (text: String, selection: NSRange)? {
+        guard valid(selection, in: text) else { return nil }
+        var source = text
+        return source.withUTF8 { bytes -> (text: String, selection: NSRange)? in
+            let result = caper_mobile_composer_toggle(bytes.baseAddress, bytes.count, Int32(selection.location),
+                                                      Int32(NSMaxRange(selection)), style.rawValue)
+            defer { caper_mobile_ints_free(result) }
+            guard result.len >= 2 else { return nil }
+            let units = UnsafeBufferPointer(start: result.data.advanced(by: 2), count: result.len - 2).map { UInt16(truncatingIfNeeded: $0) }
+            let start = Int(result.data[0]), end = Int(result.data[1])
+            return (String(decoding: units, as: UTF16.self), NSRange(location: start, length: end - start))
         }
-        if start != end {
-            let visible = projection(text).sourceIndices.filter { $0 >= start && $0 < end }
-            if let first = visible.first, let last = visible.last, first >= width, last + 1 + width <= source.length,
-               source.substring(with: NSRange(location: first - width, length: width)) == marker,
-               source.substring(with: NSRange(location: last + 1, length: width)) == marker,
-               runs(source.substring(with: NSRange(location: first - width, length: last + 1 - first + 2 * width))).allSatisfy({ marker == "**" ? $0.bold : $0.italic }) {
-                start = first; end = last + 1
-            }
+    }
+
+    /// The styles any visible character of the source selection has: the
+    /// pressed toolbar buttons (shared/messages/composer.rs `selection_styles`).
+    public static func selectionStyles(_ text: String, selection: NSRange) -> MessageStyle {
+        guard selection.length > 0, valid(selection, in: text) else { return [] }
+        var source = text
+        let bits = source.withUTF8 { bytes in
+            caper_mobile_selection_styles(bytes.baseAddress, bytes.count, Int32(selection.location), Int32(NSMaxRange(selection)))
         }
-        let selection = NSRange(location: start, length: end - start)
-        var selected = source.substring(with: selection)
-        if start >= width, end + width <= source.length,
-           source.substring(with: NSRange(location: start - width, length: width)) == marker,
-           source.substring(with: NSRange(location: end, length: width)) == marker {
-            return (source.replacingCharacters(in: NSRange(location: start - width, length: selection.length + 2 * width), with: selected), NSRange(location: start - width, length: selection.length))
-        }
-        let parsed = runs(selected)
-        func hasStyle(_ run: FormattedMessageRun) -> Bool { marker == "**" ? run.bold : run.italic }
-        if selection.length >= 2 * width, selected.hasPrefix(marker), selected.hasSuffix(marker), parsed.allSatisfy(hasStyle) {
-            return (source.replacingCharacters(in: selection, with: (selected as NSString).substring(with: NSRange(location: width, length: selection.length - 2 * width))), NSRange(location: start, length: selection.length - 2 * width))
-        }
-        if parsed.contains(where: hasStyle) {
-            var remaining: [(text: String, styled: Bool)] = []
-            for run in parsed {
-                let styled = marker == "**" ? run.italic : run.bold
-                if remaining.last?.styled == styled { remaining[remaining.count - 1].text += run.text }
-                else { remaining.append((run.text, styled)) }
-            }
-            let other = marker == "**" ? "_" : "**"
-            selected = remaining.map { $0.styled ? other + $0.text + other : $0.text }.joined()
-        }
-        let result = source.replacingCharacters(in: selection, with: marker + selected + marker)
-        guard start == end || runs(result).map(\.text).joined() == runs(text).map(\.text).joined() else { return nil }
-        return (result, NSRange(location: start + width, length: selected.utf16.count))
+        return MessageStyle(rawValue: bits)
     }
 }

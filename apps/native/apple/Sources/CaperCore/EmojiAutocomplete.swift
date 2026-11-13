@@ -134,7 +134,9 @@ enum ComposerAutocomplete {
     @Published var match: ComposerAutocompleteMatch?
     @Published var selected = 0
     @Published var formattingSelection = false
-    var formatAction: ((String) -> Void)?
+    /// The styles the selection already has: the toolbar's pressed buttons.
+    @Published var formattingStyles: MessageStyle = []
+    var formatAction: ((MessageStyle) -> Void)?
     var acceptAction: ((Int) -> Void)?
     var insertAction: ((String) -> Void)?
     /// Puts dictated words at the caret, spaced from the words around them;
@@ -268,6 +270,10 @@ public final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
     }
 }
 
+/// Formatting attributes `highlightDraft` owns; composers drop them from
+/// their typing attributes so new text starts plain until it is highlighted.
+public let composerFormattingAttributes: [NSAttributedString.Key] = [.underlineStyle, .strikethroughStyle, .paragraphStyle, .spoilerFill, .quoteBar]
+
 #if os(iOS)
 public typealias PlatformComposerFont = UIFont
 #else
@@ -288,10 +294,12 @@ public typealias PlatformComposerFont = NSFont
     let color = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
     let textColor = UIColor(CaperTheme.text)
     let linkTextColor = UIColor(CaperTheme.link)
+    let spoilerFill = UIColor(CaperTheme.border)
     #else
     let color = NSColor(CaperTheme.terracotta).withAlphaComponent(0.24)
     let textColor = NSColor(CaperTheme.text)
     let linkTextColor = NSColor(CaperTheme.link)
+    let spoilerFill = NSColor(CaperTheme.border)
     #endif
     storage.beginEditing()
     storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
@@ -299,6 +307,7 @@ public typealias PlatformComposerFont = NSFont
     storage.removeAttribute(.composerDelimiter, range: NSRange(location: 0, length: storage.length))
     storage.removeAttribute(.draftLink, range: NSRange(location: 0, length: storage.length))
     storage.removeAttribute(.kern, range: NSRange(location: 0, length: storage.length))
+    for key in composerFormattingAttributes { storage.removeAttribute(key, range: NSRange(location: 0, length: storage.length)) }
     storage.addAttribute(.foregroundColor, value: textColor, range: NSRange(location: 0, length: storage.length))
     let baseFont = PlatformComposerFont(name: "Satoshi-Regular", size: 14) ?? PlatformComposerFont.systemFont(ofSize: 14)
     storage.addAttribute(.font, value: baseFont, range: NSRange(location: 0, length: storage.length))
@@ -307,15 +316,35 @@ public typealias PlatformComposerFont = NSFont
         storage.addAttribute(.composerDelimiter, value: true, range: NSRange(location: index, length: 1))
     }
     var displayed = 0
+    var quoted: [Int] = []
     for run in projection.runs {
         let font = PlatformComposerFont(name: run.bold ? "Satoshi-Bold" : "Satoshi-Regular", size: 14) ?? baseFont
         for index in displayed..<(displayed + run.text.utf16.count) {
-            storage.addAttribute(.font, value: font, range: NSRange(location: projection.sourceIndices[index], length: 1))
+            let character = NSRange(location: projection.sourceIndices[index], length: 1)
+            storage.addAttribute(.font, value: font, range: character)
             // The bundled Satoshi faces are upright; TextKit synthesizes the same
             // slant on both Apple clients instead of silently falling back to upright.
-            if run.italic { storage.addAttribute(.obliqueness, value: 0.2, range: NSRange(location: projection.sourceIndices[index], length: 1)) }
+            if run.italic { storage.addAttribute(.obliqueness, value: 0.2, range: character) }
+            if run.underline { storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: character) }
+            if run.strikethrough { storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: character) }
+            // Drafts show spoilers, marked by DraftLinkLayoutManager's rounded fill.
+            if run.spoiler { storage.addAttribute(.spoilerFill, value: spoilerFill, range: character) }
+            if run.quote {
+                storage.addAttribute(.quoteBar, value: true, range: character)
+                quoted.append(character.location)
+            }
         }
         displayed += run.text.utf16.count
+    }
+    // A quoted line is indented past the bar DraftLinkLayoutManager draws
+    // (3pt bar and 12pt gap, as web's quote padding).
+    let quote = NSMutableParagraphStyle()
+    quote.firstLineHeadIndent = NativePresentation.quoteIndent
+    quote.headIndent = NativePresentation.quoteIndent
+    var paragraph = NSRange(location: NSNotFound, length: 0)
+    for location in quoted where !NSLocationInRange(location, paragraph) {
+        paragraph = (storage.string as NSString).paragraphRange(for: NSRange(location: location, length: 0))
+        storage.addAttribute(.paragraphStyle, value: quote, range: paragraph)
     }
     var offset = 0
     for segment in MessageLinks.segments(in: storage.string) {
@@ -372,9 +401,10 @@ public final class ComposerTextView: UITextView {
     public var autocompleteActive: (() -> Bool)?
     public var handleKey: ((String) -> Void)?
     public var pasteAttachments: (() -> Bool)?
-    public var formatSelection: ((String) -> Void)?
-    @objc func formatBold(_ sender: Any?) { formatSelection?("**") }
-    @objc func formatItalic(_ sender: Any?) { formatSelection?("_") }
+    public var formatSelection: ((MessageStyle) -> Void)?
+    @objc func formatBold(_ sender: Any?) { formatSelection?(.bold) }
+    @objc func formatItalic(_ sender: Any?) { formatSelection?(.italic) }
+    @objc func formatUnderline(_ sender: Any?) { formatSelection?(.underline) }
     private var emojiTooltip: UILabel?
     private var emojiHover: Task<Void, Never>?
     private var inspectedRange: NSRange?
@@ -479,7 +509,8 @@ public final class ComposerTextView: UITextView {
     public override func accessibilityActivate() -> Bool { touched(); return super.accessibilityActivate() }
     public override var keyCommands: [UIKeyCommand]? {
         var formatting = [UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(formatBold(_:))),
-                          UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(formatItalic(_:)))]
+                          UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(formatItalic(_:))),
+                          UIKeyCommand(input: "u", modifierFlags: .command, action: #selector(formatUnderline(_:)))]
         if markedTextRange == nil {
             for input in [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow] {
                 for modifiers in [UIKeyModifierFlags(), .shift] {
@@ -497,6 +528,22 @@ public final class ComposerTextView: UITextView {
         } + formatting
     }
     @objc private func autocompleteKey(_ command: UIKeyCommand) { if let input = command.input { handleKey?(input) } }
+}
+
+extension MessageFormattingAction {
+    /// The edit menu's formatting groups, in the toolbar's order: the inline
+    /// styles, then (after the menu's divider) Quote and Spoiler. A style the
+    /// selection already has is on.
+    @MainActor public static func editMenus(text: String, selection: NSRange, format: @escaping (MessageStyle) -> Void) -> [UIMenuElement] {
+        let pressed = MessageFormatting.selectionStyles(text, selection: selection)
+        return [false, true].map { block -> UIMenuElement in
+            let actions = all.filter { $0.block == block }.map { item -> UIMenuElement in
+                UIAction(title: item.title, image: UIImage(systemName: item.symbol), discoverabilityTitle: item.title,
+                         state: pressed.contains(item.style) ? .on : .off) { _ in format(item.style) }
+            }
+            return UIMenu(title: "", options: .displayInline, children: actions)
+        }
+    }
 }
 
 /// Sees a finger land on the composer, then steps aside for its own gestures.
@@ -601,9 +648,9 @@ struct NativeMessageTextEditor: UIViewRepresentable {
             parent.text = result.text; dismissed = false; refresh(view)
             return false
         }
-        func format(_ marker: String) {
+        func format(_ style: MessageStyle) {
             guard let view, view.isEditable, view.markedTextRange == nil,
-                  let result = MessageFormatting.toggle(view.text, selection: view.selectedRange, marker: marker),
+                  let result = MessageFormatting.toggle(view.text, selection: view.selectedRange, style: style),
                   result.text.unicodeScalars.count <= 4000 else { return }
             guard result.text != view.text,
                   let range = view.textRange(from: view.beginningOfDocument, to: view.endOfDocument) else { return }
@@ -612,10 +659,8 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         }
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
             guard textView.isEditable else { return nil }
-            return UIMenu(children: [UIMenu(title: "", options: .displayInline, children: [
-                UIAction(title: "B", discoverabilityTitle: "Bold") { [weak self] _ in self?.format("**") },
-                UIAction(title: "I", discoverabilityTitle: "Italic") { [weak self] _ in self?.format("_") }
-            ])] + suggestedActions)
+            return UIMenu(children: MessageFormattingAction.editMenus(text: textView.text, selection: range) { [weak self] in self?.format($0) }
+                + suggestedActions)
         }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
         func scrollViewDidScroll(_ scrollView: UIScrollView) { (scrollView as? ComposerTextView)?.hideEmojiName() }
@@ -632,6 +677,8 @@ struct NativeMessageTextEditor: UIViewRepresentable {
             }
             highlight(textView)
             parent.controller.formattingSelection = textView.selectedRange.length > 0
+            let styles = MessageFormatting.selectionStyles(textView.text, selection: textView.selectedRange)
+            if parent.controller.formattingStyles != styles { parent.controller.formattingStyles = styles }
             parent.controller.formatAction = { [weak self] in self?.format($0) }
             let match = dismissed || !textView.isFirstResponder ? nil : ComposerAutocomplete.match(text: textView.text, selection: textView.selectedRange, markedText: textView.markedTextRange != nil, mentions: parent.mentions)
             parent.controller.update(match)
@@ -664,6 +711,7 @@ struct NativeMessageTextEditor: UIViewRepresentable {
             view.typingAttributes.removeValue(forKey: .backgroundColor)
             view.typingAttributes.removeValue(forKey: .draftLink)
             view.typingAttributes.removeValue(forKey: .kern)
+            for key in composerFormattingAttributes { view.typingAttributes.removeValue(forKey: key) }
             view.typingAttributes[.foregroundColor] = UIColor(CaperTheme.text)
             highlighting = false
         }
@@ -747,16 +795,51 @@ public final class ComposerTextView: NSTextView {
     }
     public var handleKey: ((NSEvent) -> Bool)?
     public var focusChanged: ((Bool) -> Void)?
-    public var formatSelection: ((String) -> Void)?
-    @objc public func formatBold(_ sender: Any?) { formatSelection?("**") }
-    @objc public func formatItalic(_ sender: Any?) { formatSelection?("_") }
+    public var formatSelection: ((MessageStyle) -> Void)?
+    @objc public func formatBold(_ sender: Any?) { formatSelection?(.bold) }
+    @objc public func formatItalic(_ sender: Any?) { formatSelection?(.italic) }
+    @objc public func formatUnderline(_ sender: Any?) { formatSelection?(.underline) }
+    @objc public func formatStrikethrough(_ sender: Any?) { formatSelection?(.strikethrough) }
+    @objc public func formatQuote(_ sender: Any?) { formatSelection?(.quote) }
+    @objc public func formatSpoiler(_ sender: Any?) { formatSelection?(.spoiler) }
+    /// The action each formatting menu item sends.
+    nonisolated public static func formatSelector(_ style: MessageStyle) -> Selector {
+        switch style {
+        case .bold: return #selector(ComposerTextView.formatBold(_:))
+        case .italic: return #selector(ComposerTextView.formatItalic(_:))
+        case .underline: return #selector(ComposerTextView.formatUnderline(_:))
+        case .strikethrough: return #selector(ComposerTextView.formatStrikethrough(_:))
+        case .quote: return #selector(ComposerTextView.formatQuote(_:))
+        default: return #selector(ComposerTextView.formatSpoiler(_:))
+        }
+    }
+    /// "B — Bold" for styles with a shortcut, otherwise the style's name.
+    nonisolated public static func formatMenuTitle(_ item: MessageFormattingAction) -> String {
+        item.key.map { "\($0.uppercased()) — \(item.title)" } ?? item.title
+    }
+    /// The Edit menu's formatting items show which styles the selection has.
+    public override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard let item = MessageFormattingAction.all.first(where: { Self.formatSelector($0.style) == menuItem.action }) else {
+            return super.validateMenuItem(menuItem)
+        }
+        menuItem.state = MessageFormatting.selectionStyles(string, selection: selectedRange()).contains(item.style) ? .on : .off
+        return isEditable
+    }
     public override func menu(for event: NSEvent) -> NSMenu? {
         let menu = super.menu(for: event) ?? NSMenu()
         if isEditable {
-            let bold = NSMenuItem(title: "B — Bold", action: #selector(formatBold(_:)), keyEquivalent: "b")
-            let italic = NSMenuItem(title: "I — Italic", action: #selector(formatItalic(_:)), keyEquivalent: "i")
-            bold.target = self; italic.target = self
-            menu.insertItem(italic, at: 0); menu.insertItem(bold, at: 0)
+            // The toolbar's buttons and order; a checkmark marks a style the selection has.
+            let pressed = MessageFormatting.selectionStyles(string, selection: selectedRange())
+            var index = 0
+            for item in MessageFormattingAction.all {
+                if item.style == .quote { menu.insertItem(.separator(), at: index); index += 1 }
+                let entry = NSMenuItem(title: Self.formatMenuTitle(item), action: Self.formatSelector(item.style), keyEquivalent: item.key ?? "")
+                entry.target = self
+                entry.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
+                entry.state = pressed.contains(item.style) ? .on : .off
+                menu.insertItem(entry, at: index); index += 1
+            }
+            menu.insertItem(.separator(), at: index)
         }
         return menu
     }
@@ -938,6 +1021,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             }
             highlight(view)
             parent.controller.formattingSelection = view.selectedRange().length > 0
+            let styles = MessageFormatting.selectionStyles(view.string, selection: view.selectedRange())
+            if parent.controller.formattingStyles != styles { parent.controller.formattingStyles = styles }
             parent.controller.formatAction = { [weak self] in self?.format($0) }
             let match = dismissed || view.window?.firstResponder !== view ? nil : ComposerAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText(), mentions: parent.mentions)
             parent.controller.update(match); parent.controller.acceptAction = { [weak self] in self?.accept($0) }
@@ -965,6 +1050,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             view.typingAttributes.removeValue(forKey: .toolTip)
             view.typingAttributes.removeValue(forKey: .draftLink)
             view.typingAttributes.removeValue(forKey: .kern)
+            for key in composerFormattingAttributes { view.typingAttributes.removeValue(forKey: key) }
             view.typingAttributes[.foregroundColor] = NSColor(CaperTheme.text)
             highlighting = false
         }
@@ -988,8 +1074,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         @MainActor func handle(_ event: NSEvent) -> Bool {
             guard let view, !view.hasMarkedText() else { return false }
             if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-               let key = event.charactersIgnoringModifiers?.lowercased(), ["b", "i"].contains(key) {
-                format(key == "b" ? "**" : "_"); return true
+               let key = event.charactersIgnoringModifiers, let item = MessageFormattingAction.shortcut(key) {
+                format(item.style); return true
             }
             let key = event.keyCode
             if parent.controller.match != nil {
@@ -1000,9 +1086,9 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             if key == 36 && parent.submitOnReturn && !event.modifierFlags.contains(.shift) { parent.submit(); return true }
             return false
         }
-        @MainActor func format(_ marker: String) {
+        @MainActor func format(_ style: MessageStyle) {
             guard let view, view.isEditable, !view.hasMarkedText(),
-                  let result = MessageFormatting.toggle(view.string, selection: view.selectedRange(), marker: marker),
+                  let result = MessageFormatting.toggle(view.string, selection: view.selectedRange(), style: style),
                   result.text.unicodeScalars.count <= 4000,
                   result.text != view.string,
                   view.shouldChangeText(in: NSRange(location: 0, length: (view.string as NSString).length), replacementString: result.text) else { return }

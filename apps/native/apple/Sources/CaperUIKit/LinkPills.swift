@@ -36,8 +36,22 @@ enum LinkPills {
     }
 }
 
-/// Paints link pills behind a paragraph's glyphs, never across a line wrap.
+/// Paints link pills and spoiler fills behind a paragraph's glyphs, never
+/// across a line wrap, and a quoted paragraph's 3pt bar.
 final class LinkPillFragment: NSTextLayoutFragment {
+    /// Whether a paragraph needs this fragment: a link pill, a spoiler or a quote.
+    static func decorates(_ text: NSAttributedString) -> Bool {
+        [NSAttributedString.Key.caperLinkPill, .spoilerFill, .quoteBar].contains { has($0, in: text) }
+    }
+
+    private static func has(_ key: NSAttributedString.Key, in text: NSAttributedString) -> Bool {
+        var found = false
+        text.enumerateAttribute(key, in: NSRange(location: 0, length: text.length)) { value, _, stop in
+            if value != nil { found = true; stop.pointee = true }
+        }
+        return found
+    }
+
     private static let padding = UIEdgeInsets(top: -1, left: -2, bottom: -1, right: -2)
 
     override var renderingSurfaceBounds: CGRect {
@@ -46,6 +60,12 @@ final class LinkPillFragment: NSTextLayoutFragment {
 
     override func draw(at point: CGPoint, in context: CGContext) {
         context.saveGState()
+        if let paragraph = (textElement as? NSTextParagraph)?.attributedString, Self.has(.quoteBar, in: paragraph) {
+            // Adjacent quoted paragraphs' bars meet: one block, as on web.
+            context.setFillColor(UIKitStyle.border.cgColor)
+            context.fill(CGRect(x: point.x, y: point.y, width: 3, height: layoutFragmentFrame.height))
+        }
+        fillRuns(.spoilerFill, at: point, in: context) { $0 as? UIColor }
         for line in textLineFragments {
             let string = line.attributedString
             let lineRange = line.characterRange
@@ -67,5 +87,27 @@ final class LinkPillFragment: NSTextLayoutFragment {
         }
         context.restoreGState()
         super.draw(at: point, in: context)
+        // A hidden spoiler's fill also covers its glyphs: colour emoji ignore the clear text colour.
+        context.saveGState()
+        fillRuns(NativePresentation.hiddenSpoilerAttribute, at: point, in: context) { _ in UIKitStyle.border }
+        context.restoreGState()
+    }
+
+    /// A rounded fill behind each line's part of every run carrying `key`,
+    /// in the colour `color` gives for the attribute's value.
+    private func fillRuns(_ key: NSAttributedString.Key, at point: CGPoint, in context: CGContext, color: (Any) -> UIColor?) {
+        for line in textLineFragments {
+            line.attributedString.enumerateAttribute(key, in: line.characterRange) { value, range, _ in
+                guard let value, let fill = color(value) else { return }
+                let start = line.locationForCharacter(at: range.location).x
+                let end = line.locationForCharacter(at: NSMaxRange(range)).x
+                let bounds = line.typographicBounds
+                let rect = CGRect(x: point.x + bounds.minX + start, y: point.y + bounds.minY,
+                                  width: end - start, height: bounds.height).inset(by: Self.padding)
+                context.addPath(UIBezierPath(roundedRect: rect, cornerRadius: 4).cgPath)
+                context.setFillColor(fill.cgColor)
+                context.fillPath()
+            }
+        }
     }
 }

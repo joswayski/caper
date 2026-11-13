@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -26,7 +27,10 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.focus.focusProperties
-import chat.caper.android.data.selectionHasStyle
+import androidx.compose.ui.res.painterResource
+import chat.caper.android.R
+import chat.caper.android.data.FormatStyle
+import chat.caper.android.data.selectionStyles
 import chat.caper.android.data.toggleFormat
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -108,13 +112,14 @@ import kotlin.math.roundToInt
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val transformed = remember(value.annotatedString, visualTransformation) { visualTransformation.filter(value.annotatedString) }
-    /** The selection with [marker] toggled, or null when it can't be formatted without changing its text or a link. */
-    fun formatted(marker: String) = toggleFormat(value.text, value.selection.min, value.selection.max, marker)
-        // Reject expansion rather than letting a caller truncate the selected content.
-        .takeUnless { it.text == value.text || it.text.codePointCount(0, it.text.length) > 4000 }
-    fun format(marker: String) {
+    /**
+     * The selection with [style] (a [FormatStyle] bit) toggled through the shared toolbar logic, or null when it
+     * can't be formatted without changing its text or a link, or would pass the 4,000-character limit.
+     */
+    fun formatted(style: Int) = toggleFormat(value.text, value.selection.min, value.selection.max, style)
+    fun format(style: Int) {
         if (!enabled || readOnly || value.composition != null) return
-        val result = formatted(marker) ?: return
+        val result = formatted(style) ?: return
         history.remember(result.text)
         onValueChange(TextFieldValue(result.text, TextRange(result.start, result.end)))
     }
@@ -149,10 +154,11 @@ import kotlin.math.roundToInt
             if (event.type == KeyEventType.KeyDown) {
                 restoringHistory = (event.isCtrlPressed || event.isMetaPressed) && (event.key == Key.Z || event.key == Key.Y)
             }
-            if (enabled && !readOnly && event.type == KeyEventType.KeyDown && (event.isCtrlPressed || event.isMetaPressed) && !event.isAltPressed) {
+            if (enabled && !readOnly && event.type == KeyEventType.KeyDown && (event.isCtrlPressed || event.isMetaPressed) && !event.isAltPressed && !event.isShiftPressed) {
                 when (event.key) {
-                    Key.B -> { format("**"); true }
-                    Key.I -> { format("_"); true }
+                    Key.B -> { format(FormatStyle.BOLD); true }
+                    Key.I -> { format(FormatStyle.ITALIC); true }
+                    Key.U -> { format(FormatStyle.UNDERLINE); true }
                     else -> false
                 }
             } else false
@@ -211,22 +217,31 @@ import kotlin.math.roundToInt
                                         Box(Modifier.draftLinkPills { layout }) { inner() }
                                         if (enabled && !readOnly && focused && value.composition == null && !value.selection.collapsed) {
                                             Surface(color = Surface, shape = MaterialTheme.shapes.small) {
-                                                Row {
-                                                    // Pressed when the selection already has the style; unavailable when formatting
+                                                // Six buttons can outgrow a narrow composer: scroll rather than squeeze them.
+                                                Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                                                    val styles = selectionStyles(value.text, value.selection.min, value.selection.max)
+                                                    // Pressed when some of the selection already has the style; unavailable when formatting
                                                     // would change its text or split a link (web).
-                                                    @Composable fun StyleButton(marker: String, bold: Boolean, label: String, glyph: @Composable () -> Unit) {
-                                                        val allowed = formatted(marker) != null
-                                                        val pressed = selectionHasStyle(value.text, value.selection.min, value.selection.max, bold)
-                                                        TextButton({ format(marker) }, enabled = allowed, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }
+                                                    @Composable fun StyleButton(style: Int, label: String, icon: Int) {
+                                                        val allowed = formatted(style) != null
+                                                        val pressed = styles and style != 0
+                                                        TextButton({ format(style) }, enabled = allowed, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }
                                                             .background(if (pressed) TerracottaWash else Color.Transparent).semantics {
                                                                 contentDescription = label
                                                                 selected = pressed
                                                                 if (!allowed) stateDescription = "This selection cannot be formatted without changing its text or link"
                                                             },
-                                                            shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { glyph() }
+                                                            shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
+                                                            Icon(painterResource(icon), null, Modifier.size(17.dp))
+                                                        }
                                                     }
-                                                    StyleButton("**", bold = true, "Bold selection") { Text("B", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) }
-                                                    StyleButton("_", bold = false, "Italic selection") { Text("I", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic) }
+                                                    StyleButton(FormatStyle.BOLD, "Bold", R.drawable.lucide_bold)
+                                                    StyleButton(FormatStyle.ITALIC, "Italic", R.drawable.lucide_italic)
+                                                    StyleButton(FormatStyle.UNDERLINE, "Underline", R.drawable.lucide_underline)
+                                                    StyleButton(FormatStyle.STRIKETHROUGH, "Strikethrough", R.drawable.lucide_strikethrough)
+                                                    Box(Modifier.padding(horizontal = 4.dp).size(1.dp, 18.dp).background(Border))
+                                                    StyleButton(FormatStyle.QUOTE, "Quote", R.drawable.lucide_text_quote)
+                                                    StyleButton(FormatStyle.SPOILER, "Spoiler", R.drawable.lucide_eye_off)
                                                 }
                                             }
                                         }

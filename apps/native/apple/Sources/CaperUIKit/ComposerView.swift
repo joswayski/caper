@@ -7,7 +7,7 @@ import UIKit
 /// holding Attach (+), the native text view, Emojis/GIFs/Stickers and the
 /// microphone, with Send beside it and staged files and voice notices above.
 /// The text view is the shipping composer's own TextKit 1 UITextView: Markdown
-/// delimiters keep their source offsets but draw nothing, so bold, italic,
+/// delimiters keep their source offsets but draw nothing, so formatting,
 /// mention and link highlights, caret moves, deletion and copy match SwiftUI,
 /// and dictation, marked text (Japanese, Chinese, Korean IMEs), autocorrect,
 /// undo and VoiceOver's value, caret and selection stay native.
@@ -333,19 +333,20 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
-    /// Bold and Italic lead the edit menu, as in SwiftUI.
+    /// The formatting toolbar's styles lead the edit menu, as in SwiftUI:
+    /// Bold, Italic, Underline, Strikethrough, then Quote and Spoiler, with a
+    /// style the selection already has turned on.
     func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         guard textView.isEditable else { return nil }
-        return UIMenu(children: [UIMenu(title: "", options: .displayInline, children: [
-            UIAction(title: "B", discoverabilityTitle: "Bold") { [weak self] _ in self?.format("**") },
-            UIAction(title: "I", discoverabilityTitle: "Italic") { [weak self] _ in self?.format("_") },
-        ])] + suggestedActions)
+        return UIMenu(children: MessageFormattingAction.editMenus(text: textView.text, selection: range) { [weak self] in self?.format($0) }
+            + suggestedActions)
     }
 
-    /// Wraps or unwraps the selection in `marker` (Command-B, Command-I, the menu).
-    private func format(_ marker: String) {
+    /// Turns `style` on or off for the selection through the shared toggle
+    /// (Command-B, Command-I, Command-U, the edit menu).
+    private func format(_ style: MessageStyle) {
         guard textView.isEditable, textView.markedTextRange == nil,
-              let result = MessageFormatting.toggle(textView.text, selection: textView.selectedRange, marker: marker),
+              let result = MessageFormatting.toggle(textView.text, selection: textView.selectedRange, style: style),
               result.text.unicodeScalars.count <= 4000, result.text != textView.text,
               let all = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) else { return }
         highlighting = true
@@ -371,7 +372,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             highlighting = true
             textView.selectedRange = MessageFormatting.normalizedSelection(textView.text, selection: textView.selectedRange)
             if let model { highlightDraft(textView.textStorage, source: model.composerMentions) }
-            for key in [NSAttributedString.Key.composerDelimiter, .obliqueness, .backgroundColor, .draftLink, .kern] {
+            for key in [NSAttributedString.Key.composerDelimiter, .obliqueness, .backgroundColor, .draftLink, .kern] + composerFormattingAttributes {
                 textView.typingAttributes.removeValue(forKey: key)
             }
             textView.typingAttributes[.font] = font

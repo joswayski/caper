@@ -861,6 +861,56 @@ impl App {
         ))
     }
 
+    /// The channel row's hidden text spoiler under client point (x, y):
+    /// its row and its index in the row's spoilers.
+    pub fn spoiler_at(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        if !self.in_history(x, y) {
+            return None;
+        }
+        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let i = self.rows.row_at(ay)?;
+        let grouped = self.c.messages.get(i)?.grouped;
+        let ry = (ay - self.rows.top[i]) as f32;
+        let k = self.rows.spoiler_at(i, grouped, x - self.list_x(), ry)?;
+        Some((i, k))
+    }
+
+    /// Row `i`'s spoiler `k` in client DIPs, while the row is laid out.
+    pub fn spoiler_rect(&self, i: usize, k: usize) -> Option<crate::overlay::Rect> {
+        if i < self.rows.lo || i >= self.rows.len() {
+            return None;
+        }
+        let r = self
+            .rows
+            .spoiler_rect(i, self.c.messages.get(i)?.grouped, k)?;
+        let y = HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        Some((
+            self.list_x() + r.left,
+            y + r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+        ))
+    }
+
+    /// Reveals row `i`'s hidden text spoiler `k` (its neighbouring spoiler
+    /// runs with it) for as long as the message is shown.
+    pub fn reveal_spoiler(&mut self, i: usize, k: usize) {
+        let Some(&(start, _, true)) = self.rows.row(i).and_then(|r| r.spoilers.get(k)) else {
+            return;
+        };
+        let Some(m) = self.c.messages.get_mut(i) else {
+            return;
+        };
+        m.revealed.insert(crate::list::spoiler_key(start));
+        match self.rows.replace(&self.g, &self.c, i) {
+            Ok(true) => self.drawn = None,
+            Ok(false) => self.redraw.push(i),
+            Err(e) => eprintln!("spoiler layout failed: {e:?}"),
+        }
+        self.events |= crate::EV_ROWS;
+        self.need = true;
+    }
+
     /// Row `i`'s attachments in reading order, while laid out.
     pub fn file_ids(&self, i: usize) -> Vec<usize> {
         if self.live.is_none() || i < self.rows.lo {

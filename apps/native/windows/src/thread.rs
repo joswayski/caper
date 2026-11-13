@@ -47,6 +47,9 @@ pub enum Part {
     /// A thread row's reaction chip, and its Add reaction after them.
     Chip(usize, usize),
     Add(usize),
+    /// A thread row's hidden text spoiler (its index in `list::Row::spoilers`),
+    /// which reveals it.
+    Spoiler(usize, usize),
     /// "Load older replies", or Retry after a failed load.
     Older,
     Broadcast,
@@ -160,7 +163,18 @@ impl Pane {
         vh: f32,
     ) -> Result<()> {
         let from_bottom = self.content_h() - self.scroll;
-        let (c, ids, count) = view;
+        let (mut c, ids, count) = view;
+        // What the reader revealed stays revealed as the thread updates.
+        for m in &mut c.messages {
+            if let Some(old) = self
+                .ids
+                .rows
+                .get(&m.id)
+                .and_then(|&k| self.c.messages.get(k))
+            {
+                m.revealed.clone_from(&old.revealed);
+            }
+        }
         self.rows = Rows::new(c.messages.len());
         self.rows.set_width(Rows::body_width(THREAD_W));
         self.c = c;
@@ -534,6 +548,12 @@ impl App {
                     .find(|(a, _)| *a == action)?;
                 clip((x0 + r.left, y + r.top, r.right - r.left, r.bottom - r.top))
             }
+            Part::Spoiler(i, k) => {
+                let y = t.row_y(i)? + off;
+                let grouped = t.c.messages.get(i)?.grouped;
+                let r = t.rows.spoiler_rect(i, grouped, k)?;
+                clip((x0 + r.left, y + r.top, r.right - r.left, r.bottom - r.top))
+            }
             Part::Older => {
                 let y = t.sections().head? + off;
                 let head = t.head();
@@ -595,6 +615,11 @@ impl App {
             for &i in rows {
                 if self.thread_part_rect(Part::Row(i)).is_some() {
                     out.push(Part::Row(i));
+                    for k in t.rows.hidden_spoilers(i) {
+                        if self.thread_part_rect(Part::Spoiler(i, k)).is_some() {
+                            out.push(Part::Spoiler(i, k));
+                        }
+                    }
                     for k in 0..t.c.messages[i].reactions.len() {
                         if self.thread_part_rect(Part::Chip(i, k)).is_some() {
                             out.push(Part::Chip(i, k));
@@ -614,10 +639,7 @@ impl App {
         push_rows(&mut out, after);
         out.extend([Part::Broadcast, Part::Field]);
         if t.composer.format_height() > 0.0 {
-            out.extend([
-                Part::Format(composer::Style::Bold),
-                Part::Format(composer::Style::Italic),
-            ]);
+            out.extend(composer::Style::ALL.map(Part::Format));
         }
         if t.gif {
             out.push(Part::Gif);
@@ -639,7 +661,49 @@ impl App {
             .filter(|p| !holder(p))
             .chain(parts.iter().filter(holder))
             .copied()
-            .find(|p| self.thread_part_rect(*p).is_some_and(|r| contains(r, x, y)))
+            .find(|p| match *p {
+                // A spoiler takes only its own lines, not its bounds.
+                Part::Spoiler(i, k) => self.thread_spoiler_at(x, y) == Some((i, k)),
+                p => self.thread_part_rect(p).is_some_and(|r| contains(r, x, y)),
+            })
+    }
+
+    /// The thread row's hidden spoiler under client point (x, y): its row
+    /// and its index in the row's spoilers.
+    fn thread_spoiler_at(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        let t = self.thread.as_ref()?;
+        if !self.in_thread(x, y) || y < HEADER_H || y >= HEADER_H + self.thread_vh() {
+            return None;
+        }
+        let ay = y - HEADER_H + t.scroll;
+        t.c.messages.iter().enumerate().find_map(|(i, m)| {
+            let top = t.row_y(i)?;
+            let ry = ay - top;
+            if ry < 0.0 || ry >= t.rows.height(i) {
+                return None;
+            }
+            let k = t.rows.spoiler_at(i, m.grouped, x - self.thread_x(), ry)?;
+            Some((i, k))
+        })
+    }
+
+    /// Reveals thread row `i`'s spoiler `k` (with its neighbouring runs).
+    fn reveal_thread_spoiler(&mut self, i: usize, k: usize) {
+        let g = &self.g;
+        let Some(t) = &mut self.thread else { return };
+        let Some(&(start, _, true)) = t.rows.row(i).and_then(|r| r.spoilers.get(k)) else {
+            return;
+        };
+        let Some(m) = t.c.messages.get_mut(i) else {
+            return;
+        };
+        m.revealed.insert(list::spoiler_key(start));
+        if let Err(e) = t.rows.replace(g, &t.c, i) {
+            eprintln!("spoiler layout failed: {e:?}");
+        }
+        self.dirty.thread = true;
+        self.events |= EV_ROWS;
+        self.need = true;
     }
 
     /// The person a point on a thread row names (its author, quoted
@@ -690,6 +754,7 @@ impl App {
             Part::RemovePreview => "Remove link preview".into(),
             Part::Send => "Send reply".into(),
             Part::Add(_) => "Add reaction".into(),
+            Part::Spoiler(..) => "Spoiler, reveal".into(),
             Part::Row(_) | Part::Chip(..) => String::new(),
         }
     }
@@ -943,7 +1008,7 @@ impl App {
             Part::Format(style) => {
                 if let Some(t) = &mut self.thread
                     && t.composer.format_rect(style).is_some()
-                    && t.composer.toggle(style.marker())
+                    && t.composer.toggle(style)
                 {
                     self.thread_composer_changed();
                 }
@@ -1011,6 +1076,7 @@ impl App {
             }
             Part::RemovePreview => self.remove_thread_preview(),
             Part::Send => self.send_thread_reply(),
+            Part::Spoiler(i, k) => self.reveal_thread_spoiler(i, k),
             Part::Row(_) => {}
         }
     }

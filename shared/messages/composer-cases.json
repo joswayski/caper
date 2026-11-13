@@ -1,5 +1,5 @@
 {
-  "description": "Typing in the formatted composer, generated from web's composer (apps/web/src/chat/rich-text.ts in ProseMirror), one key at a time. `caret` is a visible UTF-16 offset. Each step types `key` at the caret; `placed` steps first place the caret where it is (a tap or click), which drops the style web carries between keys. After each step the composer holds `text` with the caret at visible offset `caret`, and `pending` is the style the next key typed at this caret takes (1 bold, 2 italic), or -1 for the style around the caret. Clients pass the previous step's `pending` as `continuing` when a key types at the caret the previous one left, and -1 after a placed caret. Every client's composer wrapper must produce exactly these steps, with its own caret mapping; see shared/messages/composer.rs.",
+  "description": "Typing in the formatted composer, generated from web's composer (apps/web/src/chat/rich-text.ts in ProseMirror), one key at a time. `caret` is a visible UTF-16 offset. Each step types `key` at the caret; `placed` steps first place the caret where it is (a tap or click), which drops the style web carries between keys. After each step the composer holds `text` with the caret at visible offset `caret`, and `pending` is the style the next key typed at this caret takes (style bits: 1 bold, 2 italic, 4 underline, 8 strikethrough, 16 spoiler, 32 quote), or -1 for the style around the caret. Clients pass the previous step's `pending` as `continuing` when a key types at the caret the previous one left, and -1 after a placed caret. Every client's composer wrapper must produce exactly these steps, with its own caret mapping; see shared/messages/composer.rs.",
   "cases": [
     {
       "note": "a space typed at the end of bold moves after its markers",
@@ -1822,7 +1822,7 @@
       ]
     },
     {
-      "note": "a whole draft typed: strikethrough markers are plain text",
+      "note": "a whole draft typed: closed strikethrough",
       "text": "",
       "caret": 0,
       "steps": [
@@ -1893,133 +1893,133 @@
           "key": "~",
           "placed": false,
           "text": "~~struck~~",
-          "caret": 10,
-          "pending": -1
+          "caret": 6,
+          "pending": 0
         },
         {
           "key": " ",
           "placed": false,
           "text": "~~struck~~ ",
-          "caret": 11,
+          "caret": 7,
           "pending": -1
         },
         {
           "key": "a",
           "placed": false,
           "text": "~~struck~~ a",
-          "caret": 12,
+          "caret": 8,
           "pending": -1
         },
         {
           "key": "n",
           "placed": false,
           "text": "~~struck~~ an",
-          "caret": 13,
+          "caret": 9,
           "pending": -1
         },
         {
           "key": "d",
           "placed": false,
           "text": "~~struck~~ and",
-          "caret": 14,
+          "caret": 10,
           "pending": -1
         },
         {
           "key": " ",
           "placed": false,
           "text": "~~struck~~ and ",
-          "caret": 15,
+          "caret": 11,
           "pending": -1
         },
         {
           "key": "*",
           "placed": false,
           "text": "~~struck~~ and *",
-          "caret": 16,
+          "caret": 12,
           "pending": -1
         },
         {
           "key": "*",
           "placed": false,
           "text": "~~struck~~ and **",
-          "caret": 17,
+          "caret": 13,
           "pending": -1
         },
         {
           "key": "b",
           "placed": false,
           "text": "~~struck~~ and **b",
-          "caret": 18,
+          "caret": 14,
           "pending": -1
         },
         {
           "key": "*",
           "placed": false,
           "text": "~~struck~~ and **b*",
-          "caret": 19,
+          "caret": 15,
           "pending": -1
         },
         {
           "key": "*",
           "placed": false,
           "text": "~~struck~~ and **b**",
-          "caret": 16,
+          "caret": 12,
           "pending": 0
         },
         {
           "key": " ",
           "placed": false,
           "text": "~~struck~~ and **b** ",
-          "caret": 17,
+          "caret": 13,
           "pending": -1
         },
         {
           "key": "~",
           "placed": false,
           "text": "~~struck~~ and **b** ~",
-          "caret": 18,
+          "caret": 14,
           "pending": -1
         },
         {
           "key": "~",
           "placed": false,
           "text": "~~struck~~ and **b** ~~",
-          "caret": 19,
+          "caret": 15,
           "pending": -1
         },
         {
           "key": "x",
           "placed": false,
           "text": "~~struck~~ and **b** ~~x",
-          "caret": 20,
+          "caret": 16,
           "pending": -1
         },
         {
           "key": "~",
           "placed": false,
           "text": "~~struck~~ and **b** ~~x~",
-          "caret": 21,
+          "caret": 17,
           "pending": -1
         },
         {
           "key": "~",
           "placed": false,
           "text": "~~struck~~ and **b** ~~x~~",
-          "caret": 22,
-          "pending": -1
+          "caret": 14,
+          "pending": 0
         },
         {
           "key": " ",
           "placed": false,
           "text": "~~struck~~ and **b** ~~x~~ ",
-          "caret": 23,
+          "caret": 15,
           "pending": -1
         },
         {
           "key": "y",
           "placed": false,
           "text": "~~struck~~ and **b** ~~x~~ y",
-          "caret": 24,
+          "caret": 16,
           "pending": -1
         }
       ]
@@ -4148,6 +4148,783 @@
           "placed": false,
           "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look right.",
           "caret": 224,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a space typed at the end of a spoiler moves after its markers",
+      "text": "||secret||",
+      "caret": 6,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "||secret|| ",
+          "caret": 7,
+          "pending": 16
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "||secret|| ||a||",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "||secret|| ||an||",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "||secret|| ||and||",
+          "caret": 10,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a space typed at the end of a spoiler moves after its markers (caret placed before each key)",
+      "text": "||secret||",
+      "caret": 6,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "||secret|| ",
+          "caret": 7,
+          "pending": 16
+        },
+        {
+          "key": "a",
+          "placed": true,
+          "text": "||secret|| a",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": true,
+          "text": "||secret|| an",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": true,
+          "text": "||secret|| and",
+          "caret": 10,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "letters typed at the end of strikethrough extend it",
+      "text": "~~old~~",
+      "caret": 3,
+      "steps": [
+        {
+          "key": "e",
+          "placed": false,
+          "text": "~~olde~~",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "~~older~~",
+          "caret": 5,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "letters typed at the end of strikethrough extend it (caret placed before each key)",
+      "text": "~~old~~",
+      "caret": 3,
+      "steps": [
+        {
+          "key": "e",
+          "placed": false,
+          "text": "~~olde~~",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": true,
+          "text": "~~older~~",
+          "caret": 5,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "underlined italics",
+      "text": "___both___",
+      "caret": 4,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "___both___ ",
+          "caret": 5,
+          "pending": 6
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "___both___ ___x___",
+          "caret": 6,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "underlined italics (caret placed before each key)",
+      "text": "___both___",
+      "caret": 4,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "___both___ ",
+          "caret": 5,
+          "pending": 6
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "___both___ x",
+          "caret": 6,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a newline typed at the end of a quote continues it",
+      "text": "> quoted",
+      "caret": 6,
+      "steps": [
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "> quoted\n",
+          "caret": 7,
+          "pending": 32
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "> quoted\n> n",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "> quoted\n> ne",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "> quoted\n> nex",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "> quoted\n> next",
+          "caret": 11,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a newline typed at the end of a quote continues it (caret placed before each key)",
+      "text": "> quoted",
+      "caret": 6,
+      "steps": [
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "> quoted\n",
+          "caret": 7,
+          "pending": 32
+        },
+        {
+          "key": "n",
+          "placed": true,
+          "text": "> quoted\nn",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": true,
+          "text": "> quoted\nne",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "> quoted\nnex",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": true,
+          "text": "> quoted\nnext",
+          "caret": 11,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "two newlines typed after a quote leave it",
+      "text": "> quoted",
+      "caret": 6,
+      "steps": [
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "> quoted\n",
+          "caret": 7,
+          "pending": 32
+        },
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "> quoted\n\n",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "> quoted\n\no",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "> quoted\n\nou",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "> quoted\n\nout",
+          "caret": 11,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "two newlines typed after a quote leave it (caret placed before each key)",
+      "text": "> quoted",
+      "caret": 6,
+      "steps": [
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "> quoted\n",
+          "caret": 7,
+          "pending": 32
+        },
+        {
+          "key": "\n",
+          "placed": true,
+          "text": "> quoted\n\n",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": true,
+          "text": "> quoted\n\no",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": true,
+          "text": "> quoted\n\nou",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": true,
+          "text": "> quoted\n\nout",
+          "caret": 11,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "typing at the start of a quoted line",
+      "text": "a\n> b",
+      "caret": 2,
+      "steps": [
+        {
+          "key": "x",
+          "placed": false,
+          "text": "a\n> xb",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "y",
+          "placed": false,
+          "text": "a\n> xyb",
+          "caret": 4,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "typing at the start of a quoted line (caret placed before each key)",
+      "text": "a\n> b",
+      "caret": 2,
+      "steps": [
+        {
+          "key": "x",
+          "placed": false,
+          "text": "a\n> xb",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "y",
+          "placed": true,
+          "text": "a\n> xyb",
+          "caret": 4,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: underline, strikethrough and spoiler, each closed",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "_",
+          "placed": false,
+          "text": "_",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "__",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "__u",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "__u_",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "__u__",
+          "caret": 1,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "__u__ ",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "__u__ ~",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "__u__ ~~",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "__u__ ~~s",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "__u__ ~~s~",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "__u__ ~~s~~",
+          "caret": 3,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "__u__ ~~s~~ ",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "|",
+          "placed": false,
+          "text": "__u__ ~~s~~ |",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "|",
+          "placed": false,
+          "text": "__u__ ~~s~~ ||",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "__u__ ~~s~~ ||p",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "|",
+          "placed": false,
+          "text": "__u__ ~~s~~ ||p|",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "|",
+          "placed": false,
+          "text": "__u__ ~~s~~ ||p||",
+          "caret": 5,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "__u__ ~~s~~ ||p|| ",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "__u__ ~~s~~ ||p|| e",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "__u__ ~~s~~ ||p|| en",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "__u__ ~~s~~ ||p|| end",
+          "caret": 9,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: a quote, a second quoted line, then out of it",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": ">",
+          "placed": false,
+          "text": ">",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "> ",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "q",
+          "placed": false,
+          "text": "> q",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "> qu",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "> quo",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "> quot",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "> quote",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "> quote\n",
+          "caret": 6,
+          "pending": 32
+        },
+        {
+          "key": "m",
+          "placed": false,
+          "text": "> quote\n> m",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "> quote\n> mo",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "> quote\n> mor",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "> quote\n> more",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "> quote\n> more\n",
+          "caret": 11,
+          "pending": 32
+        },
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "> quote\n> more\n\n",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "> quote\n> more\n\na",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "f",
+          "placed": false,
+          "text": "> quote\n> more\n\naf",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "> quote\n> more\n\naft",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "> quote\n> more\n\nafte",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "> quote\n> more\n\nafter",
+          "caret": 17,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: underlined italics then bold",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "_",
+          "placed": false,
+          "text": "_",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "__",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "___",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "___u",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "___ui",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "___ui_",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "___ui__",
+          "caret": 3,
+          "pending": 0
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "___ui___",
+          "caret": 2,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "___ui___ ",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "___ui___ *",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "___ui___ **",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "___ui___ **b",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "___ui___ **b*",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "___ui___ **b**",
+          "caret": 4,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "___ui___ **b** ",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "___ui___ **b** c",
+          "caret": 6,
           "pending": -1
         }
       ]

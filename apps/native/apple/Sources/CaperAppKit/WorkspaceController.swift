@@ -910,7 +910,7 @@ import CaperCore
                 composer.setSelectedRange(selection, affinity: composer.selectionAffinity, stillSelecting: false)
             }
             highlightDraft(storage, source: model.composerMentions)
-            for key: NSAttributedString.Key in [.composerDelimiter, .obliqueness, .backgroundColor, .toolTip, .draftLink, .kern] {
+            for key in [NSAttributedString.Key.composerDelimiter, .obliqueness, .backgroundColor, .toolTip, .draftLink, .kern] + composerFormattingAttributes {
                 composer.typingAttributes.removeValue(forKey: key)
             }
             composer.typingAttributes[.font] = NativeStyle.font(14)
@@ -927,9 +927,9 @@ import CaperCore
         suggestions.frame = NSRect(x: composerScroll.frame.minX, y: composerScroll.frame.minY - suggestions.height - 8,
             width: width, height: suggestions.height)
     }
-    private func formatDraft(_ marker: String) {
+    private func formatDraft(_ style: MessageStyle) {
         guard composer.isEditable, !composer.hasMarkedText(),
-              let result = MessageFormatting.toggle(composer.string, selection: composer.selectedRange(), marker: marker),
+              let result = MessageFormatting.toggle(composer.string, selection: composer.selectedRange(), style: style),
               result.text.unicodeScalars.count <= 4000, result.text != composer.string else { return }
         formattingDraft = true
         composer.breakUndoCoalescing()
@@ -942,8 +942,8 @@ import CaperCore
     private func handleComposerKey(_ event: NSEvent) -> Bool {
         guard !composer.hasMarkedText() else { return false }
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-           let key = event.charactersIgnoringModifiers?.lowercased(), ["b", "i"].contains(key) {
-            formatDraft(key == "b" ? "**" : "_"); return true
+           let key = event.charactersIgnoringModifiers, let item = MessageFormattingAction.shortcut(key) {
+            formatDraft(item.style); return true
         }
         if handleSuggestionKey(event) { return true }
         if event.keyCode == 53, model.chat.threadRootID != nil { closeThread(); return true }

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
 import { test } from "vitest";
-import { formattedRuns } from "../chat/formatting.ts";
+import { formatStyles, formattedRuns, type FormattedRun } from "../chat/formatting.ts";
 import { EditorState, TextSelection, type Transaction } from "prosemirror-state";
 import { history, undo, redo } from "prosemirror-history";
 import {
@@ -22,8 +22,13 @@ const shared = JSON.parse(
   readFileSync(new URL("../../../../shared/messages/formatting-cases.json", import.meta.url), "utf8"),
 );
 
-test("bold and italic follow the shared message contract", () => {
-  for (const { text, runs } of shared.cases) {
+// Fixture runs list the styles they have; the others are false.
+const fixtureRuns = (runs: ({ text: string } & Partial<FormattedRun>)[]) =>
+  runs.map((run) => ({ ...Object.fromEntries(formatStyles.map((style) => [style, false])), ...run }) as FormattedRun);
+
+test("formatting follows the shared message contract", () => {
+  for (const { text, runs: listed } of shared.cases) {
+    const runs = fixtureRuns(listed);
     assert.deepEqual(formattedRuns(text), runs, text);
     const doc = composerDocument(text);
     assert.equal(doc.textContent, runs.map((run: { text: string }) => run.text).join(""));

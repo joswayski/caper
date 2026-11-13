@@ -127,6 +127,38 @@ pub unsafe extern "C" fn caper_mobile_composer_edit(
     crate::composer_edit(previous, next, start, end, continuing).into()
 }
 
+/// `crate::composer_toggle(text, start, end, style)`: the UTF-16 selection
+/// and the new text's UTF-16 code units, or none when refused.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_composer_toggle(
+    utf8: *const u8,
+    len: usize,
+    start: i32,
+    end: i32,
+    style: i32,
+) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::composer_toggle(unsafe { text(utf8, len) }, start, end, style).into()
+}
+
+/// `crate::selection_styles(text, start, end)`.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_selection_styles(
+    utf8: *const u8,
+    len: usize,
+    start: i32,
+    end: i32,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    crate::selection_styles(unsafe { text(utf8, len) }, start, end)
+}
+
 /// `crate::emoji_catalog(json)`: loads the catalog the app ships.
 ///
 /// # Safety

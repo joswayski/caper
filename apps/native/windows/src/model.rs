@@ -3,6 +3,7 @@
 //! the API and gateway; until then `Conversation::demo` generates the
 //! benchmark fixture locally (a labelled development mock, never shown as a
 //! real account).
+use crate::formatting::{BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
 
 #[derive(Clone, PartialEq)]
 pub struct Person {
@@ -16,12 +17,12 @@ pub struct Person {
 #[derive(PartialEq)]
 pub enum Span {
     Text(String),
-    /// A live message's text run: the shared bold/italic grammar, and the
-    /// link it belongs to (its address) when it is part of one.
+    /// A live message's text run: its style bits from the shared grammar
+    /// (`formatting::BOLD`, ...), and the link it belongs to (its address)
+    /// when it is part of one.
     Rich {
         text: String,
-        bold: bool,
-        italic: bool,
+        style: i32,
         /// A resolved `@` mention, drawn as a pill.
         mention: bool,
         href: Option<String>,
@@ -229,8 +230,7 @@ impl Conversation {
             let start = len16;
             if let Span::Rich {
                 text,
-                bold,
-                italic,
+                style,
                 mention,
                 href,
             } = span
@@ -238,9 +238,14 @@ impl Conversation {
                 len16 += text.encode_utf16().count();
                 out.push_str(text);
                 let len = len16 - start;
+                let on = |bit: i32| style & bit != 0;
                 for (on, kind) in [
-                    (*bold, SpanKind::Bold),
-                    (*italic, SpanKind::Italic),
+                    (on(BOLD), SpanKind::Bold),
+                    (on(ITALIC), SpanKind::Italic),
+                    (on(UNDERLINE), SpanKind::Underline),
+                    (on(STRIKETHROUGH), SpanKind::Strikethrough),
+                    (on(SPOILER), SpanKind::Spoiler),
+                    (on(QUOTE), SpanKind::Quote),
                     (*mention, SpanKind::Mention),
                 ] {
                     if on {
@@ -284,6 +289,12 @@ pub type Href = (usize, usize, String);
 pub enum SpanKind {
     Bold,
     Italic,
+    Underline,
+    Strikethrough,
+    /// Hidden until revealed; neighbouring spoiler spans reveal together.
+    Spoiler,
+    /// A quoted line (and the newline between two of them).
+    Quote,
     Link,
     Mention,
 }

@@ -11,6 +11,13 @@ import UIKit
 public enum NativePresentation {
     /// Resolved user ID, or an empty string for a non-person mention pill.
     public static let mentionAttribute = NSAttributedString.Key("CaperMention")
+    /// A spoiler's characters: the group (an Int) of adjacent spoiler runs,
+    /// such as one with a bold word, that reveal together.
+    public static let spoilerAttribute = NSAttributedString.Key("CaperSpoiler")
+    /// A spoiler still hidden by `concealSpoilers`: its group.
+    public static let hiddenSpoilerAttribute = NSAttributedString.Key("CaperHiddenSpoiler")
+    /// A quoted line's text starts after the 3pt bar and a 12pt gap, as web's quote padding.
+    static let quoteIndent: CGFloat = 15
 
     public static func errorMessage(_ error: Error) -> String { FriendlyError.message(for: error) }
 
@@ -92,14 +99,22 @@ public enum NativePresentation {
         return (CodeResend.label(secondsRemaining: seconds), seconds == 0 && allowed, allowed)
     }
 
+    /// Formatted message text: fonts, underline and strikethrough, person
+    /// pills and links. Spoilers carry `spoilerAttribute` (hosts hide them
+    /// with `concealSpoilers`); quoted lines carry `.quoteBar`, which
+    /// `DraftLinkLayoutManager` or the host's text fragment draws, and an
+    /// indent past it.
     public static func messageText(_ text: String, size: CGFloat = 14, mentions: [MessageMention] = []) -> NSAttributedString {
         let result = NSMutableAttributedString(string: "")
         let parsed = MessageFormatting.runs(text)
         // Match renderedText: token boundaries belong to the complete visible
-        // text, not to individual bold/italic runs (for example **@ali**ce).
+        // text, not to individual formatting runs (for example **@ali**ce).
         let segments = MentionAutocomplete.segments(in: parsed.map(\.text).joined(), mentions: mentions)
         var runStart = 0
+        var spoilerGroup = -1, inSpoiler = false
         for run in parsed {
+            if run.spoiler && !inSpoiler { spoilerGroup += 1 }
+            inSpoiler = run.spoiler
             let runEnd = runStart + run.text.utf16.count
             var segmentStart = 0
             for segment in segments {
@@ -122,6 +137,10 @@ public enum NativePresentation {
                 let highlight = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
                 #endif
                 var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+                if run.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+                if run.strikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+                if run.spoiler { attributes[spoilerAttribute] = spoilerGroup }
+                if run.quote { attributes[.quoteBar] = true }
                 if segment.highlighted {
                     attributes[.backgroundColor] = highlight
                     attributes[mentionAttribute] = segment.user?.id ?? ""
@@ -136,7 +155,68 @@ public enum NativePresentation {
             }
             runStart = runEnd
         }
+        // Quoted lines start after the 3pt bar and a 12pt gap, as web's quote padding.
+        var quoted: [NSRange] = []
+        result.enumerateAttribute(.quoteBar, in: NSRange(location: 0, length: result.length)) { value, range, _ in
+            if value != nil { quoted.append(range) }
+        }
+        let quote = NSMutableParagraphStyle()
+        quote.firstLineHeadIndent = quoteIndent
+        quote.headIndent = quoteIndent
+        for range in quoted {
+            result.addAttribute(.paragraphStyle, value: quote, range: (result.string as NSString).paragraphRange(for: range))
+        }
         return result
+    }
+
+    /// Hides each spoiler group of `messageText` not in `revealed`: its text
+    /// and lines clear on a rounded #34383B fill, without any link or person
+    /// pill to activate. A revealed spoiler keeps a faint 6% white fill.
+    public static func concealSpoilers(_ text: NSMutableAttributedString, revealed: Set<Int>) {
+        #if os(macOS)
+        let hidden = NSColor(CaperTheme.border), shown = NSColor.white.withAlphaComponent(0.06), clear = NSColor.clear
+        #else
+        let hidden = UIColor(CaperTheme.border), shown = UIColor.white.withAlphaComponent(0.06), clear = UIColor.clear
+        #endif
+        var spoilers: [(range: NSRange, group: Int)] = []
+        text.enumerateAttribute(spoilerAttribute, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if let group = value as? Int { spoilers.append((range, group)) }
+        }
+        for spoiler in spoilers {
+            if revealed.contains(spoiler.group) {
+                text.addAttribute(.spoilerFill, value: shown, range: spoiler.range)
+                continue
+            }
+            for key in [NSAttributedString.Key.link, .backgroundColor, mentionAttribute] { text.removeAttribute(key, range: spoiler.range) }
+            text.addAttributes([.foregroundColor: clear, .underlineColor: clear, .strikethroughColor: clear,
+                                .spoilerFill: hidden, hiddenSpoilerAttribute: spoiler.group], range: spoiler.range)
+        }
+    }
+
+    /// The groups `concealSpoilers` left hidden.
+    public static func hiddenSpoilers(in text: NSAttributedString) -> Set<Int> {
+        var groups = Set<Int>()
+        text.enumerateAttribute(hiddenSpoilerAttribute, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            if let group = value as? Int { groups.insert(group) }
+        }
+        return groups
+    }
+
+    /// What VoiceOver reads: "Spoiler" in place of each hidden spoiler.
+    public static func spokenText(_ text: NSAttributedString) -> String {
+        let string = text.string as NSString
+        var spoken = ""
+        var last: Int?
+        text.enumerateAttribute(hiddenSpoilerAttribute, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if let group = value as? Int {
+                if group != last { spoken += "Spoiler" }
+                last = group
+            } else {
+                spoken += string.substring(with: range)
+                last = nil
+            }
+        }
+        return spoken
     }
 
     /// Core Text measures only a realized row, using the same attributed input

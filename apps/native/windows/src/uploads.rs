@@ -807,7 +807,7 @@ impl App {
 
     /// The composer box's control under client point (x, y).
     pub fn box_part_at(&self, x: f32, y: f32) -> Option<Part> {
-        for style in [composer::Style::Bold, composer::Style::Italic] {
+        for style in composer::Style::ALL {
             if self
                 .box_part_rect(Part::Format(style))
                 .is_some_and(|(bx, by, w, h)| x >= bx && x < bx + w && y >= by && y < by + h)
@@ -852,10 +852,7 @@ impl App {
         }
         let mut out = Vec::new();
         if self.composer.format_height() > 0.0 {
-            out.extend([
-                Part::Format(composer::Style::Bold),
-                Part::Format(composer::Style::Italic),
-            ]);
+            out.extend(composer::Style::ALL.map(Part::Format));
         }
         if self.live.is_none() {
             return out;
@@ -964,7 +961,7 @@ impl App {
     pub fn box_activate(&mut self, part: Part) {
         match part {
             Part::Format(style) => {
-                if self.box_part_rect(part).is_some() && self.composer.toggle(style.marker()) {
+                if self.box_part_rect(part).is_some() && self.composer.toggle(style) {
                     self.composer_changed();
                 }
                 return;

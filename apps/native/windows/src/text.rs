@@ -32,7 +32,8 @@ pub fn with_current_dc(f: impl FnOnce(&ID2D1DeviceContext)) {
 }
 
 /// Draws `layout` at (x, y) with `brush` as the default colour. Ranges with a
-/// drawing effect (a brush) use that brush instead.
+/// drawing effect (a brush) use that brush instead; a fully transparent one
+/// (`Brushes::hidden`, a hidden spoiler) draws nothing there, emoji included.
 pub fn draw(
     dc: &ID2D1DeviceContext,
     layout: &IDWriteTextLayout,
@@ -62,13 +63,22 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn brush(&self, effect: Ref<IUnknown>) -> ID2D1Brush {
+    fn brush(&self, effect: &Ref<IUnknown>) -> ID2D1Brush {
         effect
             .ok()
             .ok()
             .and_then(|e| e.cast().ok())
             .unwrap_or_else(|| self.brush.clone())
     }
+}
+
+/// Whether a range's drawing effect hides it (a brush at opacity 0).
+fn hidden(effect: &Ref<IUnknown>) -> bool {
+    effect
+        .ok()
+        .ok()
+        .and_then(|e| e.cast::<ID2D1Brush>().ok())
+        .is_some_and(|b| unsafe { b.GetOpacity() } <= 0.0)
 }
 
 impl IDWritePixelSnapping_Impl for Renderer_Impl {
@@ -112,6 +122,9 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
         desc: *const DWRITE_GLYPH_RUN_DESCRIPTION,
         effect: Ref<IUnknown>,
     ) -> Result<()> {
+        if hidden(&effect) {
+            return Ok(());
+        }
         unsafe {
             let run = &*run;
             let is_color = run
@@ -126,7 +139,7 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
                     Vector2 { X: x, Y: y },
                     run,
                     Some(desc),
-                    &self.brush(effect),
+                    &self.brush(&effect),
                     mode,
                 );
             }
@@ -142,6 +155,9 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
         u: *const DWRITE_UNDERLINE,
         effect: Ref<IUnknown>,
     ) -> Result<()> {
+        if hidden(&effect) {
+            return Ok(());
+        }
         unsafe {
             let u = &*u;
             self.dc.FillRectangle(
@@ -151,7 +167,7 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
                     x + u.width,
                     y + u.offset + u.thickness.max(1.0),
                 ),
-                &self.brush(effect),
+                &self.brush(&effect),
             );
         }
         Ok(())
@@ -165,6 +181,9 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
         s: *const DWRITE_STRIKETHROUGH,
         effect: Ref<IUnknown>,
     ) -> Result<()> {
+        if hidden(&effect) {
+            return Ok(());
+        }
         unsafe {
             let s = &*s;
             self.dc.FillRectangle(
@@ -174,7 +193,7 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
                     x + s.width,
                     y + s.offset + s.thickness.max(1.0),
                 ),
-                &self.brush(effect),
+                &self.brush(&effect),
             );
         }
         Ok(())
@@ -190,6 +209,9 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
         rtl: BOOL,
         effect: Ref<IUnknown>,
     ) -> Result<()> {
+        if hidden(&effect) {
+            return Ok(());
+        }
         let object = object.ok()?;
         let me: IDWriteTextRenderer = self.to_interface();
         unsafe {

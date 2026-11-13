@@ -37,7 +37,7 @@ pub fn token(text: &str, caret: usize) -> Option<Token> {
     }
     let mut chars = Vec::new();
     let mut sources = Vec::new();
-    parser::visit_runs(text, |range, _, _| {
+    parser::visit_runs(text, |range, _| {
         let first = starts.partition_point(|byte| *byte < range.start);
         for (offset, c) in text[range].chars().enumerate() {
             chars.push(c);

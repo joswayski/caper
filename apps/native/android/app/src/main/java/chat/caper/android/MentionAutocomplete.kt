@@ -230,13 +230,13 @@ internal class MentionVisualTransformation(private val source: MentionSource) : 
         }
         var offset = 0
         for (run in formatted.runs) {
-            if (run.bold || run.italic) projected.addStyle(SpanStyle(
-                fontWeight = if (run.bold) androidx.compose.ui.text.font.FontWeight.Bold else null,
-                fontStyle = if (run.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
-            ), offset, offset + run.text.length)
+            run.spanStyle()?.let { projected.addStyle(it, offset, offset + run.text.length) }
             offset += run.text.length
         }
         val visible = projected.toAnnotatedString()
+        val quotes = formatted.ranges(chat.caper.android.data.FormatStyle.QUOTE)
+        // Drawn text only: the newline at a quote's edge becomes a paragraph break of the same length.
+        val shown = AnnotatedString(quoteBreaks(visible.text, quotes), visible.spanStyles)
         val mentions = draftMentionSpans(visible.text, source)
         val links = linkRanges(visible.text, mentions.map { it.start until it.end })
         // This map is in projected coordinates, not source coordinates. Compose the
@@ -259,18 +259,28 @@ internal class MentionVisualTransformation(private val source: MentionSource) : 
         val styled = AnnotatedString.Builder()
         var cursor = 0
         for (link in links) {
-            styled.append(visible.subSequence(cursor, link.start))
+            styled.append(shown.subSequence(cursor, link.start))
             val start = styled.length
             styled.append(DraftLinkPrefix)
-            styled.append(visible.subSequence(link.start, link.end))
+            styled.append(shown.subSequence(link.start, link.end))
             styled.addStringAnnotation(DraftLinkPill, link.href, start, styled.length)
             styled.addStyle(SpanStyle(color = LinkBlue), start, styled.length)
             cursor = link.end
         }
-        styled.append(visible.subSequence(cursor, visible.length))
+        styled.append(shown.subSequence(cursor, shown.length))
         for (span in mentions) {
             styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)),
                 linkMapping.originalToTransformed(span.start), linkMapping.originalToTransformed(span.end))
+        }
+        // Spoilers stay readable while typing, marked by a background; quotes get their bar (draftLinkPills draws both).
+        // A range starting at a link keeps the link's icon space.
+        fun styledStart(offset: Int) = offset + links.count { it.start < offset } * DraftLinkPrefix.length
+        for (range in formatted.ranges(chat.caper.android.data.FormatStyle.SPOILER)) {
+            styled.addStringAnnotation(SpoilerText, SPOILER_DRAFT, styledStart(range.first), linkMapping.originalToTransformed(range.last + 1))
+        }
+        val drawn = styled.toAnnotatedString().text
+        for (range in quotes) {
+            styled.addQuoteBlock(drawn, styledStart(range.first), linkMapping.originalToTransformed(range.last + 1))
         }
         return TransformedText(styled.toAnnotatedString(), object : OffsetMapping {
             override fun originalToTransformed(offset: Int) = linkMapping.originalToTransformed(formatted.displayed(offset))

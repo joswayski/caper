@@ -2432,43 +2432,61 @@ minutes before expiry through `POST /api/assets/urls`, which no longer signs a
 deleted message's files for anyone but its author, so others lose access within
 about two hours. Cached copies remain.
 
-## Message text: emphasis, links and grouping
+## Message text: formatting, links and grouping
 
 Message content stays a string on the wire
 (`content: {version: 1, type: "text", text, mentions}`). Clients interpret
-emphasis before drawing mentions and links. The API resolves mentions against the
+formatting before drawing mentions and links. The API resolves mentions against the
 displayed text too, so formatting `@user_name` does not change whom a message
-notifies. Stored text and edit-history diffs keep markers.
+notifies (a mention inside a spoiler still notifies). Stored text and
+edit-history diffs keep markers.
 
-**Bold and italic.** Select text in a message composer, edit dialog or forwarding
-note to use B/I, or press Ctrl/Cmd+B and Ctrl/Cmd+I. Recognized `**bold**` and
-`_italic_` render as styled text while editing, without showing delimiters.
-Formatting requires selected text. Different styles nest and can span lines.
-Surrounding selection whitespace stays outside the markers; formatting cannot
-expand a draft beyond 4,000 characters. Unmatched and backslash-escaped markers,
-underscores in identifiers and URL contents stay literal. HTML, custom links,
-headings, lists and other Markdown are not interpreted; older clients show the
-source markers. All clients' parser tests share
-`shared/messages/formatting-cases.json`; the API, desktop, Android and Apple share the Rust parser.
+**Formatting.** Select text in a message composer, edit dialog or forwarding
+note to use the toolbar (Bold, Italic, Underline, Strikethrough, then Quote and
+Spoiler), or press Ctrl/Cmd+B, Ctrl/Cmd+I and Ctrl/Cmd+U. The syntax is
+Discord's: `**bold**`, `_italic_`, `__underline__`, `~~strikethrough~~`,
+`||spoiler||`, and `> ` at the start of a line quotes that line. Recognized
+formatting renders while editing, without showing delimiters; typing the
+Markdown has the same effect. Formatting requires selected text. Inline styles
+nest (`___text___` is underlined italics) and, outside quotes, can span lines.
+Quote applies to every non-blank line the selection touches; each quoted line is
+parsed on its own and consecutive quoted lines render as one block with a left
+bar. A newline typed in a quoted line continues the quote; a second one leaves
+it. Sent spoilers are hidden until clicked or tapped, and their links and
+mentions cannot be activated until then; composers show spoiler text on a
+shaded background. Surrounding selection whitespace stays outside the markers;
+formatting cannot expand a draft beyond 4,000 characters. Unmatched and
+backslash-escaped markers, `***`, `~~~` and `|||` runs, underscores in
+identifiers and URL contents stay literal. HTML, custom links, headings, lists,
+code and other Markdown are not interpreted; older clients show the source
+markers. Message previews (replies, notifications, history) show source text.
+
+Every client's parser follows `shared/messages/formatting-cases.json`; the API,
+desktop, Android and Apple share the Rust parser (`shared/messages/formatting.rs`,
+style bits 1 bold, 2 italic, 4 underline, 8 strikethrough, 16 spoiler, 32 quote).
+Native composers type and toggle through `shared/messages/composer.rs`, which
+follows web's ProseMirror composer; `composer-cases.json` (typing) and
+`toggle-cases.json` (toolbar) are generated from web and checked by web and Rust.
 
 Selecting part of a URL disables formatting (including shortcuts); selecting the
 whole URL is allowed. Selections the grammar cannot express (such as part of an
-identifier) are rejected rather than showing styling recipients won't see. The web
-composer uses ProseMirror for selection, composition and undo, converting to the
-string draft at its boundary; native composers project the stored source into
-styled text with offset mapping. Emoji/mention completion uses visible text and
-keeps formatting. Web paste accepts plain text, not HTML or hidden link
-destinations; copy exports visible text. Sending clears the web editor's undo
-history. The formatting toolbar is one borderless bar whose buttons fill its
-surface, using a background fill for hover, press and focus.
+identifier in italics or underline) are rejected rather than showing styling
+recipients won't see. The web composer uses ProseMirror for selection,
+composition and undo, converting to the string draft at its boundary; native
+composers project the stored source into styled text with offset mapping.
+Emoji/mention completion uses visible text and keeps formatting. Web paste accepts
+plain text, not HTML or hidden link destinations; copy exports visible text.
+Sending clears the web editor's undo history. The formatting toolbar is one
+borderless bar whose buttons fill its surface, using a background fill for hover,
+press and focus.
 
 **Extending Markdown later.** Raw source is the persistence, transport and edit
 contract; `FormattedRun` and its native equivalents are rendering-only. The shared
 send/edit validation test preserves headings, code, quotes and lists verbatim, so
-adding them needs no storage migration: add block parsing before inline parsing
-and render block nodes separately. Code nodes must bypass emphasis, autolinks and
-mention resolution; update the shared fixtures and API mention traversal with all
-clients.
+adding them needs no storage migration: parse blocks before inline formatting
+(as quotes are) and render block nodes separately. Code nodes must bypass
+formatting, autolinks and mention resolution; update the shared fixtures and API
+mention traversal with all clients.
 
 ### Message links
 

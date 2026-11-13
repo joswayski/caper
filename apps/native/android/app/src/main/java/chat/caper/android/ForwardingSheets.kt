@@ -26,7 +26,7 @@ import androidx.compose.ui.unit.sp
 import chat.caper.android.data.ApiException
 import chat.caper.android.data.withFreshUrls
 import chat.caper.android.data.friendlyError
-import chat.caper.android.data.linkRanges
+import chat.caper.android.data.messageLinkRanges
 import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
@@ -75,12 +75,13 @@ import java.util.UUID
     }
 }
 
-/** The original's text with its `http(s)://` and `www.` links (`data/Links.kt`); like web, no mention pills here. */
+/** The original's formatted text with its `http(s)://` and `www.` links (`data/Links.kt`); like web, no mention pills here. */
 @Composable internal fun LinkedText(text: String, fontSize: TextUnit = 14.sp) {
-    val links = remember(text) { linkRanges(text) }
+    val links = remember(text) { messageLinkRanges(text) }
     val uriHandler = LocalUriHandler.current
-    val annotated = remember(text, links, uriHandler) {
-        messageText(text, emptyList(), links = links, openLink = { openExternalLink(uriHandler, it) })
+    var revealed by remember(text) { mutableStateOf(emptySet<Int>()) }
+    val annotated = remember(text, links, uriHandler, revealed) {
+        messageText(text, emptyList(), links = links, openLink = { openExternalLink(uriHandler, it) }, revealed = revealed, reveal = { revealed = revealed + it })
     }
     MessageLinkText(annotated, fontSize = fontSize)
 }

@@ -1,14 +1,20 @@
 import { Link } from "lucide-react";
 import { linkSegments } from "./links.ts";
-import FormattedText from "./FormattedText.tsx";
+import FormattedText, { QuoteBlock, quoteBlocks } from "./FormattedText.tsx";
 import { formattedRuns } from "./formatting.ts";
 
-/** Message emphasis and safe autolinks; mention-aware callers format their outer runs. */
+/** Message formatting and safe autolinks; mention-aware callers format their outer runs. */
 export default function LinkedText({ text, formatted = true }: { text: string; formatted?: boolean }) {
-  if (formatted)
-    return (
-      <FormattedText runs={formattedRuns(text)}>{(part) => <LinkedText text={part} formatted={false} />}</FormattedText>
-    );
+  if (formatted) {
+    const runs = formattedRuns(text);
+    return quoteBlocks(runs).map((block) => (
+      <QuoteBlock key={block.start} quote={block.quote}>
+        <FormattedText runs={runs} range={block}>
+          {(part) => <LinkedText text={part} formatted={false} />}
+        </FormattedText>
+      </QuoteBlock>
+    ));
+  }
   return (
     <>
       {linkSegments(text).map((segment, index) => {

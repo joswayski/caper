@@ -5896,9 +5896,9 @@ private struct MessageRow: View {
     /// pad or round it, so the pill is a square-cornered span tight to its
     /// glyphs (spec: 2pt padding, 4pt corners). Unresolved names stay plain.
     /// Links are found after mentions, in the text between pills only.
-    private var messageText: (text: Text, hasLinks: Bool) {
+    private var messageText: (text: FormattedMessageText, hasLinks: Bool) {
         let content = message.content
-        return (MessageFormatting.renderedText(content.text, mentions: content.mentions),
+        return (FormattedMessageText(source: content.text, mentions: content.mentions),
                 MessageLinks.segments(in: content.text).contains { $0.href != nil })
     }
     /// "(edited)": opens the edit history, in the header or, on a grouped row, after the text.

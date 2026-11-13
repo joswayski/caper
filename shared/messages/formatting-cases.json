@@ -11,6 +11,14 @@
     {"text":"\\**literal** and \\_literal_","runs":[{"text":"\\**literal** and \\_literal_","bold":false,"italic":false}]},
     {"text":"https://example.com/a_b_c **https://example.com/path**","runs":[{"text":"https://example.com/a_b_c ","bold":false,"italic":false},{"text":"https://example.com/path","bold":true,"italic":false}]},
     {"text":"**one**\n_two_","runs":[{"text":"one","bold":true,"italic":false},{"text":"\n","bold":false,"italic":false},{"text":"two","bold":false,"italic":true}]},
+    {"text":"__under__ ~~strike~~ ||spoil||","runs":[{"text":"under","bold":false,"italic":false,"underline":true},{"text":" ","bold":false,"italic":false},{"text":"strike","bold":false,"italic":false,"strikethrough":true},{"text":" ","bold":false,"italic":false},{"text":"spoil","bold":false,"italic":false,"spoiler":true}]},
+    {"text":"___both___ **__~~||all||~~__**","runs":[{"text":"both","bold":false,"italic":true,"underline":true},{"text":" ","bold":false,"italic":false},{"text":"all","bold":true,"italic":false,"underline":true,"strikethrough":true,"spoiler":true}]},
+    {"text":"a ||secret _x_|| b ~~a~~b","runs":[{"text":"a ","bold":false,"italic":false},{"text":"secret ","bold":false,"italic":false,"spoiler":true},{"text":"x","bold":false,"italic":true,"spoiler":true},{"text":" b ","bold":false,"italic":false},{"text":"a","bold":false,"italic":false,"strikethrough":true},{"text":"b","bold":false,"italic":false}]},
+    {"text":"__init__.py ||https://example.com/a_b||","runs":[{"text":"init","bold":false,"italic":false,"underline":true},{"text":".py ","bold":false,"italic":false},{"text":"https://example.com/a_b","bold":false,"italic":false,"spoiler":true}]},
+    {"text":"~~~literal~~~ |||literal||| snake__case__name __x_","runs":[{"text":"~~~literal~~~ |||literal||| snake__case__name __x_","bold":false,"italic":false}]},
+    {"text":"> quoted **bold**\n> second\nafter","runs":[{"text":"quoted ","bold":false,"italic":false,"quote":true},{"text":"bold","bold":true,"italic":false,"quote":true},{"text":"\nsecond","bold":false,"italic":false,"quote":true},{"text":"\nafter","bold":false,"italic":false}]},
+    {"text":">no space\n> \n>  \n\\> escaped","runs":[{"text":">no space\n> \n>  \n\\> escaped","bold":false,"italic":false}]},
+    {"text":"**a\n> b**\n\n> c","runs":[{"text":"**a\n","bold":false,"italic":false},{"text":"b**","bold":false,"italic":false,"quote":true},{"text":"\n\n","bold":false,"italic":false},{"text":"c","bold":false,"italic":false,"quote":true}]},
     {"text":"","runs":[]}
   ]
 }

@@ -52,6 +52,10 @@ const clickToolbarEdge = (side) => {
   browser("mouse", "down", "left");
   browser("mouse", "up", "left");
 };
+const toggleWith = (label) => {
+  browser("wait", ".chat-format-toolbar");
+  browser("click", `.chat-format-toolbar button[aria-label="${label}"]`);
+};
 const select = (start, end) => {
   browser("focus", "#chat-message");
   evaluate(
@@ -82,10 +86,10 @@ try {
       const [pending, setPending] = React.useState();
       React.useEffect(() => { if (pending) { const timer = setTimeout(() => setPending(undefined), 100); return () => clearTimeout(timer); } }, [pending]);
       return React.createElement(React.Fragment, null,
-        React.createElement('p', {style: {color: 'var(--text-muted)', fontSize: 12}}, 'LOCAL TEST FIXTURE · Bold & italic · Delivery simulated'),
+        React.createElement('p', {style: {color: 'var(--text-muted)', fontSize: 12}}, 'LOCAL TEST FIXTURE · Message formatting · Delivery simulated'),
         React.createElement('h2', {style: {margin: '16px 0'}}, '# formatting'),
         React.createElement('section', {id: 'sent', style: {minHeight: 180}}, messages.map((message, key) =>
-          React.createElement('article', {key, style: {padding: '12px 0', lineHeight: 1.8}},
+          React.createElement('article', {key, className: 'chat-message', style: {display: 'block', padding: '12px 0'}},
             React.createElement('p', null, React.createElement(MessageText, {message, mentionNames: new Map(), actions: {openMention: () => { window.mentionOpened = true; }}})),
             React.createElement('button', {onClick: () => setEditing(message), style: {fontSize: 12, color: 'var(--text-muted)'}}, 'Edit')))),
         React.createElement('div', {className: 'chat-composer'}, React.createElement(Composer, {
@@ -106,11 +110,14 @@ try {
   assert.equal(
     evaluate(`
     const bar = document.querySelector('.chat-format-toolbar');
-    const [bold, italic] = bar.querySelectorAll('button');
+    const buttons = [...bar.querySelectorAll('button')];
+    const [bold, italic] = buttons, last = buttons.at(-1);
     const r = bar.getBoundingClientRect(), b = bold.getBoundingClientRect(), i = italic.getBoundingClientRect();
-    return b.left === r.left && i.right === r.right && b.right === i.left &&
-      b.height === r.height && i.height === r.height &&
-      [bar, bold, italic].every(el => getComputedStyle(el).borderTopWidth === '0px');
+    return buttons.map(button => button.getAttribute('aria-label')).join() ===
+        'Bold,Italic,Underline,Strikethrough,Quote,Spoiler' &&
+      b.left === r.left && last.getBoundingClientRect().right === r.right && b.right === i.left &&
+      buttons.every(button => button.getBoundingClientRect().height === r.height) &&
+      [bar, ...buttons].every(el => getComputedStyle(el).borderTopWidth === '0px');
   `),
     true,
     "borderless buttons fill the entire toolbar",
@@ -130,6 +137,10 @@ try {
   browser("press", "Control+b");
   select(23, 29);
   clickToolbarEdge("right");
+  assert.equal(value(), "Make this **bold** and ||italic||.", "the right edge is Spoiler");
+  browser("press", "Control+z");
+  select(23, 29);
+  browser("press", "Control+i");
   assert.equal(value(), "Make this **bold** and _italic_.");
   assert.equal(evaluate("return document.querySelector('#chat-message em').textContent;"), "italic");
   browser("press", "ArrowRight");
@@ -265,6 +276,67 @@ try {
   browser("click", "#chat-emoji-options button:first-child");
   assert.equal(evaluate("return document.querySelector('#chat-message strong').textContent.includes(':');"), false);
   assert.equal(evaluate("return document.querySelector('#chat-message').textContent.includes('*');"), false);
+  // Underline, strikethrough, quote and spoiler: toolbar, shortcut, send and render.
+  browser("fill", "#chat-message", "Under strike secret words");
+  select(0, 5);
+  browser("press", "Control+u");
+  // Selections are source offsets, after the markers already added.
+  select(10, 16);
+  toggleWith("Strikethrough");
+  select(21, 27);
+  toggleWith("Spoiler");
+  assert.equal(value(), "__Under__ ~~strike~~ ||secret|| words");
+  assert.equal(
+    evaluate(
+      "return document.querySelector('.chat-format-toolbar button[aria-label=Spoiler]').getAttribute('aria-pressed');",
+    ),
+    "true",
+  );
+  assert.equal(evaluate("return document.querySelector('#chat-message u').textContent;"), "Under");
+  assert.equal(evaluate("return document.querySelector('#chat-message s').textContent;"), "strike");
+  assert.equal(evaluate("return document.querySelector('#chat-message .chat-spoiler-draft').textContent;"), "secret");
+  capture("new-styles-draft");
+  browser("press", "End");
+  browser("press", "Enter");
+  browser("wait", "#sent article:last-child u");
+  assert.equal(evaluate("return window.sent.at(-1);"), "__Under__ ~~strike~~ ||secret|| words");
+  assert.equal(evaluate("return document.querySelector('#sent article:last-child s').textContent;"), "strike");
+  assert.equal(
+    evaluate(`const spoiler = document.querySelector('#sent article:last-child .chat-text-spoiler');
+      return [spoiler.getAttribute('role'), spoiler.getAttribute('aria-label'), getComputedStyle(spoiler.firstElementChild).opacity];`).join(),
+    "button,Spoiler, reveal,0",
+    "a sent spoiler is hidden",
+  );
+  capture("spoiler-hidden");
+  browser("click", "#sent article:last-child .chat-text-spoiler");
+  assert.equal(
+    evaluate(
+      "return document.querySelector('#sent article:last-child .chat-text-spoiler').hasAttribute('data-revealed');",
+    ),
+    true,
+    "clicking reveals the spoiler",
+  );
+  capture("spoiler-revealed");
+  // Enter sends, so the multi-line draft goes in through the composer's own text API.
+  browser("fill", "#chat-message", "x");
+  evaluate(
+    "const field = document.querySelector('#chat-message'); field.replaceText(0, field.value.length, 'Intro\\nquoted one\\nquoted two\\nafter');",
+  );
+  select(6, 26);
+  toggleWith("Quote");
+  assert.equal(value(), "Intro\n> quoted one\n> quoted two\nafter");
+  capture("quote-draft");
+  browser("press", "Control+End");
+  browser("press", "Enter");
+  browser("wait", "#sent article:last-child .chat-quote");
+  assert.equal(
+    evaluate(
+      "return [...document.querySelectorAll('#sent article:last-child .chat-quote')].map(q => q.textContent).join('|');",
+    ),
+    "quoted one\nquoted two",
+    "consecutive quoted lines form one block",
+  );
+  capture("quote-sent");
   browser("fill", "#chat-message", "Make this bold and italic.");
   select(10, 14);
   browser("press", "Control+b");
@@ -274,7 +346,7 @@ try {
   browser("set", "viewport", "390", "844", "2");
   capture("visual-narrow");
   console.log(
-    "PASS: visible emphasis, toolbar, shortcuts, undo/redo boundary, send/edit, nested styles, protected URLs, safe paste/copy, mentions, narrow layout and 4,000-character limit",
+    "PASS: visible emphasis, underline, strikethrough, quotes, spoilers, toolbar, shortcuts, undo/redo boundary, send/edit, nested styles, protected URLs, safe paste/copy, mentions, narrow layout and 4,000-character limit",
   );
 } finally {
   if (!process.env.FORMAT_TEST_KEEP) browser("close");

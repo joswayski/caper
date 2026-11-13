@@ -1608,17 +1608,29 @@
   {
    "text": "__:dog__",
    "caret": 6,
-   "token": null
+   "token": {
+    "start": 2,
+    "end": 6,
+    "query": "dog"
+   }
   },
   {
    "text": "__:dog__",
    "caret": 7,
-   "token": null
+   "token": {
+    "start": 2,
+    "end": 6,
+    "query": "dog"
+   }
   },
   {
    "text": "__:dog__",
    "caret": 8,
-   "token": null
+   "token": {
+    "start": 2,
+    "end": 6,
+    "query": "dog"
+   }
   },
   {
    "text": "\\:fire",

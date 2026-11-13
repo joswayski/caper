@@ -150,6 +150,44 @@ pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_historyDi
     }
 }
 
+/// `CaperMobile.composerToggle(text, start, end, style)`:
+/// `crate::composer_toggle`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_composerToggle(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+    start: jint,
+    end: jint,
+    style: jint,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { string(env, text) } {
+        // SAFETY: forwarded from the JVM's call.
+        Some(text) => unsafe { int_array(env, &crate::composer_toggle(&text, start, end, style)) },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// `CaperMobile.selectionStyles(text, start, end)`: `crate::selection_styles`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_selectionStyles(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+    start: jint,
+    end: jint,
+) -> jint {
+    // SAFETY: forwarded from the JVM's call.
+    unsafe { string(env, text) }.map_or(0, |text| crate::selection_styles(&text, start, end))
+}
+
 /// `CaperMobile.composerEdit(previous, next, start, end, continuing)`:
 /// `crate::composer_edit`.
 ///
