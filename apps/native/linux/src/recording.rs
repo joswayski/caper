@@ -359,6 +359,7 @@ impl App {
                 let Some(recording) = self.recording.take() else {
                     return;
                 };
+                let lost = recording.recorder.input_lost();
                 let prepared = Arc::new(*prepared);
                 if recording.as_voice {
                     self.keep_voice(recording.origin, prepared);
@@ -370,6 +371,10 @@ impl App {
                         error: None,
                     }));
                     self.send_dictation();
+                }
+                // What was recorded is kept; say why it ended early.
+                if lost {
+                    self.state.borrow_mut().send_error = Some(voice_note::INPUT_LOST.into());
                 }
             }
         }

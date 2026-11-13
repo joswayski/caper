@@ -1,7 +1,8 @@
-//! The main composer's card for its draft's first link, as the egui client
-//! draws it (web `DraftEmbed`): inside the box under the text, a thumbnail,
-//! the site, the title and the first line of text, with Remove to send the
-//! message without previews. The shared `caper_client::embeds::ComposerPreview`
+//! A composer's card for its draft's first link, as the egui client draws
+//! it (web `DraftEmbed`): inside the box under the text, a thumbnail, the
+//! site, the title and the first line of text, with Remove to send the
+//! message without previews. The main composer and the open thread's reply
+//! box each have one. The shared `caper_client::embeds::ComposerPreview`
 //! decides which link to ask about (400 ms after it last changed) and keeps
 //! the removal while that link stays in the draft.
 use crate::files::{alpha, cover, line};
@@ -149,10 +150,22 @@ impl App {
         self.live.as_ref()?.preview.card()
     }
 
-    /// The card's thumbnail once loaded (asking the media cache for it).
-    pub fn preview_thumb(&mut self) -> Option<ID2D1Bitmap1> {
+    /// The card for the open thread's reply draft, when one is shown.
+    pub fn thread_preview_card(&self) -> Option<&Embed> {
+        self.thread.as_ref()?;
+        self.live.as_ref()?.thread_preview.card()
+    }
+
+    /// The main card's thumbnail (the reply box's with `thread`) once loaded
+    /// (asking the media cache for it).
+    pub fn preview_thumb(&mut self, thread: bool) -> Option<ID2D1Bitmap1> {
         let live = self.live.as_mut()?;
-        let url = image(live.preview.card()?)?.to_owned();
+        let card = if thread {
+            live.thread_preview.card()
+        } else {
+            live.preview.card()
+        };
+        let url = image(card?)?.to_owned();
         let k = key(&url);
         if matches!(live.media.image(&k, Some(&url)), ImageState::Ready(_)) {
             live.media.texture(&k).cloned()
@@ -161,14 +174,23 @@ impl App {
         }
     }
 
-    /// Tracks the main draft for its card: asks once the debounce has
-    /// passed, and lays the composer out again when the card changed.
+    /// Tracks the main draft and the open thread's reply for their cards:
+    /// asks once the debounce has passed, and lays a composer out again
+    /// when its card changed. With no thread open its card starts over.
     pub fn preview_tick(&mut self) {
         let draft = String::from_utf16_lossy(&self.composer.text);
+        let reply = self
+            .thread
+            .as_ref()
+            .map(|t| String::from_utf16_lossy(&t.composer.text))
+            .unwrap_or_default();
         let Some(live) = self.live.as_mut() else {
             return;
         };
-        let (changed, wait) = live.preview_tick(&draft);
+        let (changed, wait) = live.preview_tick(false, &draft);
+        let (thread_changed, thread_wait) = live.preview_tick(true, &reply);
+        // One timer serves both: it fires for whichever is due first.
+        let wait = [wait, thread_wait].into_iter().flatten().min();
         unsafe {
             match wait {
                 Some(wait) => {
@@ -187,6 +209,9 @@ impl App {
         if changed {
             self.preview_changed();
         }
+        if thread_changed {
+            self.thread_box_changed();
+        }
     }
 
     /// The card appeared, went or changed.
@@ -203,5 +228,13 @@ impl App {
             live.preview.remove();
         }
         self.preview_changed();
+    }
+
+    /// The reply box's Remove.
+    pub fn remove_thread_preview(&mut self) {
+        if let Some(live) = &mut self.live {
+            live.thread_preview.remove();
+        }
+        self.thread_box_changed();
     }
 }

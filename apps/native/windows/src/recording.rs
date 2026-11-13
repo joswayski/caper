@@ -321,6 +321,7 @@ impl App {
                 let Some(Rec::Recording(r)) = self.rec.take() else {
                     return;
                 };
+                let lost = r.recorder.input_lost();
                 let prepared = Arc::new(*prepared);
                 if r.as_voice {
                     self.keep_voice(prepared);
@@ -332,6 +333,11 @@ impl App {
                         error: None,
                     }));
                     self.send_dictation();
+                }
+                // What was recorded is kept; say why it ended early.
+                if lost {
+                    self.status = Some((voice_note::INPUT_LOST.into(), true));
+                    self.dirty.header = true;
                 }
             }
         }

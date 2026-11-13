@@ -382,6 +382,10 @@ pub enum RecorderEvent {
     Failed(String),
 }
 
+/// What the composer says when a recording ended early on a lost microphone
+/// (web's sentence).
+pub const INPUT_LOST: &str = "The microphone disconnected, so the recording stopped.";
+
 /// One recording, on its own thread. Dropping it discards the recording.
 pub struct Recorder {
     control: MicTestControl,
@@ -449,6 +453,12 @@ impl Recorder {
     /// RMS (0–1) of the latest processed frame.
     pub fn level(&self) -> f32 {
         self.control.input_level()
+    }
+
+    /// Whether the recording stopped by itself because its microphone went
+    /// away. What it had is kept, and the composer says [`INPUT_LOST`].
+    pub fn input_lost(&self) -> bool {
+        self.control.input_lost()
     }
 
     pub fn poll(&self) -> Option<RecorderEvent> {

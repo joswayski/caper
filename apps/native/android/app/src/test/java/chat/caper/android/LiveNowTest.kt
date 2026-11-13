@@ -124,6 +124,12 @@ class LiveNowTest {
         assertEquals("Reconnecting…", callStatusLabel(VoiceState(phase = VoiceState.Phase.RECONNECTING, participants = two)))
     }
 
+    @Test fun `a connected call says when its microphone is gone`() {
+        assertEquals("Microphone disconnected", callStatusLabel(VoiceState(phase = VoiceState.Phase.CONNECTED, microphoneLost = true)))
+        assertEquals("Reconnecting…", callStatusLabel(VoiceState(phase = VoiceState.Phase.RECONNECTING, microphoneLost = true)))
+        assertNull(callStatusLabel(VoiceState(phase = VoiceState.Phase.IDLE, microphoneLost = true)))
+    }
+
     @Test fun `the full list says speaking first, then your local mute, deafened and muted`() {
         assertEquals(VoiceListStatus.Speaking, voiceListStatus(self = false, speaking = true, locallyMuted = true, deafened = false, muted = false))
         assertEquals(VoiceListStatus.LocallyMuted, voiceListStatus(self = false, speaking = false, locallyMuted = true, deafened = true, muted = true))

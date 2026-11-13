@@ -542,6 +542,9 @@ pub struct App {
     link_preview: RefCell<caper_client::embeds::ComposerPreview>,
     /// Which link the shown preview card is for, so it redraws only on change.
     shown_preview: RefCell<Option<String>>,
+    /// The same pair for the thread's reply composer.
+    thread_link_preview: RefCell<caper_client::embeds::ComposerPreview>,
+    shown_thread_preview: RefCell<Option<String>>,
     admin_window: RefCell<Option<admin::AdminWindow>>,
     confirm_window: RefCell<Option<admin::ConfirmWindow>>,
     images: Rc<Images>,
@@ -764,6 +767,8 @@ pub fn start(
         channel_ids: RefCell::default(),
         link_preview: RefCell::default(),
         shown_preview: RefCell::default(),
+        thread_link_preview: RefCell::default(),
+        shown_thread_preview: RefCell::default(),
         direct_ids: RefCell::default(),
         request_ids: RefCell::default(),
         reactors_window: RefCell::default(),
@@ -1138,9 +1143,7 @@ impl App {
                 if buffer.char_count() > 0 && !app.restoring.get() {
                     app.typed();
                 }
-                if !thread {
-                    app.update_link_preview();
-                }
+                app.update_link_preview(thread);
             });
         }
 
@@ -1622,6 +1625,7 @@ impl App {
         }
         self.set_typing(state, false);
         *self.link_preview.borrow_mut() = Default::default();
+        *self.thread_link_preview.borrow_mut() = Default::default();
         state.generation += 1;
         state.navigation += 1;
         state.loading_older = false;
@@ -2978,7 +2982,7 @@ impl App {
                 attachment_ids,
                 spoiler_attachment_ids,
                 gif: None,
-                suppress_embeds: !thread && self.link_preview.borrow().removed(text),
+                suppress_embeds: self.link_preview_of(thread).0.borrow().removed(text),
             });
         }
         if !thread {
@@ -4697,15 +4701,37 @@ impl App {
         search.grab_focus();
     }
 
-    /// Tracks the main draft's first link: asks for its card once the link
-    /// settles, then shows it above the composer.
-    fn update_link_preview(self: &Rc<Self>) {
-        let draft = self.ui.composer.text();
+    /// A composer's link preview, the link its shown card is for, and the
+    /// composer itself: the thread's reply composer or the main one.
+    fn link_preview_of(
+        &self,
+        thread: bool,
+    ) -> (
+        &RefCell<caper_client::embeds::ComposerPreview>,
+        &RefCell<Option<String>>,
+        &crate::ui::Composer,
+    ) {
+        if thread {
+            (
+                &self.thread_link_preview,
+                &self.shown_thread_preview,
+                &self.ui.thread_composer,
+            )
+        } else {
+            (&self.link_preview, &self.shown_preview, &self.ui.composer)
+        }
+    }
+
+    /// Tracks a draft's first link (the main composer's, or the thread
+    /// reply's): asks for its card once the link settles, then shows it
+    /// above the composer's text.
+    fn update_link_preview(self: &Rc<Self>, thread: bool) {
+        let (link_preview, _, composer) = self.link_preview_of(thread);
+        let draft = composer.text();
         let token = self.state.borrow().token.clone();
-        let (url, wait) =
-            self.link_preview
-                .borrow_mut()
-                .due(&draft, token.is_some(), Instant::now());
+        let (url, wait) = link_preview
+            .borrow_mut()
+            .due(&draft, token.is_some(), Instant::now());
         if let (Some(url), Some(token)) = (url, token) {
             let api = self.api.clone();
             let (sender, receiver) = async_channel::bounded(1);
@@ -4716,29 +4742,33 @@ impl App {
             let weak = Rc::downgrade(self);
             glib::spawn_future_local(async move {
                 if let (Ok((url, embed)), Some(app)) = (receiver.recv().await, weak.upgrade()) {
-                    app.link_preview.borrow_mut().answer(url, embed);
-                    app.render_link_preview();
+                    app.link_preview_of(thread)
+                        .0
+                        .borrow_mut()
+                        .answer(url, embed);
+                    app.render_link_preview(thread);
                 }
             });
         } else if let Some(wait) = wait {
             let weak = Rc::downgrade(self);
             glib::timeout_add_local_once(wait, move || {
                 if let Some(app) = weak.upgrade() {
-                    app.update_link_preview();
+                    app.update_link_preview(thread);
                 }
             });
         }
-        self.render_link_preview();
+        self.render_link_preview(thread);
     }
 
-    fn render_link_preview(self: &Rc<Self>) {
-        let preview = &self.ui.composer.preview;
-        let card = self.link_preview.borrow().card().cloned();
+    fn render_link_preview(self: &Rc<Self>, thread: bool) {
+        let (link_preview, shown_preview, composer) = self.link_preview_of(thread);
+        let preview = &composer.preview;
+        let card = link_preview.borrow().card().cloned();
         let url = card.as_ref().map(|card| card.url.clone());
-        if *self.shown_preview.borrow() == url {
+        if *shown_preview.borrow() == url {
             return;
         }
-        *self.shown_preview.borrow_mut() = url;
+        *shown_preview.borrow_mut() = url;
         clear(preview);
         preview.set_visible(card.is_some());
         let Some(card) = card else {
@@ -4747,7 +4777,7 @@ impl App {
         let weak = Rc::downgrade(self);
         let handler: rows::Handler = Rc::new(move |action| {
             if let Some(app) = weak.upgrade() {
-                app.row_action(action, false);
+                app.row_action(action, thread);
             }
         });
         let content = crate::content::Content {
@@ -4765,9 +4795,9 @@ impl App {
         let weak = Rc::downgrade(self);
         remove.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
-                app.link_preview.borrow_mut().remove();
+                app.link_preview_of(thread).0.borrow_mut().remove();
                 // The button goes with the card it belongs to.
-                glib::idle_add_local_once(move || app.render_link_preview());
+                glib::idle_add_local_once(move || app.render_link_preview(thread));
             }
         });
         preview.append(&remove);

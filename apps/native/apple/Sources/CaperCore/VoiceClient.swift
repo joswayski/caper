@@ -140,7 +140,13 @@ public final class VoiceClient {
     public var selectedOutputID: String?
     public private(set) var inputGain = 100
     public private(set) var voiceProcessingStrength = 25
+    /// The call's input went away and none could be reopened: muted until an
+    /// unmute opens one (web's microphoneLost). iOS reroutes and never sets it.
+    public private(set) var microphoneLost = false
+    nonisolated static let microphoneDisconnected = "Microphone disconnected"
+    nonisolated static let microphoneUnavailable = "Your microphone disconnected. Connect a microphone or choose another input and try again."
     public var noiseSuppressionStatus: String {
+        if microphoneLost { return Self.microphoneDisconnected }
         switch audioDevice.denoiseMode {
         case 1: return "DPDFNet-8 HR active · on-device"
         case 2: return "DPDFNet-8 unavailable · RNNoise active · on-device"
@@ -225,7 +231,8 @@ public final class VoiceClient {
         #if os(macOS)
         for (key, select) in [("caper.voice.inputUID", true), ("caper.voice.outputUID", false)] {
             let uid = UserDefaults.standard.string(forKey: key) ?? ""
-            if select { _ = audioDevice.selectInputUID(uid) }
+            // A remembered microphone that no longer exists is forgotten, as on web.
+            if select { if !audioDevice.selectInputUID(uid) { UserDefaults.standard.removeObject(forKey: key) } }
             else { _ = audioDevice.selectOutputUID(uid) }
         }
         factory = CaperCreateAudioPeerFactory(audioDevice)
@@ -233,6 +240,11 @@ public final class VoiceClient {
         factory = CaperCreateIOSAudioPeerFactory(audioDevice)
         #endif
         gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { _, _ in }
+        #if os(macOS)
+        audioDevice.inputRoutesChanged = { [weak self] reopenFailed in
+            Task { @MainActor [weak self] in await self?.inputRoutesChanged(reopenFailed: reopenFailed) }
+        }
+        #endif
     }
 
     static func configuration(iceServers: [IceServer]) -> RTCConfiguration {
@@ -406,6 +418,15 @@ public final class VoiceClient {
     }
 
     public func setMuted(_ value: Bool) async {
+        #if os(macOS)
+        // Web setMuted: unmuting a lost microphone means opening one again first.
+        if !value, microphoneLost {
+            guard phase == .connected, audioDevice.reopenLostInput() else { error = Self.microphoneUnavailable; return }
+            microphoneLost = false
+            selectedInputID = audioDevice.inputUID
+            if error == Self.microphoneDisconnected || error == Self.microphoneUnavailable { error = nil }
+        }
+        #endif
         if !value {
             muteBeforeDeafen = nil
             if deafened {
@@ -755,7 +776,7 @@ public final class VoiceClient {
         channelID = nil
         // An automatic reconnect rejoins the same call, where everyone else keeps
         // their id: keep each person's volume and Mute for me, as web does.
-        if !preservingContext { context = nil; participantGains = [:]; locallyMutedParticipants = [] }
+        if !preservingContext { context = nil; participantGains = [:]; locallyMutedParticipants = []; microphoneLost = false }
     }
 
     private func scheduleReconnect(generation attempt: Int) {
@@ -987,6 +1008,26 @@ public final class VoiceClient {
 
     #if os(macOS)
     func comparisonOutputDeviceID() -> UInt32 { audioDevice.resolvedOutputDeviceID }
+
+    /// Web recoverMicrophone, for the cases CoreAudio does not reroute by itself:
+    /// the device list changed, or capture could not follow a new system default.
+    /// A selected input that vanished is forgotten and the system default reopened
+    /// once. When no input can be opened the call stays connected but muted.
+    private func inputRoutesChanged(reopenFailed: Bool) async {
+        await refreshAudioDevices()
+        let chosen = audioDevice.inputUID
+        var lost = reopenFailed || availableInputs.isEmpty
+        if !chosen.isEmpty, !availableInputs.contains(where: { $0.id == chosen }) {
+            UserDefaults.standard.removeObject(forKey: "caper.voice.inputUID")
+            if audioDevice.selectInputUID("") { selectedInputID = "" } else { lost = true }
+        }
+        guard lost, phase == .connected, !rosterPreview, !microphoneLost else { return }
+        microphoneLost = true
+        // Undeafening must not unmute a dead input.
+        if deafened { muteBeforeDeafen = true }
+        error = Self.microphoneDisconnected
+        await setMuted(true)
+    }
 
     @discardableResult public func selectInput(_ uid: String) -> Bool {
         guard audioDevice.selectInputUID(uid) else { return false }

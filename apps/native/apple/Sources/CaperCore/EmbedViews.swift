@@ -33,21 +33,22 @@ struct MessageEmbedsView: View {
     }
 }
 
-/// The draft's first link as a compact card inside the channel composer's
-/// field, below the text (like Slack; web ComposerEmbedPreview), with × to
-/// send without previews. Shown only for signed-in accounts (`composerPreviewLink`).
+/// The draft's first link as a compact card inside the channel or thread
+/// composer's field, below the text (like Slack; web ComposerEmbedPreview), with × to
+/// send without previews. Shown only for signed-in accounts (`draftPreviewLink`).
 /// It rises in as it arrives and leaves instantly; no player in the composer.
 struct ComposerEmbedPreview: View {
     let chat: ChatModel
+    var inThread = false
 
     var body: some View {
-        if let embed = chat.composerLinkPreview {
-            ComposerEmbedCard(embed: embed) { chat.removeComposerLinkPreview() }
+        if let embed = chat.draftLinkPreview(inThread: inThread) {
+            ComposerEmbedCard(embed: embed) { chat.removeComposerLinkPreview(inThread: inThread) }
                 .modifier(Entrance.embed(true))
                 // A new link is a new card, with its own entrance.
                 .id(embed.url)
                 .padding([.horizontal, .bottom], 8)
-                .accessibilityIdentifier("composer-link-preview")
+                .accessibilityIdentifier(inThread ? "thread-link-preview" : "composer-link-preview")
         }
     }
 }

@@ -55,6 +55,9 @@ internal class VoiceNoteCapture private constructor(
     @Volatile private var stopping = false
     @Volatile private var discarded = false
     @Volatile private var saved = false
+    /** The microphone went away while recording: the worker stopped by itself and kept what it had. */
+    @Volatile var inputLost = false
+        private set
 
     private val lock = Any()
     private var mode = Mode.PREPARING
@@ -127,7 +130,12 @@ internal class VoiceNoteCapture private constructor(
             val block = ShortArray(BLOCK_FRAMES)
             while (!stopping) {
                 val read = record.read(block, 0, BLOCK_FRAMES, AudioRecord.READ_BLOCKING)
-                check(read >= 0) { "Microphone read failed ($read)." }
+                if (read < 0) {
+                    // Android moves an unplugged input's capture to another one; an error means none is left.
+                    Log.w(TAG, "Voice message microphone lost ($read)")
+                    inputLost = true
+                    break
+                }
                 if (read == 0) continue
                 backlog.addLast(block.copyOf(read))
                 backlogFrames += read

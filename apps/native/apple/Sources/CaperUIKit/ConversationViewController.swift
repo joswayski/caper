@@ -1097,7 +1097,8 @@ enum TimelineRows {
 
     @MainActor static func build(_ messages: [ChatMessage], pending: PendingMessage?, author: ChatAuthor?, viewerID: String?,
                                  focusedID: String?, chat: ChatModel?, error: String?, rejected: Bool, inThread: Bool = false,
-                                 blocked: Set<String> = [], revealed: Set<String> = [], newMessagesID: String? = nil) -> Built {
+                                 blocked: Set<String> = [], revealed: Set<String> = [], newMessagesID: String? = nil,
+                                 above: ChatMessage? = nil) -> Built {
         var built = Built()
         var previous: ChatMessage?
         // Runs of blocked authors' messages collapse to one row; a revealed run
@@ -1111,7 +1112,8 @@ enum TimelineRows {
             let ids = entry.messages.map(\.id)
             if entry.revealed { shown.formUnion(ids) } else { hidden.formUnion(ids) }
         }
-        var dayReference: ChatMessage?
+        // A thread passes its shown root: the first reply gets a divider only on another day.
+        var dayReference = above
         for (index, message) in messages.enumerated() {
             if dayReference.map({ !NativePresentation.sameDay($0.createdAt, message.createdAt) }) ?? true,
                let label = NativePresentation.dayLabel(message.createdAt) {

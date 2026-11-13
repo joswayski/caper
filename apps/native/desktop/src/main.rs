@@ -1461,6 +1461,8 @@ struct CaperApp {
     embed_arrivals: std::collections::HashMap<String, Instant>,
     /// The main composer's preview of its first link.
     link_preview: embeds::ComposerPreview,
+    /// The same for the open thread's reply composer.
+    thread_link_preview: embeds::ComposerPreview,
     /// A link preview's video playing in the system web engine.
     web_player: web_player::WebPlayer,
     file_picker: Option<FilePicker>,
@@ -1793,6 +1795,7 @@ impl CaperApp {
             media_proxy: None,
             embed_arrivals: std::collections::HashMap::new(),
             link_preview: embeds::ComposerPreview::default(),
+            thread_link_preview: embeds::ComposerPreview::default(),
             web_player: web_player::WebPlayer::default(),
             file_picker: None,
             local_media: Vec::new(),
@@ -8297,6 +8300,7 @@ impl CaperApp {
         self.attachment_progress.clear();
         self.embed_arrivals.clear();
         self.link_preview = embeds::ComposerPreview::default();
+        self.thread_link_preview = embeds::ComposerPreview::default();
         self.local_media.clear();
         self.open_after_refresh = None;
         self.invalidate_navigation_cache();
@@ -8591,10 +8595,21 @@ impl CaperApp {
             pending.reply_to = self
                 .reply_targets
                 .remove(root.as_deref().unwrap_or("channel"));
-            pending.suppress_embeds = root.is_none() && self.link_preview.removed(&text);
+            // A thread reply follows its own composer's card, which tracks
+            // the open thread's draft.
+            let (preview, shown) = match &root {
+                Some(root) => (
+                    &self.thread_link_preview,
+                    self.thread_view
+                        .as_ref()
+                        .is_some_and(|thread| thread.root == *root),
+                ),
+                None => (&self.link_preview, self.draft == text),
+            };
+            pending.suppress_embeds = preview.removed(&text);
             // The card already shown for this draft rides on the pending row.
-            if root.is_none() && !pending.suppress_embeds && self.draft == text {
-                pending.embeds = self.link_preview.card().cloned().into_iter().collect();
+            if shown && !pending.suppress_embeds {
+                pending.embeds = preview.card().cloned().into_iter().collect();
             }
         }
         let id = pending.id.clone();
@@ -13203,8 +13218,15 @@ impl CaperApp {
 
     /// Thread rows (root or replies), collapsing blocked authors' runs. Each
     /// call is its own list for grouping, so the root never groups and the
-    /// first reply never groups with it.
-    fn messages_or_blocked(&mut self, ui: &mut egui::Ui, messages: &[&model::Message]) {
+    /// first reply never groups with it. Date dividers follow the channel's
+    /// rule across calls through `last_date`: one above the first row, and
+    /// above each row on a later local day than the row before it.
+    fn messages_or_blocked(
+        &mut self,
+        ui: &mut egui::Ui,
+        messages: &[&model::Message],
+        last_date: &mut Option<String>,
+    ) {
         let me = self.account.as_ref().map(|account| account.id.clone());
         let mut previous: Option<grouping::Row> = None;
         for row in blocking::rows(messages, &self.blocked_ids(), me.as_deref()) {
@@ -13213,6 +13235,12 @@ impl CaperApp {
                 blocking::Row::Blocked { range, key } => {
                     // The placeholder separates the rows on either side.
                     previous = None;
+                    // As in the channel, a run's divider sits above its notice.
+                    if let Some(date) = display_date(&messages[range.start].created_at)
+                        && take_date_divider(last_date, &date.key)
+                    {
+                        date_divider(ui, &date.label);
+                    }
                     if self.scroll_to_target
                         && messages[range.clone()]
                             .iter()
@@ -13226,6 +13254,12 @@ impl CaperApp {
             let count = range.len();
             let draw = |app: &mut Self, ui: &mut egui::Ui| {
                 for message in &messages[range] {
+                    if let Some(date) = display_date(&message.created_at)
+                        && take_date_divider(last_date, &date.key)
+                    {
+                        date_divider(ui, &date.label);
+                        previous = None;
+                    }
                     let current = grouping::Row::new(
                         &message.author.id,
                         &message.created_at,
@@ -14035,6 +14069,12 @@ impl CaperApp {
     /// Connection progress only; the participant count belongs with the faces.
     fn call_status(&self) -> (String, String, Color32) {
         match &self.voice.state.phase {
+            // Connected, but muted because its input went away.
+            Phase::Connected(_) if self.voice.microphone_lost => (
+                voice::MICROPHONE_DISCONNECTED.into(),
+                "No microphone".into(),
+                VOICE_AMBER,
+            ),
             Phase::Connected(_) => (String::new(), String::new(), VOICE_SESSION_GREEN),
             Phase::Joining(_) => ("Connecting…".into(), "Connecting…".into(), VOICE_AMBER),
             _ => ("Reconnecting…".into(), "Reconnecting…".into(), VOICE_AMBER),
@@ -14968,15 +15008,16 @@ impl CaperApp {
             right = paint_live_timer(ui, &text, right, inner.center().y, 12.0) - 10.0;
         }
         let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
-        let status = (!matches!(self.voice.state.phase, Phase::Connected(_))).then(|| {
-            let (status, _, tone) = self.call_status();
-            let width = ui
-                .painter()
-                .layout_no_wrap(status.clone(), font.clone(), tone)
-                .size()
-                .x;
-            (status, tone, width)
-        });
+        let status = Some(self.call_status())
+            .filter(|(status, ..)| !status.is_empty())
+            .map(|(status, _, tone)| {
+                let width = ui
+                    .painter()
+                    .layout_no_wrap(status.clone(), font.clone(), tone)
+                    .size()
+                    .x;
+                (status, tone, width)
+            });
         // The faces keep their room; the channel's name gives way.
         let room = right
             - inner.left()
@@ -16678,6 +16719,8 @@ impl CaperApp {
                     return;
                 }
                 let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
+                // The channel composer's card for the reply's first link.
+                let preview = self.thread_link_preview.update(ui.ctx(), &text, self.token.as_deref(), self.media.api()).cloned();
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
                 let files = self.draft_file_count(Some(&root));
@@ -16691,7 +16734,10 @@ impl CaperApp {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     let editor = egui::Frame::new().fill(COMPOSER).corner_radius(8).inner_margin(egui::Margin::symmetric(11, 10)).show(ui, |ui| {
                         ui.set_width(editor_width - 22.0);
-                        ui.horizontal_top(|ui| {
+                        // The frame sits in a row with Send: its own content stacks,
+                        // the input row above the link card.
+                        ui.vertical(|ui| {
+                        let output = ui.horizontal_top(|ui| {
                             let button = ui.add_enabled_ui(attach && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Plus, "Attach files", 28.0))
                                 .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() } else { "Attach files".to_owned() });
                             pick = attach_drawer::popup(&button, files, false);
@@ -16729,6 +16775,15 @@ impl CaperApp {
                             choose_emoji = ui.add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 28.0)).inner.clicked();
                             if mic_in_field { record = mic_button(ui, mic && !loading, mic_unavailable, 28.0); }
                             output
+                        }).inner;
+                        if let Some(embed) = &preview {
+                            ui.add_space(8.0);
+                            let arrival = motion::entrance(ui.ctx(), egui::Id::unique("thread-composer-embed"), motion::BASE);
+                            if embeds::composer_card(ui, &mut self.media, embed, arrival) {
+                                self.thread_link_preview.remove();
+                            }
+                        }
+                        output
                         }).inner
                     });
                     ui.vertical(|ui| {
@@ -16807,9 +16862,12 @@ impl CaperApp {
                         })
                         .cloned()
                         .collect();
+                    // The channel's date dividers, over the rows shown here: the
+                    // root, its replies, then a pending reply.
+                    let mut last_date = None;
                     if let Some(parent) = rows.iter().find(|message| message.id == root) {
                         if !parent.is_deleted() {
-                            self.messages_or_blocked(ui, &[parent]);
+                            self.messages_or_blocked(ui, &[parent], &mut last_date);
                             ui.add_space(8.0);
                         }
                         if let Some(summary) = &parent.thread
@@ -16887,7 +16945,7 @@ impl CaperApp {
                                 );
                             });
                     }
-                    self.messages_or_blocked(ui, &replies);
+                    self.messages_or_blocked(ui, &replies, &mut last_date);
                     // Pending replies belong in the scrolling history, not above
                     // the editor where a long send can push all controls offscreen.
                     if let Some(pending) = self
@@ -16895,6 +16953,11 @@ impl CaperApp {
                         .clone()
                         .filter(|pending| pending.thread_root_id.as_deref() == Some(&root))
                     {
+                        if let Some(date) = display_date(&pending.created_at)
+                            && take_date_divider(&mut last_date, &date.key)
+                        {
+                            date_divider(ui, &date.label);
+                        }
                         let arrival = self.arrival(ui.ctx(), &pending.id);
                         motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
                             if let Some(reference) = &pending.reply_to {
@@ -16915,6 +16978,13 @@ impl CaperApp {
                             if let Some(gif) = &pending.gif {
                                 self.message_gif(ui, gif, 62);
                             }
+                            // The composer's card, until the confirmed reply takes over.
+                            self.message_embeds(
+                                ui,
+                                &pending.id,
+                                &pending.embeds,
+                                Color32::TRANSPARENT,
+                            );
                         });
                     }
                     if has_newer
@@ -28960,6 +29030,12 @@ impl CaperApp {
                 let Some(recording) = self.voice_recording.take() else {
                     return;
                 };
+                // What was recorded is kept; a lost microphone says why it ended early.
+                let lost = recording
+                    .recorder
+                    .as_ref()
+                    .is_some_and(voice_note::Recorder::input_lost)
+                    .then(|| recording.profile.as_ref().map(|(person, _)| person.clone()));
                 let prepared = std::sync::Arc::new(*prepared);
                 if recording.dictate && !recording.as_voice {
                     self.draft_keys += 1;
@@ -28973,6 +29049,14 @@ impl CaperApp {
                     self.send_dictation();
                 } else {
                     self.keep_voice(recording, prepared);
+                }
+                match lost {
+                    Some(Some(person)) => {
+                        self.profile_drafts.entry(person).or_default().error =
+                            Some(voice_note::INPUT_LOST.into());
+                    }
+                    Some(None) => self.error = Some(voice_note::INPUT_LOST.into()),
+                    None => {}
                 }
             }
         }
@@ -48804,6 +48888,75 @@ mod tests {
     }
 
     #[test]
+    fn thread_rows_get_the_channels_date_dividers() {
+        const FIRST: &str =
+            "Keep the space rail, channel list, and audio controls in their usual places.";
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // The root and its first reply on one day, the second reply two days on.
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let root = messages[1].id.clone();
+        messages[2].thread_root_id = Some(root.clone());
+        messages[3].thread_root_id = Some(root.clone());
+        messages[3].created_at = "2026-09-25T09:43:00Z".into();
+        let day = |index: usize| {
+            super::display_date(&messages[index].created_at)
+                .unwrap()
+                .label
+        };
+        let (first_day, later_day) = (day(1), day(3));
+        assert_ne!(first_day, later_day);
+        app.timeline.reset(messages.clone(), "4").unwrap();
+        app.open_thread(root);
+        // Dividers in the thread panel, right of the channel's own: the first
+        // reply's text starts 62 points inside the panel.
+        let dividers = |output: &egui::FullOutput, label: &str| {
+            let texts = |wanted: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == wanted => Some(text.pos),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let reply = texts(FIRST)
+                .into_iter()
+                .max_by(|left, right| left.x.total_cmp(&right.x))
+                .expect("the first reply is drawn");
+            texts(label)
+                .into_iter()
+                .filter(|position| position.x > reply.x - 62.0)
+                .map(|position| position.y < reply.y)
+                .collect::<Vec<_>>()
+        };
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(
+            dividers(&output, &first_day),
+            [true],
+            "one divider, above the root: the same-day first reply adds none"
+        );
+        assert_eq!(
+            dividers(&output, &later_day),
+            [false],
+            "the reply from another day gets its own divider, below the first reply"
+        );
+        // A deleted root is not drawn, so the first reply carries the divider.
+        messages[1].deleted_at = Some("2026-09-26T00:00:00Z".into());
+        app.timeline.reset(messages, "4").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(dividers(&output, &first_day), [true]);
+        assert_eq!(dividers(&output, &later_day), [false]);
+    }
+
+    #[test]
     fn pending_own_messages_group_under_your_earlier_row() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -53125,6 +53278,107 @@ mod tests {
         carded.content.embeds = vec![model::Embed::parse(&own).unwrap()];
         pending.carry_embeds(&mut carded);
         assert_eq!(carded.content.embeds[0].url, "https://youtu.be/server");
+    }
+
+    #[test]
+    fn the_thread_composer_previews_its_first_link_like_the_channel() {
+        const LINK: &str = "https://youtu.be/dQw4w9WgXcQ";
+        const TITLE: &str = "Never Gonna Give You Up";
+        let (context, mut app) = fixture("parity-desktop");
+        app.session = Some(session());
+        app.token = Some("fixture-token".into());
+        let root = app.timeline.messages().nth(1).unwrap().id.clone();
+        open_loaded_thread(&mut app, &root);
+        // A reply draft whose link has been asked about and answered.
+        let draft = |app: &mut CaperApp| {
+            let text = format!("look {LINK}");
+            app.thread_drafts.entry(root.clone()).or_default().0 = text.clone();
+            let start = Instant::now();
+            app.thread_link_preview.due(&text, true, start);
+            if let (Some(asked), _) =
+                app.thread_link_preview
+                    .due(&text, true, start + crate::embeds::PREVIEW_DEBOUNCE)
+            {
+                app.thread_link_preview
+                    .answer(asked, model::Embed::parse(&youtube_card()));
+            }
+        };
+        draft(&mut app);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&output).contains(&TITLE),
+            "the reply composer shows the card"
+        );
+        assert!(
+            app.link_preview.card().is_none(),
+            "and the channel composer has none"
+        );
+        // Under the reply's text and inside the panel, where it can be reached.
+        let drawn = |output: &egui::FullOutput, wanted: &str| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == wanted => {
+                        Some((text.pos, shape.clip_rect))
+                    }
+                    _ => None,
+                })
+                .max_by(|left, right| left.0.y.total_cmp(&right.0.y))
+                .unwrap_or_else(|| panic!("{wanted} is drawn"))
+        };
+        let (reply, _) = drawn(&output, &format!("look {LINK}"));
+        let (title, panel) = drawn(&output, TITLE);
+        assert!(title.y > reply.y, "the card sits under the text");
+        let remove = labelled_center(&output, "Remove link preview").expect("the card's remove");
+        assert!(panel.contains(remove), "{remove:?} in {panel:?}");
+
+        // Sent with its card: the pending reply draws it and the confirmed one keeps it.
+        app.send_message_to(Some(root.clone()), false);
+        let pending = app.pending.clone().expect("sending");
+        assert_eq!(pending.thread_root_id.as_deref(), Some(root.as_str()));
+        assert!(!pending.suppress_embeds);
+        assert_eq!(pending.embeds.len(), 1, "the shown card rides on the reply");
+        assert_eq!(pending.embeds[0].url, LINK);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            app.thread_link_preview.card().is_none(),
+            "the composer's card went with the draft"
+        );
+        assert!(
+            texts(&output).contains(&TITLE),
+            "the pending reply draws the card"
+        );
+        let mut server = confirmation(&app, &pending);
+        server.thread_root_id = Some(root.clone());
+        app.sent(Ok(server));
+        assert!(app.pending.is_none());
+        let stored = app
+            .timeline
+            .messages()
+            .find(|item| item.id == "sent-message")
+            .unwrap();
+        assert_eq!(stored.content.embeds, pending.embeds);
+
+        // Removed with its ×: the next reply goes without previews.
+        draft(&mut app);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(app.thread_link_preview.card().is_some());
+        let remove = labelled_center(&output, "Remove link preview").expect("the card's remove");
+        click(&mut app, &context, remove);
+        assert!(
+            app.thread_link_preview.card().is_none(),
+            "× removes the card"
+        );
+        app.send_message_to(Some(root.clone()), false);
+        let pending = app.pending.as_ref().expect("sending");
+        assert!(pending.suppress_embeds);
+        assert!(pending.embeds.is_empty(), "a removed card is not carried");
+        // The channel composer's own choice is untouched.
+        assert!(!app.link_preview.removed(&format!("look {LINK}")));
     }
 
     #[test]

@@ -116,18 +116,28 @@ static double CaperHardwareRate(AudioDeviceID route) {
 @interface CaperMacAudioDevice () <RTCAudioDevice>
 @end
 
+static void CaperNotifyInputRoutesChanged(CaperMacAudioDevice *device, BOOL reopenFailed) {
+    void (^changed)(BOOL) = device.inputRoutesChanged;
+    if (changed) { dispatch_async(dispatch_get_main_queue(), ^{ changed(reopenFailed); }); }
+}
+
 static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
                                          const AudioObjectPropertyAddress *addresses, void *context) {
     CaperMacAudioDevice *device = (__bridge CaperMacAudioDevice *)context;
     for (UInt32 i = 0; i < count; i++) {
         if (addresses[i].mSelector == kAudioHardwarePropertyDefaultInputDevice) {
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                if (!device.inputUID.length) { [device selectInputUID:@""]; }
+                // A microphone test holds the input and refuses the switch; that is not a loss.
+                if (!device.inputUID.length && ![device selectInputUID:@""] && !device.isComparing) {
+                    CaperNotifyInputRoutesChanged(device, YES);
+                }
             });
         } else if (addresses[i].mSelector == kAudioHardwarePropertyDefaultOutputDevice) {
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 if (!device.outputUID.length) { [device selectOutputUID:@""]; }
             });
+        } else if (addresses[i].mSelector == kAudioHardwarePropertyDevices) {
+            CaperNotifyInputRoutesChanged(device, NO);
         }
     }
     return noErr;
@@ -162,6 +172,7 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
     BOOL _comparisonOwnsInput;
     BOOL _inputListener;
     BOOL _outputListener;
+    BOOL _devicesListener;
     BOOL _terminating;
     uint64_t _lifecycle;
     BOOL _syntheticTest;
@@ -535,6 +546,15 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
 }
 - (BOOL)selectInputUID:(NSString *)uid { return [self switchInput:YES uid:uid]; }
 - (BOOL)selectOutputUID:(NSString *)uid { return [self switchInput:NO uid:uid]; }
+- (BOOL)reopenLostInput {
+    if (!_delegate || self.isComparing) { return NO; }
+    NSString *uid = CaperResolveRoute(_inputUID, YES) == kAudioObjectUnknown ? @"" : _inputUID;
+    // The switch that lost the input cleared _recording although WebRTC still
+    // expects capture. Mark it active so this switch starts the new unit; a
+    // failed switch clears it again.
+    _recording = YES;
+    return [self switchInput:YES uid:uid];
+}
 
 - (BOOL)isComparing { return atomic_load(&_comparing); }
 - (float)comparisonLevel { return atomic_load_explicit(&_comparisonLevel, memory_order_relaxed); }
@@ -645,6 +665,9 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
     AudioObjectPropertyAddress output = CaperAddress(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal);
     _inputListener = AudioObjectAddPropertyListener(kAudioObjectSystemObject, &input, CaperDefaultRouteChanged, (__bridge void *)self) == noErr;
     _outputListener = AudioObjectAddPropertyListener(kAudioObjectSystemObject, &output, CaperDefaultRouteChanged, (__bridge void *)self) == noErr;
+    // Reports a selected input that vanished; the device still works without it.
+    AudioObjectPropertyAddress devices = CaperAddress(kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal);
+    _devicesListener = AudioObjectAddPropertyListener(kAudioObjectSystemObject, &devices, CaperDefaultRouteChanged, (__bridge void *)self) == noErr;
     if (_inputListener && _outputListener) { return YES; }
     [self terminateDevice];
     return NO;
@@ -656,6 +679,8 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
     AudioObjectPropertyAddress output = CaperAddress(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal);
     if (_inputListener) { AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &input, CaperDefaultRouteChanged, (__bridge void *)self); _inputListener = NO; }
     if (_outputListener) { AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &output, CaperDefaultRouteChanged, (__bridge void *)self); _outputListener = NO; }
+    AudioObjectPropertyAddress devices = CaperAddress(kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal);
+    if (_devicesListener) { AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &devices, CaperDefaultRouteChanged, (__bridge void *)self); _devicesListener = NO; }
     [self disposeInput:YES]; [self disposeInput:NO];
     @synchronized (self) { CaperDenoisePipelineDestroy(_denoiser); _denoiser = NULL; }
     _recording = NO; _playing = NO;

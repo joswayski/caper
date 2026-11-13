@@ -4954,8 +4954,11 @@ private struct NativeThreadView: View {
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
     /// Replies group among themselves; the root never groups (empty `grouping`).
-    @ViewBuilder private func threadEntries(_ rows: [TimelineEntry], grouping: MessageGrouping.Layout = .init()) -> some View {
+    /// Date dividers follow the channel's rule; `previous` is the shown root above the replies.
+    @ViewBuilder private func threadEntries(_ rows: [TimelineEntry], grouping: MessageGrouping.Layout = .init(), after previous: String? = nil) -> some View {
+        let divided = ChatDateDivider.divided(rows, after: previous)
         ForEach(rows) { entry in
+            if divided.contains(entry.id) { ChatDateDivider(createdAt: entry.firstCreatedAt) }
             switch entry {
             case let .message(message): threadRow(message, grouping: grouping).id(message.id)
             case let .blocked(run):
@@ -5044,6 +5047,8 @@ private struct NativeThreadView: View {
                     let firstReplyID = threadReplies.first?.id
                     let replyRows = entries(threadReplies)
                     let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID })
+                    // The row above the first reply, for its date divider.
+                    let rootAbove: ChatMessage? = root.flatMap { $0.isDeleted ? nil : $0 }
                     // The root's reactions grow the thread as well as its replies'.
                     let recentRows: [TimelineEntry] = (root.flatMap { $0.isDeleted ? nil : entries([$0]) } ?? []) + replyRows.suffix(TimelinePin.recentRows)
                     let threadPending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == chat.threadRootID ? $0 : nil }
@@ -5072,13 +5077,16 @@ private struct NativeThreadView: View {
                             Button(chat.threadLoading ? "Loading…" : "Load older replies", action: loadOlderReplies)
                                 .disabled(chat.threadLoading).frame(height: 44)
                         }
-                        threadEntries(replyRows, grouping: grouping)
+                        threadEntries(replyRows, grouping: grouping, after: rootAbove?.createdAt)
                         if chat.threadHasNewer {
                             Button(chat.threadLoading ? "Loading…" : "Load newer replies") { Task { await chat.loadThread(newer: true) } }
                                 .disabled(chat.threadLoading).frame(height: 44)
                         }
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text(chat.isPreview ? "No replies yet." : "No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = threadPending {
+                            if (threadReplies.last ?? rootAbove).map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
+                                ChatDateDivider(createdAt: pending.createdAt)
+                            }
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty && chat.threadAttachmentDrafts.isEmpty, chat: chat,
                                 uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
                                 retry: { Task { await chat.send(inThread: true) } },
@@ -5162,6 +5170,8 @@ private struct NativeThreadView: View {
                 ComposerSuggestionsView(controller: composerAutocomplete)
                 #endif
                 HStack(alignment: .bottom, spacing: 8) {
+                    // As the channel's field: the reply draft's link preview sits below the text inside the box.
+                    VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .bottom, spacing: 0) {
                         HStack(alignment: .bottom, spacing: 0) {
                             AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
@@ -5188,6 +5198,9 @@ private struct NativeThreadView: View {
                         #endif
                         VoiceRecordButton(chat: chat, inThread: true, controller: composerAutocomplete).padding(.trailing, 2)
                     }
+                        ComposerEmbedPreview(chat: chat, inThread: true)
+                    }
+                        .task(id: chat.draftPreviewLink(inThread: true)) { await chat.loadComposerLinkPreview(inThread: true) }
                         // Clipped too: the fill's square corners showed outside the rounded border.
                         .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -5399,6 +5412,20 @@ struct ChatDateDivider: View {
     static func fullDateLabel(_ value: String, locale: Locale = .current, timeZone: TimeZone = .current) -> String? {
         guard let date = date(value) else { return nil }
         return ChatTimestamp.fullDate(date, locale: locale, timeZone: timeZone)
+    }
+
+    /// The thread view's rule, the channel timeline's applied to its own rows:
+    /// the ids of the rows that get a divider. The first row gets one unless it
+    /// shares its local day with `previous` (the shown root above the replies),
+    /// and each later row when its day differs from the row directly above it.
+    static func divided(_ rows: [TimelineEntry], after previous: String? = nil, calendar: Calendar = .current) -> Set<String> {
+        var above = previous
+        var ids: Set<String> = []
+        for row in rows {
+            if above.map({ !sameLocalDay($0, row.firstCreatedAt, calendar: calendar) }) ?? true { ids.insert(row.id) }
+            above = row.lastCreatedAt
+        }
+        return ids
     }
 }
 

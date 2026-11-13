@@ -54,6 +54,8 @@ data class VoiceState(
     val speakingParticipants: Set<String> = emptySet(),
     /** The Audio test holds the microphone; web disables mute and deafen meanwhile. */
     val monitoring: Boolean = false,
+    /** The input went away and none could be reopened: muted until an unmute opens one (web's "Microphone disconnected"). */
+    val microphoneLost: Boolean = false,
 ) { enum class Phase { IDLE, CONNECTING, CONNECTED, RECONNECTING, FAILED } }
 
 /** Web: RMS >= 0.004 is speech, released 180 ms after the last loud sample; muted people never light up. */
@@ -90,6 +92,11 @@ class VoiceCallService : Service() {
     private var pullRetry: Job? = null
     private var mutedForFocus = false
     private var routeChosenByUser = false
+    /** The route [selectRoute] chose, so its removal can hand routing back to the default. */
+    private var chosenRouteId: Int? = null
+    private var microphoneRecovery = MicrophoneRecovery()
+    /** One reopen at a time: [VoiceEngine.reopenCapture] waits for the input's first audio. */
+    private var reopeningMicrophone = false
     private var mediaEvents: MediaEventClient? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var audio: AudioManager
@@ -102,6 +109,8 @@ class VoiceCallService : Service() {
     /** A headset plugged in or removed mid-call moves the call there (or back to the speaker). */
     private fun devicesChanged() {
         engine?.invalidateCapture()
+        // A chosen route that is gone is no longer a choice: the default takes over again.
+        if (routeChosenByUser && Build.VERSION.SDK_INT >= 31 && audio.availableCommunicationDevices.none { it.id == chosenRouteId }) routeChosenByUser = false
         if (engine != null && !routeChosenByUser) chooseDefaultRoute()
         updateRoutes()
     }
@@ -141,6 +150,17 @@ class VoiceCallService : Service() {
                 if (state.value.monitoring) return@launch
                 val (current, attempt) = currentCall() ?: return@launch
                 mutedForFocus = false
+                // Unmuting a lost microphone means opening one again first (web's setMuted).
+                if (state.value.microphoneLost && current.muted) {
+                    if (reopeningMicrophone) return@launch
+                    val reopened = reopenMicrophone(current)
+                    if (!callResultIsCurrent(current, engine, attempt, attempts)) return@launch
+                    if (!reopened) {
+                        commitCallResult(current, attempt) { it.copy(error = MicrophoneRecovery.DISCONNECTED) }
+                        return@launch
+                    }
+                    commitCallResult(current, attempt) { it.copy(microphoneLost = false) }
+                }
                 runCatching { current.setMuted(!current.muted) {
                     commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened) }
                 } }
@@ -232,6 +252,8 @@ class VoiceCallService : Service() {
                     while (isActive) {
                         delay(100)
                         val call = state.value
+                        // Not while another app holds the audio: the input comes back with the focus.
+                        if (call.phase == VoiceState.Phase.CONNECTED && !call.microphoneLost && !reopeningMicrophone && !mutedForFocus && current.captureStalled()) scope.launch { microphoneStalled(current, attempt) }
                         val levels = if (call.phase == VoiceState.Phase.CONNECTED) runCatching { withTimeout(1_000) { current.audioLevels() } }.getOrNull() ?: continue else emptyMap()
                         val muted = call.participants.filter { if (it.id == call.selfId) call.muted else it.muted }.map { it.id }.toSet()
                         val next = SpeakingActivity.update(levels, muted, lastLoud, android.os.SystemClock.elapsedRealtime())
@@ -315,6 +337,34 @@ class VoiceCallService : Service() {
             .onSuccess { diagnostics -> commitCallResult(current, attempt) {
                 it.copy(diagnostics = diagnostics, processing = current.processingReport().toList())
             } }
+    }
+
+    private suspend fun reopenMicrophone(current: VoiceEngine): Boolean {
+        reopeningMicrophone = true
+        return try { current.reopenCapture() } finally { reopeningMicrophone = false }
+    }
+
+    /**
+     * The input stopped delivering audio (web's recoverMicrophone): reopen the system's current
+     * input once and keep publishing. If none opens, or one reopened this way within the last ten
+     * seconds is gone again, the call stays connected but muted, and says so.
+     */
+    private suspend fun microphoneStalled(current: VoiceEngine, attempt: Long) {
+        if (reopeningMicrophone || state.value.microphoneLost || !callResultIsCurrent(current, engine, attempt, attempts)) return
+        if (microphoneRecovery.mayReopen(android.os.SystemClock.elapsedRealtime()) && reopenMicrophone(current)) {
+            microphoneRecovery.reopened(android.os.SystemClock.elapsedRealtime())
+            // Audio queued from the lost input is not published through the new one.
+            current.invalidateCapture()
+            return
+        }
+        if (!callResultIsCurrent(current, engine, attempt, attempts)) return
+        // An audio focus gain must not unmute a dead input.
+        mutedForFocus = false
+        commitCallResult(current, attempt) { it.copy(microphoneLost = true) }
+        current.closeCapture()
+        runCatching { current.muteLostMicrophone {
+            commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened, error = MicrophoneRecovery.DISCONNECTED) }
+        } }.onFailure { localControlFailed(current, attempt, it, MicrophoneRecovery.DISCONNECTED) }
     }
 
     private fun transportState(current: VoiceEngine, attempt: Long, transport: org.webrtc.PeerConnection.PeerConnectionState) {
@@ -404,6 +454,7 @@ class VoiceCallService : Service() {
     private fun acquireAudio() {
         mutedForFocus = false
         routeChosenByUser = false
+        microphoneRecovery = MicrophoneRecovery()
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
         val attributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
         if (Build.VERSION.SDK_INT >= 26) {
@@ -466,6 +517,7 @@ class VoiceCallService : Service() {
         if (Build.VERSION.SDK_INT < 31 || id < 0) return
         val device = audio.availableCommunicationDevices.firstOrNull { it.id == id } ?: return
         routeChosenByUser = true
+        chosenRouteId = id
         engine?.invalidateCapture()
         if (!audio.setCommunicationDevice(device)) {
             update { it.copy(error = "That audio route is unavailable.") }
@@ -514,7 +566,7 @@ class VoiceCallService : Service() {
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_caper_notification)
             .setContentTitle(state.value.channelName?.let { "Voice · #$it" } ?: "Caper voice")
-            .setContentText(if (state.value.muted) "Muted" else "Microphone active")
+            .setContentText(if (state.value.microphoneLost) "Microphone disconnected" else if (state.value.muted) "Muted" else "Microphone active")
             .setOngoing(true).setCategory(NotificationCompat.CATEGORY_CALL).setContentIntent(open)
             .addAction(0, if (state.value.muted) "Unmute" else "Mute", mute)
             .addAction(0, if (state.value.deafened) "Undeafen" else "Deafen", deafen)
@@ -665,7 +717,8 @@ class VoiceCallService : Service() {
         internal fun beginMicComparison(): MicComparisonBinding? {
             val service = active ?: return null
             val (current, attempt) = service.currentCall() ?: return null
-            if (state.value.phase != VoiceState.Phase.CONNECTED || comparisonEngine != null) return null
+            // A lost microphone has nothing to test; unmuting opens one first.
+            if (state.value.phase != VoiceState.Phase.CONNECTED || state.value.microphoneLost || comparisonEngine != null) return null
             current.beginMicComparison()
             comparisonEngine = current
             comparisonAttempt = attempt

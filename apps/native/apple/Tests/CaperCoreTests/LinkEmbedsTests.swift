@@ -376,6 +376,75 @@ final class LinkEmbedsTests: XCTestCase {
         await chat.stop()
     }
 
+    /// The thread reply composer previews its own draft like the channel's:
+    /// its card and its removal are separate, and the removal stays with its thread.
+    @MainActor
+    func testThreadComposerPreviewAndRemoval() async throws {
+        EmbedURLProtocol.handler = { try answer($0) }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        chat.threadRootID = "Message00000001"
+
+        chat.threadDraft = "read https://news.example/story"
+        XCTAssertEqual(chat.draftPreviewLink(inThread: true), "https://news.example/story")
+        XCTAssertNil(chat.composerPreviewLink, "the channel draft has no link")
+        await chat.loadComposerLinkPreview(inThread: true)
+        let shown = try XCTUnwrap(chat.draftLinkPreview(inThread: true))
+        XCTAssertEqual(shown.site.domain, "news.example")
+
+        // The channel composer keeps its own card and removal.
+        chat.draft = "see https://news.example/story"
+        XCTAssertNil(chat.composerLinkPreview, "the thread's card is not the channel's")
+        chat.removeComposerLinkPreview()
+        XCTAssertEqual(chat.draftLinkPreview(inThread: true), shown)
+        chat.draft = ""
+
+        // Removing the reply's card lasts for this thread's draft only.
+        chat.removeComposerLinkPreview(inThread: true)
+        XCTAssertNil(chat.draftLinkPreview(inThread: true))
+        chat.threadRootID = "Root00000002"
+        chat.threadDraft = "also https://news.example/story"
+        XCTAssertEqual(chat.draftLinkPreview(inThread: true), shown)
+        chat.threadRootID = "Message00000001"
+        XCTAssertNil(chat.draftLinkPreview(inThread: true))
+
+        // It sends the reply without previews.
+        await chat.send(inThread: true)
+        let sent = try XCTUnwrap(EmbedURLProtocol.requests.last { $0.method == "POST" && $0.path == "/api/chat/channels/\(channelID)/messages" })
+        XCTAssertEqual(json(sent.body)?["threadRootId"] as? String, "Message00000001")
+        XCTAssertEqual(json(sent.body)?["suppressEmbeds"] as? Bool, true)
+        XCTAssertEqual(chat.pendingMessage?.suppressEmbeds, true)
+        XCTAssertEqual(chat.pendingMessage?.embeds, [], "a removed card never rides on the pending row")
+
+        // The sent reply cleared its draft, so the same link gets its card again.
+        XCTAssertEqual(chat.threadDraft, "")
+        chat.threadDraft = "again https://news.example/story"
+        XCTAssertEqual(chat.draftLinkPreview(inThread: true), shown)
+        await chat.stop()
+    }
+
+    /// A reply sent with its card showing carries it on the pending row.
+    @MainActor
+    func testThreadReplyCarriesItsComposerCard() async throws {
+        EmbedURLProtocol.handler = { try answer($0) }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        chat.threadRootID = "Message00000001"
+        chat.threadDraft = "read https://news.example/story"
+        await chat.loadComposerLinkPreview(inThread: true)
+        let shown = try XCTUnwrap(chat.draftLinkPreview(inThread: true))
+
+        await chat.send(inThread: true)
+        let pending = try XCTUnwrap(chat.pendingMessage, "the send failed, so the command stays pending")
+        XCTAssertEqual(pending.threadRootId, "Message00000001")
+        XCTAssertEqual(pending.embeds, [shown])
+        XCTAssertFalse(pending.suppressEmbeds)
+        let sent = try XCTUnwrap(EmbedURLProtocol.requests.last { $0.method == "POST" && $0.path == "/api/chat/channels/\(channelID)/messages" })
+        XCTAssertNil(json(sent.body)?["suppressEmbeds"])
+        XCTAssertNil(json(sent.body)?["embeds"], "the card is local only")
+        await chat.stop()
+    }
+
     /// The composer's card rides on the pending command and the message the
     /// gateway confirms, until that revision's `message.embeds` settles it.
     @MainActor

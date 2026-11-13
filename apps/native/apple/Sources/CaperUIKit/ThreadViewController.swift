@@ -290,7 +290,15 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         var items: [Item] = []
         var nextRows: [String: MessageRowState] = [:]
         var nextDays: [String: String] = [:]
-        if let root, !root.isDeleted {
+        // Date dividers as in the channel: above the root, then wherever a reply's
+        // day differs from the row above it (the first reply's, without a shown root).
+        let shownRootMessage = root.flatMap { $0.isDeleted ? nil : $0 }
+        if let root = shownRootMessage {
+            if let label = NativePresentation.dayLabel(root.createdAt) {
+                let key = "day-\(root.clientMessageId)"
+                nextDays[key] = label
+                items.append(.day(key))
+            }
             nextRows[root.clientMessageId] = MessageRowState(message: root, grouped: false, continued: false, viewerID: viewer,
                                                              focused: chat.focusedMessageID == root.id, chat: chat, inThread: true)
             items.append(.row(root.clientMessageId))
@@ -311,8 +319,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         let built = TimelineRows.build(replies, pending: pending, author: chat.currentAuthor, viewerID: viewer,
                                        focusedID: chat.focusedMessageID, chat: chat, error: chat.error,
                                        rejected: chat.sendRejected, inThread: true,
-                                       blocked: chat.blockedAuthorIDs, revealed: revealed)
-        items += built.items.filter { if case .day = $0 { false } else { true } }
+                                       blocked: chat.blockedAuthorIDs, revealed: revealed, above: shownRootMessage)
+        items += built.items
         nextRows.merge(built.rows) { _, new in new }
         nextDays.merge(built.days) { _, new in new }
 
@@ -380,6 +388,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         composer.show(draft: chat.threadDraft, conversation: "\(chat.editingContext):\(chat.threadRootID ?? "")")
         composer.refreshContext()
         composer.textView.pasteAttachments = chat.canAttach ? { [weak chat] in chat?.pasteAttachments(inThread: true) ?? false } : nil
+        composer.showLinkPreview(ready ? UIKitComposerLinkPreview(chat: chat, inThread: true) : nil)
         composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat, inThread: true)
                                  ? UIKitComposerAccessories(chat: chat, inThread: true, present: { [weak self] in
                                      if self?.presentedViewController == nil { self?.present($0, animated: false) }

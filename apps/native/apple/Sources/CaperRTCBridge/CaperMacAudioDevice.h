@@ -39,6 +39,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSArray<CaperAudioRoute *> *)outputRoutes;
 - (BOOL)selectInputUID:(NSString *)uid;
 - (BOOL)selectOutputUID:(NSString *)uid;
+/// Called on the main queue when the device list changed (NO), or when capture
+/// could not follow a new system default input (YES).
+@property(atomic, copy, nullable) void (^inputRoutesChanged)(BOOL reopenFailed);
+/// For a call whose input was lost: starts capture again on the selected input,
+/// or the system default when that one is gone. NO when none can be opened.
+- (BOOL)reopenLostInput;
 - (BOOL)beginComparison;
 - (nullable CaperAudioComparison *)endComparison;
 @property(nonatomic, readonly) BOOL isComparing;

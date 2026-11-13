@@ -227,7 +227,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         emoji.isEnabled = enabled && canPickExpressions
     }
 
-    /// The channel draft's link card (the thread composer has none).
+    /// The channel or thread draft's link card.
     /// Set once per conversation: the hosted view follows the draft itself.
     func showLinkPreview<Content: View>(_ content: Content?) {
         guard (content != nil) != linkPreviewShown else { return }

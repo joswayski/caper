@@ -1,6 +1,11 @@
 package chat.caper.android.voice
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.util.Log
 import chat.caper.android.data.CaperApi
 import chat.caper.android.data.ApiException
@@ -50,6 +55,10 @@ class VoiceEngine(
     private var source: AudioSource? = null
     private var microphone: AudioTrack? = null
     private var capture: AudioCapture? = null
+    /** When the input last delivered audio ([monotonicMs]); 0 until it has. */
+    @Volatile private var capturedAt = 0L
+    /** WebRTC's recorder did not start again after a loss; see [reopenCapture]. */
+    @Volatile private var captureUnusable = false
     private val audioPreferences = appContext.getSharedPreferences("audio", Context.MODE_PRIVATE)
     private var mediaToken: String? = null
     private var selfId: String? = null
@@ -134,6 +143,7 @@ class VoiceEngine(
                     .setAudioBufferCallback { buffer, format, channels, rate, read, time ->
                         // Runs on WebRTC's capture thread: a throw here aborts the app,
                         // so fail closed to silence instead.
+                        if (read > 0) capturedAt = monotonicMs()
                         try { processor.onBuffer(buffer, format, channels, rate, read) }
                         catch (error: Throwable) {
                             Log.e("CaperVoice", "Capture processing failed", error)
@@ -328,6 +338,62 @@ class VoiceEngine(
     suspend fun setMuted(value: Boolean, onLocalApplied: () -> Unit = {}) = localMute.setMuted(value, onLocalApplied)
 
     suspend fun setDeafened(value: Boolean, onLocalApplied: () -> Unit = {}) = localMute.setDeafened(value, onLocalApplied)
+
+    /**
+     * The connected call's input, which had been delivering audio, stopped. Android moves capture
+     * to another input by itself when one is unplugged, so this is an input that is gone with
+     * none to take over, or a capture that failed.
+     */
+    fun captureStalled(): Boolean = capturedAt.let { it != 0L && connected.get() && MicrophoneRecovery.stalled(it, monotonicMs()) }
+
+    /**
+     * Closes the input and opens the system's current one for the same publication; false (left
+     * closed) when there is none or no audio arrives from it. WebRTC's recorder cannot be started
+     * again after a start of its own failed (it rejects or aborts on the next one), so it is only
+     * started when an input opens right now, and never again in this call once that still failed.
+     */
+    suspend fun reopenCapture(): Boolean = withContext(Dispatchers.IO) {
+        if (captureUnusable) return@withContext false
+        val before = capturedAt
+        setRecording(false)
+        if (!inputOpens()) return@withContext false
+        setRecording(true)
+        val reopened = withTimeoutOrNull(MicrophoneRecovery.REOPEN_WAIT_MS) { while (capturedAt == before) delay(20) } != null
+        if (!reopened) {
+            setRecording(false)
+            captureUnusable = true
+        }
+        reopened
+    }
+
+    /** Stops reading a lost input; the publication stays for [reopenCapture]. */
+    suspend fun closeCapture() = withContext(Dispatchers.IO) { setRecording(false) }
+
+    private fun setRecording(enabled: Boolean) {
+        if (resources.isOpen) runCatching { resources.use { peer?.setAudioRecording(enabled) } }
+    }
+
+    /** Whether the system has an input for the call's capture (WebRTC's source and format) now. */
+    private fun inputOpens(): Boolean {
+        if (appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
+        var record: AudioRecord? = null
+        return try {
+            val size = AudioRecord.getMinBufferSize(48000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            record = AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build())
+                .setBufferSizeInBytes(size.coerceAtLeast(48000 / 5 * 2)).build()
+            record.startRecording()
+            record.recordingState == AudioRecord.RECORDSTATE_RECORDING
+        } catch (error: Throwable) {
+            Log.w("CaperVoice", "No microphone could be opened", error)
+            false
+        } finally {
+            runCatching { record?.release() }
+        }
+    }
+
+    /** Mutes for a lost input, reported like any mute; undeafening leaves it muted. */
+    suspend fun muteLostMicrophone(onLocalApplied: () -> Unit = {}) = localMute.muteLostMicrophone(onLocalApplied)
 
     fun setOutputVolume(value: Int) = synchronized(remoteLock) {
         outputVolume = value.coerceIn(0, 200)
@@ -722,6 +788,12 @@ internal class VoiceMuteIntent(initiallyMuted: Boolean = true) {
         if (value) { beforeDeafen = muted; muted = true } else muted = beforeDeafen
         deafened = value
     }
+
+    /** The input is gone: undeafening must not unmute it (web's `mutedBeforeDeafen = true`). */
+    fun muteLostMicrophone() {
+        muted = true
+        beforeDeafen = true
+    }
 }
 
 /** Local tracks change before waiting on serialized, potentially slow signaling. */
@@ -762,6 +834,16 @@ internal class VoiceLocalMute(
         synchronized(this) {
             intent.setDeafened(value)
             deafened = intent.deafened
+            muted = intent.muted
+            apply(muted, deafened)
+        }
+        onLocalApplied()
+        signaling.withLock { sync() }
+    }
+
+    suspend fun muteLostMicrophone(onLocalApplied: () -> Unit = {}) {
+        synchronized(this) {
+            intent.muteLostMicrophone()
             muted = intent.muted
             apply(muted, deafened)
         }

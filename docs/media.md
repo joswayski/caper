@@ -2114,7 +2114,8 @@ Roots show a reply count and up to five distinct repliers' avatars (first-reply
 order). Desktop/wide clients use a right panel; narrow web, Android and iPhone take
 over the conversation screen. The selected root has a slightly stronger pin-gold
 wash. No nested threads: replying from a broadcast opens its original root. The
-same contracts apply to DMs.
+same contracts apply to DMs. A thread uses the channel's date separators: one
+above its first shown row and one at each new local day.
 
 On phones, rightward drags over thread history/header move the thread over the
 channel beneath it. Releasing past 72px/pt/dp returns to the channel; short or
@@ -2545,7 +2546,8 @@ runs and edits keep it. A card already shown at send goes with the pending row a
 stays (locally) until `message.embeds` replaces or removes it, so the row has its
 final height from the start. Cards that load while a row is on screen fade in
 (`--motion-fast`, opacity only; none with reduced motion) and the timeline carries
-the rows they push.
+the rows they push. A thread's reply composer previews its first link the same
+way, with its own card and its own removal.
 
 **Compatibility.** Older clients ignore `content.embeds`. Older desktop builds
 treat any unknown chat event as a broken stream, so the gateway sends
@@ -2639,7 +2641,8 @@ EMBED_ORIGIN=https://embed.caper.chat EMBED_API_SECRET=... node live-check.mjs
 Staging uses `--env staging` and `embed.staging.caper.chat`.
 
 **Clients.** Every client draws cards, takes `message.embeds` live, previews the
-composer's first link, can send without previews, and plays players inline.
+composer's first link, can send without previews, and plays players inline. The
+macOS AppKit composers are the exception: they show no card before sending.
 Desktop loads `play` after Play in the operating system's web engine, only for the
 player box (`wry`): WebView2 in process on Windows; on Linux WebKitGTK in the
 separate `caper-web-player` helper, so the app never links GTK and starts without
@@ -3448,12 +3451,23 @@ initialize, capture rejects without publishing raw audio; if fallback and browse
 suppression both fail at runtime, the status reports bypassed audio.
 
 Device changes replace the outgoing track and release the previous hardware track
-and AudioContext. On the web, when the capturing device ends (unplugged, or its
-permission revoked) or leaves the device list, the client reopens the system
-default input once and swaps the track; if that fails, or the reopened input
-ends within ten seconds, the call stays connected but muted with "Microphone
-disconnected", and unmuting opens an input first. A voice message being
-recorded stops as it does at its length limit. Cancel/leave stops capture and processed tracks; a late
+and AudioContext. When the capturing input goes away mid-call, the client reopens
+the system default input once and keeps publishing; if that fails, or the
+reopened input is lost again within ten seconds, the call stays connected but
+muted (through the ordinary mute, so the room is told) with "Microphone
+disconnected", and unmuting opens an input first. A remembered input that no
+longer exists is forgotten. Each client notices the loss its own way:
+
+| Client | A lost input is |
+| --- | --- |
+| Web | an ended track (unplugged, or permission revoked) or a device missing from the device list |
+| Windows, Linux, egui desktop | a failed capture, or the chosen device missing from the list polled every 2 seconds |
+| macOS | a CoreAudio device-list change that removes the chosen input, or a default input that cannot be followed; a reopened input that goes away follows the next default, with no ten-second limit |
+| Android | no captured audio for 3 seconds while unmuted (not while audio focus is lost); a reopened input that delivers nothing within 1.5 seconds is not reopened again in that call |
+| iOS | a route change, which iOS reroutes itself; an interruption that does not resume mutes |
+
+A voice message being recorded stops as it does at its length limit, keeps what
+it captured and says why. Cancel/leave stops capture and processed tracks; a late
 permission grant is released. The RNNoise/DeepFilter adapter adds 10 ms buffering.
 DPDFNet uses a 20 ms analysis window, 10 ms hops and three output hops of startup
 buffering; an eight-hop backlog terminates inference and starts fallback. No

@@ -1039,6 +1039,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Emoji => (22, 6),
             TPart::Format(crate::composer::Style::Bold) => (22, 7),
             TPart::Format(crate::composer::Style::Italic) => (22, 8),
+            TPart::RemovePreview => (22, 9),
             TPart::Row(i) => (23, i),
             TPart::Chip(i, k) => (24, i * 64 + k.min(62)),
             TPart::Add(i) => (24, i * 64 + 63),
@@ -2602,6 +2603,7 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
             | TPart::Format(_)
             | TPart::Gif
             | TPart::Emoji
+            | TPart::RemovePreview
             | TPart::Send,
         )
         | Id::ProfilePart(CPart::Close | CPart::Open | CPart::More | CPart::Send)

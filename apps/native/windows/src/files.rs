@@ -780,6 +780,10 @@ impl App {
             self.dirty.composer = true;
             self.need = true;
         }
+        if self.thread_preview_card().is_some() {
+            self.dirty.thread_box = true;
+            self.need = true;
+        }
         if self.gifs.is_some() {
             self.dirty.gifs = true;
             self.need = true;

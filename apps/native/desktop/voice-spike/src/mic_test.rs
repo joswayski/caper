@@ -1,7 +1,7 @@
 //! Explicit, local-only microphone comparison. No HTTP, SFU or persistent PCM.
 
 use super::input_processing::{InputProcessing, ProcessedVoice, VoiceProcessor};
-use super::select_device;
+use super::{input_listed, select_device};
 use libwebrtc::audio_frame::AudioFrame;
 use libwebrtc::audio_source::{AudioSourceOptions, native::NativeAudioSource};
 use libwebrtc::audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions};
@@ -39,6 +39,8 @@ pub struct MicTestControl {
     playback_generation: Arc<AtomicU64>,
     /// RMS of the latest recorded frame, as f32 bits.
     input_level: Arc<AtomicU32>,
+    /// A voice message ended early because its input went away.
+    input_lost: Arc<AtomicBool>,
 }
 
 struct TestDevices {
@@ -88,7 +90,14 @@ impl MicTestControl {
             finish_recording: Arc::new(AtomicBool::new(false)),
             playback_generation: Arc::new(AtomicU64::new(0)),
             input_level: Arc::new(AtomicU32::new(0)),
+            input_lost: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Whether a voice message stopped by itself because its input went
+    /// away; what it had recorded is kept.
+    pub fn input_lost(&self) -> bool {
+        self.input_lost.load(Ordering::Acquire)
     }
 
     /// RMS (0–1) of the most recent captured frame while recording, else 0.
@@ -276,7 +285,7 @@ impl MicTestControl {
         .then_some(devices.capture_epoch)
     }
 
-    /// A failed start cancels this control for good; nothing can reopen it.
+    /// A cancelled control is stopped for good; nothing can reopen it.
     pub(crate) fn is_cancelled(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
@@ -457,6 +466,7 @@ pub struct MicTest {
     microphone: MediaStreamTrack,
     stream: NativeAudioStream,
     playback: NativeAudioSource,
+    input_guid: Option<String>,
     output_guid: Option<String>,
     sample: Option<MicSample>,
     /// Kept in memory only while this test lives, so a changed gain or
@@ -523,6 +533,18 @@ fn unprocessed_voice_message(pcm: &[i16], settings: InputProcessing) -> Vec<i16>
 }
 
 impl MicTest {
+    /// Whether the input this capture was opened on by name has left the
+    /// device list. The system default has no name to look for.
+    fn input_unlisted(&self) -> bool {
+        let Some(guid) = self.input_guid.as_deref() else {
+            return false;
+        };
+        self.control
+            .devices
+            .lock()
+            .is_ok_and(|devices| !devices.released && !input_listed(&devices.input, guid))
+    }
+
     pub(crate) async fn next_live_frame(&mut self) -> Option<AudioFrame<'static>> {
         self.stream.next_frame().await
     }
@@ -556,7 +578,10 @@ impl MicTest {
     ) -> Result<bool, String> {
         self.retire_for_reconnect();
         self.control.retire_capture(epoch)?;
-        let mut replacement = Self::start(self.control.clone(), input_guid, None).await?;
+        // An input that cannot open (unplugged, busy, none left) leaves this
+        // control usable: the call mutes, and a later unmute retires what
+        // this attempt left and tries again.
+        let mut replacement = Self::open(self.control.clone(), input_guid, None).await?;
         if self.control.requested_epoch() != Some(epoch) {
             replacement.retire_for_reconnect();
             *self = replacement;
@@ -573,6 +598,19 @@ impl MicTest {
         input_guid: Option<&str>,
         output_guid: Option<&str>,
     ) -> Result<Self, String> {
+        let result = Self::open(control.clone(), input_guid, output_guid).await;
+        if result.is_err() {
+            control.cancel();
+        }
+        result
+    }
+
+    /// `start` without its cancel on failure.
+    async fn open(
+        control: MicTestControl,
+        input_guid: Option<&str>,
+        output_guid: Option<&str>,
+    ) -> Result<Self, String> {
         let (input, output) = {
             let mut devices = control
                 .devices
@@ -585,11 +623,7 @@ impl MicTest {
             devices.input_acquired = true;
             (devices.input.clone(), devices.output.clone())
         };
-        let result = Self::connect(input, output, control.clone(), input_guid, output_guid).await;
-        if result.is_err() {
-            control.cancel();
-        }
-        result
+        Self::connect(input, output, control, input_guid, output_guid).await
     }
 
     async fn connect(
@@ -725,6 +759,7 @@ impl MicTest {
             microphone: microphone.into(),
             stream,
             playback,
+            input_guid: input_guid.map(str::to_owned),
             output_guid: output_guid.map(str::to_owned),
             sample: None,
             raw: Vec::new(),
@@ -759,6 +794,7 @@ impl MicTest {
         let limit = (limit.as_millis() as usize).saturating_mul(RATE as usize) / 1000;
         self.control.set_live_recording(true)?;
         let mut last_frame = Instant::now();
+        let mut listed = Instant::now();
         let mut pcm = Vec::new();
         let mut recorded_epoch = None;
         let mut processing = true;
@@ -793,7 +829,21 @@ impl MicTest {
                     continue;
                 }
             }
+            // A lost input ends the recording as its limit does, keeping what
+            // was recorded. An unplugged device can go on "delivering" decoded
+            // silence, so a chosen input leaving the device list counts too.
+            if listed.elapsed() >= Duration::from_secs(2) {
+                listed = Instant::now();
+                if !pcm.is_empty() && self.input_unlisted() {
+                    self.control.input_lost.store(true, Ordering::Release);
+                    break;
+                }
+            }
             if last_frame.elapsed() >= Duration::from_secs(2) {
+                if !pcm.is_empty() {
+                    self.control.input_lost.store(true, Ordering::Release);
+                    break;
+                }
                 self.control.cancel();
                 return Err("microphone stopped delivering audio".into());
             }
@@ -838,6 +888,10 @@ impl MicTest {
                     pcm.extend_from_slice(&data[..data.len().min(limit - pcm.len())]);
                     self.control.set_input_level(&data);
                     last_frame = Instant::now();
+                }
+                None if !pcm.is_empty() => {
+                    self.control.input_lost.store(true, Ordering::Release);
+                    break;
                 }
                 None => {
                     self.control.cancel();

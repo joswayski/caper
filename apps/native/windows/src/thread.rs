@@ -1,7 +1,8 @@
 //! The thread beside the conversation, as the egui client's thread panel:
 //! a heading ("Thread", "in #channel" and Close), the root message, its
 //! reply count, older replies or the load error, the replies, and a reply
-//! composer with "Also send to #channel" and Send. Its rows are the channel
+//! composer with "Also send to #channel", Send and the main composer's card
+//! for its first link (`preview`). Its rows are the channel
 //! list's rows (`list`), all measured at once (threads arrive in pages of
 //! 50) and drawn into the pane's surface; the reply box has its own surface,
 //! so typing redraws only the box.
@@ -55,6 +56,8 @@ pub enum Part {
     Gif,
     /// Insert emoji, at the end of the box's first line.
     Emoji,
+    /// The link card's Remove: reply without previews.
+    RemovePreview,
     Send,
 }
 
@@ -563,6 +566,12 @@ impl App {
                 let (x, y, w, h) = emoji_local();
                 Some((bx + x, by + y + t.composer.inset.1, w, h))
             }
+            Part::RemovePreview => {
+                self.thread_preview_card()?;
+                let (bx, by, bw, bh) = self.thread_box_rect()?;
+                let r = crate::preview::remove_rect(crate::preview::card_rect(bw, bh));
+                Some((bx + r.left, by + r.top, r.right - r.left, r.bottom - r.top))
+            }
             Part::Send => {
                 let (x, y, w, h) = send_local(self.h, t.box_h);
                 Some((x0 + x, y, w, h))
@@ -613,7 +622,11 @@ impl App {
         if t.gif {
             out.push(Part::Gif);
         }
-        out.extend([Part::Emoji, Part::Send]);
+        out.push(Part::Emoji);
+        if self.thread_preview_card().is_some() {
+            out.push(Part::RemovePreview);
+        }
+        out.push(Part::Send);
         out
     }
 
@@ -674,6 +687,7 @@ impl App {
             Part::Format(style) => style.name().into(),
             Part::Gif => "Send a GIF".into(),
             Part::Emoji => "Insert emoji".into(),
+            Part::RemovePreview => "Remove link preview".into(),
             Part::Send => "Send reply".into(),
             Part::Add(_) => "Add reaction".into(),
             Part::Row(_) | Part::Chip(..) => String::new(),
@@ -735,6 +749,8 @@ impl App {
         let (Some(t), Some(view)) = (live.thread.as_ref(), live.thread_view()) else {
             if self.thread.take().is_some() {
                 self.thread_layout_changed();
+                // Its reply went with it, and so does that reply's link card.
+                self.preview_tick();
             }
             return Ok(());
         };
@@ -750,6 +766,8 @@ impl App {
                 .max(BOX_MIN);
             self.thread = Some(pane);
             self.thread_layout_changed();
+            // The new thread's reply box is empty: its link card starts over.
+            self.preview_tick();
         }
         let vh = self.thread_vh();
         if let Some(p) = &mut self.thread {
@@ -859,7 +877,20 @@ impl App {
 
     /// After an edit or caret move in the reply box.
     pub fn thread_composer_changed(&mut self) {
+        // The reply's link card follows its text (and lays the box out
+        // itself when the card changed).
+        self.preview_tick();
+        self.thread_box_changed();
+    }
+
+    /// Lays the reply box out again: its text, format buttons and link card.
+    pub fn thread_box_changed(&mut self) {
         let gif = self.gif_shown();
+        let card = if self.thread_preview_card().is_some() {
+            crate::preview::PREVIEW_H
+        } else {
+            0.0
+        };
         let g = &self.g;
         let Some(t) = &mut self.thread else {
             return;
@@ -867,8 +898,9 @@ impl App {
         t.composer.caret_on = true;
         t.gif = gif;
         t.composer.inset.1 = t.composer.format_height();
+        t.composer.inset_bottom = card;
         if let Ok(h) = t.composer.relayout(g, text_w(gif)) {
-            let h = h.max(BOX_MIN) + t.composer.inset.1;
+            let h = h.max(BOX_MIN) + t.composer.inset.1 + card;
             if (h - t.box_h).abs() > 0.01 {
                 t.box_h = h;
                 self.dirty.layout = true;
@@ -977,6 +1009,7 @@ impl App {
                 let root = self.thread.as_ref().map(|t| t.root.clone());
                 self.toggle_composer_emoji(root);
             }
+            Part::RemovePreview => self.remove_thread_preview(),
             Part::Send => self.send_thread_reply(),
             Part::Row(_) => {}
         }
@@ -986,10 +1019,11 @@ impl App {
         if let Some(t) = &mut self.thread
             && t.hover != hover
         {
-            // Send a GIF and Insert emoji are drawn in the box's own surface.
+            // Send a GIF, Insert emoji and the link card's Remove are drawn
+            // in the box's own surface.
             let gif = [t.hover, hover]
                 .iter()
-                .any(|h| matches!(h, Some(Part::Gif | Part::Emoji)));
+                .any(|h| matches!(h, Some(Part::Gif | Part::Emoji | Part::RemovePreview)));
             t.hover = hover;
             self.dirty.thread = true;
             self.dirty.thread_box |= gif;
@@ -1049,7 +1083,10 @@ impl App {
                         }
                         self.thread_composer_changed();
                     }
-                    Some(part @ Part::Format(_)) => self.thread_activate(part),
+                    // Neither moves the keyboard out of the box.
+                    Some(part @ (Part::Format(_) | Part::RemovePreview)) => {
+                        self.thread_activate(part)
+                    }
                     Some(part) => {
                         self.set_thread_focus(false);
                         self.set_composer_focus(false);
@@ -1149,6 +1186,8 @@ impl App {
             self.thread_box_p.offset(-10_000.0, 0.0)?;
             return Ok(());
         }
+        let card = self.thread_preview_card().cloned();
+        let thumb = self.preview_thumb(true);
         let (x, h, vh) = (self.thread_x(), self.h, self.thread_vh());
         let (bx, by, bw, bh) = self.thread_box_rect().unwrap_or_default();
         let g = &self.g;
@@ -1191,6 +1230,16 @@ impl App {
                     if emoji { TEXT } else { TEXT_MUTED },
                     1.0,
                 );
+                if let Some(embed) = &card {
+                    crate::preview::draw(
+                        g,
+                        dc,
+                        embed,
+                        thumb.as_ref(),
+                        crate::preview::card_rect(bw, bh),
+                        t.hover == Some(Part::RemovePreview),
+                    )?;
+                }
                 let r = rect(0.5, 0.5, bw - 0.5, bh - 0.5);
                 if t.composer.focused {
                     stroke_round(dc, r, RADIUS, &g.brushes.terracotta);

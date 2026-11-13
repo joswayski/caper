@@ -370,7 +370,7 @@ impl App {
             if app.audio.borrow().is_none() {
                 return glib::ControlFlow::Break;
             }
-            app.voice.borrow_mut().receive();
+            app.receive_reports();
             app.render_audio();
             glib::ControlFlow::Continue
         });
@@ -686,7 +686,7 @@ impl App {
             if !menu.is_visible() {
                 return glib::ControlFlow::Break;
             }
-            app.voice.borrow_mut().receive();
+            app.receive_reports();
             let key = app.device_key(input);
             if *shown.borrow() != key {
                 *shown.borrow_mut() = key;
@@ -956,7 +956,7 @@ impl App {
             if app.report.borrow().is_none() {
                 return glib::ControlFlow::Break;
             }
-            app.voice.borrow_mut().receive();
+            app.receive_reports();
             app.render_report();
             glib::ControlFlow::Continue
         });

@@ -66,6 +66,36 @@ pub fn speaking_at(last_loud: Option<Instant>, muted: bool, now: Instant) -> boo
     !muted && last_loud.is_some_and(|loud| now.saturating_duration_since(loud) < SPEAKING_RELEASE)
 }
 
+/// The call's status while its input is gone and none replaced it.
+pub const MICROPHONE_DISCONNECTED: &str = "Microphone disconnected";
+/// What the call says when it mutes for a lost input, or cannot unmute.
+pub const MICROPHONE_DISCONNECTED_DETAIL: &str =
+    "Your microphone disconnected. Connect a microphone or choose another input and try again.";
+/// An input reopened after a loss that goes again this soon is not reopened
+/// a second time (web's rule), so a dying device cannot reopen forever.
+const MICROPHONE_RECOVERY_WINDOW: Duration = Duration::from_secs(10);
+
+/// Whether a lost input may be replaced by the system default: once, and
+/// not again while that replacement is younger than the recovery window.
+fn may_reopen_input(reopened: Option<Instant>, now: Instant) -> bool {
+    reopened.is_none_or(|at| now.saturating_duration_since(at) >= MICROPHONE_RECOVERY_WINDOW)
+}
+
+/// Whether the device list says the input in use has gone: a chosen input
+/// that is no longer listed or, on the system default, the device that was
+/// the default when the call opened it. A default that only moved to another
+/// device is not a loss while the old one is still there.
+fn input_gone(chosen: Option<&str>, captured_default: Option<&str>, inputs: &[Input]) -> bool {
+    match (chosen, captured_default) {
+        (Some(id), _) => !inputs.iter().any(|(guid, _)| guid == id),
+        (None, Some(was)) => !inputs.iter().any(|(_, name)| name == was),
+        (None, None) => false,
+    }
+}
+
+/// An input's device ID and name.
+type Input = (String, String);
+
 /// Measured steps of the current join, from the Join click (web `joinTiming`).
 /// Desktop publishes inside its session setup and has no separate microphone
 /// or live-update step to time, so only these are reported.
@@ -164,6 +194,17 @@ pub struct Voice {
     pub speaker_testing: bool,
     pub speaker_failed: bool,
     pub active_space: Option<String>,
+    /// The call's input went away and none replaced it: the call is muted
+    /// and shows [`MICROPHONE_DISCONNECTED`] until an input opens again.
+    pub microphone_lost: bool,
+    /// When this call last replaced a lost input (or opened one to unmute).
+    input_reopened: Option<Instant>,
+    /// The listed device that was the system default when the call opened
+    /// the default, so its leaving the list can be noticed.
+    call_default_input: Option<String>,
+    /// Moves the call's capture to an input (`None`: the system default)
+    /// with nothing to fall back to. Tests stand in for the hardware.
+    replace_input: fn(&JoinControl, Option<&str>) -> Result<(), String>,
     microphone_generation: u64,
     microphone_control: Option<MicTestControl>,
     microphone_commands: Option<Sender<MicCommand>>,
@@ -205,6 +246,10 @@ enum Report {
         Option<String>,
         Option<String>,
     ),
+    /// The unmuted call's input could not be opened.
+    InputLost(u64),
+    /// The call's inputs and the system default's name, when either changed.
+    Inputs(u64, Vec<Input>, Option<String>),
     Microphone(u64, Result<MicrophoneState, String>),
     MicPlayed(u64, Recorded),
     MicPrepared(u64, Recorded),
@@ -249,6 +294,10 @@ impl Voice {
             input_meter: VecDeque::from(vec![0.0; INPUT_METER_BARS]),
             speaker_testing: false,
             speaker_failed: false,
+            microphone_lost: false,
+            input_reopened: None,
+            call_default_input: None,
+            replace_input: JoinControl::replace_lost_input,
             microphone_generation: 0,
             microphone_control: None,
             microphone_commands: None,
@@ -387,6 +436,8 @@ impl Voice {
             let mut next_snapshot = Instant::now();
             let mut next_diagnostics = Instant::now();
             let mut activity = VoiceActivity::default();
+            let mut inputs = None;
+            let mut next_inputs = Instant::now();
             let mut next_turn = session
                 .turn_refresh_delay()
                 .map(|delay| Instant::now() + delay);
@@ -522,6 +573,24 @@ impl Voice {
                         report(&events, &repaint, Report::Activity(generation, current));
                     }
                 }
+                if control.take_capture_failure() {
+                    report(&events, &repaint, Report::InputLost(generation));
+                }
+                // Nothing tells a native call that its input was unplugged,
+                // so it watches the device list for it.
+                if ready && !control.is_cancelled() && Instant::now() >= next_inputs {
+                    let devices = session.input_devices();
+                    let current = (default_input_name(&devices), devices);
+                    if inputs.as_ref() != Some(&current) {
+                        inputs = Some(current.clone());
+                        report(
+                            &events,
+                            &repaint,
+                            Report::Inputs(generation, current.1, current.0),
+                        );
+                    }
+                    next_inputs = Instant::now() + Duration::from_secs(2);
+                }
                 if ready && !control.is_cancelled() && Instant::now() >= next_diagnostics {
                     if let Ok(Ok(stats)) = runtime.block_on(async {
                         tokio::time::timeout(Duration::from_secs(2), session.diagnostics()).await
@@ -563,7 +632,98 @@ impl Voice {
         self.join_times = None;
         self.activity = VoiceActivity::default();
         self.participant_playback.clear();
+        self.clear_lost_microphone();
+        self.input_reopened = None;
+        self.call_default_input = None;
         self.state.leave_now();
+    }
+
+    /// The input an unmuted call captures went away: it could not be opened
+    /// or it left the device list. The system default is opened in its place
+    /// once. If that fails, or it is that replacement going within the
+    /// recovery window, the call stays connected but muted, as if the user
+    /// had muted.
+    fn input_lost(&mut self, now: Instant) {
+        let Some(control) = self.control.clone() else {
+            return;
+        };
+        if self.state.audio.muted {
+            return;
+        }
+        // The choice that led here can never reopen.
+        self.preferences.input = None;
+        self.track_default_input();
+        if may_reopen_input(self.input_reopened, now)
+            && (self.replace_input)(&control, None).is_ok()
+        {
+            self.input_reopened = Some(now);
+            return;
+        }
+        self.microphone_lost = true;
+        self.error = Some(MICROPHONE_DISCONNECTED_DETAIL.into());
+        self.command(VoiceOperation::Mute(true));
+    }
+
+    /// Remembers which listed device is the system default, for a call that
+    /// captures the default from here on.
+    fn track_default_input(&mut self) {
+        self.call_default_input = self.default_input.clone().filter(|name| {
+            self.control.is_some() && self.inputs.iter().any(|(_, listed)| listed == name)
+        });
+    }
+
+    /// Unmuting a lost microphone opens an input first. Whether the unmute
+    /// may go ahead: without an input the call stays muted and says why.
+    fn open_lost_input(&mut self, now: Instant) -> bool {
+        if !self.microphone_lost {
+            return true;
+        }
+        if let Some(control) = &self.control
+            && (self.replace_input)(control, None).is_err()
+        {
+            self.error = Some(MICROPHONE_DISCONNECTED_DETAIL.into());
+            return false;
+        }
+        self.clear_lost_microphone();
+        // If this input fails as it starts, the call mutes again.
+        self.input_reopened = Some(now);
+        true
+    }
+
+    /// The loss is over (an input opened, another was chosen, or the call
+    /// ended): its message goes with it.
+    fn clear_lost_microphone(&mut self) {
+        self.microphone_lost = false;
+        if self.error.as_deref() == Some(MICROPHONE_DISCONNECTED_DETAIL) {
+            self.error = None;
+        }
+    }
+
+    /// The input list changed. A remembered input that is no longer in it is
+    /// forgotten, since it could never open, and a call capturing an input
+    /// that has gone recovers.
+    fn inputs_changed(&mut self, now: Instant) {
+        let gone = input_gone(
+            self.preferences.input.as_deref(),
+            self.call_default_input.as_deref(),
+            &self.inputs,
+        );
+        if !gone {
+            if self.call_default_input.is_none() {
+                self.track_default_input();
+            }
+            return;
+        }
+        if self.control.is_some() && !self.state.audio.muted {
+            return self.input_lost(now);
+        }
+        self.track_default_input();
+        // Muted or not in a call: the next unmute or join opens the default.
+        if self.preferences.input.take().is_some()
+            && let Some(control) = &self.control
+        {
+            let _ = (self.replace_input)(control, None);
+        }
     }
 
     pub fn start_mic_test(&mut self) {
@@ -957,6 +1117,9 @@ impl Voice {
     fn select_device(&mut self, input: bool, guid: Option<String>) {
         if let Some(control) = &self.control {
             let result = match (input, guid.as_deref()) {
+                // No input works to fall back to; a failed choice must not
+                // end the call.
+                (true, guid) if self.microphone_lost => (self.replace_input)(control, guid),
                 (true, Some(guid)) => control.select_input(guid),
                 (false, Some(guid)) => control.select_output(guid),
                 (true, None) => control.select_default_input(),
@@ -973,6 +1136,10 @@ impl Voice {
         }
         if input {
             self.preferences.input = guid;
+            // Still muted, but the next unmute is an ordinary one.
+            self.clear_lost_microphone();
+            // "System default" now means whichever device is the default now.
+            self.track_default_input();
         } else {
             self.preferences.output = guid;
             // Web keeps a running speaker test playing on the new output.
@@ -986,6 +1153,9 @@ impl Voice {
     pub fn command(&mut self, operation: VoiceOperation) {
         let command = match operation {
             VoiceOperation::Mute(value) => {
+                if !value && !self.open_lost_input(Instant::now()) {
+                    return;
+                }
                 self.state.audio.set_muted(value);
                 Operation::Mute(value)
             }
@@ -1069,6 +1239,16 @@ impl Voice {
                 Report::Activity(g, activity) if g == self.state.generation => {
                     self.activity = activity;
                 }
+                Report::InputLost(g) if g == self.state.generation => {
+                    self.input_lost(Instant::now());
+                }
+                Report::Inputs(g, inputs, default) if g == self.state.generation => {
+                    if default.is_some() {
+                        self.default_input = default;
+                    }
+                    self.inputs = inputs;
+                    self.inputs_changed(Instant::now());
+                }
                 Report::Microphone(g, state) if g == self.microphone_generation => match state {
                     Ok(state) => {
                         let recorded = matches!(self.microphone, MicrophoneState::Recording(_))
@@ -1112,6 +1292,7 @@ impl Voice {
                                 .into_iter()
                                 .map(|device| (device.id, device.name))
                                 .collect();
+                            self.inputs_changed(Instant::now());
                         }
                         Err(error) => self.device_error = Some(error),
                     }
@@ -1216,6 +1397,18 @@ fn system_devices() -> SystemDevices {
         Some("Fixture microphone".into()),
         Some("Fixture headphones".into()),
     )
+}
+
+/// The system default input's name, so a call can notice that device
+/// leaving. As in `system_devices`.
+#[cfg(all(target_os = "windows", not(test)))]
+fn default_input_name(_inputs: &[(String, String)]) -> Option<String> {
+    windows_default_names().0.filter(|name| !name.is_empty())
+}
+
+#[cfg(not(all(target_os = "windows", not(test))))]
+fn default_input_name(inputs: &[(String, String)]) -> Option<String> {
+    inputs.first().map(|(_, name)| name.clone())
 }
 
 /// The WASAPI eConsole default input and output names, looked up on one
@@ -1811,6 +2004,227 @@ mod tests {
             .unwrap();
         voice.receive();
         assert_eq!(voice.activity, VoiceActivity::default());
+    }
+
+    thread_local! {
+        /// How often the fake hardware was asked for an input, and its answer.
+        static REPLACED: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, true)) };
+    }
+
+    fn fake_input(_: &JoinControl, _: Option<&str>) -> Result<(), String> {
+        let (asked, works) = REPLACED.get();
+        REPLACED.set((asked + 1, works));
+        works
+            .then_some(())
+            .ok_or_else(|| "system default microphone is unavailable".into())
+    }
+
+    /// An unmuted call whose hardware is `fake_input`, and what it tells
+    /// the room.
+    fn call_with_fake_input(works: bool) -> (Voice, Receiver<Operation>) {
+        REPLACED.set((0, works));
+        let mut voice = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            Repaint::new(|_| ()),
+        );
+        let (sender, room) = mpsc::channel();
+        voice.control = Some(JoinControl::new());
+        voice.commands = Some(sender);
+        voice.replace_input = fake_input;
+        (voice, room)
+    }
+
+    #[test]
+    fn a_lost_input_reopens_the_default_once_then_mutes_like_a_mute() {
+        let start = Instant::now();
+        let (mut voice, room) = call_with_fake_input(true);
+        voice.preferences.input = Some("usb-microphone".into());
+
+        voice.input_lost(start);
+        assert_eq!(REPLACED.get().0, 1, "the system default is opened");
+        assert!(
+            voice.preferences.input.is_none(),
+            "the lost choice is forgotten"
+        );
+        assert!(!voice.state.audio.muted && !voice.microphone_lost);
+        assert!(room.try_recv().is_err(), "the call keeps publishing");
+
+        // The replacement goes inside the window: no second reopen.
+        voice.input_lost(start + Duration::from_millis(9_999));
+        assert_eq!(REPLACED.get().0, 1, "one reopen only");
+        assert!(voice.state.audio.muted && voice.microphone_lost);
+        assert!(voice.control.is_some(), "the call stays connected");
+        assert_eq!(voice.error.as_deref(), Some(MICROPHONE_DISCONNECTED_DETAIL));
+        assert!(
+            matches!(room.try_recv(), Ok(Operation::Mute(true))),
+            "the room is told as for a mute the user pressed"
+        );
+        // Muted already: a late report changes nothing.
+        voice.input_lost(start + Duration::from_secs(60));
+        assert_eq!(REPLACED.get().0, 1);
+        assert!(room.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_replacement_that_lasts_ten_seconds_may_be_replaced_again() {
+        let start = Instant::now();
+        assert!(may_reopen_input(None, start));
+        assert!(!may_reopen_input(Some(start), start));
+        assert!(!may_reopen_input(
+            Some(start),
+            start + Duration::from_millis(9_999)
+        ));
+        assert!(may_reopen_input(
+            Some(start),
+            start + Duration::from_secs(10)
+        ));
+
+        let (mut voice, room) = call_with_fake_input(true);
+        voice.input_lost(start);
+        voice.input_lost(start + Duration::from_secs(10));
+        assert_eq!(REPLACED.get().0, 2);
+        assert!(!voice.state.audio.muted && !voice.microphone_lost);
+        assert!(room.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_default_that_cannot_open_mutes_at_once() {
+        let (mut voice, room) = call_with_fake_input(false);
+        voice.input_lost(Instant::now());
+        assert_eq!(REPLACED.get().0, 1);
+        assert!(voice.state.audio.muted && voice.microphone_lost);
+        assert!(matches!(room.try_recv(), Ok(Operation::Mute(true))));
+    }
+
+    #[test]
+    fn unmuting_a_lost_microphone_opens_an_input_first() {
+        let start = Instant::now();
+        let (mut voice, room) = call_with_fake_input(false);
+        voice.input_lost(start);
+        assert!(matches!(room.try_recv(), Ok(Operation::Mute(true))));
+        voice.error = None;
+
+        // No input: the unmute does not happen and says why.
+        voice.command(VoiceOperation::Mute(false));
+        assert_eq!(REPLACED.get().0, 2, "an input is asked for");
+        assert!(voice.state.audio.muted && voice.microphone_lost);
+        assert_eq!(voice.error.as_deref(), Some(MICROPHONE_DISCONNECTED_DETAIL));
+        assert!(room.try_recv().is_err(), "the room never hears an unmute");
+
+        // An input: it is opened, and only then is the call unmuted.
+        REPLACED.set((0, true));
+        voice.command(VoiceOperation::Mute(false));
+        assert_eq!(REPLACED.get().0, 1);
+        assert!(!voice.state.audio.muted && !voice.microphone_lost);
+        assert!(voice.error.is_none(), "its message goes with the loss");
+        assert!(matches!(room.try_recv(), Ok(Operation::Mute(false))));
+
+        // That input failing as it starts mutes again without another try.
+        voice.input_lost(Instant::now());
+        assert_eq!(REPLACED.get().0, 1);
+        assert!(voice.state.audio.muted && voice.microphone_lost);
+        assert!(matches!(room.try_recv(), Ok(Operation::Mute(true))));
+
+        // Choosing an input that opens makes the next unmute an ordinary one.
+        voice.command(VoiceOperation::Input("other-microphone".into()));
+        assert_eq!(REPLACED.get().0, 2, "chosen with nothing to fall back to");
+        assert!(!voice.microphone_lost && voice.state.audio.muted);
+        voice.command(VoiceOperation::Mute(false));
+        assert_eq!(REPLACED.get().0, 2);
+        assert!(!voice.state.audio.muted);
+    }
+
+    #[test]
+    fn the_device_list_forgets_a_missing_input_and_recovers_the_call() {
+        let listed = |names: &[&str]| -> Vec<(String, String)> {
+            names
+                .iter()
+                .map(|name| ((*name).to_owned(), (*name).to_owned()))
+                .collect()
+        };
+        assert!(input_gone(
+            Some("usb"),
+            Some("built-in"),
+            &listed(&["built-in"])
+        ));
+        assert!(!input_gone(Some("usb"), Some("gone"), &listed(&["usb"])));
+        assert!(input_gone(None, Some("usb"), &listed(&["built-in"])));
+        assert!(!input_gone(
+            None,
+            Some("usb"),
+            &listed(&["built-in", "usb"])
+        ));
+        assert!(!input_gone(None, None, &[]));
+
+        // Outside a call (Audio settings' refresh): the fixture list has no
+        // "usb", so the remembered choice is forgotten; a listed one stays.
+        let mut idle = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            Repaint::new(|_| ()),
+        );
+        for (remembered, kept) in [("usb", false), ("fixture-microphone", true)] {
+            idle.preferences.input = Some(remembered.into());
+            idle.device_request += 1;
+            let (devices, input, output) = system_devices();
+            idle.events
+                .send(Report::Devices(idle.device_request, devices, input, output))
+                .unwrap();
+            idle.receive();
+            assert_eq!(idle.preferences.input.is_some(), kept, "{remembered}");
+        }
+
+        // In a call: the chosen input leaves the list.
+        let (mut voice, room) = call_with_fake_input(true);
+        let generation = voice.state.generation;
+        let inputs = |voice: &mut Voice, names: &[&str], default: Option<&str>| {
+            voice
+                .events
+                .send(Report::Inputs(
+                    generation,
+                    listed(names),
+                    default.map(str::to_owned),
+                ))
+                .unwrap();
+            voice.receive();
+        };
+        voice.preferences.input = Some("usb".into());
+        inputs(&mut voice, &["built-in", "usb"], Some("built-in"));
+        assert_eq!(REPLACED.get().0, 0);
+        inputs(&mut voice, &["built-in"], Some("built-in"));
+        assert_eq!(REPLACED.get().0, 1, "the default replaces it");
+        assert!(voice.preferences.input.is_none() && !voice.state.audio.muted);
+
+        // On the system default (now "built-in"): the default moving to a
+        // new device, or its name being unreadable, loses nothing while the
+        // captured device is still listed. That device leaving does, and
+        // inside the window it mutes.
+        inputs(&mut voice, &["built-in", "headset"], Some("headset"));
+        inputs(&mut voice, &["built-in"], None);
+        assert_eq!(REPLACED.get().0, 1);
+        assert!(!voice.state.audio.muted);
+        inputs(&mut voice, &["headset"], Some("headset"));
+        assert_eq!(REPLACED.get().0, 1, "one reopen only");
+        assert!(voice.state.audio.muted && voice.microphone_lost);
+        assert!(matches!(room.try_recv(), Ok(Operation::Mute(true))));
+
+        // Muted: a missing choice is still forgotten, and capture is told.
+        voice.command(VoiceOperation::Input("usb".into()));
+        assert_eq!(REPLACED.get().0, 2);
+        inputs(&mut voice, &["headset", "usb"], Some("headset"));
+        assert_eq!(voice.preferences.input.as_deref(), Some("usb"));
+        inputs(&mut voice, &["headset"], Some("headset"));
+        assert!(voice.preferences.input.is_none());
+        assert_eq!(REPLACED.get().0, 3);
+        assert!(room.try_recv().is_err());
+
+        // Unmuted on the default again ("headset"), outside the window: its
+        // leaving is replaced once more.
+        voice.command(VoiceOperation::Mute(false));
+        assert!(matches!(room.try_recv(), Ok(Operation::Mute(false))));
+        voice.input_reopened = None;
+        inputs(&mut voice, &["built-in"], Some("built-in"));
+        assert_eq!(REPLACED.get().0, 4);
+        assert!(!voice.state.audio.muted && !voice.microphone_lost);
     }
 
     #[test]

@@ -103,6 +103,18 @@ impl App {
             .set(super::audio::PREFERENCES, &self.voice.borrow().preferences);
     }
 
+    /// Reads the call's reports. An input choice they forget, because its
+    /// device is gone, is forgotten in the saved preferences too.
+    pub(super) fn receive_reports(&self) {
+        let mut voice = self.voice.borrow_mut();
+        let input = voice.preferences.input.clone();
+        voice.receive();
+        if voice.preferences.input != input {
+            self.prefs
+                .set(super::audio::PREFERENCES, &voice.preferences);
+        }
+    }
+
     /// Which channels' rosters a new gateway connection watches: the open
     /// space's joined channels, while the open channel or DM is joined (as
     /// desktop, so a DM keeps the sidebar's live rooms).
@@ -372,8 +384,8 @@ impl App {
 
     /// Reads the call's reports and plays its sounds.
     pub(super) fn receive_voice(self: &Rc<Self>) {
-        let mut voice = self.voice.borrow_mut();
-        voice.receive();
+        self.receive_reports();
+        let voice = self.voice.borrow();
         let mut heard = self.heard.borrow_mut();
         if let Ok(mut state) = self.state.try_borrow_mut()
             && state
@@ -429,7 +441,7 @@ impl App {
             let Some(app) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            app.voice.borrow_mut().receive();
+            app.receive_reports();
             app.render_voice();
             app.render_layout();
             if matches!(app.voice.borrow().state.phase, Phase::Idle) {
@@ -787,10 +799,11 @@ impl App {
             .map(|context| self.voice_people(&state, &context.channel_id))
             .unwrap_or_default();
         let key = format!(
-            "{:?}|{:?}|{:?}|{}",
+            "{:?}|{:?}|{:?}|{}|{}",
             voice.state.phase,
             error,
             toggles,
+            voice.microphone_lost,
             people
                 .iter()
                 .map(|person| format!(
@@ -888,6 +901,10 @@ impl App {
                 Phase::Joining(_) => "Connecting…",
                 Phase::Reconnecting(_) => "Reconnecting…",
                 Phase::Failed(_) => "Disconnected",
+                // Connected, but muted because its input went away.
+                Phase::Connected(_) if self.voice.borrow().microphone_lost => {
+                    voice::MICROPHONE_DISCONNECTED
+                }
                 _ => "",
             },
             &["small", "call-status"],

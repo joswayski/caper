@@ -161,8 +161,7 @@ pub struct Composer {
     /// Where a narrow thread's microphone goes: beside "Also send to"
     /// (`app::panes`).
     pub mic_slot: Option<gtk::Box>,
-    /// The draft's link preview card, with "Remove link preview" (main
-    /// composer only).
+    /// The draft's link preview card, with "Remove link preview".
     pub preview: gtk::Box,
     /// The input row, which the recording bar replaces while recording.
     pub line: gtk::Box,

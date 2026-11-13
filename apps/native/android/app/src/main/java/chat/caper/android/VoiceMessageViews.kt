@@ -527,8 +527,11 @@ private class VoiceNoteRecorder(private val context: Context) {
     private var startedAt = 0L
     private var samples = IntArray(512)
     private var count = 0
+    private var plainLost = false
 
     val elapsedMs get() = if (recorder == null && processed == null) 0L else SystemClock.elapsedRealtime() - startedAt
+    /** The microphone went away under the recording, which has stopped taking audio. */
+    val inputLost get() = processed?.inputLost == true || plainLost
 
     fun start() {
         // One recording at a time: anything left here is an abandoned one.
@@ -541,6 +544,7 @@ private class VoiceNoteRecorder(private val context: Context) {
         file = output
         startedAt = SystemClock.elapsedRealtime()
         count = 0
+        plainLost = false
     }
 
     private fun plainRecorder(output: File): MediaRecorder {
@@ -553,6 +557,7 @@ private class VoiceNoteRecorder(private val context: Context) {
             next.setAudioSamplingRate(44_100)
             next.setAudioEncodingBitRate(64_000)
             next.setOutputFile(output.absolutePath)
+            next.setOnErrorListener { failed, _, _ -> if (recorder === failed) plainLost = true }
             next.prepare()
             next.start()
         } catch (error: Throwable) {
@@ -712,6 +717,11 @@ private class VoiceNoteRecorder(private val context: Context) {
         }
         elapsedMs = recorder.elapsedMs
         if (elapsedMs >= VoiceMessages.MAX_DURATION_MS) stop()
+        else if (recorder.inputLost) {
+            // As at the limit (web's onLimit): what was captured is kept; say why it ended early.
+            stop()
+            error("The microphone disconnected, so the recording stopped.")
+        }
         return live.nextSampleIn(now)
     }
 

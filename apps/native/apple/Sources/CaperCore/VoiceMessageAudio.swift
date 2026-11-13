@@ -296,7 +296,10 @@ final class VoiceMessageRecorder {
         if elapsedMs >= VoiceMessage.maximumDurationMs || !running {
             let limit = onLimit
             onLimit = nil
+            // Stopped well short of the limit: the input ended it, so say why.
+            let lost = !running && elapsedMs < VoiceMessage.maximumDurationMs - 1000 ? owner : nil
             limit?()
+            if let lost { show(VoiceMessage.inputLost, for: lost, seconds: 6) }
         }
     }
 

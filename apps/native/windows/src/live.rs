@@ -394,6 +394,9 @@ pub struct Live {
     /// The main composer's link card, and its request in flight.
     pub preview: caper_client::embeds::ComposerPreview,
     preview_pending: Option<std::sync::mpsc::Receiver<(String, Option<core::Embed>)>>,
+    /// The same for the open thread's reply box.
+    pub thread_preview: caper_client::embeds::ComposerPreview,
+    thread_preview_pending: Option<std::sync::mpsc::Receiver<(String, Option<core::Embed>)>>,
     pub uploads: Option<caper_client::compress::Compression>,
     pub uploads_checked: bool,
     local: Vec<(String, caper_client::Rgba)>,
@@ -504,7 +507,7 @@ pub enum VoiceAction {
 /// Your call as the sidebar's card shows it.
 #[derive(Clone, PartialEq, Debug)]
 pub struct CallView {
-    /// Connecting, reconnecting or connected (None).
+    /// Connecting, reconnecting, a lost microphone or connected (None).
     pub status: Option<&'static str>,
     pub channel: String,
     pub space: String,
@@ -682,6 +685,8 @@ impl Live {
             dictations: 0,
             preview: Default::default(),
             preview_pending: None,
+            thread_preview: Default::default(),
+            thread_preview_pending: None,
             uploads: None,
             uploads_checked: false,
             local: Vec::new(),
@@ -1919,22 +1924,25 @@ impl Live {
         Some(self.dictations)
     }
 
-    /// The main composer's link card for `draft`: takes an answer that
-    /// arrived, then asks about the draft's link once it has stayed for
-    /// the debounce. Whether the card changed, and when to look again.
-    pub fn preview_tick(&mut self, draft: &str) -> (bool, Option<Duration>) {
-        let before = self.preview.card().cloned();
-        if let Some(pending) = &self.preview_pending
-            && let Ok((url, embed)) = pending.try_recv()
+    /// The link card for `draft`, the main composer's or (with `thread`) the
+    /// open thread's reply box: takes an answer that arrived, then asks
+    /// about the draft's link once it has stayed for the debounce. Whether
+    /// the card changed, and when to look again.
+    pub fn preview_tick(&mut self, thread: bool, draft: &str) -> (bool, Option<Duration>) {
+        let (preview, pending) = if thread {
+            (&mut self.thread_preview, &mut self.thread_preview_pending)
+        } else {
+            (&mut self.preview, &mut self.preview_pending)
+        };
+        let before = preview.card().cloned();
+        if let Some(receiver) = pending.as_ref()
+            && let Ok((url, embed)) = receiver.try_recv()
         {
-            self.preview_pending = None;
-            self.preview.answer(url, embed);
+            *pending = None;
+            preview.answer(url, embed);
         }
         let mut wait = None;
-        match self
-            .preview
-            .due(draft, self.token.is_some(), std::time::Instant::now())
-        {
+        match preview.due(draft, self.token.is_some(), std::time::Instant::now()) {
             (Some(url), _) => {
                 if let (Some(api), Some(token)) = (self.media.api().cloned(), self.token.clone()) {
                     let (sender, receiver) = std::sync::mpsc::channel();
@@ -1944,12 +1952,12 @@ impl Live {
                         let _ = sender.send((url, embed));
                         host.wake();
                     });
-                    self.preview_pending = Some(receiver);
+                    *pending = Some(receiver);
                 }
             }
             (None, after) => wait = after,
         }
-        (before.as_ref() != self.preview.card(), wait)
+        (before.as_ref() != preview.card(), wait)
     }
 
     /// Removes a composer file, stopping its upload and giving up the
@@ -2139,8 +2147,13 @@ impl Live {
             return;
         };
         let client_id = uuid::Uuid::new_v4().to_string();
-        // The channel composer's removed card sends without previews.
-        let suppress_embeds = thread.is_none() && self.preview.removed(&text);
+        // A removed card sends without previews: the channel composer's,
+        // or the reply box's for a thread reply.
+        let suppress_embeds = if thread.is_some() {
+            self.thread_preview.removed(&text)
+        } else {
+            self.preview.removed(&text)
+        };
         self.worker.send(Command::Send {
             generation: self.generation,
             token: self.token.clone(),
@@ -3726,6 +3739,13 @@ impl Live {
         let muted = self.voice.state.audio.muted;
         self.voice.command(VoiceOperation::Mute(!muted));
         self.effects.toggle(muted);
+        // An unmute that found no microphone says why; the call's card has
+        // room only for its status.
+        if muted && self.voice.state.audio.muted && self.voice.microphone_lost {
+            self.queued.push(Update::Warning(
+                caper_client::voice::MICROPHONE_DISCONNECTED_DETAIL.into(),
+            ));
+        }
         self.queued.push(Update::Voice);
     }
 
@@ -3757,6 +3777,10 @@ impl Live {
         let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
         Some(CallView {
             status: match self.voice.state.phase {
+                // Connected, but muted because its input went away.
+                Phase::Connected(_) if self.voice.microphone_lost => {
+                    Some(caper_client::voice::MICROPHONE_DISCONNECTED)
+                }
                 Phase::Connected(_) => None,
                 Phase::Joining(_) => Some("Connecting\u{2026}"),
                 _ => Some("Reconnecting\u{2026}"),
@@ -3780,7 +3804,12 @@ impl Live {
     /// join sound, others arriving or leaving their chimes. Whether what
     /// voice shows changed.
     fn receive_voice(&mut self) -> bool {
+        let input = self.voice.preferences.input.clone();
         self.voice.receive();
+        // A choice forgotten because its device is gone stays forgotten.
+        if self.voice.preferences.input != input {
+            crate::settings::audio::save_preferences(&self.voice.preferences);
+        }
         if self
             .pending_join
             .as_ref()
@@ -3833,7 +3862,7 @@ impl Live {
                 (&v.microphone, &v.microphone_error, v.speaker_testing),
                 (v.speaker_failed, &v.inputs, &v.outputs, &v.preferences),
                 (&v.default_input, &v.default_output, &v.device_error),
-                v.refreshing_devices,
+                (v.refreshing_devices, v.microphone_lost),
             ),
         );
         if seen == self.voice_seen {

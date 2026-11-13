@@ -3021,7 +3021,7 @@ impl App {
 
     fn draw_panels(&mut self) -> Result<()> {
         let s = self.scale;
-        let preview_thumb = self.preview_thumb();
+        let preview_thumb = self.preview_thumb(false);
         let (space_badges, channel_badges) = self.badges();
         let space_muted: Vec<bool> = (0..self.c.spaces.len())
             .map(|i| self.space_muted(i).is_some())

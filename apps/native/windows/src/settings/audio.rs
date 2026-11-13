@@ -162,7 +162,7 @@ fn egui_preferences(ron: &str) -> Option<String> {
     map.remove("audio-preferences-v1")
 }
 
-fn save_preferences(preferences: &Preferences) {
+pub fn save_preferences(preferences: &Preferences) {
     let Some(path) = preferences_path() else {
         return;
     };

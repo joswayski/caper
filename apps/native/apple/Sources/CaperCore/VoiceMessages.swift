@@ -49,6 +49,8 @@ public enum VoiceMessage {
     public static let permissionDenied = "Microphone access is needed to record voice messages"
     public static let recordingFailed = "Couldn’t record a voice message. Try again."
     public static let interrupted = "Recording was interrupted."
+    /// The input went away or changed format mid-recording; what was recorded is kept.
+    public static let inputLost = "The microphone changed, so the recording stopped."
 
     /// The per-device setting (off by default) and where it is stored.
     public static let sendOnStopTitle = "Send voice messages as soon as I stop recording"

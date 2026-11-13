@@ -262,6 +262,11 @@ pub fn enumerate_audio_devices() -> Result<AudioDevices, String> {
     Ok(devices)
 }
 
+fn input_listed(factory: &PeerConnectionFactory, guid: &str) -> bool {
+    (0..factory.recording_devices().max(0) as u16)
+        .any(|index| factory.recording_device_guid(index) == guid)
+}
+
 fn select_device(factory: &PeerConnectionFactory, guid: &str, input: bool) -> bool {
     if guid.is_empty() {
         return false;
@@ -686,6 +691,8 @@ pub struct JoinControl {
     activated: Arc<AtomicBool>,
     testing: Arc<AtomicBool>,
     capture: Arc<Mutex<Option<MicTestControl>>>,
+    /// An unmuted call's input could not be opened; the call takes this.
+    capture_failed: Arc<AtomicBool>,
     device_intent: Arc<Mutex<DeviceIntent>>,
     input_processing: Arc<Mutex<InputProcessing>>,
     processing_diagnostics: Arc<Mutex<Option<AudioProcessingDiagnostics>>>,
@@ -832,6 +839,7 @@ impl JoinControl {
             activated: Arc::new(AtomicBool::new(false)),
             testing: Arc::new(AtomicBool::new(false)),
             capture: Arc::new(Mutex::new(None)),
+            capture_failed: Arc::new(AtomicBool::new(false)),
             device_intent: Arc::new(Mutex::new(DeviceIntent::default())),
             input_processing: Arc::new(Mutex::new(InputProcessing::default())),
             processing_diagnostics: Arc::new(Mutex::new(None)),
@@ -985,14 +993,29 @@ impl JoinControl {
     }
 
     pub fn select_input(&self, guid: &str) -> Result<(), String> {
-        self.select_input_route(Some(guid))
+        self.select_input_route(Some(guid), true)
     }
 
     pub fn select_default_input(&self) -> Result<(), String> {
-        self.select_input_route(None)
+        self.select_input_route(None, true)
     }
 
-    fn select_input_route(&self, guid: Option<&str>) -> Result<(), String> {
+    /// The input in use went away: capture moves to `guid`, or to the system
+    /// default. There is no previous input to fall back to, so a failure
+    /// leaves capture closed for the caller to mute, and never ends the call.
+    pub fn replace_lost_input(&self, guid: Option<&str>) -> Result<(), String> {
+        self.select_input_route(guid, false)?;
+        // A failed open closed capture; an unmuted call opens it again.
+        self.enforce_local_audio()
+    }
+
+    /// Whether an unmuted call's input failed to open since the last call
+    /// of this. Capture is closed; the call itself is unaffected.
+    pub fn take_capture_failure(&self) -> bool {
+        self.capture_failed.swap(false, Ordering::AcqRel)
+    }
+
+    fn select_input_route(&self, guid: Option<&str>, fallback: bool) -> Result<(), String> {
         if self.is_cancelled() {
             return Err("voice call was stopped".into());
         }
@@ -1019,7 +1042,7 @@ impl JoinControl {
                     Some(guid) => capture.select_input(guid),
                     None => capture.select_default_input(),
                 };
-                if chosen.is_err() {
+                if chosen.is_err() && fallback {
                     // An unplugged or busy microphone keeps the call on the one
                     // in use before this switch; only if that fails too does
                     // the call end.
@@ -1041,13 +1064,14 @@ impl JoinControl {
                     audio.microphone.set_enabled(true);
                 }
             }
-            if result.as_ref().is_none_or(Result::is_ok) {
+            // Without a fallback the old input is gone either way.
+            if !fallback || result.as_ref().is_none_or(Result::is_ok) {
                 intent.input = Some(guid.map(str::to_owned));
             }
             (result.unwrap_or(Ok(())), reverted)
         };
         let (result, reverted) = result;
-        if result.is_err() && !reverted {
+        if result.is_err() && !reverted && fallback {
             self.cancel();
         }
         result
@@ -1581,14 +1605,23 @@ impl NativeSession {
                         result = live_microphone.reconnect_live(requested, selected_input.as_deref()) => result,
                     };
                     if !matches!(rebound, Ok(true)) {
-                        // A failed reopen (device busy or unplugged) cancels the
-                        // private capture for good. End the call so the user is
-                        // told, instead of looking unmuted while sending silence.
-                        if rebound.is_err()
-                            && (capture_gate.requested_epoch() == Some(requested)
-                                || capture_gate.is_cancelled())
-                        {
-                            break;
+                        if rebound.is_err() {
+                            if capture_gate.is_cancelled() {
+                                break;
+                            }
+                            // The input did not open (busy, unplugged, none
+                            // left). Close capture and tell the call, which
+                            // tries the system default once and otherwise
+                            // mutes, instead of looking unmuted while sending
+                            // silence. The call stays connected.
+                            if capture_gate.requested_epoch() == Some(requested) {
+                                if capture_gate.set_live_recording(false).is_err() {
+                                    break;
+                                }
+                                capture_control
+                                    .capture_failed
+                                    .store(true, Ordering::Release);
+                            }
                         }
                         continue;
                     }

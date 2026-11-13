@@ -1686,7 +1686,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val direct = state.selectedChannel?.direct == true
     val conversation = "${if (direct) "" else "#"}${state.selectedChannel?.name.orEmpty()}"
     BackHandler { viewModel.closeThread() }
-    fun send() {
+    // [preview] is the composer's link card; a retry resends the pending reply as it was.
+    fun send(preview: LinkPreview? = null) {
         if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
         if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
         // "Also send to channel" applies to one reply, so it resets with the draft.
@@ -1694,8 +1695,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             val sent = draft.text
             val sentBroadcast = broadcast
             val clear = { draft = TextFieldValue(""); broadcast = false }
+            // As in the channel composer: the card shown rides on the pending row; a removed one sends without cards.
             if (viewModel.send(sent, threadRootId = thread.rootId, broadcast = sentBroadcast,
-                unchanged = { draft.text == sent && broadcast == sentBroadcast }, accepted = clear)) clear()
+                unchanged = { draft.text == sent && broadcast == sentBroadcast }, accepted = clear,
+                suppressEmbeds = preview?.removed(sent) == true, embeds = listOfNotNull(preview?.embed))) clear()
         }
     }
     Box(Modifier.onSizeChanged { swipeWidth = it.width }
@@ -1728,7 +1731,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 }
                             }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
                             TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
-                        } else TextButton(::send, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+                        } else TextButton({ send() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
                     }
                 }
                 if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
@@ -1741,6 +1744,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
                 if (state.uploadSendTarget == target) UploadWaitNotice()
+                // Signed in, the reply's first link shows its card inside the field, like the channel composer's.
+                val preview = rememberLinkPreview(if (state.account != null) draft.text else "", thread.rootId, viewModel::linkPreview)
+                val sendReply = { send(preview) }
                 DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 // A voice reply goes on its own; the draft text stays, "Also send to" applies to it and resets.
                 // Stopping stages the recording with the reply's files; with "send as soon as I stop" it goes on its own.
@@ -1772,7 +1778,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 // One transformation per mention source, so typing and presence updates don't refilter the draft.
                 val source = mentionSource(state)
                 val transformation = remember(source) { MentionVisualTransformation(source) }
-                SuggestingComposer(draft, { draft = it }, source, thread.rootId, ::send,
+                SuggestingComposer(draft, { draft = it }, source, thread.rootId, sendReply,
                     focusRequest = state.composerFocusRequest?.takeIf { it.channelId == state.selectedChannel?.id && it.rootId == thread.rootId },
                     focusEnabled = !thread.loading, consumeFocus = viewModel::consumeComposerFocus) { field, change, actions ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
@@ -1783,7 +1789,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 leadingIcon = {
                                     AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
                                         drawer = AttachDrawerHost(files, viewModel::removeDraft,
-                                            canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null, send = ::send))
+                                            canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null, send = sendReply))
                                 },
                                 trailingIcon = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1796,10 +1802,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                         if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
                                     }
                                 },
-                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors(),
+                                below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } })
                             // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
                             FilledIconButton(
-                                ::send, modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
+                                sendReply, modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
                                 enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()),
                                 shape = MaterialTheme.shapes.small,
                                 colors = IconButtonDefaults.filledIconButtonColors(
@@ -2529,8 +2536,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         // Keep the message keys stable while inserting purely presentational day boundaries.
         items(rows, key = { it.key }, contentType = { if (it is TimelineRow.Blocked) "blocked" else "message" }) { row ->
             val message = row.first
-            val previous = row.previous
-            val divider = previous == null || !sameLocalDay(previous.createdAt, message.createdAt)
+            val divider = startsDay(row)
             val revealed = if (row is TimelineRow.Blocked) row.run.revealed else collapsesFor(message, blocked, selfId)
             // The initial date stays outside the group; later dates stay within it.
             if (divider && row is TimelineRow.Blocked) DateDivider(message.createdAt)
@@ -2734,6 +2740,13 @@ internal sealed interface TimelineRow {
         override val first get() = run.first
     }
 }
+
+/**
+ * Whether a date divider goes above [row], in a channel and in a thread alike: the first row shown
+ * (a thread's root or, without it, its first reply) and each row on another local day than the one above.
+ */
+internal fun startsDay(row: TimelineRow, zoneId: ZoneId = ZoneId.systemDefault()): Boolean =
+    row.previous.let { it == null || !sameLocalDay(it.createdAt, row.first.createdAt, zoneId) }
 
 /** A revealed run lists its messages under its Hide row, without repeating the day divider. */
 internal fun timelineRows(entries: List<TimelineEntry>): List<TimelineRow> = buildList {

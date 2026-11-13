@@ -3422,6 +3422,8 @@ public final class ChatModel {
             if let threadRootID {
                 if threadDrafts[threadRootID] != newValue { composerRevision += 1 }
                 threadDrafts[threadRootID] = newValue
+                // As the channel draft: a sent or cleared reply starts over.
+                if newValue.isEmpty { removedThreadPreviewLinks[threadRootID] = nil }
             }
         }
     }
@@ -3501,6 +3503,12 @@ public final class ChatModel {
     private var shownPreview: (url: String, embed: ChatEmbed?)?
     /// The link whose card was removed; it lasts while that link stays first in the draft.
     private var removedPreviewLink: String?
+    /// The thread composer's own card, and each thread draft's removed link by root.
+    private var threadShownPreview: (url: String, embed: ChatEmbed?)?
+    private var removedThreadPreviewLinks: [String: String] = [:]
+    private func removedLink(inThread: Bool) -> String? {
+        inThread ? threadRootID.flatMap { removedThreadPreviewLinks[$0] } : removedPreviewLink
+    }
     /// Staged originals this device sent, shown while the server processes
     /// them; removed once the attachment is ready or failed.
     private var localAttachmentCopies: [String: URL] = [:]
@@ -4127,10 +4135,12 @@ public final class ChatModel {
             attachment.spoiler = item.spoiler
             return attachment
         } : []
-        // Removing the channel composer's card sends without previews (a retry keeps the command's choice).
-        let suppressEmbeds = !inThread && removedPreviewLink != nil && LinkEmbeds.previewLink(in: text) == removedPreviewLink
+        // Removing a composer's card sends without previews (a retry keeps the command's choice).
+        let removed = removedLink(inThread: inThread)
+        let suppressEmbeds = removed != nil && LinkEmbeds.previewLink(in: text) == removed
         // The card already shown for this draft rides on the pending row, so it keeps its final height.
-        let shownEmbeds = !inThread && gif == nil && !suppressEmbeds && text == draft ? composerLinkPreview.map { [$0] } ?? [] : []
+        let shownEmbeds = gif == nil && !suppressEmbeds && text == (inThread ? threadDraft : draft)
+            ? draftLinkPreview(inThread: inThread).map { [$0] } ?? [] : []
         var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast,
                                      replyTo: replyTargets[rootID ?? "channel"], gif: gif, suppressEmbeds: suppressEmbeds, embeds: shownEmbeds)
         if newSubmission {
@@ -4519,31 +4529,38 @@ public final class ChatModel {
 
     /// The channel draft's first link that will get a card, while signed in
     /// (guests and previews get none). The composer reloads its card when this changes.
-    public var composerPreviewLink: String? {
+    public var composerPreviewLink: String? { draftPreviewLink(inThread: false) }
+    /// The same for either composer: the thread's reads the open thread's draft.
+    public func draftPreviewLink(inThread: Bool) -> String? {
         guard canInteract, currentAuthor?.isGuest == false else { return nil }
-        return LinkEmbeds.previewLink(in: draft)
+        return LinkEmbeds.previewLink(in: inThread ? threadDraft : draft)
     }
 
     /// The card shown above the channel composer, if the current first link has one.
-    public var composerLinkPreview: ChatEmbed? {
-        guard let link = composerPreviewLink, link != removedPreviewLink, let shown = shownPreview, shown.url == link else { return nil }
+    public var composerLinkPreview: ChatEmbed? { draftLinkPreview(inThread: false) }
+    public func draftLinkPreview(inThread: Bool) -> ChatEmbed? {
+        guard let link = draftPreviewLink(inThread: inThread), link != removedLink(inThread: inThread),
+              let shown = inThread ? threadShownPreview : shownPreview, shown.url == link else { return nil }
         return shown.embed
     }
 
     /// The composer's ×: the message is sent with `suppressEmbeds` while this link stays first.
-    public func removeComposerLinkPreview() { removedPreviewLink = composerPreviewLink }
+    public func removeComposerLinkPreview(inThread: Bool = false) {
+        if !inThread { removedPreviewLink = composerPreviewLink }
+        else if let threadRootID { removedThreadPreviewLinks[threadRootID] = draftPreviewLink(inThread: true) }
+    }
 
     /// Fetches the first link's card after 400 ms of quiet typing. The
-    /// composer runs it as a task keyed by `composerPreviewLink`, so a newer
+    /// composer runs it as a task keyed by its preview link, so a newer
     /// draft cancels it. Errors only mean no card.
-    public func loadComposerLinkPreview() async {
-        guard let link = composerPreviewLink, link != removedPreviewLink else { return }
-        if shownPreview?.url == link { return }
+    public func loadComposerLinkPreview(inThread: Bool = false) async {
+        guard let link = draftPreviewLink(inThread: inThread), link != removedLink(inThread: inThread) else { return }
+        if (inThread ? threadShownPreview : shownPreview)?.url == link { return }
         try? await Task.sleep(for: .milliseconds(400))
-        guard !Task.isCancelled, composerPreviewLink == link else { return }
+        guard !Task.isCancelled, draftPreviewLink(inThread: inThread) == link else { return }
         let embed = (try? await api.embedPreview(url: link)) ?? nil
-        guard !Task.isCancelled, composerPreviewLink == link else { return }
-        shownPreview = (url: link, embed: embed)
+        guard !Task.isCancelled, draftPreviewLink(inThread: inThread) == link else { return }
+        if inThread { threadShownPreview = (url: link, embed: embed) } else { shownPreview = (url: link, embed: embed) }
     }
 
     /// Typing follows edits, not a draft restored on opening its conversation.
@@ -4801,7 +4818,7 @@ public final class ChatModel {
         delivery.reset(preservingPending: preservingPending)
         reactionSnapshots.reset(); attachmentSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
         embedSnapshots.reset()
-        if !preservingPending { shownPreview = nil; removedPreviewLink = nil }
+        if !preservingPending { shownPreview = nil; removedPreviewLink = nil; threadShownPreview = nil; removedThreadPreviewLinks = [:] }
         if !preservingPending {
             pendingDrafts.forEach { AttachmentStaging.remove($0.localURL) }
             releasePendingUploads()

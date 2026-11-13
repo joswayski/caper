@@ -809,18 +809,19 @@ public struct UIKitSpaceRailTile: View {
     }
 }
 
-/// Inside the channel composer's box: the draft's first link card, loaded
-/// after a pause in typing, with × to send without it.
+/// Inside the channel or thread composer's box: the draft's first link card,
+/// loaded after a pause in typing, with × to send without it.
 public struct UIKitComposerLinkPreview: View {
     let chat: ChatModel
-    public init(chat: ChatModel) { self.chat = chat }
+    let inThread: Bool
+    public init(chat: ChatModel, inThread: Bool = false) { self.chat = chat; self.inThread = inThread }
     public var body: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: 0)
-            ComposerEmbedPreview(chat: chat)
+            ComposerEmbedPreview(chat: chat, inThread: inThread)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
+        .task(id: chat.draftPreviewLink(inThread: inThread)) { await chat.loadComposerLinkPreview(inThread: inThread) }
         .preferredColorScheme(.dark)
     }
 }
