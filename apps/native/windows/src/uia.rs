@@ -60,6 +60,8 @@ pub enum Id {
     DmItem(usize),
     /// The account footer's gear, its menu and the menu's items.
     Gear,
+    /// The header's Show/Hide member list button.
+    MembersToggle,
     /// "Update available" above the footer (`updates`).
     UpdateDock,
     AccountMenu,
@@ -311,6 +313,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             } else if a.c.has_conversation() {
                 out.push(Id::Composer);
             }
+            if a.members_toggle_rect().is_some() {
+                out.push(Id::MembersToggle);
+            }
             if a.members_w() > 0.0 {
                 out.push(Id::Members);
             }
@@ -497,6 +502,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Waiting => a.note.is_some(),
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
         Id::Gear => a.foot_shown(),
+        Id::MembersToggle => a.members_toggle_rect().is_some() && a.dialog.is_none(),
         Id::UpdateDock => a.update_dock_rect().is_some(),
         Id::AccountMenu => a.account_menu.is_some(),
         Id::DirectOptions(k) => a
@@ -619,6 +625,12 @@ fn name(a: &App, id: Id) -> String {
         Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
         Id::Settings(p) => a.settings.as_ref().map_or_else(String::new, |s| s.name(p)),
         Id::Gear | Id::AccountMenu => "User Settings".into(),
+        Id::MembersToggle => if a.members_hidden {
+            "Show member list"
+        } else {
+            "Hide member list"
+        }
+        .into(),
         Id::UpdateDock => "Update available".into(),
         Id::DirectOptions(k) => a.direct_rows().get(k).map_or_else(String::new, |r| {
             format!("Conversation options for {}", r.name)
@@ -933,7 +945,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Settings(crate::settings::SPart::Delete) => UIA_HyperlinkControlTypeId,
         Id::Settings(p) if p.is_radio() => UIA_RadioButtonControlTypeId,
         Id::Settings(p) if p.is_toggle() => UIA_CheckBoxControlTypeId,
-        Id::Settings(_) | Id::Gear | Id::UpdateDock => UIA_ButtonControlTypeId,
+        Id::Settings(_) | Id::Gear | Id::UpdateDock | Id::MembersToggle => UIA_ButtonControlTypeId,
         Id::AccountMenu | Id::DmMenu => UIA_MenuControlTypeId,
         Id::DmItem(_) => UIA_MenuItemControlTypeId,
         Id::DirectOptions(_) | Id::SpaceOptions | Id::ChannelOptions(_) => UIA_ButtonControlTypeId,
@@ -1001,6 +1013,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Settings(p) => (38, p.index()),
         Id::Gear => (39, 0),
         Id::UpdateDock => (39, 1),
+        Id::MembersToggle => (39, 2),
         Id::AccountMenu => (40, 0),
         Id::DirectOptions(k) => (43, k),
         Id::DmMenu => (44, 0),
@@ -1152,6 +1165,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .and_then(|s| s.part_rect(p))
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Gear => a.gear_rect(),
+        Id::MembersToggle => a.members_toggle_rect().unwrap_or_default(),
         Id::UpdateDock => a.update_dock_rect().unwrap_or_default(),
         Id::AccountMenu => a.account_menu_rect(),
         Id::DirectOptions(k) => a.direct_options_rect(k),
@@ -1368,6 +1382,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Settings(_)
             | Id::Voice(_)
             | Id::Gear
+            | Id::MembersToggle
             | Id::UpdateDock
             | Id::AccountItem(_)
             | Id::DirectOptions(_)
@@ -1591,6 +1606,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::NewDirect
                         | Id::Invite(_)
                         | Id::Gear
+                        | Id::MembersToggle
                         | Id::UpdateDock
                         | Id::AccountItem(_)
                         | Id::DirectOptions(_)
@@ -1858,6 +1874,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Settings(p) => a.settings_activate(p),
                 Id::Voice(p) => a.voice_activate(p),
                 Id::Gear => a.toggle_account_menu(),
+                Id::MembersToggle => a.toggle_members(),
                 Id::UpdateDock => a.open_update_review(),
                 Id::AccountItem(k) => a.account_activate(k),
                 Id::DirectOptions(k) => a.toggle_dm_menu(k),
@@ -2738,6 +2755,7 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
         | Id::SpaceOptions
         | Id::ChannelOptions(_)
         | Id::Gear
+        | Id::MembersToggle
         | Id::ReplyCancel
         | Id::Tool(..)
         | Id::Control(_, Action::Add)

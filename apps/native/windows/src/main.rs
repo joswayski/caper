@@ -294,6 +294,10 @@ pub struct App {
     pub dm_menu: Option<directs::DmMenu>,
     dm_menu_p: Panel,
     gear_hover: bool,
+    /// The header's member-list toggle: the list is hidden, and the
+    /// pointer is over the toggle.
+    pub members_hidden: bool,
+    members_toggle_hover: bool,
     /// Self-updates, the version "Update available" offers, and whether
     /// it is hovered (`updates`).
     pub updates: caper_client::updates::Updates,
@@ -554,6 +558,8 @@ impl App {
                 dm_menu: None,
                 dm_menu_p,
                 gear_hover: false,
+                members_hidden: false,
+                members_toggle_hover: false,
                 updates: caper_client::updates::Updates::start(|| {}, false),
                 update_dock: None,
                 update_dock_hover: false,
@@ -1159,6 +1165,36 @@ impl App {
         self.arm_typing();
     }
 
+    /// The header's member-list toggle (client DIPs), in a space's channel
+    /// with members, as in egui.
+    pub fn members_toggle_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        (self.c.has_conversation() && self.c.direct.is_none() && !self.c.members.is_empty()).then(
+            || {
+                (
+                    self.list_x() + self.list_w() - 18.0 - 28.0,
+                    (HEADER_H - 28.0) / 2.0,
+                    28.0,
+                    28.0,
+                )
+            },
+        )
+    }
+
+    pub fn on_members_toggle(&self, x: f32, y: f32) -> bool {
+        self.members_toggle_rect()
+            .is_some_and(|(rx, ry, rw, rh)| x >= rx && x < rx + rw && y >= ry && y < ry + rh)
+    }
+
+    /// Shows or hides the member list; the conversation takes its width.
+    pub fn toggle_members(&mut self) {
+        self.members_hidden = !self.members_hidden;
+        self.hover_member = None;
+        self.dirty.layout = true;
+        self.dirty.header = true;
+        self.events |= EV_SCREEN;
+        self.need = true;
+    }
+
     // ---- state changes ----
 
     pub fn composer_changed(&mut self) {
@@ -1612,7 +1648,10 @@ impl App {
         if let Some((x, y)) = self.pointer {
             space = (0..self.c.spaces.len()).find(|&i| inside(Self::space_rect(i), x, y));
             channel = (0..self.c.channels.len()).find(|&i| inside(Self::channel_rect(i), x, y));
-            member = (0..self.c.listed_members).find(|&i| inside(self.member_rect(i), x, y));
+            // A hidden member list leaves its column to the conversation.
+            if self.members_w() > 0.0 {
+                member = (0..self.c.listed_members).find(|&i| inside(self.member_rect(i), x, y));
+            }
             // The call card covers the DM rows under it.
             direct = if self.on_call(x, y) {
                 None
@@ -1639,6 +1678,14 @@ impl App {
         self.track_bar_hover();
         self.track_rec_hover();
         self.track_voice_hover();
+        let toggle = self
+            .pointer
+            .is_some_and(|(x, y)| self.on_members_toggle(x, y));
+        if toggle != self.members_toggle_hover {
+            self.members_toggle_hover = toggle;
+            self.dirty.header = true;
+            self.need = true;
+        }
         let gear = self.pointer.is_some_and(|(x, y)| self.on_gear(x, y));
         if gear != self.gear_hover {
             self.gear_hover = gear;
@@ -1976,6 +2023,8 @@ impl App {
                 }
                 if self.on_gear(x, y) {
                     self.toggle_account_menu();
+                } else if self.on_members_toggle(x, y) {
+                    self.toggle_members();
                 } else if self.on_update_dock(x, y) {
                     self.open_update_review();
                 } else if let Some(part) = self.bar_at(x, y) {
@@ -2172,6 +2221,7 @@ impl App {
                             || self.tool_at(x, y).is_some()
                             || self.on_head_button(x, y)
                             || self.on_gear(x, y)
+                            || self.on_members_toggle(x, y)
                             || self.on_update_dock(x, y)
                             || self.thread_link_at(x, y).is_some()
                             || self.foot_at(x, y).is_some()
@@ -3487,6 +3537,17 @@ impl App {
             let (name, hashed) = (c.title(), c.has_conversation() && c.direct.is_none());
             let lw = self.list_w();
             let status = self.status.as_ref().map(|(s, e)| (s.as_str(), *e));
+            // The member-list toggle at the header's end, as in egui: filled
+            // while the list shows or the pointer is over it.
+            let lx = self.list_x();
+            let toggle = self.members_toggle_rect().map(|(x, y, w, h)| {
+                (
+                    rect(x - lx, y, x - lx + w, y + h),
+                    !self.members_hidden,
+                    self.members_toggle_hover,
+                )
+            });
+            let status_w = (lw - 200.0 - if toggle.is_some() { 46.0 } else { 0.0 }).max(40.0);
             self.header.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
                 if hashed {
@@ -3503,14 +3564,21 @@ impl App {
                     &g.brushes.text,
                 );
                 if let Some((status, error)) = status {
-                    let l =
-                        g.layout(&gfx::wide(status), &g.formats.time, (lw - 200.0).max(40.0))?;
+                    let l = g.layout(&gfx::wide(status), &g.formats.time, status_w)?;
                     let brush = if error {
                         &g.brushes.terracotta
                     } else {
                         &g.brushes.muted
                     };
                     text::draw(dc, &l, 200.0, 21.0, brush);
+                }
+                if let Some((r, active, hover)) = toggle {
+                    if active || hover {
+                        fill_round(dc, r, 6.0, &g.brushes.hover);
+                    }
+                    let icon = rect(r.left + 5.0, r.top + 5.0, r.right - 5.0, r.bottom - 5.0);
+                    let color = if active || hover { TEXT } else { TEXT_MUTED };
+                    icons::draw(dc, icons::Icon::Users, icon, color, 1.0);
                 }
                 dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, lw, HEADER_H), &g.brushes.border);
                 Ok(())

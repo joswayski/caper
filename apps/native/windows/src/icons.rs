@@ -63,6 +63,7 @@ icons! {
     Smile => "smile.svg",
     SmilePlus => "smile-plus.svg",
     Trash => "trash-2.svg",
+    Users => "users.svg",
     Volume => "volume-2.svg",
     VolumeX => "volume-x.svg",
     ;
