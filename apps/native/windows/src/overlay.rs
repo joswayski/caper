@@ -1620,11 +1620,17 @@ impl App {
     /// A right-click at (x, y) on thread reply `i`: a link's menu on a
     /// link, otherwise the reply's actions at the pointer.
     pub fn open_thread_context_menu(&mut self, i: usize, x: f32, y: f32) {
+        self.open_thread_menu(i, x, y, true);
+    }
+
+    /// The toolbar and keyboard always open message actions, even when
+    /// their anchor happens to cover a link in another row.
+    pub fn open_thread_menu(&mut self, i: usize, x: f32, y: f32, links: bool) {
         let Some(row) = self.thread.as_ref().and_then(|t| t.c.messages.get(i)) else {
             return;
         };
         let (id, pinned) = (row.id.clone(), row.pinned_by.is_some());
-        let mut menu = if let Some((_, link)) = self.thread_text_link_at(x, y) {
+        let mut menu = if links && let Some((_, link)) = self.thread_text_link_at(x, y) {
             let mut menu = Menu::new(i, id, vec![Item::OpenLink, Item::CopyLink], x, y, y, self.h);
             menu.title = "Link";
             menu.link = link;
@@ -1635,6 +1641,11 @@ impl App {
             };
             Menu::new(i, id, items, x, y, y, self.h)
         };
+        let selected = self.thread_selected_text();
+        if menu.title == "Message actions" && !selected.is_empty() {
+            menu.items.insert(0, Item::CopySelection);
+            menu.selection = selected;
+        }
         menu.in_thread = true;
         menu.place_at(x, y, self.w, self.h);
         self.close_picker();

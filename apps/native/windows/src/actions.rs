@@ -78,27 +78,26 @@ pub struct ToolState {
 /// What the toolbar surface shows; it is redrawn only when this changes.
 #[derive(Clone, PartialEq, Debug)]
 pub struct BarKey {
-    tools: Vec<ToolState>,
-    hover: Option<usize>,
-    open: Option<Tool>,
+    pub tools: Vec<ToolState>,
+    pub hover: Option<usize>,
+    pub open: Option<Tool>,
 }
 
 pub fn bar_width(n: usize) -> f32 {
     n as f32 * SLOT + 6.0
 }
 
-fn slot_rect(k: usize) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-    let x = 3.0 + SLOT * k as f32;
-    rect(x, 3.0, x + SLOT, 3.0 + SLOT)
+pub fn slot_rect(k: usize) -> Rect {
+    (3.0 + SLOT * k as f32, 3.0, SLOT, SLOT)
 }
 
-fn draw_bar(g: &Gfx, dc: &ID2D1DeviceContext, key: &BarKey) {
-    unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
-    let body = rect(0.0, 0.0, bar_width(key.tools.len()), BAR_H);
+pub fn draw_bar(g: &Gfx, dc: &ID2D1DeviceContext, key: &BarKey, x: f32, y: f32) {
+    let body = rect(x, y, x + bar_width(key.tools.len()), y + BAR_H);
     fill_round(dc, body, RADIUS, &g.brushes.surface);
     stroke_round(dc, body, RADIUS, &g.brushes.border);
     for (k, t) in key.tools.iter().enumerate() {
-        let r = slot_rect(k);
+        let (sx, sy, sw, sh) = slot_rect(k);
+        let r = rect(x + sx, y + sy, x + sx + sw, y + sy + sh);
         let hovered = key.hover == Some(k);
         let open = key.open == Some(t.tool);
         match t.tool {
@@ -1095,7 +1094,8 @@ impl App {
                 || self.bar_drawn.as_ref() != Some(key))
         {
             self.toolbar.draw(s, |dc| {
-                draw_bar(g, dc, key);
+                unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
+                draw_bar(g, dc, key, 0.0, 0.0);
                 Ok(())
             })?;
             self.bar_drawn = Some(key.clone());

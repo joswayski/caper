@@ -263,6 +263,11 @@ fn focused(a: &App) -> Option<Id> {
     if a.profile.as_ref().is_some_and(|c| c.field.focused) {
         return Some(Id::ProfilePart(CPart::Field));
     }
+    if !a.composer.focused
+        && let Some(part) = a.focused_thread_part()
+    {
+        return Some(Id::ThreadPart(part));
+    }
     if a.signin.is_none()
         && let Some((i, action)) = a.kb_control()
     {
@@ -466,14 +471,14 @@ fn children(a: &App, id: Id) -> Vec<Id> {
         Id::Thread => a
             .thread_parts()
             .into_iter()
-            .filter(|p| !matches!(p, TPart::Chip(..) | TPart::Add(_) | TPart::Spoiler(..) | TPart::Forward(..)))
+            .filter(|p| !matches!(p, TPart::Chip(..) | TPart::Add(_) | TPart::Spoiler(..) | TPart::Forward(..) | TPart::Tool(..)))
             .map(Id::ThreadPart)
             .collect(),
         Id::ThreadPart(TPart::Row(i)) => a
             .thread_parts()
             .into_iter()
             .filter(|p| {
-                matches!(p, TPart::Chip(r, _) | TPart::Add(r) | TPart::Spoiler(r, _) | TPart::Forward(r, _) if *r == i)
+                matches!(p, TPart::Chip(r, _) | TPart::Add(r) | TPart::Spoiler(r, _) | TPart::Forward(r, _) | TPart::Tool(r, _) if *r == i)
             })
             .map(Id::ThreadPart)
             .collect(),
@@ -513,7 +518,11 @@ fn parent(id: Id) -> Option<Id> {
         Id::Gif(_) => Id::Gifs,
         Id::Member(_) => Id::Members,
         Id::ThreadPart(
-            TPart::Chip(i, _) | TPart::Add(i) | TPart::Spoiler(i, _) | TPart::Forward(i, _),
+            TPart::Chip(i, _)
+            | TPart::Add(i)
+            | TPart::Spoiler(i, _)
+            | TPart::Forward(i, _)
+            | TPart::Tool(i, _),
         ) => Id::ThreadPart(TPart::Row(i)),
         Id::ThreadPart(_) => Id::Thread,
         _ => Id::Root,
@@ -1229,6 +1238,17 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Reply => (22, 14),
             TPart::CancelReply => (22, 15),
             TPart::Row(i) => (23, i),
+            TPart::Tool(i, tool) => (
+                91,
+                i * 8
+                    + match tool {
+                        Tool::Quick(k) => k,
+                        Tool::Reply => 3,
+                        Tool::Emoji => 4,
+                        Tool::More => 5,
+                        Tool::Thread => 6,
+                    },
+            ),
             TPart::Chip(i, k) => (24, i * 64 + k.min(62)),
             TPart::Add(i) => (24, i * 64 + 63),
             TPart::Spoiler(i, k) => (25, i * 64 + k.min(63)),
@@ -1976,6 +1996,8 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
                 Id::Gif(GPart::Search) => a.gifs_activate(GPart::Search),
                 Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
+                Id::ThreadPart(TPart::Tool(i, tool)) => a.focus_thread_tool(i, tool),
+                Id::ThreadPart(TPart::Row(i)) => a.set_thread_selection(Some(((i, 0), (i, 0)))),
                 Id::ProfilePart(CPart::Field) => a.set_profile_focus(true),
                 Id::Control(i, action) => a.set_kb(Some((i, action))),
                 _ => {}
@@ -2003,6 +2025,11 @@ impl IRawElementProviderFragmentRoot_Impl for Node_Impl {
             };
             let mut best = Id::Root;
             if let Some(top) = children(a, Id::Root).into_iter().find(|t| inside(*t)) {
+                if top == Id::Thread
+                    && let Some(part @ TPart::Tool(..)) = a.thread_hit(px, py)
+                {
+                    return Ok(Id::ThreadPart(part));
+                }
                 best = children(a, top)
                     .into_iter()
                     .find(|c| inside(*c))
@@ -2375,8 +2402,11 @@ impl Doc {
             }
             Self::Row(i) => App::sel_for(a.sel, i, a.row_len(i))
                 .map_or((0, 0), |(s, e)| (s as usize, e as usize)),
-            // The thread's rows are read, not selected.
-            Self::ThreadRow(_) => (0, 0),
+            Self::ThreadRow(i) => a
+                .thread
+                .as_ref()
+                .and_then(|t| App::sel_for(t.selection(), i, t.rows.row(i)?.plain16.len() as u32))
+                .map_or((0, 0), |(s, e)| (s as usize, e as usize)),
         }
     }
 
@@ -2388,7 +2418,7 @@ impl Doc {
                 field_changed(a, id, false);
             }
             Self::Row(i) => a.set_sel(Some(((i, s as u32), (i, e as u32)))),
-            Self::ThreadRow(_) => {}
+            Self::ThreadRow(i) => a.set_thread_selection(Some(((i, s as u32), (i, e as u32)))),
         }
     }
 }
@@ -2799,6 +2829,17 @@ impl ITextRangeProvider_Impl for TextRange_Impl {
 /// Raised after edits in the focused field while a client listens.
 pub fn raise_composer_events() {
     unsafe {
+        if let Some(Id::ThreadPart(part @ TPart::Row(_))) =
+            crate::with_app(|a| focused(a)).flatten()
+        {
+            if UiaClientsAreListening().as_bool() {
+                let _ = UiaRaiseAutomationEvent(
+                    &node(Id::ThreadPart(part)),
+                    UIA_Text_TextSelectionChangedEventId,
+                );
+            }
+            return;
+        }
         if UiaClientsAreListening().as_bool()
             && let Some(id) = editable()
         {
@@ -2926,6 +2967,12 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
         .count();
     top[cards..].reverse();
     let mut id = top.into_iter().find(|c| inside(*c))?;
+    // A thread toolbar can overlap the preceding row's rectangle.
+    if id == Id::Thread
+        && let Some(part @ TPart::Tool(..)) = a.thread_hit(x, y)
+    {
+        id = Id::ThreadPart(part);
+    }
     while let Some(c) = children(a, id).into_iter().find(|c| inside(*c)) {
         id = c;
     }
@@ -2971,6 +3018,7 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
         | Id::ThreadPart(
             TPart::Close
             | TPart::Add(_)
+            | TPart::Tool(..)
             | TPart::Format(_)
             | TPart::Gif
             | TPart::Emoji

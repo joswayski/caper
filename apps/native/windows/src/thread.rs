@@ -6,7 +6,7 @@
 //! list's rows (`list`), all measured at once (threads arrive in pages of
 //! 50) and drawn into the pane's surface; the reply box has its own surface,
 //! so typing redraws only the box.
-use crate::actions::{REPLY_GAP, Rect, ReplyBar};
+use crate::actions::{self, BarKey, REPLY_GAP, Rect, ReplyBar, Tool, ToolState};
 use crate::composer::{self, Composer};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
@@ -14,7 +14,7 @@ use crate::list::{self, HEAD_H, Head, Rows};
 use crate::live;
 use crate::model::Conversation;
 use crate::theme::*;
-use crate::{App, EV_FOCUS, EV_ROWS, EV_SCREEN, EV_TEXT, WHEEL_STEP};
+use crate::{App, EV_FOCUS, EV_ROWS, EV_SCREEN, EV_TEXT, WHEEL_STEP, WM_MOUSELEAVE};
 use windows::Win32::Foundation::{LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -41,11 +41,49 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
 }
 
+/// Clipboard text uses the same UTF-16 ranges as the row highlights. UIA
+/// may supply a boundary inside a surrogate pair; copy the whole scalar.
+fn copy_selection<'a>(
+    selection: Option<crate::Sel>,
+    row: impl Fn(usize) -> Option<&'a [u16]>,
+) -> Vec<u16> {
+    let mut out = Vec::new();
+    let Some((a, b)) = selection else { return out };
+    for i in a.0.min(b.0)..=a.0.max(b.0) {
+        let Some(text) = row(i) else { continue };
+        let Some((s, e)) = App::sel_for(selection, i, text.len() as u32) else {
+            continue;
+        };
+        let (mut s, mut e) = ((s as usize).min(text.len()), (e as usize).min(text.len()));
+        if s >= e {
+            continue;
+        }
+        let inside_pair = |p: usize| {
+            p > 0
+                && p < text.len()
+                && (0xd800..=0xdbff).contains(&text[p - 1])
+                && (0xdc00..=0xdfff).contains(&text[p])
+        };
+        if inside_pair(s) {
+            s -= 1;
+        }
+        if inside_pair(e) {
+            e += 1;
+        }
+        if !out.is_empty() {
+            out.extend([13, 10]);
+        }
+        out.extend_from_slice(&text[s..e]);
+    }
+    out
+}
+
 /// The pane's parts that take clicks or have UIA nodes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Part {
     Close,
     Row(usize),
+    Tool(usize, Tool),
     /// A thread row's reaction chip, and its Add reaction after them.
     Chip(usize, usize),
     Add(usize),
@@ -97,6 +135,13 @@ pub struct Pane {
     /// The quote belongs to this thread, never the channel composer.
     pub reply: Option<ReplyBar>,
     selecting: bool,
+    /// Endpoints follow message IDs when older replies are inserted.
+    selection: Option<((String, u32), (String, u32))>,
+    history_drag: bool,
+    history_focused: bool,
+    hover_row: Option<usize>,
+    tool_focus: Option<(String, Tool)>,
+    bar: Option<(usize, BarKey)>,
     /// "Also send to #channel", for the next reply only.
     pub broadcast: bool,
     pub hover: Option<Part>,
@@ -149,6 +194,12 @@ impl Pane {
             composer: Composer::formatted(),
             reply: None,
             selecting: false,
+            selection: None,
+            history_drag: false,
+            history_focused: false,
+            hover_row: None,
+            tool_focus: None,
+            bar: None,
             broadcast: false,
             hover: None,
             box_h: BOX_MIN,
@@ -184,6 +235,10 @@ impl Pane {
                 m.forward_revealed.clone_from(&old.forward_revealed);
             }
         }
+        self.hover_row = self
+            .hover_row
+            .and_then(|i| self.c.messages.get(i))
+            .and_then(|m| ids.rows.get(&m.id).copied());
         self.rows = Rows::new(c.messages.len());
         self.rows.set_width(Rows::body_width(THREAD_W));
         self.c = c;
@@ -267,6 +322,22 @@ impl Pane {
             self.scroll = (y - 16.0).clamp(0.0, (self.content_h() - vh).max(0.0));
             self.at_end = false;
         }
+    }
+
+    pub fn selection(&self) -> Option<crate::Sel> {
+        let (a, b) = self.selection.as_ref()?;
+        let end = |(id, at): &(String, u32)| {
+            let i = *self.ids.rows.get(id)?;
+            Some((i, (*at).min(self.rows.row(i)?.plain16.len() as u32)))
+        };
+        Some((end(a)?, end(b)?))
+    }
+
+    fn bar_rect(&self, i: usize, n: usize) -> Option<Rect> {
+        let w = actions::bar_width(n);
+        let y =
+            (HEADER_H + self.row_y(i)? - self.scroll + self.rows.row(i)?.lead - 12.0).max(HEADER_H);
+        Some((THREAD_W - w - 16.0, y, w, actions::BAR_H))
     }
 
     /// The head's contents: the failed load and Retry, "Load older
@@ -356,6 +427,11 @@ impl Pane {
             );
         }
         let result = self.draw_history(g, dc, vh, media);
+        if let Some((i, key)) = &self.bar
+            && let Some((x, y, _, _)) = self.bar_rect(*i, key.tools.len())
+        {
+            actions::draw_bar(g, dc, key, x, y);
+        }
         unsafe { dc.PopAxisAlignedClip() };
         // The composer's lip over the history's bottom, inside the leading separator.
         if vh > LIP_H {
@@ -458,6 +534,10 @@ impl Pane {
         for (i, y) in rows {
             let h = self.rows.height(i);
             if y + off < HEADER_H + vh && y + h + off > HEADER_H {
+                let sel = self
+                    .rows
+                    .row(i)
+                    .and_then(|r| App::sel_for(self.selection(), i, r.plain16.len() as u32));
                 list::draw_row(
                     g,
                     dc,
@@ -465,7 +545,7 @@ impl Pane {
                     &mut self.rows,
                     i,
                     y + off,
-                    None,
+                    sel,
                     media.as_deref_mut(),
                 )?;
             }
@@ -553,6 +633,202 @@ impl App {
         self.w - self.members_w() - THREAD_W
     }
 
+    pub fn thread_tools(&self, i: usize) -> Vec<ToolState> {
+        let Some(m) = self.thread.as_ref().and_then(|t| t.c.messages.get(i)) else {
+            return Vec::new();
+        };
+        let enabled = !m.deleted && self.live.as_ref().is_some_and(|l| l.can_react());
+        let mut tools = Vec::new();
+        if !m.deleted {
+            tools.extend(actions::QUICK.iter().enumerate().map(|(k, emoji)| {
+                ToolState {
+                    tool: Tool::Quick(k),
+                    enabled,
+                    on: m
+                        .reactions
+                        .iter()
+                        .any(|r| r.mine && actions::same_emoji(&r.emoji, emoji)),
+                }
+            }));
+            if enabled {
+                tools.push(ToolState {
+                    tool: Tool::Reply,
+                    enabled,
+                    on: false,
+                });
+            }
+            tools.push(ToolState {
+                tool: Tool::Emoji,
+                enabled,
+                on: false,
+            });
+        }
+        tools.push(ToolState {
+            tool: Tool::More,
+            enabled: self.live.is_some(),
+            on: false,
+        });
+        tools
+    }
+
+    fn thread_bar_row(&self) -> Option<usize> {
+        let t = self.thread.as_ref()?;
+        self.menu
+            .as_ref()
+            .filter(|m| m.in_thread)
+            .and_then(|m| t.ids.rows.get(&m.id).copied())
+            .or_else(|| {
+                self.picker
+                    .as_ref()
+                    .filter(|p| p.row == usize::MAX && p.insert.is_none())
+                    .and_then(|p| t.ids.rows.get(&p.id).copied())
+            })
+            .or_else(|| {
+                t.tool_focus
+                    .as_ref()
+                    .and_then(|(id, _)| t.ids.rows.get(id).copied())
+            })
+            .or(t.hover_row)
+            .filter(|&i| self.thread_part_rect(Part::Row(i)).is_some())
+    }
+
+    fn thread_bar_rect(&self, i: usize) -> Option<Rect> {
+        let (x, y, w, h) = self
+            .thread
+            .as_ref()?
+            .bar_rect(i, self.thread_tools(i).len())?;
+        Some((self.thread_x() + x, y, w, h))
+    }
+
+    fn thread_bar(&self) -> Option<(usize, BarKey)> {
+        let i = self.thread_bar_row()?;
+        let t = self.thread.as_ref()?;
+        let tools = self.thread_tools(i);
+        let hover = tools.iter().position(|s| {
+            t.hover == Some(Part::Tool(i, s.tool))
+                || t.tool_focus
+                    .as_ref()
+                    .is_some_and(|(id, tool)| id == &t.c.messages[i].id && *tool == s.tool)
+        });
+        let open = if self
+            .menu
+            .as_ref()
+            .is_some_and(|m| m.in_thread && m.id == t.c.messages[i].id)
+        {
+            Some(Tool::More)
+        } else if self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.row == usize::MAX && p.id == t.c.messages[i].id)
+        {
+            Some(Tool::Emoji)
+        } else {
+            None
+        };
+        Some((i, BarKey { tools, hover, open }))
+    }
+
+    fn track_thread_row(&mut self, x: f32, y: f32) {
+        let row = self
+            .thread_bar_row()
+            .filter(|&i| self.thread_bar_rect(i).is_some_and(|r| contains(r, x, y)))
+            .or_else(|| self.thread_row_at(x, y));
+        if let Some(t) = &mut self.thread
+            && t.hover_row != row
+        {
+            t.hover_row = row;
+            self.dirty.thread = true;
+            self.need = true;
+        }
+    }
+
+    fn thread_row_at(&self, x: f32, y: f32) -> Option<usize> {
+        if !self.in_thread(x, y) || y < HEADER_H || y >= HEADER_H + self.thread_vh() {
+            return None;
+        }
+        let t = self.thread.as_ref()?;
+        (0..t.c.messages.len()).find(|&i| {
+            self.thread_part_rect(Part::Row(i))
+                .is_some_and(|r| contains(r, x, y))
+        })
+    }
+
+    fn thread_msg_hit(&self, x: f32, y: f32) -> Option<(usize, u32)> {
+        let t = self.thread.as_ref()?;
+        let y = y.clamp(HEADER_H, HEADER_H + self.thread_vh());
+        let i = (0..t.c.messages.len())
+            .filter_map(|i| self.thread_part_rect(Part::Row(i)).map(|r| (i, r)))
+            .min_by(|(_, a), (_, b)| {
+                let distance = |r: &Rect| (r.1 - y).max(0.0) + (y - r.1 - r.3).max(0.0);
+                distance(a).total_cmp(&distance(b))
+            })?
+            .0;
+        let (ox, oy) = self.thread_row_text_origin(i);
+        Some((i, gfx::hit_point(&t.rows.row(i)?.text, x - ox, y - oy)))
+    }
+
+    fn over_thread_text(&self, x: f32, y: f32) -> bool {
+        let Some(i) = self.thread_row_at(x, y) else {
+            return false;
+        };
+        let Some(row) = self.thread.as_ref().and_then(|t| t.rows.row(i)) else {
+            return false;
+        };
+        let (ox, oy) = self.thread_row_text_origin(i);
+        gfx::on_text(&row.text, x - ox, y - oy)
+    }
+
+    pub fn set_thread_selection(&mut self, selection: Option<crate::Sel>) {
+        self.set_thread_focus(false);
+        self.set_composer_focus(false);
+        self.set_kb(None);
+        let Some(t) = &mut self.thread else { return };
+        t.selection = selection.and_then(|(a, b)| {
+            Some((
+                (t.c.messages.get(a.0)?.id.clone(), a.1),
+                (t.c.messages.get(b.0)?.id.clone(), b.1),
+            ))
+        });
+        t.history_focused = true;
+        t.tool_focus = None;
+        self.dirty.thread = true;
+        self.events |= EV_FOCUS | EV_TEXT;
+        self.need = true;
+    }
+
+    pub fn thread_selected_text(&self) -> Vec<u16> {
+        let Some(t) = &self.thread else {
+            return Vec::new();
+        };
+        copy_selection(t.selection(), |i| {
+            t.rows.row(i).map(|r| r.plain16.as_slice())
+        })
+    }
+
+    pub fn focused_thread_part(&self) -> Option<Part> {
+        let t = self
+            .thread
+            .as_ref()
+            .filter(|t| t.history_focused && !t.composer.focused && !self.composer.focused)?;
+        if let Some((id, tool)) = &t.tool_focus {
+            return Some(Part::Tool(*t.ids.rows.get(id)?, *tool));
+        }
+        Some(Part::Row(t.selection()?.1.0))
+    }
+
+    pub fn focus_thread_tool(&mut self, i: usize, tool: Tool) {
+        self.set_thread_focus(false);
+        self.set_composer_focus(false);
+        self.set_kb(None);
+        let Some(t) = &mut self.thread else { return };
+        let Some(m) = t.c.messages.get(i) else { return };
+        t.tool_focus = Some((m.id.clone(), tool));
+        t.history_focused = true;
+        self.dirty.thread = true;
+        self.events |= EV_FOCUS;
+        self.need = true;
+    }
+
     /// The history's height in the pane.
     pub fn thread_vh(&self) -> f32 {
         let box_h = self.thread.as_ref().map_or(BOX_MIN, |t| t.box_h);
@@ -592,6 +868,15 @@ impl App {
             Part::Row(i) => {
                 let y = t.row_y(i)?;
                 clip((x0, y + off, THREAD_W, t.rows.height(i)))
+            }
+            Part::Tool(i, tool) => {
+                if self.thread_bar_row() != Some(i) {
+                    return None;
+                }
+                let k = self.thread_tools(i).iter().position(|s| s.tool == tool)?;
+                let (x, y, _, _) = self.thread_bar_rect(i)?;
+                let (sx, sy, w, h) = actions::slot_rect(k);
+                clip((x + sx, y + sy, w, h))
             }
             Part::Chip(i, _) | Part::Add(i) => {
                 let action = match part {
@@ -687,6 +972,11 @@ impl App {
             for &i in rows {
                 if self.thread_part_rect(Part::Row(i)).is_some() {
                     out.push(Part::Row(i));
+                    out.extend(
+                        self.thread_tools(i)
+                            .into_iter()
+                            .map(|s| Part::Tool(i, s.tool)),
+                    );
                     for (p, _, _) in self.forward_parts(true, i) {
                         let part = Part::Forward(i, p);
                         if !out.contains(&part) {
@@ -735,6 +1025,15 @@ impl App {
 
     pub fn thread_hit(&self, x: f32, y: f32) -> Option<Part> {
         let parts = self.thread_parts();
+        if y >= HEADER_H
+            && y < HEADER_H + self.thread_vh()
+            && let Some(p) = parts.iter().copied().find(|p| {
+                matches!(p, Part::Tool(..))
+                    && self.thread_part_rect(*p).is_some_and(|r| contains(r, x, y))
+            })
+        {
+            return Some(p);
+        }
         // Controls before the rows and the field that hold them.
         let holder = |p: &&Part| matches!(p, Part::Row(_) | Part::Field | Part::Reply);
         parts
@@ -743,6 +1042,12 @@ impl App {
             .chain(parts.iter().filter(holder))
             .copied()
             .find(|p| match *p {
+                Part::Tool(..) => false,
+                Part::Row(_) | Part::Chip(..) | Part::Add(_) | Part::Older => {
+                    y >= HEADER_H
+                        && y < HEADER_H + self.thread_vh()
+                        && self.thread_part_rect(*p).is_some_and(|r| contains(r, x, y))
+                }
                 // A spoiler takes only its own lines, not its bounds.
                 Part::Spoiler(i, k) => self.thread_spoiler_at(x, y) == Some((i, k)),
                 Part::Forward(i, part) => {
@@ -829,6 +1134,7 @@ impl App {
         };
         match part {
             Part::Close => "Close thread".into(),
+            Part::Tool(_, tool) => tool.label(),
             Part::Older => {
                 let head = t.head();
                 match head.note {
@@ -865,6 +1171,10 @@ impl App {
         match part {
             Part::Older => !t.loading,
             Part::Send => t.can_send(),
+            Part::Tool(i, tool) => self
+                .thread_tools(i)
+                .iter()
+                .any(|s| s.tool == tool && s.enabled),
             _ => true,
         }
     }
@@ -1084,6 +1394,10 @@ impl App {
         let Some(t) = &mut self.thread else {
             return;
         };
+        if focused {
+            t.history_focused = false;
+            t.tool_focus = None;
+        }
         if t.composer.focused == focused {
             return;
         }
@@ -1195,6 +1509,45 @@ impl App {
 
     pub fn thread_activate(&mut self, part: Part) {
         match part {
+            Part::Tool(i, tool) => {
+                let Some(state) = self
+                    .thread_tools(i)
+                    .into_iter()
+                    .find(|s| s.tool == tool && s.enabled)
+                else {
+                    return;
+                };
+                let Some(id) = self
+                    .thread
+                    .as_ref()
+                    .and_then(|t| t.c.messages.get(i))
+                    .map(|m| m.id.clone())
+                else {
+                    return;
+                };
+                match tool {
+                    Tool::Quick(k) => {
+                        if let Some(live) = &mut self.live {
+                            live.react(&id, actions::QUICK[k], !state.on);
+                        }
+                        if let Err(e) = self.drain_live() {
+                            eprintln!("reaction update failed: {e:?}");
+                        }
+                    }
+                    Tool::Reply => self.select_thread_reply(&id),
+                    Tool::Emoji => {
+                        if let Some((x, y, _, h)) = self.thread_bar_rect(i) {
+                            self.open_picker_for(usize::MAX, id, (x, y + h + 4.0));
+                        }
+                    }
+                    Tool::More => {
+                        if let Some((x, y, _, h)) = self.thread_bar_rect(i) {
+                            self.open_thread_menu(i, x, y + h + 4.0, false);
+                        }
+                    }
+                    Tool::Thread => {}
+                }
+            }
             Part::Format(style) => {
                 if let Some(t) = &mut self.thread
                     && t.composer.format_rect(style).is_some()
@@ -1303,6 +1656,15 @@ impl App {
         let focused = self.thread.as_ref()?.composer.focused;
         match msg {
             WM_MOUSEMOVE => {
+                self.track_thread_row(x, y);
+                if self.thread.as_ref()?.history_drag {
+                    if let (Some(end), Some((start, _))) =
+                        (self.thread_msg_hit(x, y), self.thread.as_ref()?.selection())
+                    {
+                        self.set_thread_selection(Some((start, end)));
+                    }
+                    return done;
+                }
                 if self.thread.as_ref()?.selecting {
                     let (tx, ty) = self.thread_text_origin();
                     let t = self.thread.as_mut()?;
@@ -1319,17 +1681,37 @@ impl App {
                 self.set_thread_hover(hover);
                 None
             }
+            WM_MOUSELEAVE => {
+                self.thread.as_mut()?.hover_row = None;
+                self.set_thread_hover(None);
+                self.dirty.thread = true;
+                self.need = true;
+                None
+            }
             WM_LBUTTONDOWN if self.in_thread(x, y) => {
-                match self.thread_hit(x, y) {
-                    Some(Part::Row(_)) if let Some((_, href)) = self.thread_text_link_at(x, y) => {
-                        self.set_thread_focus(false);
-                        crate::open_link(&href);
-                    }
+                let part = self.thread_hit(x, y);
+                self.thread.as_mut()?.tool_focus = None;
+                self.thread.as_mut()?.history_focused = false;
+                match part {
                     Some(Part::Row(_))
                         if let Some((id, entry, author)) = self.thread_person_at(x, y) =>
                     {
                         self.set_thread_focus(false);
                         self.open_profile(id, entry, author, x, y);
+                    }
+                    Some(Part::Row(_)) => {
+                        if let Some(hit) = self.thread_msg_hit(x, y) {
+                            let anchor = if shift {
+                                self.thread.as_ref()?.selection().map_or(hit, |s| s.0)
+                            } else {
+                                hit
+                            };
+                            self.set_thread_selection(Some((anchor, hit)));
+                            self.thread.as_mut()?.history_drag = true;
+                            unsafe {
+                                SetCapture(self.hwnd);
+                            }
+                        }
                     }
                     Some(Part::Field) => {
                         self.set_thread_focus(true);
@@ -1366,6 +1748,42 @@ impl App {
                 }
                 done
             }
+            WM_LBUTTONDOWN => {
+                self.thread.as_mut()?.history_focused = false;
+                self.thread.as_mut()?.tool_focus = None;
+                None
+            }
+            WM_LBUTTONDBLCLK if matches!(self.thread_hit(x, y), Some(Part::Row(_))) => {
+                if let Some((i, p)) = self.thread_msg_hit(x, y) {
+                    let text = &self.thread.as_ref()?.rows.row(i)?.plain16;
+                    let word = |c: u16| char::from_u32(c as u32).is_some_and(char::is_alphanumeric);
+                    let (mut s, mut e) = (p as usize, p as usize);
+                    while s > 0 && word(text[s - 1]) {
+                        s -= 1;
+                    }
+                    while e < text.len() && word(text[e]) {
+                        e += 1;
+                    }
+                    self.set_thread_selection(Some(((i, s as u32), (i, e as u32))));
+                }
+                done
+            }
+            WM_LBUTTONUP if self.thread.as_ref()?.history_drag => {
+                let clicked = self
+                    .thread
+                    .as_ref()?
+                    .selection()
+                    .is_some_and(|(a, b)| a == b);
+                self.thread.as_mut()?.history_drag = false;
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+                if clicked && let Some((_, href)) = self.thread_text_link_at(x, y) {
+                    self.set_thread_selection(None);
+                    crate::open_link(&href);
+                }
+                done
+            }
             WM_LBUTTONUP if self.thread.as_ref()?.selecting => {
                 self.thread.as_mut()?.selecting = false;
                 unsafe {
@@ -1375,7 +1793,19 @@ impl App {
             }
             WM_CAPTURECHANGED => {
                 self.thread.as_mut()?.selecting = false;
+                self.thread.as_mut()?.history_drag = false;
                 None
+            }
+            WM_CONTEXTMENU if x < 0.0 && y < 0.0 && self.thread.as_ref()?.history_focused => {
+                let part = self.focused_thread_part()?;
+                let i = match part {
+                    Part::Row(i) | Part::Tool(i, _) => i,
+                    _ => return None,
+                };
+                if let Some((x, y, _, h)) = self.thread_bar_rect(i) {
+                    self.open_thread_menu(i, x, y + h, false);
+                }
+                done
             }
             WM_MOUSEWHEEL if self.pointer.is_some_and(|(x, y)| self.in_thread(x, y)) => {
                 let delta = ((wp.0 >> 16) & 0xffff) as i16 as f32;
@@ -1389,16 +1819,22 @@ impl App {
                 self.need = true;
                 done
             }
-            WM_SETCURSOR if self.pointer.is_some_and(|(x, y)| self.in_thread(x, y)) => {
+            WM_SETCURSOR
+                if self.thread.as_ref()?.history_drag
+                    || self.pointer.is_some_and(|(x, y)| self.in_thread(x, y)) =>
+            {
                 let (px, py) = self.pointer?;
+                self.track_thread_row(px, py);
                 let cursor = match self.thread_hit(px, py) {
                     Some(Part::Field) => IDC_IBEAM,
+                    _ if self.thread.as_ref()?.history_drag => IDC_IBEAM,
                     Some(Part::Row(_))
                         if self.thread_person_at(px, py).is_some()
                             || self.thread_text_link_at(px, py).is_some() =>
                     {
                         IDC_HAND
                     }
+                    Some(Part::Row(_)) if self.over_thread_text(px, py) => IDC_IBEAM,
                     Some(Part::Row(_) | Part::Reply) | None => IDC_ARROW,
                     Some(_) => IDC_HAND,
                 };
@@ -1406,6 +1842,65 @@ impl App {
                     SetCursor(LoadCursorW(None, cursor).ok());
                 }
                 Some(Some(LRESULT(1)))
+            }
+            WM_KEYDOWN
+                if !focused && !self.composer.focused && self.thread.as_ref()?.history_focused =>
+            {
+                let vk = VIRTUAL_KEY(wp.0 as u16);
+                if ctrl && vk == VIRTUAL_KEY('C' as u16) {
+                    let text = self.thread_selected_text();
+                    if !text.is_empty() {
+                        crate::set_clipboard(self.hwnd, &text);
+                    }
+                    return done;
+                }
+                if vk == VK_ESCAPE {
+                    self.set_thread_selection(None);
+                    return done;
+                }
+                if (vk == VK_RETURN || vk == VK_SPACE)
+                    && let Some(part @ Part::Tool(..)) = self.focused_thread_part()
+                {
+                    self.thread_activate(part);
+                    return done;
+                }
+                if vk == VK_TAB
+                    && let Some(part) = self.focused_thread_part()
+                {
+                    let (i, tool) = match part {
+                        Part::Row(i) => (i, None),
+                        Part::Tool(i, tool) => (i, Some(tool)),
+                        _ => return None,
+                    };
+                    let tools = self.thread_tools(i);
+                    let current = tool.and_then(|t| tools.iter().position(|s| s.tool == t));
+                    let next = if shift {
+                        current.map_or(Some(tools.len() - 1), |k| k.checked_sub(1))
+                    } else {
+                        Some(current.map_or(0, |k| k + 1)).filter(|k| *k < tools.len())
+                    };
+                    if let Some(k) = next {
+                        self.focus_thread_tool(i, tools[k].tool);
+                    } else {
+                        self.set_thread_focus(true);
+                    }
+                    return done;
+                }
+                let vh = self.thread_vh();
+                let t = self.thread.as_mut()?;
+                let max = (t.content_h() - vh).max(0.0);
+                t.scroll = match vk {
+                    VK_PRIOR => (t.scroll - vh * 0.9).max(0.0),
+                    VK_NEXT => (t.scroll + vh * 0.9).min(max),
+                    VK_HOME if ctrl => 0.0,
+                    VK_END if ctrl => max,
+                    _ => return None,
+                };
+                t.at_end = t.scroll >= max - 0.5;
+                self.dirty.thread = true;
+                self.events |= EV_SCREEN;
+                self.need = true;
+                done
             }
             WM_KEYDOWN if focused => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
@@ -1472,6 +1967,13 @@ impl App {
             self.thread_p.offset(-10_000.0, 0.0)?;
             self.thread_box_p.offset(-10_000.0, 0.0)?;
             return Ok(());
+        }
+        let bar = self.thread_bar();
+        if let Some(t) = &mut self.thread
+            && t.bar != bar
+        {
+            t.bar = bar;
+            self.dirty.thread = true;
         }
         let card = self.thread_preview_card().cloned();
         let thumb = self.preview_thumb(true);
@@ -1559,5 +2061,29 @@ impl App {
             })?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copying_a_thread_selection_preserves_order_unicode_and_partial_endpoints() {
+        let rows = ["alpha 👋", "middle reply", "omega"].map(gfx::wide);
+        let row = |i: usize| rows.get(i).map(Vec::as_slice);
+        let expected = gfx::wide("👋\r\nmiddle reply\r\nome");
+        assert_eq!(copy_selection(Some(((0, 6), (2, 3))), row), expected);
+        assert_eq!(copy_selection(Some(((2, 3), (0, 6))), row), expected);
+        // UIA endpoints inside an emoji must not put broken UTF-16 on the clipboard.
+        assert_eq!(copy_selection(Some(((0, 7), (0, 8))), row), gfx::wide("👋"));
+        assert_eq!(copy_selection(Some(((0, 6), (0, 7))), row), gfx::wide("👋"));
+        assert!(copy_selection(Some(((0, 7), (0, 7))), row).is_empty());
+        // An edit shortened the selected message; clamp rather than panic or copy a neighbour.
+        assert_eq!(
+            copy_selection(Some(((2, 2), (2, 99))), row),
+            gfx::wide("ega")
+        );
+        assert!(copy_selection(None, row).is_empty());
     }
 }
