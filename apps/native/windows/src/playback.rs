@@ -541,6 +541,21 @@ impl Playback {
     }
 }
 
+fn contains_voice(m: &crate::model::Message, id: &str) -> bool {
+    m.attachments.iter().any(|a| a.id == id)
+        || m.forward
+            .as_ref()
+            .and_then(|f| f.message.as_ref())
+            .filter(|m| !m.is_deleted())
+            .is_some_and(|original| {
+                original
+                    .content
+                    .attachments
+                    .iter()
+                    .any(|a| a.id == id && !crate::files::hidden(a, &m.forward_revealed))
+            })
+}
+
 impl App {
     /// The rows showing attachment `id`.
     /// Whether `id` is a recording staged in the open composer.
@@ -566,9 +581,15 @@ impl App {
             .messages
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.attachments.iter().any(|a| a.id == id))
+            .filter(|(_, m)| contains_voice(m, id))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    fn thread_voice_shown(&self, id: &str) -> bool {
+        self.thread
+            .as_ref()
+            .is_some_and(|t| t.c.messages.iter().any(|m| contains_voice(m, id)))
     }
 
     fn voice_message_redraw(&mut self, id: Option<String>) {
@@ -581,6 +602,7 @@ impl App {
             return;
         }
         if let Some(id) = id {
+            self.dirty.thread |= self.thread_voice_shown(&id);
             let rows = self.voice_message_rows(&id);
             self.redraw.extend(rows);
             self.events |= EV_ROWS;
@@ -627,18 +649,22 @@ impl App {
                 }
                 self.events |= EV_ROWS;
                 self.need = true;
-                return;
             }
-            Part::Play => self.playback.play(&a, None),
+            Part::Play => self.play_attachment(&a, None),
             Part::Seek(at) => {
                 let duration = a.duration_ms.unwrap_or(0);
                 if duration == 0 {
                     return;
                 }
-                self.playback.play(&a, Some((at * duration as f32) as u64));
+                self.play_attachment(&a, Some((at * duration as f32) as u64));
             }
         }
-        self.voice_message_redraw(Some(a.id));
+    }
+
+    /// Shared by ordinary rows and a forwarded original's voice card.
+    pub fn play_attachment(&mut self, a: &Attachment, at: Option<u64>) {
+        self.playback.play(a, at);
+        self.voice_message_redraw(Some(a.id.clone()));
         self.arm_playback();
     }
 
@@ -655,9 +681,11 @@ impl App {
                 p.state() == State::Ended
             });
         let id = self.playback.id().map(str::to_owned);
-        let gone = id
-            .as_deref()
-            .is_some_and(|id| self.voice_message_rows(id).is_empty() && !self.staged_shown(id));
+        let gone = id.as_deref().is_some_and(|id| {
+            self.voice_message_rows(id).is_empty()
+                && !self.thread_voice_shown(id)
+                && !self.staged_shown(id)
+        });
         if ended || gone {
             self.playback.stop();
         }
@@ -670,6 +698,7 @@ impl App {
     pub fn playback_follow(&mut self) {
         if let Some(id) = self.playback.id().map(str::to_owned)
             && self.voice_message_rows(&id).is_empty()
+            && !self.thread_voice_shown(&id)
             && !self.staged_shown(&id)
         {
             self.playback.stop();

@@ -52,6 +52,7 @@ pub enum Part {
     /// A thread row's hidden text spoiler (its index in `list::Row::spoilers`),
     /// which reveals it.
     Spoiler(usize, usize),
+    Forward(usize, list::ForwardPart),
     /// "Load older replies", or Retry after a failed load.
     Older,
     Broadcast,
@@ -175,6 +176,7 @@ impl Pane {
                 .and_then(|&k| self.c.messages.get(k))
             {
                 m.revealed.clone_from(&old.revealed);
+                m.forward_revealed.clone_from(&old.forward_revealed);
             }
         }
         self.rows = Rows::new(c.messages.len());
@@ -578,6 +580,11 @@ impl App {
                 let r = t.rows.spoiler_rect(i, grouped, k)?;
                 clip((x0 + r.left, y + r.top, r.right - r.left, r.bottom - r.top))
             }
+            Part::Forward(i, p) => self
+                .forward_parts(true, i)
+                .into_iter()
+                .find(|(q, _, _)| *q == p)
+                .map(|(_, r, _)| r),
             Part::Older => {
                 let y = t.sections().head? + off;
                 let head = t.head();
@@ -639,6 +646,12 @@ impl App {
             for &i in rows {
                 if self.thread_part_rect(Part::Row(i)).is_some() {
                     out.push(Part::Row(i));
+                    for (p, _, _) in self.forward_parts(true, i) {
+                        let part = Part::Forward(i, p);
+                        if !out.contains(&part) {
+                            out.push(part);
+                        }
+                    }
                     for k in t.rows.hidden_spoilers(i) {
                         if self.thread_part_rect(Part::Spoiler(i, k)).is_some() {
                             out.push(Part::Spoiler(i, k));
@@ -688,6 +701,15 @@ impl App {
             .find(|p| match *p {
                 // A spoiler takes only its own lines, not its bounds.
                 Part::Spoiler(i, k) => self.thread_spoiler_at(x, y) == Some((i, k)),
+                Part::Forward(i, part) => {
+                    part != list::ForwardPart::Body
+                        && y >= HEADER_H
+                        && y < HEADER_H + self.thread_vh()
+                        && self
+                            .forward_parts(true, i)
+                            .into_iter()
+                            .any(|(p, r, _)| p == part && contains(r, x, y))
+                }
                 p => self.thread_part_rect(p).is_some_and(|r| contains(r, x, y)),
             })
     }
@@ -779,6 +801,11 @@ impl App {
             Part::Send => "Send reply".into(),
             Part::Add(_) => "Add reaction".into(),
             Part::Spoiler(..) => "Spoiler, reveal".into(),
+            Part::Forward(i, p) => self
+                .forward_parts(true, i)
+                .into_iter()
+                .find(|(q, _, _)| *q == p)
+                .map_or_else(String::new, |(_, _, name)| name),
             Part::Row(_) | Part::Chip(..) => String::new(),
         }
     }
@@ -1120,6 +1147,7 @@ impl App {
             Part::RemovePreview => self.remove_thread_preview(),
             Part::Send => self.send_thread_reply(),
             Part::Spoiler(i, k) => self.reveal_thread_spoiler(i, k),
+            Part::Forward(i, p) => self.forward_activate(true, i, p),
             Part::Row(_) => {}
         }
     }
@@ -1199,6 +1227,11 @@ impl App {
                     // Neither moves the keyboard out of the box.
                     Some(part @ (Part::Format(_) | Part::RemovePreview)) => {
                         self.thread_activate(part)
+                    }
+                    Some(Part::Forward(i, part)) => {
+                        self.set_thread_focus(false);
+                        self.set_composer_focus(false);
+                        self.forward_click(true, i, part, x, y);
                     }
                     Some(part) => {
                         self.set_thread_focus(false);

@@ -868,6 +868,7 @@ impl App {
                         new.date = old.date.clone();
                         new.unread = old.unread;
                         new.revealed = old.revealed.clone();
+                        new.forward_revealed.clone_from(&old.forward_revealed);
                         if new == *old {
                             continue;
                         }
@@ -2063,6 +2064,8 @@ impl App {
                         self.foot_activate(k);
                     } else if let Some(i) = self.quote_link_at(x, y) {
                         self.view_original_of(i);
+                    } else if let Some((i, part)) = self.forward_at(x, y) {
+                        self.forward_click(false, i, part, x, y);
                     } else if let Some(i) = self.edited_at(x, y) {
                         self.open_history_of(i);
                     } else if let Some((i, k, part)) = self.voice_message_at(x, y) {
@@ -2227,6 +2230,7 @@ impl App {
                             || self.thread_link_at(x, y).is_some()
                             || self.foot_at(x, y).is_some()
                             || self.quote_link_at(x, y).is_some()
+                            || self.forward_at(x, y).is_some()
                             || self.edited_at(x, y).is_some()
                             || self.file_at(x, y).is_some()
                             || self.embed_at(x, y).is_some()

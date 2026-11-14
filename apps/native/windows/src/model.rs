@@ -97,6 +97,10 @@ pub struct Message {
     pub revealed: std::collections::HashSet<String>,
     /// Link preview cards under its files.
     pub embeds: Vec<caper_client::model::Embed>,
+    /// The original's live snapshot, distinct from the wrapper's own content.
+    pub forward: Option<Box<caper_client::model::MessageForward>>,
+    /// Spoiler reveals belong to this forward, not to its wrapper or siblings.
+    pub forward_revealed: std::collections::HashSet<String>,
 }
 
 pub struct Channel {
@@ -639,6 +643,8 @@ impl Conversation {
             attachments: Vec::new(),
             revealed: Default::default(),
             embeds: Vec::new(),
+            forward: None,
+            forward_revealed: Default::default(),
         });
     }
 }
@@ -674,6 +680,8 @@ impl Conversation {
             attachments: Vec::new(),
             revealed: Default::default(),
             embeds: Vec::new(),
+            forward: None,
+            forward_revealed: Default::default(),
         });
     }
 }

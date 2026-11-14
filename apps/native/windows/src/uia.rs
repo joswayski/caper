@@ -12,6 +12,7 @@ use crate::actions::{PPart, Tool};
 use crate::attachment_editor::Part as EPart;
 use crate::gifs::GPart;
 use crate::list::Action;
+use crate::list::ForwardPart;
 use crate::overlay::{Kind, Part as DPart};
 use crate::profile::PPart as CPart;
 use crate::settings::SPart;
@@ -113,6 +114,7 @@ pub enum Id {
     /// Row `i`'s hidden text spoiler `k` (its index in `list::Row::spoilers`),
     /// a button that reveals it, as web's.
     Spoiler(usize, usize),
+    Forward(usize, ForwardPart),
     /// The composer box's Attach files and its staged files' controls.
     BoxPart(crate::uploads::Part),
     /// The thread beside the conversation, and its parts.
@@ -415,18 +417,23 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .chain(a.edited_rect(i).map(|_| Id::Edited(i)))
             .chain(a.file_ids(i).into_iter().map(move |k| Id::File(i, k)))
             .chain((0..a.embed_parts(i).len()).map(move |k| Id::Embed(i, k)))
+            .chain({
+                let mut parts: Vec<_> = a.forward_parts(false, i).into_iter().map(|(p, _, _)| Id::Forward(i, p)).collect();
+                parts.dedup();
+                parts
+            })
             .collect(),
         Id::Thread => a
             .thread_parts()
             .into_iter()
-            .filter(|p| !matches!(p, TPart::Chip(..) | TPart::Add(_) | TPart::Spoiler(..)))
+            .filter(|p| !matches!(p, TPart::Chip(..) | TPart::Add(_) | TPart::Spoiler(..) | TPart::Forward(..)))
             .map(Id::ThreadPart)
             .collect(),
         Id::ThreadPart(TPart::Row(i)) => a
             .thread_parts()
             .into_iter()
             .filter(|p| {
-                matches!(p, TPart::Chip(r, _) | TPart::Add(r) | TPart::Spoiler(r, _) if *r == i)
+                matches!(p, TPart::Chip(r, _) | TPart::Add(r) | TPart::Spoiler(r, _) | TPart::Forward(r, _) if *r == i)
             })
             .map(Id::ThreadPart)
             .collect(),
@@ -452,18 +459,21 @@ fn parent(id: Id) -> Option<Id> {
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
         Id::Older | Id::Newer(_) => Id::History,
-        Id::Original(i) | Id::Edited(i) | Id::File(i, _) | Id::Embed(i, _) | Id::Spoiler(i, _) => {
-            Id::Row(i)
-        }
+        Id::Original(i)
+        | Id::Edited(i)
+        | Id::File(i, _)
+        | Id::Embed(i, _)
+        | Id::Spoiler(i, _)
+        | Id::Forward(i, _) => Id::Row(i),
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::ProfilePart(_) => Id::Profile,
         Id::Suggestion(_) => Id::Suggest,
         Id::Pick(_) => Id::Picker,
         Id::Gif(_) => Id::Gifs,
         Id::Member(_) => Id::Members,
-        Id::ThreadPart(TPart::Chip(i, _) | TPart::Add(i) | TPart::Spoiler(i, _)) => {
-            Id::ThreadPart(TPart::Row(i))
-        }
+        Id::ThreadPart(
+            TPart::Chip(i, _) | TPart::Add(i) | TPart::Spoiler(i, _) | TPart::Forward(i, _),
+        ) => Id::ThreadPart(TPart::Row(i)),
         Id::ThreadPart(_) => Id::Thread,
         _ => Id::Root,
     })
@@ -550,6 +560,9 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Older => a.dialog.is_none() && a.head_rect().is_some(),
         Id::Newer(k) => a.dialog.is_none() && a.foot_rect(k).is_some(),
         Id::Original(i) => a.dialog.is_none() && a.quote_link_rect(i).is_some(),
+        Id::Forward(i, p) => {
+            a.dialog.is_none() && a.forward_parts(false, i).iter().any(|(q, _, _)| *q == p)
+        }
         Id::Edited(i) => a.dialog.is_none() && a.edited_rect(i).is_some(),
         Id::File(i, k) => a.dialog.is_none() && a.file_rect(i, k).is_some(),
         Id::BoxPart(p) => {
@@ -737,6 +750,11 @@ fn name(a: &App, id: Id) -> String {
         Id::ReplyCancel => "Cancel reply".into(),
         Id::Newer(k) => a.foot_head(k).label.into(),
         Id::Original(_) => "View original".into(),
+        Id::Forward(i, p) => a
+            .forward_parts(false, i)
+            .into_iter()
+            .find(|(q, _, _)| *q == p)
+            .map_or_else(String::new, |(_, _, name)| name),
         Id::Edited(_) => "Message history".into(),
         Id::File(i, k) => a.file_label(i, k),
         Id::BoxPart(p) => a.box_part_label(p),
@@ -925,6 +943,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Reply => UIA_TextControlTypeId,
         Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
         Id::Original(_) | Id::Embed(..) => UIA_HyperlinkControlTypeId,
+        Id::Forward(_, ForwardPart::Body)
+        | Id::ThreadPart(TPart::Forward(_, ForwardPart::Body)) => UIA_TextControlTypeId,
+        Id::Forward(_, ForwardPart::Link(_))
+        | Id::ThreadPart(TPart::Forward(_, ForwardPart::Link(_))) => UIA_HyperlinkControlTypeId,
+        Id::Forward(..) => UIA_ButtonControlTypeId,
         Id::Edited(_) | Id::File(..) | Id::Spoiler(..) | Id::BoxPart(_) => UIA_ButtonControlTypeId,
         Id::Tool(..)
         | Id::MenuClose
@@ -1075,6 +1098,10 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Older => (20, 0),
         Id::Newer(k) => (26, k),
         Id::Original(i) => (27, i),
+        Id::Forward(i, p) => {
+            let (kind, k) = p.identity();
+            (70 + kind as i32, i * 8192 + k)
+        }
         Id::Edited(i) => (28, i),
         Id::File(i, k) => (29, i * 16 + k.min(15)),
         Id::Embed(i, k) => (31, i * 64 + k.min(63)),
@@ -1122,6 +1149,10 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Chip(i, k) => (24, i * 64 + k.min(62)),
             TPart::Add(i) => (24, i * 64 + 63),
             TPart::Spoiler(i, k) => (25, i * 64 + k.min(63)),
+            TPart::Forward(i, p) => {
+                let (kind, k) = p.identity();
+                (80 + kind as i32, i * 8192 + k)
+            }
         },
         Id::Control(i, action) => (
             11,
@@ -1269,6 +1300,11 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Older => a.head_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Newer(k) => a.foot_rect(k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Original(i) => a.quote_link_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Forward(i, p) => a
+            .forward_parts(false, i)
+            .into_iter()
+            .find(|(q, _, _)| *q == p)
+            .map_or((0.0, 0.0, 0.0, 0.0), |(_, r, _)| r),
         Id::Edited(i) => a.edited_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::File(i, k) => a.file_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::BoxPart(p) => a.box_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
@@ -1390,6 +1426,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::ChannelOptions(_)
             | Id::DmItem(_) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Title | Part::Message) => false,
+            Id::Forward(_, ForwardPart::Body)
+            | Id::ThreadPart(TPart::Forward(_, ForwardPart::Body)) => false,
+            Id::Forward(..) => pattern == UIA_InvokePatternId,
             Id::Rec(p) => p.button() && pattern == UIA_InvokePatternId,
             Id::MenuItem(_)
             | Id::NewDirect
@@ -1901,6 +1940,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Older => a.load_older(),
                 Id::Newer(k) => a.foot_activate(k),
                 Id::Original(i) => a.view_original_of(i),
+                Id::Forward(i, p) => a.forward_activate(false, i, p),
                 Id::Edited(i) => a.open_history_of(i),
                 Id::File(i, k) => a.file_activate(i, k, false),
                 Id::BoxPart(p) => a.box_activate(p),

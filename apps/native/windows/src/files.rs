@@ -796,7 +796,7 @@ impl App {
             .c
             .messages
             .iter()
-            .any(|m| !m.attachments.is_empty() || !m.embeds.is_empty())
+            .any(|m| !m.attachments.is_empty() || !m.embeds.is_empty() || m.forward.is_some())
         {
             self.drawn = None;
             self.events |= crate::EV_ROWS;

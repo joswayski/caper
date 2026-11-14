@@ -48,6 +48,8 @@ pub struct Row {
     /// Its link preview cards, below the files.
     pub embeds: crate::embeds::Embeds,
     pub embeds_y: f32,
+    pub forward: Option<Box<ForwardCard>>,
+    pub forward_y: f32,
     /// Each reaction chip's label, its width and whether it is yours.
     pub reactions: Vec<(IDWriteTextLayout, f32, bool)>,
     pub reactions_y: f32,
@@ -148,6 +150,247 @@ pub struct Header {
     pub time: IDWriteTextLayout,
     pub name_w: f32,
     pub initials: IDWriteTextLayout,
+}
+
+/// A forward reuses ordinary text/media layouts, but never exposes actions
+/// that would mutate its original through the destination channel.
+pub struct ForwardCard {
+    label: IDWriteTextLayout,
+    original: Option<(Conversation, Box<Row>)>,
+    summary: IDWriteTextLayout,
+    summary_text: String,
+    height: f32,
+}
+
+const FORWARD_PAD: f32 = 12.0;
+const FORWARD_HEAD: f32 = 20.0;
+const FORWARD_X: f32 = BODY_X + FORWARD_PAD - PAD_X;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForwardPart {
+    Body,
+    Spoiler(usize),
+    Link(usize),
+    File(usize),
+    Hide(usize),
+    Transcript(usize),
+}
+
+impl ForwardPart {
+    pub fn identity(self) -> (usize, usize) {
+        match self {
+            Self::Body => (0, 0),
+            Self::Spoiler(k) => (1, k),
+            Self::Link(k) => (2, k),
+            Self::File(k) => (3, k),
+            Self::Hide(k) => (4, k),
+            Self::Transcript(k) => (5, k),
+        }
+    }
+}
+
+impl ForwardCard {
+    fn new(g: &Gfx, m: &crate::model::Message, width: f32) -> Result<Option<Box<Self>>> {
+        let Some(forward) = &m.forward else {
+            return Ok(None);
+        };
+        let inner = (width - 2.0 * FORWARD_PAD).max(1.0);
+        let original = forward
+            .message
+            .as_ref()
+            .map(|source| -> Result<_> {
+                let author = crate::live::person(
+                    &source.author.id,
+                    &source.author.name,
+                    crate::avatars::Avatar::new(
+                        source.author.avatar_id,
+                        &source.author.avatar_asset,
+                        &source.author.avatar_url,
+                    ),
+                );
+                let mut shown = crate::live::message(source, 0, false, None);
+                shown.time = if source.edited_at.is_some() && !source.is_deleted() {
+                    "(edited)".into()
+                } else {
+                    String::new()
+                };
+                shown.reply = None;
+                shown.pinned_by = None;
+                shown.thread_replies = None;
+                shown.thread_context = false;
+                shown.forward = None;
+                shown.reactions.clear();
+                shown.embeds.clear();
+                shown.revealed.clone_from(&m.forward_revealed);
+                let c = Conversation::live(Vec::new(), 0, Vec::new(), 0, vec![author], vec![shown]);
+                let row = build(g, &c, 0, (inner - BODY_X + PAD_X).max(1.0))?;
+                if let Some(h) = &row.header {
+                    unsafe {
+                        h.name.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                        h.name.SetTrimming(
+                            &DWRITE_TRIMMING {
+                                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                                ..Default::default()
+                            },
+                            &g.dwrite.CreateEllipsisTrimmingSign(&g.formats.name)?,
+                        )?;
+                    }
+                }
+                Ok((c, Box::new(row)))
+            })
+            .transpose()?;
+        let summary = match forward.message.as_ref() {
+            None => "Original conversation unavailable.".into(),
+            Some(source) if source.is_deleted() => String::new(),
+            Some(source) => source
+                .reactions
+                .iter()
+                .filter(|r| !r.author_ids.is_empty())
+                .map(|r| format!("{} {}", r.emoji, r.author_ids.len()))
+                .collect::<Vec<_>>()
+                .join("  "),
+        };
+        let summary_layout = g.layout(&gfx::wide(&summary), &g.formats.quote_meta, inner)?;
+        emoji::apply(&summary_layout, &summary, 12.0, 1.0)?;
+        Ok(Some(Box::new(Self {
+            label: g.layout(&gfx::wide("Forwarded"), &g.formats.quote_meta, inner)?,
+            original,
+            summary: summary_layout,
+            summary_text: summary,
+            height: 0.0,
+        })))
+    }
+
+    fn place(&mut self, width: f32) {
+        let inner = (width - 2.0 * FORWARD_PAD).max(1.0);
+        unsafe {
+            let _ = self.summary.SetMaxWidth(inner);
+        }
+        let mut h = FORWARD_HEAD;
+        if let Some((c, row)) = &mut self.original {
+            row.width = (inner - BODY_X + PAD_X).max(1.0);
+            unsafe {
+                let _ = row.text.SetMaxWidth(row.width);
+                if let Some(header) = &mut row.header {
+                    let width = (row.width - 65.0).max(1.0);
+                    let _ = header.name.SetMaxWidth(width);
+                    header.name_w = gfx::metrics(&header.name)
+                        .widthIncludingTrailingWhitespace
+                        .min(width);
+                }
+            }
+            if !row.quotes.is_empty() {
+                let _ = gfx::indent_quotes(&row.text, &row.plain16, &row.quotes);
+            }
+            place(row, &c.messages[0]);
+            h += row.height;
+        }
+        self.height = 2.0 * FORWARD_PAD + h + gfx::metrics(&self.summary).height;
+    }
+}
+
+impl Row {
+    /// Card controls in row coordinates. Wrapped links/spoilers retain their
+    /// individual line rectangles for hit testing, rather than a bounding box.
+    pub fn forward_parts(&self, grouped: bool) -> Vec<(ForwardPart, Common::D2D_RECT_F, String)> {
+        let Some(card) = &self.forward else {
+            return Vec::new();
+        };
+        let top = content_top(grouped) + self.forward_y;
+        let mut out = Vec::new();
+        let body = rect(BODY_X, top, BODY_X + self.width, top + card.height);
+        let Some((c, row)) = &card.original else {
+            return vec![(
+                ForwardPart::Body,
+                body,
+                "Forwarded. Original conversation unavailable.".into(),
+            )];
+        };
+        let m = &c.messages[0];
+        let (x, y) = (
+            FORWARD_X + BODY_X,
+            top + FORWARD_PAD + FORWARD_HEAD + content_top(false),
+        );
+        for (k, &(s, l, hidden)) in row.spoilers.iter().enumerate() {
+            if hidden {
+                for r in gfx::range_rects(&row.text, s, l) {
+                    out.push((
+                        ForwardPart::Spoiler(k),
+                        rect(
+                            x + r.left,
+                            y + row.text_y + r.top,
+                            x + r.left + r.width,
+                            y + row.text_y + r.top + r.height,
+                        ),
+                        "Reveal forwarded spoiler".into(),
+                    ));
+                }
+            }
+        }
+        for (k, (s, l, href)) in row.links.iter().enumerate() {
+            for r in gfx::range_rects(&row.text, *s, *l) {
+                out.push((
+                    ForwardPart::Link(k),
+                    rect(
+                        x + r.left,
+                        y + row.text_y + r.top,
+                        x + r.left + r.width,
+                        y + row.text_y + r.top + r.height,
+                    ),
+                    href.clone(),
+                ));
+            }
+        }
+        for f in &row.files.list {
+            let a = &m.attachments[f.index];
+            let r = rect(
+                x + f.rect.left,
+                y + row.files_y + f.rect.top,
+                x + f.rect.right,
+                y + row.files_y + f.rect.bottom,
+            );
+            let hidden = crate::files::hidden(a, &m.revealed);
+            if a.spoiler && !hidden {
+                out.push((
+                    ForwardPart::Hide(f.index),
+                    crate::files::hide_rect(r).0,
+                    "Hide spoiler".into(),
+                ));
+            }
+            if f.voice && f.transcript.as_ref().is_some_and(|t| t.long) {
+                let expanded = m.revealed.contains(&crate::playback::expanded_key(&a.id));
+                out.push((
+                    ForwardPart::Transcript(f.index),
+                    rect(r.left, r.bottom - 22.0, r.right, r.bottom),
+                    if expanded {
+                        "Hide transcript"
+                    } else {
+                        "View transcript"
+                    }
+                    .into(),
+                ));
+            }
+            if hidden || crate::files::clickable(a) {
+                out.push((
+                    ForwardPart::File(f.index),
+                    r,
+                    crate::files::label(a, &m.revealed),
+                ));
+            }
+        }
+        out.push((
+            ForwardPart::Body,
+            body,
+            format!(
+                "Forwarded from {}. {}. {} {}",
+                c.members[0].name,
+                row.spoken(),
+                m.time,
+                card.summary_text
+            ),
+        ));
+        out
+    }
 }
 
 /// Row positions are DIPs relative to an anchor: the bottom of the newest
@@ -578,6 +821,8 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         files_y: 0.0,
         embeds: crate::embeds::build(g, &m.embeds)?,
         embeds_y: 0.0,
+        forward: ForwardCard::new(g, m, width)?,
+        forward_y: 0.0,
         add: c.is_live() && !m.deleted && !reactions.is_empty(),
         reactions,
         reactions_y: 0.0,
@@ -699,6 +944,11 @@ fn place(row: &mut Row, m: &crate::model::Message) {
     if !row.embeds.cards.is_empty() {
         let width = row.width;
         y += 6.0 + crate::embeds::place(&mut row.embeds, &m.embeds, width);
+    }
+    row.forward_y = y + 6.0;
+    if let Some(forward) = &mut row.forward {
+        forward.place(row.width);
+        y += 6.0 + forward.height;
     }
     row.reactions_y = y + 6.0;
     if !row.reactions.is_empty() {
@@ -1116,7 +1366,7 @@ pub fn draw_row(
     i: usize,
     y: f32,
     sel: Option<(u32, u32)>,
-    mut files: Option<&mut crate::files::Ctx>,
+    files: Option<&mut crate::files::Ctx>,
 ) -> Result<()> {
     let m = &c.messages[i];
     let bitmap = if m.picture.is_some() {
@@ -1127,6 +1377,22 @@ pub fn draw_row(
     let Some(row) = rows.row(i) else {
         return Ok(());
     };
+    draw_content(g, dc, c, row, i, i, y, sel, bitmap, files)
+}
+
+fn draw_content(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    c: &Conversation,
+    row: &Row,
+    i: usize,
+    media_row: usize,
+    y: f32,
+    sel: Option<(u32, u32)>,
+    bitmap: Option<ID2D1Bitmap1>,
+    mut files: Option<&mut crate::files::Ctx>,
+) -> Result<()> {
+    let m = &c.messages[i];
     let top = y + content_top(m.grouped);
     unsafe {
         // egui's date divider: the muted label between two border rules.
@@ -1308,13 +1574,58 @@ pub fn draw_row(
                 &m.attachments,
                 &m.revealed,
                 files.as_deref_mut(),
-                i,
+                media_row,
                 BODY_X,
                 top + row.files_y,
             )?;
         }
         if !row.embeds.cards.is_empty() {
-            crate::embeds::draw(g, dc, &row.embeds, files, i, BODY_X, top + row.embeds_y)?;
+            crate::embeds::draw(
+                g,
+                dc,
+                &row.embeds,
+                files.as_deref_mut(),
+                media_row,
+                BODY_X,
+                top + row.embeds_y,
+            )?;
+        }
+        if let Some(card) = &row.forward {
+            let fy = top + row.forward_y;
+            let bounds = rect(BODY_X, fy, BODY_X + row.width, fy + card.height);
+            fill_round(dc, bounds, 8.0, &g.brushes.surface);
+            stroke_round(dc, bounds, 8.0, &g.brushes.border);
+            dc.PushAxisAlignedClip(&bounds, D2D1_ANTIALIAS_MODE_ALIASED);
+            crate::text::draw(
+                dc,
+                &card.label,
+                BODY_X + FORWARD_PAD,
+                fy + FORWARD_PAD,
+                &g.brushes.muted,
+            );
+            let mut sy = fy + FORWARD_PAD + FORWARD_HEAD;
+            if let Some((c, nested)) = &card.original {
+                let mut transform = windows_numerics::Matrix3x2::default();
+                dc.GetTransform(&mut transform);
+                let mut inset = transform;
+                inset.M31 += FORWARD_X * transform.M11;
+                inset.M32 += FORWARD_X * transform.M12;
+                dc.SetTransform(&inset);
+                let drawn = draw_content(g, dc, c, nested, 0, media_row, sy, None, None, files);
+                dc.SetTransform(&transform);
+                dc.PopAxisAlignedClip();
+                drawn?;
+                dc.PushAxisAlignedClip(&bounds, D2D1_ANTIALIAS_MODE_ALIASED);
+                sy += nested.height;
+            }
+            crate::text::draw(
+                dc,
+                &card.summary,
+                BODY_X + FORWARD_PAD,
+                sy,
+                &g.brushes.muted,
+            );
+            dc.PopAxisAlignedClip();
         }
         if let Some((l, _, _)) = &row.error {
             crate::text::draw(dc, l, BODY_X, top + row.error_y + 3.0, &g.brushes.error);
@@ -1362,4 +1673,199 @@ pub fn draw_row(
         }
     }
     Ok(())
+}
+
+impl crate::App {
+    pub fn forward_parts(
+        &self,
+        thread: bool,
+        i: usize,
+    ) -> Vec<(ForwardPart, crate::overlay::Rect, String)> {
+        let (c, rows, x, y, bottom) = if thread {
+            let Some(t) = &self.thread else {
+                return Vec::new();
+            };
+            let Some((x, y, _, _)) = self.thread_part_rect(crate::thread::Part::Row(i)) else {
+                return Vec::new();
+            };
+            (
+                &t.c,
+                &t.rows,
+                x,
+                y,
+                crate::theme::HEADER_H + self.thread_vh(),
+            )
+        } else {
+            if !self.visible_rows().contains(&i) {
+                return Vec::new();
+            }
+            (
+                &self.c,
+                &self.rows,
+                self.list_x(),
+                crate::theme::HEADER_H + (self.rows.top[i] - self.scroll_top) as f32,
+                crate::theme::HEADER_H + self.vh(),
+            )
+        };
+        let Some((m, row)) = c.messages.get(i).zip(rows.row(i)) else {
+            return Vec::new();
+        };
+        row.forward_parts(m.grouped)
+            .into_iter()
+            .filter_map(|(p, r, name)| {
+                let top = (y + r.top).max(crate::theme::HEADER_H);
+                let end = (y + r.bottom).min(bottom);
+                (end > top).then_some((
+                    p,
+                    (x + r.left, y + r.top, r.right - r.left, r.bottom - r.top),
+                    name,
+                ))
+            })
+            .collect()
+    }
+
+    pub fn forward_at(&self, x: f32, y: f32) -> Option<(usize, ForwardPart)> {
+        if !self.in_history(x, y) {
+            return None;
+        }
+        let i = self
+            .rows
+            .row_at(self.scroll_top + (y - crate::theme::HEADER_H) as f64)?;
+        self.forward_parts(false, i)
+            .into_iter()
+            .find_map(|(p, r, _)| {
+                (p != ForwardPart::Body && x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3)
+                    .then_some((i, p))
+            })
+    }
+
+    /// Pointer clicks keep the voice card's waveform seeking; UIA's File
+    /// action remains Play/Pause and Transcript is a separate control.
+    pub fn forward_click(&mut self, thread: bool, i: usize, part: ForwardPart, x: f32, y: f32) {
+        if let ForwardPart::File(k) = part {
+            let rows = if thread {
+                self.thread.as_ref().map(|t| &t.rows)
+            } else {
+                Some(&self.rows)
+            };
+            if let Some((c, row)) = rows
+                .and_then(|rows| rows.row(i))
+                .and_then(|r| r.forward.as_ref())
+                .and_then(|f| f.original.as_ref())
+                && let Some(a) = c.messages[0]
+                    .attachments
+                    .get(k)
+                    .filter(|a| crate::playback::is_voice(a))
+                && let Some(f) = row.files.list.iter().find(|f| f.index == k)
+                && let Some((_, (rx, ry, w, h), _)) = self
+                    .forward_parts(thread, i)
+                    .into_iter()
+                    .find(|(p, _, _)| *p == part)
+                && let Some(crate::playback::Part::Seek(at)) =
+                    crate::playback::part_at(f, rect(rx, ry, rx + w, ry + h), x, y)
+            {
+                let a = a.clone();
+                if let Some(duration) = a.duration_ms.filter(|d| *d > 0) {
+                    self.play_attachment(&a, Some((at * duration as f32) as u64));
+                }
+                return;
+            }
+        }
+        self.forward_activate(thread, i, part);
+    }
+
+    pub fn forward_activate(&mut self, thread: bool, i: usize, part: ForwardPart) {
+        let (c, rows) = if thread {
+            let Some(t) = &mut self.thread else { return };
+            (&mut t.c, &mut t.rows)
+        } else {
+            (&mut self.c, &mut self.rows)
+        };
+        let Some(wrapper) = c.messages.get_mut(i) else {
+            return;
+        };
+        let Some((original, row)) = rows
+            .row(i)
+            .and_then(|r| r.forward.as_ref())
+            .and_then(|f| f.original.as_ref())
+        else {
+            return;
+        };
+        let m = &original.messages[0];
+        let mut toggle = None;
+        match part {
+            ForwardPart::Body => return,
+            ForwardPart::Link(k) => {
+                if let Some((_, _, href)) = row.links.get(k) {
+                    crate::open_link(href);
+                }
+                return;
+            }
+            ForwardPart::Spoiler(k) => {
+                let Some(&(s, _, true)) = row.spoilers.get(k) else {
+                    return;
+                };
+                wrapper.forward_revealed.insert(spoiler_key(s));
+            }
+            ForwardPart::Hide(k) => {
+                let Some(a) = m.attachments.get(k).filter(|a| a.spoiler) else {
+                    return;
+                };
+                wrapper.forward_revealed.remove(&a.id);
+            }
+            ForwardPart::Transcript(k) => {
+                let Some(a) = m.attachments.get(k) else {
+                    return;
+                };
+                toggle = Some(crate::playback::expanded_key(&a.id));
+            }
+            ForwardPart::File(k) => {
+                let Some(a) = m.attachments.get(k).cloned() else {
+                    return;
+                };
+                if crate::files::hidden(&a, &wrapper.forward_revealed) {
+                    wrapper.forward_revealed.insert(a.id.clone());
+                } else if crate::playback::is_voice(&a) {
+                    return self.play_attachment(&a, None);
+                } else if crate::files::clickable(&a) {
+                    if crate::viewer::viewable(&a) {
+                        let (items, index) = crate::viewer::gallery(
+                            &m.attachments,
+                            &wrapper.forward_revealed,
+                            &a.id,
+                        );
+                        return self.open_viewer(items, index);
+                    }
+                    if let Some(live) = &mut self.live {
+                        let a = live.media.resolve(&a);
+                        let unix = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs() as i64);
+                        if let Some(url) = live.media.open(&a, unix) {
+                            crate::open_link(&url);
+                        }
+                    }
+                    let _ = self.drain_live();
+                    return;
+                } else {
+                    return;
+                }
+            }
+        }
+        if let Some(key) = toggle
+            && !wrapper.forward_revealed.remove(&key)
+        {
+            wrapper.forward_revealed.insert(key);
+        }
+        if let Err(e) = rows.replace(&self.g, c, i) {
+            eprintln!("forward layout failed: {e:?}");
+        }
+        if thread {
+            self.dirty.thread = true;
+        } else {
+            self.drawn = None;
+        }
+        self.events |= crate::EV_ROWS;
+        self.need = true;
+    }
 }

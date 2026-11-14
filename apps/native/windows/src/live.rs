@@ -5651,7 +5651,7 @@ pub fn spans(text: &str, mentions: &[core::Mention]) -> Vec<Span> {
     out
 }
 
-/// One displayed message (attachments and embeds are not drawn yet). `me`
+/// One displayed message. `me`
 /// is the signed-in author, whose reactions are highlighted.
 pub fn message(
     m: &core::Message,
@@ -5750,6 +5750,8 @@ pub fn message(
         } else {
             m.content.embeds.clone()
         },
+        forward: m.forward.clone().filter(|_| !deleted),
+        forward_revealed: Default::default(),
     }
 }
 
@@ -5921,6 +5923,35 @@ mod tests {
         );
         assert_eq!(gif.content_type, "image/gif");
         assert_eq!(gif.name, "Wave");
+
+        let original = core_message(serde_json::json!({ "id": "original", "content": content }));
+        let mut wrapper = core_message(serde_json::json!({
+            "forward": { "seq": "9", "message": original },
+        }));
+        let shown = message(&wrapper, 0, false, None);
+        assert!(
+            shown.attachments.is_empty(),
+            "the wrapper keeps its own media separate"
+        );
+        let forward = shown.forward.unwrap();
+        assert_eq!(forward.seq, "9");
+        let source = forward.message.unwrap();
+        assert_eq!(source.id, "original");
+        assert_eq!(source.content.gif.unwrap().title, "Wave");
+        wrapper.forward.as_mut().unwrap().message = None;
+        assert!(
+            message(&wrapper, 0, false, None)
+                .forward
+                .unwrap()
+                .message
+                .is_none(),
+            "unavailable is still a card"
+        );
+        wrapper.deleted_at = Some("2026-10-01T09:10:00Z".into());
+        assert!(
+            message(&wrapper, 0, false, None).forward.is_none(),
+            "deleting the wrapper hides its forward"
+        );
 
         let deleted = core_message(serde_json::json!({
             "content": content, "deletedAt": "2026-10-01T09:10:00Z",
