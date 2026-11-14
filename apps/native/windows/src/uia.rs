@@ -278,6 +278,11 @@ fn focused(a: &App) -> Option<Id> {
         return Some(Id::MemberSearch(SPartM::Field));
     }
     if !a.composer.focused
+        && let Some(p) = a.call_ui.focus
+    {
+        return Some(Id::Voice(p));
+    }
+    if !a.composer.focused
         && let Some(part) = a.focused_thread_part()
     {
         return Some(Id::ThreadPart(part));
@@ -691,6 +696,13 @@ fn name(a: &App, id: Id) -> String {
             if let Some(label) = a.space_muted(i) {
                 n.push_str(&format!(", {label}"));
             }
+            if let Some(connected) = a.space_voice(i) {
+                n.push_str(if connected {
+                    ", Connected to voice in this space"
+                } else {
+                    ", Voice active in this space"
+                });
+            }
             n
         }
         Id::Channels => c
@@ -1070,6 +1082,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::DmItem(_) => UIA_MenuItemControlTypeId,
         Id::DirectOptions(_) | Id::SpaceOptions | Id::ChannelOptions(_) => UIA_ButtonControlTypeId,
         Id::Voice(crate::call::VPart::Status) => UIA_TextControlTypeId,
+        Id::Voice(crate::call::VPart::Volume) => UIA_SliderControlTypeId,
+        Id::Voice(crate::call::VPart::LocalMute) => UIA_CheckBoxControlTypeId,
         Id::Voice(_) => UIA_ButtonControlTypeId,
         Id::AccountItem(_) => UIA_MenuItemControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
@@ -1149,6 +1163,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::DmMenu => (44, 0),
         Id::DmItem(k) => (45, k),
         Id::SpaceOptions => (46, 0),
+        Id::Voice(crate::call::VPart::Person(k)) => (92, k),
         Id::Voice(p) => (48, p.index()),
         Id::ChannelOptions(i) => (47, i),
         Id::AccountItem(k) => (41, k),
@@ -1555,6 +1570,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::Settings(p) if p.is_toggle() => pattern == UIA_TogglePatternId,
             Id::Settings(p) if p.is_slider() => pattern == UIA_RangeValuePatternId,
+            Id::Voice(crate::call::VPart::Volume) => pattern == UIA_RangeValuePatternId,
+            Id::Voice(crate::call::VPart::LocalMute) => pattern == UIA_TogglePatternId,
             // A formatting button is pressed while the selection has its style.
             Id::BoxPart(crate::uploads::Part::Format(_)) | Id::ThreadPart(TPart::Format(_)) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_TogglePatternId
@@ -1822,6 +1839,12 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                                 | crate::call::VPart::Deafen
                                 | crate::call::VPart::Leave
                                 | crate::call::VPart::Dismiss
+                                | crate::call::VPart::People
+                                | crate::call::VPart::Person(_)
+                                | crate::call::VPart::Volume
+                                | crate::call::VPart::LocalMute
+                                | crate::call::VPart::Previous
+                                | crate::call::VPart::Next
                         )
                         | Id::DmItem(_)
                         | Id::Bar(
@@ -1969,6 +1992,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
             }
             match id {
                 Id::Composer => a.set_composer_focus(true),
+                Id::Voice(p) if p != crate::call::VPart::Status => a.focus_voice(p),
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Dialog(DPart::Number(k)) => a.dialog_activate(DPart::Number(k)),
@@ -2259,6 +2283,7 @@ impl IToggleProvider_Impl for Node_Impl {
             }
             match id {
                 Id::ThreadPart(p) => a.thread_activate(p),
+                Id::Voice(p) => a.voice_activate(p),
                 Id::BoxPart(p) => a.box_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
                 Id::Dialog(p) | Id::ForwardDialog(p) => a.dialog_activate(p),
@@ -2272,6 +2297,9 @@ impl IToggleProvider_Impl for Node_Impl {
         let id = self.id;
         with(|a| {
             let on = match id {
+                Id::Voice(crate::call::VPart::LocalMute) => {
+                    a.call_playback().is_some_and(|p| p.muted)
+                }
                 Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.checked(p)),
                 Id::ForwardDialog(p) => a.dialog.as_ref().is_some_and(|d| d.forward_checked(p)),
                 Id::Dialog(_) => a.dialog.as_ref().is_some_and(|d| d.private),
@@ -2286,22 +2314,31 @@ impl IToggleProvider_Impl for Node_Impl {
     }
 }
 
-/// The Audio test's sliders.
+/// The Audio test and per-participant listening volume.
 impl IRangeValueProvider_Impl for Node_Impl {
     fn SetValue(&self, val: f64) -> Result<()> {
         let id = self.id;
         with(|a| {
-            let Id::Settings(p) = id else {
-                return Ok(());
+            if !exists(a, id) {
+                return Err(na());
+            }
+            let enabled = match id {
+                Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
+                Id::Voice(crate::call::VPart::Volume) => a.call_playback().is_some(),
+                _ => false,
             };
-            if !a.settings.as_ref().is_some_and(|s| s.enabled(p)) {
+            if !enabled {
                 return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
             }
             let max = gauge(a, id).map_or(0.0, |g| f64::from(g.1));
             if !(0.0..=max).contains(&val) {
                 return Err(E_INVALIDARG.into());
             }
-            a.set_gauge(p, val.round() as u16, true);
+            match id {
+                Id::Settings(p) => a.set_gauge(p, val.round() as u16, true),
+                Id::Voice(crate::call::VPart::Volume) => a.set_call_volume(val.round() as u16),
+                _ => {}
+            }
             Ok(())
         })
     }
@@ -2316,6 +2353,7 @@ impl IRangeValueProvider_Impl for Node_Impl {
         with(|a| {
             Ok(match id {
                 Id::Settings(p) => !a.settings.as_ref().is_some_and(|s| s.enabled(p)),
+                Id::Voice(crate::call::VPart::Volume) => a.call_playback().is_none(),
                 _ => true,
             }
             .into())
@@ -2341,8 +2379,13 @@ impl IRangeValueProvider_Impl for Node_Impl {
 }
 
 fn gauge(a: &App, id: Id) -> Option<(u16, u16, u16)> {
-    let Id::Settings(p) = id else { return None };
-    a.settings.as_ref()?.gauge(p)
+    match id {
+        Id::Settings(p) => a.settings.as_ref()?.gauge(p),
+        Id::Voice(crate::call::VPart::Volume) => {
+            a.call_playback().map(|p| (p.gain_percent, 200, 1))
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -5,21 +5,28 @@
 //! Deafen and Leave (Cancel while joining). A failed join or call shows its
 //! error there instead, with a dismiss button. The shared
 //! `caper_client::voice::Voice`, kept in `Live`, runs the call.
+use crate::avatars::{self, Face};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::live::{CallView, VoiceAction};
 use crate::overlay::Rect;
 use crate::settings::FOOT_H;
 use crate::theme::*;
-use crate::{App, EV_ROWS, text};
+use crate::{App, EV_FOCUS, EV_ROWS, text};
+use caper_client::model::VoiceOccupant;
+use windows::Win32::Foundation::{LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
-/// Redraws the call's timer every second while a call is under way.
+/// Redraws levels and their 180ms speaking release while in a call.
 pub const TIMER_CALL: usize = 12;
-const CARD_H: f32 = 112.0;
+const CARD_H: f32 = 136.0;
+const PERSON_H: f32 = 42.0;
+const AUDIO_H: f32 = 104.0;
+const PAGE_H: f32 = 26.0;
 const ERROR_H: f32 = 60.0;
 /// egui's live call card and its colours.
 const LIVE_CARD: u32 = 0x22382C;
@@ -38,6 +45,12 @@ pub enum VPart {
     Deafen,
     Leave,
     Dismiss,
+    People,
+    Person(usize),
+    Volume,
+    LocalMute,
+    Previous,
+    Next,
 }
 
 impl VPart {
@@ -48,9 +61,27 @@ impl VPart {
             Self::Deafen => 2,
             Self::Leave => 3,
             Self::Dismiss => 4,
-            Self::Join(i) => 8 + i,
+            Self::People => 5,
+            Self::Volume => 6,
+            Self::LocalMute => 7,
+            Self::Previous => 8,
+            Self::Next => 9,
+            Self::Join(i) => 32 + i,
+            Self::Person(i) => i, // Separate UIA runtime-id group.
         }
     }
+}
+
+/// Expanded roster and a local listener's controls. The selected identity
+/// survives roster reordering; leaving or switching calls resets it.
+#[derive(Default)]
+pub struct People {
+    open: bool,
+    start: usize,
+    audio: Option<String>,
+    generation: Option<u64>,
+    pub focus: Option<VPart>,
+    dragging: bool,
 }
 
 /// What the card shows.
@@ -64,7 +95,465 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
 }
 
+fn label(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    value: &str,
+    (x, y, w, h): Rect,
+    color: u32,
+) -> Result<()> {
+    let l = g.layout(&gfx::wide(value), &g.formats.direct_note, w.max(1.0))?;
+    crate::emoji::apply(&l, value, 12.0, 1.0)?;
+    unsafe {
+        l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        dc.PushAxisAlignedClip(&rect(x, y, x + w, y + h), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    }
+    text::draw(
+        dc,
+        &l,
+        x,
+        y + (h - gfx::metrics(&l).height) / 2.0,
+        &g.solid(color),
+    );
+    unsafe {
+        dc.PopAxisAlignedClip();
+    }
+    Ok(())
+}
+
+fn face(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    p: &VoiceOccupant,
+    (x, y, size, _): Rect,
+    speaking: bool,
+) -> Result<()> {
+    let person = crate::live::person(&p.id, &p.name, p.avatar());
+    let r = rect(x, y, x + size, y + size);
+    let picture = avatars::draw(dc, &person.avatar, r, size * 0.3);
+    if !picture {
+        avatars::circle(
+            g,
+            dc,
+            &person.avatar,
+            (x + size / 2.0, y + size / 2.0, size / 2.0),
+            person.color,
+            &person.initials,
+        )?;
+    }
+    if speaking {
+        stroke_round(
+            dc,
+            rect(x - 2.0, y - 2.0, x + size + 2.0, y + size + 2.0),
+            if picture {
+                size * 0.3 + 2.0
+            } else {
+                size / 2.0 + 2.0
+            },
+            &g.solid(VOICE_GREEN),
+        );
+    }
+    Ok(())
+}
+
 impl App {
+    pub fn focus_voice(&mut self, p: VPart) {
+        self.set_composer_focus(false);
+        self.set_thread_focus(false);
+        self.set_member_search_focus(false);
+        self.set_kb(None);
+        self.call_ui.focus = Some(p);
+        self.events |= EV_FOCUS;
+        self.dirty.sidebar = true;
+        self.need = true;
+    }
+
+    pub fn set_call_volume(&mut self, gain: u16) {
+        if let (Some(id), Some(playback)) =
+            (self.call_audio().map(str::to_owned), self.call_playback())
+        {
+            self.live
+                .as_mut()
+                .unwrap()
+                .participant_playback(&id, gain.min(200), playback.muted);
+            self.voice_changed();
+        }
+    }
+
+    fn call_scrub(&mut self, px: f32) {
+        if let Some((x, _, w, _)) = self.voice_rect(VPart::Volume) {
+            self.set_call_volume(
+                (((px - x - 8.0) / (w - 16.0)).clamp(0.0, 1.0) * 200.0).round() as u16,
+            );
+        }
+    }
+
+    /// The card owns input only inside itself (or during a captured slider
+    /// drag). It does not steal wheel/keyboard input from other surfaces.
+    pub fn call_input(
+        &mut self,
+        msg: u32,
+        wp: WPARAM,
+        x: f32,
+        y: f32,
+        shift: bool,
+    ) -> Option<LRESULT> {
+        match msg {
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
+                if !self.on_call(x, y) {
+                    self.call_ui.focus = None;
+                    return None;
+                }
+                if let Some(p) = self.voice_at(x, y) {
+                    self.focus_voice(p);
+                    if p == VPart::Volume && msg == WM_LBUTTONDOWN {
+                        self.call_ui.dragging = true;
+                        unsafe {
+                            SetCapture(self.hwnd);
+                        }
+                        self.call_scrub(x);
+                    } else if msg == WM_LBUTTONDOWN || matches!(p, VPart::Person(_)) {
+                        self.voice_activate(p);
+                    }
+                }
+            }
+            WM_MOUSEMOVE if self.call_ui.dragging => self.call_scrub(x),
+            WM_LBUTTONUP if self.call_ui.dragging => {
+                self.call_scrub(x);
+                self.call_ui.dragging = false;
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+            }
+            WM_CAPTURECHANGED | WM_CANCELMODE => {
+                self.call_ui.dragging = false;
+                return None;
+            }
+            WM_CONTEXTMENU if self.on_call(x, y) => {}
+            WM_MOUSEWHEEL
+                if self.call_ui.open && self.pointer.is_some_and(|(x, y)| self.on_call(x, y)) =>
+            {
+                let up = ((wp.0 >> 16) & 0xffff) as i16 > 0;
+                self.voice_activate(if up { VPart::Previous } else { VPart::Next });
+            }
+            WM_KEYDOWN
+                if self.call_ui.focus.is_some()
+                    && !self.composer.focused
+                    && !self.member_search.as_ref().is_some_and(|s| s.field.focused)
+                    && !self.thread.as_ref().is_some_and(|t| t.composer.focused) =>
+            {
+                let p = self.call_ui.focus.unwrap();
+                let key = VIRTUAL_KEY(wp.0 as u16);
+                match key {
+                    VK_ESCAPE => {
+                        self.call_ui.open = false;
+                        self.call_ui.audio = None;
+                        self.call_ui.focus = None;
+                        self.voice_changed();
+                        self.set_composer_focus(true);
+                    }
+                    VK_TAB => {
+                        let order: Vec<_> = self
+                            .voice_parts()
+                            .into_iter()
+                            .filter(|p| *p != VPart::Status && self.voice_enabled(*p))
+                            .collect();
+                        let at = order.iter().position(|part| *part == p);
+                        let next = at
+                            .and_then(|k| if shift { k.checked_sub(1) } else { Some(k + 1) })
+                            .and_then(|k| order.get(k));
+                        if let Some(next) = next {
+                            self.focus_voice(*next);
+                        } else {
+                            self.call_ui.focus = None;
+                            self.set_composer_focus(true);
+                        }
+                    }
+                    VK_LEFT | VK_RIGHT | VK_DOWN | VK_UP | VK_HOME | VK_END
+                        if p == VPart::Volume =>
+                    {
+                        let v = self.call_playback()?.gain_percent;
+                        let next = match key {
+                            VK_HOME => 0,
+                            VK_END => 200,
+                            VK_LEFT | VK_DOWN => v.saturating_sub(if shift { 10 } else { 1 }),
+                            _ => v.saturating_add(if shift { 10 } else { 1 }).min(200),
+                        };
+                        self.set_call_volume(next);
+                    }
+                    VK_RETURN | VK_SPACE => self.voice_activate(p),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+        Some(LRESULT(0))
+    }
+
+    /// Compact faces leave at least half the row for its channel name.
+    pub fn draw_voice_row(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        i: usize,
+        right: f32,
+        cy: f32,
+    ) -> Result<f32> {
+        let Some((live, id)) = self.live.as_ref().zip(self.ids.channels.get(i)) else {
+            return Ok(right);
+        };
+        let people = live.voice_people(id);
+        if people.is_empty() {
+            return Ok(right);
+        }
+        let count = people.len().min(2);
+        let extra = if people.len() > count { 26.0 } else { 0.0 };
+        let left = right - count as f32 * 20.0 - extra;
+        for (k, p) in people.iter().take(count).enumerate() {
+            face(
+                g,
+                dc,
+                p,
+                (left + k as f32 * 20.0, cy - 9.0, 18.0, 18.0),
+                live.voice_speaking(id, p),
+            )?;
+        }
+        if people.len() > count {
+            label(
+                g,
+                dc,
+                &format!("+{}", people.len() - count),
+                (right - extra + 2.0, cy - 10.0, extra - 2.0, 20.0),
+                TEXT_MUTED,
+            )?;
+        }
+        Ok(left - 8.0)
+    }
+
+    fn draw_call_people(&self, g: &Gfx, dc: &ID2D1DeviceContext) -> Result<()> {
+        let people = self.call_people();
+        let Some(live) = &self.live else {
+            return Ok(());
+        };
+        let local = |p| self.voice_rect(p).map(|(x, y, w, h)| (x - RAIL_W, y, w, h));
+        let Some((x, y, w, h)) = local(VPart::People) else {
+            return Ok(());
+        };
+        if self.voice_hover == Some(VPart::People) {
+            fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
+        }
+        for (k, p) in people.iter().take(4).enumerate() {
+            face(
+                g,
+                dc,
+                p,
+                (x + 4.0 + k as f32 * 24.0, y + 5.0, 24.0, 24.0),
+                live.voice
+                    .speaking(&p.id, p.muted, std::time::Instant::now()),
+            )?;
+        }
+        let fx = x + 8.0 + people.len().min(4) as f32 * 24.0;
+        label(
+            g,
+            dc,
+            if self.call_ui.open { "Hide" } else { "People" },
+            (fx, y, w - (fx - x), h),
+            TEXT,
+        )?;
+        if !self.call_ui.open {
+            return Ok(());
+        }
+        for k in self.call_range() {
+            let p = &people[k];
+            let Some((x, y, w, h)) = local(VPart::Person(k)) else {
+                continue;
+            };
+            let own = p.id == live.voice.self_id;
+            let selected = self.call_audio() == Some(&p.id);
+            if selected || self.voice_hover == Some(VPart::Person(k)) {
+                fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
+            }
+            let speaking = live
+                .voice
+                .speaking(&p.id, p.muted, std::time::Instant::now());
+            face(g, dc, p, (x + 4.0, y + 7.0, 28.0, 28.0), speaking)?;
+            let name = if own {
+                format!("{} (you)", p.name)
+            } else {
+                p.name.clone()
+            };
+            label(
+                g,
+                dc,
+                &name,
+                (x + 40.0, y + 2.0, w - 78.0, 20.0),
+                if speaking { TEXT } else { TEXT_MUTED },
+            )?;
+            let playback = live.voice.playback(&p.id);
+            let status = if !own && playback.muted {
+                "Muted for me"
+            } else if p.deafened {
+                "Deafened"
+            } else if p.muted {
+                "Mic muted"
+            } else if speaking {
+                "Speaking"
+            } else {
+                ""
+            };
+            label(
+                g,
+                dc,
+                status,
+                (x + 40.0, y + 22.0, w - 78.0, 16.0),
+                TEXT_MUTED,
+            )?;
+            if !own {
+                icons::draw(
+                    dc,
+                    Icon::Volume,
+                    rect(x + w - 26.0, y + 13.0, x + w - 10.0, y + 29.0),
+                    if selected { TEXT } else { TEXT_MUTED },
+                    1.0,
+                );
+            }
+        }
+        for (p, title) in [(VPart::Previous, "Previous"), (VPart::Next, "Next")] {
+            if let Some((x, y, w, h)) = local(p) {
+                label(
+                    g,
+                    dc,
+                    title,
+                    (x + 8.0, y, w - 16.0, h),
+                    if self.voice_enabled(p) { TEXT } else { BORDER },
+                )?;
+            }
+        }
+        if let Some(playback) = self.call_playback() {
+            if let Some((x, y, w, _)) = local(VPart::Volume) {
+                let name = people
+                    .iter()
+                    .find(|p| Some(p.id.as_str()) == self.call_audio())
+                    .map_or("", |p| p.name.as_str());
+                label(g, dc, name, (x, y, w - 44.0, 20.0), TEXT)?;
+                label(
+                    g,
+                    dc,
+                    &format!("{}%", playback.gain_percent),
+                    (x + w - 40.0, y, 40.0, 20.0),
+                    TEXT,
+                )?;
+                let left = x + 8.0;
+                let knob = left + (w - 16.0) * f32::from(playback.gain_percent) / 200.0;
+                fill_round(
+                    dc,
+                    rect(left, y + 33.0, x + w - 8.0, y + 37.0),
+                    2.0,
+                    &g.brushes.border,
+                );
+                fill_round(
+                    dc,
+                    rect(left, y + 33.0, knob, y + 37.0),
+                    2.0,
+                    &g.brushes.text,
+                );
+                fill_round(
+                    dc,
+                    rect(knob - 6.0, y + 29.0, knob + 6.0, y + 41.0),
+                    6.0,
+                    &g.brushes.text,
+                );
+            }
+            if let Some((x, y, w, h)) = local(VPart::LocalMute) {
+                let check = rect(x, y + 5.0, x + 16.0, y + 21.0);
+                stroke_round(dc, check, 4.0, &g.brushes.text);
+                if playback.muted {
+                    fill_round(
+                        dc,
+                        rect(x + 4.0, y + 9.0, x + 12.0, y + 17.0),
+                        2.0,
+                        &g.brushes.text,
+                    );
+                }
+                label(g, dc, "Mute for me", (x + 24.0, y, w - 24.0, h), TEXT)?;
+                label(
+                    g,
+                    dc,
+                    "Only changes what you hear.",
+                    (x, y + h, w, 18.0),
+                    TEXT_MUTED,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn space_voice(&self, i: usize) -> Option<bool> {
+        self.live
+            .as_ref()
+            .filter(|_| self.c.is_live())?
+            .voice_badge(self.ids.spaces.get(i)?)
+    }
+
+    pub fn call_people(&self) -> Vec<VoiceOccupant> {
+        let Some(live) = self.live.as_ref().filter(|_| self.c.is_live()) else {
+            return vec![];
+        };
+        live.voice
+            .state
+            .active_channel()
+            .map_or_else(Vec::new, |id| live.voice_people(id))
+    }
+
+    /// The open controls' identity must still belong to this call, and
+    /// must never be your own microphone.
+    fn call_audio(&self) -> Option<&str> {
+        let live = self.live.as_ref()?;
+        let id = self.call_ui.audio.as_deref()?;
+        (live.in_voice()
+            && id != live.voice.self_id
+            && live.voice.participants.iter().any(|p| p.id == id))
+        .then_some(id)
+    }
+
+    pub fn call_playback(&self) -> Option<caper_client::voice_media::TrackPlayback> {
+        Some(self.live.as_ref()?.voice.playback(self.call_audio()?))
+    }
+
+    fn call_slots(&self) -> usize {
+        if !self.call_ui.open {
+            return 0;
+        }
+        let audio = if self.call_audio().is_some() {
+            AUDIO_H
+        } else {
+            0.0
+        };
+        let available =
+            self.h - FOOT_H - self.update_dock_h() - HEADER_H - 24.0 - CARD_H - PAGE_H - audio;
+        ((available / PERSON_H).floor().clamp(1.0, 4.0) as usize).min(self.call_people().len())
+    }
+
+    fn call_range(&self) -> std::ops::Range<usize> {
+        let n = self.call_people().len();
+        let slots = self.call_slots();
+        let start = self.call_ui.start.min(n.saturating_sub(slots));
+        start..start + slots
+    }
+
+    fn call_extra(&self) -> f32 {
+        if !self.call_ui.open {
+            return 0.0;
+        }
+        self.call_slots() as f32 * PERSON_H
+            + PAGE_H
+            + if self.call_audio().is_some() {
+                AUDIO_H
+            } else {
+                0.0
+            }
+    }
+
     pub fn voice_card(&self) -> Option<Card> {
         let live = self.live.as_ref().filter(|_| self.c.is_live())?;
         match live.call_view() {
@@ -76,7 +565,7 @@ impl App {
     /// The card (client DIPs), above the account footer.
     pub fn call_rect(&self) -> Option<Rect> {
         let h = match self.voice_card()? {
-            Card::Call(_) => CARD_H,
+            Card::Call(_) => CARD_H + self.call_extra(),
             Card::Error(_) => ERROR_H,
         };
         let foot = (if self.foot_shown() { FOOT_H } else { 0.0 }) + self.update_dock_h();
@@ -104,7 +593,18 @@ impl App {
     pub fn voice_parts(&self) -> Vec<VPart> {
         match self.voice_card() {
             None => Vec::new(),
-            Some(Card::Call(_)) => vec![VPart::Status, VPart::Mute, VPart::Deafen, VPart::Leave],
+            Some(Card::Call(_)) => {
+                let mut parts = vec![VPart::Status, VPart::People];
+                if self.call_ui.open {
+                    parts.extend(self.call_range().map(VPart::Person));
+                    parts.extend([VPart::Previous, VPart::Next]);
+                    if self.call_audio().is_some() {
+                        parts.extend([VPart::Volume, VPart::LocalMute]);
+                    }
+                }
+                parts.extend([VPart::Mute, VPart::Deafen, VPart::Leave]);
+                parts
+            }
             Some(Card::Error(_)) => vec![VPart::Status, VPart::Dismiss],
         }
     }
@@ -117,13 +617,37 @@ impl App {
         let (x, y, w, h) = self.call_rect()?;
         let row = y + h - 44.0;
         Some(match p {
-            VPart::Status if call => (x + 12.0, y + 10.0, w - 24.0, h - 60.0),
+            VPart::Status if call => (x + 12.0, y + 10.0, w - 24.0, 40.0),
             VPart::Status => (x + 12.0, y + 10.0, w - 56.0, h - 20.0),
+            VPart::People => (x + 12.0, y + 50.0, w - 24.0, 34.0),
+            VPart::Person(k) if self.call_ui.open && self.call_range().contains(&k) => (
+                x + 12.0,
+                y + 86.0 + (k - self.call_range().start) as f32 * PERSON_H,
+                w - 24.0,
+                PERSON_H,
+            ),
+            VPart::Previous | VPart::Next if self.call_ui.open => (
+                x + 12.0
+                    + if p == VPart::Next {
+                        (w - 24.0) / 2.0
+                    } else {
+                        0.0
+                    },
+                y + 86.0 + self.call_slots() as f32 * PERSON_H,
+                (w - 24.0) / 2.0,
+                PAGE_H,
+            ),
+            VPart::Volume if self.call_audio().is_some() => {
+                (x + 16.0, row - AUDIO_H + 4.0, w - 32.0, 48.0)
+            }
+            VPart::LocalMute if self.call_audio().is_some() => {
+                (x + 16.0, row - 48.0, w - 32.0, 26.0)
+            }
             VPart::Mute => (x + 12.0, row, 32.0, 32.0),
             VPart::Deafen => (x + 50.0, row, 32.0, 32.0),
             VPart::Leave => (x + w - 12.0 - 92.0, row, 92.0, 32.0),
             VPart::Dismiss => (x + w - 40.0, y + (h - 28.0) / 2.0, 28.0, 28.0),
-            VPart::Join(_) => return None,
+            _ => return None,
         })
     }
 
@@ -149,6 +673,13 @@ impl App {
     pub fn voice_enabled(&self, p: VPart) -> bool {
         match p {
             VPart::Join(i) => self.join_action(i).is_some_and(|(_, on)| on),
+            VPart::Person(k) => self
+                .call_people()
+                .get(k)
+                .is_some_and(|p| self.live.as_ref().is_some_and(|l| p.id != l.voice.self_id)),
+            VPart::Volume | VPart::LocalMute => self.call_audio().is_some(),
+            VPart::Previous => self.call_range().start > 0,
+            VPart::Next => self.call_range().end < self.call_people().len(),
             _ => true,
         }
     }
@@ -192,12 +723,83 @@ impl App {
             VPart::Leave if call.is_some_and(|c| c.joining) => "Cancel joining voice".into(),
             VPart::Leave => "Leave voice".into(),
             VPart::Dismiss => "Dismiss voice error".into(),
+            VPart::People => format!(
+                "{} call participants",
+                if self.call_ui.open { "Hide" } else { "Show" }
+            ),
+            VPart::Person(k) => self.call_people().get(k).map_or_else(String::new, |p| {
+                let live = self.live.as_ref().unwrap();
+                let speaking = live
+                    .voice
+                    .speaking(&p.id, p.muted, std::time::Instant::now());
+                let local = live.voice.playback(&p.id).muted;
+                format!(
+                    "{}{}, {}{}{}{}",
+                    p.name,
+                    if p.id == live.voice.self_id {
+                        " (you)"
+                    } else {
+                        " audio controls"
+                    },
+                    if speaking { "speaking" } else { "not speaking" },
+                    if p.muted { ", microphone muted" } else { "" },
+                    if p.deafened { ", deafened" } else { "" },
+                    if local { ", muted for me" } else { "" }
+                )
+            }),
+            VPart::Volume | VPart::LocalMute => {
+                let name = self
+                    .call_people()
+                    .into_iter()
+                    .find(|p| Some(p.id.as_str()) == self.call_audio())
+                    .map_or_else(String::new, |p| p.name);
+                format!(
+                    "{}: {name}",
+                    if p == VPart::Volume {
+                        "User volume"
+                    } else {
+                        "Mute for me"
+                    }
+                )
+            }
+            VPart::Previous => "Previous call participants".into(),
+            VPart::Next => "Next call participants".into(),
         }
     }
 
     pub fn voice_activate(&mut self, p: VPart) {
         if !self.voice_enabled(p) {
             return;
+        }
+        match p {
+            VPart::People => {
+                self.call_ui.open = !self.call_ui.open;
+                if !self.call_ui.open {
+                    self.call_ui.audio = None;
+                }
+            }
+            VPart::Person(k) => {
+                if let Some(person) = self.call_people().get(k) {
+                    self.call_ui.audio = (self.call_ui.audio.as_deref() != Some(&person.id))
+                        .then(|| person.id.clone());
+                }
+            }
+            VPart::Previous => {
+                self.call_ui.start = self.call_range().start.saturating_sub(self.call_slots())
+            }
+            VPart::Next => self.call_ui.start = self.call_range().end,
+            VPart::LocalMute => {
+                if let (Some(id), Some(playback)) =
+                    (self.call_audio().map(str::to_owned), self.call_playback())
+                {
+                    self.live.as_mut().unwrap().participant_playback(
+                        &id,
+                        playback.gain_percent,
+                        !playback.muted,
+                    );
+                }
+            }
+            _ => {}
         }
         let id = match p {
             VPart::Join(i) => self.ids.channels.get(i).cloned(),
@@ -214,7 +816,7 @@ impl App {
             VPart::Deafen => live.toggle_deafen(),
             VPart::Leave => live.leave_voice(),
             VPart::Dismiss => live.dismiss_voice_error(),
-            VPart::Status => {}
+            _ => {}
         }
         self.voice_changed();
     }
@@ -222,13 +824,47 @@ impl App {
     /// Voice changed: the sidebar redraws, and the call's timer runs only
     /// while a call is under way.
     pub fn voice_changed(&mut self) {
+        let dragging = self.call_ui.dragging;
+        let generation = self
+            .live
+            .as_ref()
+            .filter(|l| l.in_voice())
+            .map(|l| l.voice.state.generation);
+        if generation != self.call_ui.generation {
+            self.call_ui = People {
+                generation,
+                ..Default::default()
+            };
+        }
+        if self.call_audio().is_none() {
+            self.call_ui.audio = None;
+            self.call_ui.dragging = false;
+        }
+        if dragging && !self.call_ui.dragging {
+            unsafe {
+                let _ = ReleaseCapture();
+            }
+        }
+        if self
+            .call_ui
+            .focus
+            .is_some_and(|p| !self.voice_parts().contains(&p))
+        {
+            self.call_ui.focus = match self.voice_card() {
+                Some(Card::Call(_)) => Some(VPart::People),
+                Some(Card::Error(_)) => Some(VPart::Dismiss),
+                None => None,
+            };
+            self.events |= EV_FOCUS;
+        }
         self.dirty.sidebar = true;
+        self.dirty.rail = true;
         self.events |= EV_ROWS;
         self.need = true;
         let calling = self.live.as_ref().is_some_and(|l| l.in_voice());
         unsafe {
             if calling {
-                SetTimer(Some(self.hwnd), TIMER_CALL, 1000, None);
+                SetTimer(Some(self.hwnd), TIMER_CALL, 80, None);
             } else {
                 let _ = KillTimer(Some(self.hwnd), TIMER_CALL);
             }
@@ -334,12 +970,7 @@ impl App {
                 let pl = g.layout(&gfx::wide(&people), &g.formats.direct_note, tw)?;
                 unsafe { pl.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
                 text::draw(dc, &pl, tx, ty + 22.0, &g.brushes.muted);
-                if !call.names.is_empty() {
-                    let ml = g.layout(&gfx::wide(&call.names), &g.formats.direct_note, tw)?;
-                    unsafe { ml.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
-                    crate::emoji::apply(&ml, &call.names, 12.0, 1.0)?;
-                    text::draw(dc, &ml, tx, ty + 38.0, &g.brushes.text);
-                }
+                self.draw_call_people(g, dc)?;
                 for (p, icon, on) in [
                     (
                         VPart::Mute,
@@ -401,6 +1032,13 @@ impl App {
                     );
                 }
             }
+        }
+        if let Some(p) = self.call_ui.focus
+            && !self.composer.focused
+            && !self.thread.as_ref().is_some_and(|t| t.composer.focused)
+            && let Some((x, y, w, h)) = local(p)
+        {
+            stroke_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.terracotta);
         }
         Ok(())
     }

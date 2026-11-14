@@ -302,6 +302,7 @@ pub struct App {
     hover_invite: Option<invites::Spot>,
     /// A channel row's Join or a call card button under the pointer.
     voice_hover: Option<call::VPart>,
+    call_ui: call::People,
     /// The request bar's hovered and pressed buttons.
     bar_hover: Option<directs::BarPart>,
     bar_pressed: Option<directs::BarPart>,
@@ -582,6 +583,7 @@ impl App {
                 hover_channel: None,
                 hover_channel_options: false,
                 voice_hover: None,
+                call_ui: Default::default(),
                 space_options_hover: false,
                 hover_member: None,
                 hover_direct: None,
@@ -2006,6 +2008,9 @@ impl App {
         {
             return r;
         }
+        if let Some(r) = self.call_input(msg, wp, x, y, shift) {
+            return Some(r);
+        }
         if self.thread.is_some()
             && let Some(r) = self.thread_input(msg, wp, x, y, ctrl, shift)
         {
@@ -2066,7 +2071,7 @@ impl App {
                 updates::TIMER_SHINE => self.shine_tick(),
                 tips::TIMER_TIP => self.tip_tick(),
                 web_player::TIMER_WEB_PLAYER => self.need = true,
-                // The call's running time.
+                // Levels, speaking release and the call's running time.
                 call::TIMER_CALL => {
                     self.dirty.sidebar = true;
                     self.need = true;
@@ -3508,6 +3513,27 @@ impl App {
                     } else {
                         text::draw(dc, &l, r.left, r.top, &g.brushes.text);
                     }
+                    // Voice has its own top-right corner, leaving mute,
+                    // unread and mention badges unchanged.
+                    if let Some(connected) = self.space_voice(i) {
+                        let b = rect(r.right - 12.0, r.top - 6.0, r.right + 6.0, r.top + 12.0);
+                        fill_round(dc, b, 9.0, &g.brushes.blackout);
+                        if connected {
+                            fill_round(
+                                dc,
+                                rect(b.left + 2.0, b.top + 2.0, b.right - 2.0, b.bottom - 2.0),
+                                7.0,
+                                &g.solid(VOICE_GREEN),
+                            );
+                        }
+                        icons::draw(
+                            dc,
+                            icons::Icon::Volume,
+                            rect(b.left + 3.0, b.top + 3.0, b.right - 3.0, b.bottom - 3.0),
+                            TEXT,
+                            1.0,
+                        );
+                    }
                     // egui's unread dot in the rail margin, and the
                     // terracotta mention count on the tile's corner.
                     let (unread, mentions) = space_badges.get(i).copied().unwrap_or_default();
@@ -3574,9 +3600,6 @@ impl App {
                 })
                 .collect();
             let options_hover = self.hover_channel_options;
-            let in_voice: Vec<usize> = (0..c.channels.len())
-                .map(|i| self.channel_voice(i).map_or(0, |(n, _)| n))
-                .collect();
             // A hovered row's Join (Switch from a call elsewhere).
             let joins: Vec<Option<(bool, bool)>> = (0..c.channels.len())
                 .map(|i| self.join_action(i).filter(|_| hover == Some(i)))
@@ -3681,18 +3704,7 @@ impl App {
                         );
                         right -= 16.0;
                     }
-                    // A quiet "N in voice" while people are in its voice.
-                    if in_voice[i] > 0 {
-                        let l = g.layout(
-                            &gfx::wide(&format!("{} in voice", in_voice[i])),
-                            &g.formats.direct_note,
-                            1e6,
-                        )?;
-                        let m = gfx::metrics(&l);
-                        right -= m.widthIncludingTrailingWhitespace;
-                        text::draw(dc, &l, right, cy - m.height / 2.0, &g.solid(VOICE_GREEN));
-                        right -= 8.0;
-                    }
+                    right = self.draw_voice_row(g, dc, i, right, cy)?;
                     if *muted {
                         icons::draw(
                             dc,
@@ -3730,6 +3742,10 @@ impl App {
                             quiet
                         },
                     );
+                    dc.PushAxisAlignedClip(
+                        &rect(46.0, y, right.max(46.0), y + h),
+                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                    );
                     text::draw(
                         dc,
                         l,
@@ -3737,6 +3753,7 @@ impl App {
                         y + 5.0,
                         if i == c.channel { bright } else { quiet },
                     );
+                    dc.PopAxisAlignedClip();
                     // A failed notification change, after the name.
                     if let Some(e) = error {
                         let nx = 46.0 + gfx::metrics(l).widthIncludingTrailingWhitespace + 6.0;

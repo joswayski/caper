@@ -33,6 +33,10 @@ pub struct Requests {
     pub wake_after: Option<Duration>,
     pub front: bool,
     pub title: Option<String>,
+    /// A delayed wake requested while draining is consumed by that same
+    /// drain, not another immediate WM_LIVE (Voice requests its release
+    /// deadline every time it is read).
+    draining: bool,
 }
 
 /// The window as the worker's host: every call posts `WM_LIVE`.
@@ -63,7 +67,17 @@ impl Host for WinHost {
     }
 
     fn wake_after(&self, delay: Duration) {
-        self.request(|r| r.wake_after = Some(r.wake_after.map_or(delay, |d| d.min(delay))));
+        let post = self
+            .requests
+            .lock()
+            .map(|mut r| {
+                r.wake_after = Some(r.wake_after.map_or(delay, |d| d.min(delay)));
+                !r.draining
+            })
+            .unwrap_or(false);
+        if post {
+            self.post();
+        }
     }
 
     fn bring_to_front(&self) {
@@ -460,6 +474,10 @@ pub struct Live {
     /// gateway last listed them (egui's `channel_rosters`), and when each
     /// session started.
     rosters: HashMap<String, (Vec<core::VoiceOccupant>, Option<u64>)>,
+    /// Account-wide activity, including spaces whose gateway isn't open.
+    voice_spaces: HashSet<String>,
+    voice_activity_at: Option<Instant>,
+    voice_activity_pending: bool,
     /// Your call (the shared engine, as egui's `voice`) and its sounds.
     pub voice: Voice,
     pub effects: Effects,
@@ -742,6 +760,9 @@ impl Live {
             activity: Default::default(),
             focus: None,
             rosters: HashMap::new(),
+            voice_spaces: HashSet::new(),
+            voice_activity_at: None,
+            voice_activity_pending: false,
             voice,
             effects,
             preferences,
@@ -1394,6 +1415,9 @@ impl Live {
         self.load_notifications();
         // Mentions and DMs toast while the window isn't showing them.
         self.account_epoch = self.generation;
+        self.voice_spaces.clear();
+        self.voice_activity_at = None;
+        self.voice_activity_pending = false;
         if let Some(token) = self.token.clone() {
             self.worker.send(Command::StartNotifications {
                 epoch: self.account_epoch,
@@ -3357,6 +3381,91 @@ impl Live {
         })
     }
 
+    /// Faces in a channel: your media roster when in it, otherwise the
+    /// gateway's spectator-safe identities. Only your call has levels.
+    pub fn voice_people(&self, id: &str) -> Vec<core::VoiceOccupant> {
+        if !self.own_call(id) {
+            return self
+                .rosters
+                .get(id)
+                .map_or_else(Vec::new, |(p, _)| p.clone());
+        }
+        self.voice
+            .participants
+            .iter()
+            .map(|p| {
+                let own = p.id == self.voice.self_id;
+                core::VoiceOccupant {
+                    id: p.id.clone(),
+                    avatar_id: p.avatar_id,
+                    avatar_asset: p.avatar_asset.clone(),
+                    avatar_url: p.avatar_url.clone(),
+                    name: if own {
+                        self.account_name.clone()
+                    } else {
+                        p.name.clone()
+                    },
+                    muted: if own {
+                        self.voice.state.audio.muted
+                    } else {
+                        p.muted
+                    },
+                    deafened: if own {
+                        self.voice.state.audio.deafened
+                    } else {
+                        p.deafened
+                    },
+                }
+            })
+            .collect()
+    }
+
+    pub fn voice_speaking(&self, channel: &str, p: &core::VoiceOccupant) -> bool {
+        self.own_call(channel) && self.voice.speaking(&p.id, p.muted, Instant::now())
+    }
+
+    /// None: quiet, false: active elsewhere, true: connected here. Joining
+    /// or reconnecting alone must not claim a working connection.
+    pub fn voice_badge(&self, space: &str) -> Option<bool> {
+        let connected = self.voice.active_space.as_deref() == Some(space)
+            && matches!(self.voice.state.phase, Phase::Connected(_));
+        (connected || self.voice_spaces.contains(space)).then_some(connected)
+    }
+
+    /// A local listening preference, never a remote microphone command.
+    pub fn participant_playback(&mut self, id: &str, gain: u16, muted: bool) {
+        self.voice.set_participant_playback(
+            id,
+            caper_client::voice_media::TrackPlayback {
+                gain_percent: gain,
+                muted,
+            },
+        );
+        self.queued.push(Update::Voice);
+    }
+
+    fn poll_voice_activity(&mut self) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let elapsed = self.voice_activity_at.map(|at| at.elapsed());
+        if !self.voice_activity_pending && elapsed.is_none_or(|e| e >= MEMBERSHIP_EVERY) {
+            self.voice_activity_at = Some(Instant::now());
+            self.voice_activity_pending = true;
+            self.worker.send(Command::LoadVoiceActivity {
+                epoch: self.account_epoch,
+                token,
+            });
+        }
+        let delay = MEMBERSHIP_EVERY
+            .saturating_sub(
+                self.voice_activity_at
+                    .map_or(Duration::ZERO, |at| at.elapsed()),
+            )
+            .max(Duration::from_secs(1));
+        self.host.wake_after(delay);
+    }
+
     /// Whether your call (not a failed one) is in channel `id`.
     fn own_call(&self, id: &str) -> bool {
         self.voice.state.active_channel() == Some(id)
@@ -4446,6 +4555,9 @@ impl Live {
 
     /// Handles the worker's pending events; returns what the UI must show.
     pub fn drain(&mut self) -> Vec<Update> {
+        if let Ok(mut r) = self.host.requests.lock() {
+            r.draining = true;
+        }
         // A notification's unread change, once its second has passed (the
         // window's timer rounds to whole milliseconds).
         if self
@@ -4468,6 +4580,10 @@ impl Live {
         }
         for event in events {
             self.handle(event, &mut out);
+        }
+        self.poll_voice_activity();
+        if let Ok(mut r) = self.host.requests.lock() {
+            r.draining = false;
         }
         out
     }
@@ -5199,6 +5315,13 @@ impl Live {
                 self.rosters.clear();
                 out.push(Update::Voice);
             }
+            Event::VoiceActivityLoaded { epoch, result }
+                if epoch == self.account_epoch && self.token.is_some() =>
+            {
+                self.voice_activity_pending = false;
+                self.voice_spaces = result.unwrap_or_default().into_iter().collect();
+                out.push(Update::Voice);
+            }
             Event::MediaStatus {
                 generation,
                 root,
@@ -5917,6 +6040,126 @@ pub fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_faces_levels_badges_and_playback_follow_the_current_account_and_call() {
+        let api = Api::new("http://127.0.0.1:9").unwrap();
+        let host = WinHost {
+            hwnd: 0,
+            requests: Arc::default(),
+        };
+        let voice = Voice::new(
+            api.base().clone(),
+            caper_client::voice::Repaint::new(|_| {}),
+        );
+        let mut live = Live::fresh(
+            Worker::new(api, host.clone()),
+            caper_client::media::Media::new(None, Arc::new(|| {})),
+            Arc::default(),
+            host,
+            1,
+            voice,
+            crate::settings::preferences::Preferences::load(None),
+        );
+        live.token = Some("fixture".into());
+        live.account_epoch = 17;
+        live.account_name = "My saved name".into();
+        let call = CallContext {
+            channel_id: "room".into(),
+            channel_name: "Room".into(),
+            space_name: "Space".into(),
+        };
+        live.voice.active_space = Some("space".into());
+        let mut out = Vec::new();
+        live.handle(
+            Event::VoiceActivityLoaded {
+                epoch: 16,
+                result: Ok(vec!["space".into()]),
+            },
+            &mut out,
+        );
+        assert_eq!(
+            live.voice_badge("space"),
+            None,
+            "a former account's answer is ignored"
+        );
+        live.handle(
+            Event::VoiceActivityLoaded {
+                epoch: 17,
+                result: Ok(vec!["space".into(), "elsewhere".into()]),
+            },
+            &mut out,
+        );
+        for phase in [
+            Phase::Idle,
+            Phase::Joining(call.clone()),
+            Phase::Reconnecting(call.clone()),
+            Phase::Failed(call.clone()),
+        ] {
+            live.voice.state.phase = phase;
+            assert_eq!(live.voice_badge("space"), Some(false));
+        }
+        live.voice.state.phase = Phase::Connected(call);
+        live.handle(
+            Event::VoiceActivityLoaded {
+                epoch: 17,
+                result: Err("offline".into()),
+            },
+            &mut out,
+        );
+        assert_eq!(
+            live.voice_badge("space"),
+            Some(true),
+            "the local connection does not depend on polling"
+        );
+        assert_eq!(
+            live.voice_badge("elsewhere"),
+            None,
+            "failed polls clear stale activity"
+        );
+        live.voice.self_id = "self".into();
+        live.voice.state.audio.muted = true;
+        live.voice.participants = serde_json::from_value(serde_json::json!([
+            {"id":"self","name":"Old name","muted":false,"deafened":false,"tracks":[]},
+            {"id":"other","name":"Other","avatarId":4,"avatarAsset":"picture","avatarUrl":"https://example.invalid/picture","muted":false,"deafened":true,"tracks":[]}
+        ])).unwrap();
+        let people = live.voice_people("room");
+        assert_eq!(people[0].name, "My saved name");
+        assert!(people[0].muted, "local mute wins over the delayed roster");
+        assert_eq!(people[1].avatar_asset.as_deref(), Some("picture"));
+        assert!(people[1].deafened);
+        live.rosters
+            .insert("spectating".into(), (people.clone(), None));
+        live.voice.activity.local = Some(Instant::now());
+        live.voice
+            .activity
+            .participants
+            .insert("other".into(), Instant::now());
+        assert!(!live.voice_speaking("room", &people[0]));
+        assert!(live.voice_speaking("room", &people[1]));
+        assert!(
+            !live.voice_speaking("spectating", &people[1]),
+            "spectator identities don't imply audio levels"
+        );
+        live.participant_playback("other", 137, true);
+        live.participant_playback("self", 0, true);
+        assert_eq!(live.voice.playback("self").gain_percent, 100);
+        assert!(!live.voice.playback("self").muted);
+        assert_eq!(live.voice.playback("other").gain_percent, 137);
+        assert!(live.voice.playback("other").muted);
+        assert!(
+            !live.voice_people("room")[1].muted,
+            "Mute for me never changes their microphone"
+        );
+        live.voice.participants.reverse();
+        assert_eq!(live.voice.playback("other").gain_percent, 137);
+        live.participant_playback("other", 999, false);
+        assert_eq!(live.voice.playback("other").gain_percent, 200);
+        assert!(!live.voice.playback("other").muted);
+        live.leave_voice();
+        assert_eq!(live.voice.playback("other").gain_percent, 100);
+        assert_eq!(live.voice_badge("space"), None);
+    }
 
     #[test]
     fn stopped_voice_sends_separately_only_when_enabled_and_can_be_discarded() {
