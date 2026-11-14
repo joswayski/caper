@@ -788,6 +788,10 @@ impl App {
             self.dirty.gifs = true;
             self.need = true;
         }
+        if self.thread.is_some() {
+            self.dirty.thread = true;
+            self.need = true;
+        }
         if self
             .c
             .messages

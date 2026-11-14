@@ -1948,6 +1948,7 @@ impl App {
                 TIMER_CARD => self.show_card(),
                 invite_people::TIMER_COPIED => self.copied_tick(),
                 TIMER_MEDIA => self.next_gif_frame(),
+                thread::TIMER_MEDIA => self.thread_media_tick(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
                 TIMER_MUTE => self.mutes_changed(),
                 updates::TIMER_SHINE => self.shine_tick(),

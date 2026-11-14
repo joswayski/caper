@@ -24,6 +24,8 @@ use windows::core::Result;
 
 /// egui's thread panel width (its default; it is not resizable here).
 pub const THREAD_W: f32 = 340.0;
+/// Separate from channel GIFs: either surface may redraw without the other.
+pub const TIMER_MEDIA: usize = 20;
 const PAD: f32 = 18.0;
 const CLOSE: f32 = 36.0;
 const SEND: f32 = 36.0;
@@ -288,7 +290,14 @@ impl Pane {
 
     /// Draws the heading, the history at `scroll` within `vh`, the
     /// broadcast checkbox and Send; `h` is the pane's height.
-    fn draw(&mut self, g: &Gfx, dc: &ID2D1DeviceContext, h: f32, vh: f32) -> Result<()> {
+    fn draw(
+        &mut self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        h: f32,
+        vh: f32,
+        media: Option<&mut crate::files::Ctx>,
+    ) -> Result<()> {
         let w = THREAD_W;
         unsafe {
             dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
@@ -317,7 +326,7 @@ impl Pane {
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
         }
-        let result = self.draw_history(g, dc, vh);
+        let result = self.draw_history(g, dc, vh, media);
         unsafe { dc.PopAxisAlignedClip() };
         // The composer's lip over the history's bottom, inside the leading separator.
         if vh > LIP_H {
@@ -394,7 +403,13 @@ impl Pane {
     }
 
     /// The history's rows, reply count, head and empty note (the caller clips).
-    fn draw_history(&mut self, g: &Gfx, dc: &ID2D1DeviceContext, vh: f32) -> Result<()> {
+    fn draw_history(
+        &mut self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        vh: f32,
+        mut media: Option<&mut crate::files::Ctx>,
+    ) -> Result<()> {
         let w = THREAD_W;
         let s = self.sections();
         let off = HEADER_H - self.scroll;
@@ -409,7 +424,16 @@ impl Pane {
         for (i, y) in rows {
             let h = self.rows.height(i);
             if y + off < HEADER_H + vh && y + h + off > HEADER_H {
-                list::draw_row(g, dc, &self.c, &mut self.rows, i, y + off, None, None)?;
+                list::draw_row(
+                    g,
+                    dc,
+                    &self.c,
+                    &mut self.rows,
+                    i,
+                    y + off,
+                    None,
+                    media.as_deref_mut(),
+                )?;
             }
         }
         if let (Some(y), Some(n)) = (s.count, self.count) {
@@ -1271,6 +1295,17 @@ impl App {
         }
     }
 
+    /// Advance visible thread GIFs without replacing the channel's timer.
+    pub fn thread_media_tick(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_MEDIA);
+        }
+        if self.thread.is_some() {
+            self.dirty.thread = true;
+            self.need = true;
+        }
+    }
+
     /// Positions and redraws the pane's surfaces when they changed.
     pub fn draw_thread(&mut self) -> Result<()> {
         let s = self.scale;
@@ -1290,7 +1325,29 @@ impl App {
         if (fresh || std::mem::take(&mut self.dirty.thread))
             && let Some(t) = &mut self.thread
         {
-            self.thread_p.draw(s, |dc| t.draw(g, dc, h, vh))?;
+            let mut tex = crate::files::D2d(g.dc.clone());
+            let mut media = self.live.as_mut().map(|l| crate::files::Ctx {
+                voice: self.playback.view(),
+                ..crate::files::Ctx::new(&mut l.media, &mut tex)
+            });
+            self.thread_p
+                .draw(s, |dc| t.draw(g, dc, h, vh, media.as_mut()))?;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_MEDIA);
+                if let Some(ctx) = media {
+                    if let Some(next) = ctx.next {
+                        SetTimer(
+                            Some(self.hwnd),
+                            TIMER_MEDIA,
+                            next.as_millis().clamp(10, u32::MAX as u128) as u32,
+                            None,
+                        );
+                    }
+                    if ctx.media.busy() {
+                        SetTimer(Some(self.hwnd), crate::TIMER_LIVE, 100, None);
+                    }
+                }
+            }
         }
         let Some(t) = &self.thread else {
             return Ok(());
