@@ -435,6 +435,13 @@ pub struct Live {
     pub directs: Vec<core::DirectConversation>,
     pub account_id: Option<String>,
     pub account_name: String,
+    pub feedback_team: bool,
+    pub debug_enabled: bool,
+    pub feedback: caper_client::feedback::Inbox,
+    pub feedback_waiting: u64,
+    pub feedback_shown: bool,
+    pub feedback_visit: Option<caper_client::feedback::Visit>,
+    report_target: Option<(u64, caper_client::feedback::VisitTarget)>,
     /// Your avatar, as the account last said.
     pub account_avatar: crate::avatars::Avatar,
     /// The open profile card's requests, and the last invitation's number.
@@ -744,6 +751,13 @@ impl Live {
             directs: Vec::new(),
             account_id: None,
             account_name: String::new(),
+            feedback_team: false,
+            debug_enabled: false,
+            feedback: Default::default(),
+            feedback_waiting: 0,
+            feedback_shown: false,
+            feedback_visit: None,
+            report_target: None,
             account_avatar: crate::avatars::Avatar::default(),
             card: None,
             profile_drafts: HashMap::new(),
@@ -1349,6 +1363,8 @@ impl Live {
             return;
         }
         let update = core::PersonUpdate::from(account);
+        self.feedback_team = account.feedback_team;
+        self.debug_enabled = account.debug_enabled;
         self.account_avatar = account.avatar();
         self.username.clone_from(&account.username);
         self.name = account
@@ -1409,6 +1425,8 @@ impl Live {
         out: &mut Vec<Update>,
     ) {
         self.account_id = Some(account.id.clone());
+        self.feedback_team = account.feedback_team;
+        self.debug_enabled = account.debug_enabled;
         self.account_avatar = account.avatar();
         self.username.clone_from(&account.username);
         self.name = account
@@ -1991,6 +2009,13 @@ impl Live {
 
     /// The open DM's header and empty note.
     pub fn direct_head(&self) -> Option<crate::model::Direct> {
+        if let Some(visit) = &self.feedback_visit {
+            return Some(crate::model::Direct {
+                name: format!("{} · Feedback visit", visit.title),
+                own: false,
+                note: "Visiting as the Caper team. Replies are visible in this conversation. Return through Feedback in the sidebar.".into(),
+            });
+        }
         let id = self.direct.as_ref()?;
         let d = self.directs.iter().find(|d| &d.id == id);
         Some(crate::model::Direct {
@@ -2498,6 +2523,9 @@ impl Live {
         }
         self.navigation += 1;
         self.join_error = None;
+        let visiting = self.report_target.as_ref().is_some_and(|(n, t)| {
+            *n == self.navigation && channel.as_deref() == Some(t.channel.as_str())
+        });
         // A visit's unread snapshot loads beside its history, not after it.
         self.prefetch = None;
         if self.token.is_some() {
@@ -2513,7 +2541,7 @@ impl Live {
             channel,
             name: self.name.clone(),
             cached: None,
-            visit: false,
+            visit: visiting,
             preferred: None,
         });
     }
@@ -3291,6 +3319,15 @@ impl Live {
 
     /// Reloads the open channel from history.
     fn reload(&mut self) {
+        if let Some(visit) = &self.feedback_visit {
+            self.open_feedback_report(caper_client::feedback::VisitTarget {
+                channel: visit.channel.clone(),
+                message: String::new(),
+                thread: None,
+                reporter: visit.reporter.clone(),
+            });
+            return;
+        }
         if let Some(channel) = self.channel.clone() {
             let space = if self.direct.is_some() {
                 None
@@ -3364,6 +3401,52 @@ impl Live {
 
     pub fn close_activity(&mut self) {
         self.activity.shown = false;
+    }
+
+    pub fn load_feedback(&mut self, more: bool) {
+        let Some(token) = self.token.clone().filter(|_| self.feedback_team) else {
+            return;
+        };
+        if let Some((request, before)) = self.feedback.start(more) {
+            self.worker.send(Command::LoadFeedback {
+                epoch: self.account_epoch,
+                request,
+                token,
+                before,
+                archived: self.feedback.archived,
+            });
+        }
+    }
+
+    pub fn archive_feedback(&mut self, report: &caper_client::feedback::Report) {
+        let Some(token) = self.token.clone().filter(|_| self.feedback_team) else {
+            return;
+        };
+        let archived = !self.feedback.archived;
+        self.feedback
+            .remove_thread(&report.channel.id, &report.thread_root_id);
+        self.worker.send(Command::ArchiveFeedback {
+            epoch: self.account_epoch,
+            token,
+            channel: report.channel.id.clone(),
+            thread_root: report.thread_root_id.clone(),
+            archived,
+        });
+    }
+
+    pub fn open_feedback_report(&mut self, target: caper_client::feedback::VisitTarget) {
+        if !self.feedback_team || self.token.is_none() {
+            return;
+        }
+        self.report_target = Some((self.navigation + 1, target.clone()));
+        self.navigate(None, Some(target.channel.clone()));
+        self.focus = (!target.message.is_empty()).then(|| {
+            (
+                self.navigation,
+                target.message.clone(),
+                target.thread.filter(|root| root != &target.message),
+            )
+        });
     }
 
     /// egui's `load_activity_page`: the first page (`more`: the next older
@@ -4628,7 +4711,11 @@ impl Live {
     /// Marks the open channel read up to its newest message while you see
     /// it: not before the visit's unread range loaded, nor in the past.
     fn mark_read(&mut self) {
-        if !self.foreground || self.unread_pending || self.window.is_some() {
+        if !self.foreground
+            || self.unread_pending
+            || self.window.is_some()
+            || self.feedback_visit.is_some()
+        {
             return;
         }
         let (Some(channel), Some(token)) = (self.channel.clone(), self.token.clone()) else {
@@ -4766,6 +4853,21 @@ impl Live {
                         out.push(Update::Failed("No joined channel in this space.".into()));
                         return;
                     };
+                    self.feedback_visit = self
+                        .report_target
+                        .take()
+                        .filter(|(n, target)| {
+                            *n == navigation && target.channel == history.channel.id
+                        })
+                        .map(|(_, target)| {
+                            caper_client::feedback::Visit::new(
+                                caper_client::feedback::VisitRequest {
+                                    target,
+                                    origin: caper_client::feedback::Origin::Inbox,
+                                },
+                                &history,
+                            )
+                        });
                     self.reactions.clear();
                     self.mutations = core::MessageMutations::default();
                     self.pending_pins.clear();
@@ -5204,6 +5306,7 @@ impl Live {
                 if revision == self.unread_revision
                     && let Ok(unread) = result
                 {
+                    self.feedback_waiting = unread.feedback_waiting;
                     self.unread_spaces = unread.spaces;
                     if let Some(count) = unread.badge_count {
                         self.activity.unread_count = count;
@@ -5777,9 +5880,23 @@ impl Live {
                 }
                 out.push(Update::Media);
             }
-            // A clicked toast opens its conversation, as in egui. This
-            // client has no feedback-team visits, so every conversation
-            // counts as known.
+            Event::FeedbackLoaded {
+                epoch,
+                request,
+                result,
+            } if epoch == self.account_epoch => {
+                self.feedback.finish(request, result);
+                out.push(Update::Settings);
+            }
+            Event::FeedbackArchived { epoch, result } if epoch == self.account_epoch => {
+                if let Err(error) = result {
+                    self.feedback.action_error = Some(error);
+                    self.load_feedback(false);
+                }
+                self.refresh_unread();
+                out.push(Update::Settings);
+            }
+            // A clicked toast opens its conversation, as in egui.
             Event::OpenNotification { epoch, alert }
                 if epoch == self.account_epoch && self.token.is_some() =>
             {
@@ -6179,6 +6296,63 @@ pub fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn support_pages_follow_account_permissions_and_keep_credentials_out() {
+        use crate::settings::{Page, support};
+        let api = Api::new("http://127.0.0.1:9").unwrap();
+        let host = WinHost {
+            hwnd: 0,
+            requests: Arc::default(),
+        };
+        let voice = Voice::new(
+            api.base().clone(),
+            caper_client::voice::Repaint::new(|_| {}),
+        );
+        let mut live = Live::fresh(
+            Worker::new(api, host.clone()),
+            caper_client::media::Media::new(None, Arc::new(|| {})),
+            Arc::default(),
+            host,
+            1,
+            voice,
+            crate::settings::preferences::Preferences::load(None),
+        );
+        live.token = Some("fixture-token".into());
+        live.account_id = Some("team-member".into());
+        assert!(support::snapshot(&live, Page::Feedback).is_none());
+        assert!(support::snapshot(&live, Page::Diagnostics).is_none());
+        assert!(
+            !live
+                .direct_rows()
+                .iter()
+                .any(|r| r.kind == crate::directs::RowKind::Feedback)
+        );
+        live.feedback_team = true;
+        live.feedback_waiting = 9;
+        let rows = live.direct_rows();
+        let row = rows
+            .iter()
+            .find(|r| r.kind == crate::directs::RowKind::Feedback)
+            .unwrap();
+        assert_eq!(row.count, Some(9));
+        assert!(support::snapshot(&live, Page::Feedback).is_some());
+        assert!(
+            support::snapshot(&live, Page::Diagnostics).is_none(),
+            "team permission does not grant diagnostics"
+        );
+        live.debug_enabled = true;
+        let Some(support::Snapshot::Report {
+            json: Some(json), ..
+        }) = support::snapshot(&live, Page::Diagnostics)
+        else {
+            panic!("missing report")
+        };
+        let report: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(report.as_object().unwrap().len(), 2);
+        assert!(report["processing"].is_null());
+        assert!(!json.contains("fixture-token"));
+    }
 
     #[test]
     fn profile_files_survive_open_and_voice_but_clear_only_after_their_own_send() {

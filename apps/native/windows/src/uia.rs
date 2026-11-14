@@ -410,7 +410,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .gifs
             .as_ref()
             .map_or_else(Vec::new, |p| p.parts().into_iter().map(Id::Gif).collect()),
-        Id::AccountMenu => (0..crate::settings::MENU_ITEMS.len())
+        Id::AccountMenu => a.account_items().into_iter()
             .map(Id::AccountItem)
             .collect(),
         Id::DmMenu => (0..a.dm_menu_items().1.len()).map(Id::DmItem).collect(),
@@ -620,7 +620,7 @@ fn exists(a: &App, id: Id) -> bool {
             .is_some_and(crate::directs::Row::menu),
         Id::DmMenu => a.dm_menu.is_some(),
         Id::DmItem(k) => a.dm_menu.is_some() && k < a.dm_menu_items().1.len(),
-        Id::AccountItem(k) => a.account_menu.is_some() && k < crate::settings::MENU_ITEMS.len(),
+        Id::AccountItem(k) => a.account_menu.is_some() && a.account_items().contains(&k),
         Id::Direct(k) => k < a.direct_rows().len(),
         Id::Member(i) => a.shown_members().contains(&i),
         Id::MemberSearch(p) => a.member_search_rect(p).is_some(),
@@ -1172,7 +1172,18 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Invite(s) => (50, s.index()),
         Id::Bar(p) => (37, p.index()),
         Id::Rec(p) => (49, p.index()),
-        Id::Settings(p) => (38, p.index()),
+        Id::Settings(p) => (
+            match p {
+                SPart::FeedbackRefresh
+                | SPart::FeedbackMore
+                | SPart::FeedbackArchived
+                | SPart::FeedbackOpen(_)
+                | SPart::FeedbackArchive(_) => 65,
+                SPart::Connection | SPart::Diagnostics | SPart::CopyReport => 66,
+                _ => 38,
+            },
+            p.index(),
+        ),
         Id::Gear => (39, 0),
         Id::UpdateDock => (39, 1),
         Id::MembersToggle => (39, 2),

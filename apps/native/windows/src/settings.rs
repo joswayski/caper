@@ -30,6 +30,7 @@ use windows::core::*;
 
 pub mod audio;
 pub mod preferences;
+pub mod support;
 
 const CARD_W: f32 = 560.0;
 const PAD: f32 = 24.0;
@@ -54,7 +55,14 @@ pub const LEVELS: [NotificationLevel; 3] = [
 pub const FOOT_H: f32 = 52.0;
 const MENU_W: f32 = 232.0;
 const MENU_ITEM_H: f32 = 32.0;
-pub const MENU_ITEMS: [&str; 4] = ["Settings\u{2026}", "Audio test", "Log out", "Edit profile"];
+pub const MENU_ITEMS: [&str; 6] = [
+    "Settings\u{2026}",
+    "Audio test",
+    "Log out",
+    "Edit profile",
+    "Connection details",
+    "Audio diagnostics",
+];
 
 fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
@@ -105,6 +113,14 @@ pub enum SPart {
     Meter,
     /// The natural (false) or enhanced sample.
     Sample(bool),
+    Connection,
+    Diagnostics,
+    CopyReport,
+    FeedbackRefresh,
+    FeedbackMore,
+    FeedbackArchived,
+    FeedbackOpen(usize),
+    FeedbackArchive(usize),
 }
 
 impl SPart {
@@ -158,6 +174,14 @@ impl SPart {
             Self::RetryHighlights => 46,
             Self::InstalledRevision => 47,
             Self::Done => 48,
+            Self::Connection => 49,
+            Self::Diagnostics => 50,
+            Self::CopyReport => 51,
+            Self::FeedbackRefresh => 52,
+            Self::FeedbackMore => 53,
+            Self::FeedbackArchived => 54,
+            Self::FeedbackOpen(k) => 2_000_000 + 2 * k,
+            Self::FeedbackArchive(k) => 2_000_001 + 2 * k,
             Self::ReleaseRevision(k) => 4000 + k,
             Self::Input(k) => 2000 + k,
             Self::Output(k) => 3000 + k,
@@ -209,6 +233,14 @@ impl SPart {
                 | Self::SpeakerTest
                 | Self::MicTest
                 | Self::Sample(_)
+                | Self::Connection
+                | Self::Diagnostics
+                | Self::CopyReport
+                | Self::FeedbackRefresh
+                | Self::FeedbackMore
+                | Self::FeedbackArchived
+                | Self::FeedbackOpen(_)
+                | Self::FeedbackArchive(_)
         )
     }
 }
@@ -219,6 +251,7 @@ enum Style {
     Label,
     Detail,
     Error,
+    Code,
     /// A fixed-height update status row; the full text remains accessible.
     Status(bool),
     /// A blocked account: its avatar (or initials on this colour) before
@@ -266,6 +299,8 @@ pub struct Snapshot {
     pub inbox: Option<InboxSnap>,
     /// The Audio test's state.
     pub audio: Option<audio::AudioSnap>,
+    pub support: Option<support::Snapshot>,
+    pub debug_enabled: bool,
 }
 
 /// What the inbox shows (`Live::inbox_snapshot`).
@@ -309,6 +344,9 @@ pub enum Page {
     Inbox,
     Audio,
     WhatsNew,
+    Feedback,
+    Connection,
+    Diagnostics,
 }
 
 pub struct Settings {
@@ -330,6 +368,7 @@ pub struct Settings {
     /// failed.
     pub launch: bool,
     pub startup_error: Option<String>,
+    pub notice: String,
 }
 
 impl Settings {
@@ -349,6 +388,7 @@ impl Settings {
             body: (0.0, 0.0, 0.0, 0.0),
             launch,
             startup_error,
+            notice: String::new(),
         }
     }
 
@@ -365,6 +405,12 @@ impl Settings {
         let inbox = s.inbox.as_ref();
         let audio = s.audio.as_ref();
         match part {
+            SPart::FeedbackRefresh | SPart::FeedbackMore => {
+                matches!(
+                    &s.support,
+                    Some(support::Snapshot::Feedback { busy: false, .. })
+                )
+            }
             SPart::Launch => s.launch.is_some(),
             SPart::Sounds | SPart::VoiceSend | SPart::WhatsNew => s.highlights.is_some(),
             SPart::CheckUpdates => {
@@ -425,6 +471,9 @@ impl Settings {
             SPart::Close if self.page == Page::Inbox => "Close notifications".into(),
             SPart::Close if self.page == Page::Audio => "Close audio test".into(),
             SPart::Close if self.page == Page::WhatsNew => "Close What’s new".into(),
+            SPart::Close if self.page == Page::Feedback => "Close feedback".into(),
+            SPart::Close if self.page == Page::Connection => "Close connection details".into(),
+            SPart::Close if self.page == Page::Diagnostics => "Close audio diagnostics".into(),
             SPart::Close => "Close settings".into(),
             _ => self
                 .items
@@ -535,10 +584,19 @@ impl Settings {
             b.inbox(inbox)?;
         } else if let (Page::Audio, Some(a)) = (self.page, &snap.audio) {
             b.audio(a)?;
+            if snap.debug_enabled {
+                b.separator();
+                b.button(SPart::Diagnostics, "Audio diagnostics")?;
+            }
         } else if self.page == Page::Settings {
             b.settings(&snap)?;
         } else if let (Page::WhatsNew, Some(history)) = (self.page, &snap.highlights) {
             b.highlights(history)?;
+        } else if let Some(support) = &snap.support {
+            b.support(support)?;
+            if !self.notice.is_empty() {
+                b.text(&self.notice, Style::Detail)?;
+            }
         }
         let content_h = b.y;
         let card_h = (HEAD_H + content_h + PAD).min(h - 48.0).max(HEAD_H + 40.0);
@@ -827,6 +885,17 @@ impl Settings {
                 Page::Inbox => "Notifications",
                 Page::Audio => "Audio test",
                 Page::WhatsNew => "What’s new",
+                Page::Feedback
+                    if matches!(
+                        &self.snap.support,
+                        Some(support::Snapshot::Feedback { archived: true, .. })
+                    ) =>
+                {
+                    "Archived feedback"
+                }
+                Page::Feedback => "Feedback",
+                Page::Connection => "Connection details",
+                Page::Diagnostics => "Audio diagnostics",
             };
             let title = g.layout(&gfx::wide(heading), &g.formats.dialog_title, 1e6)?;
             text::draw(dc, &title, cx + PAD, cy + 22.0, &g.brushes.text);
@@ -1140,6 +1209,7 @@ fn style(g: &Gfx, s: Style) -> (&IDWriteTextFormat, &ID2D1SolidColorBrush) {
         Style::Label | Style::Person(_) => (&g.formats.dialog_note, &g.brushes.text),
         Style::Detail | Style::Status(false) => (&g.formats.direct_note, &g.brushes.muted),
         Style::Error | Style::Status(true) => (&g.formats.error, &g.brushes.error),
+        Style::Code => (&g.formats.mono, &g.brushes.text),
     }
 }
 
@@ -1324,11 +1394,12 @@ impl App {
             live.poll_activity();
         }
         let snap = self.settings_snapshot();
-        if self
-            .settings
-            .as_ref()
-            .is_some_and(|s| s.page == Page::Inbox && s.snap != snap)
-        {
+        if self.settings.as_ref().is_some_and(|s| {
+            matches!(
+                s.page,
+                Page::Inbox | Page::Feedback | Page::Connection | Page::Diagnostics
+            ) && s.snap != snap
+        }) {
             self.settings_changed();
         }
     }
@@ -1353,6 +1424,20 @@ impl App {
 
     pub fn close_settings(&mut self) {
         if let Some(s) = self.settings.take() {
+            if matches!(
+                s.page,
+                Page::Feedback | Page::Connection | Page::Diagnostics
+            ) {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_INBOX);
+                }
+            }
+            if s.page == Page::Feedback
+                && let Some(live) = &mut self.live
+            {
+                live.feedback_shown = false;
+                self.dirty.sidebar = true;
+            }
             if s.page == Page::WhatsNew
                 && let Some(live) = &mut self.live
             {
@@ -1393,6 +1478,8 @@ impl App {
         };
         if let Some(live) = self.live.as_ref().filter(|_| self.c.is_live()) {
             live.settings_snapshot(&mut snap);
+            snap.debug_enabled = live.debug_enabled;
+            snap.support = s.and_then(|s| support::snapshot(live, s.page));
             if s.is_some_and(|s| s.page == Page::Inbox) {
                 snap.inbox = Some(live.inbox_snapshot());
             }
@@ -1432,6 +1519,14 @@ impl App {
             return;
         }
         match part {
+            SPart::Connection => return self.open_support(Page::Connection),
+            SPart::Diagnostics => return self.open_support(Page::Diagnostics),
+            SPart::CopyReport
+            | SPart::FeedbackRefresh
+            | SPart::FeedbackMore
+            | SPart::FeedbackArchived
+            | SPart::FeedbackOpen(_)
+            | SPart::FeedbackArchive(_) => return self.support_activate(part),
             SPart::Close | SPart::Done => return self.close_settings(),
             SPart::WhatsNew => return self.open_highlights(),
             SPart::RetryHighlights => {
@@ -1662,7 +1757,7 @@ impl App {
 
     /// The gear's menu (client DIPs), above the gear.
     pub fn account_menu_rect(&self) -> Rect {
-        let h = MENU_ITEMS.len() as f32 * MENU_ITEM_H + 12.0;
+        let h = self.account_items().len() as f32 * MENU_ITEM_H + 12.0;
         let (gx, gy, gw, _) = self.gear_rect();
         (
             (gx + gw - MENU_W).max(RAIL_W + 4.0),
@@ -1674,6 +1769,9 @@ impl App {
 
     pub fn account_item_rect(&self, k: usize) -> Rect {
         let (x, y, w, _) = self.account_menu_rect();
+        let Some(k) = self.account_items().iter().position(|i| *i == k) else {
+            return (0.0, 0.0, 0.0, 0.0);
+        };
         (
             x + 6.0,
             y + 6.0 + k as f32 * MENU_ITEM_H,
@@ -1702,6 +1800,8 @@ impl App {
             1 => self.open_audio(),
             2 => self.logout(),
             3 => self.open_profile_editor(),
+            4 => self.open_support(Page::Connection),
+            5 => self.open_support(Page::Diagnostics),
             _ => {}
         }
     }
@@ -1715,7 +1815,11 @@ impl App {
         y: f32,
     ) -> Option<Option<LRESULT>> {
         let done = Some(Some(LRESULT(0)));
-        let hit = (0..MENU_ITEMS.len()).find(|&k| contains(self.account_item_rect(k), x, y));
+        let items = self.account_items();
+        let hit = items
+            .iter()
+            .copied()
+            .find(|&k| contains(self.account_item_rect(k), x, y));
         let inside = contains(self.account_menu_rect(), x, y);
         let gear = self.on_gear(x, y);
         let m = self.account_menu.as_mut()?;
@@ -1741,11 +1845,12 @@ impl App {
                 if gear { done } else { None }
             }
             WM_KEYDOWN => {
-                let n = MENU_ITEMS.len();
+                let n = items.len();
+                let at = m.hover.and_then(|k| items.iter().position(|i| *i == k));
                 match VIRTUAL_KEY(wp.0 as u16) {
                     VK_ESCAPE => self.toggle_account_menu(),
-                    VK_DOWN => m.hover = Some(m.hover.map_or(0, |k| (k + 1) % n)),
-                    VK_UP => m.hover = Some(m.hover.map_or(n - 1, |k| (k + n - 1) % n)),
+                    VK_DOWN => m.hover = Some(items[at.map_or(0, |k| (k + 1) % n)]),
+                    VK_UP => m.hover = Some(items[at.map_or(n - 1, |k| (k + n - 1) % n)]),
                     VK_RETURN | VK_SPACE => {
                         if let Some(k) = m.hover {
                             self.account_activate(k);
@@ -1860,10 +1965,12 @@ impl App {
             return self.settings_p.offset(-100_000.0, 0.0);
         };
         let (mx, my, mw, mh) = self.account_menu_rect();
-        let items: Vec<Rect> = (0..MENU_ITEMS.len())
+        let items: Vec<(usize, Rect)> = self
+            .account_items()
+            .into_iter()
             .map(|k| {
                 let (x, y, w, h) = self.account_item_rect(k);
-                (x - mx, y - my, w, h)
+                (k, (x - mx, y - my, w, h))
             })
             .collect();
         self.settings_p.ensure(g, px(mw), px(mh))?;
@@ -1873,11 +1980,11 @@ impl App {
             let r = rect(0.5, 0.5, mw - 0.5, mh - 0.5);
             fill_round(dc, r, RADIUS, &g.brushes.surface);
             stroke_round(dc, r, RADIUS, &g.brushes.border);
-            for (k, (x, y, w, h)) in items.iter().enumerate() {
-                if m.hover == Some(k) {
+            for (k, (x, y, w, h)) in &items {
+                if m.hover == Some(*k) {
                     fill_round(dc, rect(*x, *y, x + w, y + h), 6.0, &g.brushes.hover);
                 }
-                let l = g.layout(&gfx::wide(MENU_ITEMS[k]), &g.formats.dialog_note, *w)?;
+                let l = g.layout(&gfx::wide(MENU_ITEMS[*k]), &g.formats.dialog_note, *w)?;
                 let lm = gfx::metrics(&l);
                 text::draw(dc, &l, x + 10.0, y + (h - lm.height) / 2.0, &g.brushes.text);
             }

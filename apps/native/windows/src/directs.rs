@@ -174,6 +174,7 @@ pub enum RowKind {
     Direct,
     /// "Notifications", opening the inbox, with its unread count.
     Notifications,
+    Feedback,
     /// "Message requests", open or closed, with the requests' count.
     Requests {
         open: bool,
@@ -215,7 +216,7 @@ impl Row {
     pub fn label(&self) -> String {
         match self.kind {
             RowKind::Requests { .. } => return self.name.clone(),
-            RowKind::Notifications => {
+            RowKind::Notifications | RowKind::Feedback => {
                 return match self.count {
                     Some(n) => format!("{} \u{b7} {n}", self.name),
                     None => self.name.clone(),
@@ -286,6 +287,15 @@ impl Live {
             muted: None,
             error: None,
         }];
+        if self.feedback_team {
+            out.push(Row {
+                kind: RowKind::Feedback,
+                name: "Feedback".into(),
+                count: (self.feedback_waiting > 0).then_some(self.feedback_waiting),
+                active: self.feedback_shown || self.feedback_visit.is_some(),
+                ..out[0].clone()
+            });
+        }
         let requests: Vec<_> = self
             .directs
             .iter()
@@ -396,7 +406,7 @@ pub fn draw(
             draw_requests(g, dc, row, r, open, lit)?;
             continue;
         }
-        if row.kind == RowKind::Notifications {
+        if matches!(row.kind, RowKind::Notifications | RowKind::Feedback) {
             draw_inbox(g, dc, row, r, lit)?;
             continue;
         }
@@ -508,7 +518,11 @@ fn draw_inbox(g: &Gfx, dc: &ID2D1DeviceContext, row: &Row, r: D2D_RECT_F, lit: b
     let on = lit || row.active;
     crate::icons::draw(
         dc,
-        crate::icons::Icon::Bell,
+        if row.kind == RowKind::Feedback {
+            crate::icons::Icon::MessageCircle
+        } else {
+            crate::icons::Icon::Bell
+        },
         rect(r.left + 10.0, cy - 7.5, r.left + 25.0, cy + 7.5),
         if on { TEXT } else { TEXT_MUTED },
         1.0,
@@ -1396,6 +1410,9 @@ impl App {
         };
         if row.kind == RowKind::Notifications {
             return self.open_inbox();
+        }
+        if row.kind == RowKind::Feedback {
+            return self.open_support(crate::settings::Page::Feedback);
         }
         let Some(live) = &mut self.live else { return };
         match (row.kind, row.own, row.id) {
