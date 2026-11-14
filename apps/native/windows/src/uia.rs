@@ -14,6 +14,7 @@ use crate::gifs::GPart;
 use crate::list::Action;
 use crate::overlay::{Kind, Part as DPart};
 use crate::profile::PPart as CPart;
+use crate::settings::SPart;
 use crate::signin::Part;
 use crate::thread::Part as TPart;
 use crate::viewer::{Part as MPart, Viewer};
@@ -205,6 +206,9 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
 
 /// The node of the focused text field, while one is focused.
 fn focused(a: &App) -> Option<Id> {
+    if let Some(s) = &a.settings {
+        return s.focus.map(Id::Settings);
+    }
     if let Some(v) = &a.viewer {
         return Some(Id::Viewer(v.focus));
     }
@@ -1483,6 +1487,11 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     Id::UpdateDock => VARIANT::from(BSTR::from(a.update_dock_help())),
                     _ => VARIANT::default(),
                 },
+                UIA_IsKeyboardFocusablePropertyId if matches!(id, Id::Settings(_)) => {
+                    VARIANT::from(
+                        matches!(id, Id::Settings(p) if !matches!(p, SPart::Text(_) | SPart::Meter)),
+                    )
+                }
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
@@ -1676,6 +1685,13 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Dialog(DPart::Number(k)) => a.dialog_activate(DPart::Number(k)),
+                Id::Settings(p) if !matches!(p, SPart::Text(_) | SPart::Meter) => {
+                    if let Some(s) = &mut a.settings {
+                        s.focus_part(p);
+                        a.events |= crate::EV_FOCUS;
+                        a.settings_changed();
+                    }
+                }
                 Id::Viewer(p) => {
                     if let Some(v) = &mut a.viewer
                         && Viewer::focusable(p)

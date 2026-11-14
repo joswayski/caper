@@ -29,6 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
 pub mod audio;
+pub mod preferences;
 
 const CARD_W: f32 = 560.0;
 const PAD: f32 = 24.0;
@@ -66,6 +67,14 @@ pub enum SPart {
     Text(usize),
     Launch,
     DismissStartup,
+    Sounds,
+    VoiceSend,
+    CheckUpdates,
+    WhatsNew,
+    RetryHighlights,
+    InstalledRevision,
+    ReleaseRevision(usize),
+    Done,
     Level(usize),
     VoiceStarted,
     RetryNotifications,
@@ -99,6 +108,24 @@ pub enum SPart {
 }
 
 impl SPart {
+    fn switch_text(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Sounds => (
+                "Caper sound effects",
+                "Play sounds for messages and app interactions.",
+            ),
+            Self::VoiceSend => (
+                "Send voice messages as soon as I stop recording",
+                "Off: a stopped recording waits in the composer with your text and files until you press Send.",
+            ),
+            Self::Launch => (
+                "Launch at login",
+                "Open Caper when you sign in to your computer.",
+            ),
+            _ => unreachable!("not a settings switch"),
+        }
+    }
+
     /// A stable number per part, for UI Automation's runtime ids.
     pub fn index(self) -> usize {
         match self {
@@ -124,6 +151,14 @@ impl SPart {
             Self::MicTest => 38,
             Self::Meter => 39,
             Self::Sample(e) => 40 + usize::from(e),
+            Self::Sounds => 42,
+            Self::VoiceSend => 43,
+            Self::CheckUpdates => 44,
+            Self::WhatsNew => 45,
+            Self::RetryHighlights => 46,
+            Self::InstalledRevision => 47,
+            Self::Done => 48,
+            Self::ReleaseRevision(k) => 4000 + k,
             Self::Input(k) => 2000 + k,
             Self::Output(k) => 3000 + k,
             Self::Text(k) => 100 + k,
@@ -148,13 +183,22 @@ impl SPart {
     }
 
     pub fn is_toggle(self) -> bool {
-        matches!(self, Self::Launch | Self::VoiceStarted | Self::UnreadOnly)
+        matches!(
+            self,
+            Self::Launch | Self::Sounds | Self::VoiceSend | Self::VoiceStarted | Self::UnreadOnly
+        )
     }
 
     fn is_button(self) -> bool {
         matches!(
             self,
             Self::DismissStartup
+                | Self::CheckUpdates
+                | Self::WhatsNew
+                | Self::RetryHighlights
+                | Self::InstalledRevision
+                | Self::ReleaseRevision(_)
+                | Self::Done
                 | Self::RetryNotifications
                 | Self::RetryPrivacy
                 | Self::RetryBlocks
@@ -175,6 +219,8 @@ enum Style {
     Label,
     Detail,
     Error,
+    /// A fixed-height update status row; the full text remains accessible.
+    Status(bool),
     /// A blocked account: its avatar (or initials on this colour) before
     /// the name.
     Person(u32),
@@ -198,6 +244,10 @@ pub struct Snapshot {
     /// Launch at login as the OS has it; None when it can't change here.
     pub launch: Option<bool>,
     pub startup_error: Option<String>,
+    pub sounds: bool,
+    pub voice_send: bool,
+    pub updates: crate::updates::Check,
+    pub highlights: Option<crate::updates::History>,
     /// Signed in: the account sections show.
     pub account: bool,
     pub level: Option<NotificationLevel>,
@@ -258,6 +308,7 @@ pub enum Page {
     Settings,
     Inbox,
     Audio,
+    WhatsNew,
 }
 
 pub struct Settings {
@@ -271,6 +322,7 @@ pub struct Settings {
     content_h: f32,
     pub hover: Option<SPart>,
     pub pressed: Option<SPart>,
+    pub focus: Option<SPart>,
     /// Client DIPs: the card and its scrolling body.
     card: Rect,
     body: Rect,
@@ -292,6 +344,7 @@ impl Settings {
             content_h: 0.0,
             hover: None,
             pressed: None,
+            focus: Some(SPart::Close),
             card: (0.0, 0.0, 0.0, 0.0),
             body: (0.0, 0.0, 0.0, 0.0),
             launch,
@@ -313,6 +366,11 @@ impl Settings {
         let audio = s.audio.as_ref();
         match part {
             SPart::Launch => s.launch.is_some(),
+            SPart::Sounds | SPart::VoiceSend | SPart::WhatsNew => s.highlights.is_some(),
+            SPart::CheckUpdates => {
+                s.updates.can_check && s.updates.status != caper_client::updates::Status::Checking
+            }
+            SPart::RetryHighlights => s.highlights.as_ref().is_some_and(|h| !h.loading),
             SPart::Level(_) | SPart::VoiceStarted => s.level.is_some() && !s.notify_saving,
             SPart::Privacy(_) => s.privacy.is_some(),
             SPart::Unblock(_) => !s.block_busy,
@@ -341,6 +399,8 @@ impl Settings {
         let s = &self.snap;
         match part {
             SPart::Launch => s.launch.unwrap_or(false),
+            SPart::Sounds => s.sounds,
+            SPart::VoiceSend => s.voice_send,
             SPart::VoiceStarted => s.voice_started,
             SPart::Level(k) => s.level == Some(LEVELS[k]),
             SPart::Privacy(k) => s.privacy.as_deref() == Some(DM_PRIVACY[k].0),
@@ -364,6 +424,7 @@ impl Settings {
         match part {
             SPart::Close if self.page == Page::Inbox => "Close notifications".into(),
             SPart::Close if self.page == Page::Audio => "Close audio test".into(),
+            SPart::Close if self.page == Page::WhatsNew => "Close What’s new".into(),
             SPart::Close => "Close settings".into(),
             _ => self
                 .items
@@ -421,6 +482,42 @@ impl Settings {
         self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll());
     }
 
+    pub fn focus_part(&mut self, part: SPart) {
+        if !self.enabled(part) {
+            return;
+        }
+        self.focus = Some(part);
+        if let Some(item) = self.items.iter().find(|i| i.part == part) {
+            let (_, top, _, height) = item.rect;
+            if top < self.scroll {
+                self.scroll = top;
+            }
+            if top + height > self.scroll + self.body.3 {
+                self.scroll = top + height - self.body.3;
+            }
+            self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        }
+    }
+
+    fn tab(&mut self, backwards: bool) {
+        let parts: Vec<_> = self
+            .parts()
+            .into_iter()
+            .filter(|p| !matches!(p, SPart::Text(_) | SPart::Meter) && self.enabled(*p))
+            .collect();
+        if parts.is_empty() {
+            return;
+        }
+        let current = self.focus.and_then(|p| parts.iter().position(|v| *v == p));
+        let next = match (current, backwards) {
+            (Some(i), true) => (i + parts.len() - 1) % parts.len(),
+            (Some(i), false) => (i + 1) % parts.len(),
+            (None, true) => parts.len() - 1,
+            (None, false) => 0,
+        };
+        self.focus_part(parts[next]);
+    }
+
     /// Lays the card out for a `w` × `h` window.
     pub fn relayout(&mut self, g: &Gfx, snap: Snapshot, w: f32, h: f32) -> Result<()> {
         let card_w = CARD_W.min(w - 48.0).max(280.0);
@@ -440,6 +537,8 @@ impl Settings {
             b.audio(a)?;
         } else if self.page == Page::Settings {
             b.settings(&snap)?;
+        } else if let (Page::WhatsNew, Some(history)) = (self.page, &snap.highlights) {
+            b.highlights(history)?;
         }
         let content_h = b.y;
         let card_h = (HEAD_H + content_h + PAD).min(h - 48.0).max(HEAD_H + 40.0);
@@ -466,27 +565,35 @@ impl Builder<'_> {
         let inner = b.inner;
         b.text("Startup", Style::Section)?;
         b.y += 6.0;
-        // The switch row: its title and note on the left, the switch right.
-        let title = b.measure("Launch at login", Style::Label, inner - 56.0)?;
-        let note = b.measure(
-            "Open Caper when you sign in to your computer.",
-            Style::Detail,
-            inner - 56.0,
-        )?;
-        b.items.push(Item {
-            part: SPart::Launch,
-            rect: (0.0, b.y, inner, (title + 2.0 + note).max(ROW_H)),
-            text: "Launch at login".into(),
-            style: Style::Label,
-            face: None,
-        });
-        b.y += (title + 2.0 + note).max(ROW_H);
+        b.switch_row(SPart::Launch)?;
         if let Some(e) = &snap.startup_error {
             b.y += 6.0;
             b.text(e, Style::Error)?;
             b.y += 4.0;
             b.button(SPart::DismissStartup, "Dismiss startup error")?;
         }
+        b.separator();
+        b.text("Sounds", Style::Section)?;
+        b.y += 6.0;
+        b.switch_row(SPart::Sounds)?;
+        b.separator();
+        b.text("Voice messages", Style::Section)?;
+        b.y += 6.0;
+        b.switch_row(SPart::VoiceSend)?;
+        b.separator();
+        b.text("Updates", Style::Section)?;
+        b.y += 6.0;
+        b.text(&caper_client::updates::installed_version(), Style::Detail)?;
+        b.button(
+            SPart::InstalledRevision,
+            &caper_client::whats_new::REVISION[..7],
+        )?;
+        b.button(SPart::CheckUpdates, "Check for updates")?;
+        let (message, error) = snap.updates.message();
+        b.text(&message, Style::Status(error))?;
+        b.text(snap.updates.note(), Style::Detail)?;
+        b.y += 10.0;
+        b.button(SPart::WhatsNew, "What’s new")?;
         if snap.account {
             b.separator();
             b.text("Notifications", Style::Section)?;
@@ -565,6 +672,46 @@ impl Builder<'_> {
             b.y += dh;
         }
         Ok(())
+    }
+
+    fn switch_row(&mut self, part: SPart) -> Result<()> {
+        let (title, note) = part.switch_text();
+        let height = (self.measure(title, Style::Label, self.inner - 56.0)?
+            + 2.0
+            + self.measure(note, Style::Detail, self.inner - 56.0)?)
+        .max(ROW_H);
+        self.push(part, (0.0, self.y, self.inner, height), title);
+        self.y += height;
+        Ok(())
+    }
+
+    fn highlights(&mut self, history: &crate::updates::History) -> Result<()> {
+        self.button(
+            SPart::InstalledRevision,
+            &caper_client::updates::version_label(),
+        )?;
+        self.y += 12.0;
+        if history.loading {
+            self.text("Loading release highlights…", Style::Detail)?;
+        } else if let Some(error) = &history.error {
+            self.text(error, Style::Error)?;
+            self.button(SPart::RetryHighlights, "Retry")?;
+        } else if history.releases.is_empty() {
+            self.text("No release highlights for this version yet.", Style::Detail)?;
+        } else {
+            for (k, release) in history.releases.iter().enumerate() {
+                self.text(&release.date, Style::Section)?;
+                self.button(SPart::ReleaseRevision(k), &release.label)?;
+                for (title, body) in &release.highlights {
+                    self.y += 10.0;
+                    self.text(title, Style::Label)?;
+                    self.text(body, Style::Detail)?;
+                }
+                self.separator();
+            }
+        }
+        self.y += 12.0;
+        self.button(SPart::Done, "Done")
     }
 
     /// The inbox, as egui's `activity_dialog` stacks it.
@@ -679,11 +826,12 @@ impl Settings {
                 Page::Settings => "Settings",
                 Page::Inbox => "Notifications",
                 Page::Audio => "Audio test",
+                Page::WhatsNew => "What’s new",
             };
             let title = g.layout(&gfx::wide(heading), &g.formats.dialog_title, 1e6)?;
             text::draw(dc, &title, cx + PAD, cy + 22.0, &g.brushes.text);
             if let Some((x, y, w, h)) = self.part_rect(SPart::Close) {
-                let on = self.hover == Some(SPart::Close);
+                let on = self.hover == Some(SPart::Close) || self.focus == Some(SPart::Close);
                 if on {
                     fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
                 }
@@ -736,6 +884,14 @@ impl Settings {
         } else {
             &g.brushes.muted
         };
+        if self.focus == Some(item.part) {
+            stroke_round(
+                dc,
+                rect(x - 2.0, y - 2.0, x + w + 2.0, y + h + 2.0),
+                RADIUS,
+                &g.brushes.terracotta,
+            );
+        }
         match item.part {
             SPart::Text(_) => {
                 let (format, brush) = style(g, item.style);
@@ -752,6 +908,18 @@ impl Settings {
                     tx += 32.0;
                 }
                 let l = g.layout(&gfx::wide(&item.text), format, (w - (tx - x)).max(1.0))?;
+                if matches!(item.style, Style::Status(_)) {
+                    unsafe {
+                        l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                        l.SetTrimming(
+                            &DWRITE_TRIMMING {
+                                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                                ..Default::default()
+                            },
+                            &g.dwrite.CreateEllipsisTrimmingSign(format)?,
+                        )?;
+                    }
+                }
                 crate::emoji::apply(&l, &item.text, 13.0, 1.0)?;
                 let m = gfx::metrics(&l);
                 let ty = if matches!(item.style, Style::Person(_)) {
@@ -761,16 +929,13 @@ impl Settings {
                 };
                 text::draw(dc, &l, tx, ty, brush);
             }
-            SPart::Launch => {
+            SPart::Launch | SPart::Sounds | SPart::VoiceSend => {
+                let (title, note) = item.part.switch_text();
                 let tw = w - 56.0;
-                let t = g.layout(&gfx::wide("Launch at login"), &g.formats.dialog_note, tw)?;
+                let t = g.layout(&gfx::wide(title), &g.formats.dialog_note, tw)?;
                 text::draw(dc, &t, x, y, label_brush);
                 let th = gfx::metrics(&t).height;
-                let n = g.layout(
-                    &gfx::wide("Open Caper when you sign in to your computer."),
-                    &g.formats.direct_note,
-                    tw,
-                )?;
+                let n = g.layout(&gfx::wide(note), &g.formats.direct_note, tw)?;
                 text::draw(dc, &n, x, y + th + 2.0, &g.brushes.muted);
                 switch(
                     g,
@@ -973,8 +1138,8 @@ fn style(g: &Gfx, s: Style) -> (&IDWriteTextFormat, &ID2D1SolidColorBrush) {
         Style::Title => (&g.formats.direct_unread, &g.brushes.text),
         Style::Section => (&g.formats.section, &g.brushes.muted),
         Style::Label | Style::Person(_) => (&g.formats.dialog_note, &g.brushes.text),
-        Style::Detail => (&g.formats.direct_note, &g.brushes.muted),
-        Style::Error => (&g.formats.error, &g.brushes.error),
+        Style::Detail | Style::Status(false) => (&g.formats.direct_note, &g.brushes.muted),
+        Style::Error | Style::Status(true) => (&g.formats.error, &g.brushes.error),
     }
 }
 
@@ -1007,7 +1172,11 @@ impl Builder<'_> {
         } else {
             0.0
         };
-        let h = self.measure(text, s, self.inner - indent)?;
+        let h = if matches!(s, Style::Status(_)) {
+            self.measure("Updates", s, self.inner)?
+        } else {
+            self.measure(text, s, self.inner - indent)?
+        };
         self.items.push(Item {
             part: SPart::Text(self.texts),
             rect: (indent, self.y, self.inner - indent, h),
@@ -1184,6 +1353,12 @@ impl App {
 
     pub fn close_settings(&mut self) {
         if let Some(s) = self.settings.take() {
+            if s.page == Page::WhatsNew
+                && let Some(live) = &mut self.live
+            {
+                live.whats_new.dismiss();
+                live.save_highlights_read();
+            }
             if s.page == Page::Audio {
                 self.audio_closed();
             }
@@ -1207,6 +1382,13 @@ impl App {
         let mut snap = Snapshot {
             launch: launch_allowed().then(|| s.is_some_and(|s| s.launch)),
             startup_error: s.and_then(|s| s.startup_error.clone()),
+            sounds: self.live.as_ref().is_none_or(|l| l.preferences.sounds()),
+            voice_send: self
+                .live
+                .as_ref()
+                .is_some_and(|l| l.preferences.voice_send_on_stop()),
+            updates: crate::updates::Check::new(&self.updates),
+            highlights: self.live.as_ref().map(|l| l.highlights.clone()),
             ..Snapshot::default()
         };
         if let Some(live) = self.live.as_ref().filter(|_| self.c.is_live()) {
@@ -1250,7 +1432,43 @@ impl App {
             return;
         }
         match part {
-            SPart::Close => return self.close_settings(),
+            SPart::Close | SPart::Done => return self.close_settings(),
+            SPart::WhatsNew => return self.open_highlights(),
+            SPart::RetryHighlights => {
+                if let Some(live) = &mut self.live {
+                    live.load_highlights(true);
+                }
+            }
+            SPart::CheckUpdates => self.updates.check_now(),
+            SPart::InstalledRevision => {
+                if let Some(url) =
+                    caper_client::updates::commit_url(caper_client::whats_new::REVISION)
+                {
+                    crate::open_link(&url);
+                }
+            }
+            SPart::ReleaseRevision(k) => {
+                if let Some(url) = s
+                    .snap
+                    .highlights
+                    .as_ref()
+                    .and_then(|h| h.releases.get(k))
+                    .and_then(|r| caper_client::updates::commit_url(&r.revision))
+                {
+                    crate::open_link(&url);
+                }
+            }
+            SPart::Sounds => {
+                if let Some(live) = &mut self.live {
+                    live.set_sound_effects(!s.snap.sounds);
+                }
+            }
+            SPart::VoiceSend => {
+                if let Some(live) = &mut self.live {
+                    live.preferences
+                        .set("voice-send-on-stop-v1", (!s.snap.voice_send).to_string());
+                }
+            }
             SPart::Input(_)
             | SPart::Output(_)
             | SPart::RefreshDevices
@@ -1333,6 +1551,7 @@ impl App {
             }
             WM_LBUTTONDOWN => {
                 let part = s.hit(x, y);
+                s.focus = part;
                 s.pressed = part;
                 // A slider follows the pointer until it lets go.
                 if let Some(p) = part.filter(|p| p.is_slider()) {
@@ -1388,6 +1607,17 @@ impl App {
             WM_KEYDOWN => {
                 let page = s.body.3 - 48.0;
                 match VIRTUAL_KEY(wp.0 as u16) {
+                    VK_TAB => {
+                        let backwards = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+                        s.tab(backwards);
+                        self.events |= EV_FOCUS;
+                    }
+                    VK_RETURN | VK_SPACE => {
+                        if let Some(part) = s.focus {
+                            self.settings_activate(part);
+                        }
+                        return done;
+                    }
                     VK_ESCAPE => {
                         self.close_settings();
                         return done;
@@ -1615,7 +1845,15 @@ impl App {
         if let Some(st) = &self.settings {
             self.settings_p.ensure(g, px(self.w), px(self.h))?;
             self.settings_p.offset(0.0, 0.0)?;
-            return self.settings_p.draw(s, |dc| st.draw(g, dc));
+            self.settings_p.draw(s, |dc| st.draw(g, dc))?;
+            if st.page == Page::WhatsNew
+                && let Some(live) = &mut self.live
+                && !live.highlights.loading
+                && live.highlights.error.is_none()
+            {
+                live.whats_new.displayed();
+            }
+            return Ok(());
         }
         let Some(m) = &self.account_menu else {
             return self.settings_p.offset(-100_000.0, 0.0);

@@ -344,12 +344,15 @@ impl App {
         self.rec_changed();
     }
 
-    /// A stopped voice message waits in the composer with its files.
+    /// Stage by default; auto-send consumes only this recording and its reply.
     fn keep_voice(&mut self, prepared: Arc<Prepared>) {
-        if let Some(live) = &mut self.live
-            && let Err(e) = live.stage_voice(prepared)
-        {
-            self.attach_error = Some(e);
+        let reply = self.reply.as_ref().map(|r| r.target.id.clone());
+        if let Some(live) = &mut self.live {
+            match live.stage_voice(prepared, reply) {
+                Ok(true) => self.cancel_reply(),
+                Ok(false) => {}
+                Err(e) => self.attach_error = Some(e),
+            }
         }
         self.drafts_changed();
     }
@@ -519,7 +522,16 @@ impl App {
             }
             .into(),
             (_, RPart::Retry) => "Retry".into(),
-            (_, RPart::Keep) => "Keep as voice note".into(),
+            (_, RPart::Keep) => if self
+                .live
+                .as_ref()
+                .is_some_and(|l| l.preferences.voice_send_on_stop())
+            {
+                "Send as voice note"
+            } else {
+                "Keep as voice note"
+            }
+            .into(),
             _ => String::new(),
         }
     }

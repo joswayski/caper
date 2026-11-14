@@ -459,6 +459,9 @@ pub struct Live {
     /// Your call (the shared engine, as egui's `voice`) and its sounds.
     pub voice: Voice,
     pub effects: Effects,
+    pub preferences: crate::settings::preferences::Preferences,
+    pub whats_new: caper_client::whats_new::WhatsNew,
+    pub highlights: crate::updates::History,
     /// Whether each channel's voice can be joined, as the server said for
     /// this account (egui's `media_availability`), and which were asked.
     availability: HashMap<String, bool>,
@@ -622,7 +625,11 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         host,
         generation,
         voice,
-        Effects::new(true),
+        crate::settings::preferences::Preferences::load(
+            production()
+                .then(|| std::env::var_os("APPDATA").map(std::path::PathBuf::from))
+                .flatten(),
+        ),
     ))
 }
 
@@ -635,8 +642,15 @@ impl Live {
         host: WinHost,
         generation: u64,
         voice: Voice,
-        effects: Effects,
+        preferences: crate::settings::preferences::Preferences,
     ) -> Self {
+        let origin = media
+            .api()
+            .map(|a| a.base().origin().ascii_serialization())
+            .unwrap_or_default();
+        let mut whats_new = caper_client::whats_new::WhatsNew::new(&origin, "windows");
+        whats_new.restore(preferences.get(whats_new.key()));
+        let effects = Effects::new(preferences.sounds() && production());
         Live {
             worker,
             input_reported: std::time::Instant::now(),
@@ -722,6 +736,9 @@ impl Live {
             rosters: HashMap::new(),
             voice,
             effects,
+            preferences,
+            whats_new,
+            highlights: Default::default(),
             availability: HashMap::new(),
             status_asked: HashSet::new(),
             join_request: 0,
@@ -746,6 +763,7 @@ impl Live {
     /// server revokes it. A signed-out Live replaces this one on the same
     /// worker, so nothing can restore the old session meanwhile.
     pub fn logout(mut self) -> Live {
+        self.discard_voice_sends();
         if let Some((_, draft)) = self.edit_upload.take() {
             draft.upload.abandon();
         }
@@ -762,13 +780,44 @@ impl Live {
             media_ready,
             host,
             mut voice,
-            effects,
+            preferences,
             ..
         } = self;
         media.clear();
         voice.leave();
         voice.error = None;
-        Live::fresh(worker, media, media_ready, host, generation, voice, effects)
+        Live::fresh(
+            worker,
+            media,
+            media_ready,
+            host,
+            generation,
+            voice,
+            preferences,
+        )
+    }
+
+    pub fn set_sound_effects(&mut self, enabled: bool) {
+        self.preferences
+            .set("sound-effects-v1", enabled.to_string());
+        self.effects = Effects::new(enabled && production());
+        if enabled {
+            self.effects.play(Effect::ToggleOn);
+        }
+    }
+
+    pub fn load_highlights(&mut self, manual: bool) {
+        if self.whats_new.begin(Instant::now(), manual) {
+            self.highlights.loading = true;
+            self.highlights.error = None;
+            self.worker.send(Command::WhatsNew);
+        }
+    }
+
+    pub fn save_highlights_read(&mut self) {
+        if let Some(value) = self.whats_new.stored() {
+            self.preferences.set(self.whats_new.key(), value);
+        }
     }
 
     /// Keyboard or pointer input: tell the gateway, at most every 5 seconds.
@@ -1820,8 +1869,16 @@ impl Live {
             && draft.upload.thread_root_id.is_none()
     }
 
-    /// The open channel's composer files, in order.
+    /// Files for the next manual Send; automatic voice messages send alone.
     pub fn open_drafts(&self) -> Vec<&crate::uploads::Draft> {
+        self.visible_drafts()
+            .into_iter()
+            .filter(|d| d.auto_send.is_none())
+            .collect()
+    }
+
+    /// Also show uploading/sending voice messages without consuming the draft.
+    pub fn visible_drafts(&self) -> Vec<&crate::uploads::Draft> {
         self.drafts
             .iter()
             .filter(|d| self.is_open_draft(d))
@@ -1886,12 +1943,13 @@ impl Live {
             .then_some("Remove the voice message to record another")
     }
 
-    /// Stages a stopped recording in the open channel's composer: it
-    /// uploads now (so transcription starts) and goes with the next Send.
+    /// Uploads a recording now. When enabled, it sends alone with the reply.
+    /// Returns whether the caller should consume its reply, never its text.
     pub fn stage_voice(
         &mut self,
         prepared: Arc<caper_client::uploads::Prepared>,
-    ) -> Result<(), String> {
+        reply: Option<String>,
+    ) -> Result<bool, String> {
         let (Some(token), Some(settings), Some(channel)) = (
             self.token.clone(),
             self.uploads.clone(),
@@ -1902,12 +1960,81 @@ impl Live {
         if let Some(blocked) = self.voice_note_blocked() {
             return Err(blocked.into());
         }
+        let auto = self.preferences.voice_send_on_stop();
+        let auto_send = if auto {
+            Some(crate::uploads::AutoSend {
+                client_id: uuid::Uuid::new_v4().to_string(),
+                chat_token: self
+                    .chat_token
+                    .clone()
+                    .ok_or("The conversation is not connected.")?,
+                reply,
+                sending: false,
+                attempted: false,
+            })
+        } else {
+            None
+        };
         self.draft_keys += 1;
-        let upload =
+        let mut upload =
             caper_client::drafts::Upload::recorded(self.draft_keys, channel, None, prepared);
+        upload.restart();
         self.worker.send(upload.command(token, settings));
-        self.drafts.push(crate::uploads::Draft::new(upload));
-        Ok(())
+        let mut draft = crate::uploads::Draft::new(upload);
+        draft.auto_send = auto_send;
+        self.drafts.push(draft);
+        Ok(auto)
+    }
+
+    fn send_voice(&mut self, key: u64) {
+        let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) else {
+            return;
+        };
+        let Some(send) = d.auto_send.as_mut() else {
+            return;
+        };
+        if send.sending || d.upload.uploading || d.upload.error.is_some() {
+            return;
+        }
+        let Some(file) = &d.upload.attachment else {
+            return;
+        };
+        send.sending = true;
+        send.attempted = true;
+        self.worker.send(Command::Send {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token: send.chat_token.clone(),
+            channel: d.upload.channel.clone(),
+            client_id: send.client_id.clone(),
+            text: String::new(),
+            thread_root_id: None,
+            broadcast: false,
+            reply_to_id: send.reply.clone(),
+            attachment_ids: vec![file.id.clone()],
+            spoiler_attachment_ids: Vec::new(),
+            gif: None,
+            suppress_embeds: false,
+        });
+    }
+
+    /// Navigation/logout cancel unfinished uploads, but never delete an asset
+    /// whose send has already reached the server (including a lost response).
+    fn discard_voice_sends(&mut self) {
+        let mut ids = Vec::new();
+        self.drafts.retain(|d| {
+            let Some(send) = &d.auto_send else {
+                return true;
+            };
+            d.upload.abandon();
+            if !send.attempted
+                && let Some(file) = &d.upload.attachment
+            {
+                ids.push(file.id.clone());
+            }
+            false
+        });
+        self.cancel_assets(ids);
     }
 
     /// Transcribes a recording (`POST /api/dictation`); its key, or None
@@ -1965,9 +2092,14 @@ impl Live {
     pub fn remove_draft(&mut self, key: u64) {
         self.cancel_draft_edit(key);
         if let Some(i) = self.drafts.iter().position(|d| d.upload.key == key) {
+            if self.drafts[i].auto_send.as_ref().is_some_and(|s| s.sending) {
+                return;
+            }
             let draft = self.drafts.remove(i);
             draft.upload.abandon();
-            if let Some(file) = draft.upload.attachment {
+            if !draft.auto_send.as_ref().is_some_and(|s| s.attempted)
+                && let Some(file) = draft.upload.attachment
+            {
                 self.cancel_assets(vec![file.id]);
             }
         }
@@ -2038,6 +2170,18 @@ impl Live {
         let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) else {
             return;
         };
+        if let Some(send) = &d.auto_send {
+            if send.sending {
+                return;
+            }
+            // Retry the exact send after an uncertain response. Reuploading or
+            // deleting its asset could damage an already accepted message.
+            if send.attempted {
+                d.upload.error = None;
+                self.send_voice(key);
+                return;
+            }
+        }
         let Some(old) = d.upload.restart() else {
             return;
         };
@@ -3369,6 +3513,7 @@ impl Live {
                 }
                 // Fence late history/gateway responses and discard the departed
                 // conversation even when there is nothing else to navigate to.
+                self.discard_voice_sends();
                 self.generation += 1;
                 self.navigation += 1;
                 self.worker.send(Command::StopGateway);
@@ -4036,6 +4181,12 @@ impl Live {
     fn handle(&mut self, event: Event, out: &mut Vec<Update>) {
         let current = self.generation;
         match event {
+            Event::WhatsNew(result) => {
+                self.highlights.finish(&result);
+                self.whats_new.finish(result);
+                self.save_highlights_read();
+                out.push(Update::Settings);
+            }
             Event::Restored { generation, result } if generation == current => match result {
                 Ok(Some((token, account, spaces))) => self.open(token, account, spaces, out),
                 Ok(None) => out.push(Update::SignedOut(None)),
@@ -4073,6 +4224,7 @@ impl Live {
                 Ok(prepared) => {
                     // Events still in flight for the previous conversation
                     // (its gateway, sends) carry the old generation and drop.
+                    self.discard_voice_sends();
                     self.generation += 1;
                     let current = self.generation;
                     // A DM has no space of its own: the open space's
@@ -4373,34 +4525,61 @@ impl Live {
                 client_id,
                 result,
                 ..
-            } if generation == current => match result {
-                Ok(m) => {
-                    // Best effort, once KLIPY's GIF is really sent.
-                    if let Some(share) = self.shares.remove(&client_id) {
-                        share.send();
+            } if generation == current => {
+                if let Some(index) = self.drafts.iter().position(|d| {
+                    d.auto_send
+                        .as_ref()
+                        .is_some_and(|s| s.client_id == client_id)
+                }) {
+                    match &result {
+                        Ok(_) => {
+                            self.drafts.remove(index);
+                        }
+                        Err(failure) => {
+                            let d = &mut self.drafts[index];
+                            d.auto_send.as_mut().unwrap().sending = false;
+                            if failure.status == Some(409)
+                                && failure.code.as_deref() == Some("attachment_unavailable")
+                            {
+                                // A definitive reservation rejection: Retry may upload
+                                // again, unlike an uncertain transport failure.
+                                d.upload.upload_expired = true;
+                                d.auto_send.as_mut().unwrap().attempted = false;
+                            }
+                            d.upload.error = Some(failure.message.clone());
+                        }
                     }
-                    if self.timeline.merge_sent(m.clone()).is_err() {
-                        self.reload();
+                    out.push(Update::Drafts);
+                }
+                match result {
+                    Ok(m) => {
+                        // Best effort, once KLIPY's GIF is really sent.
+                        if let Some(share) = self.shares.remove(&client_id) {
+                            share.send();
+                        }
+                        if self.timeline.merge_sent(m.clone()).is_err() {
+                            self.reload();
+                        }
+                        let thread = m
+                            .thread_root_id
+                            .as_deref()
+                            .is_some_and(|r| self.in_thread(r));
+                        if m.is_channel_message() && self.has_newer() {
+                            // As in egui: your message shows at the latest history.
+                            self.reload();
+                        } else if self.in_channel(&m) {
+                            out.push(Update::Message(Box::new(m)));
+                        }
+                        if thread {
+                            out.push(Update::Thread);
+                        }
                     }
-                    let thread = m
-                        .thread_root_id
-                        .as_deref()
-                        .is_some_and(|r| self.in_thread(r));
-                    if m.is_channel_message() && self.has_newer() {
-                        // As in egui: your message shows at the latest history.
-                        self.reload();
-                    } else if self.in_channel(&m) {
-                        out.push(Update::Message(Box::new(m)));
-                    }
-                    if thread {
-                        out.push(Update::Thread);
+                    Err(f) => {
+                        self.shares.remove(&client_id);
+                        out.push(Update::Failed(f.message));
                     }
                 }
-                Err(f) => {
-                    self.shares.remove(&client_id);
-                    out.push(Update::Failed(f.message));
-                }
-            },
+            }
             Event::Gateway(gateway::GatewayEvent::Message {
                 generation,
                 channel,
@@ -4979,6 +5158,9 @@ impl Live {
                     self.local.push((file.id.clone(), image.clone()));
                 }
                 d.thumb_changed = false;
+                if finished {
+                    self.send_voice(key);
+                }
                 out.push(Update::Drafts);
             }
             Event::AttachmentUrls {
@@ -5391,6 +5573,85 @@ pub fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopped_voice_sends_separately_only_when_enabled_and_can_be_discarded() {
+        use caper_client::uploads::{Body, Prepared, VoiceUpload};
+        let api = Api::new("http://127.0.0.1:9").unwrap();
+        let host = WinHost {
+            hwnd: 0,
+            requests: Arc::default(),
+        };
+        let voice = Voice::new(
+            api.base().clone(),
+            caper_client::voice::Repaint::new(|_| {}),
+        );
+        let mut live = Live::fresh(
+            Worker::new(api, host.clone()),
+            caper_client::media::Media::new(None, Arc::new(|| {})),
+            Arc::default(),
+            host,
+            1,
+            voice,
+            crate::settings::preferences::Preferences::load(None),
+        );
+        live.token = Some("fixture-token".into());
+        live.chat_token = Some("fixture-chat".into());
+        live.channel = Some("general".into());
+        live.uploads = Some(Default::default());
+        let prepared = Arc::new(Prepared {
+            name: "Voice message.m4a".into(),
+            content_type: "audio/mp4".into(),
+            kind: core::AttachmentKind::Audio,
+            source_size: 1,
+            size: 1,
+            body: Body::Memory(Arc::from([0])),
+            width: None,
+            height: None,
+            duration_ms: Some(2000),
+            preview: None,
+            thumbnail: None,
+            voice: Some(VoiceUpload { waveform: None }),
+        });
+        assert!(!live.stage_voice(prepared.clone(), None).unwrap());
+        assert_eq!(live.open_drafts().len(), 1, "the default waits for Send");
+        let staged = live.open_drafts()[0].upload.key;
+        live.remove_draft(staged);
+        let manual = caper_client::drafts::Upload::picked(
+            100,
+            "general".into(),
+            None,
+            "keep.txt".into(),
+            None,
+        );
+        live.drafts.push(crate::uploads::Draft::new(manual));
+        live.preferences.set("voice-send-on-stop-v1", "true".into());
+        assert!(
+            live.stage_voice(prepared.clone(), Some("quoted-message".into()))
+                .unwrap()
+        );
+        assert_eq!(live.visible_drafts().len(), 2);
+        assert_eq!(
+            live.open_drafts()
+                .iter()
+                .map(|d| d.upload.source_name.as_str())
+                .collect::<Vec<_>>(),
+            ["keep.txt"]
+        );
+        let outgoing = live.visible_drafts()[1].upload.key;
+        let cancelled = live.visible_drafts()[1].upload.cancel.clone();
+        live.remove_draft(outgoing);
+        assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(live.visible_drafts().len(), 1);
+        live.preferences
+            .set("voice-send-on-stop-v1", "false".into());
+        assert!(!live.stage_voice(prepared, None).unwrap());
+        assert_eq!(live.open_drafts().len(), 2, "turning it off stages again");
+        assert!(
+            live.voice_note_blocked().is_some(),
+            "one staged recording per message"
+        );
+    }
 
     fn core_message(extra: serde_json::Value) -> core::Message {
         let mut m = serde_json::json!({

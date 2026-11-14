@@ -50,9 +50,20 @@ const CORNER_R: f32 = 11.0;
 const CORNER_INSET: f32 = 4.0;
 const CORNER_HIT: f32 = 28.0;
 
+/// A voice message sends separately, retaining its id across uncertain failures.
+pub struct AutoSend {
+    pub client_id: String,
+    pub chat_token: String,
+    pub reply: Option<String>,
+    pub sending: bool,
+    /// Once attempted, the asset might belong to an accepted message.
+    pub attempted: bool,
+}
+
 /// A composer file: the shared upload state and its tile's bitmaps.
 pub struct Draft {
     pub upload: Upload,
+    pub auto_send: Option<AutoSend>,
     /// The sender's own decoded copy, once preparing produced one.
     pub thumb: Option<Rgba>,
     /// A thumbnail arrived since the last upload event was handled.
@@ -65,6 +76,7 @@ impl Draft {
     pub fn new(upload: Upload) -> Self {
         Self {
             upload,
+            auto_send: None,
             thumb: None,
             thumb_changed: false,
             bitmap: None,
@@ -256,7 +268,7 @@ pub fn part_at(tiles: &[D2D_RECT_F], drafts: &[&Draft], top: f32, x: f32, y: f32
     if is_chip(t) {
         return if inside(chip_play(t), x, y) {
             Some(Part::Play(k))
-        } else if inside(chip_remove(t), x, y) {
+        } else if inside(chip_remove(t), x, y) && !d.auto_send.as_ref().is_some_and(|s| s.sending) {
             Some(Part::Remove(k))
         } else if d.upload.error.is_some() && inside(chip_status(t), x, y) {
             Some(Part::Retry(k))
@@ -394,14 +406,16 @@ fn chip(
         1.0,
     );
     let r = chip_remove(t);
-    centered_icon(
-        dc,
-        Icon::Close,
-        (r.left + r.right) / 2.0,
-        (r.top + r.bottom) / 2.0,
-        14.0,
-        TEXT_MUTED,
-    );
+    if !d.auto_send.as_ref().is_some_and(|s| s.sending) {
+        centered_icon(
+            dc,
+            Icon::Close,
+            (r.left + r.right) / 2.0,
+            (r.top + r.bottom) / 2.0,
+            14.0,
+            TEXT_MUTED,
+        );
+    }
     let duration = prepared.duration_ms.unwrap_or(0);
     let position = view.and_then(|v| v.position);
     let shown = duration.saturating_sub(position.unwrap_or(0));
@@ -422,15 +436,24 @@ fn chip(
     let peaks = prepared.voice.as_ref().and_then(|v| v.waveform.as_deref());
     crate::playback::waveform(g, dc, wave, peaks, played)?;
     let s = chip_status(t);
-    if u.error.is_some() {
-        let l = line(g, "Retry upload", &g.formats.file_detail, 1e6)?;
+    if u.error.is_some() || d.auto_send.is_some() {
+        let label = match (u.error.is_some(), d.auto_send.is_some()) {
+            (true, true) => "Retry sending voice message",
+            (true, false) => "Retry upload",
+            _ => "Sending voice message…",
+        };
+        let l = line(g, label, &g.formats.file_detail, s.right - s.left)?;
         let m = gfx::metrics(&l);
         crate::text::draw(
             dc,
             &l,
             s.left,
             (s.top + s.bottom - m.height) / 2.0,
-            &g.brushes.error,
+            if u.error.is_some() {
+                &g.brushes.error
+            } else {
+                &g.brushes.muted
+            },
         );
     } else if u.attachment.is_none() {
         let track = rect(
@@ -756,7 +779,7 @@ impl App {
         let Some(live) = &self.live else {
             return (Vec::new(), Vec::new(), bar, None);
         };
-        let drafts = live.open_drafts();
+        let drafts = live.visible_drafts();
         let failed = drafts.iter().filter(|d| d.upload.error.is_some()).count();
         let notice = drafts::failed_notice(failed)
             .or_else(|| self.attach_error.clone())
@@ -865,7 +888,9 @@ impl App {
                 if d.upload.error.is_some() {
                     out.push(Part::Retry(k));
                 }
-                out.push(Part::Remove(k));
+                if !d.auto_send.as_ref().is_some_and(|s| s.sending) {
+                    out.push(Part::Remove(k));
+                }
                 continue;
             }
             if previewable(d) {
@@ -940,7 +965,12 @@ impl App {
                 "Remove voice message".into()
             }
             Part::Retry(k) if drafts.get(k).is_some_and(|d| d.upload.voice().is_some()) => {
-                "Retry upload".into()
+                if drafts[k].auto_send.is_some() {
+                    "Retry sending voice message"
+                } else {
+                    "Retry upload"
+                }
+                .into()
             }
             Part::Open(k) => file(k).map_or_else(String::new, |(s, _)| format!("Preview {s}")),
             Part::Spoiler(k) => file(k).map_or_else(String::new, |(_, d)| {

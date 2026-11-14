@@ -9,7 +9,7 @@ use crate::settings::FOOT_H;
 use crate::theme::*;
 use crate::{App, EV_SCREEN, text};
 use caper_client::state::Phase;
-use caper_client::updates::{Available, DOWNLOAD_URL};
+use caper_client::updates::{Available, DOWNLOAD_URL, Status, Updates};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
@@ -28,6 +28,97 @@ const SHINE_COLORS: [u32; 5] = [0xA780F2, 0x68AFEC, 0x63D2C1, 0xD7CD82, 0xE58BB7
 /// egui's dock: a 36-DIP secondary button with 8 DIPs under it.
 pub const DOCK_H: f32 = 36.0;
 const DOCK_GAP: f32 = 8.0;
+
+/// Settings follows the shared updater, including deferred and failed checks.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Check {
+    pub can_check: bool,
+    pub status: Status,
+    known: bool,
+}
+
+impl Check {
+    pub fn new(updates: &Updates) -> Self {
+        Self {
+            can_check: updates.can_check(),
+            status: updates.status(),
+            known: updates.known_available().is_some(),
+        }
+    }
+
+    pub fn message(&self) -> (String, bool) {
+        let text = match &self.status {
+            Status::UpToDate => "No newer published release is available.",
+            Status::Available => "An update is available to review.",
+            Status::Deferred if self.known => "An update is available to review.",
+            Status::Deferred => "No new updates. Will check again shortly.",
+            Status::Failed(error) => {
+                return (format!("Could not check for updates: {error}"), true);
+            }
+            Status::Checking => "Checking for updates…",
+            Status::Idle => "Updates are checked automatically.",
+        };
+        (text.into(), false)
+    }
+
+    pub fn note(&self) -> &'static str {
+        if !self.can_check && self.status == Status::Idle {
+            "Update checks are available in packaged release builds."
+        } else {
+            "Checks automatically every minute."
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct History {
+    pub loading: bool,
+    pub error: Option<String>,
+    pub releases: Vec<Release>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Release {
+    pub revision: String,
+    pub date: String,
+    pub label: String,
+    pub highlights: Vec<(String, String)>,
+}
+
+impl History {
+    pub fn finish(
+        &mut self,
+        result: &std::result::Result<caper_client::whats_new::Snapshot, String>,
+    ) {
+        self.loading = false;
+        self.error = result.as_ref().err().cloned();
+        self.releases = result
+            .as_ref()
+            .map(|s| {
+                s.releases
+                    .iter()
+                    .rev()
+                    .filter(|r| !r.highlights.is_empty())
+                    .map(|r| Release {
+                        revision: r.revision.clone(),
+                        date: chrono::DateTime::parse_from_rfc3339(&r.published_at)
+                            .map(|d| d.format("%B %-d, %Y").to_string())
+                            .unwrap_or_default(),
+                        label: r
+                            .version
+                            .as_ref()
+                            .map_or_else(|| r.revision[..7].into(), |v| format!("Version {v}")),
+                        highlights: r
+                            .highlights
+                            .iter()
+                            .map(|h| (h.title.clone(), h.body.clone()))
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+}
 
 /// A line of the review's body.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -168,6 +259,21 @@ impl Dialog {
 }
 
 impl App {
+    /// Manual history uses the existing scrolling Settings surface, not a browser.
+    pub fn open_highlights(&mut self) {
+        self.close_settings();
+        self.close_profile();
+        self.close_dialog();
+        if let Some(live) = &mut self.live {
+            live.whats_new.open_history();
+            live.load_highlights(true);
+        }
+        let mut settings = crate::settings::Settings::new(false, None);
+        settings.page = crate::settings::Page::WhatsNew;
+        self.settings = Some(settings);
+        self.settings_changed();
+    }
+
     /// "Update available" (client DIPs), above the account footer while an
     /// update is known, as egui's dock.
     pub fn update_dock_rect(&self) -> Option<Rect> {
@@ -401,6 +507,13 @@ impl App {
     /// After each wake: the dock follows what the checks found, and the
     /// review opens when one was asked for and nothing else is open.
     pub(crate) fn poll_updates(&mut self) {
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.snap.updates != Check::new(&self.updates))
+        {
+            self.settings_changed();
+        }
         let known = self.updates.known_available().map(|u| u.version);
         if known != self.update_dock {
             self.update_shine = known.as_ref().map(|_| std::time::Instant::now());
@@ -410,7 +523,11 @@ impl App {
             self.events |= EV_SCREEN;
             self.need = true;
         }
-        if self.dialog.is_some() || self.signin.is_some() || self.viewer.is_some() {
+        if self.dialog.is_some()
+            || self.signin.is_some()
+            || self.viewer.is_some()
+            || self.settings.is_some()
+        {
             return;
         }
         if let Some(available) = self.updates.available() {
@@ -454,6 +571,49 @@ impl App {
 mod tests {
     use super::*;
     use caper_client::updates::Highlight;
+
+    #[test]
+    fn history_retries_and_shows_only_highlights_newest_first() {
+        let mut history = History {
+            loading: true,
+            ..History::default()
+        };
+        history.finish(&Err("offline".into()));
+        assert!(!history.loading);
+        assert_eq!(history.error.as_deref(), Some("offline"));
+        let revision = format!("{:040x}", 4);
+        let payload = serde_json::json!({
+            "schema": 1, "platform": "windows", "revision": revision, "sequence": 4,
+            "releases": ([1, 2, 4].map(|n| serde_json::json!({
+                "sequence": n, "revision": format!("{n:040x}"),
+                "publishedAt": "2026-11-09T10:00:00Z",
+                "highlights": if n == 2 { vec![] } else { vec![serde_json::json!({"title": format!("Release {n}"), "body": "Shipped."})] }
+            })))
+        });
+        let result = caper_client::whats_new::Snapshot::decode(
+            &serde_json::to_vec(&payload).unwrap(),
+            "windows",
+            &revision,
+        );
+        history.loading = true;
+        history.finish(&result);
+        assert!(!history.loading);
+        assert_eq!(history.error, None);
+        assert_eq!(
+            history
+                .releases
+                .iter()
+                .map(|r| r.highlights[0].0.as_str())
+                .collect::<Vec<_>>(),
+            ["Release 4", "Release 1"]
+        );
+        assert!(
+            history
+                .releases
+                .iter()
+                .all(|r| r.date == "November 9, 2026")
+        );
+    }
 
     fn release() -> Available {
         Available {
