@@ -19,8 +19,12 @@ private typealias DropColor = UIColor
     private let stage = CALayer()
     private let cards = (0..<3).map { _ in CALayer() }
     private let character = CALayer()
-    private let titleLayer = CATextLayer()
-    private let detailLayer = CATextLayer()
+    // TextKit draws the text into plain layers: CATextLayer will not break an
+    // overlong word such as a long channel name, so it clipped instead of wrapping.
+    private let titleLayer = CALayer()
+    private let detailLayer = CALayer()
+    private var titleString = NSAttributedString()
+    private var detailString = NSAttributedString()
     private let titleText: String
     private let detailText: String
     private let plan: FileDropMotion.Plan
@@ -96,11 +100,7 @@ private typealias DropColor = UIColor
         character.contents = UIImage(named: "caper-branding-\(avatar)", in: caperResourceBundle, compatibleWith: nil)?.cgImage
         #endif
         stage.addSublayer(character)
-        for text in [titleLayer, detailLayer] {
-            text.isWrapped = true
-            text.alignmentMode = .center
-            panel.addSublayer(text)
-        }
+        for text in [titleLayer, detailLayer] { panel.addSublayer(text) }
         updateText()
         render()
     }
@@ -135,7 +135,7 @@ private typealias DropColor = UIColor
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineBreakMode = .byWordWrapping
-        for (text, value, size, bold) in [(titleLayer, titleText, CGFloat(18), true), (detailLayer, detailText, CGFloat(13), false)] {
+        for (title, value, size, bold) in [(true, titleText, CGFloat(18), true), (false, detailText, CGFloat(13), false)] {
             #if os(macOS)
             let font = AppKitKit.font(size, weight: bold ? .bold : .regular)
             #else
@@ -143,10 +143,11 @@ private typealias DropColor = UIColor
                 ?? UIFont.systemFont(ofSize: size, weight: bold ? .bold : .regular)
             let font = UIFontMetrics.default.scaledFont(for: base, compatibleWith: traitCollection)
             #endif
-            text.string = NSAttributedString(string: value, attributes: [
+            let string = NSAttributedString(string: value, attributes: [
                 .font: font, .foregroundColor: DropColor(bold ? CaperTheme.text : CaperTheme.muted),
                 .paragraphStyle: paragraph,
             ])
+            if title { titleString = string } else { detailString = string }
         }
     }
 
@@ -155,12 +156,11 @@ private typealias DropColor = UIColor
         scrim.frame = bounds
         let width = min(360, max(0, bounds.width - 32))
         let textWidth = max(1, width - 48)
-        func height(_ layer: CATextLayer) -> CGFloat {
-            guard let text = layer.string as? NSAttributedString else { return 0 }
-            return ceil(text.boundingRect(with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+        func height(_ text: NSAttributedString) -> CGFloat {
+            ceil(text.boundingRect(with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
                 options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height)
         }
-        let titleHeight = height(titleLayer), detailHeight = height(detailLayer)
+        let titleHeight = height(titleString), detailHeight = height(detailString)
         // Same 20pt top, 128pt artwork, 14pt gap, 6pt text gap and 26pt bottom
         // padding as FileDropOverlay; long destination names wrap, not truncate.
         let panelHeight = 20 + 128 + 14 + titleHeight + 6 + detailHeight + 26
@@ -172,7 +172,10 @@ private typealias DropColor = UIColor
         stage.frame = CGRect(x: (width - 176) / 2, y: 20, width: 176, height: 128)
         titleLayer.frame = CGRect(x: 24, y: 162, width: textWidth, height: titleHeight)
         detailLayer.frame = CGRect(x: 24, y: 162 + titleHeight + 6, width: textWidth, height: detailHeight)
-        for text in [titleLayer, detailLayer] { text.contentsScale = scale }
+        for (layer, text) in [(titleLayer, titleString), (detailLayer, detailString)] {
+            layer.contentsScale = scale
+            layer.contents = Self.image(text, size: layer.bounds.size, scale: scale)
+        }
         render()
         CATransaction.commit()
     }
@@ -207,6 +210,29 @@ private typealias DropColor = UIColor
             .scaledBy(x: pose.character.scaleX, y: pose.character.scaleY))
         character.opacity = Float(pose.character.opacity)
         CATransaction.commit()
+    }
+
+    private static func image(_ text: NSAttributedString, size: CGSize, scale: CGFloat) -> CGImage? {
+        guard size.width >= 1, size.height >= 1 else { return nil }
+        let rect = CGRect(origin: .zero, size: size)
+        #if os(macOS)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(ceil(size.width * scale)),
+            pixelsHigh: Int(ceil(size.height * scale)), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        rep.size = size
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context.cgContext, flipped: true)
+        context.cgContext.translateBy(x: 0, y: size.height); context.cgContext.scaleBy(x: 1, y: -1)
+        text.draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading])
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.cgImage
+        #else
+        let format = UIGraphicsImageRendererFormat(); format.scale = scale; format.opaque = false
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            text.draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+        }.cgImage
+        #endif
     }
 
     private static func symbol(_ name: String) -> CGImage? {
