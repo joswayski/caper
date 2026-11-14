@@ -221,6 +221,9 @@ fn focused(a: &App) -> Option<Id> {
         if let Some(e) = &d.profile_edit {
             return Some(Id::ProfileEdit(e.focus));
         }
+        if let Some(v) = &d.reactors {
+            return Some(Id::Dialog(v.focus));
+        }
         if let Some(k) = d.number_focus() {
             return Some(Id::Dialog(DPart::Number(k)));
         }
@@ -745,6 +748,9 @@ fn name(a: &App, id: Id) -> String {
             let Some(d) = &a.dialog else {
                 return String::new();
             };
+            if d.kind == Kind::Reactions {
+                return d.reactor_name(p);
+            }
             match p {
                 DPart::Title => d.title(),
                 DPart::Note => d.note(),
@@ -961,6 +967,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::Invitee(_)
             | DPart::Member(_)
             | DPart::Unsaved
+            | DPart::ReactorPerson(_)
             | DPart::LinkRow(_),
         ) => UIA_TextControlTypeId,
         Id::Dialog(DPart::Toggle) => UIA_CheckBoxControlTypeId,
@@ -1210,7 +1217,13 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Dialog(p) => a
             .dialog
             .as_ref()
-            .and_then(|d| d.part_rect(p))
+            .and_then(|d| {
+                if d.kind == Kind::Reactions {
+                    d.reactor_bounds(p)
+                } else {
+                    d.part_rect(p)
+                }
+            })
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Tool(i, t) => a
             .tools(i)
@@ -1453,6 +1466,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::SaveChanges
                 | DPart::ManageRow(_)
                 | DPart::RemoveMember(_)
+                | DPart::ReactorTab(_)
                 | DPart::DeleteOpen,
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
@@ -1524,6 +1538,14 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     VARIANT::from(
                         matches!(id, Id::Settings(p) if !matches!(p, SPart::Text(_) | SPart::Meter)),
                     )
+                }
+                UIA_IsKeyboardFocusablePropertyId
+                    if matches!(
+                        id,
+                        Id::Dialog(DPart::Close | DPart::Retry | DPart::ReactorTab(_))
+                    ) && a.dialog.as_ref().is_some_and(|d| d.kind == Kind::Reactions) =>
+                {
+                    VARIANT::from(true)
                 }
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
@@ -1729,6 +1751,13 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Dialog(DPart::Number(k)) => a.dialog_activate(DPart::Number(k)),
+                Id::Dialog(p) if a.dialog.as_ref().is_some_and(|d| d.kind == Kind::Reactions) => {
+                    if let Some(d) = &mut a.dialog {
+                        d.reactor_focus(p);
+                    }
+                    a.events |= crate::EV_FOCUS;
+                    a.dialog_changed();
+                }
                 Id::ProfileEdit(p) => {
                     if let Some(d) = &mut a.dialog {
                         d.profile_focus(p);

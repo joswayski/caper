@@ -34,6 +34,7 @@ mod overlay;
 mod playback;
 mod preview;
 mod profile;
+mod reactors;
 mod recording;
 mod settings;
 mod space_settings;
@@ -957,6 +958,7 @@ impl App {
                 }
             }
         }
+        self.refresh_reactors();
         Ok(())
     }
 

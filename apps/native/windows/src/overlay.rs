@@ -62,6 +62,7 @@ pub enum Item {
     Unpin,
     /// "Saving…" while a pin change is in flight; not clickable.
     PinSaving,
+    ViewReactions,
     CopyText,
     CopyId,
     Delete,
@@ -83,6 +84,7 @@ impl Item {
             Self::Pin => "Pin message",
             Self::Unpin => "Unpin message",
             Self::PinSaving => "Saving\u{2026}",
+            Self::ViewReactions => "View reactions",
             Self::CopyText => "Copy text",
             Self::CopyId => "Copy message ID",
             Self::Delete => "Delete message",
@@ -105,6 +107,7 @@ impl Item {
             Self::History => Icon::History,
             Self::Pin | Self::PinSaving => Icon::Pin,
             Self::Unpin => Icon::PinOff,
+            Self::ViewReactions => Icon::Smile,
             Self::CopyText => Icon::Copy,
             Self::CopyId => Icon::Hash,
             Self::Delete => Icon::Trash,
@@ -334,6 +337,7 @@ pub enum Kind {
     Update,
     /// Your private name and picture draft.
     Profile,
+    Reactions,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -408,6 +412,8 @@ pub enum Part {
     /// The danger zone's Delete space or Delete channel.
     DeleteOpen,
     Profile(crate::profile::editor::Control),
+    ReactorTab(usize),
+    ReactorPerson(usize),
 }
 
 impl Part {
@@ -461,6 +467,8 @@ impl Part {
             Self::RemoveMember(k) => 120_000 + k,
             Self::DeleteOpen => 30_210,
             Self::Profile(control) => 130_000 + control.index(),
+            Self::ReactorTab(k) => 140_000 + k,
+            Self::ReactorPerson(k) => 150_000 + k,
         }
     }
 
@@ -554,6 +562,7 @@ pub struct Dialog {
     pub in_call: bool,
     pub update_shown: Vec<(crate::updates::Line, String)>,
     pub profile_edit: Option<Box<crate::profile::editor::Editor>>,
+    pub reactors: Option<Box<crate::reactors::View>>,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -633,6 +642,7 @@ impl Dialog {
             in_call: false,
             update_shown: Vec::new(),
             profile_edit: None,
+            reactors: None,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -645,6 +655,7 @@ impl Dialog {
     pub fn title(&self) -> String {
         match self.kind {
             Kind::Profile => "Edit profile".into(),
+            Kind::Reactions => "Reactions".into(),
             Kind::Edit => "Edit message".into(),
             Kind::Delete => "Delete message?".into(),
             Kind::History => "Message history".into(),
@@ -691,7 +702,7 @@ impl Dialog {
                 self.browse.as_ref().map_or("", |b| b.space_name.as_str())
             ),
             Kind::JoinInvite | Kind::Invitation => self.invite_note(),
-            Kind::CreateSpace | Kind::CreateChannel | Kind::Profile => String::new(),
+            Kind::CreateSpace | Kind::CreateChannel | Kind::Profile | Kind::Reactions => String::new(),
             Kind::InvitePeople => self.invite_people_note(),
             Kind::Update => self.update_note(),
             Kind::LeaveSpace => "You will lose access to its channels and conversations. An owner can add you again later.".into(),
@@ -815,7 +826,7 @@ impl Dialog {
             (Kind::Edit, true) => "Saving\u{2026}",
             (Kind::Delete, false) => "Delete",
             (Kind::Delete, true) => "Deleting\u{2026}",
-            (Kind::History, _) => "Close",
+            (Kind::History | Kind::Reactions, _) => "Close",
             (Kind::StartDirect, true) if self.creating => "Opening\u{2026}",
             (Kind::StartDirect, true) => "Finding\u{2026}",
             (Kind::StartDirect, false) if self.recipient.is_some() => "Open conversation",
@@ -856,7 +867,7 @@ impl Dialog {
                     && match self.kind {
                         Kind::Edit => caper_client::edits::valid_text(&self.draft()),
                         Kind::Delete | Kind::Block | Kind::LeaveSpace | Kind::LeaveChannel => true,
-                        Kind::History | Kind::Browse => false,
+                        Kind::History | Kind::Browse | Kind::Reactions => false,
                         Kind::StartDirect => self.draft().len() >= 3,
                         Kind::JoinInvite => {
                             self.invite.is_some() || !self.draft().trim().is_empty()
@@ -879,6 +890,8 @@ impl Dialog {
             | Part::LinkCopy(_)
             | Part::LinkRevoke(_) => self.invite_enabled(part),
             Part::Retry if self.kind == Kind::InvitePeople => self.invite_enabled(part),
+            Part::Retry if self.kind == Kind::Reactions => self.part_rect(part).is_some(),
+            Part::ReactorTab(_) | Part::ReactorPerson(_) => true,
             Part::CancelInvite(_) => !self.busy,
             Part::SaveName => self.can_save_name(),
             Part::Reset | Part::SaveChanges | Part::RemoveMember(_) | Part::DeleteOpen => {
@@ -961,9 +974,10 @@ impl Dialog {
                         | Part::ManageRow(_)
                         | Part::RemoveMember(_)
                         | Part::DeleteOpen
+                        | Part::ReactorTab(_)
                 ) && contains(*r, x, y)
                     && match self.kind {
-                        Kind::History | Kind::InvitePeople => {
+                        Kind::History | Kind::InvitePeople | Kind::Reactions => {
                             !p.in_body() || contains(self.body, x, y)
                         }
                         Kind::Browse => {
@@ -1002,6 +1016,9 @@ impl Dialog {
     pub fn relayout(&mut self, g: &Gfx, w: f32, h: f32) -> Result<()> {
         if self.kind == Kind::Profile {
             return self.relayout_profile(g, w, h);
+        }
+        if self.kind == Kind::Reactions {
+            return self.relayout_reactors(g, w, h);
         }
         if self.kind == Kind::History {
             return self.relayout_history(g, w, h);
@@ -1194,6 +1211,9 @@ impl Dialog {
             stroke_round(dc, card, RADIUS, &g.brushes.border);
             if self.kind == Kind::Profile {
                 return self.draw_profile(g, dc);
+            }
+            if self.kind == Kind::Reactions {
+                return self.draw_reactors(g, dc);
             }
             if self.kind == Kind::History {
                 return self.draw_history(g, dc);
@@ -1536,6 +1556,12 @@ impl App {
                 Item::Pin
             });
         }
+        if live
+            .reactor_message(id)
+            .is_some_and(|m| m.reactions.iter().any(|r| !r.author_ids.is_empty()))
+        {
+            items.push(Item::ViewReactions);
+        }
         if !m.is_deleted() && !m.content.text.is_empty() {
             items.push(Item::CopyText);
         }
@@ -1674,6 +1700,7 @@ impl App {
             Item::History => return self.open_history(m),
             Item::Pin => live.pin(&m, true),
             Item::Unpin => live.pin(&m, false),
+            Item::ViewReactions => return self.open_reactors(&m.id),
             Item::CopyText => crate::set_clipboard(self.hwnd, &gfx::wide(&m.content.text)),
             Item::CopyId => crate::set_clipboard(self.hwnd, &gfx::wide(&m.id)),
             Item::CopySelection => crate::set_clipboard(self.hwnd, &menu.selection),
@@ -1797,6 +1824,9 @@ impl App {
         }
         if d.kind == Kind::Profile {
             return self.profile_edit_activate(part);
+        }
+        if d.kind == Kind::Reactions {
+            return self.reactors_activate(part);
         }
         if d.kind == Kind::Update {
             return self.update_activate(part);
@@ -1963,6 +1993,8 @@ impl App {
             | Part::SaveChanges
             | Part::RemoveMember(_)
             | Part::DeleteOpen
+            | Part::ReactorTab(_)
+            | Part::ReactorPerson(_)
             | Part::Profile(_) => {}
         }
         self.dialog_changed();
@@ -2232,6 +2264,10 @@ impl App {
         let done = Some(Some(LRESULT(0)));
         let hwnd = self.hwnd;
         let d = self.dialog.as_mut()?;
+        if d.kind == Kind::Reactions && msg == WM_KEYDOWN {
+            self.reactors_key(VIRTUAL_KEY(wp.0 as u16), shift);
+            return done;
+        }
         match msg {
             WM_MOUSEMOVE => {
                 self.pointer = Some((x, y));
@@ -2297,7 +2333,10 @@ impl App {
                 done
             }
             WM_MOUSEWHEEL
-                if matches!(d.kind, Kind::History | Kind::Browse | Kind::InvitePeople) =>
+                if matches!(
+                    d.kind,
+                    Kind::History | Kind::Browse | Kind::InvitePeople | Kind::Reactions
+                ) =>
             {
                 let notches = (wp.0 >> 16) as u16 as i16 as f32 / 120.0;
                 d.scroll -= notches * 3.0 * LINE;

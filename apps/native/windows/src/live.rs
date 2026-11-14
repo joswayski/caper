@@ -2593,7 +2593,7 @@ impl Live {
     /// Starts reading who reacted to message `id` unless its current
     /// reaction revision is known or already loading, as egui's hover card.
     pub fn load_reactors(&mut self, id: &str) {
-        let Some(m) = self.timeline.messages().find(|m| m.id == id) else {
+        let Some(m) = self.reactor_message(id) else {
             return;
         };
         let revision = m.reaction_seq.clone().unwrap_or_else(|| "0".into());
@@ -2604,9 +2604,7 @@ impl Live {
         {
             return;
         }
-        let Some(channel) = self.channel.clone() else {
-            return;
-        };
+        let channel = m.channel_id.clone();
         if self.reactors.len() >= REACTOR_CACHE_LIMIT && !self.reactors.contains_key(id) {
             self.reactors.clear();
         }
@@ -2629,6 +2627,48 @@ impl Live {
             message: id.to_owned(),
             revision,
         });
+    }
+
+    /// The live reaction snapshot, including a thread reply or a pinned row.
+    pub fn reactor_message(&self, id: &str) -> Option<core::Message> {
+        self.timeline
+            .messages()
+            .chain(self.timeline.pinned_messages())
+            .find(|m| m.id == id)
+            .map(|m| self.shown(m))
+            .filter(|m| !m.is_deleted())
+    }
+
+    pub fn reactor_cache(&self, id: &str) -> Option<&ReactorCache> {
+        self.reactors.get(id)
+    }
+
+    pub fn retry_reactors(&mut self, id: &str) {
+        if let Some(cached) = self.reactors.get_mut(id) {
+            cached.revision.clear();
+        }
+        self.load_reactors(id);
+    }
+
+    /// A pending own reaction may not have an identity in the loaded groups.
+    pub fn reactor_self(&self) -> core::Reactor {
+        core::Reactor {
+            id: self
+                .me
+                .as_ref()
+                .or(self.account_id.as_ref())
+                .cloned()
+                .unwrap_or_default(),
+            username: self.username.clone(),
+            display_name: Some(self.account_name.clone()),
+            avatar_id: self.account_avatar.mascot.map(i32::from),
+            avatar_asset: self.account_avatar.picture.as_ref().map(|p| p.0.clone()),
+            avatar_url: self
+                .account_avatar
+                .picture
+                .as_ref()
+                .and_then(|p| p.1.clone()),
+        }
     }
 
     /// Who reacted to message `id` with `emoji`, as every client words it:
