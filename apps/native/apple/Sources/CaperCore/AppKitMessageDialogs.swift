@@ -87,7 +87,7 @@ import SwiftUI
         preview.sizingOptions = [.intrinsicContentSize]
         setRows([preview, search, destinations, status,
                  composer, error, retry, send])
-        heightAnchor.constraint(equalToConstant: 560).withPriority(.defaultHigh).isActive = true
+        preferHeight(560)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func controlTextDidChange(_ notification: Notification) { state.search = search.stringValue }
@@ -154,7 +154,7 @@ import SwiftUI
         older = AppKitKitButton("Load older replies") { state.older() }
         retry = AppKitKitButton("Retry") { state.load() }
         setRows([count, older, messages, status, error, retry])
-        heightAnchor.constraint(equalToConstant: 560).withPriority(.defaultHigh).isActive = true
+        preferHeight(560)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 

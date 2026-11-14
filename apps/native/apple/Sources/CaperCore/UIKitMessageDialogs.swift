@@ -202,7 +202,9 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
                 let row = Self.button("\(destination.direct ? "" : "# ")\(destination.name)") { [state] in state.toggle(destination.id) }
                 row.configuration?.subtitle = destination.spaceName
                 row.configuration?.imagePlacement = .trailing; row.configuration?.imagePadding = 12
-                row.contentHorizontalAlignment = .leading
+                // Name and space on the left, the checkbox at the trailing edge, as on Mac.
+                row.configuration?.titleAlignment = .leading
+                row.contentHorizontalAlignment = .fill
                 row.accessibilityIdentifier = "forward-destination-\(destination.id)"
                 destinations.addArrangedSubview(row); rows[destination.id] = row
             }

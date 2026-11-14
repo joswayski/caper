@@ -70,6 +70,7 @@ import AppKit
     let observation = AppKitObservation()
     let header: AppKitDialogHeader
     var dismissDisabled: Bool { false }
+    private var fitsContent: NSLayoutConstraint!
 
     init(title: String, detail: String, closeLabel: String, identifier: String, close: @escaping () -> Void) {
         header = AppKitDialogHeader(title: title, detail: detail, closeLabel: closeLabel, close: close)
@@ -85,8 +86,17 @@ import AppKit
             header.topAnchor.constraint(equalTo: topAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: header.bottomAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
-            scroll.heightAnchor.constraint(equalTo: scroll.documentView!.heightAnchor).withPriority(.defaultHigh),
         ])
+        fitsContent = scroll.heightAnchor.constraint(equalTo: scroll.documentView!.heightAnchor).withPriority(.defaultHigh)
+        fitsContent.isActive = true
+    }
+
+    /// Keeps SwiftUI's ideal height whatever the body holds: a short body
+    /// leaves the spare height below its rows instead of stretching the
+    /// header or spacing the rows apart.
+    func preferHeight(_ height: CGFloat) {
+        fitsContent.priority = .init(NSLayoutConstraint.Priority.defaultLow.rawValue - 1)
+        heightAnchor.constraint(equalToConstant: height).withPriority(.defaultHigh).isActive = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
