@@ -251,7 +251,7 @@ fn inside(r: D2D_RECT_F, x: f32, y: f32) -> bool {
 }
 
 /// Whether a tile opens a preview: its local original, or the upload.
-fn previewable(d: &Draft) -> bool {
+pub fn previewable(d: &Draft) -> bool {
     d.upload.local_path.is_some()
         || d.upload
             .attachment
@@ -477,7 +477,7 @@ fn chip(
     Ok(())
 }
 
-fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Result<()> {
+pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Result<()> {
     let u = &d.upload;
     let (cx, cy) = ((t.left + t.right) / 2.0, (t.top + t.bottom) / 2.0);
     fill_round(dc, t, RADIUS, &g.brushes.surface);
@@ -699,7 +699,7 @@ unsafe fn dialog(owner: HWND, picture: bool) -> Result<Vec<PathBuf>> {
 }
 
 /// The files in a drop or a copied file list (folders are skipped).
-fn drop_files(drop: HDROP) -> Vec<PathBuf> {
+pub fn drop_files(drop: HDROP) -> Vec<PathBuf> {
     unsafe {
         let n = DragQueryFileW(drop, u32::MAX, None);
         (0..n)
@@ -1106,9 +1106,13 @@ impl App {
 
     /// Files dropped on the window.
     pub fn dropped(&mut self, drop: HDROP) {
+        let mut point = POINT::default();
+        let client = unsafe { DragQueryPoint(drop, &mut point).as_bool() };
         let files = drop_files(drop);
         unsafe { DragFinish(drop) };
-        self.attach(files.into_iter().map(|p| (p, None)).collect());
+        if client {
+            self.drop_paths(point, files);
+        }
     }
 
     /// Ctrl+V in the composer: copied files or a picture attach; text
@@ -1130,7 +1134,7 @@ impl App {
             return;
         }
         let Some(live) = &mut self.live else { return };
-        self.attach_error = live.add_files(files);
+        self.attach_error = live.add_files(files, None);
         self.drafts_changed();
     }
 
@@ -1139,6 +1143,7 @@ impl App {
     /// one failed or the draft changed).
     pub fn drafts_changed(&mut self) {
         self.thread_tools_changed();
+        self.thread_files_changed();
         if let Some((text, keys)) = &self.send_waiting
             && let Some(live) = &self.live
         {
@@ -1171,7 +1176,7 @@ impl App {
             return false;
         };
         let keys: Vec<u64> = live.open_drafts().iter().map(|d| d.upload.key).collect();
-        if live.send_with_files(text, reply) == Sent::Waiting {
+        if live.send_with_files(text, reply, None) == Sent::Waiting {
             self.send_waiting = Some((self.composer.text.clone(), keys));
             self.drafts_changed();
             return false;

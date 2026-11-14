@@ -23,6 +23,7 @@ mod card;
 mod composer;
 mod custom_links;
 mod directs;
+mod drop_overlay;
 mod embeds;
 mod emoji;
 mod files;
@@ -84,11 +85,10 @@ use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::*;
 use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::*;
-use windows::Win32::System::Ole::CF_UNICODETEXT;
+use windows::Win32::System::Ole::{CF_UNICODETEXT, OleInitialize, OleUninitialize, RevokeDragDrop};
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::Ime::*;
@@ -448,6 +448,8 @@ pub struct App {
     pub thread: Option<thread::Pane>,
     thread_p: Panel,
     thread_box_p: Panel,
+    drop_overlay: Option<drop_overlay::Open>,
+    drop_p: Panel,
     quit: bool,
 }
 
@@ -490,6 +492,7 @@ impl App {
             let lip_p = Panel::new(&g)?;
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
+            let drop_p = Panel::new(&g)?;
             let card_p = Panel::new(&g)?;
             let profile_p = Panel::new(&g)?;
             let suggest_p = Panel::new(&g)?;
@@ -524,6 +527,7 @@ impl App {
                 &thread_p.visual,
                 &thread_box_p.visual,
                 &members.visual,
+                &drop_p.visual,
             ] {
                 root.AddVisual(v, true, &prev)?;
                 prev = v.cast()?;
@@ -681,6 +685,8 @@ impl App {
                 thread: None,
                 thread_p,
                 thread_box_p,
+                drop_overlay: None,
+                drop_p,
                 quit: false,
             })
         }
@@ -1950,10 +1956,10 @@ impl App {
         {
             player.blur();
         }
-        if (self.attachment_editor.is_some() || self.viewer.is_some()) && msg == WM_DROPFILES {
-            unsafe {
-                windows::Win32::UI::Shell::DragFinish(windows::Win32::UI::Shell::HDROP(wp.0 as _));
-            }
+        // Always release the shell's HDROP, including while a modal surface
+        // is open. The shared pane hit test rejects covered destinations.
+        if msg == WM_DROPFILES {
+            self.dropped(windows::Win32::UI::Shell::HDROP(wp.0 as _));
             return Some(LRESULT(0));
         }
         if let Some(r) = self.attachment_editor_input(msg, wp, x, y, ctrl, shift) {
@@ -2064,6 +2070,7 @@ impl App {
                 }
                 invite_people::TIMER_COPIED => self.copied_tick(),
                 TIMER_MEDIA => self.next_gif_frame(),
+                drop_overlay::TIMER_DROP => self.need = true,
                 thread::TIMER_MEDIA => self.thread_media_tick(),
                 pins::TIMER_PINS => self.pins_tick(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
@@ -2305,9 +2312,6 @@ impl App {
                     self.set_sel(None);
                     open_link(&href);
                 }
-            }
-            WM_DROPFILES => {
-                self.dropped(windows::Win32::UI::Shell::HDROP(wp.0 as _));
             }
             WM_MOUSEWHEEL => {
                 let delta = ((wp.0 >> 16) & 0xffff) as i16 as f64;
@@ -4015,6 +4019,7 @@ impl App {
         }
         self.draw_zoom()?;
         if self.signin.is_some() {
+            self.close_drop();
             // The sign-in screen covers everything; the rest waits until it closes.
             self.draw_signin()?;
             unsafe { self.g.dcomp.Commit()? };
@@ -4041,6 +4046,7 @@ impl App {
         self.draw_suggest()?;
         self.draw_tip()?;
         self.draw_panels()?;
+        self.draw_drop()?;
         unsafe { self.g.dcomp.Commit()? };
         self.place_web_player();
         if let Some(live) = &mut self.live {
@@ -4153,6 +4159,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 return LRESULT(0);
             }
             WM_DESTROY => {
+                let _ = RevokeDragDrop(hwnd);
                 // The player's child window goes with ours.
                 with_app(|a| a.web_player = None);
                 let _ = UiaReturnRawElementProvider(hwnd, WPARAM(0), LPARAM(0), None);
@@ -4383,7 +4390,8 @@ fn main() -> Result<()> {
     }
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        // OLE's STA initialization is required by RegisterDragDrop.
+        OleInitialize(None)?;
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
             style: CS_DBLCLKS,
@@ -4421,6 +4429,10 @@ fn main() -> Result<()> {
         let active = bench.active();
         let app = App::new(hwnd, Gfx::new()?, Conversation::demo(messages), bench)?;
         APP.with(|a| *a.borrow_mut() = Some(app));
+        if let Err(e) = drop_overlay::register(hwnd) {
+            // WM_DROPFILES remains available if OLE registration fails.
+            eprintln!("file drag feedback unavailable: {e:?}");
+        }
         with_app(|a| {
             a.live = live::start(hwnd);
             if a.live.is_some() {
@@ -4463,6 +4475,8 @@ fn main() -> Result<()> {
             let mut msg = MSG::default();
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
+                    APP.with(|a| drop(a.borrow_mut().take()));
+                    OleUninitialize();
                     return Ok(());
                 }
                 let _ = TranslateMessage(&msg);

@@ -104,6 +104,7 @@ pub enum Part {
     Emoji,
     /// The link card's Remove: reply without previews.
     RemovePreview,
+    Upload(crate::uploads::Part),
     Send,
 }
 
@@ -132,6 +133,9 @@ pub struct Pane {
     pub scroll: f32,
     pub at_end: bool,
     pub composer: Composer,
+    has_files: bool,
+    pub attach_error: Option<String>,
+    send_waiting: Option<(Vec<u16>, Vec<u64>)>,
     /// The quote belongs to this thread, never the channel composer.
     pub reply: Option<ReplyBar>,
     selecting: bool,
@@ -192,6 +196,9 @@ impl Pane {
             scroll: 0.0,
             at_end: true,
             composer: Composer::formatted(),
+            has_files: false,
+            attach_error: None,
+            send_waiting: None,
             reply: None,
             selecting: false,
             selection: None,
@@ -369,9 +376,10 @@ impl Pane {
 
     fn can_send(&self) -> bool {
         !self.loading
-            && !String::from_utf16_lossy(&self.composer.text)
-                .trim()
-                .is_empty()
+            && (self.has_files
+                || !String::from_utf16_lossy(&self.composer.text)
+                    .trim()
+                    .is_empty())
     }
 
     fn reply_h(&self) -> f32 {
@@ -925,6 +933,12 @@ impl App {
                 Some((x0 + PAD, y, CHECK + 7.0 + t.check_w, CHECK_H))
             }
             Part::Field => self.thread_box_rect(),
+            Part::Upload(p) => {
+                let (bx, by, _, _) = self.thread_box_rect()?;
+                let (_, tiles, top, _) = self.thread_uploads();
+                let r = crate::uploads::part_rect(&tiles, top, p)?;
+                Some((bx + r.left, by + r.top, r.right - r.left, r.bottom - r.top))
+            }
             Part::Format(style) => {
                 let (bx, by, _, _) = self.thread_box_rect()?;
                 let (x, y, w, h) = t.composer.format_rect(style)?;
@@ -1011,6 +1025,17 @@ impl App {
         out.extend([Part::Broadcast, Part::Field]);
         if t.composer.format_height() > 0.0 {
             out.extend(composer::Style::ALL.map(Part::Format));
+        }
+        for (i, d) in self.thread_uploads().0.iter().enumerate() {
+            use crate::uploads::Part as U;
+            // Hit-test the small controls before the preview covering the tile.
+            out.extend([Part::Upload(U::Remove(i)), Part::Upload(U::Spoiler(i))]);
+            if d.upload.error.is_some() {
+                out.push(Part::Upload(U::Retry(i)));
+            }
+            if crate::uploads::previewable(d) {
+                out.push(Part::Upload(U::Open(i)));
+            }
         }
         if t.gif {
             out.push(Part::Gif);
@@ -1148,6 +1173,25 @@ impl App {
             }),
             Part::CancelReply => "Cancel reply".into(),
             Part::Field => "Reply to thread".into(),
+            Part::Upload(p) => {
+                use crate::uploads::Part as U;
+                let i = match p {
+                    U::Open(i) | U::Remove(i) | U::Retry(i) | U::Spoiler(i) => i,
+                    _ => return String::new(),
+                };
+                let drafts = self.thread_uploads().0;
+                let Some(d) = drafts.get(i) else {
+                    return String::new();
+                };
+                let action = match p {
+                    U::Open(_) => "Preview",
+                    U::Remove(_) => "Remove",
+                    U::Retry(_) => "Retry uploading",
+                    _ if d.upload.spoiler => "Remove spoiler from",
+                    _ => "Mark as spoiler:",
+                };
+                format!("{action} {}", d.upload.name)
+            }
             Part::Format(style) => style.name().into(),
             Part::Gif => "Send a GIF".into(),
             Part::Emoji => "Insert emoji".into(),
@@ -1261,6 +1305,8 @@ impl App {
             self.thread_layout_changed();
             // The new thread's reply box is empty: its link card starts over.
             self.preview_tick();
+            // Its files may have kept uploading while another thread was open.
+            self.thread_box_changed();
         }
         let vh = self.thread_vh();
         if let Some(p) = &mut self.thread {
@@ -1270,6 +1316,13 @@ impl App {
             && let Some(p) = &mut self.thread
         {
             p.scroll_to(&id, vh);
+        }
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|t| !t.loading && t.send_waiting.is_some())
+        {
+            self.thread_files_changed();
         }
         self.dirty.thread = true;
         self.events |= EV_SCREEN;
@@ -1439,8 +1492,85 @@ impl App {
         }
     }
 
+    fn thread_uploads(
+        &self,
+    ) -> (
+        Vec<&crate::uploads::Draft>,
+        Vec<windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F>,
+        f32,
+        Option<String>,
+    ) {
+        let Some(t) = &self.thread else {
+            return (Vec::new(), Vec::new(), 0.0, None);
+        };
+        let drafts = self
+            .live
+            .as_ref()
+            .map_or_else(Vec::new, |l| l.composer_drafts(Some(&t.root)));
+        let failed = drafts.iter().filter(|d| d.upload.error.is_some()).count();
+        let notice = caper_client::drafts::failed_notice(failed)
+            .or_else(|| t.attach_error.clone())
+            .or_else(|| {
+                t.send_waiting
+                    .as_ref()
+                    .map(|_| crate::uploads::UPLOAD_WAIT.into())
+            });
+        let (mut tiles, mut top) =
+            crate::uploads::strip(&vec![false; drafts.len()], box_w(), false);
+        let bar = t.composer.format_height();
+        for tile in &mut tiles {
+            tile.top += bar;
+            tile.bottom += bar;
+        }
+        top += bar;
+        if let Some(notice) = &notice {
+            top += 6.0
+                + self
+                    .g
+                    .layout(
+                        &gfx::wide(notice),
+                        &self.g.formats.file_detail,
+                        box_w() - 2.0 * composer::PAD,
+                    )
+                    .map_or(18.0, |l| gfx::metrics(&l).height);
+        }
+        (drafts, tiles, top, notice)
+    }
+
+    /// Upload events only complete the pending send for this exact draft.
+    pub fn thread_files_changed(&mut self) {
+        let mut send = false;
+        if let (Some(t), Some(live)) = (&mut self.thread, &self.live)
+            && let Some((text, keys)) = &t.send_waiting
+        {
+            let drafts = live.composer_drafts(Some(&t.root));
+            let now: Vec<_> = drafts.iter().map(|d| d.upload.key).collect();
+            if *text != t.composer.text
+                || *keys != now
+                || drafts.iter().any(|d| d.upload.error.is_some())
+            {
+                t.send_waiting = None;
+            } else {
+                send = drafts
+                    .iter()
+                    .all(|d| !d.upload.uploading && !d.upload.needs_upload());
+            }
+        }
+        self.thread_box_changed();
+        if send {
+            self.send_thread_reply();
+        }
+    }
+
     /// After an edit or caret move in the reply box.
     pub fn thread_composer_changed(&mut self) {
+        if let Some(t) = &mut self.thread
+            && t.send_waiting
+                .as_ref()
+                .is_some_and(|(text, _)| *text != t.composer.text)
+        {
+            t.send_waiting = None;
+        }
         // The reply's link card follows its text (and lays the box out
         // itself when the card changed).
         self.preview_tick();
@@ -1450,6 +1580,8 @@ impl App {
     /// Lays the reply box out again: its text, format buttons and link card.
     pub fn thread_box_changed(&mut self) {
         let gif = self.gif_shown();
+        let (files, _, top, _) = self.thread_uploads();
+        let has_files = !files.is_empty();
         let card = if self.thread_preview_card().is_some() {
             crate::preview::PREVIEW_H
         } else {
@@ -1461,7 +1593,8 @@ impl App {
         };
         t.composer.caret_on = true;
         t.gif = gif;
-        t.composer.inset.1 = t.composer.format_height();
+        t.has_files = has_files;
+        t.composer.inset.1 = top;
         t.composer.inset_bottom = card;
         if let Ok(h) = t.composer.relayout(g, text_w(gif)) {
             let h = h.max(BOX_MIN) + t.composer.inset.1 + card;
@@ -1497,18 +1630,66 @@ impl App {
             .to_string();
         let (root, broadcast) = (t.root.clone(), t.broadcast);
         let reply = t.reply.as_ref().map(|r| r.target.id.clone());
+        let Some(live) = &mut self.live else { return };
+        let keys = live
+            .composer_drafts(Some(&root))
+            .iter()
+            .map(|d| d.upload.key)
+            .collect();
+        if live.send_with_files(text, reply, Some((root, broadcast))) == live::Sent::Waiting {
+            t.send_waiting = Some((t.composer.text.clone(), keys));
+            self.thread_box_changed();
+            return;
+        }
+        t.send_waiting = None;
+        t.attach_error = None;
         t.composer.set_text(Vec::new());
         t.broadcast = false;
         t.at_end = true;
-        if let Some(live) = &self.live {
-            live.send(text, reply, Some((root, broadcast)));
-        }
         self.cancel_thread_reply();
         self.thread_composer_changed();
     }
 
     pub fn thread_activate(&mut self, part: Part) {
         match part {
+            Part::Upload(p) => {
+                use crate::uploads::Part as U;
+                let i = match p {
+                    U::Open(i) | U::Remove(i) | U::Retry(i) | U::Spoiler(i) => i,
+                    _ => return,
+                };
+                let drafts = self.thread_uploads().0;
+                let Some(d) = drafts.get(i) else { return };
+                let key = d.upload.key;
+                let open = d
+                    .upload
+                    .local_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .or_else(|| d.upload.attachment.as_ref().and_then(|a| a.url.clone()));
+                if matches!(p, U::Open(_)) {
+                    if !self.open_attachment_editor(key)
+                        && let Some(target) = open
+                    {
+                        crate::open_link(&target);
+                    }
+                    return;
+                }
+                if let Some(live) = &mut self.live {
+                    match p {
+                        U::Remove(_) => {
+                            live.remove_draft(key);
+                        }
+                        U::Retry(_) => live.retry_draft(key),
+                        U::Spoiler(_) => live.toggle_spoiler(key),
+                        _ => {}
+                    }
+                }
+                if let Some(t) = &mut self.thread {
+                    t.attach_error = None;
+                }
+                self.drafts_changed();
+            }
             Part::Tool(i, tool) => {
                 let Some(state) = self
                     .thread_tools(i)
@@ -2016,6 +2197,7 @@ impl App {
         self.thread_box_p
             .offset((bx * s).round(), (by * s).round())?;
         if fresh || std::mem::take(&mut self.dirty.thread_box) {
+            let (drafts, tiles, top, notice) = self.thread_uploads();
             let placeholder = "Reply to thread\u{2026}";
             // Lit while its picker is open, as the channel's.
             let open = self
@@ -2026,6 +2208,27 @@ impl App {
             let emoji = self.emoji_open_for(Some(t.root.as_str())) || t.hover == Some(Part::Emoji);
             self.thread_box_p.draw(s, |dc| {
                 t.composer.draw(g, dc, bw, bh, placeholder)?;
+                for (draft, tile) in drafts.iter().zip(&tiles) {
+                    crate::uploads::tile(g, dc, draft, *tile)?;
+                }
+                if let Some(notice) = &notice {
+                    let l = g.layout(
+                        &gfx::wide(notice),
+                        &g.formats.file_detail,
+                        bw - 2.0 * composer::PAD,
+                    )?;
+                    crate::text::draw(
+                        dc,
+                        &l,
+                        composer::PAD,
+                        top - gfx::metrics(&l).height,
+                        if notice == crate::uploads::UPLOAD_WAIT {
+                            &g.brushes.muted
+                        } else {
+                            &g.brushes.error
+                        },
+                    );
+                }
                 if t.gif {
                     let (x, y, w, h) = gif_local();
                     let y = y + t.composer.inset.1;

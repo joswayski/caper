@@ -1284,6 +1284,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Format(crate::composer::Style::Spoiler) => (22, 13),
             TPart::Reply => (22, 14),
             TPart::CancelReply => (22, 15),
+            TPart::Upload(p) => (93, runtime_id(Id::BoxPart(p))[2] as usize),
             TPart::Row(i) => (23, i),
             TPart::Tool(i, tool) => (
                 91,
@@ -3101,6 +3102,7 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
             TPart::Close
             | TPart::Add(_)
             | TPart::Tool(..)
+            | TPart::Upload(_)
             | TPart::Format(_)
             | TPart::Gif
             | TPart::Emoji

@@ -1996,6 +1996,18 @@ impl Live {
             .collect()
     }
 
+    /// Manual-send files belong to exactly one channel or thread composer.
+    pub fn composer_drafts(&self, root: Option<&str>) -> Vec<&crate::uploads::Draft> {
+        self.drafts
+            .iter()
+            .filter(|d| {
+                Some(d.upload.channel.as_str()) == self.channel.as_deref()
+                    && d.upload.thread_root_id.as_deref() == root
+                    && d.auto_send.is_none()
+            })
+            .collect()
+    }
+
     /// Stages picked, dropped or pasted files in the open channel's
     /// composer and starts uploading them; at most ten. Returns the
     /// error to show when some (or all) did not fit.
@@ -2005,6 +2017,7 @@ impl Live {
             std::path::PathBuf,
             Option<Arc<caper_client::uploads::Scratch>>,
         )>,
+        root: Option<&str>,
     ) -> Option<String> {
         if files.is_empty() {
             return None;
@@ -2016,7 +2029,7 @@ impl Live {
         ) else {
             return Some(self.attach_unavailable().into());
         };
-        let used = self.open_drafts().len();
+        let used = self.composer_drafts(root).len();
         let room = caper_client::uploads::MAX_ATTACHMENTS.saturating_sub(used);
         if room == 0 {
             return Some(caper_client::drafts::room_error(0));
@@ -2033,7 +2046,7 @@ impl Live {
             let mut upload = caper_client::drafts::Upload::picked(
                 self.draft_keys,
                 channel.clone(),
-                None,
+                root.map(str::to_owned),
                 name,
                 Some(path),
             );
@@ -2316,8 +2329,18 @@ impl Live {
     /// Sends `text` with the open channel's composer files once they are
     /// all uploaded: failed or expired ones start again and the send waits
     /// (`Sent::Waiting`). Sent files leave the composer.
-    pub fn send_with_files(&mut self, text: String, reply_to: Option<String>) -> Sent {
-        let keys: Vec<u64> = self.open_drafts().iter().map(|d| d.upload.key).collect();
+    pub fn send_with_files(
+        &mut self,
+        text: String,
+        reply_to: Option<String>,
+        thread: Option<(String, bool)>,
+    ) -> Sent {
+        let root = thread.as_ref().map(|(root, _)| root.as_str());
+        let keys: Vec<u64> = self
+            .composer_drafts(root)
+            .iter()
+            .map(|d| d.upload.key)
+            .collect();
         if self
             .edit_upload
             .as_ref()
@@ -2329,7 +2352,7 @@ impl Live {
             self.retry_draft(*key);
         }
         if self
-            .open_drafts()
+            .composer_drafts(root)
             .iter()
             .any(|d| d.upload.uploading || d.upload.needs_upload())
         {
@@ -2339,12 +2362,16 @@ impl Live {
             return Sent::Waiting;
         };
         let files: Vec<_> = self
-            .open_drafts()
+            .composer_drafts(root)
             .iter()
             .filter_map(|d| d.upload.send_attachment())
             .collect();
         // A removed card sends the message without previews.
-        let suppress_embeds = self.preview.removed(&text);
+        let suppress_embeds = if thread.is_some() {
+            self.thread_preview.removed(&text)
+        } else {
+            self.preview.removed(&text)
+        };
         self.worker.send(Command::Send {
             generation: self.generation,
             token: self.token.clone(),
@@ -2352,8 +2379,8 @@ impl Live {
             channel: channel.clone(),
             client_id: uuid::Uuid::new_v4().to_string(),
             text,
-            broadcast: false,
-            thread_root_id: None,
+            broadcast: thread.as_ref().is_some_and(|(_, broadcast)| *broadcast),
+            thread_root_id: thread.map(|(root, _)| root),
             reply_to_id: reply_to,
             spoiler_attachment_ids: files
                 .iter()
@@ -6040,6 +6067,117 @@ pub fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_files_have_independent_limits_and_send_without_consuming_other_drafts() {
+        let api = Api::new("http://127.0.0.1:9").unwrap();
+        let host = WinHost {
+            hwnd: 0,
+            requests: Arc::default(),
+        };
+        let voice = Voice::new(
+            api.base().clone(),
+            caper_client::voice::Repaint::new(|_| {}),
+        );
+        let mut live = Live::fresh(
+            Worker::new(api, host.clone()),
+            caper_client::media::Media::new(None, Arc::new(|| {})),
+            Arc::default(),
+            host,
+            1,
+            voice,
+            crate::settings::preferences::Preferences::load(None),
+        );
+        live.token = Some("fixture-token".into());
+        live.channel = Some("channel".into());
+        live.chat_token = Some("fixture-chat".into());
+        live.uploads = Some(Default::default());
+        for key in 1..=10 {
+            live.drafts.push(crate::uploads::Draft::new(
+                caper_client::drafts::Upload::picked(
+                    key,
+                    "channel".into(),
+                    None,
+                    format!("channel-{key}.txt"),
+                    None,
+                ),
+            ));
+        }
+        for (key, channel, root) in [
+            (11, "channel", "root-a"),
+            (12, "channel", "root-b"),
+            (13, "other-channel", "root-a"),
+        ] {
+            live.drafts.push(crate::uploads::Draft::new(
+                caper_client::drafts::Upload::picked(
+                    key,
+                    channel.into(),
+                    Some(root.into()),
+                    format!("thread-{key}.txt"),
+                    None,
+                ),
+            ));
+        }
+        live.draft_keys = 20;
+        assert_eq!(live.composer_drafts(None).len(), 10);
+        assert_eq!(live.composer_drafts(Some("root-a")).len(), 1);
+        assert_eq!(
+            live.add_files(vec![("next.txt".into(), None)], Some("root-a")),
+            None
+        );
+        assert!(
+            live.add_files(vec![("full.txt".into(), None)], None)
+                .is_some()
+        );
+        assert_eq!(
+            live.send_with_files(
+                String::new(),
+                Some("quote".into()),
+                Some(("root-a".into(), true))
+            ),
+            Sent::Waiting
+        );
+        for d in &mut live.drafts {
+            if d.upload.channel == "channel" && d.upload.thread_root_id.as_deref() == Some("root-a")
+            {
+                let attachment = core::Attachment {
+                    id: format!("asset-{}", d.upload.key),
+                    kind: core::AttachmentKind::File,
+                    content_type: "text/plain".into(),
+                    name: d.upload.name.clone(),
+                    size: 1,
+                    spoiler: false,
+                    width: None,
+                    height: None,
+                    duration_ms: None,
+                    preview: false,
+                    url: None,
+                    preview_url: None,
+                    unavailable: false,
+                    status: core::AttachmentStatus::Ready,
+                    animated: false,
+                    voice: false,
+                    waveform: None,
+                    transcript: None,
+                };
+                d.upload
+                    .apply(caper_client::worker::UploadUpdate::Finished(Ok(attachment)));
+            }
+        }
+        assert_eq!(
+            live.send_with_files(
+                String::new(),
+                Some("quote".into()),
+                Some(("root-a".into(), true))
+            ),
+            Sent::Sent
+        );
+        assert!(live.composer_drafts(Some("root-a")).is_empty());
+        assert_eq!(live.composer_drafts(None).len(), 10);
+        assert_eq!(live.composer_drafts(Some("root-b"))[0].upload.key, 12);
+        live.channel = Some("other-channel".into());
+        assert_eq!(live.composer_drafts(Some("root-a"))[0].upload.key, 13);
+    }
 
     #[test]
     fn voice_faces_levels_badges_and_playback_follow_the_current_account_and_call() {
