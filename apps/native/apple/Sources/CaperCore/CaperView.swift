@@ -7690,7 +7690,9 @@ struct MessageActionsSheet: View {
             if let emoji = reactionsRequested { viewReactions?(emoji) }
         }
         .presentationDragIndicator(.visible)
-        .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false; dismiss() } }
+        .sheet(isPresented: $editing) {
+            UIKitMessageDialogSheet(UIKitMessageEditor(chat: chat, message: message) { editing = false; dismiss() })
+        }
         .sheet(isPresented: $history) { MessageHistoryView(chat: chat, message: message) { history = false } }
         .alert(MessageDeletion.confirmTitle, isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {

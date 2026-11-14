@@ -75,6 +75,70 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    @MainActor
+    func testNativeForwardDialogKeepsAmbiguousIntentAndDoesNotResendConfirmedDestinations() async throws {
+        let source = ChatMessage(id: "Message00000001", channelId: "Source000001", seq: "1",
+            author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+            content: ChatContent(version: 1, type: "text", text: "Original"), createdAt: "now", clientMessageId: "source")
+        for failure in [503, 403] {
+            // The service stores an ambiguous delivery but loses its answer.
+            // A definite rejection stores nothing and permits a new intent.
+            var delivered: [String: [String]] = [:]
+            var failed = false
+            var closed = false
+            MockURLProtocol.handler = { request in
+                switch request.url?.path {
+                case "/api/chat/forward-destinations":
+                    return (200, Data(#"{"destinations":[{"id":"Channel00002","name":"design","spaceName":"Zeta","direct":false},{"id":"Channel00001","name":"general","spaceName":"Alpha","direct":false}]}"#.utf8))
+                case "/api/chat/session":
+                    return (200, Data(#"{"token":"chat-secret","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+                case "/api/chat/channels/Channel00001/forwards", "/api/chat/channels/Channel00002/forwards":
+                    let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: String])
+                    let id = try XCTUnwrap(request.url?.pathComponents.dropLast().last)
+                    let key = try XCTUnwrap(body["clientMessageId"])
+                    let text = try XCTUnwrap(body["text"])
+                    XCTAssertEqual(body["sourceMessageId"], source.id)
+                    let failing = id == "Channel00002" && !failed
+                    if !failing || failure == 503 { delivered[key] = [id, text] }
+                    if failing { failed = true; return (failure, Data(#"{"error":"Try again"}"#.utf8)) }
+                    var forward = ChatMessage(id: "Forward00000001", channelId: id, seq: "1",
+                        author: ChatAuthor(id: "me", name: "Me", isGuest: false),
+                        content: ChatContent(version: 1, type: "text", text: text), createdAt: "now", clientMessageId: key)
+                    forward.forward = MessageForward(message: source, seq: "1")
+                    return (200, try JSONEncoder().encode(forward))
+                default: throw URLError(.badURL)
+                }
+            }
+            let chat = ChatModel(api: client())
+            let dialog = NativeForwardPicker(chat: chat, message: source) { closed = true }
+            dialog.load()
+            await waitUntil { dialog.destinations != nil }
+            XCTAssertEqual(dialog.visible.map(\.id), ["Channel00001", "Channel00002"])
+            dialog.toggle("Channel00001"); dialog.toggle("Channel00002")
+            dialog.search = "#DESIGN zeta"
+            XCTAssertEqual(dialog.visible.map(\.id), ["Channel00002"])
+            XCTAssertEqual(dialog.selected.count, 2, "Filtering must not drop a selection")
+            dialog.note = String(repeating: "e\u{301}", count: 2001)
+            XCTAssertFalse(dialog.canSend, "The limit is scalars, not graphemes")
+            dialog.note = String(repeating: "e\u{301}", count: 2000)
+            XCTAssertTrue(dialog.canSend)
+            dialog.note = "  First note\n"
+            dialog.send()
+            await waitUntil { !dialog.sending }
+            XCTAssertFalse(closed)
+            XCTAssertEqual(dialog.selected, Set(["Channel00002"]))
+            XCTAssertTrue(dialog.error?.contains("Forwarded to 1 destination.") == true)
+            XCTAssertEqual(dialog.editable, failure == 403)
+            if failure == 403 { dialog.note = "Second note" }
+            dialog.send()
+            await waitUntil { closed }
+            XCTAssertEqual(delivered.count, 2, "Retry must not duplicate either a confirmed or ambiguously accepted forward")
+            XCTAssertEqual(delivered.values.filter { $0[0] == "Channel00001" }, [["Channel00001", "First note"]])
+            XCTAssertEqual(delivered.values.filter { $0[0] == "Channel00002" }, [["Channel00002", failure == 403 ? "Second note" : "First note"]])
+            dialog.stop(); await chat.stop()
+        }
+    }
+
     func testActivityInboxEncodesCursorAndAcknowledgesOnlyExplicitIDs() async throws {
         let api = client()
         var requests = 0

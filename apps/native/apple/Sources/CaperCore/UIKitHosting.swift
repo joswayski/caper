@@ -977,8 +977,12 @@ public struct UIKitPresentationHost: View {
                 ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: viewerID)
             }
             .sheet(item: $state.actions) { message in actionsSheet(message) }
-            .sheet(item: forwards) { message in ForwardPickerView(chat: chat, message: message) }
-            .sheet(item: forwardConversations) { message in ForwardConversationView(chat: chat, messageID: message.id) }
+            .sheet(item: forwards) { message in
+                UIKitMessageDialogSheet(UIKitForwardPicker(chat: chat, message: message) { chat.forwardTarget = nil })
+            }
+            .sheet(item: forwardConversations) { message in
+                UIKitMessageDialogSheet(UIKitForwardConversation(chat: chat, messageID: message.id) { chat.forwardConversationTarget = nil })
+            }
             .modifier(BlockConfirmation(target: $state.block) { target in
                 do { try await model.block(target) } catch { chat.error = FriendlyError.message(for: error) }
             })
