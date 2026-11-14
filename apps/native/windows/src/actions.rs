@@ -527,6 +527,7 @@ impl App {
     pub fn bar_row(&self) -> Option<usize> {
         self.menu
             .as_ref()
+            .filter(|m| !m.in_thread)
             .map(|m| m.row)
             .or_else(|| {
                 let row = self.picker.as_ref()?.row;
@@ -1061,7 +1062,11 @@ impl App {
         let key = self.bar_row().map(|i| BarKey {
             tools: self.tools(i),
             hover: self.tool_hover,
-            open: if self.menu.as_ref().is_some_and(|m| m.row == i) {
+            open: if self
+                .menu
+                .as_ref()
+                .is_some_and(|m| !m.in_thread && m.row == i)
+            {
                 Some(Tool::More)
             } else if self.picker.as_ref().is_some_and(|p| p.row == i) {
                 Some(Tool::Emoji)

@@ -130,6 +130,8 @@ pub struct Menu {
     pub items: Vec<Item>,
     /// "Message actions", or "Link" for a link's menu.
     pub title: &'static str,
+    /// Opened on a thread reply: `row` is the thread pane's.
+    pub in_thread: bool,
     /// What Copy selected text and the link items act on.
     pub selection: Vec<u16>,
     pub link: String,
@@ -169,6 +171,7 @@ impl Menu {
             id,
             items,
             title: "Message actions",
+            in_thread: false,
             selection: Vec::new(),
             link: String::new(),
             image: None,
@@ -1473,12 +1476,24 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 impl App {
     /// Opens row `i`'s actions menu under its toolbar.
     pub fn open_menu(&mut self, i: usize) {
-        let Some(live) = &self.live else { return };
-        let Some(m) = self.c.messages.get(i).and_then(|r| live.message(&r.id)) else {
+        let Some(row) = self.c.messages.get(i) else {
             return;
         };
+        let Some((id, items)) = self.message_items(&row.id, row.pinned_by.is_some(), true) else {
+            return;
+        };
+        let (tx, ty, tw, th) = self.bar_rect_for(i);
+        self.close_picker();
+        self.menu = Some(Menu::new(i, id, items, tx + tw, ty, ty + th, self.h));
+        self.overlay_changed();
+    }
+
+    /// Message `id`'s actions in egui's order; `reply` offers Reply.
+    fn message_items(&self, id: &str, pinned: bool, reply: bool) -> Option<(String, Vec<Item>)> {
+        let live = self.live.as_ref()?;
+        let m = live.message(id)?;
         let mut items = Vec::new();
-        if live.can_react() && !m.is_deleted() {
+        if reply && live.can_react() && !m.is_deleted() {
             items.push(Item::Reply);
         }
         if live.can_edit(&m) {
@@ -1491,7 +1506,7 @@ impl App {
         if live.can_pin(&m) {
             items.push(if live.pin_pending(&m.id) {
                 Item::PinSaving
-            } else if self.c.messages[i].pinned_by.is_some() {
+            } else if pinned {
                 Item::Unpin
             } else {
                 Item::Pin
@@ -1504,9 +1519,32 @@ impl App {
         if live.can_delete(&m) {
             items.push(Item::Delete);
         }
-        let (tx, ty, tw, th) = self.bar_rect_for(i);
+        Some((m.id, items))
+    }
+
+    /// A right-click at (x, y) on thread reply `i`: a link's menu on a
+    /// link, otherwise the reply's actions at the pointer. Thread replies
+    /// can't quote one another, so there is no Reply.
+    pub fn open_thread_context_menu(&mut self, i: usize, x: f32, y: f32) {
+        let Some(row) = self.thread.as_ref().and_then(|t| t.c.messages.get(i)) else {
+            return;
+        };
+        let (id, pinned) = (row.id.clone(), row.pinned_by.is_some());
+        let mut menu = if let Some((_, link)) = self.thread_text_link_at(x, y) {
+            let mut menu = Menu::new(i, id, vec![Item::OpenLink, Item::CopyLink], x, y, y, self.h);
+            menu.title = "Link";
+            menu.link = link;
+            menu
+        } else {
+            let Some((id, items)) = self.message_items(&id, pinned, false) else {
+                return;
+            };
+            Menu::new(i, id, items, x, y, y, self.h)
+        };
+        menu.in_thread = true;
+        menu.place_at(x, y, self.w, self.h);
         self.close_picker();
-        self.menu = Some(Menu::new(i, m.id, items, tx + tw, ty, ty + th, self.h));
+        self.menu = Some(menu);
         self.overlay_changed();
     }
 

@@ -770,6 +770,25 @@ impl App {
         }
     }
 
+    /// The thread row and the address of the message link under client point
+    /// (x, y).
+    pub fn thread_text_link_at(&self, x: f32, y: f32) -> Option<(usize, String)> {
+        let Some(Part::Row(i)) = self.thread_hit(x, y) else {
+            return None;
+        };
+        let row = self.thread.as_ref()?.rows.row(i)?;
+        let (ox, oy) = self.thread_row_text_origin(i);
+        if !gfx::on_text(&row.text, x - ox, y - oy) {
+            return None;
+        }
+        let p = gfx::hit_point(&row.text, x - ox, y - oy);
+        let href = row
+            .links
+            .iter()
+            .find_map(|(s, l, href)| (p >= *s && p < s + l).then(|| href.clone()))?;
+        Some((i, href))
+    }
+
     /// Client position of thread row `i`'s message text origin.
     pub fn thread_row_text_origin(&self, i: usize) -> (f32, f32) {
         let Some(t) = &self.thread else {
@@ -1129,6 +1148,10 @@ impl App {
             }
             WM_LBUTTONDOWN if self.in_thread(x, y) => {
                 match self.thread_hit(x, y) {
+                    Some(Part::Row(_)) if let Some((_, href)) = self.thread_text_link_at(x, y) => {
+                        self.set_thread_focus(false);
+                        crate::open_link(&href);
+                    }
                     Some(Part::Row(_))
                         if let Some((id, entry, author)) = self.thread_person_at(x, y) =>
                     {
@@ -1192,7 +1215,12 @@ impl App {
                 let (px, py) = self.pointer?;
                 let cursor = match self.thread_hit(px, py) {
                     Some(Part::Field) => IDC_IBEAM,
-                    Some(Part::Row(_)) if self.thread_person_at(px, py).is_some() => IDC_HAND,
+                    Some(Part::Row(_))
+                        if self.thread_person_at(px, py).is_some()
+                            || self.thread_text_link_at(px, py).is_some() =>
+                    {
+                        IDC_HAND
+                    }
                     Some(Part::Row(_)) | None => IDC_ARROW,
                     Some(_) => IDC_HAND,
                 };

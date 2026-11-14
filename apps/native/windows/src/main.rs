@@ -2006,6 +2006,10 @@ impl App {
                     && i < self.c.messages.len()
                 {
                     self.open_context_menu(i, x, y);
+                } else if self.in_thread(x, y)
+                    && let Some(thread::Part::Row(i)) = self.thread_hit(x, y)
+                {
+                    self.open_thread_context_menu(i, x, y);
                 }
             }
             WM_LBUTTONDBLCLK if self.in_history(x, y) => {
