@@ -55,6 +55,7 @@ mod links;
 mod list;
 mod live;
 mod model;
+mod pins;
 mod signin;
 mod text;
 mod theme;
@@ -166,6 +167,8 @@ struct Dirty {
     tip: bool,
     /// The row naming who is typing, above the composer.
     typing: bool,
+    /// The Pins dialog.
+    pins: bool,
 }
 
 impl Dirty {
@@ -192,6 +195,7 @@ impl Dirty {
             suggest: true,
             tip: true,
             typing: true,
+            pins: true,
         }
     }
 }
@@ -299,6 +303,11 @@ pub struct App {
     /// pointer is over the toggle.
     pub members_hidden: bool,
     members_toggle_hover: bool,
+    /// The open Pins dialog, its panel, and whether the header's Pins
+    /// button is hovered.
+    pub pins: Option<pins::Pins>,
+    pins_p: Panel,
+    pins_hover: bool,
     /// Self-updates, the version "Update available" offers, and whether
     /// it is hovered (`updates`).
     pub updates: caper_client::updates::Updates,
@@ -453,6 +462,7 @@ impl App {
             let menu_p = Panel::new(&g)?;
             let dialog_p = Panel::new(&g)?;
             let viewer_p = Panel::new(&g)?;
+            let pins_p = Panel::new(&g)?;
             let picker_p = Panel::new(&g)?;
             let gifs_p = Panel::new(&g)?;
             let empty_p = Panel::new(&g)?;
@@ -507,7 +517,8 @@ impl App {
             root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&dm_menu_p.visual, true, &gifs_p.visual)?;
             root.AddVisual(&dialog_p.visual, true, &dm_menu_p.visual)?;
-            root.AddVisual(&viewer_p.visual, true, &dialog_p.visual)?;
+            root.AddVisual(&pins_p.visual, true, &dialog_p.visual)?;
+            root.AddVisual(&viewer_p.visual, true, &pins_p.visual)?;
             root.AddVisual(&settings_p.visual, true, &viewer_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &settings_p.visual)?;
             root.AddVisual(&tip_p.visual, true, &signin_p.visual)?;
@@ -561,6 +572,9 @@ impl App {
                 gear_hover: false,
                 members_hidden: false,
                 members_toggle_hover: false,
+                pins: None,
+                pins_p,
+                pins_hover: false,
                 updates: caper_client::updates::Updates::start(|| {}, false),
                 update_dock: None,
                 update_dock_hover: false,
@@ -733,6 +747,7 @@ impl App {
                 live::Update::SignedOut(warning) => {
                     avatars::clear();
                     self.close_viewer();
+                    self.close_pins();
                     self.stop_web_player();
                     if let Some(s) = &mut self.signin {
                         s.restoring = false;
@@ -773,9 +788,10 @@ impl App {
                             self.drafts.insert(old, text);
                         }
                     }
-                    // A reply belongs to the channel it was started in.
+                    // A reply and Pins belong to the channel they were opened in.
                     if self.ids.open != ids.open {
                         self.reply = None;
+                        self.close_pins();
                     }
                     self.ids = ids;
                     self.status = None;
@@ -944,6 +960,7 @@ impl App {
                 live::Update::Notified => {
                     self.close_attachment_editor();
                     self.close_viewer();
+                    self.close_pins();
                     self.close_dialog();
                     self.close_settings();
                     self.close_dm_menu();
@@ -968,6 +985,7 @@ impl App {
         }
         self.refresh_reactors();
         self.poll_forward();
+        self.refresh_pins();
         Ok(())
     }
 
@@ -1697,6 +1715,12 @@ impl App {
             self.dirty.header = true;
             self.need = true;
         }
+        let pins = self.pointer.is_some_and(|(x, y)| self.on_pins_button(x, y));
+        if pins != self.pins_hover {
+            self.pins_hover = pins;
+            self.dirty.header = true;
+            self.need = true;
+        }
         let gear = self.pointer.is_some_and(|(x, y)| self.on_gear(x, y));
         if gear != self.gear_hover {
             self.gear_hover = gear;
@@ -1863,6 +1887,11 @@ impl App {
         if let Some(r) = self.viewer_input(msg, wp, x, y, shift) {
             return r;
         }
+        if self.pins.is_some()
+            && let Some(r) = self.pins_input(msg, wp, x, y)
+        {
+            return r;
+        }
         if self.signin.is_some()
             && let Some(r) = self.signin_input(msg, wp, lp, x, y, ctrl, shift)
         {
@@ -1924,6 +1953,9 @@ impl App {
                         self.attachment_editor_changed();
                     }
                     self.viewer_changed();
+                    if self.pins.is_some() {
+                        self.pins_changed();
+                    }
                     if self.settings.is_some() {
                         self.settings_changed();
                     }
@@ -1960,6 +1992,7 @@ impl App {
                 invite_people::TIMER_COPIED => self.copied_tick(),
                 TIMER_MEDIA => self.next_gif_frame(),
                 thread::TIMER_MEDIA => self.thread_media_tick(),
+                pins::TIMER_PINS => self.pins_tick(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
                 TIMER_MUTE => self.mutes_changed(),
                 updates::TIMER_SHINE => self.shine_tick(),
@@ -2037,6 +2070,8 @@ impl App {
                     self.toggle_account_menu();
                 } else if self.on_members_toggle(x, y) {
                     self.toggle_members();
+                } else if self.on_pins_button(x, y) {
+                    self.open_pins();
                 } else if self.on_update_dock(x, y) {
                     self.open_update_review();
                 } else if let Some(part) = self.bar_at(x, y) {
@@ -2236,6 +2271,7 @@ impl App {
                             || self.on_head_button(x, y)
                             || self.on_gear(x, y)
                             || self.on_members_toggle(x, y)
+                            || self.on_pins_button(x, y)
                             || self.on_update_dock(x, y)
                             || self.thread_link_at(x, y).is_some()
                             || self.foot_at(x, y).is_some()
@@ -3562,7 +3598,18 @@ impl App {
                     self.members_toggle_hover,
                 )
             });
-            let status_w = (lw - 200.0 - if toggle.is_some() { 46.0 } else { 0.0 }).max(40.0);
+            // Pins left of the toggle, filled while open or under the pointer.
+            let pins = self.pins_button_rect().map(|(x, y, w, h)| {
+                (
+                    rect(x - lx, y, x - lx + w, y + h),
+                    self.pins.is_some() || self.pins_hover,
+                )
+            });
+            let status_w = (lw
+                - 200.0
+                - if toggle.is_some() { 46.0 } else { 0.0 }
+                - if pins.is_some() { 34.0 } else { 0.0 })
+            .max(40.0);
             self.header.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
                 if hashed {
@@ -3594,6 +3641,14 @@ impl App {
                     let icon = rect(r.left + 5.0, r.top + 5.0, r.right - 5.0, r.bottom - 5.0);
                     let color = if active || hover { TEXT } else { TEXT_MUTED };
                     icons::draw(dc, icons::Icon::Users, icon, color, 1.0);
+                }
+                if let Some((r, lit)) = pins {
+                    if lit {
+                        fill_round(dc, r, 6.0, &g.brushes.hover);
+                    }
+                    let icon = rect(r.left + 5.0, r.top + 5.0, r.right - 5.0, r.bottom - 5.0);
+                    let color = if lit { TEXT } else { TEXT_MUTED };
+                    icons::draw(dc, icons::Icon::Pin, icon, color, 1.0);
                 }
                 dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, lw, HEADER_H), &g.brushes.border);
                 Ok(())
@@ -3773,6 +3828,7 @@ impl App {
         self.draw_gifs()?;
         self.draw_empty()?;
         self.draw_overlays()?;
+        self.draw_pins()?;
         self.draw_settings()?;
         self.draw_dm_menu()?;
         self.draw_thread()?;

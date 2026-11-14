@@ -2651,6 +2651,64 @@ impl Live {
         self.reactors.get(id)
     }
 
+    /// The open conversation's pins as egui's Pins dialog lists them, newest
+    /// pin first with pending pins and unpins applied: one ungrouped card
+    /// each, dated in full, with whether you pinned it and its thread root.
+    pub fn pinned_view(&self) -> Option<(Conversation, Vec<(bool, Option<String>)>)> {
+        self.channel.as_ref()?;
+        let spaces = core::Spaces {
+            spaces: Vec::new(),
+            invitations: Vec::new(),
+            limits: None,
+        };
+        let pins: Vec<core::Message> = self
+            .mutations
+            .pinned(&self.timeline)
+            .iter()
+            .map(|m| self.shown(m))
+            .collect();
+        let (mut c, ids) = conversation(
+            &spaces,
+            self.detail.as_ref(),
+            self.channel.as_deref(),
+            &pins,
+            self.me.as_deref(),
+            true,
+            None,
+            self.direct_head(),
+        );
+        let mut about = vec![(false, None); c.messages.len()];
+        for m in &pins {
+            let Some(&k) = ids.rows.get(&m.id) else {
+                continue;
+            };
+            let shown = &mut c.messages[k];
+            shown.grouped = false;
+            shown.date = None;
+            shown.edited_inline = false;
+            shown.thread_replies = None;
+            shown.thread_context = false;
+            shown.time = chrono::DateTime::parse_from_rfc3339(&m.created_at).map_or_else(
+                |_| m.created_at.clone(),
+                |t| {
+                    t.with_timezone(&chrono::Local)
+                        .format("%b %-d, %Y · %-I:%M %p")
+                        .to_string()
+                },
+            );
+            if m.revision > 1 && !m.is_deleted() {
+                shown.time.push_str(" (edited)");
+            }
+            about[k] = (
+                m.pin
+                    .as_ref()
+                    .is_some_and(|p| self.me.as_deref() == Some(p.author.id.as_str())),
+                m.thread_root_id.clone(),
+            );
+        }
+        Some((c, about))
+    }
+
     pub fn retry_reactors(&mut self, id: &str) {
         if let Some(cached) = self.reactors.get_mut(id) {
             cached.revision.clear();

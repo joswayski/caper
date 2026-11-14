@@ -792,6 +792,10 @@ impl App {
             self.dirty.thread = true;
             self.need = true;
         }
+        if self.pins.is_some() {
+            self.dirty.pins = true;
+            self.need = true;
+        }
         if self
             .c
             .messages

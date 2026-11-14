@@ -15,6 +15,7 @@ use crate::gifs::GPart;
 use crate::list::Action;
 use crate::list::ForwardPart;
 use crate::overlay::{Kind, Part as DPart};
+use crate::pins::Part as PinPart;
 use crate::profile::PPart as CPart;
 use crate::settings::SPart;
 use crate::signin::Part;
@@ -64,6 +65,10 @@ pub enum Id {
     Gear,
     /// The header's Show/Hide member list button.
     MembersToggle,
+    /// The header's Pins button, and the Pins dialog's parts, which replace
+    /// the tree while shown.
+    PinsButton,
+    Pins(crate::pins::Part),
     /// "Update available" above the footer (`updates`).
     UpdateDock,
     AccountMenu,
@@ -225,6 +230,9 @@ fn focused(a: &App) -> Option<Id> {
     if let Some(v) = &a.viewer {
         return Some(Id::Viewer(v.focus));
     }
+    if let Some(p) = &a.pins {
+        return p.focus.map(Id::Pins);
+    }
     if let Some(e) = &a.attachment_editor {
         return Some(Id::AttachmentEditor(e.focus));
     }
@@ -275,6 +283,20 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 .filter(|p| *p != MPart::Panel)
                 .map(Id::Viewer)
                 .collect(),
+            _ => Vec::new(),
+        };
+    }
+    if let Some(p) = &a.pins {
+        let parts = p.parts();
+        return match id {
+            Id::Root => parts
+                .iter()
+                .filter(|q| !matches!(q, PinPart::Go(_)))
+                .map(|q| Id::Pins(*q))
+                .collect(),
+            Id::Pins(PinPart::Card(k)) if parts.contains(&PinPart::Go(k)) => {
+                vec![Id::Pins(PinPart::Go(k))]
+            }
             _ => Vec::new(),
         };
     }
@@ -329,6 +351,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 out.extend(a.rec_parts().into_iter().map(|(p, _)| Id::Rec(p)));
             } else if a.c.has_conversation() {
                 out.push(Id::Composer);
+            }
+            if a.pins_button_rect().is_some() {
+                out.push(Id::PinsButton);
             }
             if a.members_toggle_rect().is_some() {
                 out.push(Id::MembersToggle);
@@ -461,6 +486,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Root => return None,
         Id::Viewer(MPart::Panel) => Id::Root,
         Id::Viewer(_) => Id::Viewer(MPart::Panel),
+        Id::Pins(PinPart::Go(k)) => Id::Pins(PinPart::Card(k)),
         Id::Space(_) => Id::Rail,
         Id::Invite(s) if s.in_sidebar() => Id::Channels,
         Id::Invite(_) => Id::Rail,
@@ -502,6 +528,13 @@ fn exists(a: &App, id: Id) -> bool {
             _ => false,
         };
     }
+    if let Some(p) = &a.pins {
+        return match id {
+            Id::Root => true,
+            Id::Pins(q) => p.parts().contains(&q),
+            _ => false,
+        };
+    }
     if a.attachment_editor.is_some() && !matches!(id, Id::Root | Id::AttachmentEditor(_)) {
         return false;
     }
@@ -528,6 +561,8 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
         Id::Gear => a.foot_shown(),
         Id::MembersToggle => a.members_toggle_rect().is_some() && a.dialog.is_none(),
+        Id::PinsButton => a.pins_button_rect().is_some() && a.dialog.is_none(),
+        Id::Pins(_) => false,
         Id::UpdateDock => a.update_dock_rect().is_some(),
         Id::AccountMenu => a.account_menu.is_some(),
         Id::DirectOptions(k) => a
@@ -657,6 +692,11 @@ fn name(a: &App, id: Id) -> String {
         Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
         Id::Settings(p) => a.settings.as_ref().map_or_else(String::new, |s| s.name(p)),
         Id::Gear | Id::AccountMenu => "User Settings".into(),
+        Id::PinsButton => "Pins".into(),
+        Id::Pins(PinPart::Card(k)) => a.pins.as_ref().map_or_else(String::new, |p| {
+            row_name(&p.c, k, p.rows.row(k).map(crate::list::Row::spoken))
+        }),
+        Id::Pins(q) => a.pins.as_ref().map_or_else(String::new, |p| p.name(q)),
         Id::MembersToggle => if a.members_hidden {
             "Show member list"
         } else {
@@ -992,6 +1032,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Settings(p) if p.is_radio() => UIA_RadioButtonControlTypeId,
         Id::Settings(p) if p.is_toggle() => UIA_CheckBoxControlTypeId,
         Id::Settings(_) | Id::Gear | Id::UpdateDock | Id::MembersToggle => UIA_ButtonControlTypeId,
+        Id::PinsButton | Id::Pins(PinPart::Close | PinPart::Go(_)) => UIA_ButtonControlTypeId,
+        Id::Pins(PinPart::Card(_)) => UIA_ListItemControlTypeId,
         Id::AccountMenu | Id::DmMenu => UIA_MenuControlTypeId,
         Id::DmItem(_) => UIA_MenuItemControlTypeId,
         Id::DirectOptions(_) | Id::SpaceOptions | Id::ChannelOptions(_) => UIA_ButtonControlTypeId,
@@ -1065,6 +1107,10 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Gear => (39, 0),
         Id::UpdateDock => (39, 1),
         Id::MembersToggle => (39, 2),
+        Id::PinsButton => (39, 3),
+        Id::Pins(PinPart::Close) => (70, 0),
+        Id::Pins(PinPart::Card(k)) => (70, 1 + 2 * k),
+        Id::Pins(PinPart::Go(k)) => (70, 2 + 2 * k),
         Id::AccountMenu => (40, 0),
         Id::DirectOptions(k) => (43, k),
         Id::DmMenu => (44, 0),
@@ -1230,6 +1276,12 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Gear => a.gear_rect(),
         Id::MembersToggle => a.members_toggle_rect().unwrap_or_default(),
+        Id::PinsButton => a.pins_button_rect().unwrap_or_default(),
+        Id::Pins(q) => a
+            .pins
+            .as_ref()
+            .and_then(|p| p.part_rect(q))
+            .unwrap_or_default(),
         Id::UpdateDock => a.update_dock_rect().unwrap_or_default(),
         Id::AccountMenu => a.account_menu_rect(),
         Id::DirectOptions(k) => a.direct_options_rect(k),
@@ -1457,6 +1509,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::Voice(_)
             | Id::Gear
             | Id::MembersToggle
+            | Id::PinsButton
+            | Id::Pins(_)
             | Id::UpdateDock
             | Id::AccountItem(_)
             | Id::DirectOptions(_)
@@ -1698,6 +1752,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Invite(_)
                         | Id::Gear
                         | Id::MembersToggle
+                        | Id::PinsButton
+                        | Id::Pins(PinPart::Close | PinPart::Go(_))
                         | Id::UpdateDock
                         | Id::AccountItem(_)
                         | Id::DirectOptions(_)
@@ -1879,6 +1935,13 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                         a.dialog_changed();
                     }
                 }
+                Id::Pins(p @ (PinPart::Close | PinPart::Go(_))) => {
+                    if let Some(pins) = &mut a.pins {
+                        pins.focus_part(p);
+                        a.events |= crate::EV_FOCUS;
+                        a.pins_changed();
+                    }
+                }
                 Id::Settings(p) if !matches!(p, SPart::Text(_) | SPart::Meter) => {
                     if let Some(s) = &mut a.settings {
                         s.focus_part(p);
@@ -1973,6 +2036,8 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Voice(p) => a.voice_activate(p),
                 Id::Gear => a.toggle_account_menu(),
                 Id::MembersToggle => a.toggle_members(),
+                Id::PinsButton => a.open_pins(),
+                Id::Pins(q) => a.pins_activate(q),
                 Id::UpdateDock => a.open_update_review(),
                 Id::AccountItem(k) => a.account_activate(k),
                 Id::DirectOptions(k) => a.toggle_dm_menu(k),
@@ -2875,6 +2940,8 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
         | Id::ChannelOptions(_)
         | Id::Gear
         | Id::MembersToggle
+        | Id::PinsButton
+        | Id::Pins(PinPart::Close)
         | Id::ReplyCancel
         | Id::Tool(..)
         | Id::Control(_, Action::Add)
