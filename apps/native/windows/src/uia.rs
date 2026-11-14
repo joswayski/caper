@@ -14,6 +14,7 @@ use crate::forward::Control as FPart;
 use crate::gifs::GPart;
 use crate::list::Action;
 use crate::list::ForwardPart;
+use crate::member_search::Part as SPartM;
 use crate::overlay::{Kind, Part as DPart};
 use crate::pins::Part as PinPart;
 use crate::profile::PPart as CPart;
@@ -79,6 +80,8 @@ pub enum Id {
     Control(usize, Action),
     Members,
     Member(usize),
+    /// The member list's Search members, its field and Clear and close.
+    MemberSearch(SPartM),
     Composer,
     /// A part of the sign-in form, which replaces the tree while shown.
     Sign(Part),
@@ -165,6 +168,9 @@ fn field(a: &App, id: Id) -> &Composer {
     if let (Id::ProfilePart(CPart::Field), Some(c)) = (id, &a.profile) {
         return &c.field;
     }
+    if let (Id::MemberSearch(_), Some(s)) = (id, &a.member_search) {
+        return &s.field;
+    }
     match (id, &a.signin, &a.dialog) {
         (Id::Dialog(p) | Id::ProfileEdit(p) | Id::ForwardDialog(p), _, Some(d)) => d.field_for(p),
         (Id::Sign(_), Some(s), _) => s.field(),
@@ -193,6 +199,9 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
     if let (Id::ProfilePart(CPart::Field), Some(c)) = (id, &mut a.profile) {
         return &mut c.field;
     }
+    if let (Id::MemberSearch(_), Some(s)) = (id, &mut a.member_search) {
+        return &mut s.field;
+    }
     match (id, &mut a.signin) {
         (Id::Sign(_), Some(s)) => s.field_mut(),
         _ => &mut a.composer,
@@ -217,6 +226,8 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
         a.thread_composer_changed();
     } else if matches!(id, Id::ProfilePart(_)) {
         a.profile_changed();
+    } else if matches!(id, Id::MemberSearch(_)) {
+        a.member_search_changed(text);
     } else {
         a.composer_changed();
     }
@@ -262,6 +273,9 @@ fn focused(a: &App) -> Option<Id> {
     }
     if a.profile.as_ref().is_some_and(|c| c.field.focused) {
         return Some(Id::ProfilePart(CPart::Field));
+    }
+    if a.member_search.as_ref().is_some_and(|s| s.field.focused) {
+        return Some(Id::MemberSearch(SPartM::Field));
     }
     if !a.composer.focused
         && let Some(part) = a.focused_thread_part()
@@ -446,7 +460,12 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .chain(a.visible_rows().map(Id::Row))
             .chain((0..2).filter(|k| a.foot_rect(*k).is_some()).map(Id::Newer))
             .collect(),
-        Id::Members => (0..a.c.members.len()).map(Id::Member).collect(),
+        Id::Members => [SPartM::Open, SPartM::Field, SPartM::Close]
+            .into_iter()
+            .filter(|p| a.member_search_rect(*p).is_some())
+            .map(Id::MemberSearch)
+            .chain(a.shown_members().into_iter().map(Id::Member))
+            .collect(),
         Id::Row(i) => a
             .row_controls(i)
             .into_iter()
@@ -516,7 +535,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Suggestion(_) => Id::Suggest,
         Id::Pick(_) => Id::Picker,
         Id::Gif(_) => Id::Gifs,
-        Id::Member(_) => Id::Members,
+        Id::Member(_) | Id::MemberSearch(_) => Id::Members,
         Id::ThreadPart(
             TPart::Chip(i, _)
             | TPart::Add(i)
@@ -582,7 +601,8 @@ fn exists(a: &App, id: Id) -> bool {
         Id::DmItem(k) => a.dm_menu.is_some() && k < a.dm_menu_items().1.len(),
         Id::AccountItem(k) => a.account_menu.is_some() && k < crate::settings::MENU_ITEMS.len(),
         Id::Direct(k) => k < a.direct_rows().len(),
-        Id::Member(i) => i < a.c.members.len(),
+        Id::Member(i) => a.shown_members().contains(&i),
+        Id::MemberSearch(p) => a.member_search_rect(p).is_some(),
         Id::Space(i) => i < a.c.spaces.len(),
         Id::Invite(s) => a.invite_spots().contains(&s),
         Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
@@ -765,6 +785,7 @@ fn name(a: &App, id: Id) -> String {
         Id::Control(_, Action::Retry) => "Retry".into(),
         Id::Control(_, Action::Dismiss) => "Dismiss".into(),
         Id::Members => format!("Members, {}", c.members.len()),
+        Id::MemberSearch(p) => App::member_search_name(p).into(),
         Id::Member(i) => format!(
             "{}, {}",
             c.members[i].name,
@@ -996,6 +1017,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Space(_) => UIA_ListItemControlTypeId,
         Id::Channels | Id::Directs | Id::History | Id::Members => UIA_ListControlTypeId,
         Id::Channel(_) | Id::Direct(_) | Id::Row(_) | Id::Member(_) => UIA_ListItemControlTypeId,
+        Id::MemberSearch(SPartM::Field) => UIA_EditControlTypeId,
+        Id::MemberSearch(_) => UIA_ButtonControlTypeId,
         Id::Composer | Id::Sign(Part::Field) => UIA_EditControlTypeId,
         Id::Sign(Part::Title | Part::Message) => UIA_TextControlTypeId,
         Id::Menu => UIA_MenuControlTypeId,
@@ -1134,6 +1157,14 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Row(i) => (6, i),
         Id::Members => (7, 0),
         Id::Member(i) => (8, i),
+        Id::MemberSearch(p) => (
+            71,
+            match p {
+                SPartM::Open => 0,
+                SPartM::Field => 1,
+                SPartM::Close => 2,
+            },
+        ),
         Id::Composer => (9, 0),
         Id::Sign(p) => (10, p as usize),
         Id::Menu => (12, 0),
@@ -1333,6 +1364,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         }
         Id::Members => (a.w - a.members_w(), 0.0, a.members_w(), a.h),
         Id::Member(i) => a.member_rect(i),
+        Id::MemberSearch(p) => a.member_search_rect(p).unwrap_or_default(),
         Id::Composer => a.box_rect(),
         Id::AttachmentEditor(p) => a
             .attachment_editor
@@ -1579,11 +1611,12 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Gif(GPart::Tab(_)) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
-            Id::Gif(GPart::Search) => {
+            Id::Gif(GPart::Search) | Id::MemberSearch(SPartM::Field) => {
                 pattern == UIA_ValuePatternId
                     || pattern == UIA_TextPatternId
                     || pattern == UIA_TextPattern2Id
             }
+            Id::MemberSearch(_) => pattern == UIA_InvokePatternId,
             Id::Gif(_) => pattern == UIA_InvokePatternId,
             Id::ProfileEdit(DPart::Field | DPart::Number(_)) => {
                 pattern == UIA_ValuePatternId
@@ -1810,6 +1843,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         )
                         | Id::Pick(PPart::Search)
                         | Id::Gif(GPart::Search)
+                        | Id::MemberSearch(_)
                         | Id::Dialog(
                             DPart::Field
                                 | DPart::Number(_)
@@ -1995,6 +2029,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 }
                 Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
                 Id::Gif(GPart::Search) => a.gifs_activate(GPart::Search),
+                Id::MemberSearch(SPartM::Field) => a.set_member_search_focus(true),
                 Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
                 Id::ThreadPart(TPart::Tool(i, tool)) => a.focus_thread_tool(i, tool),
                 Id::ThreadPart(TPart::Row(i)) => a.set_thread_selection(Some(((i, 0), (i, 0)))),
@@ -2068,6 +2103,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Gear => a.toggle_account_menu(),
                 Id::MembersToggle => a.toggle_members(),
                 Id::PinsButton => a.open_pins(),
+                Id::MemberSearch(p) => a.member_search_activate(p),
                 Id::Pins(q) => a.pins_activate(q),
                 Id::UpdateDock => a.open_update_review(),
                 Id::AccountItem(k) => a.account_activate(k),
@@ -2388,6 +2424,7 @@ impl Doc {
             (Self::Field(Id::Gif(_)), _) => a.gifs.as_ref().map_or((0.0, 0.0), |p| p.text_origin()),
             (Self::Field(Id::ThreadPart(_)), _) => a.thread_text_origin(),
             (Self::Field(Id::ProfilePart(_)), _) => a.profile_text_origin(),
+            (Self::Field(Id::MemberSearch(_)), _) => a.member_search_text_origin(),
             (Self::Field(_), _) => a.composer_text_origin(),
             (Self::Row(i), _) => a.row_text_origin(i),
             (Self::ThreadRow(i), _) => a.thread_row_text_origin(i),
@@ -2993,6 +3030,7 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
         | Id::MembersToggle
         | Id::PinsButton
         | Id::Pins(PinPart::Close)
+        | Id::MemberSearch(SPartM::Open | SPartM::Close)
         | Id::ReplyCancel
         | Id::Tool(..)
         | Id::Control(_, Action::Add)

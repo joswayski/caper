@@ -59,6 +59,7 @@ icons! {
     Plus => "plus.svg",
     Reply => "reply.svg",
     Retry => "rotate-ccw.svg",
+    Search => "search.svg",
     Send => "send.svg",
     Settings => "settings.svg",
     Smile => "smile.svg",

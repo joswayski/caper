@@ -54,6 +54,7 @@ mod icons;
 mod links;
 mod list;
 mod live;
+mod member_search;
 mod model;
 mod pins;
 mod signin;
@@ -319,6 +320,9 @@ pub struct App {
     /// The open Pins dialog, its panel, and whether the header's Pins
     /// button is hovered.
     pub pins: Option<pins::Pins>,
+    /// The member list's search, and whether its heading button is hovered.
+    pub member_search: Option<member_search::MemberSearch>,
+    member_search_hover: bool,
     pins_p: Panel,
     pins_hover: bool,
     /// Self-updates, the version "Update available" offers, and whether
@@ -592,6 +596,8 @@ impl App {
                 members_hidden: false,
                 members_toggle_hover: false,
                 pins: None,
+                member_search: None,
+                member_search_hover: false,
                 pins_p,
                 pins_hover: false,
                 updates: caper_client::updates::Updates::start(|| {}, false),
@@ -829,6 +835,7 @@ impl App {
                     }
                     self.composer.set_text(text);
                     self.composer_changed();
+                    self.member_search_follow();
                     self.bar_changed();
                 }
                 live::Update::Older(older) => {
@@ -1141,10 +1148,20 @@ impl App {
         )
     }
 
+    /// Member `i`'s row, at its place among the shown members; empty
+    /// while a search hides it.
     pub fn member_rect(&self, i: usize) -> (f32, f32, f32, f32) {
+        self.shown_members()
+            .iter()
+            .position(|&k| k == i)
+            .map_or((0.0, 0.0, 0.0, 0.0), |slot| self.member_slot_rect(slot))
+    }
+
+    /// The `slot`th shown member's row.
+    pub fn member_slot_rect(&self, slot: usize) -> (f32, f32, f32, f32) {
         (
             self.w - MEMBERS_W + 8.0,
-            MEMBER_TOP + MEMBER_H * i as f32,
+            MEMBER_TOP + self.members_top() + MEMBER_H * slot as f32,
             MEMBERS_W - 16.0,
             MEMBER_H,
         )
@@ -1229,6 +1246,7 @@ impl App {
     pub fn toggle_members(&mut self) {
         self.members_hidden = !self.members_hidden;
         self.hover_member = None;
+        self.member_search_follow();
         self.dirty.layout = true;
         self.dirty.header = true;
         self.events |= EV_SCREEN;
@@ -1271,6 +1289,14 @@ impl App {
         {
             p.search.focused = false;
             self.dirty.gifs = true;
+        }
+        if focused
+            && let Some(s) = &mut self.member_search
+            && s.field.focused
+        {
+            s.field.focused = false;
+            s.field.end();
+            self.dirty.members = true;
         }
         if focused {
             self.set_kb(None);
@@ -1471,6 +1497,11 @@ impl App {
         {
             return Some((&t.composer, self.thread_text_origin()));
         }
+        if let Some(s) = &self.member_search
+            && s.field.focused
+        {
+            return Some((&s.field, self.member_search_text_origin()));
+        }
         self.composer
             .focused
             .then(|| (&self.composer, self.composer_text_origin()))
@@ -1529,6 +1560,11 @@ impl App {
         {
             return Some(&mut t.composer);
         }
+        if let Some(s) = &mut self.member_search
+            && s.field.focused
+        {
+            return Some(&mut s.field);
+        }
         Some(&mut self.composer).filter(|c| c.focused)
     }
 
@@ -1548,6 +1584,8 @@ impl App {
             self.gifs_changed(text);
         } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
             self.thread_composer_changed();
+        } else if self.member_search.as_ref().is_some_and(|s| s.field.focused) {
+            self.member_search_changed(text);
         } else {
             self.composer_changed();
         }
@@ -1698,7 +1736,10 @@ impl App {
             channel = (0..self.c.channels.len()).find(|&i| inside(Self::channel_rect(i), x, y));
             // A hidden member list leaves its column to the conversation.
             if self.members_w() > 0.0 {
-                member = (0..self.c.listed_members).find(|&i| inside(self.member_rect(i), x, y));
+                let shown = self.shown_members();
+                member = (0..shown.len())
+                    .find(|&k| inside(self.member_slot_rect(k), x, y))
+                    .map(|k| shown[k]);
             }
             // The call card covers the DM rows under it.
             direct = if self.on_call(x, y) {
@@ -1970,6 +2011,11 @@ impl App {
         {
             return r;
         }
+        if self.members_w() > 0.0
+            && let Some(r) = self.member_search_input(msg, wp, x, y, ctrl, shift)
+        {
+            return r;
+        }
         match msg {
             WM_SIZE => {
                 let (pw, ph) = ((lp.0 & 0xffff) as f32, ((lp.0 >> 16) & 0xffff) as f32);
@@ -1995,6 +2041,8 @@ impl App {
                         self.dirty.gifs = true;
                     } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
                         self.dirty.thread_box = true;
+                    } else if self.member_search.as_ref().is_some_and(|s| s.field.focused) {
+                        self.dirty.members = true;
                     } else {
                         self.dirty.composer = true;
                     }
@@ -3779,6 +3827,13 @@ impl App {
         }
         if d.members {
             let (hover, layouts) = (self.hover_member, &self.member_layouts);
+            let (shown, top0, searching) = (
+                self.shown_members(),
+                self.members_top(),
+                self.member_search.is_some(),
+            );
+            let x0 = self.w - MEMBERS_W;
+            let this = &*self;
             self.members.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
                 dc.FillRectangle(&rect(0.0, 0.0, 1.0, 100_000.0), &g.brushes.border);
@@ -3792,19 +3847,26 @@ impl App {
                     &rect(0.0, HEADER_H - 1.0, MEMBERS_W, HEADER_H),
                     &g.brushes.border,
                 );
-                let online = c.members[..c.listed_members]
-                    .iter()
-                    .filter(|m| m.online)
-                    .count();
+                member_search::draw(g, dc, this, x0)?;
+                let online = shown.iter().filter(|&&i| c.members[i].online).count();
                 let label = if c.presence {
                     format!("Online  {online}")
                 } else {
                     "Everyone".to_owned()
                 };
                 let o = g.layout(&gfx::wide(&label), &g.formats.section, 10_000.0)?;
-                text::draw(dc, &o, 12.0, SECTION_TOP + 4.0, &g.brushes.muted);
-                for (i, l) in layouts.iter().enumerate() {
-                    let top = MEMBER_TOP + MEMBER_H * i as f32;
+                text::draw(dc, &o, 12.0, SECTION_TOP + top0 + 4.0, &g.brushes.muted);
+                if searching && shown.is_empty() {
+                    let l = g.layout(
+                        &gfx::wide(member_search::NO_MATCH),
+                        &g.formats.quote,
+                        MEMBERS_W - 32.0,
+                    )?;
+                    text::draw(dc, &l, 16.0, MEMBER_TOP + top0 + 4.0, &g.brushes.muted);
+                }
+                for (slot, &i) in shown.iter().enumerate() {
+                    let Some(l) = layouts.get(i) else { continue };
+                    let top = MEMBER_TOP + top0 + MEMBER_H * slot as f32;
                     if hover == Some(i) {
                         fill_round(
                             dc,

@@ -2709,6 +2709,16 @@ impl Live {
         Some((c, about))
     }
 
+    /// The open space's members' usernames by id, for member search.
+    pub fn member_usernames(&self) -> HashMap<&str, &str> {
+        self.detail.as_ref().map_or_else(HashMap::new, |d| {
+            d.members
+                .iter()
+                .map(|m| (m.id.as_str(), m.username.as_str()))
+                .collect()
+        })
+    }
+
     pub fn retry_reactors(&mut self, id: &str) {
         if let Some(cached) = self.reactors.get_mut(id) {
             cached.revision.clear();
