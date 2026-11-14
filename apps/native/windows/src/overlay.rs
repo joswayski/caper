@@ -1523,8 +1523,8 @@ impl App {
     }
 
     /// A right-click at (x, y) on thread reply `i`: a link's menu on a
-    /// link, otherwise the reply's actions at the pointer. Thread replies
-    /// can't quote one another, so there is no Reply.
+    /// link, otherwise the reply's actions at the pointer. No Reply yet:
+    /// egui's thread composer can quote a reply, this one can't.
     pub fn open_thread_context_menu(&mut self, i: usize, x: f32, y: f32) {
         let Some(row) = self.thread.as_ref().and_then(|t| t.c.messages.get(i)) else {
             return;
