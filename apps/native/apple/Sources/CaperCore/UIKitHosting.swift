@@ -688,7 +688,7 @@ public struct UIKitComposerNotices: View {
     }
 }
 
-/// SwiftUI's file drop onto a conversation or thread, for UIKit: the drop
+/// Native file drop onto a conversation or thread: the drop
 /// overlay while files hover, then the files staged for the composer that was
 /// targeted when they arrived.
 @MainActor public final class UIKitFileDrop: NSObject, UIDropInteractionDelegate {
@@ -714,14 +714,11 @@ public struct UIKitComposerNotices: View {
         let direct = model.selectedDirectMessageID != nil || model.visit?.direct == true
         let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: direct,
                                              attached: inThread ? chat.threadAttachmentDrafts.count : chat.attachmentDrafts.count)
-        let host = UIHostingController(rootView: FileDropOverlay(title: inThread ? "Add files to thread" : text.title, detail: text.detail)
-            .preferredColorScheme(.dark))
-        host.view.backgroundColor = .clear
-        host.view.isUserInteractionEnabled = false
-        host.view.frame = view.bounds
-        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(host.view)
-        overlay = host.view
+        let overlay = NativeFileDropOverlay(title: inThread ? "Add files to thread" : text.title, detail: text.detail)
+        overlay.frame = view.bounds
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(overlay)
+        self.overlay = overlay
     }
 
     public func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: UIDropSession) -> UIDropProposal {
