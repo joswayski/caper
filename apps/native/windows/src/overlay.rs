@@ -49,6 +49,12 @@ pub enum Item {
     /// A right-click on a link: its own menu.
     OpenLink,
     CopyLink,
+    /// A right-click on an image: its own menu, as in egui. Copy image
+    /// keeps the menu open and shows "Copying…" until it lands.
+    CopyImage,
+    CopyingImage,
+    CopyImageLink,
+    OpenImage,
     Reply,
     Edit,
     History,
@@ -67,6 +73,10 @@ impl Item {
             Self::CopySelection => "Copy selected text",
             Self::OpenLink => "Open link",
             Self::CopyLink => "Copy link",
+            Self::CopyImage => "Copy image",
+            Self::CopyingImage => "Copying\u{2026}",
+            Self::CopyImageLink => "Copy image link",
+            Self::OpenImage => "Open image in browser",
             Self::Reply => "Reply",
             Self::Edit => "Edit message",
             Self::History => "Message history",
@@ -80,13 +90,16 @@ impl Item {
     }
 
     pub fn enabled(self) -> bool {
-        self != Self::PinSaving
+        !matches!(self, Self::PinSaving | Self::CopyingImage)
     }
 
     fn icon(self) -> Icon {
         match self {
-            Self::CopySelection | Self::CopyLink => Icon::Copy,
-            Self::OpenLink => Icon::ExternalLink,
+            Self::CopySelection | Self::CopyLink | Self::CopyImage | Self::CopyingImage => {
+                Icon::Copy
+            }
+            Self::CopyImageLink => Icon::Link,
+            Self::OpenLink | Self::OpenImage => Icon::ExternalLink,
             Self::Reply => Icon::Reply,
             Self::Edit => Icon::Pencil,
             Self::History => Icon::History,
@@ -105,6 +118,8 @@ const MENU_PAD: f32 = 6.0;
 const MENU_W: f32 = 244.0 + 2.0 * MENU_PAD;
 const MENU_HEAD: f32 = 30.0 + 4.0;
 const ITEM_H: f32 = 36.0;
+/// An image menu's copy status, a muted line under the items.
+const STATUS_H: f32 = 28.0;
 /// Danger items (Delete message), as in the egui client.
 const DANGER: u32 = 0xFF8C9A;
 
@@ -118,6 +133,11 @@ pub struct Menu {
     /// What Copy selected text and the link items act on.
     pub selection: Vec<u16>,
     pub link: String,
+    /// The image an image menu acts on, its copy in flight, and the copy's
+    /// status line under the items.
+    pub image: Option<core::Attachment>,
+    pub(crate) copying: Option<std::sync::mpsc::Receiver<crate::viewer::CopyResult>>,
+    pub status: Option<String>,
     pub x: f32,
     pub y: f32,
     pub hover: Option<usize>,
@@ -126,9 +146,10 @@ pub struct Menu {
 
 impl Menu {
     pub fn size(&self) -> (f32, f32) {
+        let status = if self.status.is_some() { STATUS_H } else { 0.0 };
         (
             MENU_W,
-            2.0 * MENU_PAD + MENU_HEAD + ITEM_H * self.items.len() as f32,
+            2.0 * MENU_PAD + MENU_HEAD + ITEM_H * self.items.len() as f32 + status,
         )
     }
 
@@ -150,6 +171,9 @@ impl Menu {
             title: "Message actions",
             selection: Vec::new(),
             link: String::new(),
+            image: None,
+            copying: None,
+            status: None,
             x: 0.0,
             y: 0.0,
             hover: None,
@@ -252,6 +276,22 @@ impl Menu {
                 brush.SetOpacity(alpha);
                 crate::text::draw(dc, &l, ix + 32.0, cy - height(&l) / 2.0, &brush);
                 brush.SetOpacity(1.0);
+            }
+            if let Some(status) = &self.status {
+                let top = MENU_PAD + MENU_HEAD + ITEM_H * self.items.len() as f32;
+                let l = layout(
+                    g,
+                    status,
+                    &g.formats.menu_item,
+                    MENU_W - 2.0 * MENU_PAD - 16.0,
+                )?;
+                crate::text::draw(
+                    dc,
+                    &l,
+                    MENU_PAD + 8.0,
+                    top + (STATUS_H - height(&l)) / 2.0,
+                    &g.brushes.muted,
+                );
             }
         }
         Ok(())
@@ -1475,7 +1515,25 @@ impl App {
     /// open at the pointer, with Copy selected text first while text is
     /// selected.
     pub fn open_context_menu(&mut self, i: usize, x: f32, y: f32) {
-        if let Some(link) = self.link_at(x, y) {
+        let image = self.file_at(x, y).and_then(|(i, k, _)| {
+            let m = self.c.messages.get(i)?;
+            let a = m.attachments.get(k)?;
+            (a.kind == core::AttachmentKind::Image
+                && crate::files::clickable(a)
+                && !crate::files::hidden(a, &m.revealed))
+            .then(|| a.clone())
+        });
+        if let Some(image) = image {
+            let Some(id) = self.c.messages.get(i).map(|m| m.id.clone()) else {
+                return;
+            };
+            self.close_picker();
+            let items = vec![Item::CopyImage, Item::CopyImageLink, Item::OpenImage];
+            let mut menu = Menu::new(i, id, items, x, y, y, self.h);
+            menu.title = "Image";
+            menu.image = Some(image);
+            self.menu = Some(menu);
+        } else if let Some(link) = self.link_at(x, y) {
             let Some(id) = self.c.messages.get(i).map(|m| m.id.clone()) else {
                 return;
             };
@@ -1490,11 +1548,27 @@ impl App {
         let selection = self.selected_text();
         let (w, h) = (self.w, self.h);
         let Some(menu) = &mut self.menu else { return };
-        if menu.title != "Link" && !selection.is_empty() {
+        if menu.title == "Message actions" && !selection.is_empty() {
             menu.items.insert(0, Item::CopySelection);
             menu.selection = selection;
         }
         menu.place_at(x, y, w, h);
+        self.overlay_changed();
+    }
+
+    /// An image menu's finished copy: onto the clipboard, then its status.
+    pub fn poll_menu_copy(&mut self) {
+        let Some(menu) = &mut self.menu else { return };
+        let Some(Ok(result)) = menu.copying.as_ref().map(|rx| rx.try_recv()) else {
+            return;
+        };
+        menu.copying = None;
+        menu.status = Some(crate::viewer::put_copied(self.hwnd, result));
+        for item in &mut menu.items {
+            if *item == Item::CopyingImage {
+                *item = Item::CopyImage;
+            }
+        }
         self.overlay_changed();
     }
 
@@ -1506,6 +1580,23 @@ impl App {
 
     /// Clicks, Enter and UIA Invoke on a menu item.
     pub fn menu_activate(&mut self, k: usize) {
+        // Copy image keeps the menu open to show its progress, as in egui.
+        if let Some(menu) = &self.menu
+            && menu.items.get(k) == Some(&Item::CopyImage)
+            && let Some(image) = menu.image.clone()
+        {
+            let started = self.start_image_copy(&image);
+            let Some(menu) = &mut self.menu else { return };
+            match started {
+                Ok(rx) => {
+                    menu.copying = Some(rx);
+                    menu.items[k] = Item::CopyingImage;
+                    menu.status = None;
+                }
+                Err(e) => menu.status = Some(e),
+            }
+            return self.overlay_changed();
+        }
         let Some(menu) = self.menu.take() else { return };
         self.overlay_changed();
         let (Some(item), Some(live)) = (menu.items.get(k).copied(), &mut self.live) else {
@@ -1526,6 +1617,22 @@ impl App {
             Item::CopySelection => crate::set_clipboard(self.hwnd, &menu.selection),
             Item::OpenLink => crate::open_link(&menu.link),
             Item::CopyLink => crate::set_clipboard(self.hwnd, &gfx::wide(&menu.link)),
+            Item::CopyImageLink => {
+                if let Some(url) = menu.image.and_then(|a| live.media.resolve(&a).url) {
+                    crate::set_clipboard(self.hwnd, &gfx::wide(&url));
+                }
+            }
+            Item::OpenImage => {
+                let unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                // An expiring URL opens once refreshed (`Update::Open`).
+                if let Some(image) = &menu.image
+                    && let Some(url) = live.media.open(image, unix)
+                {
+                    crate::open_link(&url);
+                }
+            }
             _ => {}
         }
         if let Err(e) = self.drain_live() {

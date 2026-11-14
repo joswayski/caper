@@ -252,9 +252,25 @@ struct Video {
 }
 
 /// Pixels for the clipboard: a DIBV5 (with alpha) and a PNG.
-struct Copied {
+pub(crate) struct Copied {
     dib: Vec<u8>,
     png: Vec<u8>,
+}
+
+/// A copy worker's image, or why it failed.
+pub(crate) type CopyResult = std::result::Result<Copied, String>;
+
+fn unavailable() -> String {
+    "Couldn\u{2019}t copy: media is unavailable.".into()
+}
+
+/// Puts a finished copy on the clipboard; the status line to show.
+pub(crate) fn put_copied(hwnd: HWND, result: CopyResult) -> String {
+    match result {
+        Ok(copied) if set_clipboard_image(hwnd, &copied) => "Image copied.".into(),
+        Ok(_) => "Couldn\u{2019}t access the clipboard.".into(),
+        Err(e) => e,
+    }
 }
 
 /// Which entrance the media panel plays at its next draw.
@@ -1075,6 +1091,39 @@ impl App {
         }
     }
 
+    /// Fetches `a`'s original image and readies it for the clipboard on a
+    /// worker that wakes the window; Err says why it can't start. The
+    /// viewer's Copy image and the history's image menu share it.
+    pub(crate) fn start_image_copy(
+        &self,
+        a: &Attachment,
+    ) -> std::result::Result<Receiver<CopyResult>, String> {
+        let live = self.live.as_ref().ok_or_else(unavailable)?;
+        let a = live.media.resolve(a);
+        let (Some(api), Some(url)) = (live.media.api().cloned(), a.url.clone()) else {
+            return Err(unavailable());
+        };
+        let (tx, rx) = channel();
+        let window = self.hwnd.0 as isize;
+        let content_type = a.content_type.clone();
+        std::thread::spawn(move || {
+            let result = api
+                .fetch_media(&url)
+                .map_err(|_| "Couldn\u{2019}t load the original image.".to_owned())
+                .and_then(|bytes| {
+                    caper_client::attachments::decode_original(&bytes, &content_type)
+                        .ok_or_else(|| "Couldn\u{2019}t decode the original image.".to_owned())
+                })
+                .and_then(|image| {
+                    clipboard_image(&image)
+                        .ok_or_else(|| "Couldn\u{2019}t copy the image.".to_owned())
+                });
+            let _ = tx.send(result);
+            wake(window);
+        });
+        Ok(rx)
+    }
+
     /// Results from the viewer's workers: a probed video, a copied image.
     pub fn poll_viewer(&mut self) {
         let Some(v) = &mut self.viewer else {
@@ -1085,12 +1134,7 @@ impl App {
             && let Ok(result) = rx.try_recv()
         {
             v.copying = None;
-            let text = match result {
-                Ok(copied) if set_clipboard_image(self.hwnd, &copied) => "Image copied.".into(),
-                Ok(_) => "Couldn\u{2019}t access the clipboard.".into(),
-                Err(e) => e,
-            };
-            v.notice = Some((text, Instant::now()));
+            v.notice = Some((put_copied(self.hwnd, result), Instant::now()));
             changed = true;
         }
         if let Some(rx) = &v.saving {
@@ -1269,39 +1313,19 @@ impl App {
                 }
             }
             Part::Copy => {
-                let Some(live) = &self.live else {
-                    return;
-                };
-                let a = live.media.resolve(v.current());
-                let (Some(api), Some(url)) = (live.media.api().cloned(), a.url.clone()) else {
-                    v.notice = Some((
-                        "Couldn\u{2019}t copy: media is unavailable.".into(),
-                        Instant::now(),
-                    ));
-                    return self.viewer_changed();
-                };
-                let (tx, rx) = channel();
-                v.copying = Some(rx);
-                v.notice = Some(("Copying\u{2026}".into(), Instant::now()));
-                let window = self.hwnd.0 as isize;
-                let content_type = a.content_type.clone();
-                std::thread::spawn(move || {
-                    let result = api
-                        .fetch_media(&url)
-                        .map_err(|_| "Couldn\u{2019}t load the original image.".to_owned())
-                        .and_then(|bytes| {
-                            caper_client::attachments::decode_original(&bytes, &content_type)
-                                .ok_or_else(|| {
-                                    "Couldn\u{2019}t decode the original image.".to_owned()
-                                })
-                        })
-                        .and_then(|image| {
-                            clipboard_image(&image)
-                                .ok_or_else(|| "Couldn\u{2019}t copy the image.".to_owned())
-                        });
-                    let _ = tx.send(result);
-                    wake(window);
-                });
+                let current = v.current().clone();
+                let started = self.start_image_copy(&current);
+                let Some(v) = &mut self.viewer else { return };
+                match started {
+                    Ok(rx) => {
+                        v.copying = Some(rx);
+                        v.notice = Some(("Copying\u{2026}".into(), Instant::now()));
+                    }
+                    Err(e) => {
+                        v.notice = Some((e, Instant::now()));
+                        return self.viewer_changed();
+                    }
+                }
             }
             Part::Link => {
                 let url = self

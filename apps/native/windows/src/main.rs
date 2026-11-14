@@ -661,6 +661,7 @@ impl App {
         self.poll_file_dialog();
         self.poll_attachment_editor();
         self.poll_viewer();
+        self.poll_menu_copy();
         self.gifs_poll();
         self.poll_updates();
         self.poll_app_links();
