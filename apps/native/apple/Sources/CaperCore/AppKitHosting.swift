@@ -82,6 +82,7 @@ import SwiftUI
     public func currentMessage(_ message: ChatMessage) -> ChatMessage? {
         guard message.channelId == model.chat.channelID else { return nil }
         return model.chat.displayedMessages.first { $0.id == message.id }
+            ?? model.chat.displayedPins.first { $0.id == message.id }
     }
 
     public func canEdit(_ message: ChatMessage) -> Bool { model.chat.canEdit(message) }
@@ -170,6 +171,8 @@ import SwiftUI
     /// Dialogs rebuilt in AppKit; the rest still use the SwiftUI dialog.
     private func nativeContent(_ item: AppKitWorkspaceDialogItem, close: @escaping () -> Void) -> AppKitDialogContent? {
         switch item {
+        case .activity:
+            return AppKitActivityInbox(model: model, close: close)
         case .edit(let message):
             return AppKitMessageEditor(chat: model.chat, message: message, close: close)
         case .forward(let message):
@@ -407,21 +410,21 @@ private struct AppKitWorkspaceDialog: View {
     }
 }
 
-/// Pins use the shipping, bounded card list in a native header-anchored popover.
+/// The workspace supplies native pin cards in a header-anchored popover.
 /// Reading pins does not require an editable composer (channel previews too).
 @MainActor public final class AppKitPinsPresenter: NSObject, NSPopoverDelegate {
     private let model: AppModel
-    private let media: AppKitMediaPresenter
     private var popover: NSPopover?
     private var restoreFocus: (() -> Void)?
 
-    public init(model: AppModel, media: AppKitMediaPresenter) {
-        self.model = model; self.media = media; super.init()
+    public init(model: AppModel) {
+        self.model = model; super.init()
     }
 
     public var isAvailable: Bool { model.chat.channelID != nil }
 
-    public func show(from anchor: NSView, composer: ComposerTextView) {
+    public func show(from anchor: NSView, composer: ComposerTextView,
+                     makeContent: (@escaping () -> Void) -> NSViewController) {
         guard let window = anchor.window, isAvailable,
               window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
         if popover != nil { close(); return }
@@ -447,17 +450,9 @@ private struct AppKitWorkspaceDialog: View {
         popover.behavior = .transient
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         popover.delegate = self
-        let host = NSHostingController(rootView: PinnedMessagesView(chat: model.chat, model: model) { [weak self] in self?.close() }
-            .frame(width: width, height: 360)
-            .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
-                guard let self else { return }
-                self.close()
-                self.media.showViewer(request)
-            })
-            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
-            .onChange(of: model.whatsNew.workspaceModalOpen) { [weak self] _, open in if open { self?.close(restoringFocus: false) } }
-            .onExitCommand { [weak self] in self?.close() })
-        host.sizingOptions = [.preferredContentSize]
+        let host = makeContent { [weak self] in self?.close() }
+        host.preferredContentSize = NSSize(width: width, height: 360)
+        host.view.setFrameSize(host.preferredContentSize)
         popover.contentViewController = host
         popover.show(relativeTo: rect, of: content, preferredEdge: content.isFlipped ? .maxY : .minY)
     }
@@ -478,8 +473,7 @@ private struct AppKitWorkspaceDialog: View {
     }
 }
 
-/// On-demand profile surfaces shared with the shipping Mac app. The workspace,
-/// timeline and main composer remain AppKit; no hosting view exists until open.
+/// Native profile cards retain the rich composer and media/editor leaves.
 @MainActor public final class AppKitProfilePresenter: NSObject, NSPopoverDelegate {
     private let model: AppModel
     private var popover: NSPopover?
@@ -524,7 +518,7 @@ private struct AppKitWorkspaceDialog: View {
         popover.behavior = .transient
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         popover.delegate = self
-        let host = NSHostingController(rootView: MentionCardView(model: model, person: person,
+        let host = AppKitProfileCard(model: model, person: person,
             requestBlock: { [weak self, weak window] target in
                 guard let self, let window else { return }
                 self.confirmBlock(target, window: window)
@@ -532,11 +526,7 @@ private struct AppKitWorkspaceDialog: View {
                 // Entrances animate, closing is instant on every motion setting.
                 popover?.animates = false
                 popover?.close()
-            })
-            .onPreferenceChange(ProfileDismissPreference.self) { [weak self] action in self?.dismissAction = action }
-            .preferredColorScheme(.dark)
-            .tint(CaperTheme.terracottaBright))
-        host.sizingOptions = [.preferredContentSize]
+            }, dismissChanged: { [weak self] action in self?.dismissAction = action })
         popover.contentViewController = host
         anchor = view
         popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
@@ -685,7 +675,8 @@ private final class AppKitPointerPassthroughView: NSView {
         let context = model.chat.editingContext
         observation.start(reading: { [model, messageID, emoji] () -> (String?, String, Bool) in
             let chat = model.chat
-            let message = chat.displayedMessages.first { $0.id == messageID && !$0.isDeleted }
+            let message = (chat.displayedMessages.first { $0.id == messageID }
+                ?? chat.displayedPins.first { $0.id == messageID }).flatMap { $0.isDeleted ? nil : $0 }
             let summary = message.flatMap { message in
                 message.reactions?.contains { $0.emoji == emoji } == true
                     ? NativePresentation.reactionSummary(message, emoji: emoji, chat: chat, viewerID: chat.viewerID) : nil
@@ -782,7 +773,7 @@ private final class AppKitPointerPassthroughView: NSView {
         }
     }
 
-    public func messageAttachments(_ message: ChatMessage) -> AppKitAttachmentSurface? {
+    public func messageAttachments(_ message: ChatMessage, beforeViewing: (() -> Void)? = nil) -> AppKitAttachmentSurface? {
         let files = message.content.attachments ?? []
         guard !message.isDeleted, !files.isEmpty || message.content.gif != nil || message.forward != nil else { return nil }
         let chat = model.chat
@@ -791,13 +782,16 @@ private final class AppKitPointerPassthroughView: NSView {
                 if let gif = message.content.gif { MessageGifView(gif: gif) }
                 if !files.isEmpty {
                     MessageAttachmentsView(attachments: files, chat: chat, isAvailable: {
-                        chat.channelID == message.channelId && chat.displayedMessages.contains { $0.id == message.id && !$0.isDeleted }
+                        chat.channelID == message.channelId
+                            && (chat.displayedMessages.first { $0.id == message.id }
+                                ?? chat.displayedPins.first { $0.id == message.id })?.isDeleted == false
                     })
                 }
                 ForwardCardView(message: message, chat: chat) {
                     Task {
                         guard chat.channelID == message.channelId,
-                              let current = chat.displayedMessages.first(where: { $0.id == message.id }),
+                              let current = chat.displayedMessages.first(where: { $0.id == message.id })
+                                ?? chat.displayedPins.first(where: { $0.id == message.id }),
                               !current.isDeleted, current.forward?.message != nil else { return }
                         _ = await chat.onOpenForward?(current)
                     }
@@ -805,6 +799,7 @@ private final class AppKitPointerPassthroughView: NSView {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
+                beforeViewing?()
                 self?.showViewer(request)
             })
         }
@@ -968,7 +963,8 @@ public enum AppKitComposerCounter {
                 close()
                 Task {
                     guard chat.editingContext == context, chat.canInteract,
-                          chat.displayedMessages.contains(where: { $0.id == message.id && !$0.isDeleted }) else { return }
+                          (chat.displayedMessages.first(where: { $0.id == message.id })
+                            ?? chat.displayedPins.first(where: { $0.id == message.id }))?.isDeleted == false else { return }
                     await chat.setReaction(messageID: message.id, emoji: emoji, active: true)
                 }
             }

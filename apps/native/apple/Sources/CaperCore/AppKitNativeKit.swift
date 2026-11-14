@@ -117,6 +117,7 @@ import SwiftUI
     private var tracking: NSTrackingArea?
     var minimumHeight: CGFloat = 0 { didSet { invalidateIntrinsicContentSize() } }
     var fillsWidth = false
+    var showsSelection = false { didSet { if oldValue != showsSelection { refresh() } } }
 
     init(_ title: String, kind: Kind = .secondary, action: @escaping () -> Void) {
         handler = action; self.kind = kind
@@ -153,8 +154,8 @@ import SwiftUI
     private var focused: Bool { window?.firstResponder === self && window?.isKeyWindow == true }
 
     func refresh() {
-        let color: NSColor
-        let fill: NSColor
+        var color: NSColor
+        var fill: NSColor
         var stroke: NSColor = .clear
         switch kind {
         case .primary:
@@ -168,6 +169,11 @@ import SwiftUI
         case .plain:
             color = hovered ? AppKitKit.text : AppKitKit.muted
             fill = .clear
+        }
+        if showsSelection {
+            color = AppKitKit.terracottaBright
+            fill = AppKitKit.terracotta.withAlphaComponent(0.12)
+            stroke = AppKitKit.terracotta
         }
         let size: CGFloat = kind == .primary ? 13 : 12
         let weight: NSFont.Weight = kind == .primary ? .bold : .medium

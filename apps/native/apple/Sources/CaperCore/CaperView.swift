@@ -6301,6 +6301,7 @@ struct MentionCardView: View {
     @Bindable var draft: ProfileMessageDraft
     let person: MentionCardPerson
     private let activity: ActivityItem?
+    private let nativeComposerOnly: Bool
     /// Shows the host's block confirmation once the card has closed.
     let requestBlock: (BlockTarget) -> Void
     let close: () -> Void
@@ -6338,11 +6339,13 @@ struct MentionCardView: View {
     }
     private static let redundantInvitation = ["user already in space": "Member", "user already invited": "Invited"]
 
-    init(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void, close: @escaping () -> Void) {
+    init(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void, close: @escaping () -> Void,
+         nativeComposerOnly: Bool = false) {
         self.model = model
         self.draft = model.profileMessageDraft(person: person)
         self.person = person
         self.activity = nil
+        self.nativeComposerOnly = nativeComposerOnly
         self.requestBlock = requestBlock
         self.close = close
     }
@@ -6351,6 +6354,7 @@ struct MentionCardView: View {
         self.model = model
         self.draft = model.activityDraft(activity)
         self.activity = activity
+        self.nativeComposerOnly = true
         self.person = MentionCardPerson(id: activity.actorId, username: activity.actorName,
                                        displayName: nil, avatarId: activity.avatarId, isSelf: false)
         self.requestBlock = { _ in }
@@ -6388,6 +6392,8 @@ struct MentionCardView: View {
                         .id(pictureViewer.id)
                 }
             }
+            .preference(key: ProfileComposerPresentationSize.self,
+                        value: nativeComposerOnly && covered ? CGSize(width: 720, height: 600) : nil)
             #else
             profileCard
                 .sheet(item: $pictureViewer) { shown in
@@ -6563,7 +6569,7 @@ struct MentionCardView: View {
 
     private var profileCard: some View {
         Group {
-            if activity != nil { composer }
+            if nativeComposerOnly { composer }
             else { profileContents }
         }
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
@@ -6635,7 +6641,7 @@ struct MentionCardView: View {
         }
         // Contain, so this identifier does not replace each child's own.
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("mention-card")
+        .accessibilityIdentifier(nativeComposerOnly ? "mention-card-composer-leaf" : "mention-card")
     }
 
     private var canMessage: Bool {
@@ -9581,7 +9587,7 @@ private struct LoginActionLabel: View {
     }
 }
 
-private struct ProfileSheet: View {
+struct ProfileSheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
     @State private var draft: ProfileEditDraft?

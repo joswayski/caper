@@ -40,9 +40,9 @@ public enum NativePresentation {
         MessageGrouping.isGrouped(message, after: previous, inThread: inThread)
     }
 
-    public static func time(_ value: String) -> String {
+    public static func time(_ value: String, includingDate: Bool = false) -> String {
         guard let date = ChatTimestamp.date(value) else { return "" }
-        return date.formatted(date: .omitted, time: .shortened)
+        return date.formatted(date: includingDate ? .abbreviated : .omitted, time: .shortened)
     }
 
     public static func dayLabel(_ value: String) -> String? { ChatDateDivider.fullDateLabel(value) }
