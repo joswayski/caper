@@ -8,7 +8,7 @@ import SwiftUI
     private let model: AppModel
     private let inThread: Bool
     private var target: ChatModel.AttachmentTarget?
-    private var overlay: AppKitDropOverlay?
+    private var overlay: NativeFileDropOverlay?
     public var acceptedDrop: (() -> Void)?
     public override var isFlipped: Bool { true }
 
@@ -54,10 +54,9 @@ import SwiftUI
         let text = AttachmentPolicy.dropText(channel: chat.channelName,
             direct: model.selectedDirectMessageID != nil || model.visit?.direct == true,
             attached: inThread ? chat.threadAttachmentDrafts.count : chat.attachmentDrafts.count)
-        let overlay = AppKitDropOverlay(rootView: FileDropOverlay(title: inThread ? "Add files to thread" : text.title, detail: text.detail))
+        let overlay = NativeFileDropOverlay(title: inThread ? "Add files to thread" : text.title, detail: text.detail)
         overlay.frame = bounds
         overlay.autoresizingMask = [.width, .height]
-        overlay.setAccessibilityIdentifier("attachment-drop-overlay")
         addSubview(overlay)
         self.overlay = overlay
         return .copy
@@ -106,11 +105,6 @@ import SwiftUI
 
     private func hideOverlay() { overlay?.removeFromSuperview(); overlay = nil }
     private func resetHover() { hideOverlay(); target = nil }
-}
-
-/// Decorative only: never replace the destination or steal composer focus.
-private final class AppKitDropOverlay: NSHostingView<FileDropOverlay> {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// One accepted drag. Only disk work runs on the serial background queue;

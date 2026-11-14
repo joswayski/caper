@@ -1,5 +1,10 @@
 import XCTest
 @testable import CaperCore
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Runs every case in shared/messages/drop-cases.json, as web and the other
 /// native clients do (apps/web/src/server/drop.test.ts).
@@ -26,6 +31,40 @@ final class FileDropTests: XCTestCase {
             let text = AttachmentPolicy.dropText(channel: item.channel, direct: item.direct, attached: item.attached)
             XCTAssertEqual(text.title, item.title, item.note)
             XCTAssertEqual(text.detail, item.detail, item.note)
+        }
+    }
+
+    @MainActor func testNativeOverlayExposesDestinationWithoutInterceptingInput() {
+        #if os(macOS)
+        _ = NSApplication.shared
+        let destination = NSView()
+        #else
+        let destination = UIView()
+        #endif
+        for (title, detail) in [
+            ("Add files to #release-notes", "Drop to attach · up to 10 files"),
+            ("Add files to thread", "Remove a file before adding another."),
+        ] {
+            let overlay = NativeFileDropOverlay(title: title, detail: detail)
+            destination.addSubview(overlay)
+            for width in [CGFloat(320), CGFloat(1024)] {
+                destination.frame = CGRect(x: 0, y: 0, width: width, height: 600)
+                overlay.frame = destination.bounds
+                let point = CGPoint(x: width / 2, y: 300)
+                #if os(macOS)
+                overlay.layoutSubtreeIfNeeded()
+                XCTAssertTrue(destination.hitTest(point) === destination)
+                XCTAssertEqual(overlay.accessibilityIdentifier(), "attachment-drop-overlay")
+                XCTAssertEqual(overlay.accessibilityLabel(), title + "\n" + detail)
+                #else
+                overlay.layoutIfNeeded()
+                XCTAssertTrue(destination.hitTest(point, with: nil) === destination)
+                XCTAssertTrue(overlay.isAccessibilityElement)
+                XCTAssertEqual(overlay.accessibilityIdentifier, "attachment-drop-overlay")
+                XCTAssertEqual(overlay.accessibilityLabel, title + "\n" + detail)
+                #endif
+            }
+            overlay.removeFromSuperview()
         }
     }
 
