@@ -1155,9 +1155,10 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::UpdateDock => (39, 1),
         Id::MembersToggle => (39, 2),
         Id::PinsButton => (39, 3),
-        Id::Pins(PinPart::Close) => (70, 0),
-        Id::Pins(PinPart::Card(k)) => (70, 1 + 2 * k),
-        Id::Pins(PinPart::Go(k)) => (70, 2 + 2 * k),
+        // Groups 70–76 and 80–86 belong to forwarded cards (`ForwardPart`).
+        Id::Pins(PinPart::Close) => (54, 0),
+        Id::Pins(PinPart::Card(k)) => (54, 1 + 2 * k),
+        Id::Pins(PinPart::Go(k)) => (54, 2 + 2 * k),
         Id::AccountMenu => (40, 0),
         Id::DirectOptions(k) => (43, k),
         Id::DmMenu => (44, 0),
@@ -1173,7 +1174,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Members => (7, 0),
         Id::Member(i) => (8, i),
         Id::MemberSearch(p) => (
-            71,
+            55,
             match p {
                 SPartM::Open => 0,
                 SPartM::Field => 1,
