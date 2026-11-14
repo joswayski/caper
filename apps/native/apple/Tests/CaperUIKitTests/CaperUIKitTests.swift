@@ -883,9 +883,24 @@ final class CaperUIKitTests: XCTestCase {
 
         UIPasteboard.general.string = String(repeating: "a", count: 3100)
         composer.press(forDuration: 1.0)
-        let paste = app.menuItems["Paste"].exists ? app.menuItems["Paste"] : app.buttons["Paste"]
-        XCTAssertTrue(paste.waitForExistence(timeout: 5))
-        paste.tap()
+        // The edit menu leads with formatting, as SwiftUI's does, so Paste
+        // sits on a later page behind "Next Page". The iPad keyboard's
+        // shortcut bar has its own Paste button; skip that one.
+        let menuItem = NSPredicate(format: "label IN %@", ["Paste", "Next Page"])
+        XCTAssertTrue(app.descendants(matching: .any).matching(menuItem).firstMatch.waitForExistence(timeout: 5),
+                      "Long-pressing the composer opens the edit menu")
+        let menuPaste = NSPredicate(format: "label == %@ AND NOT (identifier BEGINSWITH %@)", "Paste", "assistantPaste")
+        func paste() -> XCUIElement {
+            let item = app.menuItems.matching(menuPaste).firstMatch
+            return item.exists ? item : app.buttons.matching(menuPaste).firstMatch
+        }
+        let nextPage = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Next Page")).firstMatch
+        for _ in 0..<4 where !paste().exists && nextPage.exists {
+            nextPage.tap()
+            _ = paste().waitForExistence(timeout: 1)
+        }
+        XCTAssertTrue(paste().exists, "Paste is in the edit menu")
+        paste().tap()
         let counter = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", "of 4,000 characters")).firstMatch
         XCTAssertTrue(counter.waitForExistence(timeout: 10), "The counter shows from 3,000")
         screenshot("uikit-composer-counter")
