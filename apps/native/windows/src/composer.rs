@@ -53,6 +53,8 @@ pub struct Composer {
     /// the layout's text), drawn under the text.
     pub(crate) spoilers: Vec<(u32, u32)>,
     pub(crate) quotes: Vec<(u32, u32)>,
+    /// Complete mention ranges in the displayed UTF-16 draft.
+    pub(crate) mentions: Vec<(u32, u32)>,
     /// What typing left in a formatted composer; `None` in plain fields.
     pub(crate) rich: Option<Typing>,
     /// A typed high surrogate waiting for its low half (formatted only).
@@ -811,6 +813,49 @@ impl Composer {
         self.text_h = gfx::metrics(&layout).height.max(LINE);
         self.layout = Some(layout);
         Ok(self.text_h)
+    }
+
+    /// Tint the visible draft, not its Markdown source. Layout effects never
+    /// change the wire text, selection or IME; refresh even while unfocused.
+    pub fn tint_mentions(
+        &mut self,
+        g: &Gfx,
+        people: &[caper_client::mentions::Person],
+        specials: caper_client::mentions::Specials,
+    ) -> Result<bool> {
+        let text = String::from_utf16_lossy(&self.display());
+        let ranges: Vec<_> = caper_client::mentions::draft_highlights(&text, people, specials)
+            .into_iter()
+            .map(|r| {
+                (
+                    text[..r.start].encode_utf16().count() as u32,
+                    text[r].encode_utf16().count() as u32,
+                )
+            })
+            .collect();
+        if let Some(layout) = &self.layout {
+            unsafe {
+                layout.SetDrawingEffect(
+                    &g.brushes.text,
+                    DWRITE_TEXT_RANGE {
+                        startPosition: 0,
+                        length: u32::MAX,
+                    },
+                )?;
+                for &(start, length) in &ranges {
+                    layout.SetDrawingEffect(
+                        &g.brushes.terracotta,
+                        DWRITE_TEXT_RANGE {
+                            startPosition: start,
+                            length,
+                        },
+                    )?;
+                }
+            }
+        }
+        let changed = self.mentions != ranges;
+        self.mentions = ranges;
+        Ok(changed)
     }
 
     /// Editing keys every text field shares: caret movement, deletion,

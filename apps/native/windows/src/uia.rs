@@ -352,6 +352,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 .as_ref()
                 .map(|_| Id::Suggest)
                 .into_iter()
+                .chain(a.menu.as_ref().map(|_| Id::Menu))
                 .chain(a.profile.as_ref().map(|_| Id::Profile))
                 .collect();
             if a.profile_emoji_open() { out.insert(0, Id::Picker); }
@@ -395,7 +396,6 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             }
             out.extend(a.account_menu.as_ref().map(|_| Id::AccountMenu));
             out.extend(a.dm_menu.as_ref().map(|_| Id::DmMenu));
-            out.extend(a.menu.as_ref().map(|_| Id::Menu));
             if !a.profile_emoji_open() { out.extend(a.picker.as_ref().map(|_| Id::Picker)); }
             out.extend(a.gifs.as_ref().map(|_| Id::Gifs));
             out

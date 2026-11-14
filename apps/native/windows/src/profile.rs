@@ -553,6 +553,7 @@ impl App {
             return;
         }
         if let Some(card) = self.profile.take() {
+            self.close_menu();
             if self.profile_emoji_open() {
                 self.close_picker();
             }
@@ -849,7 +850,7 @@ impl App {
         ctrl: bool,
         shift: bool,
     ) -> Option<Option<LRESULT>> {
-        if self.profile_emoji_open() {
+        if self.profile_emoji_open() || self.menu.is_some() {
             return None;
         }
         let done = Some(Some(LRESULT(0)));
@@ -920,6 +921,10 @@ impl App {
                 done
             }
             WM_LBUTTONDBLCLK if on_card => done,
+            WM_RBUTTONDOWN if hit == Some(PPart::Picture) => {
+                self.profile_picture_menu(x, y);
+                done
+            }
             WM_RBUTTONDOWN if !on_card && !v.busy => {
                 self.close_profile();
                 None
@@ -940,6 +945,18 @@ impl App {
             }
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
+                if (vk == VK_APPS || (vk == VK_F10 && shift))
+                    && self.profile.as_ref()?.key_focus == Some(PPart::Picture)
+                {
+                    if let Some((_, (x, y, _, h))) = self
+                        .profile_parts()
+                        .into_iter()
+                        .find(|(p, _)| *p == PPart::Picture)
+                    {
+                        self.profile_picture_menu(x, y + h);
+                    }
+                    return done;
+                }
                 if vk == VK_TAB {
                     let parts: Vec<_> = self
                         .profile_parts()
@@ -1030,6 +1047,18 @@ impl App {
                 done
             }
             _ => None,
+        }
+    }
+
+    fn profile_picture_menu(&mut self, x: f32, y: f32) {
+        let Some(v) = self.profile_view() else { return };
+        if let Some(image) = v
+            .profile
+            .picture()
+            .and_then(|s| caper_client::attachments::profile_picture(s, &v.profile.title()))
+        {
+            self.set_profile_focus(false);
+            self.open_image_menu(image, x, y);
         }
     }
 

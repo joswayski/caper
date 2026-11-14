@@ -533,9 +533,9 @@ impl App {
                 prev = v.cast()?;
             }
             root.AddVisual(&card_p.visual, true, &prev)?;
-            root.AddVisual(&menu_p.visual, true, &card_p.visual)?;
-            root.AddVisual(&profile_p.visual, true, &menu_p.visual)?;
-            root.AddVisual(&suggest_p.visual, true, &profile_p.visual)?;
+            root.AddVisual(&profile_p.visual, true, &card_p.visual)?;
+            root.AddVisual(&menu_p.visual, true, &profile_p.visual)?;
+            root.AddVisual(&suggest_p.visual, true, &menu_p.visual)?;
             root.AddVisual(&picker_p.visual, true, &suggest_p.visual)?;
             root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&dm_menu_p.visual, true, &gifs_p.visual)?;
@@ -4039,6 +4039,7 @@ impl App {
             self.apply_layout()?;
         }
         self.update_history()?;
+        self.tint_drafts()?;
         // Before the panels, which take the rest of the damage flags.
         self.draw_actions()?;
         self.draw_gifs()?;

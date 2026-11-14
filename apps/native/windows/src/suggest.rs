@@ -150,6 +150,21 @@ impl App {
         live.mention_people(peer)
     }
 
+    /// Membership can change without a keystroke; all three drafts keep their
+    /// tint when focus moves or suggestions are dismissed.
+    pub fn tint_drafts(&mut self) -> Result<()> {
+        let (people, specials) = self.suggest_people(Field::Main);
+        self.dirty.composer |= self.composer.tint_mentions(&self.g, &people, specials)?;
+        if let Some(t) = &mut self.thread {
+            self.dirty.thread |= t.composer.tint_mentions(&self.g, &people, specials)?;
+        }
+        let (people, specials) = self.suggest_people(Field::Profile);
+        if let Some(c) = &mut self.profile {
+            self.dirty.profile |= c.field.tint_mentions(&self.g, &people, specials)?;
+        }
+        Ok(())
+    }
+
     /// Recomputes the token at the focused composer's caret and its
     /// suggestions; called after every composer change.
     pub fn refresh_suggest(&mut self) {
@@ -299,7 +314,7 @@ impl App {
     }
 
     /// Escape: hides the popup for this token until the text or caret moves.
-    fn suggest_dismiss(&mut self) {
+    pub(crate) fn suggest_dismiss(&mut self) {
         let Some(s) = self.suggest.take() else { return };
         if let Some(f) = self.suggest_field_mut(s.field) {
             let (text, caret) = (f.text.clone(), f.caret);

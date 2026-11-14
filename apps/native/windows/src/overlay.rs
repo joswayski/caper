@@ -1667,15 +1667,7 @@ impl App {
             .then(|| a.clone())
         });
         if let Some(image) = image {
-            let Some(id) = self.c.messages.get(i).map(|m| m.id.clone()) else {
-                return;
-            };
-            self.close_picker();
-            let items = vec![Item::CopyImage, Item::CopyImageLink, Item::OpenImage];
-            let mut menu = Menu::new(i, id, items, x, y, y, self.h);
-            menu.title = "Image";
-            menu.image = Some(image);
-            self.menu = Some(menu);
+            return self.open_image_menu(image, x, y);
         } else if let Some(link) = self.link_at(x, y) {
             let Some(id) = self.c.messages.get(i).map(|m| m.id.clone()) else {
                 return;
@@ -1696,6 +1688,20 @@ impl App {
             menu.selection = selection;
         }
         menu.place_at(x, y, w, h);
+        self.overlay_changed();
+    }
+
+    /// History attachments and profile pictures share these actions and the
+    /// copy worker. A picture need not belong to any loaded message.
+    pub fn open_image_menu(&mut self, image: core::Attachment, x: f32, y: f32) {
+        self.close_picker();
+        self.suggest_dismiss();
+        let items = vec![Item::CopyImage, Item::CopyImageLink, Item::OpenImage];
+        let mut menu = Menu::new(0, String::new(), items, x, y, y, self.h);
+        menu.title = "Image";
+        menu.image = Some(image);
+        menu.place_at(x, y, self.w, self.h);
+        self.menu = Some(menu);
         self.overlay_changed();
     }
 
@@ -1745,6 +1751,24 @@ impl App {
         let (Some(item), Some(live)) = (menu.items.get(k).copied(), &mut self.live) else {
             return;
         };
+        if matches!(item, Item::CopyImageLink | Item::OpenImage) {
+            if let Some(image) = &menu.image {
+                if item == Item::CopyImageLink {
+                    if let Some(url) = live.media.resolve(image).url {
+                        crate::set_clipboard(self.hwnd, &gfx::wide(&url));
+                    }
+                } else {
+                    let unix = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs() as i64);
+                    // An expiring URL opens once refreshed (`Update::Open`).
+                    if let Some(url) = live.media.open(image, unix) {
+                        crate::open_link(&url);
+                    }
+                }
+            }
+            return;
+        }
         let Some(m) = live.message(&menu.id) else {
             return;
         };
@@ -1764,22 +1788,6 @@ impl App {
             Item::CopySelection => crate::set_clipboard(self.hwnd, &menu.selection),
             Item::OpenLink => crate::open_link(&menu.link),
             Item::CopyLink => crate::set_clipboard(self.hwnd, &gfx::wide(&menu.link)),
-            Item::CopyImageLink => {
-                if let Some(url) = menu.image.and_then(|a| live.media.resolve(&a).url) {
-                    crate::set_clipboard(self.hwnd, &gfx::wide(&url));
-                }
-            }
-            Item::OpenImage => {
-                let unix = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs() as i64);
-                // An expiring URL opens once refreshed (`Update::Open`).
-                if let Some(image) = &menu.image
-                    && let Some(url) = live.media.open(image, unix)
-                {
-                    crate::open_link(&url);
-                }
-            }
             _ => {}
         }
         if let Err(e) = self.drain_live() {
