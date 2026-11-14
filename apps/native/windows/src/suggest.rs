@@ -156,7 +156,7 @@ impl App {
         let (people, specials) = self.suggest_people(Field::Main);
         self.dirty.composer |= self.composer.tint_mentions(&self.g, &people, specials)?;
         if let Some(t) = &mut self.thread {
-            self.dirty.thread |= t.composer.tint_mentions(&self.g, &people, specials)?;
+            self.dirty.thread_box |= t.composer.tint_mentions(&self.g, &people, specials)?;
         }
         let (people, specials) = self.suggest_people(Field::Profile);
         if let Some(c) = &mut self.profile {
