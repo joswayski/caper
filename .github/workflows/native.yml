@@ -9,6 +9,11 @@ on:
   schedule:
     - cron: '0 9 * * *'
   workflow_dispatch:
+    inputs:
+      android_only:
+        description: Run only the Android suite on GitHub-hosted Linux (no personal machines)
+        type: boolean
+        default: false
 
 # No signing credentials, release, store upload, or deploy.
 permissions:
@@ -24,12 +29,14 @@ concurrency:
 
 jobs:
   route:
+    if: ${{ !inputs.android_only }}
     uses: ./.github/workflows/mac-route.yml
     secrets: inherit
 
   desktop:
     name: Desktop / ${{ matrix.target }}
     needs: route
+    if: ${{ !inputs.android_only }}
     strategy:
       fail-fast: false
       matrix:
@@ -128,6 +135,7 @@ jobs:
   linux-gtk:
     name: Linux GTK / development check
     needs: route
+    if: ${{ !inputs.android_only }}
     runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
@@ -212,6 +220,7 @@ jobs:
   windows-native:
     name: Windows native client (development)
     needs: route
+    if: ${{ !inputs.android_only }}
     runs-on: ${{ needs.route.outputs.windows == 'true' && fromJSON('["self-hosted","josewin"]') || 'windows-2025' }}
     timeout-minutes: 60
     steps:
@@ -256,7 +265,7 @@ jobs:
   apple:
     name: Apple / ${{ matrix.target }}
     needs: route
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.android_only
     strategy:
       fail-fast: false
       matrix:
@@ -404,7 +413,7 @@ jobs:
   appkit:
     name: Apple / AppKit development host
     needs: route
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.android_only
     # A sibling job, not a dependency of the shipping Apple clients.
     runs-on: [self-hosted, josemac-ui]
     timeout-minutes: 60
@@ -455,7 +464,7 @@ jobs:
   uikit:
     name: Apple / UIKit development client
     needs: route
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.android_only
     # A sibling job, never part of the shipping iOS build or release.yml. Its
     # UI tests drive the iOS simulator, so it shares the simulator VM.
     runs-on: [self-hosted, josemac-sim]
@@ -498,7 +507,8 @@ jobs:
   android:
     name: Android / development APK
     needs: route
-    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
+    if: ${{ !cancelled() && (inputs.android_only || needs.route.result == 'success') }}
+    runs-on: ${{ !inputs.android_only && needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       # The emulator system image no longer fits beside the build on a stock
@@ -584,7 +594,7 @@ jobs:
           profile: pixel_7_pro
           disable-animations: true
           script: |
-            CMAKE_BUILD_PARALLEL_LEVEL=1 apps/native/android/gradlew -p apps/native/android --no-daemon --max-workers=1 -PcaperFixtureMode=true -PcaperApiBaseUrl=http://localhost:3001 connectedDebugAndroidTest
+            python scripts/android-fixture-test.py
             mkdir -p apps/native/android/dist/ui
             find apps/native/android/app/build/outputs/connected_android_test_additional_output -type f \( -name 'voice-roster-connected-*.png' -o -name 'profile-*-test-fixture.png' -o -name 'reaction-*-test-fixture.png' -o -name 'attach-drawer-*-test-fixture.png' \) -exec cp {} apps/native/android/dist/ui/ \;
             test -s apps/native/android/dist/ui/voice-roster-connected-closed.png && test -s apps/native/android/dist/ui/voice-roster-connected-open.png
