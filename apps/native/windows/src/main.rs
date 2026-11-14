@@ -58,6 +58,7 @@ mod list;
 mod live;
 mod member_search;
 mod model;
+mod motion;
 mod pins;
 mod signin;
 mod text;
@@ -212,6 +213,7 @@ struct Panel {
     visual: IDCompositionVisual2,
     surface: Option<IDCompositionSurface>,
     size: (u32, u32),
+    entrance: Option<motion::Entrance>,
 }
 
 impl Panel {
@@ -220,13 +222,25 @@ impl Panel {
             visual: g.visual()?,
             surface: None,
             size: (0, 0),
+            entrance: None,
         })
+    }
+
+    fn entering(mut self, g: &Gfx, kind: motion::Kind) -> Self {
+        self.entrance = Some(motion::Entrance::new(&g.dcomp, kind));
+        self
     }
 
     /// Ensures a surface of this pixel size; true when it was (re)created.
     fn ensure(&mut self, g: &Gfx, w: u32, h: u32) -> Result<bool> {
         if self.surface.is_some() && self.size == (w, h) {
             return Ok(false);
+        }
+        // Resizing an already shown panel must never animate its geometry.
+        if self.surface.is_some()
+            && let Some(entrance) = &self.entrance
+        {
+            entrance.settle(&self.visual)?;
         }
         let s = g.surface(w, h)?;
         unsafe { self.visual.SetContent(&s)? };
@@ -236,6 +250,9 @@ impl Panel {
     }
 
     fn offset(&self, x: f32, y: f32) -> Result<()> {
+        if let Some(entrance) = &self.entrance {
+            return entrance.place(&self.visual, x, y);
+        }
         unsafe {
             self.visual.SetOffsetX2(x)?;
             self.visual.SetOffsetY2(y)
@@ -244,7 +261,13 @@ impl Panel {
 
     fn draw(&self, scale: f32, f: impl FnOnce(&ID2D1DeviceContext) -> Result<()>) -> Result<()> {
         match &self.surface {
-            Some(s) => gfx::draw(s, scale, f),
+            Some(s) => {
+                gfx::draw(s, scale, f)?;
+                if let Some(entrance) = &self.entrance {
+                    entrance.start(&self.visual, scale)?;
+                }
+                Ok(())
+            }
             None => Ok(()),
         }
     }
@@ -385,6 +408,8 @@ pub struct App {
     opened_attachments: Vec<std::sync::Arc<caper_client::uploads::Scratch>>,
     menu_p: Panel,
     dialog_p: Panel,
+    /// Dialog content rises separately from its stationary scrim.
+    dialog_card_p: Panel,
     /// The reaction picker, the reply above the composer, and the toolbar
     /// control under the pointer and what the toolbar last drew.
     pub picker: Option<actions::Picker>,
@@ -483,28 +508,29 @@ impl App {
             let composer_p = Panel::new(&g)?;
             let toolbar = Panel::new(&g)?;
             let signin_p = Panel::new(&g)?;
-            let menu_p = Panel::new(&g)?;
-            let dialog_p = Panel::new(&g)?;
+            let menu_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
+            let dialog_p = Panel::new(&g)?.entering(&g, motion::Kind::Fade);
+            let dialog_card_p = Panel::new(&g)?.entering(&g, motion::Kind::Dialog);
             let viewer_p = Panel::new(&g)?;
-            let pins_p = Panel::new(&g)?;
-            let picker_p = Panel::new(&g)?;
-            let gifs_p = Panel::new(&g)?;
+            let pins_p = Panel::new(&g)?.entering(&g, motion::Kind::Fade);
+            let picker_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
+            let gifs_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
             let empty_p = Panel::new(&g)?;
             let reply_p = Panel::new(&g)?;
             let note_p = Panel::new(&g)?;
             let typing_p = Panel::new(&g)?;
             let lip_p = Panel::new(&g)?;
-            let thread_p = Panel::new(&g)?;
-            let thread_box_p = Panel::new(&g)?;
+            let thread_p = Panel::new(&g)?.entering(&g, motion::Kind::Thread);
+            let thread_box_p = Panel::new(&g)?.entering(&g, motion::Kind::Thread);
             let drop_p = Panel::new(&g)?;
-            let card_p = Panel::new(&g)?;
-            let profile_p = Panel::new(&g)?;
-            let suggest_p = Panel::new(&g)?;
-            let tip_p = Panel::new(&g)?;
+            let card_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
+            let profile_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
+            let suggest_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
+            let tip_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
             let zoom_p = Panel::new(&g)?;
             let autoscroll_p = Panel::new(&g)?;
-            let settings_p = Panel::new(&g)?;
-            let dm_menu_p = Panel::new(&g)?;
+            let settings_p = Panel::new(&g)?.entering(&g, motion::Kind::Fade);
+            let dm_menu_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -545,7 +571,8 @@ impl App {
             root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&dm_menu_p.visual, true, &gifs_p.visual)?;
             root.AddVisual(&dialog_p.visual, true, &dm_menu_p.visual)?;
-            root.AddVisual(&pins_p.visual, true, &dialog_p.visual)?;
+            root.AddVisual(&dialog_card_p.visual, true, &dialog_p.visual)?;
+            root.AddVisual(&pins_p.visual, true, &dialog_card_p.visual)?;
             root.AddVisual(&viewer_p.visual, true, &pins_p.visual)?;
             root.AddVisual(&settings_p.visual, true, &viewer_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &settings_p.visual)?;
@@ -654,6 +681,7 @@ impl App {
                 opened_attachments: Vec::new(),
                 menu_p,
                 dialog_p,
+                dialog_card_p,
                 picker: None,
                 picker_p,
                 gifs: None,
@@ -953,10 +981,15 @@ impl App {
                             crate::avatars::Face::avatar(&m.author),
                         ));
                     }
+                    let watching = self.at_end
+                        && self.watching_arrivals()
+                        && self.live.as_ref().is_some_and(|l| !l.has_newer());
                     let mut new = live::message(&m, author, grouped, me.as_deref());
                     new.reaction_error = error;
                     new.date = date;
                     self.c.messages.push(new);
+                    self.rows.arrivals.received(&m.id, watching, Instant::now());
+                    self.arm_arrivals();
                     self.rows.append(&self.g, &self.c)?;
                     self.need = true;
                 }
@@ -2052,6 +2085,7 @@ impl App {
                 let (pw, ph) = ((lp.0 & 0xffff) as f32, ((lp.0 >> 16) & 0xffff) as f32);
                 self.resized(pw, ph);
             }
+            WM_SETTINGCHANGE => self.motion_changed(),
             WM_TIMER => match wp.0 {
                 TIMER_BENCH if self.bench.tick() => self.quit = true,
                 TIMER_LIVE => unsafe {
@@ -2092,6 +2126,7 @@ impl App {
                 TIMER_MEDIA => self.next_gif_frame(),
                 drop_overlay::TIMER_DROP => self.need = true,
                 autoscroll::TIMER_AUTOSCROLL => self.autoscroll_tick(),
+                motion::TIMER_ARRIVAL => self.arrivals_tick(),
                 thread::TIMER_MEDIA => self.thread_media_tick(),
                 pins::TIMER_PINS => self.pins_tick(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
@@ -3483,6 +3518,9 @@ impl App {
                 for (i, space) in c.spaces.iter().enumerate() {
                     let (x, y, w, h) = Self::space_rect(i);
                     let r = rect(x, y, x + w, y + h);
+                    if i == c.space {
+                        motion::space_glow(dc, r)?;
+                    }
                     fill_round(
                         dc,
                         r,

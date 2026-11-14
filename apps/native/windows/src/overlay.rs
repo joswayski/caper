@@ -1229,11 +1229,12 @@ impl Dialog {
         Ok(())
     }
 
-    /// Draws the scrim and the card over a `w` × `h` window. Call after
+    /// Draws the card over a `w` × `h` window; its scrim is a separate
+    /// stationary surface so the entrance never uncovers a window edge. Call after
     /// [`Dialog::relayout`].
     pub fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, w: f32, h: f32) -> Result<()> {
         unsafe {
-            dc.Clear(Some(&gfx::color(BLACKOUT, 0.6)));
+            dc.Clear(None);
             let _ = (w, h);
             let (cx, cy, cw, ch) = self.card;
             let card = rect(cx, cy, cx + cw, cy + ch);
@@ -2568,6 +2569,7 @@ impl App {
     /// Redraws the menu and dialog surfaces when they changed.
     pub fn draw_overlays(&mut self) -> windows::core::Result<()> {
         if self.viewer.is_some() {
+            self.dialog_card_p.offset(-100_000.0, 0.0)?;
             self.dirty.overlay = false;
             return self.draw_viewer();
         }
@@ -2588,6 +2590,7 @@ impl App {
             None => self.menu_p.offset(-10_000.0, 0.0)?,
         }
         if let Some(e) = &self.attachment_editor {
+            self.dialog_card_p.offset(-100_000.0, 0.0)?;
             self.dialog_p.ensure(g, px(self.w), px(self.h))?;
             self.dialog_p.offset(0.0, 0.0)?;
             self.dialog_p.draw(s, |dc| e.draw(g, dc, self.w))?;
@@ -2597,10 +2600,21 @@ impl App {
             Some(d) => {
                 self.dialog_p.ensure(g, px(self.w), px(self.h))?;
                 self.dialog_p.offset(0.0, 0.0)?;
+                self.dialog_p.draw(s, |dc| {
+                    unsafe {
+                        dc.Clear(Some(&gfx::color(BLACKOUT, 0.6)));
+                    }
+                    Ok(())
+                })?;
+                self.dialog_card_p.ensure(g, px(self.w), px(self.h))?;
+                self.dialog_card_p.offset(0.0, 0.0)?;
                 let (w, h) = (self.w, self.h);
-                self.dialog_p.draw(s, |dc| d.draw(g, dc, w, h))?;
+                self.dialog_card_p.draw(s, |dc| d.draw(g, dc, w, h))?;
             }
-            None => self.dialog_p.offset(-100_000.0, 0.0)?,
+            None => {
+                self.dialog_p.offset(-100_000.0, 0.0)?;
+                self.dialog_card_p.offset(-100_000.0, 0.0)?;
+            }
         }
         Ok(())
     }

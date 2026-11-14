@@ -424,6 +424,7 @@ pub struct Rows {
     pub lo: usize,
     pub anchor_bottom: f64,
     pictures: HashMap<usize, ID2D1Bitmap1>,
+    pub arrivals: crate::motion::Arrivals,
 }
 
 impl Rows {
@@ -436,6 +437,7 @@ impl Rows {
             lo: n,
             anchor_bottom: 0.0,
             pictures: HashMap::new(),
+            arrivals: Default::default(),
         }
     }
 
@@ -1394,7 +1396,13 @@ pub fn draw_row(
     let Some(row) = rows.row(i) else {
         return Ok(());
     };
-    draw_content(g, dc, c, row, i, i, y, sel, bitmap, files)
+    let progress = rows.arrivals.progress(&m.id);
+    crate::motion::row(
+        dc,
+        rect(0.0, y, BODY_X + row.width + PAD_X, y + row.height),
+        progress,
+        |rise| draw_content(g, dc, c, row, i, i, y + rise, sel, bitmap, files),
+    )
 }
 
 fn draw_content(

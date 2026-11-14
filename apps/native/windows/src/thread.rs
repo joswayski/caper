@@ -227,6 +227,7 @@ impl Pane {
         view: (Conversation, live::Ids, Option<u64>),
         state: (bool, bool, bool),
         vh: f32,
+        watching: bool,
     ) -> Result<()> {
         let from_bottom = self.content_h() - self.scroll;
         let (mut c, ids, count) = view;
@@ -246,7 +247,17 @@ impl Pane {
             .hover_row
             .and_then(|i| self.c.messages.get(i))
             .and_then(|m| ids.rows.get(&m.id).copied());
+        let before: Vec<_> = self.c.messages.iter().map(|m| m.id.clone()).collect();
+        let after: Vec<_> = c.messages.iter().map(|m| m.id.clone()).collect();
+        let mut arrivals = std::mem::take(&mut self.rows.arrivals);
+        arrivals.observe(
+            &before,
+            &after,
+            watching && self.at_end && !self.loading && !state.0,
+            std::time::Instant::now(),
+        );
         self.rows = Rows::new(c.messages.len());
+        self.rows.arrivals = arrivals;
         self.rows.set_width(Rows::body_width(THREAD_W));
         self.c = c;
         self.ids = ids;
@@ -1321,9 +1332,11 @@ impl App {
             self.thread_box_changed();
         }
         let vh = self.thread_vh();
+        let watching = self.watching_arrivals();
         if let Some(p) = &mut self.thread {
-            p.set(&self.g, view, state, vh)?;
+            p.set(&self.g, view, state, vh, watching)?;
         }
+        self.arm_arrivals();
         if let Some(id) = self.live.as_mut().and_then(|l| l.take_thread_focus())
             && let Some(p) = &mut self.thread
         {
