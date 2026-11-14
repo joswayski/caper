@@ -571,11 +571,15 @@ struct NativeMessageTextEditor: UIViewRepresentable {
     @Environment(\.isEnabled) private var isEnabled
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
+        makeNativeView(coordinator: context.coordinator)
+    }
+    /// Native dialogs use the same TextKit delegate without a hosting view.
+    func makeNativeView(coordinator: Coordinator) -> UITextView {
         let storage = NSTextStorage()
         let layout = DraftLinkLayoutManager(); storage.addLayoutManager(layout)
         let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         container.widthTracksTextView = true; layout.addTextContainer(container)
-        let view = ComposerTextView(frame: .zero, textContainer: container); view.delegate = context.coordinator
+        let view = ComposerTextView(frame: .zero, textContainer: container); view.delegate = coordinator
         layout.delegate = view.composerGlyphs
         let touchDown = TouchDownObserver(target: nil, action: nil)
         touchDown.cancelsTouchesInView = false; touchDown.delaysTouchesEnded = false
@@ -583,26 +587,30 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         view.addGestureRecognizer(touchDown)
         let hold = UILongPressGestureRecognizer(target: view, action: #selector(ComposerTextView.inspectEmojiHold(_:)))
         hold.minimumPressDuration = 0.5; hold.allowableMovement = 10
-        hold.cancelsTouchesInView = false; hold.delegate = context.coordinator
+        hold.cancelsTouchesInView = false; hold.delegate = coordinator
         view.addGestureRecognizer(hold)
         view.addGestureRecognizer(UIHoverGestureRecognizer(target: view, action: #selector(ComposerTextView.inspectEmojiHover(_:))))
         view.autocompleteActive = { [weak controller] in controller?.match != nil }
-        view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) }
-        view.formatSelection = { [weak coordinator = context.coordinator] in coordinator?.format($0) }
+        view.handleKey = { [weak coordinator] in coordinator?.handle($0) }
+        view.formatSelection = { [weak coordinator] in coordinator?.format($0) }
         view.backgroundColor = .clear; view.textColor = UIColor(CaperTheme.text); view.font = UIFont(name: "Satoshi-Regular", size: 14)
         // The text container already supplies 5 points of line-fragment padding.
         view.textContainerInset = UIEdgeInsets(top: 11, left: 0, bottom: 11, right: 7)
         view.isScrollEnabled = true; view.accessibilityIdentifier = "message-composer"
         view.accessibilityLabel = placeholder
-        context.coordinator.view = view; context.coordinator.refresh(view); return view
+        coordinator.view = view; coordinator.refresh(view); return view
     }
     func updateUIView(_ view: UITextView, context: Context) {
+        updateNativeView(view, coordinator: context.coordinator, enabled: isEnabled, covered: covered)
+    }
+    func updateNativeView(_ view: UITextView, coordinator: Coordinator, enabled: Bool = true, covered: Bool = false) {
+        coordinator.enabled = enabled; coordinator.covered = covered
         (view as? ComposerTextView)?.setCovered(covered)
         (view as? ComposerTextView)?.pasteAttachments = pasteAttachments
         // A disabled composer (under a dialog) must not keep taking keystrokes.
-        view.isEditable = editable && isEnabled
+        view.isEditable = editable && enabled
         if !editable { (view as? ComposerTextView)?.hideEmojiName() }
-        if !isEnabled, view.isFirstResponder {
+        if !enabled, view.isFirstResponder {
             // After this update, and only if nothing else (the dialog's own field) took focus first.
             Task { @MainActor [weak view] in
                 if let view, view.isFirstResponder { _ = view.resignFirstResponder() }
@@ -611,11 +619,11 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         view.accessibilityIdentifier = accessibilityID
         // The conversation can change under the same editor (a channel, then a DM).
         view.accessibilityLabel = placeholder
-        let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
-        context.coordinator.adopt(self)
-        if view.text != text { (view as? ComposerTextView)?.hideEmojiName(); view.text = text; context.coordinator.typing.end(); context.coordinator.dismissed = false; context.coordinator.refresh(view) }
+        let mentionsChanged = coordinator.parent.mentions != mentions || coordinator.parent.highlightSource != highlightSource
+        coordinator.adopt(self)
+        if view.text != text { (view as? ComposerTextView)?.hideEmojiName(); view.text = text; coordinator.typing.end(); coordinator.dismissed = false; coordinator.refresh(view) }
         // Members can finish loading while an `@` query is open.
-        else if mentionsChanged { context.coordinator.refresh(view) }
+        else if mentionsChanged { coordinator.refresh(view) }
         view.accessibilityValue = text; view.accessibilityHint = "Use the Send button when composing with the iPhone keyboard."
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
@@ -625,6 +633,8 @@ struct NativeMessageTextEditor: UIViewRepresentable {
     }
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var parent: NativeMessageTextEditor; weak var view: UITextView?; var dismissed = false
+        var enabled = true
+        var covered = false
         private var highlighting = false
         var typing = ComposerTyping()
         init(_ parent: NativeMessageTextEditor) { self.parent = parent }
@@ -691,7 +701,7 @@ struct NativeMessageTextEditor: UIViewRepresentable {
                 self.view?.becomeFirstResponder()
             }
             parent.controller.requestFocusAction = { [weak self] in
-                guard let self, self.parent.editable, self.parent.isEnabled, !self.parent.covered,
+                guard let self, self.parent.editable, self.enabled, !self.covered,
                       let view = self.view, let window = view.window, !window.isHidden else { return false }
                 var top = window.rootViewController
                 while let presented = top?.presentedViewController { top = presented }
@@ -908,11 +918,15 @@ struct NativeMessageTextEditor: NSViewRepresentable {
     @Environment(\.isEnabled) private var isEnabled
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
+        makeNativeView(coordinator: context.coordinator)
+    }
+    /// Native dialogs use the same TextKit delegate without a hosting view.
+    func makeNativeView(coordinator: Coordinator) -> NSScrollView {
         let scroll = NSScrollView(); let view = ComposerTextView()
         view.textContainer?.replaceLayoutManager(DraftLinkLayoutManager())
         view.layoutManager?.delegate = view.composerGlyphs
         scroll.documentView = view; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        view.delegate = context.coordinator; view.drawsBackground = false; view.textColor = NSColor(CaperTheme.text)
+        view.delegate = coordinator; view.drawsBackground = false; view.textColor = NSColor(CaperTheme.text)
         view.font = NSFont(name: "Satoshi-Regular", size: 14); view.textContainerInset = NSSize(width: 0, height: 10)
         // AppKit sizes the text view: its width follows the scroll view and its height the text.
         view.minSize = NSSize(width: 0, height: 42)
@@ -923,23 +937,26 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         view.isRichText = false
         view.updateDragTypeRegistration()
         view.setAccessibilityIdentifier("message-composer"); view.setAccessibilityLabel(placeholder)
-        view.setAccessibilityHelp("Return sends. Shift-Return adds a new line."); context.coordinator.view = view
-        view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) == true }
-        view.formatSelection = { [weak coordinator = context.coordinator] in coordinator?.format($0) }
-        view.focusChanged = { [weak coordinator = context.coordinator] focused in
+        view.setAccessibilityHelp("Return sends. Shift-Return adds a new line."); coordinator.view = view
+        view.handleKey = { [weak coordinator] in coordinator?.handle($0) == true }
+        view.formatSelection = { [weak coordinator] in coordinator?.format($0) }
+        view.focusChanged = { [weak coordinator] focused in
             guard let coordinator, let view = coordinator.view else { return }
             if focused { coordinator.refresh(view) } else { coordinator.parent.controller.update(nil) }
         }
-        context.coordinator.refresh(view); return scroll
+        coordinator.refresh(view); return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
-        context.coordinator.adopt(self)
+        updateNativeView(scroll, coordinator: context.coordinator, enabled: isEnabled)
+    }
+    func updateNativeView(_ scroll: NSScrollView, coordinator: Coordinator, enabled: Bool = true) {
+        let mentionsChanged = coordinator.parent.mentions != mentions || coordinator.parent.highlightSource != highlightSource
+        coordinator.adopt(self); coordinator.enabled = enabled
         guard let view = scroll.documentView as? ComposerTextView else { return }
         view.pasteAttachments = pasteAttachments
         // A disabled composer (under a dialog) must not keep taking keystrokes.
-        view.isEditable = editable && isEnabled
-        if !isEnabled, view.window?.firstResponder === view {
+        view.isEditable = editable && enabled
+        if !enabled, view.window?.firstResponder === view {
             // After this update, and only if nothing else (the dialog's own field) took focus first.
             Task { @MainActor [weak view] in
                 if let view, let window = view.window, window.firstResponder === view { _ = window.makeFirstResponder(nil) }
@@ -951,9 +968,9 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         view.setAccessibilityHelp(submitOnReturn ? "Return sends. Shift-Return adds a new line." : "Use the Send button. Return adds a new line.")
         // The text view reports its own text as its accessibility value; setting
         // it would replace the text on every update.
-        if view.string != text { view.string = text; context.coordinator.typing.end(); context.coordinator.dismissed = false; context.coordinator.refresh(view) }
+        if view.string != text { view.string = text; coordinator.typing.end(); coordinator.dismissed = false; coordinator.refresh(view) }
         // Members can finish loading while an `@` query is open.
-        else if mentionsChanged { context.coordinator.refresh(view) }
+        else if mentionsChanged { coordinator.refresh(view) }
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
         guard let width = proposal.width, let view = nsView.documentView as? ComposerTextView else { return nil }
@@ -974,6 +991,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeMessageTextEditor; weak var view: ComposerTextView?; var dismissed = false
+        var enabled = true
         private var highlighting = false
         var typing = ComposerTyping()
         init(_ parent: NativeMessageTextEditor) { self.parent = parent }
@@ -1033,7 +1051,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
                 view.window?.makeFirstResponder(view)
             }
             parent.controller.requestFocusAction = { [weak self] in
-                guard let self, self.parent.editable, self.parent.isEnabled,
+                guard let self, self.parent.editable, self.enabled,
                       let view = self.view, let window = view.window,
                       window.isKeyWindow, window.attachedSheet == nil else { return false }
                 return window.makeFirstResponder(view)

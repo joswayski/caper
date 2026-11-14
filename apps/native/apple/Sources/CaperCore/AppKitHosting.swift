@@ -27,6 +27,8 @@ import SwiftUI
     private let model: AppModel
     /// The open dialog: native, or SwiftUI for items not yet rebuilt in AppKit.
     private var host: NSViewController?
+    private var dialogMedia: NSHostingController<AnyView>?
+    private weak var mediaResponder: NSResponder?
     private var state: AppKitWorkspaceDialogState?
     private let observation = AppKitObservation()
     private weak var previousResponder: NSResponder?
@@ -168,6 +170,14 @@ import SwiftUI
     /// Dialogs rebuilt in AppKit; the rest still use the SwiftUI dialog.
     private func nativeContent(_ item: AppKitWorkspaceDialogItem, close: @escaping () -> Void) -> AppKitDialogContent? {
         switch item {
+        case .edit(let message):
+            return AppKitMessageEditor(chat: model.chat, message: message, close: close)
+        case .forward(let message):
+            return AppKitForwardPicker(chat: model.chat, message: message, close: close,
+                showMedia: { [weak self] in self?.showDialogMedia($0) })
+        case .forwardConversation(let message):
+            return AppKitForwardConversation(chat: model.chat, messageID: message.id, close: close,
+                showMedia: { [weak self] in self?.showDialogMedia($0) })
         case .leaveChannel(let channel):
             return AppKitConfirmationDialog(title: "Leave #\(channel.name)?",
                 detail: channel.private && !model.isOwner
@@ -213,6 +223,7 @@ import SwiftUI
 
     private func close() {
         guard let host, let state else { return }
+        closeDialogMedia()
         let item = state.item
         let window = host.view.window
         let parent = host.parent
@@ -241,6 +252,30 @@ import SwiftUI
         previousContext = nil
         model.whatsNew.workspaceModalOpen = false
         if let parent { presentInvitations(in: parent) }
+    }
+
+    /// A native forwarding dialog's media covers the full workspace, not the
+    /// small preview leaf. It temporarily owns AX and focus above the dialog.
+    private func showDialogMedia(_ request: MediaViewerRequest) {
+        guard dialogMedia == nil, let host,
+              let container = host.parent?.view as? AppKitWorkspaceContainer else { return }
+        let media = NSHostingController(rootView: AnyView(MediaViewer(request: request) { [weak self] in self?.closeDialogMedia() }
+            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)))
+        dialogMedia = media; mediaResponder = host.view.window?.firstResponder
+        host.addChild(media)
+        media.view.frame = host.view.bounds; media.view.autoresizingMask = [.width, .height]
+        host.view.addSubview(media.view)
+        container.dialogView = media.view
+        host.view.window?.makeFirstResponder(media.view)
+    }
+
+    private func closeDialogMedia() {
+        guard let media = dialogMedia else { return }
+        let window = media.view.window
+        media.view.removeFromSuperview(); media.removeFromParent(); dialogMedia = nil
+        (host?.parent?.view as? AppKitWorkspaceContainer)?.dialogView = host?.view
+        if let responder = mediaResponder as? NSView, responder.window === window { window?.makeFirstResponder(responder) }
+        mediaResponder = nil
     }
 }
 

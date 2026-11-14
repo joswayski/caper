@@ -68,15 +68,16 @@ import AppKit
 @MainActor class AppKitSettingsDialog: NSView, AppKitDialogContent {
     let body = AppKitKit.stack([], spacing: 14)
     let observation = AppKitObservation()
+    let header: AppKitDialogHeader
     var dismissDisabled: Bool { false }
 
     init(title: String, detail: String, closeLabel: String, identifier: String, close: @escaping () -> Void) {
+        header = AppKitDialogHeader(title: title, detail: detail, closeLabel: closeLabel, close: close)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = AppKitKit.surface.cgColor
         setAccessibilityElement(true); setAccessibilityRole(.group)
         setAccessibilityIdentifier(identifier)
-        let header = AppKitDialogHeader(title: title, detail: detail, closeLabel: closeLabel, close: close)
         let scroll = appKitKitScroll(body, insets: NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22))
         addSubview(header); addSubview(scroll)
         NSLayoutConstraint.activate([
