@@ -366,7 +366,7 @@ pub fn draw(
     g: &Gfx,
     dc: &ID2D1DeviceContext,
     rows: &[Row],
-    top: f32,
+    (top, width): (f32, f32),
     hover: Option<Spot>,
     menu: Option<usize>,
 ) -> Result<()> {
@@ -378,7 +378,7 @@ pub fn draw(
     // The heading's "+" shows while the heading is hovered, as in egui.
     if matches!(hover, Some(Spot::Heading | Spot::New)) {
         let y = top + GAP;
-        let b = rect(SIDEBAR_W - 40.0, y, SIDEBAR_W - 12.0, y + 28.0);
+        let b = rect(width - 40.0, y, width - 12.0, y + 28.0);
         let on = hover == Some(Spot::New);
         if on {
             fill_round(dc, b, 6.0, &g.brushes.hover);
@@ -394,7 +394,7 @@ pub fn draw(
     }
     for (k, row) in rows.iter().enumerate() {
         let y = top + GAP + LABEL_H + PITCH * k as f32;
-        let r = rect(12.0, y, SIDEBAR_W - 12.0, y + ROW_H);
+        let r = rect(12.0, y, width - 12.0, y + ROW_H);
         let lit = matches!(hover, Some(Spot::Row(j) | Spot::Options(j)) if j == k);
         if row.active {
             fill_round(dc, r, 6.0, &g.brushes.selected);
@@ -983,7 +983,7 @@ impl App {
         (
             RAIL_W + 12.0,
             self.directs_top() + GAP + LABEL_H + PITCH * k as f32,
-            SIDEBAR_W - 24.0,
+            self.sidebar_w() - 24.0,
             ROW_H,
         )
     }
@@ -993,7 +993,7 @@ impl App {
         (
             RAIL_W,
             self.directs_top() + GAP,
-            SIDEBAR_W,
+            self.sidebar_w(),
             LABEL_H + PITCH * n as f32,
         )
     }
@@ -1001,7 +1001,7 @@ impl App {
     /// The heading's "New direct message" button.
     pub fn new_direct_rect(&self) -> Rect {
         (
-            RAIL_W + SIDEBAR_W - 40.0,
+            RAIL_W + self.sidebar_w() - 40.0,
             self.directs_top() + GAP,
             28.0,
             28.0,
@@ -1019,7 +1019,7 @@ impl App {
             return Some(Spot::New);
         }
         let top = self.directs_top() + GAP;
-        if inside((RAIL_W, top, SIDEBAR_W, LABEL_H)) {
+        if inside((RAIL_W, top, self.sidebar_w(), LABEL_H)) {
             return Some(Spot::Heading);
         }
         if let Some(k) = (0..n).find(|&k| rows[k].menu() && inside(self.direct_options_rect(k))) {
@@ -1083,7 +1083,7 @@ impl App {
         let h = self.dm_menu_items().1.len() as f32 * MENU_ITEM_H + 12.0;
         let y = self.dm_menu_anchor().unwrap_or(0.0);
         (
-            RAIL_W + SIDEBAR_W - 8.0,
+            RAIL_W + self.sidebar_w() - 8.0,
             y.min(self.h - 8.0 - h).max(8.0),
             MENU_W,
             h,
@@ -1155,13 +1155,13 @@ impl App {
 
     /// The sidebar header's space options button (client DIPs).
     pub fn space_options_rect(&self) -> Rect {
-        (RAIL_W + SIDEBAR_W - 40.0, 13.0, 28.0, 28.0)
+        (RAIL_W + self.sidebar_w() - 40.0, 13.0, 28.0, 28.0)
     }
 
     /// Channel `i`'s options button (client DIPs), shown while its row is
     /// hovered.
-    pub fn channel_options_rect(i: usize) -> Rect {
-        let (x, y, w, h) = App::channel_rect(i);
+    pub fn channel_options_rect(&self, i: usize) -> Rect {
+        let (x, y, w, h) = self.channel_rect(i);
         (x + w - 30.0, y + (h - 24.0) / 2.0, 24.0, 24.0)
     }
 
@@ -1176,7 +1176,7 @@ impl App {
                 .channels
                 .iter()
                 .position(|c| c == channel)
-                .map(|i| App::channel_rect(i).1),
+                .map(|i| self.channel_rect(i).1),
             Scope::Space(space) if here(space) => Some(HEADER_H - 6.0),
             _ => None,
         }
@@ -1193,7 +1193,7 @@ impl App {
                 .channels
                 .iter()
                 .position(|c| c == channel)
-                .is_some_and(|i| contains(Self::channel_options_rect(i), x, y)),
+                .is_some_and(|i| contains(self.channel_options_rect(i), x, y)),
             Some(Scope::Space(_)) => contains(self.space_options_rect(), x, y),
             _ => false,
         }
@@ -1433,7 +1433,7 @@ impl App {
         if self.c.direct.is_some() || !self.c.has_conversation() || self.members_hidden {
             0.0
         } else {
-            MEMBERS_W
+            self.member_width()
         }
     }
 

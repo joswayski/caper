@@ -82,6 +82,7 @@ pub enum Id {
     Member(usize),
     /// The member list's Search members, its field and Clear and close.
     MemberSearch(SPartM),
+    Resize(crate::panes::Pane),
     Composer,
     /// A part of the sign-in form, which replaces the tree while shown.
     Sign(Part),
@@ -278,6 +279,9 @@ fn focused(a: &App) -> Option<Id> {
     if a.member_search.as_ref().is_some_and(|s| s.field.focused) {
         return Some(Id::MemberSearch(SPartM::Field));
     }
+    if let Some(p) = a.panes.focus {
+        return Some(Id::Resize(p));
+    }
     if !a.composer.focused
         && let Some(c) = a.video_focus()
     {
@@ -362,6 +366,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 .chain(a.profile.as_ref().map(|_| Id::Profile))
                 .collect();
             if a.profile_emoji_open() { out.insert(0, Id::Picker); }
+            out.extend(crate::panes::Pane::ALL.into_iter().filter(|&p| a.pane_rect(p).is_some()).map(Id::Resize));
             out.extend([Id::Rail, Id::Channels]);
             if !a.direct_rows().is_empty() {
                 out.push(Id::Directs);
@@ -624,6 +629,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Direct(k) => k < a.direct_rows().len(),
         Id::Member(i) => a.shown_members().contains(&i),
         Id::MemberSearch(p) => a.member_search_rect(p).is_some(),
+        Id::Resize(p) => a.pane_rect(p).is_some(),
         Id::Space(i) => i < a.c.spaces.len(),
         Id::Invite(s) => a.invite_spots().contains(&s),
         Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
@@ -693,6 +699,7 @@ fn exists(a: &App, id: Id) -> bool {
 fn name(a: &App, id: Id) -> String {
     let c = &a.c;
     match id {
+        Id::Resize(p) => p.name().into(),
         Id::Viewer(p) => a.viewer.as_ref().map_or_else(String::new, |v| v.label(p)),
         Id::AttachmentEditor(p) => a
             .attachment_editor
@@ -1040,6 +1047,7 @@ fn chip_name(c: &crate::model::Conversation, i: usize, k: usize) -> String {
 
 fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
     match id {
+        Id::Resize(_) => UIA_SliderControlTypeId,
         Id::Root => UIA_PaneControlTypeId,
         Id::Rail => UIA_ListControlTypeId,
         Id::Space(_) => UIA_ListItemControlTypeId,
@@ -1161,6 +1169,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
 
 fn runtime_id(id: Id) -> [i32; 3] {
     let (k, i) = match id {
+        Id::Resize(p) => (67, p as usize),
         Id::Root => (0, 0),
         Id::Rail => (1, 0),
         Id::Space(i) => (2, i),
@@ -1358,11 +1367,12 @@ fn runtime_id(id: Id) -> [i32; 3] {
 
 fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
     match id {
+        Id::Resize(p) => a.pane_rect(p).unwrap_or_default(),
         Id::Root => (0.0, 0.0, a.w, a.h),
         Id::Rail => (0.0, 0.0, crate::theme::RAIL_W, a.h),
         Id::Space(i) => App::space_rect(i),
-        Id::Channels => (crate::theme::RAIL_W, 0.0, crate::theme::SIDEBAR_W, a.h),
-        Id::Channel(i) => App::channel_rect(i),
+        Id::Channels => (crate::theme::RAIL_W, 0.0, a.sidebar_w(), a.h),
+        Id::Channel(i) => a.channel_rect(i),
         Id::Directs => a.directs_rect(a.direct_rows().len()),
         Id::Direct(k) => a.direct_rect(k),
         Id::NewDirect => a.new_direct_rect(),
@@ -1395,7 +1405,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::AccountMenu => a.account_menu_rect(),
         Id::DirectOptions(k) => a.direct_options_rect(k),
         Id::SpaceOptions => a.space_options_rect(),
-        Id::ChannelOptions(i) => App::channel_options_rect(i),
+        Id::ChannelOptions(i) => a.channel_options_rect(i),
         Id::Voice(p) => a.voice_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::DmMenu => a.dm_menu_rect(),
         Id::DmItem(k) => a.dm_item_rect(k),
@@ -1511,7 +1521,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::BoxPart(p) => a.box_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Embed(i, k) => a.embed_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Spoiler(i, k) => a.spoiler_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
-        Id::Thread => (a.thread_x(), 0.0, crate::thread::THREAD_W, a.h),
+        Id::Thread => (a.thread_x(), 0.0, a.thread_w(), a.h),
         Id::ThreadPart(p) => a.thread_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
             .signin
@@ -1602,6 +1612,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
 
     fn GetPatternProvider(&self, pattern: UIA_PATTERN_ID) -> Result<IUnknown> {
         let ok = match self.id {
+            Id::Resize(_) => pattern == UIA_RangeValuePatternId,
             Id::Space(_) | Id::Channel(_) | Id::Direct(_) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
@@ -1798,6 +1809,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_FrameworkIdPropertyId => VARIANT::from(BSTR::from("Win32")),
                 // A chip's who-reacted summary, as its card shows it.
                 UIA_HelpTextPropertyId => match id {
+                    Id::Resize(_) => VARIANT::from(BSTR::from(crate::panes::HELP)),
                     Id::Control(i, Action::Chip(k)) => {
                         let m = &a.c.messages[i];
                         a.live
@@ -1833,6 +1845,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
+                        | Id::Resize(_)
                         | Id::ProfilePart(_)
                         | Id::Viewer(
                             MPart::Link
@@ -2040,8 +2053,12 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
             if !exists(a, id) {
                 return Err(na());
             }
+            if !matches!(id, Id::Resize(_)) {
+                a.clear_pane_focus();
+            }
             match id {
                 Id::Composer => a.set_composer_focus(true),
+                Id::Resize(p) => a.focus_pane(p),
                 Id::Video(c) if a.video_enabled(c) => a.focus_video(c),
                 Id::Voice(p) if p != crate::call::VPart::Status => a.focus_voice(p),
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
@@ -2391,6 +2408,7 @@ impl IRangeValueProvider_Impl for Node_Impl {
                 return Err(na());
             }
             let enabled = match id {
+                Id::Resize(p) => a.pane_rect(p).is_some(),
                 Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
                 Id::Video(c) => a.video_enabled(c),
                 Id::Voice(crate::call::VPart::Volume) => a.call_playback().is_some(),
@@ -2399,11 +2417,15 @@ impl IRangeValueProvider_Impl for Node_Impl {
             if !enabled {
                 return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
             }
-            let max = gauge(a, id).map_or(0.0, |g| f64::from(g.1));
-            if !(0.0..=max).contains(&val) {
+            let (min, max) = match id {
+                Id::Resize(p) => (f64::from(p.min()), f64::from(a.pane_max(p))),
+                _ => (0.0, gauge(a, id).map_or(0.0, |g| f64::from(g.1))),
+            };
+            if !(min..=max).contains(&val) {
                 return Err(E_INVALIDARG.into());
             }
             match id {
+                Id::Resize(p) => a.set_pane_width(p, val as f32, true),
                 Id::Settings(p) => a.set_gauge(p, val.round() as u16, true),
                 Id::Video(c) => a.video_seek(c, val as f32 / 1000.0),
                 Id::Voice(crate::call::VPart::Volume) => a.set_call_volume(val.round() as u16),
@@ -2415,13 +2437,19 @@ impl IRangeValueProvider_Impl for Node_Impl {
 
     fn Value(&self) -> Result<f64> {
         let id = self.id;
-        with(|a| Ok(gauge(a, id).map_or(0.0, |g| f64::from(g.0))))
+        with(|a| {
+            Ok(match id {
+                Id::Resize(p) => f64::from(a.pane_value(p)),
+                _ => gauge(a, id).map_or(0.0, |g| f64::from(g.0)),
+            })
+        })
     }
 
     fn IsReadOnly(&self) -> Result<BOOL> {
         let id = self.id;
         with(|a| {
             Ok(match id {
+                Id::Resize(_) => false,
                 Id::Settings(p) => !a.settings.as_ref().is_some_and(|s| s.enabled(p)),
                 Id::Video(c) => !a.video_enabled(c),
                 Id::Voice(crate::call::VPart::Volume) => a.call_playback().is_none(),
@@ -2433,11 +2461,19 @@ impl IRangeValueProvider_Impl for Node_Impl {
 
     fn Maximum(&self) -> Result<f64> {
         let id = self.id;
-        with(|a| Ok(gauge(a, id).map_or(0.0, |g| f64::from(g.1))))
+        with(|a| {
+            Ok(match id {
+                Id::Resize(p) => f64::from(a.pane_max(p)),
+                _ => gauge(a, id).map_or(0.0, |g| f64::from(g.1)),
+            })
+        })
     }
 
     fn Minimum(&self) -> Result<f64> {
-        Ok(0.0)
+        Ok(match self.id {
+            Id::Resize(p) => f64::from(p.min()),
+            _ => 0.0,
+        })
     }
 
     fn LargeChange(&self) -> Result<f64> {
@@ -2445,7 +2481,11 @@ impl IRangeValueProvider_Impl for Node_Impl {
     }
 
     fn SmallChange(&self) -> Result<f64> {
-        Ok(1.0)
+        Ok(if matches!(self.id, Id::Resize(_)) {
+            10.0
+        } else {
+            1.0
+        })
     }
 }
 
@@ -3113,6 +3153,9 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
         x >= l && x < l + w && y >= t && y < t + h
     };
     let mut top = children(a, Id::Root);
+    if let Some(p) = a.pane_at(x, y).filter(|p| top.contains(&Id::Resize(*p))) {
+        return Some((crate::panes::HELP.into(), a.pane_rect(p)?));
+    }
     let cards = top
         .iter()
         .take_while(|id| {

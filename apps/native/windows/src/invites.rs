@@ -287,12 +287,13 @@ pub fn draw_channel_plus(
     dc: &ID2D1DeviceContext,
     plus: Option<bool>,
     hover: Option<Spot>,
+    width: f32,
 ) {
     let Some(enabled) = plus else { return };
     let b = rect(
-        SIDEBAR_W - 40.0,
+        width - 40.0,
         SECTION_TOP - 2.0,
-        SIDEBAR_W - 12.0,
+        width - 12.0,
         SECTION_TOP + 26.0,
     );
     let lit = enabled && hover == Some(Spot::NewChannel);
@@ -315,6 +316,7 @@ pub fn draw_sidebar(
     names: &[String],
     top: f32,
     hover: Option<Spot>,
+    width: f32,
 ) -> Result<()> {
     if names.is_empty() {
         return Ok(());
@@ -325,7 +327,7 @@ pub fn draw_sidebar(
     let iw = gfx::metrics(&invited).widthIncludingTrailingWhitespace;
     for (k, name) in names.iter().enumerate() {
         let y = top + GAP + LABEL_H + PITCH * k as f32;
-        let r = rect(12.0, y, SIDEBAR_W - 12.0, y + ROW_H);
+        let r = rect(12.0, y, width - 12.0, y + ROW_H);
         if hover == Some(Spot::Channel(k)) {
             fill_round(dc, r, 6.0, &g.brushes.hover);
         }
@@ -413,11 +415,16 @@ impl App {
             Spot::Space(k) => Self::space_rect(spaces + k),
             Spot::Create => Self::space_rect(spaces + self.invite_names().0.len()),
             Spot::Join => Self::space_rect(spaces + self.invite_names().0.len() + 1),
-            Spot::NewChannel => (RAIL_W + SIDEBAR_W - 40.0, SECTION_TOP - 2.0, 28.0, 28.0),
+            Spot::NewChannel => (
+                RAIL_W + self.sidebar_w() - 40.0,
+                SECTION_TOP - 2.0,
+                28.0,
+                28.0,
+            ),
             Spot::Channel(k) => (
                 RAIL_W + 12.0,
                 self.invites_top() + GAP + LABEL_H + PITCH * k as f32,
-                SIDEBAR_W - 24.0,
+                self.sidebar_w() - 24.0,
                 ROW_H,
             ),
         }

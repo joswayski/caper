@@ -1740,7 +1740,7 @@ impl App {
     /// The footer's gear (client DIPs).
     pub fn gear_rect(&self) -> Rect {
         (
-            RAIL_W + SIDEBAR_W - 12.0 - 28.0,
+            RAIL_W + self.sidebar_w() - 12.0 - 28.0,
             self.h - FOOT_H + 12.0,
             28.0,
             28.0,
@@ -1906,15 +1906,16 @@ impl App {
         };
         self.draw_update_dock(g, dc)?;
         let top = h - FOOT_H;
+        let width = self.sidebar_w();
         unsafe {
-            dc.FillRectangle(&rect(0.0, top, SIDEBAR_W, h), &g.solid(SURFACE_SIDEBAR));
-            dc.FillRectangle(&rect(0.0, top, SIDEBAR_W, top + 1.0), &g.brushes.border);
+            dc.FillRectangle(&rect(0.0, top, width, h), &g.solid(SURFACE_SIDEBAR));
+            dc.FillRectangle(&rect(0.0, top, width, top + 1.0), &g.brushes.border);
         }
         let me = live.account_id.as_deref().unwrap_or_default();
         let p = crate::live::person(me, &live.account_name, live.account_avatar.clone());
         let (cx, cy) = (12.0 + 15.0, top + FOOT_H / 2.0);
         crate::avatars::circle(g, dc, &p.avatar, (cx, cy, 15.0), p.color, &p.initials)?;
-        let name_w = SIDEBAR_W - 12.0 - 28.0 - 8.0 - (cx + 21.0);
+        let name_w = width - 12.0 - 28.0 - 8.0 - (cx + 21.0);
         let name = g.layout(
             &gfx::wide(&live.account_name),
             &g.formats.direct_unread,

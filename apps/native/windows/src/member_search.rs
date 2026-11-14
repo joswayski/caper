@@ -51,15 +51,15 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
 
 impl App {
     /// The member column's left edge (client DIPs).
-    fn members_x(&self) -> f32 {
-        self.w - MEMBERS_W
+    pub fn members_x(&self) -> f32 {
+        self.w - self.member_width()
     }
 
     /// Search members in the heading while the search is closed.
     pub fn member_search_button_rect(&self) -> Option<Rect> {
         (self.members_w() > 0.0 && self.c.is_live() && self.member_search.is_none()).then(|| {
             (
-                self.members_x() + MEMBERS_W - 16.0 - BUTTON,
+                self.members_x() + self.member_width() - 16.0 - BUTTON,
                 (HEADER_H - BUTTON) / 2.0,
                 BUTTON,
                 BUTTON,
@@ -77,9 +77,14 @@ impl App {
         let x = self.members_x();
         Some(match p {
             Part::Open => return None,
-            Part::Field => (x + 8.0, FIELD_Y, MEMBERS_W - 16.0 - BUTTON - 4.0, FIELD_H),
+            Part::Field => (
+                x + 8.0,
+                FIELD_Y,
+                self.member_width() - 16.0 - BUTTON - 4.0,
+                FIELD_H,
+            ),
             Part::Close => (
-                x + MEMBERS_W - 8.0 - BUTTON,
+                x + self.member_width() - 8.0 - BUTTON,
                 FIELD_Y + (FIELD_H - BUTTON) / 2.0,
                 BUTTON,
                 BUTTON,
@@ -142,7 +147,7 @@ impl App {
         }
         self.member_search = Some(MemberSearch {
             field: Composer {
-                width: MEMBERS_W - 16.0 - BUTTON - 4.0 - 20.0,
+                width: self.member_width() - 16.0 - BUTTON - 4.0 - 20.0,
                 ..Default::default()
             },
             hover: None,

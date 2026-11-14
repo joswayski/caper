@@ -132,6 +132,7 @@ pub struct Pane {
     /// Distance scrolled from the top of the history's content.
     pub scroll: f32,
     pub at_end: bool,
+    width: f32,
     pub composer: Composer,
     has_files: bool,
     pub attach_error: Option<String>,
@@ -160,19 +161,19 @@ pub struct Pane {
 }
 
 impl Pane {
-    fn new(g: &Gfx, root: String, channel: &str) -> Result<Self> {
+    fn new(g: &Gfx, root: String, channel: &str, width: f32) -> Result<Self> {
         let destination = channel.to_owned();
         let title = g.layout(&gfx::wide("Thread"), &g.formats.name, 1e6)?;
         let sub = g.layout(
             &gfx::wide(&format!("in {destination}")),
             &g.formats.time,
-            THREAD_W - 2.0 * PAD - CLOSE - 10.0,
+            width - 2.0 * PAD - CLOSE - 10.0,
         )?;
         let label = format!("Also send to {destination}");
         let check = g.layout(
             &gfx::wide(&label),
             &g.formats.head,
-            THREAD_W - 2.0 * PAD - CHECK - 7.0,
+            width - 2.0 * PAD - CHECK - 7.0,
         )?;
         unsafe {
             check.SetFontWeight(
@@ -195,6 +196,7 @@ impl Pane {
             error: false,
             scroll: 0.0,
             at_end: true,
+            width,
             composer: Composer::formatted(),
             has_files: false,
             attach_error: None,
@@ -258,7 +260,7 @@ impl Pane {
         );
         self.rows = Rows::new(c.messages.len());
         self.rows.arrivals = arrivals;
-        self.rows.set_width(Rows::body_width(THREAD_W));
+        self.rows.set_width(Rows::body_width(self.width));
         self.c = c;
         self.ids = ids;
         self.count = count;
@@ -355,7 +357,7 @@ impl Pane {
         let w = actions::bar_width(n);
         let y =
             (HEADER_H + self.row_y(i)? - self.scroll + self.rows.row(i)?.lead - 12.0).max(HEADER_H);
-        Some((THREAD_W - w - 16.0, y, w, actions::BAR_H))
+        Some((self.width - w - 16.0, y, w, actions::BAR_H))
     }
 
     /// The head's contents: the failed load and Retry, "Load older
@@ -402,7 +404,7 @@ impl Pane {
         Some((
             PAD,
             h - 16.0 - self.box_h - 8.0 - CHECK_H - self.reply_h(),
-            THREAD_W - 2.0 * PAD,
+            self.width - 2.0 * PAD,
             r.height,
         ))
     }
@@ -417,7 +419,7 @@ impl Pane {
         vh: f32,
         media: Option<&mut crate::files::Ctx>,
     ) -> Result<()> {
-        let w = THREAD_W;
+        let w = self.width;
         unsafe {
             dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
             // egui's panel separator on the leading edge.
@@ -426,7 +428,7 @@ impl Pane {
         }
         crate::text::draw(dc, &self.title, PAD, 8.0, &g.brushes.text);
         crate::text::draw(dc, &self.sub, PAD, 30.0, &g.brushes.muted);
-        let (cx, cy, cw, ch) = close_local();
+        let (cx, cy, cw, ch) = close_local(w);
         let lit = self.hover == Some(Part::Close);
         if lit {
             fill_round(dc, rect(cx, cy, cx + cw, cy + ch), 6.0, &g.brushes.hover);
@@ -505,7 +507,7 @@ impl Pane {
             &g.brushes.muted,
         );
         // Send beside the box, eggshell while there is something to send.
-        let (sx, sy, sw, sh) = send_local(h, self.box_h);
+        let (sx, sy, sw, sh) = send_local(w, h, self.box_h);
         let r = rect(sx, sy, sx + sw, sy + sh);
         let enabled = self.can_send();
         if enabled {
@@ -539,7 +541,7 @@ impl Pane {
         vh: f32,
         mut media: Option<&mut crate::files::Ctx>,
     ) -> Result<()> {
-        let w = THREAD_W;
+        let w = self.width;
         let s = self.sections();
         let off = HEADER_H - self.scroll;
         let mut rows: Vec<(usize, f32)> = s.root.into_iter().collect();
@@ -598,25 +600,20 @@ impl Pane {
 }
 
 /// Close in the heading, relative to the pane.
-fn close_local() -> Rect {
-    (
-        THREAD_W - PAD - CLOSE,
-        (HEADER_H - CLOSE) / 2.0,
-        CLOSE,
-        CLOSE,
-    )
+fn close_local(width: f32) -> Rect {
+    (width - PAD - CLOSE, (HEADER_H - CLOSE) / 2.0, CLOSE, CLOSE)
 }
 
 /// The reply box's width.
-fn box_w() -> f32 {
-    THREAD_W - 2.0 * PAD - SEND - 8.0
+fn box_w(width: f32) -> f32 {
+    width - 2.0 * PAD - SEND - 8.0
 }
 
 /// Send, relative to the pane, at the bottom of a box `box_h` tall.
-fn send_local(h: f32, box_h: f32) -> Rect {
+fn send_local(width: f32, h: f32, box_h: f32) -> Rect {
     let by = h - 16.0 - box_h;
     (
-        PAD + box_w() + 8.0,
+        PAD + box_w(width) + 8.0,
         by + (box_h - 42.0).max(0.0),
         SEND,
         SEND,
@@ -625,31 +622,75 @@ fn send_local(h: f32, box_h: f32) -> Rect {
 
 /// The reply box's text width, beside Insert emoji and Send a GIF (when
 /// it is shown).
-fn text_w(gif: bool) -> f32 {
+fn text_w(width: f32, gif: bool) -> f32 {
     let gif_w = if gif { crate::uploads::GIF_W } else { 0.0 };
-    box_w() - 2.0 * composer::PAD - crate::uploads::EMOJI_W - gif_w
+    box_w(width) - 2.0 * composer::PAD - crate::uploads::EMOJI_W - gif_w
 }
 
 /// Insert emoji, relative to the box, at the end of its first line.
-fn emoji_local() -> Rect {
+fn emoji_local(width: f32) -> Rect {
     let cy = composer::PAD + composer::LINE / 2.0;
-    (box_w() - 36.0, cy - 14.0, 28.0, 28.0)
+    (box_w(width) - 36.0, cy - 14.0, 28.0, 28.0)
 }
 
 /// Send a GIF, before Insert emoji (where egui's thread field keeps it).
-fn gif_local() -> Rect {
-    let (x, y, w, h) = emoji_local();
+fn gif_local(width: f32) -> Rect {
+    let (x, y, w, h) = emoji_local(width);
     (x - crate::uploads::EMOJI_W, y, w, h)
 }
 
 impl App {
     /// The open thread's width beside the conversation.
     pub fn thread_w(&self) -> f32 {
-        if self.thread.is_some() { THREAD_W } else { 0.0 }
+        if self.thread.is_some() {
+            self.panes.width(crate::panes::Pane::Thread)
+        } else {
+            0.0
+        }
     }
 
     pub fn thread_x(&self) -> f32 {
-        self.w - self.members_w() - THREAD_W
+        self.w - self.members_w() - self.thread_w()
+    }
+
+    /// Rewrap only on width changes, keeping the visible reply anchored.
+    pub fn relayout_thread_width(&mut self) -> Result<()> {
+        let width = self.thread_w();
+        let Some(t) = &mut self.thread else {
+            return Ok(());
+        };
+        if t.width == width {
+            return Ok(());
+        }
+        let keep = (!t.at_end)
+            .then(|| {
+                (0..t.c.messages.len()).find_map(|i| {
+                    let y = t.row_y(i)?;
+                    (y + t.rows.height(i) > t.scroll).then_some((i, t.scroll - y))
+                })
+            })
+            .flatten();
+        t.width = width;
+        t.rows.set_width(Rows::body_width(width));
+        t.rows.measure_up_to(&self.g, &t.c, f64::NEG_INFINITY)?;
+        if let Some((i, offset)) = keep {
+            t.scroll = t.row_y(i).unwrap_or(0.0) + offset;
+        }
+        unsafe {
+            t.sub.SetMaxWidth(width - 2.0 * PAD - CLOSE - 10.0)?;
+            t.check.SetMaxWidth(width - 2.0 * PAD - CHECK - 7.0)?;
+        }
+        t.check_w = gfx::metrics(&t.check).widthIncludingTrailingWhitespace;
+        if let Some(reply) = &t.reply {
+            t.reply = Some(ReplyBar::new(
+                &self.g,
+                reply.target.clone(),
+                width - 2.0 * PAD,
+            )?);
+        }
+        self.thread_box_changed();
+        self.thread_layout_changed();
+        Ok(())
     }
 
     pub fn thread_tools(&self, i: usize) -> Vec<ToolState> {
@@ -872,7 +913,7 @@ impl App {
         Some((
             self.thread_x() + PAD,
             self.h - 16.0 - t.box_h,
-            box_w(),
+            box_w(t.width),
             t.box_h,
         ))
     }
@@ -893,12 +934,12 @@ impl App {
         let clip = |r: Rect| (r.1 + r.3 > HEADER_H && r.1 < HEADER_H + vh).then_some(r);
         match part {
             Part::Close => {
-                let (x, y, w, h) = close_local();
+                let (x, y, w, h) = close_local(t.width);
                 Some((x0 + x, y, w, h))
             }
             Part::Row(i) => {
                 let y = t.row_y(i)?;
-                clip((x0, y + off, THREAD_W, t.rows.height(i)))
+                clip((x0, y + off, t.width, t.rows.height(i)))
             }
             Part::Tool(i, tool) => {
                 if self.thread_bar_row() != Some(i) {
@@ -940,7 +981,7 @@ impl App {
                 if !head.button {
                     return None;
                 }
-                let r = list::head_button_rect(&self.g, &head, THREAD_W).ok()?;
+                let r = list::head_button_rect(&self.g, &head, t.width).ok()?;
                 clip((x0 + r.left, y + r.top, r.right - r.left, r.bottom - r.top))
             }
             Part::Reply | Part::CancelReply => {
@@ -972,12 +1013,12 @@ impl App {
                     return None;
                 }
                 let (bx, by, _, _) = self.thread_box_rect()?;
-                let (x, y, w, h) = gif_local();
+                let (x, y, w, h) = gif_local(t.width);
                 Some((bx + x, by + y + t.composer.inset.1, w, h))
             }
             Part::Emoji => {
                 let (bx, by, _, _) = self.thread_box_rect()?;
-                let (x, y, w, h) = emoji_local();
+                let (x, y, w, h) = emoji_local(t.width);
                 Some((bx + x, by + y + t.composer.inset.1, w, h))
             }
             Part::RemovePreview => {
@@ -987,7 +1028,7 @@ impl App {
                 Some((bx + r.left, by + r.top, r.right - r.left, r.bottom - r.top))
             }
             Part::Send => {
-                let (x, y, w, h) = send_local(self.h, t.box_h);
+                let (x, y, w, h) = send_local(t.width, self.h, t.box_h);
                 Some((x0 + x, y, w, h))
             }
         }
@@ -1282,7 +1323,7 @@ impl App {
     pub fn in_thread(&self, x: f32, y: f32) -> bool {
         self.thread.is_some()
             && x >= self.thread_x()
-            && x < self.thread_x() + THREAD_W
+            && x < self.thread_x() + self.thread_w()
             && y < self.h
     }
 
@@ -1331,11 +1372,16 @@ impl App {
         let state = (t.loading, t.has_more, t.error.is_some());
         let opened = self.thread.as_ref().is_none_or(|p| p.root != root);
         if opened {
-            let mut pane = Pane::new(&self.g, root, &self.c.place())?;
+            let mut pane = Pane::new(
+                &self.g,
+                root,
+                &self.c.place(),
+                self.panes.width(crate::panes::Pane::Thread),
+            )?;
             pane.gif = self.gif_shown();
             pane.box_h = pane
                 .composer
-                .relayout(&self.g, text_w(pane.gif))?
+                .relayout(&self.g, text_w(pane.width, pane.gif))?
                 .max(BOX_MIN);
             self.thread = Some(pane);
             self.thread_layout_changed();
@@ -1415,7 +1461,7 @@ impl App {
         match ReplyBar::new(
             &self.g,
             caper_client::model::MessageReply::from_message(&m),
-            THREAD_W - 2.0 * PAD,
+            t.width - 2.0 * PAD,
         ) {
             Ok(reply) => t.reply = Some(reply),
             Err(e) => {
@@ -1482,6 +1528,9 @@ impl App {
     }
 
     pub fn set_thread_focus(&mut self, focused: bool) {
+        if focused {
+            self.clear_pane_focus();
+        }
         let Some(t) = &mut self.thread else {
             return;
         };
@@ -1554,7 +1603,7 @@ impl App {
                     .map(|_| crate::uploads::UPLOAD_WAIT.into())
             });
         let (mut tiles, mut top) =
-            crate::uploads::strip(&vec![false; drafts.len()], box_w(), false);
+            crate::uploads::strip(&vec![false; drafts.len()], box_w(t.width), false);
         let bar = t.composer.format_height();
         for tile in &mut tiles {
             tile.top += bar;
@@ -1568,7 +1617,7 @@ impl App {
                     .layout(
                         &gfx::wide(notice),
                         &self.g.formats.file_detail,
-                        box_w() - 2.0 * composer::PAD,
+                        box_w(t.width) - 2.0 * composer::PAD,
                     )
                     .map_or(18.0, |l| gfx::metrics(&l).height);
         }
@@ -1634,7 +1683,7 @@ impl App {
         t.has_files = has_files;
         t.composer.inset.1 = top;
         t.composer.inset_bottom = card;
-        if let Ok(h) = t.composer.relayout(g, text_w(gif)) {
+        if let Ok(h) = t.composer.relayout(g, text_w(t.width, gif)) {
             let h = h.max(BOX_MIN) + t.composer.inset.1 + card;
             if (h - t.box_h).abs() > 0.01 {
                 t.box_h = h;
@@ -2196,8 +2245,9 @@ impl App {
         let (bx, by, bw, bh) = self.thread_box_rect().unwrap_or_default();
         let video = self.inline_video_view();
         let video_focus = self.video_focus_view();
+        let width = self.thread_w();
         let g = &self.g;
-        let fresh = self.thread_p.ensure(g, px(THREAD_W), px(h))?;
+        let fresh = self.thread_p.ensure(g, px(width), px(h))?;
         self.thread_p.offset((x * s).round(), 0.0)?;
         if (fresh || std::mem::take(&mut self.dirty.thread))
             && let Some(t) = &mut self.thread
@@ -2209,8 +2259,15 @@ impl App {
                 video_focus,
                 ..crate::files::Ctx::new(&mut l.media, &mut tex)
             });
-            self.thread_p
-                .draw(s, |dc| t.draw(g, dc, h, vh, media.as_mut()))?;
+            self.thread_p.draw(s, |dc| {
+                t.draw(g, dc, h, vh, media.as_mut())?;
+                if self.panes.focus == Some(crate::panes::Pane::Thread) {
+                    unsafe {
+                        dc.FillRectangle(&rect(0.0, 0.0, 2.0, h), &g.brushes.terracotta);
+                    }
+                }
+                Ok(())
+            })?;
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_MEDIA);
                 if let Some(ctx) = media {
@@ -2268,12 +2325,12 @@ impl App {
                     );
                 }
                 if t.gif {
-                    let (x, y, w, h) = gif_local();
+                    let (x, y, w, h) = gif_local(t.width);
                     let y = y + t.composer.inset.1;
                     let color = if lit { TEXT } else { TEXT_MUTED };
                     crate::uploads::gif_button(g, dc, rect(x, y, x + w, y + h), color)?;
                 }
-                let (x, y, w, h) = emoji_local();
+                let (x, y, w, h) = emoji_local(t.width);
                 let y = y + t.composer.inset.1;
                 icons::draw(
                     dc,

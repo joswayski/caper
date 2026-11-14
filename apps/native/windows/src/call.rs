@@ -569,7 +569,12 @@ impl App {
             Card::Error(_) => ERROR_H,
         };
         let foot = (if self.foot_shown() { FOOT_H } else { 0.0 }) + self.update_dock_h();
-        Some((RAIL_W + 8.0, self.h - foot - 8.0 - h, SIDEBAR_W - 16.0, h))
+        Some((
+            RAIL_W + 8.0,
+            self.h - foot - 8.0 - h,
+            self.sidebar_w() - 16.0,
+            h,
+        ))
     }
 
     /// Joined channel `i`'s Join or Switch, and whether it can join now;
@@ -584,8 +589,8 @@ impl App {
     }
 
     /// Channel `i`'s Join button (client DIPs), left of its options button.
-    pub fn join_rect(i: usize) -> Rect {
-        let (x, y, w, h) = App::channel_rect(i);
+    pub fn join_rect(&self, i: usize) -> Rect {
+        let (x, y, w, h) = self.channel_rect(i);
         (x + w - 58.0, y + (h - 24.0) / 2.0, 24.0, 24.0)
     }
 
@@ -611,7 +616,7 @@ impl App {
 
     pub fn voice_rect(&self, p: VPart) -> Option<Rect> {
         if let VPart::Join(i) = p {
-            return self.join_action(i).map(|_| App::join_rect(i));
+            return self.join_action(i).map(|_| self.join_rect(i));
         }
         let call = matches!(self.voice_card()?, Card::Call(_));
         let (x, y, w, h) = self.call_rect()?;
@@ -661,7 +666,7 @@ impl App {
             });
         }
         (0..self.c.channels.len())
-            .find(|&i| contains(App::join_rect(i), x, y) && self.join_action(i).is_some())
+            .find(|&i| contains(self.join_rect(i), x, y) && self.join_action(i).is_some())
             .map(VPart::Join)
     }
 

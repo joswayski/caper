@@ -59,6 +59,7 @@ mod live;
 mod member_search;
 mod model;
 mod motion;
+mod panes;
 mod pins;
 mod signin;
 mod text;
@@ -294,6 +295,7 @@ pub struct App {
     zoom_p: Panel,
     pub w: f32,
     pub h: f32,
+    panes: panes::State,
     _target: IDCompositionTarget,
     background: IDCompositionVisual2,
     rail: Panel,
@@ -597,6 +599,7 @@ impl App {
                 zoom: 1.0,
                 zoom_notice: false,
                 zoom_p,
+                panes: panes::State::default(),
                 w: rc.right as f32 / scale,
                 h: rc.bottom as f32 / scale,
                 _target: target,
@@ -1134,11 +1137,11 @@ impl App {
     }
 
     pub fn list_x(&self) -> f32 {
-        RAIL_W + SIDEBAR_W
+        RAIL_W + self.sidebar_w()
     }
 
     pub fn list_w(&self) -> f32 {
-        (self.w - RAIL_W - SIDEBAR_W - self.members_w() - self.thread_w()).max(160.0)
+        (self.w - self.list_x() - self.members_w() - self.thread_w()).max(160.0)
     }
 
     pub fn box_rect(&self) -> (f32, f32, f32, f32) {
@@ -1192,11 +1195,11 @@ impl App {
         )
     }
 
-    pub fn channel_rect(i: usize) -> (f32, f32, f32, f32) {
+    pub fn channel_rect(&self, i: usize) -> (f32, f32, f32, f32) {
         (
             RAIL_W + 12.0,
             CHANNEL_TOP + CHANNEL_H * i as f32,
-            SIDEBAR_W - 24.0,
+            self.sidebar_w() - 24.0,
             CHANNEL_H - 2.0,
         )
     }
@@ -1213,9 +1216,9 @@ impl App {
     /// The `slot`th shown member's row.
     pub fn member_slot_rect(&self, slot: usize) -> (f32, f32, f32, f32) {
         (
-            self.w - MEMBERS_W + 8.0,
+            self.members_x() + 8.0,
             MEMBER_TOP + self.members_top() + MEMBER_H * slot as f32,
-            MEMBERS_W - 16.0,
+            self.member_width() - 16.0,
             MEMBER_H,
         )
     }
@@ -1334,6 +1337,7 @@ impl App {
             focused && self.c.has_conversation() && self.dm_bar().is_none() && self.rec().is_none();
         // One text field has focus: the reply box in the thread gives it up.
         if focused {
+            self.clear_pane_focus();
             self.set_thread_focus(false);
         }
         if focused
@@ -1787,7 +1791,7 @@ impl App {
         let (mut channel_options, mut space_options) = (false, false);
         if let Some((x, y)) = self.pointer {
             space = (0..self.c.spaces.len()).find(|&i| inside(Self::space_rect(i), x, y));
-            channel = (0..self.c.channels.len()).find(|&i| inside(Self::channel_rect(i), x, y));
+            channel = (0..self.c.channels.len()).find(|&i| inside(self.channel_rect(i), x, y));
             // A hidden member list leaves its column to the conversation.
             if self.members_w() > 0.0 {
                 let shown = self.shown_members();
@@ -1802,7 +1806,7 @@ impl App {
                 self.direct_at(x, y)
             };
             channel_options = channel.is_some_and(|i| {
-                self.channel_scope(i).is_some() && inside(Self::channel_options_rect(i), x, y)
+                self.channel_scope(i).is_some() && inside(self.channel_options_rect(i), x, y)
             });
             space_options = self.space_scope().is_some() && inside(self.space_options_rect(), x, y);
         }
@@ -2067,6 +2071,9 @@ impl App {
             && let Some(r) = self.gifs_input(msg, wp, x, y, ctrl, shift)
         {
             return r;
+        }
+        if let Some(r) = self.pane_input(msg, wp, x, y, shift) {
+            return Some(r);
         }
         if let Some(r) = self.call_input(msg, wp, x, y, shift) {
             return Some(r);
@@ -3094,6 +3101,13 @@ impl App {
         let s = self.scale;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         let (w, h, lx, lw) = (self.w, self.h, self.list_x(), self.list_w());
+        let (sw, mw) = (self.sidebar_w(), self.member_width());
+        self.relayout_thread_width()?;
+        if let Some(search) = &mut self.member_search {
+            search
+                .field
+                .relayout_with(&self.g, &self.g.formats.composer, 15.0, mw - 68.0)?;
+        }
         unsafe {
             self.background.SetTransform2(&Matrix3x2 {
                 M11: w * s,
@@ -3105,14 +3119,14 @@ impl App {
             })?;
         }
         self.dirty.rail |= self.rail.ensure(&self.g, px(RAIL_W), px(h))?;
-        self.dirty.sidebar |= self.sidebar.ensure(&self.g, px(SIDEBAR_W), px(h))?;
+        self.dirty.sidebar |= self.sidebar.ensure(&self.g, px(sw), px(h))?;
         self.sidebar.offset((RAIL_W * s).round(), 0.0)?;
         self.dirty.header |= self.header.ensure(&self.g, px(lw), px(HEADER_H))?;
         self.header.offset((lx * s).round(), 0.0)?;
-        self.dirty.members |= self.members.ensure(&self.g, px(MEMBERS_W), px(h))?;
+        self.dirty.members |= self.members.ensure(&self.g, px(mw), px(h))?;
         // A DM has no member list: the column steps aside.
         if self.members_w() > 0.0 {
-            self.members.offset(((w - MEMBERS_W) * s).round(), 0.0)?;
+            self.members.offset(((w - mw) * s).round(), 0.0)?;
         } else {
             self.members.offset(-10_000.0, 0.0)?;
         }
@@ -3653,6 +3667,7 @@ impl App {
             })?;
         }
         if d.sidebar {
+            let sw = self.sidebar_w();
             let (hover, layouts) = (self.hover_channel, &self.channel_layouts);
             let (drows, dtop, dhover) = (self.direct_rows(), self.directs_top(), self.hover_direct);
             let dmenu = self.dm_menu_row();
@@ -3684,8 +3699,11 @@ impl App {
             let voice_hover = self.voice_hover;
             self.sidebar.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
+                if self.panes.focus == Some(panes::Pane::Sidebar) {
+                    dc.FillRectangle(&rect(sw - 2.0, 0.0, sw, self.h), &g.brushes.terracotta);
+                }
                 if let Some((muted, lit)) = space_menu {
-                    let b = rect(SIDEBAR_W - 40.0, 13.0, SIDEBAR_W - 12.0, 41.0);
+                    let b = rect(sw - 40.0, 13.0, sw - 12.0, 41.0);
                     if lit {
                         fill_round(dc, b, 6.0, &g.brushes.hover);
                     }
@@ -3713,10 +3731,7 @@ impl App {
                 let t = g.layout(&gfx::wide(title), &g.formats.space, 10_000.0)?;
                 emoji::apply(&t, title, 17.0, 1.0)?;
                 text::draw(dc, &t, 20.0, 16.0, &g.brushes.text);
-                dc.FillRectangle(
-                    &rect(0.0, HEADER_H - 1.0, SIDEBAR_W, HEADER_H),
-                    &g.brushes.border,
-                );
+                dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, sw, HEADER_H), &g.brushes.border);
                 let label = g.layout(
                     &gfx::wide(&format!("Channels  {}", c.channels.len())),
                     &g.formats.section,
@@ -3724,7 +3739,7 @@ impl App {
                 )?;
                 text::draw(dc, &label, 20.0, SECTION_TOP + 4.0, &g.brushes.muted);
                 for (i, l) in layouts.iter().enumerate() {
-                    let (_, y, w, h) = Self::channel_rect(i);
+                    let (_, y, w, h) = self.channel_rect(i);
                     let r = rect(12.0, y, 12.0 + w, y + h);
                     if i == c.channel {
                         fill_round(dc, r, RADIUS, &g.brushes.selected);
@@ -3841,9 +3856,9 @@ impl App {
                         }
                     }
                 }
-                invites::draw_channel_plus(g, dc, channel_plus, invite_hover);
-                invites::draw_sidebar(g, dc, &side_invites, invites_top, invite_hover)?;
-                directs::draw(g, dc, &drows, dtop, dhover, dmenu)?;
+                invites::draw_channel_plus(g, dc, channel_plus, invite_hover, sw);
+                invites::draw_sidebar(g, dc, &side_invites, invites_top, invite_hover, sw)?;
+                directs::draw(g, dc, &drows, (dtop, sw), dhover, dmenu)?;
                 self.draw_call(g, dc)?;
                 self.draw_foot(g, dc, self.h)?;
                 Ok(())
@@ -3920,27 +3935,28 @@ impl App {
             })?;
         }
         if d.members {
+            let mw = self.member_width();
             let (hover, layouts) = (self.hover_member, &self.member_layouts);
             let (shown, top0, searching) = (
                 self.shown_members(),
                 self.members_top(),
                 self.member_search.is_some(),
             );
-            let x0 = self.w - MEMBERS_W;
+            let x0 = self.members_x();
             let this = &*self;
             self.members.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
                 dc.FillRectangle(&rect(0.0, 0.0, 1.0, 100_000.0), &g.brushes.border);
+                if self.panes.focus == Some(panes::Pane::Members) {
+                    dc.FillRectangle(&rect(0.0, 0.0, 2.0, self.h), &g.brushes.terracotta);
+                }
                 let t = g.layout(
                     &gfx::wide(&format!("Members  {}", c.listed_members)),
                     &g.formats.section,
                     10_000.0,
                 )?;
                 text::draw(dc, &t, 20.0, 18.0, &g.brushes.text);
-                dc.FillRectangle(
-                    &rect(0.0, HEADER_H - 1.0, MEMBERS_W, HEADER_H),
-                    &g.brushes.border,
-                );
+                dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, mw, HEADER_H), &g.brushes.border);
                 member_search::draw(g, dc, this, x0)?;
                 let online = shown.iter().filter(|&&i| c.members[i].online).count();
                 let label = if c.presence {
@@ -3954,7 +3970,7 @@ impl App {
                     let l = g.layout(
                         &gfx::wide(member_search::NO_MATCH),
                         &g.formats.quote,
-                        MEMBERS_W - 32.0,
+                        mw - 32.0,
                     )?;
                     text::draw(dc, &l, 16.0, MEMBER_TOP + top0 + 4.0, &g.brushes.muted);
                 }
@@ -3964,7 +3980,7 @@ impl App {
                     if hover == Some(i) {
                         fill_round(
                             dc,
-                            rect(8.0, top, MEMBERS_W - 8.0, top + MEMBER_H - 2.0),
+                            rect(8.0, top, mw - 8.0, top + MEMBER_H - 2.0),
                             RADIUS,
                             &g.brushes.hover,
                         );
@@ -4511,6 +4527,9 @@ fn main() -> Result<()> {
         }
         with_app(|a| {
             a.live = live::start(hwnd);
+            if let Some(live) = &a.live {
+                a.panes.restore(&live.preferences);
+            }
             if a.live.is_some() {
                 // Restoring the stored session; the sign-in form follows if there is none.
                 a.signin = Some(signin::SignIn::new());

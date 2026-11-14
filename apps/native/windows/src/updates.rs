@@ -280,7 +280,7 @@ impl App {
         (self.update_dock.is_some() && self.foot_shown()).then_some((
             RAIL_W + 12.0,
             self.h - FOOT_H - DOCK_GAP - DOCK_H,
-            SIDEBAR_W - 24.0,
+            self.sidebar_w() - 24.0,
             DOCK_H,
         ))
     }
