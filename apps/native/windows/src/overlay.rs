@@ -56,6 +56,7 @@ pub enum Item {
     CopyImageLink,
     OpenImage,
     Reply,
+    Forward,
     Edit,
     History,
     Pin,
@@ -79,6 +80,7 @@ impl Item {
             Self::CopyImageLink => "Copy image link",
             Self::OpenImage => "Open image in browser",
             Self::Reply => "Reply",
+            Self::Forward => "Forward",
             Self::Edit => "Edit message",
             Self::History => "Message history",
             Self::Pin => "Pin message",
@@ -103,6 +105,7 @@ impl Item {
             Self::CopyImageLink => Icon::Link,
             Self::OpenLink | Self::OpenImage => Icon::ExternalLink,
             Self::Reply => Icon::Reply,
+            Self::Forward => Icon::ExternalLink,
             Self::Edit => Icon::Pencil,
             Self::History => Icon::History,
             Self::Pin | Self::PinSaving => Icon::Pin,
@@ -338,6 +341,8 @@ pub enum Kind {
     /// Your private name and picture draft.
     Profile,
     Reactions,
+    Forward,
+    ForwardConversation,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -414,6 +419,7 @@ pub enum Part {
     Profile(crate::profile::editor::Control),
     ReactorTab(usize),
     ReactorPerson(usize),
+    Forward(crate::forward::Control),
 }
 
 impl Part {
@@ -469,6 +475,8 @@ impl Part {
             Self::Profile(control) => 130_000 + control.index(),
             Self::ReactorTab(k) => 140_000 + k,
             Self::ReactorPerson(k) => 150_000 + k,
+            // Forward controls have their own multi-component UIA identities.
+            Self::Forward(_) => 160_000,
         }
     }
 
@@ -563,6 +571,7 @@ pub struct Dialog {
     pub update_shown: Vec<(crate::updates::Line, String)>,
     pub profile_edit: Option<Box<crate::profile::editor::Editor>>,
     pub reactors: Option<Box<crate::reactors::View>>,
+    pub forwarding: Option<Box<crate::forward::Forward>>,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -643,6 +652,7 @@ impl Dialog {
             update_shown: Vec::new(),
             profile_edit: None,
             reactors: None,
+            forwarding: None,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -656,6 +666,8 @@ impl Dialog {
         match self.kind {
             Kind::Profile => "Edit profile".into(),
             Kind::Reactions => "Reactions".into(),
+            Kind::Forward => "Forward message".into(),
+            Kind::ForwardConversation => "Forwarded conversation".into(),
             Kind::Edit => "Edit message".into(),
             Kind::Delete => "Delete message?".into(),
             Kind::History => "Message history".into(),
@@ -702,7 +714,7 @@ impl Dialog {
                 self.browse.as_ref().map_or("", |b| b.space_name.as_str())
             ),
             Kind::JoinInvite | Kind::Invitation => self.invite_note(),
-            Kind::CreateSpace | Kind::CreateChannel | Kind::Profile | Kind::Reactions => String::new(),
+            Kind::CreateSpace | Kind::CreateChannel | Kind::Profile | Kind::Reactions | Kind::Forward | Kind::ForwardConversation => String::new(),
             Kind::InvitePeople => self.invite_people_note(),
             Kind::Update => self.update_note(),
             Kind::LeaveSpace => "You will lose access to its channels and conversations. An owner can add you again later.".into(),
@@ -844,6 +856,8 @@ impl Dialog {
             (Kind::InvitePeople, _) => self.invite_people_primary(),
             (Kind::Update, _) => self.update_primary(),
             (Kind::Profile, _) => "Save profile",
+            (Kind::Forward, _) => "Forward",
+            (Kind::ForwardConversation, _) => "Close",
         }
     }
 
@@ -858,6 +872,9 @@ impl Dialog {
     }
 
     pub fn enabled(&self, part: Part) -> bool {
+        if self.forwarding.is_some() {
+            return self.forward_enabled(part);
+        }
         if self.kind == Kind::Profile {
             return self.profile_enabled(part);
         }
@@ -877,6 +894,7 @@ impl Dialog {
                         Kind::InvitePeople => self.invite_enabled(part),
                         Kind::Update => true,
                         Kind::Profile => self.profile_enabled(part),
+                        Kind::Forward | Kind::ForwardConversation => self.forward_enabled(part),
                     }
             }
             Part::Copy
@@ -891,7 +909,7 @@ impl Dialog {
             | Part::LinkRevoke(_) => self.invite_enabled(part),
             Part::Retry if self.kind == Kind::InvitePeople => self.invite_enabled(part),
             Part::Retry if self.kind == Kind::Reactions => self.part_rect(part).is_some(),
-            Part::ReactorTab(_) | Part::ReactorPerson(_) => true,
+            Part::ReactorTab(_) | Part::ReactorPerson(_) | Part::Forward(_) => true,
             Part::CancelInvite(_) => !self.busy,
             Part::SaveName => self.can_save_name(),
             Part::Reset | Part::SaveChanges | Part::RemoveMember(_) | Part::DeleteOpen => {
@@ -937,6 +955,9 @@ impl Dialog {
 
     /// The clickable part under (x, y).
     pub fn hit(&self, x: f32, y: f32) -> Option<Part> {
+        if self.forwarding.is_some() {
+            return self.forward_hit(x, y);
+        }
         if self.kind == Kind::Profile {
             return self.profile_hit(x, y);
         }
@@ -1004,6 +1025,9 @@ impl Dialog {
     /// Client DIP origin of the field's text layout as drawn (scrolled), for
     /// the IME window and UI Automation.
     pub fn text_origin(&self) -> (f32, f32) {
+        if let Some(f) = &self.forwarding {
+            return self.forward_origin(f.focus);
+        }
         if let Some(e) = &self.profile_edit {
             return self.profile_field_origin(e.focus);
         }
@@ -1014,6 +1038,9 @@ impl Dialog {
     /// Lays out the card for a `w` × `h` window: the field's text and every
     /// part's rectangle.
     pub fn relayout(&mut self, g: &Gfx, w: f32, h: f32) -> Result<()> {
+        if self.forwarding.is_some() {
+            return self.relayout_forward(g, w, h);
+        }
         if self.kind == Kind::Profile {
             return self.relayout_profile(g, w, h);
         }
@@ -1209,6 +1236,9 @@ impl Dialog {
             let card = rect(cx, cy, cx + cw, cy + ch);
             fill_round(dc, card, RADIUS, &g.brushes.surface);
             stroke_round(dc, card, RADIUS, &g.brushes.border);
+            if self.forwarding.is_some() {
+                return self.draw_forward(g, dc);
+            }
             if self.kind == Kind::Profile {
                 return self.draw_profile(g, dc);
             }
@@ -1540,6 +1570,9 @@ impl App {
         if reply && live.can_react() && !m.is_deleted() {
             items.push(Item::Reply);
         }
+        if live.forward_session().is_some() && crate::forward::forwardable(&m) {
+            items.push(Item::Forward);
+        }
         if live.can_edit(&m) {
             items.push(Item::Edit);
         }
@@ -1695,6 +1728,7 @@ impl App {
         };
         match item {
             Item::Reply => return self.select_reply(menu.row),
+            Item::Forward => return self.open_forward(&m.id, false),
             Item::Edit if live.can_edit(&m) => self.open_dialog(Dialog::edit(m)),
             Item::Delete if live.can_delete(&m) => self.open_dialog(Dialog::delete(m)),
             Item::History => return self.open_history(m),
@@ -1741,6 +1775,7 @@ impl App {
                 | Kind::CreateChannel
                 | Kind::InvitePeople
                 | Kind::Profile
+                | Kind::Forward
         );
         self.dialog = Some(d);
         if editing {
@@ -1806,6 +1841,9 @@ impl App {
                 }
             }
             d.field.caret_on = true;
+            if let Some(f) = &mut d.forwarding {
+                f.note.caret_on = true;
+            }
             if let Err(e) = d.relayout(g, w, h) {
                 eprintln!("dialog layout failed: {e:?}");
             }
@@ -1821,6 +1859,9 @@ impl App {
         let Some(d) = &mut self.dialog else { return };
         if !d.enabled(part) {
             return;
+        }
+        if d.forwarding.is_some() {
+            return self.forward_dialog_activate(part);
         }
         if d.kind == Kind::Profile {
             return self.profile_edit_activate(part);
@@ -1995,6 +2036,7 @@ impl App {
             | Part::DeleteOpen
             | Part::ReactorTab(_)
             | Part::ReactorPerson(_)
+            | Part::Forward(_)
             | Part::Profile(_) => {}
         }
         self.dialog_changed();
@@ -2254,6 +2296,9 @@ impl App {
         ctrl: bool,
         shift: bool,
     ) -> Option<Option<LRESULT>> {
+        if self.dialog.as_ref().is_some_and(|d| d.forwarding.is_some()) {
+            return self.forward_dialog_input(msg, wp, x, y, ctrl, shift);
+        }
         if self
             .dialog
             .as_ref()

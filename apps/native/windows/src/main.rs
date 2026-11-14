@@ -26,6 +26,7 @@ mod directs;
 mod embeds;
 mod emoji;
 mod files;
+mod forward;
 mod gifs;
 mod invite_people;
 mod invites;
@@ -966,6 +967,7 @@ impl App {
             }
         }
         self.refresh_reactors();
+        self.poll_forward();
         Ok(())
     }
 
@@ -1400,6 +1402,10 @@ impl App {
             return (e.field.focused && !e.busy).then(|| (&e.field, e.text_origin()));
         }
         if let Some(d) = &self.dialog {
+            if let Some(f) = &d.forwarding {
+                return (forward::field(f.focus) && d.forward_enabled(f.focus))
+                    .then(|| (d.field_for(f.focus), d.forward_origin(f.focus)));
+            }
             if let Some(e) = &d.profile_edit {
                 return matches!(e.focus, overlay::Part::Field | overlay::Part::Number(0))
                     .then(|| (d.field_for(e.focus), d.profile_field_origin(e.focus)))
@@ -1438,6 +1444,10 @@ impl App {
             return Some(&mut e.field).filter(|f| f.focused && !e.busy);
         }
         if let Some(d) = &mut self.dialog {
+            if let Some(f) = &d.forwarding {
+                let p = f.focus;
+                return (forward::field(p) && d.forward_enabled(p)).then(|| d.field_for_mut(p));
+            }
             if let Some(e) = &d.profile_edit {
                 let p = e.focus;
                 return (matches!(p, overlay::Part::Field | overlay::Part::Number(0))

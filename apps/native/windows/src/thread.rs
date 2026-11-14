@@ -257,6 +257,13 @@ impl Pane {
         }
     }
 
+    fn scroll_to(&mut self, id: &str, vh: f32) {
+        if let Some(y) = self.ids.rows.get(id).and_then(|&i| self.row_y(i)) {
+            self.scroll = (y - 16.0).clamp(0.0, (self.content_h() - vh).max(0.0));
+            self.at_end = false;
+        }
+    }
+
     /// The head's contents: the failed load and Retry, "Load older
     /// replies", or "Loading…" while the first page loads.
     fn head(&self) -> Head<'static> {
@@ -907,6 +914,11 @@ impl App {
         let vh = self.thread_vh();
         if let Some(p) = &mut self.thread {
             p.set(&self.g, view, state, vh)?;
+        }
+        if let Some(id) = self.live.as_mut().and_then(|l| l.take_thread_focus())
+            && let Some(p) = &mut self.thread
+        {
+            p.scroll_to(&id, vh);
         }
         self.dirty.thread = true;
         self.events |= EV_SCREEN;

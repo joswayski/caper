@@ -127,6 +127,11 @@ impl Dialog {
 
     /// The editable text behind a part: a number field's, else the field's.
     pub(crate) fn field_for(&self, part: Part) -> &Composer {
+        if part == Part::Forward(crate::forward::Control::Note)
+            && let Some(f) = &self.forwarding
+        {
+            return &f.note;
+        }
         if part == Part::Number(0)
             && let Some(e) = &self.profile_edit
         {
@@ -139,6 +144,11 @@ impl Dialog {
     }
 
     pub(crate) fn field_for_mut(&mut self, part: Part) -> &mut Composer {
+        if part == Part::Forward(crate::forward::Control::Note)
+            && let Some(f) = &mut self.forwarding
+        {
+            return &mut f.note;
+        }
         if part == Part::Number(0)
             && let Some(e) = &mut self.profile_edit
         {

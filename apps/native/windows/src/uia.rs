@@ -10,6 +10,7 @@
 //! its bounds and select in it (the selection is the history's selection).
 use crate::actions::{PPart, Tool};
 use crate::attachment_editor::Part as EPart;
+use crate::forward::Control as FPart;
 use crate::gifs::GPart;
 use crate::list::Action;
 use crate::list::ForwardPart;
@@ -83,6 +84,7 @@ pub enum Id {
     Dialog(DPart),
     /// Profile editing has its own identities, separate from message dialogs.
     ProfileEdit(DPart),
+    ForwardDialog(DPart),
     AttachmentEditor(EPart),
     /// The media viewer (its panel) and its parts, which replace the tree while shown.
     Viewer(MPart),
@@ -159,7 +161,7 @@ fn field(a: &App, id: Id) -> &Composer {
         return &c.field;
     }
     match (id, &a.signin, &a.dialog) {
-        (Id::Dialog(p) | Id::ProfileEdit(p), _, Some(d)) => d.field_for(p),
+        (Id::Dialog(p) | Id::ProfileEdit(p) | Id::ForwardDialog(p), _, Some(d)) => d.field_for(p),
         (Id::Sign(_), Some(s), _) => s.field(),
         _ => &a.composer,
     }
@@ -169,7 +171,9 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
     if let (Id::AttachmentEditor(EPart::Field), Some(e)) = (id, &mut a.attachment_editor) {
         return &mut e.field;
     }
-    if let (Id::Dialog(p) | Id::ProfileEdit(p), Some(d)) = (id, &mut a.dialog) {
+    if let (Id::Dialog(p) | Id::ProfileEdit(p) | Id::ForwardDialog(p), Some(d)) =
+        (id, &mut a.dialog)
+    {
         return d.field_for_mut(p);
     }
     if let (Id::Pick(_), Some(p)) = (id, &mut a.picker) {
@@ -193,7 +197,10 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
 fn field_changed(a: &mut App, id: Id, text: bool) {
     if matches!(id, Id::AttachmentEditor(_)) {
         a.attachment_editor_changed();
-    } else if matches!(id, Id::Dialog(_) | Id::ProfileEdit(_)) {
+    } else if matches!(
+        id,
+        Id::Dialog(_) | Id::ProfileEdit(_) | Id::ForwardDialog(_)
+    ) {
         a.dialog_changed();
     } else if matches!(id, Id::Pick(_)) {
         a.picker_changed(text);
@@ -222,6 +229,9 @@ fn focused(a: &App) -> Option<Id> {
         return Some(Id::AttachmentEditor(e.focus));
     }
     if let Some(d) = &a.dialog {
+        if let Some(f) = &d.forwarding {
+            return Some(Id::ForwardDialog(f.focus));
+        }
         if let Some(e) = &d.profile_edit {
             return Some(Id::ProfileEdit(e.focus));
         }
@@ -278,6 +288,11 @@ fn children(a: &App, id: Id) -> Vec<Id> {
         return s.parts().into_iter().map(Id::Settings).collect();
     }
     if let (Id::Root, Some(d)) = (id, &a.dialog) {
+        if d.forwarding.is_some() {
+            let mut ids: Vec<_> = d.parts().map(Id::ForwardDialog).collect();
+            ids.dedup();
+            return ids;
+        }
         if d.kind == Kind::Profile {
             return d.parts().map(Id::ProfileEdit).collect();
         }
@@ -528,6 +543,10 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Invite(s) => a.invite_spots().contains(&s),
         Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
         Id::Dialog(p) => a.dialog.as_ref().is_some_and(|d| d.part_rect(p).is_some()),
+        Id::ForwardDialog(p) => a
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.forwarding.is_some() && d.part_rect(p).is_some()),
         Id::ProfileEdit(p) => a
             .dialog
             .as_ref()
@@ -774,6 +793,10 @@ fn name(a: &App, id: Id) -> String {
             .dialog
             .as_ref()
             .map_or_else(String::new, |d| d.profile_name(p)),
+        Id::ForwardDialog(p) => a
+            .dialog
+            .as_ref()
+            .map_or_else(String::new, |d| d.forward_name(p)),
         Id::Dialog(p) => {
             let Some(d) = &a.dialog else {
                 return String::new();
@@ -984,6 +1007,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::ProfileEdit(DPart::Field | DPart::Number(_)) => UIA_EditControlTypeId,
         Id::ProfileEdit(p) if crate::profile::editor::focusable(p) => UIA_ButtonControlTypeId,
         Id::ProfileEdit(_) => UIA_TextControlTypeId,
+        Id::ForwardDialog(DPart::Forward(FPart::Search | FPart::Note)) => UIA_EditControlTypeId,
+        Id::ForwardDialog(DPart::Forward(FPart::Destination(_))) => UIA_CheckBoxControlTypeId,
+        Id::ForwardDialog(DPart::Forward(FPart::Link(..))) => UIA_HyperlinkControlTypeId,
+        Id::ForwardDialog(p) if crate::forward::focusable(p) => UIA_ButtonControlTypeId,
+        Id::ForwardDialog(_) => UIA_TextControlTypeId,
         Id::Dialog(DPart::Field | DPart::Number(_)) => UIA_EditControlTypeId,
         Id::Dialog(
             DPart::Title
@@ -1060,6 +1088,11 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::MenuItem(k) => (13, k),
         Id::Dialog(p) => (14, p.index()),
         Id::ProfileEdit(p) => (64, p.index()),
+        Id::ForwardDialog(DPart::Forward(c)) => {
+            let (kind, row, part) = c.identity();
+            (1000 + (row * 8 + kind) as i32, part)
+        }
+        Id::ForwardDialog(p) => (90, p.index()),
         Id::AttachmentEditor(p) => (51, p.index()),
         Id::Viewer(p) => (52, p.index()),
         Id::Tool(i, t) => (
@@ -1259,6 +1292,11 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .as_ref()
             .and_then(|d| d.profile_bounds(p))
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::ForwardDialog(p) => a
+            .dialog
+            .as_ref()
+            .and_then(|d| d.forward_bounds(p))
+            .unwrap_or_default(),
         Id::Dialog(p) => a
             .dialog
             .as_ref()
@@ -1477,6 +1515,15 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::ProfileEdit(p) => {
                 pattern == UIA_InvokePatternId && crate::profile::editor::focusable(p)
             }
+            Id::ForwardDialog(DPart::Forward(FPart::Search | FPart::Note)) => {
+                pattern == UIA_ValuePatternId
+                    || pattern == UIA_TextPatternId
+                    || pattern == UIA_TextPattern2Id
+            }
+            Id::ForwardDialog(DPart::Forward(FPart::Destination(_) | FPart::Format(_))) => {
+                pattern == UIA_TogglePatternId
+            }
+            Id::ForwardDialog(p) => pattern == UIA_InvokePatternId && crate::forward::focusable(p),
             Id::Dialog(DPart::Toggle) => pattern == UIA_TogglePatternId,
             Id::AttachmentEditor(EPart::Field) => {
                 pattern == UIA_ValuePatternId
@@ -1593,6 +1640,11 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         matches!(id, Id::Settings(p) if !matches!(p, SPart::Text(_) | SPart::Meter)),
                     )
                 }
+                UIA_IsKeyboardFocusablePropertyId if matches!(id, Id::ForwardDialog(_)) => {
+                    VARIANT::from(
+                        matches!(id, Id::ForwardDialog(p) if crate::forward::focusable(p)),
+                    )
+                }
                 UIA_IsKeyboardFocusablePropertyId
                     if matches!(
                         id,
@@ -1691,7 +1743,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_IsEnabledPropertyId => VARIANT::from(match (id, &a.signin) {
                     (Id::Sign(Part::Field), Some(s)) => s.editable(),
                     (Id::Sign(Part::Title | Part::Message), _) => true,
-                    (Id::Dialog(p) | Id::ProfileEdit(p), _) => {
+                    (Id::Dialog(p) | Id::ProfileEdit(p) | Id::ForwardDialog(p), _) => {
                         a.dialog.as_ref().is_some_and(|d| d.enabled(p))
                     }
                     (Id::ProfilePart(p), _) => a.profile_part_enabled(p),
@@ -1820,6 +1872,13 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                         a.dialog_changed();
                     }
                 }
+                Id::ForwardDialog(p) => {
+                    if let Some(d) = &mut a.dialog {
+                        d.forward_focus(p);
+                        a.events |= crate::EV_FOCUS;
+                        a.dialog_changed();
+                    }
+                }
                 Id::Settings(p) if !matches!(p, SPart::Text(_) | SPart::Meter) => {
                     if let Some(s) = &mut a.settings {
                         s.focus_part(p);
@@ -1928,7 +1987,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::DmItem(k) => a.dm_menu_activate(k),
                 Id::Sign(p) => a.signin_activate(Some(p)),
                 Id::MenuItem(k) => a.menu_activate(k),
-                Id::Dialog(p) | Id::ProfileEdit(p) => a.dialog_activate(p),
+                Id::Dialog(p) | Id::ProfileEdit(p) | Id::ForwardDialog(p) => a.dialog_activate(p),
                 Id::AttachmentEditor(p) => a.attachment_editor_activate(p),
                 Id::Viewer(p) => a.viewer_activate(p),
                 Id::Control(i, action) => a.row_action(i, action),
@@ -2010,6 +2069,11 @@ impl IValueProvider_Impl for Node_Impl {
             {
                 return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
             }
+            if let Id::ForwardDialog(p) = id
+                && !a.dialog.as_ref().is_some_and(|d| d.forward_enabled(p))
+            {
+                return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
+            }
             if a.signin.as_ref().is_some_and(|s| !s.editable()) {
                 return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
             }
@@ -2032,6 +2096,13 @@ impl IValueProvider_Impl for Node_Impl {
 
     fn IsReadOnly(&self) -> Result<BOOL> {
         with(|a| {
+            if let Id::ForwardDialog(p) = self.id {
+                return Ok(a
+                    .dialog
+                    .as_ref()
+                    .is_none_or(|d| !d.forward_enabled(p))
+                    .into());
+            }
             if let Id::ProfileEdit(p) = self.id {
                 return Ok(a
                     .dialog
@@ -2058,7 +2129,7 @@ impl IToggleProvider_Impl for Node_Impl {
                 Id::ThreadPart(p) => a.thread_activate(p),
                 Id::BoxPart(p) => a.box_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
-                Id::Dialog(p) => a.dialog_activate(p),
+                Id::Dialog(p) | Id::ForwardDialog(p) => a.dialog_activate(p),
                 _ => {}
             }
             Ok(())
@@ -2070,6 +2141,7 @@ impl IToggleProvider_Impl for Node_Impl {
         with(|a| {
             let on = match id {
                 Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.checked(p)),
+                Id::ForwardDialog(p) => a.dialog.as_ref().is_some_and(|d| d.forward_checked(p)),
                 Id::Dialog(_) => a.dialog.as_ref().is_some_and(|d| d.private),
                 Id::BoxPart(crate::uploads::Part::Format(style)) => a.composer.pressed(style),
                 Id::ThreadPart(TPart::Format(style)) => {
@@ -2206,6 +2278,10 @@ impl Doc {
                 .dialog
                 .as_ref()
                 .map_or((0.0, 0.0), |d| d.profile_field_origin(p)),
+            (Self::Field(Id::ForwardDialog(p)), _) => a
+                .dialog
+                .as_ref()
+                .map_or((0.0, 0.0), |d| d.forward_origin(p)),
             (Self::Field(Id::Dialog(_)), _) => {
                 a.dialog.as_ref().map_or((0.0, 0.0), |d| d.text_origin())
             }
@@ -2702,6 +2778,9 @@ fn editable() -> Option<Id> {
         if let Some(e) = a.dialog.as_ref().and_then(|d| d.profile_edit.as_ref()) {
             return matches!(e.focus, DPart::Field | DPart::Number(0))
                 .then_some(Id::ProfileEdit(e.focus));
+        }
+        if let Some(f) = a.dialog.as_ref().and_then(|d| d.forwarding.as_ref()) {
+            return crate::forward::field(f.focus).then_some(Id::ForwardDialog(f.focus));
         }
         Some(
             match (

@@ -159,6 +159,7 @@ pub struct ForwardCard {
     original: Option<(Conversation, Box<Row>)>,
     summary: IDWriteTextLayout,
     summary_text: String,
+    view: IDWriteTextLayout,
     height: f32,
 }
 
@@ -169,6 +170,7 @@ const FORWARD_X: f32 = BODY_X + FORWARD_PAD - PAD_X;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForwardPart {
     Body,
+    Conversation,
     Spoiler(usize),
     Link(usize),
     File(usize),
@@ -185,6 +187,7 @@ impl ForwardPart {
             Self::File(k) => (3, k),
             Self::Hide(k) => (4, k),
             Self::Transcript(k) => (5, k),
+            Self::Conversation => (6, 0),
         }
     }
 }
@@ -257,6 +260,7 @@ impl ForwardCard {
             original,
             summary: summary_layout,
             summary_text: summary,
+            view: g.layout(&gfx::wide("View conversation"), &g.formats.button, inner)?,
             height: 0.0,
         })))
     }
@@ -285,7 +289,10 @@ impl ForwardCard {
             place(row, &c.messages[0]);
             h += row.height;
         }
-        self.height = 2.0 * FORWARD_PAD + h + gfx::metrics(&self.summary).height;
+        self.height = 2.0 * FORWARD_PAD
+            + h
+            + gfx::metrics(&self.summary).height
+            + if self.original.is_some() { 36.0 } else { 0.0 };
     }
 }
 
@@ -307,6 +314,16 @@ impl Row {
             )];
         };
         let m = &c.messages[0];
+        out.push((
+            ForwardPart::Conversation,
+            rect(
+                BODY_X + FORWARD_PAD,
+                top + card.height - FORWARD_PAD - 32.0,
+                BODY_X + self.width - FORWARD_PAD,
+                top + card.height - FORWARD_PAD,
+            ),
+            "View conversation".into(),
+        ));
         let (x, y) = (
             FORWARD_X + BODY_X,
             top + FORWARD_PAD + FORWARD_HEAD + content_top(false),
@@ -1625,6 +1642,23 @@ fn draw_content(
                 sy,
                 &g.brushes.muted,
             );
+            if card.original.is_some() {
+                let vy = fy + card.height - FORWARD_PAD - 32.0;
+                let button = rect(
+                    BODY_X + FORWARD_PAD,
+                    vy,
+                    BODY_X + row.width - FORWARD_PAD,
+                    vy + 32.0,
+                );
+                stroke_round(dc, button, 8.0, &g.brushes.border);
+                crate::text::draw(
+                    dc,
+                    &card.view,
+                    button.left + 8.0,
+                    vy + (32.0 - gfx::metrics(&card.view).height) / 2.0,
+                    &g.brushes.text,
+                );
+            }
             dc.PopAxisAlignedClip();
         }
         if let Some((l, _, _)) = &row.error {
@@ -1775,6 +1809,17 @@ impl crate::App {
     }
 
     pub fn forward_activate(&mut self, thread: bool, i: usize, part: ForwardPart) {
+        if part == ForwardPart::Conversation {
+            let c = if thread {
+                self.thread.as_ref().map(|t| &t.c)
+            } else {
+                Some(&self.c)
+            };
+            if let Some(id) = c.and_then(|c| c.messages.get(i)).map(|m| m.id.clone()) {
+                self.open_forward(&id, true);
+            }
+            return;
+        }
         let (c, rows) = if thread {
             let Some(t) = &mut self.thread else { return };
             (&mut t.c, &mut t.rows)
@@ -1794,7 +1839,7 @@ impl crate::App {
         let m = &original.messages[0];
         let mut toggle = None;
         match part {
-            ForwardPart::Body => return,
+            ForwardPart::Body | ForwardPart::Conversation => return,
             ForwardPart::Link(k) => {
                 if let Some((_, _, href)) = row.links.get(k) {
                     crate::open_link(href);

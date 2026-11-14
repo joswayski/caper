@@ -547,6 +547,9 @@ pub struct Thread {
     pub error: Option<String>,
     /// The failed request was an older page, so Retry repeats it.
     retry_older: bool,
+    /// An explicit target; older pages load until it can be shown without
+    /// leaving a gap between that reply and the latest history.
+    focus: Option<String>,
 }
 
 /// What the top of the history offers, as in the egui client.
@@ -1297,6 +1300,11 @@ impl Live {
             self.media.api()?.clone(),
             self.token.clone()?,
         ))
+    }
+
+    /// Forward requests remain tied to the signed-in account.
+    pub fn forward_session(&self) -> Option<(u64, caper_client::api::Api, String)> {
+        self.profile_session()
     }
 
     /// Apply the saved identity to retained snapshots without navigating or
@@ -2495,7 +2503,7 @@ impl Live {
     /// reply, the shown row when it is loaded, or the history around it.
     pub fn view_original(&mut self, id: &str, thread_root: Option<&str>) {
         if let Some(root) = thread_root {
-            self.open_thread(root);
+            self.open_thread_at(root, id);
             return;
         }
         if self
@@ -2692,6 +2700,34 @@ impl Live {
     /// A shown message as the server last sent it, by id.
     pub fn message(&self, id: &str) -> Option<core::Message> {
         self.timeline.messages().find(|m| m.id == id).cloned()
+    }
+
+    pub fn forward_sent(&mut self, message: core::Message) {
+        if self.channel.as_deref() != Some(&message.channel_id) {
+            return;
+        }
+        if self.timeline.merge_sent(message.clone()).is_err() || self.has_newer() {
+            self.reload();
+        } else if self.in_channel(&message) {
+            self.queued.push(Update::Message(Box::new(message)));
+            self.host.wake();
+        }
+    }
+
+    /// Only a server-authorized ForwardSource can enter this path. A root
+    /// opens its thread too, rather than merely focusing its channel row.
+    pub fn open_forward_source(&mut self, source: core::ForwardSource) {
+        let root = source
+            .message
+            .thread_root_id
+            .clone()
+            .unwrap_or_else(|| source.message.id.clone());
+        if self.channel.as_deref() == Some(&source.message.channel_id) {
+            self.open_thread_at(&root, &source.message.id);
+        } else {
+            self.navigate(source.space_id, Some(source.message.channel_id));
+            self.focus = Some((self.navigation, source.message.id, Some(root)));
+        }
     }
 
     /// The signed-in, non-guest author of `m` may delete it (and edit it,
@@ -2926,8 +2962,47 @@ impl Live {
             before: None,
             error: None,
             retry_older: false,
+            focus: None,
         });
         self.load_thread(false);
+    }
+
+    /// Opens an exact root/reply, including one older than the latest page.
+    /// Pins, inbox navigation and forwarded sources share this path.
+    pub fn open_thread_at(&mut self, root: &str, id: &str) {
+        self.open_thread(root);
+        if let Some(t) = &mut self.thread {
+            t.focus = Some(id.to_owned());
+        }
+        self.advance_thread_focus();
+        self.queued.push(Update::Thread);
+    }
+
+    fn advance_thread_focus(&mut self) {
+        let Some(t) = &self.thread else { return };
+        let Some(id) = &t.focus else { return };
+        if t.loading || t.error.is_some() {
+            return;
+        }
+        match self.message(id) {
+            Some(m)
+                if !m.is_deleted()
+                    && (m.id == t.root || m.thread_root_id.as_deref() == Some(&t.root)) => {}
+            None if t.has_more => self.load_thread(true),
+            _ => {
+                self.thread.as_mut().unwrap().focus = None;
+                self.queued
+                    .push(Update::Warning("This reply is no longer available.".into()));
+            }
+        }
+    }
+
+    pub fn take_thread_focus(&mut self) -> Option<String> {
+        let t = self.thread.as_mut()?;
+        if t.loading || t.error.is_some() {
+            return None;
+        }
+        t.focus.take()
     }
 
     pub fn close_thread(&mut self) {
@@ -4648,6 +4723,20 @@ impl Live {
                         if let Some(t) = &mut self.thread {
                             t.loading = false;
                             t.has_more = page.has_more;
+                            if t.focus.is_some()
+                                && t.retry_older
+                                && t.has_more
+                                && before.as_ref().is_none_or(|next| {
+                                    t.before.as_ref().is_none_or(|old| {
+                                        core::sequence(next).unwrap_or(0)
+                                            >= core::sequence(old).unwrap_or(0)
+                                    })
+                                })
+                            {
+                                t.error = Some(
+                                    "This thread could not load earlier replies. Try again.".into(),
+                                );
+                            }
                             t.before = before.or(t.before.take());
                             if let Err(e) = merged {
                                 t.error = Some(e);
@@ -4671,6 +4760,8 @@ impl Live {
                         }
                     }
                 }
+                self.advance_thread_focus();
+                out.append(&mut self.queued);
                 out.push(Update::Thread);
             }
             Event::Sent {
@@ -5852,6 +5943,91 @@ mod tests {
             m[k] = v.clone();
         }
         serde_json::from_value(m).unwrap()
+    }
+
+    #[test]
+    fn opening_an_old_thread_reply_keeps_recent_replies_and_stops_on_missing_targets() {
+        let api = Api::new("http://127.0.0.1:9").unwrap();
+        let host = WinHost {
+            hwnd: 0,
+            requests: Arc::default(),
+        };
+        let voice = Voice::new(
+            api.base().clone(),
+            caper_client::voice::Repaint::new(|_| {}),
+        );
+        let mut live = Live::fresh(
+            Worker::new(api, host.clone()),
+            caper_client::media::Media::new(None, Arc::new(|| {})),
+            Arc::default(),
+            host,
+            1,
+            voice,
+            crate::settings::preferences::Preferences::load(None),
+        );
+        live.channel = Some("general".into());
+        let root = core_message(serde_json::json!({}));
+        let older = core_message(serde_json::json!({
+            "id": "b00000000000002", "seq": "20", "threadRootId": root.id,
+            "clientMessageId": "00000000-0000-4000-9000-000000000002"
+        }));
+        let recent = core_message(serde_json::json!({
+            "id": "b00000000000003", "seq": "90", "threadRootId": root.id,
+            "clientMessageId": "00000000-0000-4000-9000-000000000003"
+        }));
+        let deliver = |live: &mut Live, messages: Vec<core::Message>, has_more| {
+            let mut updates = Vec::new();
+            live.handle(
+                Event::ThreadLoaded {
+                    generation: live.generation,
+                    request: live.thread.as_ref().unwrap().request,
+                    channel: "general".into(),
+                    root: root.id.clone(),
+                    result: Ok(core::ThreadHistory {
+                        root: root.clone(),
+                        messages,
+                        cursor: "90".into(),
+                        has_more,
+                    }),
+                },
+                &mut updates,
+            );
+            updates
+        };
+        live.open_thread_at(&root.id, &older.id);
+        assert_eq!(live.take_thread_focus(), None, "wait for history");
+        deliver(&mut live, vec![recent.clone()], true);
+        assert_eq!(
+            live.take_thread_focus(),
+            None,
+            "the latest page is not the target"
+        );
+        deliver(&mut live, vec![older.clone()], true);
+        assert_eq!(live.take_thread_focus().as_deref(), Some(older.id.as_str()));
+        assert_eq!(live.take_thread_focus(), None, "focus is consumed once");
+        let (view, _, _) = live.thread_view().unwrap();
+        assert_eq!(
+            view.messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            [root.id.as_str(), older.id.as_str(), recent.id.as_str()]
+        );
+
+        live.open_thread_at(&root.id, "b00000000000004");
+        deliver(&mut live, vec![older], true);
+        assert!(
+            live.thread.as_ref().unwrap().error.is_some(),
+            "a repeated cursor stops automatic paging"
+        );
+        assert_eq!(live.take_thread_focus(), None);
+        live.retry_thread();
+        let updates = deliver(&mut live, Vec::new(), false);
+        assert_eq!(live.take_thread_focus(), None);
+        assert!(
+            updates.iter().any(|u| matches!(u, Update::Warning(_))),
+            "report an unavailable reply in the same update, not on a later wake"
+        );
     }
 
     #[test]
