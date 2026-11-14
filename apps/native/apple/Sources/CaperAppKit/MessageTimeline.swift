@@ -288,7 +288,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
 }
 
-@MainActor private final class MessageCell: NativeView {
+@MainActor final class MessageCell: NativeView {
     let body = MessageTextView()
     private let author = NativeStyle.label("", size: 13, bold: true)
     private let timestamp = NativeStyle.label("", size: 10)
@@ -475,7 +475,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         setAccessibilityIdentifier("pending-row-\(pending.id)")
     }
 
-    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
+    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, inPins: Bool = false, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
         guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
         let range = body.selectedRange()
         // Another message, or edited text, hides its spoilers again.
@@ -555,7 +555,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         avatarAction.setAccessibilityLabel("Open profile for \(message.author.name)")
         avatarAction.setAccessibilityIdentifier("profile-avatar-\(message.id)")
         avatarAction.isHidden = authorAction.isHidden
-        timestamp.stringValue = NativePresentation.time(message.createdAt)
+        timestamp.stringValue = NativePresentation.time(message.createdAt, includingDate: inPins)
         body.textStorage?.setAttributedString(bodyText(message))
         body.configureMentions(message.isDeleted ? [] : message.content.mentions)
         body.setAccessibilityIdentifier("message-\(message.id)")
@@ -758,7 +758,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
 
 /// TextKit still owns selection, including drags starting on a mention. Only a
 /// single stationary click on an actual resolved-person glyph opens a card.
-@MainActor private final class MessageTextView: NSTextView {
+@MainActor final class MessageTextView: NSTextView {
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
     var messageMenu: (() -> NSMenu?)?
     /// Reveals hidden spoiler groups (a click, or VoiceOver's "Spoiler, reveal").

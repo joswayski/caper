@@ -1009,8 +1009,9 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(entry.waitForExistence(timeout: 10))
         XCTAssertEqual(entry.label, "Notifications")
         entry.tap()
-        let mention = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "check the narrow layout")).firstMatch
+        let mention = app.buttons["activity-open-inbox0000002"]
         XCTAssertTrue(mention.waitForExistence(timeout: 10), "The fixture's mention is listed")
+        XCTAssertTrue(mention.label.contains("check the narrow layout"), "The notification's content is accessible on its Open button")
         screenshot("uikit-activity-inbox")
         app.buttons["Done"].firstMatch.tap()
         XCTAssertTrue(mention.waitForNonExistence(timeout: 10))
@@ -1737,8 +1738,9 @@ final class CaperUIKitParityTests: XCTestCase {
             sleep(1)
 
             label(app, "Notifications").tap()
-            let mention = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "check the narrow layout")).firstMatch
+            let mention = app.buttons["activity-open-inbox0000002"]
             XCTAssertTrue(mention.waitForExistence(timeout: 10), prefix)
+            XCTAssertTrue(mention.label.contains("check the narrow layout"), prefix)
             sleep(1)
             capture("\(prefix)-activity-inbox")
             app.buttons["Done"].firstMatch.tap()

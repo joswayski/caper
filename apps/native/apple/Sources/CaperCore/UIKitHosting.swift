@@ -109,29 +109,7 @@ import UniformTypeIdentifiers
     /// A sheet, as SwiftUI's MentionCardHost presents on iPhone. Block closes
     /// the card first; the conversation then asks to confirm.
     private static func profileCard(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void) -> UIViewController {
-        let box = WeakController()
-        let guardian = DismissGuard()
-        var pendingBlock: BlockTarget?
-        let host = DisappearingHostingController(rootView: AnyView(
-            MentionCardView(model: model, person: person, requestBlock: { target in
-                pendingBlock = target
-                if box.value?.presentingViewController != nil { box.value?.dismiss(animated: true) }
-            }, close: { box.value?.dismiss(animated: true) })
-            .onPreferenceChange(ProfileDismissPreference.self) { action in MainActor.assumeIsolated { guardian.profileEditor = action } }
-            .preferredColorScheme(.dark)))
-        box.value = host
-        // Like MentionCardHost: a swipe down asks an open profile editor to
-        // close itself, and never drops an unsent draft.
-        let draft = model.profileMessageDraft(person: person)
-        guardian.allow = { !draft.preventsImplicitDismissal }
-        host.dismissGuard = guardian
-        host.presentationController?.delegate = guardian
-        host.overrideUserInterfaceStyle = .dark
-        host.disappeared = { if let target = pendingBlock { pendingBlock = nil; requestBlock(target) } }
-        sheet(host, background: CaperTheme.surface)
-        host.sheetPresentationController?.detents = [.large()]
-        host.view.accessibilityIdentifier = "mention-card"
-        return host
+        UIKitProfileCard(model: model, person: person, requestBlock: requestBlock)
     }
 
     /// SwiftUI's full-screen pages for an account in no spaces: the
@@ -508,15 +486,12 @@ public struct UIKitFeedbackInbox: View {
 }
 
 /// The account's notifications inbox ("Notifications" atop Direct messages):
-/// SwiftUI's sheet, polling while it is up as SwiftUI's binding has it.
+/// native controls, polling only while this sheet is open.
 @MainActor public enum UIKitActivity {
     public static func unread(_ model: AppModel) -> Int { model.activityUnread }
 
     public static func inbox(model: AppModel) -> UIViewController {
-        model.activityShown = true
-        let host = UIKitHosting.controller { _ in
-            ActivityInboxView(model: model).onDisappear { model.activityShown = false }
-        }
+        let host = UIKitActivityInbox(model: model)
         UIKitHosting.sheet(host, background: CaperTheme.surface)
         // SwiftUI's default sheet: full height, no grabber.
         host.sheetPresentationController?.detents = [.large()]

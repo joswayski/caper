@@ -67,9 +67,11 @@ import AppKit
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard window != nil else { return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { alphaValue = 1; return }
         alphaValue = 0
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
+            context.duration = CaperMotion.fast
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
             animator().alphaValue = 1
         }
     }

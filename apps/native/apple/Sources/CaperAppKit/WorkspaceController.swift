@@ -49,7 +49,7 @@ import CaperCore
     }
     private lazy var dialogs = AppKitWorkspacePresenter(model: model)
     private lazy var media = AppKitMediaPresenter(model: model, parent: presentationParent)
-    private lazy var pins = AppKitPinsPresenter(model: model, media: media)
+    private lazy var pins = AppKitPinsPresenter(model: model)
     private lazy var picker = AppKitComposerPicker(model: model, inThread: inThread)
     private lazy var voiceComposer = AppKitVoiceComposer(chat: model.chat, inThread: inThread, editor: composer)
     private var wasRecording = false
@@ -71,7 +71,13 @@ import CaperCore
     private lazy var pinsButton: NativeButton = NativeButton.icon("Pins", symbol: "pin") { [weak self] in
         guard let self else { return }
         self.picker.close(restoringFocus: false)
-        self.pins.show(from: self.pinsButton, composer: self.composer)
+        self.pins.show(from: self.pinsButton, composer: self.composer) { close in
+            PinsViewController(model: self.model, configure: { [weak self] in self?.configurePin($0) },
+                react: { [weak self] id, emoji in
+                    guard let self, let message = self.model.chat.displayedPins.first(where: { $0.id == id }) else { return }
+                    self.messageAction(message, action: .reaction(emoji), anchor: self.pinsButton)
+                }, close: close)
+        }
     }
     private lazy var membersToggle = NativeButton.icon("Show members", symbol: "person.2") { [weak self] in
         guard let self else { return }
@@ -735,6 +741,25 @@ import CaperCore
     }
 
     @objc private func pickFiles() { media.pickFiles(inThread: inThread) }
+
+    private func configurePin(_ row: MessageCell) {
+        row.openAuthor = { [weak self] author, anchor in
+            self?.profiles.show(author: author, relativeTo: anchor.bounds, of: anchor)
+        }
+        row.body.openMention = { [weak self] mention, anchor, rect in
+            self?.profiles.show(mention: mention, relativeTo: rect, of: anchor)
+        }
+        row.makeAttachments = { [weak self] message in
+            self?.media.messageAttachments(message, beforeViewing: { [weak self] in self?.pins.close() })
+        }
+        row.makeReply = { [weak self] message in self?.media.replyContext(message) }
+        row.messageMenu = { [weak self] message, anchor in self?.messageMenu(message, anchor: anchor) }
+        row.messageAction = { [weak self] message, action, anchor in self?.messageAction(message, action: action, anchor: anchor) }
+        row.hoverReaction = { [weak self] message, emoji, entered, anchor in
+            guard let self, let container = anchor.window?.contentView else { return }
+            self.reactionTooltip.hover(message, emoji: emoji, entered: entered, from: anchor, in: container)
+        }
+    }
 
     private func messageAction(_ message: ChatMessage, action: MessageAction, anchor: NSView) {
         let chat = model.chat

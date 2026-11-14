@@ -2366,6 +2366,36 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    #if os(macOS)
+    @MainActor
+    func testNativePinActionsResolveCurrentSnapshotsOutsideLoadedHistory() async throws {
+        let channel = "Channel12345", messageID = "Message00000001"
+        MockURLProtocol.handler = { request in
+            guard request.url?.path == "/api/chat/session" else { throw URLError(.badURL) }
+            return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+        }
+        let model = AppModel(api: client()), author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let original = ChatMessage(id: messageID, channelId: channel, seq: "1", author: author,
+            content: ChatContent(version: 1, type: "text", text: "Older pinned message"), createdAt: "now",
+            clientMessageId: "client", reactions: [], reactionSeq: "1", pin: MessagePin(author: author, createdAt: "now"), pinSeq: "2")
+        let chat = model.chat, presenter = AppKitWorkspacePresenter(model: model)
+        await chat.open(history: ChatHistory(space: HistoryIdentity(id: "Space1234567", name: "Space"),
+            channel: HistoryIdentity(id: channel, name: "general"), messages: [], pinnedMessages: [original],
+            cursor: "10", hasMore: false), displayName: "Me")
+        XCTAssertTrue(chat.displayedMessages.isEmpty)
+        XCTAssertEqual(presenter.currentMessage(original)?.content.text, "Older pinned message")
+        chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "11",
+                      "messageId": messageID, "reactions": [["emoji": "👍", "authorIds": ["other"]]]],
+                     generation: 1, channelID: channel)
+        XCTAssertEqual(presenter.currentMessage(original)?.reactions, [MessageReaction(emoji: "👍", authorIds: ["other"])],
+                       "Actions use the live pin, not the snapshot that opened the popover")
+        await chat.open(history: ChatHistory(space: nil, channel: HistoryIdentity(id: "Channel67890", name: "other"),
+            messages: [], cursor: "0", hasMore: false), displayName: "Me")
+        XCTAssertNil(presenter.currentMessage(original), "A pin action cannot survive navigation to another channel")
+        await chat.stop()
+    }
+    #endif
+
     @MainActor
     func testReactionIsOptimisticAndGatewaySnapshotsPreservePendingOwnIntent() async throws {
         let channel = "chan00000001"
