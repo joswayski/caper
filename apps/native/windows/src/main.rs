@@ -1020,6 +1020,7 @@ impl App {
         self.refresh_reactors();
         self.poll_forward();
         self.refresh_pins();
+        self.poll_profile_composer();
         Ok(())
     }
 
@@ -1516,6 +1517,7 @@ impl App {
     }
 
     fn focused_field_mut(&mut self) -> Option<&mut Composer> {
+        let profile_editable = self.profile_part_enabled(profile::PPart::Field);
         if let Some(e) = &mut self.attachment_editor {
             return Some(&mut e.field).filter(|f| f.focused && !e.busy);
         }
@@ -1553,7 +1555,7 @@ impl App {
         if let Some(c) = &mut self.profile
             && c.field.focused
         {
-            return Some(&mut c.field);
+            return profile_editable.then_some(&mut c.field);
         }
         if let Some(p) = &mut self.picker {
             return Some(&mut p.search).filter(|f| f.focused);
@@ -1996,6 +1998,11 @@ impl App {
         if let Some(r) = self.suggest_input(msg, wp, x, y, ctrl, shift) {
             return r;
         }
+        if self.profile_emoji_open()
+            && let Some(r) = self.picker_input(msg, wp, x, y, ctrl, shift)
+        {
+            return r;
+        }
         if self.profile.is_some()
             && let Some(r) = self.profile_input(msg, wp, x, y, ctrl, shift)
         {
@@ -2088,6 +2095,7 @@ impl App {
                 settings::audio::TIMER_AUDIO => self.audio_tick(),
                 playback::TIMER_PLAYBACK => self.playback_tick(),
                 recording::TIMER_RECORDING => self.recording_tick(),
+                profile::TIMER_PROFILE_RECORDING => self.profile_recording_tick(),
                 preview::TIMER_PREVIEW => self.preview_tick(),
                 TIMER_GIFS => self.gifs_tick(),
                 TIMER_GIF_FRAMES => self.next_picker_frame(),

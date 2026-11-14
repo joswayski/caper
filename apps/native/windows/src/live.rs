@@ -208,9 +208,8 @@ pub enum Update {
         message: String,
         result: Result<core::MessageVersions, String>,
     },
-    /// The profile card's requests changed; Some(person) when its message
-    /// was sent (or its DM opened) and the card closed, clearing its draft.
-    Profile(Option<String>),
+    /// The profile card changed; Some((person, clear_draft)) closes it.
+    Profile(Option<(String, bool)>),
     /// Online account ids in the open space.
     Presence(HashSet<String>),
     /// The gateway's state while not live ("Connecting…"); None once live.
@@ -305,8 +304,7 @@ impl Ids {
 
 /// The open profile card's requests, as egui's `MentionCard` keeps them:
 /// its send or open in flight and what it says, the invitation in flight,
-/// spaces already answered, and the message id an uncertain failed send
-/// retries with.
+/// and spaces already answered. Drafts and retries survive closing it.
 #[derive(Default)]
 pub struct CardState {
     pub person: String,
@@ -316,7 +314,15 @@ pub struct CardState {
     pub choosing_space: bool,
     pub inviting: Option<(u64, String)>,
     pub invited: HashMap<String, &'static str>,
-    pub retry_id: Option<String>,
+}
+
+/// Recipient-scoped files and a failed write's exact payload. An uncertain
+/// write cannot be edited into a different message under the same key.
+#[derive(Default)]
+pub struct ProfileDraft {
+    pub files: Vec<caper_client::profile_dm::File>,
+    pub retry: Option<Box<caper_client::profile_dm::Send>>,
+    pub error: Option<String>,
 }
 
 pub struct Live {
@@ -433,6 +439,8 @@ pub struct Live {
     pub account_avatar: crate::avatars::Avatar,
     /// The open profile card's requests, and the last invitation's number.
     pub card: Option<CardState>,
+    pub profile_drafts: HashMap<String, ProfileDraft>,
+    profile_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     card_request: u64,
     username: Option<String>,
     pub direct: Option<String>,
@@ -738,6 +746,8 @@ impl Live {
             account_name: String::new(),
             account_avatar: crate::avatars::Avatar::default(),
             card: None,
+            profile_drafts: HashMap::new(),
+            profile_cancel: None,
             card_request: 0,
             username: None,
             direct: None,
@@ -792,6 +802,10 @@ impl Live {
     /// server revokes it. A signed-out Live replaces this one on the same
     /// worker, so nothing can restore the old session meanwhile.
     pub fn logout(mut self) -> Live {
+        if let Some(cancel) = self.profile_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.profile_drafts.clear();
         self.discard_voice_sends();
         if let Some((_, draft)) = self.edit_upload.take() {
             draft.upload.abandon();
@@ -1567,57 +1581,137 @@ impl Live {
         text: String,
         open_only: bool,
     ) -> bool {
-        let Some(token) = self.token.clone() else {
-            return false;
-        };
-        let (name, settings, epoch) = (
-            self.account_name.clone(),
-            self.uploads.clone(),
-            self.account_epoch,
-        );
-        let Some(card) = self.card.as_mut().filter(|c| c.person == person) else {
-            return false;
-        };
-        if card.sending || card.inviting.is_some() || (!open_only && text.trim().is_empty()) {
+        if self.token.is_none()
+            || self
+                .card
+                .as_ref()
+                .is_none_or(|c| c.person != person || c.sending || c.inviting.is_some())
+        {
             return false;
         }
-        if text.chars().count() > 4_000 {
-            card.error = Some("Messages can be at most 4,000 characters.".into());
+        let draft = self.profile_drafts.entry(person.into()).or_default();
+        if !open_only && text.trim().is_empty() && draft.files.is_empty() && draft.retry.is_none() {
             return false;
         }
-        card.sending = true;
-        card.error = None;
-        card.status = Some(
-            if open_only {
-                "Opening\u{2026}"
-            } else {
-                "Sending\u{2026}"
-            }
-            .into(),
-        );
-        let client_id = card
-            .retry_id
-            .clone()
-            .filter(|_| !open_only)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        self.worker.send(Command::SendProfile {
-            epoch,
-            person: person.to_owned(),
-            token,
-            send: Box::new(caper_client::profile_dm::Send {
-                person: person.to_owned(),
+        if text.chars().count() > 4_000 && !open_only && draft.retry.is_none() {
+            draft.error = Some("Messages can be at most 4,000 characters.".into());
+            return false;
+        }
+        let send = if !open_only && draft.retry.is_some() {
+            draft.retry.take().unwrap()
+        } else {
+            Box::new(caper_client::profile_dm::Send {
+                person: person.into(),
                 username,
-                name,
-                client_id,
+                name: self.account_name.clone(),
+                client_id: uuid::Uuid::new_v4().to_string(),
                 text: if open_only { String::new() } else { text },
-                files: Vec::new(),
-                settings,
+                files: if open_only {
+                    Vec::new()
+                } else {
+                    draft.files.clone()
+                },
+                settings: self.uploads.clone(),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 retrying: false,
                 open_only,
                 voice_only: false,
                 direct: None,
-            }),
+            })
+        };
+        self.dispatch_profile(send)
+    }
+
+    pub fn profile_voice(
+        &mut self,
+        person: &str,
+        username: String,
+        file: caper_client::profile_dm::File,
+    ) {
+        if !self.preferences.voice_send_on_stop() {
+            self.profile_drafts
+                .entry(person.into())
+                .or_default()
+                .files
+                .push(file);
+            self.upload_profile_files(person, &username);
+            return;
+        }
+        self.dispatch_profile(Box::new(caper_client::profile_dm::Send {
+            person: person.into(),
+            username,
+            name: self.account_name.clone(),
+            client_id: uuid::Uuid::new_v4().to_string(),
+            text: String::new(),
+            files: vec![file],
+            settings: self.uploads.clone(),
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            retrying: false,
+            open_only: false,
+            voice_only: true,
+            direct: None,
+        }));
+    }
+
+    /// Eager uploads are account/recipient scoped, never the selected channel.
+    pub fn upload_profile_files(&mut self, person: &str, username: &str) {
+        let Some((_, api, token)) = self.profile_session() else {
+            return;
+        };
+        let Some(settings) = &self.uploads else {
+            return;
+        };
+        if let Some(draft) = self
+            .profile_drafts
+            .get_mut(person)
+            .filter(|d| d.retry.is_none())
+        {
+            for file in &mut draft.files {
+                if file.upload.is_none() && file.attachment.is_none() {
+                    file.upload_eagerly(
+                        &api,
+                        &token,
+                        (person, username, None),
+                        settings,
+                        &self.host,
+                    );
+                }
+            }
+        }
+    }
+
+    fn dispatch_profile(&mut self, send: Box<caper_client::profile_dm::Send>) -> bool {
+        let Some(token) = self.token.clone() else {
+            return false;
+        };
+        let Some(card) = self.card.as_mut().filter(|c| c.person == send.person) else {
+            return false;
+        };
+        if card.sending || card.inviting.is_some() {
+            return false;
+        }
+        self.profile_drafts
+            .entry(send.person.clone())
+            .or_default()
+            .error = None;
+        card.sending = true;
+        card.error = None;
+        card.status = Some(
+            if send.open_only {
+                "Opening\u{2026}"
+            } else if send.voice_only {
+                "Sending voice message\u{2026}"
+            } else {
+                "Sending\u{2026}"
+            }
+            .into(),
+        );
+        self.profile_cancel = Some(send.cancel.clone());
+        self.worker.send(Command::SendProfile {
+            epoch: self.account_epoch,
+            person: send.person.clone(),
+            token,
+            send,
         });
         true
     }
@@ -2315,7 +2409,7 @@ impl Live {
         }
     }
 
-    fn cancel_assets(&self, ids: Vec<String>) {
+    pub(crate) fn cancel_assets(&self, ids: Vec<String>) {
         if let Some(token) = &self.token
             && !ids.is_empty()
         {
@@ -5439,9 +5533,10 @@ impl Live {
             Event::ProfileSent {
                 epoch,
                 person,
-                send,
+                mut send,
                 result,
             } if epoch == self.account_epoch => {
+                self.profile_cancel = None;
                 if let Some(direct) = result.as_ref().ok().or(send.direct.as_ref()) {
                     self.directs.retain(|d| d.id != direct.id);
                     self.directs.push(direct.clone());
@@ -5450,19 +5545,36 @@ impl Live {
                 if let Some(card) = self.card.as_mut().filter(|c| c.person == person) {
                     card.sending = false;
                     card.status = None;
+                    let draft = self.profile_drafts.entry(person.clone()).or_default();
                     match result {
                         Ok(direct) => {
-                            // Sent (or opened): the card closes on its DM.
-                            self.card = None;
-                            let id = direct.id.clone();
-                            out.push(Update::Profile(Some(person)));
-                            self.open_direct(id);
+                            if !send.voice_only && !send.open_only {
+                                draft.files.clear();
+                            }
+                            if !send.open_only {
+                                draft.retry = None;
+                                draft.error = None;
+                            }
+                            if send.voice_only {
+                                out.push(Update::Profile(None));
+                            } else {
+                                // Explicit Open preserves the unsent draft.
+                                self.card = None;
+                                out.push(Update::Profile(Some((person, !send.open_only))));
+                                self.open_direct(direct.id);
+                            }
                         }
                         Err(error) => {
                             if !send.open_only {
-                                card.retry_id = error.uncertain.then_some(send.client_id);
+                                if !send.voice_only {
+                                    draft.files = send.files.clone();
+                                }
+                                send.retrying = error.uncertain;
+                                if error.uncertain || send.voice_only {
+                                    draft.retry = Some(send);
+                                }
                             }
-                            card.error = Some(error.message);
+                            draft.error = Some(error.message);
                             out.push(Update::Profile(None));
                         }
                     }
@@ -6067,6 +6179,181 @@ pub fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_files_survive_open_and_voice_but_clear_only_after_their_own_send() {
+        let api = Api::new("http://127.0.0.1:9").unwrap();
+        let host = WinHost {
+            hwnd: 0,
+            requests: Arc::default(),
+        };
+        let voice = Voice::new(
+            api.base().clone(),
+            caper_client::voice::Repaint::new(|_| {}),
+        );
+        let mut live = Live::fresh(
+            Worker::new(api, host.clone()),
+            caper_client::media::Media::new(None, Arc::new(|| {})),
+            Arc::default(),
+            host,
+            1,
+            voice,
+            crate::settings::preferences::Preferences::load(None),
+        );
+        let epoch = live.account_epoch;
+        live.profile_drafts
+            .entry("alex-id".into())
+            .or_default()
+            .files
+            .push(caper_client::profile_dm::File::picked("alex.txt".into()));
+        live.profile_drafts
+            .entry("bob-id".into())
+            .or_default()
+            .files
+            .push(caper_client::profile_dm::File::picked("bob.txt".into()));
+        let send = |open_only, voice_only| {
+            Box::new(caper_client::profile_dm::Send {
+                person: "alex-id".into(),
+                username: "alex".into(),
+                name: "Me".into(),
+                client_id: "same-key".into(),
+                text: "kept payload".into(),
+                files: vec![caper_client::profile_dm::File::picked(
+                    "returned.txt".into(),
+                )],
+                settings: None,
+                cancel: Arc::default(),
+                retrying: false,
+                open_only,
+                voice_only,
+                direct: None,
+            })
+        };
+        let direct = || {
+            serde_json::from_value(serde_json::json!({
+            "id": "dm-alex", "peer": {"id": "alex-id", "username": "alex", "displayName": "Alex"},
+            "lastSeq": "1", "readSeq": "0", "status": "accepted"
+        })).unwrap()
+        };
+        let card = || CardState {
+            person: "alex-id".into(),
+            sending: true,
+            ..Default::default()
+        };
+        let mut updates = Vec::new();
+        live.card = Some(card());
+        live.handle(
+            Event::ProfileSent {
+                epoch,
+                person: "alex-id".into(),
+                send: send(false, false),
+                result: Err(caper_client::profile_dm::Failure {
+                    message: "Timed out".into(),
+                    uncertain: true,
+                }),
+            },
+            &mut updates,
+        );
+        let retry = live.profile_drafts["alex-id"].retry.as_ref().unwrap();
+        assert!(retry.retrying);
+        assert_eq!(retry.client_id, "same-key");
+        assert_eq!(retry.text, "kept payload");
+        assert_eq!(retry.files[0].name(), "returned.txt");
+        assert!(!live.card.as_ref().unwrap().sending);
+
+        // Closing and reopening, or navigating explicitly, must not silently
+        // turn an uncertain send into a new editable payload.
+        live.card = None;
+        live.card = Some(card());
+        live.handle(
+            Event::ProfileSent {
+                epoch,
+                person: "alex-id".into(),
+                send: send(true, false),
+                result: Ok(direct()),
+            },
+            &mut updates,
+        );
+        assert!(live.profile_drafts["alex-id"].retry.is_some());
+        assert_eq!(
+            live.profile_drafts["alex-id"].files[0].name(),
+            "returned.txt"
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|u| matches!(u, Update::Profile(Some((id, false))) if id == "alex-id"))
+        );
+
+        live.profile_drafts.get_mut("alex-id").unwrap().retry = None;
+        live.card = Some(card());
+        live.handle(
+            Event::ProfileSent {
+                epoch,
+                person: "alex-id".into(),
+                send: send(false, true),
+                result: Err(caper_client::profile_dm::Failure {
+                    message: "Offline".into(),
+                    uncertain: false,
+                }),
+            },
+            &mut updates,
+        );
+        assert!(
+            live.profile_drafts["alex-id"]
+                .retry
+                .as_ref()
+                .unwrap()
+                .voice_only
+        );
+        assert_eq!(
+            live.profile_drafts["alex-id"].files[0].name(),
+            "returned.txt"
+        );
+        live.handle(
+            Event::ProfileSent {
+                epoch,
+                person: "alex-id".into(),
+                send: send(false, true),
+                result: Ok(direct()),
+            },
+            &mut updates,
+        );
+        assert!(live.profile_drafts["alex-id"].retry.is_none());
+        assert!(live.card.is_some(), "voice alone keeps the card and draft");
+        assert_eq!(live.profile_drafts["alex-id"].files.len(), 1);
+
+        live.handle(
+            Event::ProfileSent {
+                epoch: epoch.wrapping_sub(1),
+                person: "alex-id".into(),
+                send: send(false, false),
+                result: Ok(direct()),
+            },
+            &mut updates,
+        );
+        assert_eq!(
+            live.profile_drafts["alex-id"].files.len(),
+            1,
+            "a prior account cannot clear this draft"
+        );
+        live.handle(
+            Event::ProfileSent {
+                epoch,
+                person: "alex-id".into(),
+                send: send(false, false),
+                result: Ok(direct()),
+            },
+            &mut updates,
+        );
+        assert!(live.profile_drafts["alex-id"].files.is_empty());
+        assert_eq!(live.profile_drafts["bob-id"].files[0].name(), "bob.txt");
+        assert!(
+            updates
+                .iter()
+                .any(|u| matches!(u, Update::Profile(Some((id, true))) if id == "alex-id"))
+        );
+    }
 
     #[test]
     fn thread_files_have_independent_limits_and_send_without_consuming_other_drafts() {

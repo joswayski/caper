@@ -271,8 +271,8 @@ fn focused(a: &App) -> Option<Id> {
     if a.thread.as_ref().is_some_and(|t| t.composer.focused) {
         return Some(Id::ThreadPart(TPart::Field));
     }
-    if a.profile.as_ref().is_some_and(|c| c.field.focused) {
-        return Some(Id::ProfilePart(CPart::Field));
+    if let Some(c) = &a.profile {
+        return c.key_focus.map(Id::ProfilePart);
     }
     if a.member_search.as_ref().is_some_and(|s| s.field.focused) {
         return Some(Id::MemberSearch(SPartM::Field));
@@ -354,6 +354,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 .into_iter()
                 .chain(a.profile.as_ref().map(|_| Id::Profile))
                 .collect();
+            if a.profile_emoji_open() { out.insert(0, Id::Picker); }
             out.extend([Id::Rail, Id::Channels]);
             if !a.direct_rows().is_empty() {
                 out.push(Id::Directs);
@@ -395,7 +396,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             out.extend(a.account_menu.as_ref().map(|_| Id::AccountMenu));
             out.extend(a.dm_menu.as_ref().map(|_| Id::DmMenu));
             out.extend(a.menu.as_ref().map(|_| Id::Menu));
-            out.extend(a.picker.as_ref().map(|_| Id::Picker));
+            if !a.profile_emoji_open() { out.extend(a.picker.as_ref().map(|_| Id::Picker)); }
             out.extend(a.gifs.as_ref().map(|_| Id::Gifs));
             out
         }
@@ -823,9 +824,7 @@ fn name(a: &App, id: Id) -> String {
                     _ => format!("Profile of {}", v.profile.title()),
                 })
         }
-        Id::ProfilePart(p) => a
-            .profile_view()
-            .map_or_else(String::new, |v| v.part_name(p)),
+        Id::ProfilePart(p) => a.profile_part_name(p),
         Id::Suggest => "Suggestions".into(),
         Id::Suggestion(k) => a
             .suggest
@@ -1036,6 +1035,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Menu => UIA_MenuControlTypeId,
         Id::Profile => UIA_GroupControlTypeId,
         Id::ProfilePart(CPart::Field) => UIA_EditControlTypeId,
+        Id::ProfilePart(CPart::RecordingStatus) => UIA_TextControlTypeId,
         Id::ProfilePart(CPart::Invite | CPart::Block) => UIA_MenuItemControlTypeId,
         Id::ProfilePart(_) => UIA_ButtonControlTypeId,
         Id::Suggest => UIA_ListControlTypeId,
@@ -1721,6 +1721,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     || pattern == UIA_TextPatternId
                     || pattern == UIA_TextPattern2Id
             }
+            Id::ProfilePart(CPart::RecordingStatus) => false,
             Id::ProfilePart(_) => pattern == UIA_InvokePatternId,
             Id::Suggestion(_) => pattern == UIA_InvokePatternId,
             Id::ThreadPart(_) => pattern == UIA_InvokePatternId,
@@ -2059,7 +2060,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
                 Id::ThreadPart(TPart::Tool(i, tool)) => a.focus_thread_tool(i, tool),
                 Id::ThreadPart(TPart::Row(i)) => a.set_thread_selection(Some(((i, 0), (i, 0)))),
-                Id::ProfilePart(CPart::Field) => a.set_profile_focus(true),
+                Id::ProfilePart(p) => a.focus_profile_part(p),
                 Id::Control(i, action) => a.set_kb(Some((i, action))),
                 _ => {}
             }
@@ -2232,6 +2233,11 @@ impl IValueProvider_Impl for Node_Impl {
             {
                 return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
             }
+            if let Id::ProfilePart(p) = id
+                && !a.profile_part_enabled(p)
+            {
+                return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
+            }
             if a.signin.as_ref().is_some_and(|s| !s.editable()) {
                 return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
             }
@@ -2254,6 +2260,9 @@ impl IValueProvider_Impl for Node_Impl {
 
     fn IsReadOnly(&self) -> Result<BOOL> {
         with(|a| {
+            if let Id::ProfilePart(p) = self.id {
+                return Ok((!a.profile_part_enabled(p)).into());
+            }
             if let Id::ForwardDialog(p) = self.id {
                 return Ok(a
                     .dialog
@@ -3045,7 +3054,9 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
     let mut top = children(a, Id::Root);
     let cards = top
         .iter()
-        .take_while(|id| matches!(id, Id::Suggest | Id::Profile))
+        .take_while(|id| {
+            matches!(id, Id::Suggest | Id::Profile) || **id == Id::Picker && a.profile_emoji_open()
+        })
         .count();
     top[cards..].reverse();
     let mut id = top.into_iter().find(|c| inside(*c))?;
@@ -3110,7 +3121,24 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
             | TPart::CancelReply
             | TPart::Send,
         )
-        | Id::ProfilePart(CPart::Close | CPart::Open | CPart::More | CPart::Send)
+        | Id::ProfilePart(
+            CPart::Close
+            | CPart::Open
+            | CPart::More
+            | CPart::Send
+            | CPart::Attach
+            | CPart::Emoji
+            | CPart::Mic
+            | CPart::Stop
+            | CPart::DiscardRecording
+            | CPart::File(_)
+            | CPart::Remove(_)
+            | CPart::Spoiler(_)
+            | CPart::RetryFile(_)
+            | CPart::DiscardSend
+            | CPart::PreviousFiles
+            | CPart::NextFiles,
+        )
         | Id::Pick(PPart::Close | PPart::Category(_) | PPart::Emoji(_))
         | Id::Gif(GPart::Close)
         | Id::MenuClose

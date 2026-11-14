@@ -762,7 +762,7 @@ fn bmp(dib: &[u8]) -> Option<Vec<u8>> {
 
 /// What a paste attaches: copied files, else a copied picture saved as a
 /// PNG the draft keeps (egui's "Pasted image.png"). Empty for text.
-fn clipboard_files(hwnd: HWND) -> Vec<(PathBuf, Option<Arc<Scratch>>)> {
+pub(crate) fn clipboard_files(hwnd: HWND) -> Vec<(PathBuf, Option<Arc<Scratch>>)> {
     unsafe {
         if OpenClipboard(Some(hwnd)).is_err() {
             return Vec::new();

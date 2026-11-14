@@ -25,7 +25,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::Result;
 
+mod compose;
 pub mod editor;
+pub use compose::TIMER_PROFILE_RECORDING;
 
 /// egui's card: 320 DIPs wide with 16 DIPs of padding inside its border.
 pub const CARD_W: f32 = 320.0;
@@ -57,6 +59,19 @@ pub enum PPart {
     Field,
     Send,
     Edit,
+    Attach,
+    Emoji,
+    Mic,
+    Stop,
+    DiscardRecording,
+    RecordingStatus,
+    File(usize),
+    Remove(usize),
+    Spoiler(usize),
+    RetryFile(usize),
+    DiscardSend,
+    PreviousFiles,
+    NextFiles,
 }
 
 impl PPart {
@@ -71,6 +86,19 @@ impl PPart {
             Self::Field => 6,
             Self::Send => 7,
             Self::Edit => 100_000,
+            Self::Attach => 100_001,
+            Self::Emoji => 100_002,
+            Self::Mic => 100_003,
+            Self::Stop => 100_004,
+            Self::DiscardRecording => 100_005,
+            Self::RecordingStatus => 100_006,
+            Self::DiscardSend => 100_007,
+            Self::PreviousFiles => 100_008,
+            Self::NextFiles => 100_009,
+            Self::File(k) => 110_000 + k,
+            Self::Remove(k) => 120_000 + k,
+            Self::Spoiler(k) => 130_000 + k,
+            Self::RetryFile(k) => 140_000 + k,
             Self::Space(k) => 8 + k,
         }
     }
@@ -88,7 +116,11 @@ pub struct ProfileCard {
     /// The More menu is open.
     pub more: bool,
     pub field: Composer,
+    pub key_focus: Option<PPart>,
     dragging: bool,
+    file_dialog: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    recording: Option<compose::Recording>,
+    file_start: usize,
 }
 
 /// What the card shows now, from the account's loaded state.
@@ -99,6 +131,7 @@ pub struct View {
     pub can_block: bool,
     pub can_invite: bool,
     pub busy: bool,
+    pub editable: bool,
     pub choosing: bool,
     pub spaces: Vec<(core::Space, String, bool)>,
     pub status: Option<String>,
@@ -125,6 +158,19 @@ impl View {
             PPart::Field => format!("Message @{}", self.username().unwrap_or_default()),
             PPart::Send => "Send".into(),
             PPart::Edit => "Edit profile".into(),
+            PPart::Attach => "Attach files".into(),
+            PPart::Emoji => "Insert emoji".into(),
+            PPart::Mic => "Record voice message".into(),
+            PPart::Stop => "Finish voice message".into(),
+            PPart::DiscardRecording => "Discard recording".into(),
+            PPart::RecordingStatus => "Recording voice message".into(),
+            PPart::File(_) => "Attachment".into(),
+            PPart::Remove(_) => "Remove attachment".into(),
+            PPart::Spoiler(_) => "Toggle attachment spoiler".into(),
+            PPart::RetryFile(_) => "Retry upload".into(),
+            PPart::DiscardSend => "Discard failed send".into(),
+            PPart::PreviousFiles => "Previous attachments".into(),
+            PPart::NextFiles => "Next attachments".into(),
         }
     }
 }
@@ -171,6 +217,8 @@ impl App {
         let sending = state.is_some_and(|s| s.sending);
         let inviting = state.and_then(|s| s.inviting.clone());
         let busy = sending || inviting.is_some() || live.block_busy();
+        let draft = live.profile_drafts.get(&card.id);
+        let editable = !busy && draft.is_none_or(|d| d.retry.is_none()) && card.recording.is_none();
         let spaces = owned
             .into_iter()
             .map(|s| {
@@ -192,15 +240,26 @@ impl App {
             can_block,
             can_invite,
             busy,
+            editable,
             choosing: can_invite && state.is_some_and(|s| s.choosing_space),
             spaces,
             status: state.and_then(|s| s.status.clone()),
-            error: state.and_then(|s| s.error.clone()),
+            error: draft
+                .and_then(|d| d.error.clone())
+                .or_else(|| state.and_then(|s| s.error.clone())),
             profile,
         })
     }
 
     fn profile_enabled(&self, v: &View, part: PPart) -> bool {
+        if self.profile_recording_active()
+            && !matches!(
+                part,
+                PPart::Close | PPart::Stop | PPart::DiscardRecording | PPart::RecordingStatus
+            )
+        {
+            return false;
+        }
         let sending = self
             .live
             .as_ref()
@@ -210,15 +269,48 @@ impl App {
             PPart::Picture => !sending,
             PPart::Edit => v.profile.me && !v.busy,
             PPart::Close | PPart::More | PPart::Block | PPart::Invite => !v.busy,
-            PPart::Open => !v.busy && self.live.as_ref().is_some_and(|l| l.me.is_some()),
+            PPart::Open => {
+                !v.busy
+                    && self.profile.as_ref().is_some_and(|c| c.recording.is_none())
+                    && self.live.as_ref().is_some_and(|l| l.me.is_some())
+            }
             PPart::Space(k) => !v.busy && v.spaces.get(k).is_some_and(|s| !s.2),
-            PPart::Field => !v.busy,
-            PPart::Send => {
+            PPart::Field | PPart::Emoji => v.editable && v.can_message,
+            PPart::Attach => v.editable && self.profile_can_attach(),
+            PPart::Mic => v.editable && self.profile_can_record(),
+            PPart::Stop => self
+                .profile
+                .as_ref()
+                .and_then(|c| c.recording.as_ref())
+                .is_some_and(|r| r.started.is_some() && !r.finishing),
+            PPart::DiscardRecording => self.profile.as_ref().is_some_and(|c| c.recording.is_some()),
+            PPart::RecordingStatus => false,
+            PPart::Remove(_) | PPart::Spoiler(_) | PPart::RetryFile(_) => v.editable,
+            PPart::File(k) => {
                 !v.busy
                     && self
-                        .profile
-                        .as_ref()
-                        .is_some_and(|c| !String::from_utf16_lossy(&c.field.text).trim().is_empty())
+                        .profile_draft()
+                        .and_then(|d| d.files.get(k))
+                        .is_some_and(|f| f.voice.is_some() || f.uploaded_id().is_some())
+            }
+            PPart::PreviousFiles => self.profile.as_ref().is_some_and(|c| c.file_start > 0),
+            PPart::NextFiles => self
+                .profile
+                .as_ref()
+                .zip(self.profile_draft())
+                .is_some_and(|(c, d)| c.file_start + compose::VISIBLE_FILES < d.files.len()),
+            PPart::DiscardSend => {
+                !v.busy && self.profile_draft().is_some_and(|d| d.retry.is_some())
+            }
+            PPart::Send => {
+                !v.busy
+                    && self.profile.as_ref().is_some_and(|c| c.recording.is_none())
+                    && (self
+                        .profile_draft()
+                        .is_some_and(|d| !d.files.is_empty() || d.retry.is_some())
+                        || self.profile.as_ref().is_some_and(|c| {
+                            !String::from_utf16_lossy(&c.field.text).trim().is_empty()
+                        }))
             }
         }
     }
@@ -289,13 +381,20 @@ impl App {
             if v.can_message {
                 geo.divider = Some(y);
                 y += GAP;
+                self.profile_compose_parts(&mut geo.parts, &mut y, inner);
                 let fh = field_h(&card.field);
                 geo.parts.push((PPart::Field, (PAD, y, inner, fh)));
-                geo.parts.push((
-                    PPart::Send,
-                    (PAD + inner - SEND - 4.0, y + fh - SEND - 4.0, SEND, SEND),
-                ));
-                y += fh + GAP;
+                y += fh + 6.0;
+                for (k, part) in [PPart::Attach, PPart::Emoji, PPart::Mic]
+                    .into_iter()
+                    .enumerate()
+                {
+                    geo.parts
+                        .push((part, (PAD + k as f32 * 36.0, y, SEND, SEND)));
+                }
+                geo.parts
+                    .push((PPart::Send, (PAD + inner - SEND, y, SEND, SEND)));
+                y += SEND + GAP;
             }
         }
         let h = y - GAP + PAD;
@@ -418,7 +517,11 @@ impl App {
             hover: None,
             more: false,
             field,
+            key_focus: None,
             dragging: false,
+            file_dialog: None,
+            recording: None,
+            file_start: 0,
         });
         let Some(v) = self.profile_view() else {
             self.profile = None;
@@ -450,6 +553,12 @@ impl App {
             return;
         }
         if let Some(card) = self.profile.take() {
+            if self.profile_emoji_open() {
+                self.close_picker();
+            }
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_PROFILE_RECORDING);
+            }
             if !card.field.text.is_empty() {
                 self.profile_drafts.insert(card.id, card.field.text);
             }
@@ -467,9 +576,14 @@ impl App {
     }
 
     /// The card's message was sent (or its DM opened): it closed.
-    pub fn profile_finished(&mut self, person: Option<String>) {
-        if let Some(person) = person {
-            self.profile_drafts.remove(&person);
+    pub fn profile_finished(&mut self, person: Option<(String, bool)>) {
+        if let Some((person, clear)) = person {
+            if clear {
+                self.profile_drafts.remove(&person);
+            } else if let Some(c) = self.profile.as_ref().filter(|c| c.id == person) {
+                self.profile_drafts
+                    .insert(person.clone(), c.field.text.clone());
+            }
             if self.profile.as_ref().is_some_and(|c| c.id == person) {
                 if self.profile.as_ref().is_some_and(|c| c.field.focused) {
                     unsafe {
@@ -484,9 +598,13 @@ impl App {
     }
 
     pub fn set_profile_focus(&mut self, focused: bool) {
+        let focused = focused && self.profile_part_enabled(PPart::Field);
         let Some(card) = &mut self.profile else {
             return;
         };
+        if focused {
+            card.key_focus = Some(PPart::Field);
+        }
         if card.field.focused == focused {
             return;
         }
@@ -511,11 +629,23 @@ impl App {
         self.profile_changed();
     }
 
+    pub fn focus_profile_part(&mut self, part: PPart) {
+        if !self.profile_part_enabled(part) {
+            return;
+        }
+        self.set_profile_focus(part == PPart::Field);
+        if let Some(c) = &mut self.profile {
+            c.key_focus = Some(part);
+        }
+        self.events |= EV_FOCUS;
+        self.profile_changed();
+    }
+
     /// After the card's text, state or what it shows changed.
     pub fn profile_changed(&mut self) {
         let g = &self.g;
         if let Some(card) = &mut self.profile {
-            let width = CARD_W - 2.0 * PAD - 2.0 * FIELD_PAD_X - SEND;
+            let width = CARD_W - 2.0 * PAD - 2.0 * FIELD_PAD_X;
             let _ = card
                 .field
                 .relayout_with(g, &g.formats.composer, 15.0, width);
@@ -595,6 +725,9 @@ impl App {
     }
 
     fn profile_send(&mut self, open_only: bool) {
+        if !self.profile_part_enabled(if open_only { PPart::Open } else { PPart::Send }) {
+            return;
+        }
         let (Some(card), Some(v)) = (self.profile.as_ref(), self.profile_view()) else {
             return;
         };
@@ -605,6 +738,7 @@ impl App {
         if let Some(live) = &mut self.live {
             live.profile_send(&id, username, text, open_only);
         }
+        self.set_profile_focus(false);
         self.profile_changed();
         if let Err(e) = self.drain_live() {
             eprintln!("profile send failed: {e:?}");
@@ -640,6 +774,19 @@ impl App {
             PPart::Open => self.profile_send(true),
             PPart::Send => self.profile_send(false),
             PPart::Field => self.set_profile_focus(true),
+            PPart::Attach
+            | PPart::Emoji
+            | PPart::Mic
+            | PPart::Stop
+            | PPart::DiscardRecording
+            | PPart::RecordingStatus
+            | PPart::File(_)
+            | PPart::Remove(_)
+            | PPart::Spoiler(_)
+            | PPart::RetryFile(_)
+            | PPart::DiscardSend
+            | PPart::PreviousFiles
+            | PPart::NextFiles => self.profile_compose_activate(part),
             PPart::More => {
                 if let Some(card) = &mut self.profile {
                     card.more = !card.more;
@@ -702,6 +849,9 @@ impl App {
         ctrl: bool,
         shift: bool,
     ) -> Option<Option<LRESULT>> {
+        if self.profile_emoji_open() {
+            return None;
+        }
         let done = Some(Some(LRESULT(0)));
         let v = self.profile_view()?;
         let geo = self.profile_geometry(&v)?;
@@ -741,7 +891,10 @@ impl App {
                         }
                         self.profile_changed();
                     }
-                    Some(part) => self.profile_activate(part),
+                    Some(part) => {
+                        self.focus_profile_part(part);
+                        self.profile_activate(part);
+                    }
                     // A click off the open More menu only closes it.
                     None if more => {
                         self.profile.as_mut()?.more = false;
@@ -787,6 +940,29 @@ impl App {
             }
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
+                if vk == VK_TAB {
+                    let parts: Vec<_> = self
+                        .profile_parts()
+                        .into_iter()
+                        .map(|(p, _)| p)
+                        .filter(|p| self.profile_part_enabled(*p))
+                        .collect();
+                    if !parts.is_empty() {
+                        let current = self
+                            .profile
+                            .as_ref()?
+                            .key_focus
+                            .and_then(|p| parts.iter().position(|q| *q == p));
+                        let next = match (current, shift) {
+                            (Some(k), true) => (k + parts.len() - 1) % parts.len(),
+                            (Some(k), false) => (k + 1) % parts.len(),
+                            (None, true) => parts.len() - 1,
+                            (None, false) => 0,
+                        };
+                        self.focus_profile_part(parts[next]);
+                    }
+                    return done;
+                }
                 let card = self.profile.as_mut()?;
                 let focused = card.field.focused;
                 if card.field.composing || !card.field.comp.is_empty() {
@@ -797,19 +973,41 @@ impl App {
                         card.more = false;
                         self.profile_changed();
                     }
+                    VK_ESCAPE if card.recording.is_some() => {
+                        self.profile_compose_activate(PPart::DiscardRecording)
+                    }
                     VK_ESCAPE => self.close_profile(),
-                    VK_RETURN if focused && shift && !v.busy => {
+                    VK_RETURN if card.recording.is_some() => {
+                        self.profile_compose_activate(PPart::Stop)
+                    }
+                    VK_RETURN if focused && shift && v.editable => {
                         card.field.insert(&['\n' as u16]);
                         self.profile_changed();
                     }
                     VK_RETURN if focused => self.profile_send(false),
+                    VK_RETURN | VK_SPACE if !focused && card.key_focus.is_some() => {
+                        let part = card.key_focus.unwrap();
+                        self.profile_activate(part);
+                    }
                     _ if focused && ctrl && vk == VIRTUAL_KEY('C' as u16) => {
                         let copied = card.field.copied();
                         if !copied.is_empty() {
                             crate::set_clipboard(hwnd, &copied);
                         }
                     }
-                    _ if focused && !v.busy && card.field.edit_key(hwnd, vk, ctrl, shift, true) => {
+                    _ if focused
+                        && v.editable
+                        && ctrl
+                        && vk == VIRTUAL_KEY('V' as u16)
+                        && self.paste_profile_files() => {}
+                    _ if focused
+                        && v.editable
+                        && self
+                            .profile
+                            .as_mut()?
+                            .field
+                            .edit_key(hwnd, vk, ctrl, shift, true) =>
+                    {
                         self.profile_changed();
                     }
                     // Keys for the window (Ctrl+, and the like) pass on
@@ -825,7 +1023,7 @@ impl App {
                     return None;
                 }
                 let c = wp.0 as u16;
-                if !ctrl && c >= 0x20 && c != 0x7f && !v.busy {
+                if !ctrl && c >= 0x20 && c != 0x7f && v.editable {
                     card.field.insert(&[c]);
                     self.profile_changed();
                 }
@@ -919,7 +1117,7 @@ impl App {
                 );
             }
             for &(part, (x, y, pw, ph), on) in &enabled {
-                let hover = card.hover == Some(part) && on;
+                let hover = (card.hover == Some(part) || card.key_focus == Some(part)) && on;
                 let r = rect(x, y, x + pw, y + ph);
                 let tint = if on { TEXT } else { TEXT_MUTED };
                 let alpha = if on { 1.0 } else { 0.5 };
@@ -977,11 +1175,10 @@ impl App {
                             },
                         );
                         let hint = format!("Message @{}", v.username().unwrap_or_default());
-                        let hint =
-                            layout(g, &hint, &g.formats.composer, pw - 2.0 * FIELD_PAD_X - SEND)?;
+                        let hint = layout(g, &hint, &g.formats.composer, pw - 2.0 * FIELD_PAD_X)?;
                         let (ox, oy) = (x + FIELD_PAD_X, y + FIELD_PAD_Y);
                         dc.PushAxisAlignedClip(
-                            &rect(x + 1.0, y + 1.0, x + pw - SEND - 4.0, y + ph - 1.0),
+                            &rect(x + 1.0, y + 1.0, x + pw - 1.0, y + ph - 1.0),
                             D2D1_ANTIALIAS_MODE_ALIASED,
                         );
                         card.field.draw_text(
@@ -1004,12 +1201,17 @@ impl App {
                         }
                         icons::draw(
                             dc,
-                            Icon::Send,
+                            if self.profile_draft().is_some_and(|d| d.retry.is_some()) {
+                                Icon::Retry
+                            } else {
+                                Icon::Send
+                            },
                             rect(x + 8.0, y + 8.0, x + pw - 8.0, y + ph - 8.0),
                             if on { BLACKOUT } else { TEXT_MUTED },
                             if on { 1.0 } else { 0.6 },
                         );
                     }
+                    _ => self.draw_profile_compose(g, dc, part, (x, y, pw, ph), on, hover)?,
                 }
             }
             // The More menu over everything.

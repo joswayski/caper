@@ -166,8 +166,15 @@ pub enum PPart {
     Emoji(usize),
 }
 
-/// "Add a reaction" for message `id` (row `row`), anchored under its
-/// toolbar's Add reaction button.
+/// The draft that owns an emoji insertion, independent of later navigation.
+#[derive(Clone)]
+pub enum InsertTarget {
+    Channel,
+    Thread(String),
+    Profile(String),
+}
+
+/// "Add a reaction" for message `id`, or insert into a composer's selection.
 pub struct Picker {
     pub row: usize,
     pub id: String,
@@ -179,9 +186,9 @@ pub struct Picker {
     pub hover: Option<PPart>,
     pub choices: Arc<Vec<&'static Entry>>,
     /// "Insert emoji" instead of a reaction: the composer its choice goes
-    /// into (the channel's, or thread root's reply box) and the selection
+    /// into (channel, thread root, or profile recipient) and the selection
     /// it replaces, in UTF-16 units.
-    pub insert: Option<(Option<String>, usize, usize)>,
+    pub insert: Option<(InsertTarget, usize, usize)>,
 }
 
 impl Picker {
@@ -743,7 +750,11 @@ impl App {
         let (cx, cy) = (x + w / 2.0, y + h / 2.0);
         let anchor = (cx + 14.0 - PICKER_W, cy - 18.0 - PICKER_H);
         let mut picker = Picker::new(usize::MAX, String::new(), anchor, (self.w, self.h));
-        picker.insert = Some((root, start, end));
+        picker.insert = Some((
+            root.map_or(InsertTarget::Channel, InsertTarget::Thread),
+            start,
+            end,
+        ));
         self.picker = Some(picker);
         self.picker_changed(true);
         self.events |= EV_SCREEN | EV_FOCUS;
@@ -755,17 +766,58 @@ impl App {
         self.picker
             .as_ref()
             .and_then(|p| p.insert.as_ref())
-            .is_some_and(|(r, ..)| r.as_deref() == root)
+            .is_some_and(|(r, ..)| match r {
+                InsertTarget::Channel => root.is_none(),
+                InsertTarget::Thread(id) => root == Some(id),
+                InsertTarget::Profile(_) => false,
+            })
+    }
+
+    pub fn profile_emoji_open(&self) -> bool {
+        self.picker
+            .as_ref()
+            .and_then(|p| p.insert.as_ref())
+            .is_some_and(|(target, ..)| matches!(target, InsertTarget::Profile(_)))
+    }
+
+    pub fn toggle_profile_emoji(&mut self) {
+        if self.profile_emoji_open() {
+            return self.close_picker_refocus();
+        }
+        let Some(card) = &self.profile else { return };
+        let id = card.id.clone();
+        let (start, end) = card.field.selection();
+        let Some((_, (x, y, w, _))) = self
+            .profile_parts()
+            .into_iter()
+            .find(|(p, _)| *p == crate::profile::PPart::Emoji)
+        else {
+            return;
+        };
+        self.close_picker();
+        self.close_menu();
+        self.close_gifs(false);
+        self.set_profile_focus(false);
+        let mut picker = Picker::new(
+            usize::MAX,
+            String::new(),
+            (x + w - PICKER_W, y - PICKER_H - 6.0),
+            (self.w, self.h),
+        );
+        picker.insert = Some((InsertTarget::Profile(id), start, end));
+        self.picker = Some(picker);
+        self.picker_changed(true);
+        self.events |= EV_SCREEN | EV_FOCUS;
     }
 
     /// Closes the picker; "Insert emoji" returns focus to its composer.
     fn close_picker_refocus(&mut self) {
-        let target = self.picker.as_ref().and_then(|p| p.insert.as_ref());
-        let thread = target.map(|(root, ..)| root.is_some());
+        let target = self.picker.as_ref().and_then(|p| p.insert.clone());
         self.close_picker();
-        match thread {
-            Some(true) => self.set_thread_focus(true),
-            Some(false) => self.set_composer_focus(true),
+        match target {
+            Some((InsertTarget::Profile(_), ..)) => self.set_profile_focus(true),
+            Some((InsertTarget::Thread(_), ..)) => self.set_thread_focus(true),
+            Some((InsertTarget::Channel, ..)) => self.set_composer_focus(true),
             None => {}
         }
     }
@@ -773,27 +825,36 @@ impl App {
     /// Puts `emoji` in place of `start..end` in that composer's draft.
     fn insert_composer_emoji(
         &mut self,
-        root: Option<String>,
+        target: InsertTarget,
         start: usize,
         end: usize,
         emoji: &str,
     ) {
-        let c = match &root {
-            Some(root) => self
+        let c = match &target {
+            InsertTarget::Profile(id) => {
+                if !self.profile_part_enabled(crate::profile::PPart::Field) {
+                    return;
+                }
+                self.profile
+                    .as_mut()
+                    .filter(|c| c.id == *id)
+                    .map(|c| &mut c.field)
+            }
+            InsertTarget::Thread(root) => self
                 .thread
                 .as_mut()
                 .filter(|t| t.root == *root)
                 .map(|t| &mut t.composer),
-            None => Some(&mut self.composer),
+            InsertTarget::Channel => Some(&mut self.composer),
         };
         let Some(c) = c else { return };
         let len = c.text.len();
         (c.anchor, c.caret) = (start.min(len), end.min(len));
         c.commit(&gfx::wide(emoji));
-        if root.is_some() {
-            self.thread_composer_changed();
-        } else {
-            self.composer_changed();
+        match target {
+            InsertTarget::Profile(_) => self.profile_changed(),
+            InsertTarget::Thread(_) => self.thread_composer_changed(),
+            InsertTarget::Channel => self.composer_changed(),
         }
     }
 
@@ -802,6 +863,7 @@ impl App {
             // An Insert emoji button stops being lit.
             self.dirty.composer = true;
             self.dirty.thread_box = true;
+            self.dirty.profile = true;
             self.picker_changed(false);
             self.events |= EV_SCREEN | EV_FOCUS;
         }
@@ -894,12 +956,19 @@ impl App {
                     // An outside click closes only the picker and still
                     // reaches what it landed on, as in the egui client;
                     // its own Insert emoji button toggles it.
-                    let own = match p.insert.as_ref().map(|(root, ..)| root.is_some()) {
-                        Some(true) => {
+                    let own = match p.insert.as_ref().map(|(target, ..)| target) {
+                        Some(InsertTarget::Profile(_)) => {
+                            self.profile_parts().iter().any(|(part, r)| {
+                                *part == crate::profile::PPart::Emoji && contains(*r, x, y)
+                            })
+                        }
+                        Some(InsertTarget::Thread(_)) => {
                             self.in_thread(x, y)
                                 && self.thread_hit(x, y) == Some(crate::thread::Part::Emoji)
                         }
-                        Some(false) => self.box_part_at(x, y) == Some(crate::uploads::Part::Emoji),
+                        Some(InsertTarget::Channel) => {
+                            self.box_part_at(x, y) == Some(crate::uploads::Part::Emoji)
+                        }
                         None => false,
                     };
                     if own {

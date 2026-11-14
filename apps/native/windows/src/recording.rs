@@ -102,7 +102,7 @@ impl Rec {
 /// scrolling left, pinching and fading over the left 40 px; quiet bars are
 /// small grey dots and loud ones brighten toward eggshell (egui's
 /// `paint_live_levels`).
-fn live_levels(
+pub(crate) fn live_levels(
     dc: &ID2D1DeviceContext,
     r: D2D_RECT_F,
     levels: &[f32],
@@ -181,7 +181,7 @@ impl App {
         let live = self.live.as_ref()?;
         if !live.can_attach() {
             Some(live.attach_unavailable())
-        } else if matches!(self.rec, Some(Rec::Recording(_))) {
+        } else if self.profile_recording_active() || matches!(self.rec, Some(Rec::Recording(_))) {
             Some("Finish the current voice message first")
         } else if matches!(self.rec, Some(Rec::Dictation(_))) {
             Some("Finish the current dictation first")
