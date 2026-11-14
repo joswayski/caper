@@ -121,15 +121,14 @@ private typealias DropColor = UIColor
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refreshMotion() }
     override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); layoutLayers() }
     override func accessibilityFrame() -> NSRect { NSAccessibility.screenRect(fromView: self, rect: bounds) }
-    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     private var scale: CGFloat { window?.backingScaleFactor ?? 2 }
     #else
     override func layoutSubviews() { super.layoutSubviews(); layoutLayers() }
     override func didMoveToWindow() { super.didMoveToWindow(); refreshMotion() }
-    private var reduceMotion: Bool { UIAccessibility.isReduceMotionEnabled }
     private var scale: CGFloat { traitCollection.displayScale }
     @objc private func textSizeChanged() { updateText(); setNeedsLayout() }
     #endif
+    private var reduceMotion: Bool { CaperAccessibility.reduceMotion }
 
     private func updateText() {
         let paragraph = NSMutableParagraphStyle()

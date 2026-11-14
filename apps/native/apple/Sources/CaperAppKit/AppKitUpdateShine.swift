@@ -90,7 +90,7 @@ import CaperCore
 
     private var running: Bool {
         guard let button, button.isEnabled, !button.isHiddenOrHasHiddenAncestor, !focused,
-              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return false }
+              !CaperAccessibility.reduceMotion else { return false }
         return button.window?.isKeyWindow == true
     }
 

@@ -1,4 +1,27 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+/// Reduce Motion for the native AppKit and UIKit views. A Debug build under
+/// the parity UI fixture can force it with CAPER_REDUCE_MOTION=1, so UI tests
+/// render the still poses without changing the Mac's settings; Release builds
+/// read only the system setting.
+public enum CaperAccessibility {
+    public static var reduceMotion: Bool {
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        if environment["CAPER_TEST_MODE"] == "parity", environment["CAPER_REDUCE_MOTION"] == "1" { return true }
+        #endif
+        #if os(macOS)
+        return NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        #else
+        return UIAccessibility.isReduceMotionEnabled
+        #endif
+    }
+}
 
 /// The shared motion tokens (shared/design.css --motion-*, --ease-out).
 enum CaperMotion {
