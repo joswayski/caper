@@ -142,7 +142,7 @@ pub struct Pane {
     /// Endpoints follow message IDs when older replies are inserted.
     selection: Option<((String, u32), (String, u32))>,
     history_drag: bool,
-    history_focused: bool,
+    pub(crate) history_focused: bool,
     hover_row: Option<usize>,
     tool_focus: Option<(String, Tool)>,
     bar: Option<(usize, BarKey)>,
@@ -842,6 +842,18 @@ impl App {
         let box_h = self.thread.as_ref().map_or(BOX_MIN, |t| t.box_h);
         let reply_h = self.thread.as_ref().map_or(0.0, Pane::reply_h);
         (self.h - 16.0 - box_h - 8.0 - CHECK_H - reply_h - 12.0 - HEADER_H).max(0.0)
+    }
+
+    /// Wheel and middle-click scrolling share the same bounds/live-end state.
+    pub fn scroll_thread_by(&mut self, delta: f32) {
+        let vh = self.thread_vh();
+        let Some(t) = &mut self.thread else { return };
+        let max = (t.content_h() - vh).max(0.0);
+        t.scroll = (t.scroll + delta).clamp(0.0, max);
+        t.at_end = t.scroll >= max - 0.5;
+        self.dirty.thread = true;
+        self.events |= EV_SCREEN;
+        self.need = true;
     }
 
     pub fn thread_box_rect(&self) -> Option<Rect> {
@@ -1990,14 +2002,7 @@ impl App {
             }
             WM_MOUSEWHEEL if self.pointer.is_some_and(|(x, y)| self.in_thread(x, y)) => {
                 let delta = ((wp.0 >> 16) & 0xffff) as i16 as f32;
-                let vh = self.thread_vh();
-                let t = self.thread.as_mut()?;
-                let max = (t.content_h() - vh).max(0.0);
-                t.scroll = (t.scroll - delta / 120.0 * WHEEL_STEP as f32).clamp(0.0, max);
-                t.at_end = t.scroll >= max - 0.5;
-                self.dirty.thread = true;
-                self.events |= EV_SCREEN;
-                self.need = true;
+                self.scroll_thread_by(-delta / 120.0 * WHEEL_STEP as f32);
                 done
             }
             WM_SETCURSOR
@@ -2067,6 +2072,9 @@ impl App {
                     }
                     return done;
                 }
+                if vk == VK_END {
+                    self.stop_autoscroll();
+                }
                 let vh = self.thread_vh();
                 let t = self.thread.as_mut()?;
                 let max = (t.content_h() - vh).max(0.0);
@@ -2074,7 +2082,7 @@ impl App {
                     VK_PRIOR => (t.scroll - vh * 0.9).max(0.0),
                     VK_NEXT => (t.scroll + vh * 0.9).min(max),
                     VK_HOME if ctrl => 0.0,
-                    VK_END if ctrl => max,
+                    VK_END => max,
                     _ => return None,
                 };
                 t.at_end = t.scroll >= max - 0.5;

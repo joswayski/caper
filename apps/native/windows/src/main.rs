@@ -15,6 +15,7 @@
 mod actions;
 mod app_link;
 mod attachment_editor;
+mod autoscroll;
 mod avatars;
 mod bench;
 mod browse;
@@ -342,6 +343,9 @@ pub struct App {
     settings_p: Panel,
     pointer: Option<(f32, f32)>,
     tracking: bool,
+    autoscroll: Option<autoscroll::Run>,
+    autoscroll_release: Option<u32>,
+    autoscroll_p: Panel,
     pub sel: Option<Sel>,
     selecting: bool,
     composer_drag: bool,
@@ -498,6 +502,7 @@ impl App {
             let suggest_p = Panel::new(&g)?;
             let tip_p = Panel::new(&g)?;
             let zoom_p = Panel::new(&g)?;
+            let autoscroll_p = Panel::new(&g)?;
             let settings_p = Panel::new(&g)?;
             let dm_menu_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
@@ -546,6 +551,7 @@ impl App {
             root.AddVisual(&signin_p.visual, true, &settings_p.visual)?;
             root.AddVisual(&tip_p.visual, true, &signin_p.visual)?;
             root.AddVisual(&zoom_p.visual, true, &tip_p.visual)?;
+            root.AddVisual(&autoscroll_p.visual, true, &zoom_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
             let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
@@ -619,6 +625,9 @@ impl App {
                 sel: None,
                 selecting: false,
                 composer_drag: false,
+                autoscroll: None,
+                autoscroll_release: None,
+                autoscroll_p,
                 redraw: Vec::new(),
                 gif_rows: Vec::new(),
                 playback: playback::Playback::default(),
@@ -694,6 +703,7 @@ impl App {
 
     /// Shows another conversation (the live one replacing the mock).
     fn set_conversation(&mut self, c: Conversation) -> Result<()> {
+        self.stop_autoscroll();
         self.close_attachment_editor();
         self.close_viewer();
         let (channels, members) = side_layouts(&self.g, &c)?;
@@ -1939,6 +1949,9 @@ impl App {
         {
             live.active();
         }
+        if let Some(r) = self.autoscroll_input(msg, wp, x, y) {
+            return Some(r);
+        }
         // Ctrl +/−/0 zoom everywhere, as in egui; no field types these.
         if msg == WM_KEYDOWN && ctrl {
             let steps = match VIRTUAL_KEY(wp.0 as u16) {
@@ -2078,6 +2091,7 @@ impl App {
                 invite_people::TIMER_COPIED => self.copied_tick(),
                 TIMER_MEDIA => self.next_gif_frame(),
                 drop_overlay::TIMER_DROP => self.need = true,
+                autoscroll::TIMER_AUTOSCROLL => self.autoscroll_tick(),
                 thread::TIMER_MEDIA => self.thread_media_tick(),
                 pins::TIMER_PINS => self.pins_tick(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
@@ -2812,7 +2826,11 @@ impl App {
             match vk {
                 VK_PRIOR => self.scroll_by(-page),
                 VK_NEXT => self.scroll_by(page),
-                VK_END if ctrl => {
+                VK_END => {
+                    self.stop_autoscroll();
+                    if self.live.as_ref().is_some_and(live::Live::has_newer) {
+                        self.foot_activate(1);
+                    }
                     self.at_end = true;
                     self.need = true;
                 }
@@ -4056,6 +4074,7 @@ impl App {
         self.draw_tip()?;
         self.draw_panels()?;
         self.draw_drop()?;
+        self.draw_autoscroll()?;
         unsafe { self.g.dcomp.Commit()? };
         self.place_web_player();
         if let Some(live) = &mut self.live {
