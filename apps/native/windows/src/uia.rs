@@ -663,7 +663,11 @@ fn name(a: &App, id: Id) -> String {
             }
         ),
         Id::Composer => format!("Message {}", c.place()),
-        Id::Menu => "Message actions".into(),
+        Id::Menu => a
+            .menu
+            .as_ref()
+            .map_or("Message actions", |m| m.title)
+            .into(),
         Id::Profile => {
             a.profile_view()
                 .map_or_else(String::new, |v| match (v.profile.me, v.username()) {

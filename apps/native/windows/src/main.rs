@@ -1671,6 +1671,18 @@ impl App {
                 self.pointer = Some(at);
             }
             at
+        } else if msg == WM_CONTEXTMENU {
+            // Screen coordinates, or (-1, -1) from the keyboard.
+            let mut p = POINT {
+                x: (lp.0 & 0xffff) as i16 as i32,
+                y: ((lp.0 >> 16) & 0xffff) as i16 as i32,
+            };
+            if (p.x, p.y) != (-1, -1) {
+                unsafe {
+                    let _ = ScreenToClient(self.hwnd, &mut p);
+                }
+            }
+            (p.x as f32 / self.scale, p.y as f32 / self.scale)
         } else {
             (
                 (lp.0 & 0xffff) as i16 as f32 / self.scale,
@@ -1975,6 +1987,24 @@ impl App {
                     } else if let Some(i) = self.hover_member {
                         self.open_member_profile(i, x, y);
                     }
+                }
+            }
+            // Right-click (sent on release) or Shift+F10 and the menu key.
+            WM_CONTEXTMENU
+                if self.settings.is_none()
+                    && self.viewer.is_none()
+                    && self.attachment_editor.is_none()
+                    && self.dialog.is_none() =>
+            {
+                if lp.0 & 0xffff_ffff == 0xffff_ffff {
+                    if let Some((i, _)) = self.kb_control() {
+                        self.open_menu(i);
+                    }
+                } else if self.in_history(x, y)
+                    && let Some(i) = self.rows.row_at(self.scroll_top + (y - HEADER_H) as f64)
+                    && i < self.c.messages.len()
+                {
+                    self.open_context_menu(i, x, y);
                 }
             }
             WM_LBUTTONDBLCLK if self.in_history(x, y) => {

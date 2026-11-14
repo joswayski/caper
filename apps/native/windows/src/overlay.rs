@@ -44,6 +44,11 @@ pub(crate) fn width(l: &IDWriteTextLayout) -> f32 {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Item {
+    /// A right-click while message text is selected, first as in egui.
+    CopySelection,
+    /// A right-click on a link: its own menu.
+    OpenLink,
+    CopyLink,
     Reply,
     Edit,
     History,
@@ -59,6 +64,9 @@ pub enum Item {
 impl Item {
     pub fn label(self) -> &'static str {
         match self {
+            Self::CopySelection => "Copy selected text",
+            Self::OpenLink => "Open link",
+            Self::CopyLink => "Copy link",
             Self::Reply => "Reply",
             Self::Edit => "Edit message",
             Self::History => "Message history",
@@ -77,6 +85,8 @@ impl Item {
 
     fn icon(self) -> Icon {
         match self {
+            Self::CopySelection | Self::CopyLink => Icon::Copy,
+            Self::OpenLink => Icon::ExternalLink,
             Self::Reply => Icon::Reply,
             Self::Edit => Icon::Pencil,
             Self::History => Icon::History,
@@ -103,6 +113,11 @@ pub struct Menu {
     pub row: usize,
     pub id: String,
     pub items: Vec<Item>,
+    /// "Message actions", or "Link" for a link's menu.
+    pub title: &'static str,
+    /// What Copy selected text and the link items act on.
+    pub selection: Vec<u16>,
+    pub link: String,
     pub x: f32,
     pub y: f32,
     pub hover: Option<usize>,
@@ -132,6 +147,9 @@ impl Menu {
             row,
             id,
             items,
+            title: "Message actions",
+            selection: Vec::new(),
+            link: String::new(),
             x: 0.0,
             y: 0.0,
             hover: None,
@@ -145,6 +163,14 @@ impl Menu {
             bottom + 4.0
         };
         m
+    }
+
+    /// Moves it to a right-click at (x, y): its top-left at the pointer,
+    /// flipped left or up where it would leave the window.
+    pub fn place_at(&mut self, x: f32, y: f32, window_w: f32, window_h: f32) {
+        let (w, h) = self.size();
+        self.x = (if x + w > window_w - 4.0 { x - w } else { x }).max(4.0);
+        self.y = (if y + h > window_h - 4.0 { y - h } else { y }).max(4.0);
     }
 
     pub fn rect(&self) -> Rect {
@@ -182,7 +208,7 @@ impl Menu {
             let body = rect(0.0, 0.0, w, h);
             fill_round(dc, body, RADIUS, &g.brushes.surface);
             stroke_round(dc, body, RADIUS, &g.brushes.border);
-            let title = g.layout(&gfx::wide("Message actions"), &g.formats.menu_title, 1e6)?;
+            let title = g.layout(&gfx::wide(self.title), &g.formats.menu_title, 1e6)?;
             crate::text::draw(
                 dc,
                 &title,
@@ -1444,6 +1470,34 @@ impl App {
         self.overlay_changed();
     }
 
+    /// A right-click at (x, y) on row `i`, as in egui: a link opens its own
+    /// menu (Open link, Copy link); anywhere else the message's actions
+    /// open at the pointer, with Copy selected text first while text is
+    /// selected.
+    pub fn open_context_menu(&mut self, i: usize, x: f32, y: f32) {
+        if let Some(link) = self.link_at(x, y) {
+            let Some(id) = self.c.messages.get(i).map(|m| m.id.clone()) else {
+                return;
+            };
+            self.close_picker();
+            let mut menu = Menu::new(i, id, vec![Item::OpenLink, Item::CopyLink], x, y, y, self.h);
+            menu.title = "Link";
+            menu.link = link;
+            self.menu = Some(menu);
+        } else {
+            self.open_menu(i);
+        }
+        let selection = self.selected_text();
+        let (w, h) = (self.w, self.h);
+        let Some(menu) = &mut self.menu else { return };
+        if menu.title != "Link" && !selection.is_empty() {
+            menu.items.insert(0, Item::CopySelection);
+            menu.selection = selection;
+        }
+        menu.place_at(x, y, w, h);
+        self.overlay_changed();
+    }
+
     pub fn close_menu(&mut self) {
         if self.menu.take().is_some() {
             self.overlay_changed();
@@ -1469,6 +1523,9 @@ impl App {
             Item::Unpin => live.pin(&m, false),
             Item::CopyText => crate::set_clipboard(self.hwnd, &gfx::wide(&m.content.text)),
             Item::CopyId => crate::set_clipboard(self.hwnd, &gfx::wide(&m.id)),
+            Item::CopySelection => crate::set_clipboard(self.hwnd, &menu.selection),
+            Item::OpenLink => crate::open_link(&menu.link),
+            Item::CopyLink => crate::set_clipboard(self.hwnd, &gfx::wide(&menu.link)),
             _ => {}
         }
         if let Err(e) = self.drain_live() {
