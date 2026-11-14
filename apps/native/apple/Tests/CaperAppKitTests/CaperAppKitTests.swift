@@ -855,12 +855,11 @@ import XCTest
         let pins = app.descendants(matching: .any)["pinned-messages"]
         let pinned = pins.descendants(matching: .any)["pinned-message-\(sourceID)"]
         XCTAssertTrue(pinned.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, sourceDraft)
-        let pinBody = pinned.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", originalText, originalText)).firstMatch
-        XCTAssertTrue(pinBody.waitForExistence(timeout: 5))
+        // Pins reuse the native MessageCell, whose body text view owns the message menu.
+        let pinBody = pinned.textViews["message-\(sourceID)"]
+        XCTAssertTrue(pinBody.waitForExistence(timeout: 5)); XCTAssertEqual(pinBody.value as? String, originalText)
         pinBody.hover(); pins.buttons["go-to-message-\(sourceID)"].hover()
-        // Selectable body text answers a right-click with the text menu; the
-        // card's message menu belongs to the row, so open it from its gutter.
-        pinBody.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5)).withOffset(CGVector(dx: -12, dy: 0)).rightClick()
+        pinBody.rightClick()
         let pinForward = app.menuItems["Forward message"]
         XCTAssertTrue(pinForward.waitForExistence(timeout: 5)); XCTAssertTrue(pinForward.isEnabled); pinForward.click()
         let note = app.textViews["forward-note"]

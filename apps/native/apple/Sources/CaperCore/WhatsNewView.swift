@@ -20,7 +20,7 @@ struct WhatsNewDisplay: Identifiable {
     private let history: WhatsNewHistory
     private(set) var loading = false
     private(set) var error: String?
-    var workspaceModalOpen = false
+    public internal(set) var workspaceModalOpen = false
     var settingsOpen = false
     var presentation: WhatsNewDisplay?
 

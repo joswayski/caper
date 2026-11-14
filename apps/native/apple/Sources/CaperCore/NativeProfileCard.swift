@@ -84,6 +84,10 @@ import AppKit
         for row in chrome { body.addArrangedSubview(row); AppKitKit.fillWidth(row, of: body) }
         let scroll = appKitKitScroll(body, insets: NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16))
         view.addSubview(scroll)
+        // A wrapping draft grows the body inside the scroll view without
+        // laying out the card, so the popover would keep its old height.
+        body.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(bodyResized), name: NSView.frameDidChangeNotification, object: body)
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: view.topAnchor), scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -94,6 +98,7 @@ import AppKit
         observation.start(reading: { [weak self] in self?.render() }, apply: { _ in })
     }
     override func viewDidDisappear() { super.viewDidDisappear(); observation.stop() }
+    @objc private func bodyResized() { view.needsLayout = true }
     override func viewDidLayout() {
         super.viewDidLayout()
         guard overlay == nil else { return }
@@ -135,7 +140,12 @@ import AppKit
             choiceButtons[space.id]?.isEnabled = !state.busy && state.invited[space.id] == nil
         }
         if state.canMessage {
+            // Intrinsic sizing reports SwiftUI's unwrapped ideal height, so a
+            // wrapping draft drew past the host over the header. Fixing the
+            // width to the card's lets the height include every wrapped line.
+            let width = composerSize?.width ?? (state.person.isSelf ? 280 : 320) - 32
             let content = AnyView(MentionCardView(model: state.model, person: state.person, requestBlock: requestBlock, close: close, nativeComposerOnly: true)
+                .frame(width: width)
                 .disabled(state.pending != nil).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
                 .onPreferenceChange(ProfileComposerPresentationSize.self) { [weak self] size in
                     DispatchQueue.main.async { [weak self] in
@@ -198,7 +208,7 @@ import AppKit
         Task { [weak self] in
             if (try? await copyMediaImage(url)) != true, let window = self?.view.window {
                 let alert = NSAlert(); alert.messageText = "Couldn’t copy image. Try opening it and saving it instead."
-                alert.addButton(withTitle: "OK"); alert.beginSheetModal(for: window)
+                alert.addButton(withTitle: "OK"); alert.beginSheetModal(for: window, completionHandler: nil)
             }
         }
     }

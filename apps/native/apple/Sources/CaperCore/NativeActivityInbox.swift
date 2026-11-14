@@ -162,6 +162,7 @@ import AppKit
     private let time = AppKitKit.label("", size: 11, color: AppKitKit.muted)
     private let replyBody = AppKitKit.stack([], spacing: 8)
     private var replyHost: NSHostingView<AnyView>?
+    private var replyStale: Bool?
 
     init(model: AppModel, item: ActivityItem, close: @escaping () -> Void,
          react: @escaping (ActivityItem, NSView) -> Void) {
@@ -208,7 +209,11 @@ import AppKit
         reply.isEnabled = !model.activityStale; reactButton.isEnabled = !model.activityStale
         let expanded = model.activityExpanded[item.id] != nil
         reply.title = expanded ? "Close reply" : "Reply"
-        if expanded {
+        // The composer observes the model itself. Rebuild its root only when
+        // the inbox goes stale or fresh: replacing it on every render took
+        // keyboard focus away from the reply field as soon as it was clicked.
+        if expanded, replyHost == nil || replyStale != model.activityStale {
+            replyStale = model.activityStale
             let content = AnyView(MentionCardView(model: model, activity: item)
                 .modifier(Entrance.anchored)
                 .disabled(model.activityStale).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
@@ -220,8 +225,8 @@ import AppKit
                 AppKitKit.fillWidth(label, of: replyBody); AppKitKit.fillWidth(host, of: replyBody)
                 replyHost = host
             }
-        } else if replyHost != nil {
-            replyBody.arrangedSubviews.forEach { $0.removeFromSuperview() }; replyHost = nil
+        } else if !expanded, replyHost != nil {
+            replyBody.arrangedSubviews.forEach { $0.removeFromSuperview() }; replyHost = nil; replyStale = nil
         }
         replyBody.isHidden = !expanded
     }
@@ -253,7 +258,13 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
+    // An untitled, imageless NSButton is otherwise ignored by accessibility,
+    // so VoiceOver and UI tests could not reach a row's Open target.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityChildren() -> [Any]? { [] }
+    // The labels inside are not children, so hit tests must stop here too.
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? { self }
     override func accessibilityFrame() -> NSRect {
         guard window != nil else { return super.accessibilityFrame() }
         return NSAccessibility.screenRect(fromView: self, rect: bounds)
