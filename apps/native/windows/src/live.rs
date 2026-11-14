@@ -103,6 +103,8 @@ pub enum Update {
     Unread(String),
     /// Who reacted to a message loaded (for a chip's card).
     Reactors,
+    /// Who is typing in the open conversation changed.
+    Typing,
     /// The account's unread state changed: the rail's dots and mention
     /// counts and the sidebar's dots.
     Badges,
@@ -324,6 +326,8 @@ pub struct Live {
     chat_token: Option<String>,
     /// The signed-in author's public id, for "your" reactions.
     pub me: Option<String>,
+    /// Who is typing in the open conversation, and your typing.
+    pub typing: crate::typing::Typing,
     /// The open channel's history as the core keeps it: gateway messages,
     /// reactions and edits apply here in sequence, then reach the rows.
     timeline: core::Timeline,
@@ -666,6 +670,7 @@ impl Live {
             channel: None,
             chat_token: None,
             me: None,
+            typing: crate::typing::Typing::default(),
             timeline: core::Timeline::default(),
             reactions: Reactions::default(),
             queued: Vec::new(),
@@ -2335,6 +2340,9 @@ impl Live {
     /// Opens a space (its first joined channel unless `channel` is given)
     /// or a channel. The open conversation stays until the new one loads.
     pub fn navigate(&mut self, space: Option<String>, channel: Option<String>) {
+        if let Some(typing) = self.typing.stop() {
+            self.send_typing(typing);
+        }
         self.navigation += 1;
         self.join_error = None;
         // A visit's unread snapshot loads beside its history, not after it.
@@ -2354,6 +2362,35 @@ impl Live {
             cached: None,
             visit: false,
             preferred: None,
+        });
+    }
+
+    /// The main composer changed: announces your typing, or its end.
+    pub fn typed(&mut self, draft: &str) {
+        if let Some(typing) = self.typing.edited(draft, Instant::now()) {
+            self.send_typing(typing);
+        }
+    }
+
+    /// Expires who is typing and ends yours after a pause. True when the
+    /// row changed.
+    pub fn typing_tick(&mut self) -> bool {
+        let (send, changed) = self.typing.tick(Instant::now());
+        if let Some(typing) = send {
+            self.send_typing(typing);
+        }
+        changed
+    }
+
+    fn send_typing(&mut self, typing: bool) {
+        let (Some(chat_token), Some(channel)) = (&self.chat_token, &self.channel) else {
+            return;
+        };
+        self.worker.send(Command::Typing {
+            token: self.token.clone(),
+            chat_token: chat_token.clone(),
+            channel: channel.clone(),
+            typing,
         });
     }
 
@@ -4321,6 +4358,8 @@ impl Live {
                     self.window = None;
                     self.context_loading = false;
                     self.reactors.clear();
+                    self.typing.clear();
+                    out.push(Update::Typing);
                     self.detail = detail.clone();
                     let mut timeline = core::Timeline::default();
                     if let Err(e) = timeline.reset(history.messages, &history.cursor) {
@@ -4660,10 +4699,34 @@ impl Live {
                 message,
             }) if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
                 let id = message.id.clone();
+                if self.typing.sent_message(&message.author.id) {
+                    out.push(Update::Typing);
+                }
                 let old = self.seq();
                 let applied = self.timeline.apply(*message);
                 self.publish(old, applied, &id, out);
                 self.mark_read();
+            }
+            Event::Gateway(gateway::GatewayEvent::Typing {
+                generation,
+                channel,
+                author,
+                typing,
+                revision,
+            }) if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                // Yours never shows, nor anyone's you blocked, as on web.
+                if self.me.as_deref() != Some(author.id.as_str())
+                    && !self.is_blocked(&author.id)
+                    && self.typing.update(
+                        &author.id,
+                        &author.name,
+                        typing,
+                        core::sequence(&revision).unwrap_or(0),
+                        Instant::now(),
+                    )
+                {
+                    out.push(Update::Typing);
+                }
             }
             Event::UnreadLoaded {
                 revision,
@@ -4973,9 +5036,15 @@ impl Live {
                 online,
                 detail,
                 ..
-            }) if generation == current => out.push(Update::Connection(
-                (!online && !detail.is_empty()).then_some(detail),
-            )),
+            }) if generation == current => {
+                if !online {
+                    self.typing.clear();
+                    out.push(Update::Typing);
+                }
+                out.push(Update::Connection(
+                    (!online && !detail.is_empty()).then_some(detail),
+                ));
+            }
             Event::DirectsLoaded {
                 result: Ok(directs),
                 ..

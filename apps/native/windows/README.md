@@ -26,7 +26,7 @@ without either show a labelled mock conversation (3000 generated messages,
 48 members). Connected, it signs in (or restores the stored session) and
 runs on the shared client core (`apps/native/client`):
 the account's spaces and channels, DMs and message requests, live gateway
-updates, replies, threads, reactions, edits and their history, pins, unread
+updates and who is typing, replies, threads, reactions, edits and their history, pins, unread
 state, invitations and invite links, space and channel settings, settings
 and the notification inbox, system notifications (toasts), voice calls,
 dictation and voice messages, KLIPY GIFs, and attachments.

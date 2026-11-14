@@ -39,6 +39,7 @@ mod settings;
 mod space_settings;
 mod suggest;
 mod tips;
+mod typing;
 // The message grammar every client shares.
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/formatting.rs"]
@@ -115,6 +116,9 @@ pub(crate) const TIMER_GIFS: usize = 8;
 pub(crate) const TIMER_GIF_FRAMES: usize = 9;
 /// Redraws the DM rows when the earliest timed mute ends, as egui does.
 const TIMER_MUTE: usize = 10;
+/// Who is typing: their dots' bounce, their entries' expiry and the end of
+/// your own typing.
+const TIMER_TYPING: usize = 19;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
 pub(crate) const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -158,6 +162,8 @@ struct Dirty {
     /// A composer's emoji and mention suggestions.
     suggest: bool,
     tip: bool,
+    /// The row naming who is typing, above the composer.
+    typing: bool,
 }
 
 impl Dirty {
@@ -183,6 +189,7 @@ impl Dirty {
             profile: true,
             suggest: true,
             tip: true,
+            typing: true,
         }
     }
 }
@@ -361,6 +368,8 @@ pub struct App {
     /// text and height.
     pub note: Option<(String, f32)>,
     note_p: Panel,
+    /// Who is typing, in the 16 px band above the composer, reply and note.
+    typing_p: Panel,
     /// The composer's lip: a shade over the bottom of the history.
     lip_p: Panel,
     tool_hover: Option<usize>,
@@ -443,6 +452,7 @@ impl App {
             let empty_p = Panel::new(&g)?;
             let reply_p = Panel::new(&g)?;
             let note_p = Panel::new(&g)?;
+            let typing_p = Panel::new(&g)?;
             let lip_p = Panel::new(&g)?;
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
@@ -475,6 +485,7 @@ impl App {
                 &composer_p.visual,
                 &reply_p.visual,
                 &note_p.visual,
+                &typing_p.visual,
                 &thread_p.visual,
                 &thread_box_p.visual,
                 &members.visual,
@@ -593,6 +604,7 @@ impl App {
                 reply_p,
                 note: None,
                 note_p,
+                typing_p,
                 lip_p,
                 tool_hover: None,
                 bar_drawn: None,
@@ -768,6 +780,10 @@ impl App {
                     let text = new
                         .and_then(|id| self.drafts.remove(&id))
                         .unwrap_or_default();
+                    // Restoring the channel's draft isn't typing.
+                    if let Some(live) = &mut self.live {
+                        live.typing.adopt(&String::from_utf16_lossy(&text));
+                    }
                     self.composer.set_text(text);
                     self.composer_changed();
                     self.bar_changed();
@@ -910,6 +926,11 @@ impl App {
                     }
                 }
                 live::Update::Inbox => self.inbox_changed(),
+                live::Update::Typing => {
+                    self.dirty.typing = true;
+                    self.need = true;
+                    self.arm_typing();
+                }
                 live::Update::Voice => self.voice_changed(),
                 live::Update::Notified => {
                     self.close_attachment_editor();
@@ -1095,11 +1116,56 @@ impl App {
         )
     }
 
+    /// The band above the composer (and its reply and note) where the
+    /// history's 16 px gap is: who is typing shows there, as in egui.
+    pub fn typing_rect(&self) -> (f32, f32, f32, f32) {
+        let (bx, by, bw, _) = self.box_rect();
+        (bx, by - 16.0 - self.reply_h() - self.note_h(), bw, 16.0)
+    }
+
+    /// The dots bounce while someone types, unless animations are off or
+    /// the window is in the background, as in egui.
+    fn typing_animates(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|l| !l.typing.names().is_empty())
+            && files::motion()
+            && unsafe { GetForegroundWindow() } == self.hwnd
+    }
+
+    /// Keeps the typing timer running while it has work: a frame for the
+    /// bounce, else a slower tick to expire entries and end your typing.
+    fn arm_typing(&self) {
+        let busy = self.live.as_ref().is_some_and(|l| l.typing.busy());
+        unsafe {
+            if self.typing_animates() {
+                SetTimer(Some(self.hwnd), TIMER_TYPING, 33, None);
+            } else if busy {
+                SetTimer(Some(self.hwnd), TIMER_TYPING, 250, None);
+            } else {
+                let _ = KillTimer(Some(self.hwnd), TIMER_TYPING);
+            }
+        }
+    }
+
+    fn typing_tick(&mut self) {
+        let changed = self.live.as_mut().is_some_and(|l| l.typing_tick());
+        if changed || self.typing_animates() {
+            self.dirty.typing = true;
+            self.need = true;
+        }
+        self.arm_typing();
+    }
+
     // ---- state changes ----
 
     pub fn composer_changed(&mut self) {
         self.composer.caret_on = true;
         self.preview_tick();
+        if let Some(live) = &mut self.live {
+            live.typed(&String::from_utf16_lossy(&self.composer.text));
+            self.arm_typing();
+        }
         let (_, _, bw, _) = self.box_rect();
         if let Ok(h) = self.box_height(bw)
             && (h - self.box_h).abs() > 0.01
@@ -1844,6 +1910,7 @@ impl App {
                     self.need = true;
                 }
                 settings::TIMER_INBOX => self.inbox_tick(),
+                TIMER_TYPING => self.typing_tick(),
                 settings::audio::TIMER_AUDIO => self.audio_tick(),
                 playback::TIMER_PLAYBACK => self.playback_tick(),
                 recording::TIMER_RECORDING => self.recording_tick(),
@@ -2720,6 +2787,14 @@ impl App {
             }
             None => self.note_p.offset(-10_000.0, 0.0)?,
         }
+        let (tx, ty, tw, th) = self.typing_rect();
+        self.typing_p.ensure(&self.g, px(tw), px(th))?;
+        self.dirty.typing = true;
+        if self.c.has_conversation() {
+            self.typing_p.offset((tx * s).round(), (ty * s).round())?;
+        } else {
+            self.typing_p.offset(-10_000.0, 0.0)?;
+        }
         let vh = self.vh();
         unsafe {
             self.history_clip.SetOffsetX2((lx * s).round())?;
@@ -3512,6 +3587,15 @@ impl App {
                 Ok(())
             })?;
         }
+        if d.typing {
+            let names = self.live.as_ref().map_or_else(Vec::new, |l| {
+                l.typing.names().into_iter().map(str::to_owned).collect()
+            });
+            let (_, _, tw, _) = self.typing_rect();
+            let lift = self.typing_animates().then(typing_phase);
+            self.typing_p
+                .draw(s, |dc| draw_typing(g, dc, &names, tw, lift))?;
+        }
         if d.composer {
             let (_, _, bw, bh) = self.box_rect();
             let placeholder = format!("Message {}", c.place());
@@ -3805,6 +3889,74 @@ pub(crate) fn open_link(href: &str) {
             SW_SHOWNORMAL,
         );
     }
+}
+
+/// The three dots' bounce, as web's `.chat-typing-dots`: each rests, rises
+/// 3 px at 30% of a 1.2 s cycle and settles by 60%, 0.15 s after the last.
+fn typing_phase() -> [f32; 3] {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis()) as f64;
+    std::array::from_fn(|i| {
+        let phase = ((ms / 1000.0 - i as f64 * 0.15).rem_euclid(1.2) / 1.2) as f32;
+        if phase < 0.6 {
+            let t = if phase < 0.3 {
+                phase / 0.3
+            } else {
+                (0.6 - phase) / 0.3
+            };
+            t * t * (3.0 - 2.0 * t)
+        } else {
+            0.0
+        }
+    })
+}
+
+/// Who is typing, `w` wide: web's dots, then the names in muted 11 px text
+/// cut with an ellipsis. Still dots (`lift` None) rest at full strength.
+fn draw_typing(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    names: &[String],
+    w: f32,
+    lift: Option<[f32; 3]>,
+) -> Result<()> {
+    unsafe {
+        dc.Clear(Some(&gfx::color(0x000000, 0.0)));
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        if names.is_empty() {
+            return Ok(());
+        }
+        let brush = g.solid(TEXT_MUTED);
+        for i in 0..3 {
+            let (rise, opacity) = lift.map_or((0.0, 1.0), |l| (3.0 * l[i], 0.45 + 0.55 * l[i]));
+            brush.SetOpacity(opacity);
+            dc.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: windows_numerics::Vector2 {
+                        X: 2.0 + i as f32 * 7.0,
+                        Y: 8.0 - rise,
+                    },
+                    radiusX: 2.0,
+                    radiusY: 2.0,
+                },
+                &brush,
+            );
+        }
+        brush.SetOpacity(1.0);
+        let text = typing::label(&names);
+        let x = 18.0 + 7.0;
+        let l = g.layout(&gfx::wide(&text), &g.formats.file_detail, (w - x).max(1.0))?;
+        crate::emoji::apply(&l, &text, 11.0, 1.0)?;
+        crate::text::draw(
+            dc,
+            &l,
+            x,
+            (16.0 - gfx::metrics(&l).height) / 2.0,
+            &g.brushes.muted,
+        );
+    }
+    Ok(())
 }
 
 fn resize_window(hwnd: HWND, w: f32, h: f32) {
