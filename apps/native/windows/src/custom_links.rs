@@ -98,12 +98,18 @@ impl InvitePeople {
 impl Dialog {
     /// The number field with the keyboard, if one has it.
     pub(crate) fn number_focus(&self) -> Option<u8> {
+        if let Some(e) = &self.profile_edit {
+            return (e.focus == Part::Number(0)).then_some(0);
+        }
         self.inviting.as_ref().and_then(|ip| ip.focus)
     }
 
     /// Whether the focused number field takes no edits now: the name while
     /// it saves, the others while a link request is in flight.
     pub(crate) fn number_locked(&self) -> bool {
+        if self.profile_edit.is_some() {
+            return !self.profile_enabled(Part::Number(0));
+        }
         match self.number_focus() {
             Some(NAME) => self.busy,
             _ => self.inviting.as_ref().is_some_and(|ip| ip.pending),
@@ -111,6 +117,9 @@ impl Dialog {
     }
 
     pub(crate) fn number_mut(&mut self) -> Option<&mut Composer> {
+        if let Some(e) = &mut self.profile_edit {
+            return (e.focus == Part::Number(0)).then_some(&mut e.name);
+        }
         let ip = self.inviting.as_deref_mut()?;
         let k = ip.focus?;
         Some(&mut ip.numbers[k as usize])
@@ -118,6 +127,11 @@ impl Dialog {
 
     /// The editable text behind a part: a number field's, else the field's.
     pub(crate) fn field_for(&self, part: Part) -> &Composer {
+        if part == Part::Number(0)
+            && let Some(e) = &self.profile_edit
+        {
+            return &e.name;
+        }
         match (part, self.inviting.as_deref()) {
             (Part::Number(k), Some(ip)) => &ip.numbers[k as usize],
             _ => &self.field,
@@ -125,6 +139,11 @@ impl Dialog {
     }
 
     pub(crate) fn field_for_mut(&mut self, part: Part) -> &mut Composer {
+        if part == Part::Number(0)
+            && let Some(e) = &mut self.profile_edit
+        {
+            return &mut e.name;
+        }
         match (part, self.inviting.as_deref_mut()) {
             (Part::Number(k), Some(ip)) => &mut ip.numbers[k as usize],
             _ => &mut self.field,

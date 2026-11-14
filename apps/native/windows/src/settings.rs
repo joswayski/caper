@@ -54,7 +54,7 @@ pub const LEVELS: [NotificationLevel; 3] = [
 pub const FOOT_H: f32 = 52.0;
 const MENU_W: f32 = 232.0;
 const MENU_ITEM_H: f32 = 32.0;
-pub const MENU_ITEMS: [&str; 3] = ["Settings\u{2026}", "Audio test", "Log out"];
+pub const MENU_ITEMS: [&str; 4] = ["Settings\u{2026}", "Audio test", "Log out", "Edit profile"];
 
 fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
@@ -1701,6 +1701,7 @@ impl App {
             0 => self.open_settings(),
             1 => self.open_audio(),
             2 => self.logout(),
+            3 => self.open_profile_editor(),
             _ => {}
         }
     }

@@ -101,6 +101,32 @@ pub fn clear() {
     });
 }
 
+/// A private profile preview, removed when its editor closes or replaces it.
+pub fn local(key: String, image: caper_client::Rgba) {
+    CACHE.with_borrow_mut(|c| {
+        c.decoded.insert(key, image);
+    });
+}
+
+pub fn forget_local(key: &str) {
+    CACHE.with_borrow_mut(|c| {
+        c.decoded.remove(key);
+        c.pictures.remove(key);
+    });
+}
+
+/// Keep the saved draft visible while its server URL is still loading.
+pub fn save_local(key: &str, asset: &str) {
+    CACHE.with_borrow_mut(|c| {
+        if let Some(image) = c.decoded.get(key).cloned() {
+            c.decoded.insert(asset.to_owned(), image);
+        }
+        if let Some(bitmap) = c.pictures.get(key).cloned() {
+            c.pictures.insert(asset.to_owned(), bitmap);
+        }
+    });
+}
+
 /// Takes finished loads; true when a picture became ready, so panels that
 /// show avatars redraw.
 pub fn poll() -> bool {

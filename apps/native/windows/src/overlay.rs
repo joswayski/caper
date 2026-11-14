@@ -332,6 +332,8 @@ pub enum Kind {
     InvitePeople,
     /// The update review (`updates`): what's new and Restart to update.
     Update,
+    /// Your private name and picture draft.
+    Profile,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -405,6 +407,7 @@ pub enum Part {
     RemoveMember(usize),
     /// The danger zone's Delete space or Delete channel.
     DeleteOpen,
+    Profile(crate::profile::editor::Control),
 }
 
 impl Part {
@@ -457,6 +460,7 @@ impl Part {
             Self::ManageRow(k) => 110_000 + k,
             Self::RemoveMember(k) => 120_000 + k,
             Self::DeleteOpen => 30_210,
+            Self::Profile(control) => 130_000 + control.index(),
         }
     }
 
@@ -549,6 +553,7 @@ pub struct Dialog {
     pub update: Option<Box<caper_client::updates::Available>>,
     pub in_call: bool,
     pub update_shown: Vec<(crate::updates::Line, String)>,
+    pub profile_edit: Option<Box<crate::profile::editor::Editor>>,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -627,6 +632,7 @@ impl Dialog {
             update: None,
             in_call: false,
             update_shown: Vec::new(),
+            profile_edit: None,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -638,6 +644,7 @@ impl Dialog {
 
     pub fn title(&self) -> String {
         match self.kind {
+            Kind::Profile => "Edit profile".into(),
             Kind::Edit => "Edit message".into(),
             Kind::Delete => "Delete message?".into(),
             Kind::History => "Message history".into(),
@@ -684,7 +691,7 @@ impl Dialog {
                 self.browse.as_ref().map_or("", |b| b.space_name.as_str())
             ),
             Kind::JoinInvite | Kind::Invitation => self.invite_note(),
-            Kind::CreateSpace | Kind::CreateChannel => String::new(),
+            Kind::CreateSpace | Kind::CreateChannel | Kind::Profile => String::new(),
             Kind::InvitePeople => self.invite_people_note(),
             Kind::Update => self.update_note(),
             Kind::LeaveSpace => "You will lose access to its channels and conversations. An owner can add you again later.".into(),
@@ -825,6 +832,7 @@ impl Dialog {
             (Kind::CreateSpace | Kind::CreateChannel, true) => "Creating\u{2026}",
             (Kind::InvitePeople, _) => self.invite_people_primary(),
             (Kind::Update, _) => self.update_primary(),
+            (Kind::Profile, _) => "Save profile",
         }
     }
 
@@ -839,6 +847,9 @@ impl Dialog {
     }
 
     pub fn enabled(&self, part: Part) -> bool {
+        if self.kind == Kind::Profile {
+            return self.profile_enabled(part);
+        }
         match part {
             Part::Primary => {
                 !self.busy
@@ -854,6 +865,7 @@ impl Dialog {
                         Kind::CreateSpace | Kind::CreateChannel => !self.create_name().is_empty(),
                         Kind::InvitePeople => self.invite_enabled(part),
                         Kind::Update => true,
+                        Kind::Profile => self.profile_enabled(part),
                     }
             }
             Part::Copy
@@ -872,7 +884,7 @@ impl Dialog {
             Part::Reset | Part::SaveChanges | Part::RemoveMember(_) | Part::DeleteOpen => {
                 !self.busy
             }
-            Part::Member(_) | Part::Unsaved | Part::ManageRow(_) => true,
+            Part::Member(_) | Part::Unsaved | Part::ManageRow(_) | Part::Profile(_) => true,
             Part::Cancel
             | Part::Reload
             | Part::Field
@@ -912,6 +924,9 @@ impl Dialog {
 
     /// The clickable part under (x, y).
     pub fn hit(&self, x: f32, y: f32) -> Option<Part> {
+        if self.kind == Kind::Profile {
+            return self.profile_hit(x, y);
+        }
         self.parts
             .iter()
             .find(|(p, r)| {
@@ -975,6 +990,9 @@ impl Dialog {
     /// Client DIP origin of the field's text layout as drawn (scrolled), for
     /// the IME window and UI Automation.
     pub fn text_origin(&self) -> (f32, f32) {
+        if let Some(e) = &self.profile_edit {
+            return self.profile_field_origin(e.focus);
+        }
         let (ox, oy) = self.field_origin;
         (ox, oy - self.field.scroll())
     }
@@ -982,6 +1000,9 @@ impl Dialog {
     /// Lays out the card for a `w` × `h` window: the field's text and every
     /// part's rectangle.
     pub fn relayout(&mut self, g: &Gfx, w: f32, h: f32) -> Result<()> {
+        if self.kind == Kind::Profile {
+            return self.relayout_profile(g, w, h);
+        }
         if self.kind == Kind::History {
             return self.relayout_history(g, w, h);
         }
@@ -1171,6 +1192,9 @@ impl Dialog {
             let card = rect(cx, cy, cx + cw, cy + ch);
             fill_round(dc, card, RADIUS, &g.brushes.surface);
             stroke_round(dc, card, RADIUS, &g.brushes.border);
+            if self.kind == Kind::Profile {
+                return self.draw_profile(g, dc);
+            }
             if self.kind == Kind::History {
                 return self.draw_history(g, dc);
             }
@@ -1689,6 +1713,7 @@ impl App {
                 | Kind::CreateSpace
                 | Kind::CreateChannel
                 | Kind::InvitePeople
+                | Kind::Profile
         );
         self.dialog = Some(d);
         if editing {
@@ -1729,6 +1754,9 @@ impl App {
     pub fn dialog_changed(&mut self) {
         let (g, w, h) = (&self.g, self.w, self.h);
         if let Some(d) = &mut self.dialog {
+            if d.kind == Kind::Profile {
+                d.profile_changed();
+            }
             if matches!(d.kind, Kind::StartDirect | Kind::InvitePeople) {
                 d.username_changed(self.live.as_ref());
             }
@@ -1766,6 +1794,9 @@ impl App {
         let Some(d) = &mut self.dialog else { return };
         if !d.enabled(part) {
             return;
+        }
+        if d.kind == Kind::Profile {
+            return self.profile_edit_activate(part);
         }
         if d.kind == Kind::Update {
             return self.update_activate(part);
@@ -1931,7 +1962,8 @@ impl App {
             | Part::Reset
             | Part::SaveChanges
             | Part::RemoveMember(_)
-            | Part::DeleteOpen => {}
+            | Part::DeleteOpen
+            | Part::Profile(_) => {}
         }
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
@@ -2190,6 +2222,13 @@ impl App {
         ctrl: bool,
         shift: bool,
     ) -> Option<Option<LRESULT>> {
+        if self
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.kind == Kind::Profile)
+        {
+            return self.profile_edit_input(msg, wp, x, y, ctrl, shift);
+        }
         let done = Some(Some(LRESULT(0)));
         let hwnd = self.hwnd;
         let d = self.dialog.as_mut()?;

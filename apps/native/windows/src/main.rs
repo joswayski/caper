@@ -659,6 +659,7 @@ impl App {
 
     fn drain_live(&mut self) -> Result<()> {
         self.poll_file_dialog();
+        self.poll_profile_editor();
         self.poll_attachment_editor();
         self.poll_viewer();
         self.poll_menu_copy();
@@ -1294,6 +1295,11 @@ impl App {
             return (e.field.focused && !e.busy).then(|| (&e.field, e.text_origin()));
         }
         if let Some(d) = &self.dialog {
+            if let Some(e) = &d.profile_edit {
+                return matches!(e.focus, overlay::Part::Field | overlay::Part::Number(0))
+                    .then(|| (d.field_for(e.focus), d.profile_field_origin(e.focus)))
+                    .filter(|_| d.profile_enabled(e.focus));
+            }
             return d.field.focused.then(|| (&d.field, d.text_origin()));
         }
         if let Some(s) = &self.signin {
@@ -1327,6 +1333,12 @@ impl App {
             return Some(&mut e.field).filter(|f| f.focused && !e.busy);
         }
         if let Some(d) = &mut self.dialog {
+            if let Some(e) = &d.profile_edit {
+                let p = e.focus;
+                return (matches!(p, overlay::Part::Field | overlay::Part::Number(0))
+                    && d.profile_enabled(p))
+                .then(|| d.field_for_mut(p));
+            }
             if d.number_focus().is_some() {
                 return d.number_mut();
             }

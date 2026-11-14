@@ -119,6 +119,8 @@ pub struct Editor {
     prepared: Option<Arc<Prepared>>,
     opening: Option<Receiver<std::result::Result<Arc<Scratch>, String>>>,
     color_picker: Option<Receiver<Option<[u8; 3]>>>,
+    /// A private profile photo, not an eager message upload.
+    profile_picture: Option<Arc<Scratch>>,
 }
 
 fn inside(r: D2D_RECT_F, x: f32, y: f32) -> bool {
@@ -179,6 +181,7 @@ impl Editor {
             prepared: None,
             opening: None,
             color_picker: None,
+            profile_picture: None,
         }
     }
 
@@ -737,7 +740,9 @@ impl App {
 
     pub fn close_attachment_editor(&mut self) {
         if let Some(e) = self.attachment_editor.take() {
-            if let Some(live) = &mut self.live {
+            if e.profile_picture.is_none()
+                && let Some(live) = &mut self.live
+            {
                 live.cancel_draft_edit(e.key);
             }
             unsafe {
@@ -746,8 +751,26 @@ impl App {
             self.dirty.overlay = true;
             self.need = true;
             self.events |= EV_SCREEN | EV_FOCUS;
-            self.set_composer_focus(true);
+            if e.profile_picture.is_some() {
+                self.dialog_changed();
+            } else {
+                self.set_composer_focus(true);
+            }
         }
+    }
+
+    pub fn open_profile_picture_editor(&mut self, scratch: Arc<Scratch>) {
+        let mut editor = Editor::new(
+            self.hwnd,
+            0,
+            "Profile picture".into(),
+            scratch.path().to_owned(),
+            None,
+        );
+        editor.profile_picture = Some(scratch);
+        self.attachment_editor = Some(editor);
+        self.attachment_editor_changed();
+        self.events |= EV_SCREEN | EV_FOCUS;
     }
 
     pub fn attachment_editor_changed(&mut self) {
@@ -788,19 +811,22 @@ impl App {
         let Some(e) = &mut self.attachment_editor else {
             return;
         };
-        if !self
-            .live
-            .as_ref()
-            .is_some_and(|l| l.open_drafts().iter().any(|d| d.upload.key == e.key))
+        if e.profile_picture.is_none()
+            && !self
+                .live
+                .as_ref()
+                .is_some_and(|l| l.open_drafts().iter().any(|d| d.upload.key == e.key))
         {
             self.close_attachment_editor();
             return;
         }
-        e.prepared = self
-            .live
-            .as_ref()
-            .and_then(|l| l.drafts.iter().find(|d| d.upload.key == e.key))
-            .and_then(|d| d.upload.prepared.clone());
+        if e.profile_picture.is_none() {
+            e.prepared = self
+                .live
+                .as_ref()
+                .and_then(|l| l.drafts.iter().find(|d| d.upload.key == e.key))
+                .and_then(|d| d.upload.prepared.clone());
+        }
         let mut changed = false;
         if let Some(rx) = &e.color_picker
             && let Ok(color) = rx.try_recv()
@@ -845,7 +871,11 @@ impl App {
     }
 
     pub fn attachment_edit_finished(&mut self, key: u64, error: Option<String>) {
-        let Some(e) = self.attachment_editor.as_mut().filter(|e| e.key == key) else {
+        let Some(e) = self
+            .attachment_editor
+            .as_mut()
+            .filter(|e| e.key == key && e.profile_picture.is_none())
+        else {
             return;
         };
         if let Some(error) = error {
@@ -888,6 +918,11 @@ impl App {
                     return self.close_attachment_editor();
                 }
                 let edit = e.edit.is_edited().then(|| e.edit.clone());
+                if let Some(scratch) = e.profile_picture.clone() {
+                    self.close_attachment_editor();
+                    self.profile_picture_edited(scratch, edit);
+                    return;
+                }
                 let result = self
                     .live
                     .as_mut()

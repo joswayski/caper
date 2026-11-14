@@ -25,6 +25,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::Result;
 
+pub mod editor;
+
 /// egui's card: 320 DIPs wide with 16 DIPs of padding inside its border.
 pub const CARD_W: f32 = 320.0;
 const PAD: f32 = 17.0;
@@ -54,6 +56,7 @@ pub enum PPart {
     Space(usize),
     Field,
     Send,
+    Edit,
 }
 
 impl PPart {
@@ -67,6 +70,7 @@ impl PPart {
             Self::Block => 5,
             Self::Field => 6,
             Self::Send => 7,
+            Self::Edit => 100_000,
             Self::Space(k) => 8 + k,
         }
     }
@@ -120,6 +124,7 @@ impl View {
             PPart::Space(k) => self.spaces.get(k).map_or_else(String::new, |s| s.1.clone()),
             PPart::Field => format!("Message @{}", self.username().unwrap_or_default()),
             PPart::Send => "Send".into(),
+            PPart::Edit => "Edit profile".into(),
         }
     }
 }
@@ -203,6 +208,7 @@ impl App {
             .is_some_and(|c| c.sending);
         match part {
             PPart::Picture => !sending,
+            PPart::Edit => v.profile.me && !v.busy,
             PPart::Close | PPart::More | PPart::Block | PPart::Invite => !v.busy,
             PPart::Open => !v.busy && self.live.as_ref().is_some_and(|l| l.me.is_some()),
             PPart::Space(k) => !v.busy && v.spaces.get(k).is_some_and(|s| !s.2),
@@ -261,6 +267,8 @@ impl App {
         if v.profile.me {
             geo.you = Some(y);
             y += NOTE_H + GAP;
+            geo.parts.push((PPart::Edit, (PAD, y, inner, 36.0)));
+            y += 36.0 + GAP;
         } else {
             if v.choosing {
                 for k in 0..v.spaces.len() {
@@ -618,6 +626,7 @@ impl App {
         }
         match part {
             PPart::Close => self.close_profile(),
+            PPart::Edit => self.open_profile_editor(),
             PPart::Picture => {
                 let title = v.profile.title();
                 if let Some(a) = v
@@ -933,8 +942,12 @@ impl App {
                             alpha,
                         );
                     }
-                    PPart::Space(k) => {
-                        let label = v.spaces.get(k).map_or("", |s| s.1.as_str());
+                    PPart::Space(_) | PPart::Edit => {
+                        let label = if let PPart::Space(k) = part {
+                            v.spaces.get(k).map_or("", |s| s.1.as_str())
+                        } else {
+                            "Edit profile"
+                        };
                         fill_round(
                             dc,
                             r,

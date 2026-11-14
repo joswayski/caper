@@ -26,6 +26,7 @@ use windows::Win32::System::Com::*;
 use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::Memory::*;
 use windows::Win32::System::Ole::{CF_DIB, CF_HDROP};
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use windows::core::*;
@@ -627,6 +628,15 @@ pub fn draw(
 /// The system file dialog on its own thread (it blocks while open), its
 /// choice posted back to the window.
 pub fn pick(hwnd: HWND) -> Receiver<Vec<PathBuf>> {
+    pick_files_or_picture(hwnd, false)
+}
+
+/// One private profile picture; uploading still waits for Save profile.
+pub fn pick_picture(hwnd: HWND) -> Receiver<Vec<PathBuf>> {
+    pick_files_or_picture(hwnd, true)
+}
+
+fn pick_files_or_picture(hwnd: HWND, picture: bool) -> Receiver<Vec<PathBuf>> {
     let (tx, rx) = channel();
     let raw = hwnd.0 as isize;
     std::thread::spawn(move || {
@@ -635,7 +645,7 @@ pub fn pick(hwnd: HWND) -> Receiver<Vec<PathBuf>> {
             if CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_err() {
                 Vec::new()
             } else {
-                let files = dialog(owner).unwrap_or_default();
+                let files = dialog(owner, picture).unwrap_or_default();
                 CoUninitialize();
                 files
             }
@@ -649,13 +659,31 @@ pub fn pick(hwnd: HWND) -> Receiver<Vec<PathBuf>> {
 }
 
 /// "Upload a file": any files, several at once. Cancel chooses none.
-unsafe fn dialog(owner: HWND) -> Result<Vec<PathBuf>> {
+unsafe fn dialog(owner: HWND, picture: bool) -> Result<Vec<PathBuf>> {
     unsafe {
         let d: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-        d.SetOptions(
-            d.GetOptions()? | FOS_ALLOWMULTISELECT | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM,
-        )?;
-        d.SetTitle(w!("Upload a file"))?;
+        let options = d.GetOptions()? | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM;
+        d.SetOptions(if picture {
+            options
+        } else {
+            options | FOS_ALLOWMULTISELECT
+        })?;
+        let filter = HSTRING::from(
+            caper_client::pictures::PICKER_EXTENSIONS
+                .iter()
+                .map(|ext| format!("*.{ext}"))
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
+        if picture {
+            d.SetTitle(w!("Choose profile picture"))?;
+            d.SetFileTypes(&[COMDLG_FILTERSPEC {
+                pszName: w!("Pictures"),
+                pszSpec: PCWSTR(filter.as_ptr()),
+            }])?;
+        } else {
+            d.SetTitle(w!("Upload a file"))?;
+        }
         if d.Show(Some(owner)).is_err() {
             return Ok(Vec::new());
         }

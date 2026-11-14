@@ -1285,6 +1285,73 @@ impl Live {
         });
     }
 
+    /// A profile request belongs to this sign-in, not a navigation generation.
+    pub fn profile_session(&self) -> Option<(u64, caper_client::api::Api, String)> {
+        Some((
+            self.account_epoch,
+            self.media.api()?.clone(),
+            self.token.clone()?,
+        ))
+    }
+
+    /// Apply the saved identity to retained snapshots without navigating or
+    /// resetting cursors, pending sends, or composer drafts.
+    pub fn profile_saved(&mut self, account: &core::Account) {
+        if self.account_id.as_deref() != Some(&account.id) {
+            return;
+        }
+        let update = core::PersonUpdate::from(account);
+        self.account_avatar = account.avatar();
+        self.username.clone_from(&account.username);
+        self.name = account
+            .display_name
+            .as_ref()
+            .or(account.username.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        self.account_name.clone_from(&self.name);
+        if let Some(author) = &mut self.author {
+            author.apply_person(&update);
+        }
+        if let Some(detail) = &mut self.detail {
+            for member in &mut detail.members {
+                member.apply_person(&update);
+            }
+        }
+        for person in &mut self.people {
+            person.apply_person(&update);
+        }
+        for direct in &mut self.directs {
+            direct.peer.apply_person(&update);
+        }
+        for person in self.blocks.iter_mut().flatten() {
+            person.apply_person(&update);
+        }
+        for person in self
+            .reactors
+            .values_mut()
+            .flat_map(|r| &mut r.groups)
+            .flat_map(|g| &mut g.authors)
+        {
+            person.apply_person(&update);
+        }
+        for person in self.rosters.values_mut().flat_map(|(people, _)| people) {
+            person.apply_person(&update);
+        }
+        for (message, pin) in self.mutations.pins.values_mut() {
+            message.apply_person(&update);
+            if let Some(pin) = pin {
+                pin.author.apply_person(&update);
+            }
+        }
+        self.timeline.apply_person(&update);
+        self.queued.push(Update::Badges);
+    }
+
+    pub fn profile_snapshot(&self) -> Option<(Conversation, Ids)> {
+        self.rebuilt()
+    }
+
     /// Opens the account's first space; its first joined channel follows.
     fn open(
         &mut self,
@@ -1437,6 +1504,13 @@ impl Live {
         if profile.me {
             profile.username.clone_from(&self.username);
             profile.display_name = Some(self.account_name.clone());
+            profile.avatar_id = self.account_avatar.mascot.map(i32::from);
+            profile.avatar_asset = self.account_avatar.picture.as_ref().map(|p| p.0.clone());
+            profile.avatar_url = self
+                .account_avatar
+                .picture
+                .as_ref()
+                .and_then(|p| p.1.clone());
         }
         Some(profile)
     }
