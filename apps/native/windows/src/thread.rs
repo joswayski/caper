@@ -1,12 +1,12 @@
 //! The thread beside the conversation, as the egui client's thread panel:
 //! a heading ("Thread", "in #channel" and Close), the root message, its
 //! reply count, older replies or the load error, the replies, and a reply
-//! composer with "Also send to #channel", Send and the main composer's card
-//! for its first link (`preview`). Its rows are the channel
+//! composer with a selected quote, "Also send to #channel", Send and the
+//! main composer's card for its first link (`preview`). Its rows are the channel
 //! list's rows (`list`), all measured at once (threads arrive in pages of
 //! 50) and drawn into the pane's surface; the reply box has its own surface,
 //! so typing redraws only the box.
-use crate::actions::Rect;
+use crate::actions::{REPLY_GAP, Rect, ReplyBar};
 use crate::composer::{self, Composer};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
@@ -55,6 +55,8 @@ pub enum Part {
     Forward(usize, list::ForwardPart),
     /// "Load older replies", or Retry after a failed load.
     Older,
+    Reply,
+    CancelReply,
     Broadcast,
     Field,
     Format(composer::Style),
@@ -92,6 +94,8 @@ pub struct Pane {
     pub scroll: f32,
     pub at_end: bool,
     pub composer: Composer,
+    /// The quote belongs to this thread, never the channel composer.
+    pub reply: Option<ReplyBar>,
     selecting: bool,
     /// "Also send to #channel", for the next reply only.
     pub broadcast: bool,
@@ -143,6 +147,7 @@ impl Pane {
             scroll: 0.0,
             at_end: true,
             composer: Composer::formatted(),
+            reply: None,
             selecting: false,
             broadcast: false,
             hover: None,
@@ -292,9 +297,24 @@ impl Pane {
     }
 
     fn can_send(&self) -> bool {
-        !String::from_utf16_lossy(&self.composer.text)
-            .trim()
-            .is_empty()
+        !self.loading
+            && !String::from_utf16_lossy(&self.composer.text)
+                .trim()
+                .is_empty()
+    }
+
+    fn reply_h(&self) -> f32 {
+        self.reply.as_ref().map_or(0.0, |r| r.height + REPLY_GAP)
+    }
+
+    fn reply_rect(&self, h: f32) -> Option<Rect> {
+        let r = self.reply.as_ref()?;
+        Some((
+            PAD,
+            h - 16.0 - self.box_h - 8.0 - CHECK_H - self.reply_h(),
+            THREAD_W - 2.0 * PAD,
+            r.height,
+        ))
     }
 
     /// Draws the heading, the history at `scroll` within `vh`, the
@@ -342,6 +362,11 @@ impl Pane {
             crate::draw_lip(dc, 1.0, HEADER_H + vh - LIP_H, w - 1.0);
         }
         result?;
+        let reply_rect = self.reply_rect(h);
+        if let (Some(r), Some((x, y, w, _))) = (&mut self.reply, reply_rect) {
+            r.cancel_hover = self.hover == Some(Part::CancelReply);
+            r.draw(g, dc, x, y, w);
+        }
         // "Also send to #channel" in its own row above the box.
         let check_y = h - 16.0 - self.box_h - 8.0 - CHECK_H;
         let by = check_y + (CHECK_H - CHECK) / 2.0;
@@ -531,7 +556,8 @@ impl App {
     /// The history's height in the pane.
     pub fn thread_vh(&self) -> f32 {
         let box_h = self.thread.as_ref().map_or(BOX_MIN, |t| t.box_h);
-        (self.h - 16.0 - box_h - 8.0 - CHECK_H - 12.0 - HEADER_H).max(0.0)
+        let reply_h = self.thread.as_ref().map_or(0.0, Pane::reply_h);
+        (self.h - 16.0 - box_h - 8.0 - CHECK_H - reply_h - 12.0 - HEADER_H).max(0.0)
     }
 
     pub fn thread_box_rect(&self) -> Option<Rect> {
@@ -600,6 +626,14 @@ impl App {
                 }
                 let r = list::head_button_rect(&self.g, &head, THREAD_W).ok()?;
                 clip((x0 + r.left, y + r.top, r.right - r.left, r.bottom - r.top))
+            }
+            Part::Reply | Part::CancelReply => {
+                let (x, y, w, h) = t.reply_rect(self.h)?;
+                Some(if part == Part::CancelReply {
+                    (x0 + x + w - 52.0, y + 8.0, 44.0, 44.0)
+                } else {
+                    (x0 + x, y, w, h)
+                })
             }
             Part::Broadcast => {
                 let y = self.h - 16.0 - t.box_h - 8.0 - CHECK_H;
@@ -681,6 +715,9 @@ impl App {
             out.push(Part::Older);
         }
         push_rows(&mut out, after);
+        if t.reply.is_some() {
+            out.extend([Part::Reply, Part::CancelReply]);
+        }
         out.extend([Part::Broadcast, Part::Field]);
         if t.composer.format_height() > 0.0 {
             out.extend(composer::Style::ALL.map(Part::Format));
@@ -699,7 +736,7 @@ impl App {
     pub fn thread_hit(&self, x: f32, y: f32) -> Option<Part> {
         let parts = self.thread_parts();
         // Controls before the rows and the field that hold them.
-        let holder = |p: &&Part| matches!(p, Part::Row(_) | Part::Field);
+        let holder = |p: &&Part| matches!(p, Part::Row(_) | Part::Field | Part::Reply);
         parts
             .iter()
             .filter(|p| !holder(p))
@@ -800,6 +837,10 @@ impl App {
                 }
             }
             Part::Broadcast => format!("Also send to {}", t.destination),
+            Part::Reply => t.reply.as_ref().map_or_else(String::new, |r| {
+                format!("Replying to {}: {}", r.target.author.name, r.target.text)
+            }),
+            Part::CancelReply => "Cancel reply".into(),
             Part::Field => "Reply to thread".into(),
             Part::Format(style) => style.name().into(),
             Part::Gif => "Send a GIF".into(),
@@ -927,12 +968,74 @@ impl App {
     }
 
     fn thread_layout_changed(&mut self) {
+        let vh = self.thread_vh();
+        if let Some(t) = &mut self.thread {
+            let max = (t.content_h() - vh).max(0.0);
+            t.scroll = if t.at_end { max } else { t.scroll.min(max) };
+        }
         self.dirty.layout = true;
         self.dirty.thread = true;
         self.dirty.thread_box = true;
         self.drawn = None;
         self.events |= EV_SCREEN | EV_ROWS;
         self.need = true;
+    }
+
+    /// Start or continue a channel message's thread and accept typing even
+    /// while its history loads. A broadcast reply opens its existing root.
+    pub fn reply_in_thread(&mut self, id: &str) {
+        let Some(m) = self.live.as_ref().and_then(|l| l.message(id)) else {
+            return;
+        };
+        let root = m.thread_root_id.unwrap_or(m.id);
+        self.close_menu();
+        self.close_picker();
+        self.close_pins();
+        if let Some(live) = &mut self.live {
+            live.open_thread(&root);
+        }
+        if let Err(e) = self.drain_live() {
+            eprintln!("thread failed: {e:?}");
+        }
+        self.set_thread_focus(true);
+    }
+
+    /// Quote a root or reply without changing the channel draft or creating
+    /// a nested thread. Menu actions keep the message ID, not its row index.
+    pub fn select_thread_reply(&mut self, id: &str) {
+        let Some(live) = &self.live else { return };
+        let Some(m) = live.message(id).filter(|m| !m.is_deleted()) else {
+            return;
+        };
+        let Some(t) = &mut self.thread else { return };
+        if !live.can_react() || (m.id != t.root && m.thread_root_id.as_deref() != Some(&t.root)) {
+            return;
+        }
+        match ReplyBar::new(
+            &self.g,
+            caper_client::model::MessageReply::from_message(&m),
+            THREAD_W - 2.0 * PAD,
+        ) {
+            Ok(reply) => t.reply = Some(reply),
+            Err(e) => {
+                eprintln!("thread reply layout failed: {e:?}");
+                return;
+            }
+        }
+        self.close_menu();
+        self.close_pins();
+        self.set_thread_focus(true);
+        self.thread_layout_changed();
+    }
+
+    pub fn cancel_thread_reply(&mut self) {
+        if self
+            .thread
+            .as_mut()
+            .is_some_and(|t| t.reply.take().is_some())
+        {
+            self.thread_layout_changed();
+        }
     }
 
     /// Opens the thread of row `i` of the channel: a root's own thread, or
@@ -1066,22 +1169,27 @@ impl App {
     /// Sends the reply box's text into the thread (and to the channel when
     /// "Also send to" is checked, which then resets, as in egui).
     pub fn send_thread_reply(&mut self) {
+        if !self.live.as_ref().is_some_and(|l| l.can_react()) {
+            return;
+        }
         let Some(t) = &mut self.thread else {
             return;
         };
+        if !t.can_send() {
+            return;
+        }
         let text = String::from_utf16_lossy(&t.composer.text)
             .trim()
             .to_string();
-        if text.is_empty() {
-            return;
-        }
         let (root, broadcast) = (t.root.clone(), t.broadcast);
+        let reply = t.reply.as_ref().map(|r| r.target.id.clone());
         t.composer.set_text(Vec::new());
         t.broadcast = false;
         t.at_end = true;
         if let Some(live) = &self.live {
-            live.send(text, None, Some((root, broadcast)));
+            live.send(text, reply, Some((root, broadcast)));
         }
+        self.cancel_thread_reply();
         self.thread_composer_changed();
     }
 
@@ -1096,6 +1204,7 @@ impl App {
                 }
             }
             Part::Close => self.close_thread(),
+            Part::CancelReply => self.cancel_thread_reply(),
             Part::Older => {
                 let Some(t) = &self.thread else { return };
                 if t.loading {
@@ -1160,7 +1269,7 @@ impl App {
             Part::Send => self.send_thread_reply(),
             Part::Spoiler(i, k) => self.reveal_thread_spoiler(i, k),
             Part::Forward(i, p) => self.forward_activate(true, i, p),
-            Part::Row(_) => {}
+            Part::Row(_) | Part::Reply => {}
         }
     }
 
@@ -1206,7 +1315,7 @@ impl App {
                     .in_thread(x, y)
                     .then(|| self.thread_hit(x, y))
                     .flatten()
-                    .filter(|p| !matches!(p, Part::Row(_) | Part::Field));
+                    .filter(|p| !matches!(p, Part::Row(_) | Part::Field | Part::Reply));
                 self.set_thread_hover(hover);
                 None
             }
@@ -1237,7 +1346,7 @@ impl App {
                         self.thread_composer_changed();
                     }
                     // Neither moves the keyboard out of the box.
-                    Some(part @ (Part::Format(_) | Part::RemovePreview)) => {
+                    Some(part @ (Part::Format(_) | Part::RemovePreview | Part::CancelReply)) => {
                         self.thread_activate(part)
                     }
                     Some(Part::Forward(i, part)) => {
@@ -1290,7 +1399,7 @@ impl App {
                     {
                         IDC_HAND
                     }
-                    Some(Part::Row(_)) | None => IDC_ARROW,
+                    Some(Part::Row(_) | Part::Reply) | None => IDC_ARROW,
                     Some(_) => IDC_HAND,
                 };
                 unsafe {
@@ -1319,7 +1428,11 @@ impl App {
                         return done;
                     }
                     VK_ESCAPE => {
-                        self.set_thread_focus(false);
+                        if t.reply.is_some() {
+                            self.cancel_thread_reply();
+                        } else {
+                            self.set_thread_focus(false);
+                        }
                         return done;
                     }
                     _ if t.composer.edit_key(hwnd, vk, ctrl, shift, true) => {}

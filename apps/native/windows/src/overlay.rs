@@ -56,6 +56,7 @@ pub enum Item {
     CopyImageLink,
     OpenImage,
     Reply,
+    Thread,
     Forward,
     Edit,
     History,
@@ -80,6 +81,7 @@ impl Item {
             Self::CopyImageLink => "Copy image link",
             Self::OpenImage => "Open image in browser",
             Self::Reply => "Reply",
+            Self::Thread => "Reply in thread",
             Self::Forward => "Forward",
             Self::Edit => "Edit message",
             Self::History => "Message history",
@@ -105,6 +107,7 @@ impl Item {
             Self::CopyImageLink => Icon::Link,
             Self::OpenLink | Self::OpenImage => Icon::ExternalLink,
             Self::Reply => Icon::Reply,
+            Self::Thread => Icon::Thread,
             Self::Forward => Icon::ExternalLink,
             Self::Edit => Icon::Pencil,
             Self::History => Icon::History,
@@ -1553,7 +1556,7 @@ impl App {
         let Some(row) = self.c.messages.get(i) else {
             return;
         };
-        let Some((id, items)) = self.message_items(&row.id, row.pinned_by.is_some(), true) else {
+        let Some((id, items)) = self.message_items(&row.id, row.pinned_by.is_some(), false) else {
             return;
         };
         let (tx, ty, tw, th) = self.bar_rect_for(i);
@@ -1562,13 +1565,22 @@ impl App {
         self.overlay_changed();
     }
 
-    /// Message `id`'s actions in egui's order; `reply` offers Reply.
-    fn message_items(&self, id: &str, pinned: bool, reply: bool) -> Option<(String, Vec<Item>)> {
+    /// Message `id`'s actions in egui's order. The thread pane offers Reply
+    /// in its own composer, but never starts a nested thread.
+    fn message_items(
+        &self,
+        id: &str,
+        pinned: bool,
+        in_thread: bool,
+    ) -> Option<(String, Vec<Item>)> {
         let live = self.live.as_ref()?;
         let m = live.message(id)?;
         let mut items = Vec::new();
-        if reply && live.can_react() && !m.is_deleted() {
+        if live.can_react() && !m.is_deleted() {
             items.push(Item::Reply);
+        }
+        if !in_thread && (!m.is_deleted() || m.thread.is_some() || m.thread_root_id.is_some()) {
+            items.push(Item::Thread);
         }
         if live.forward_session().is_some() && crate::forward::forwardable(&m) {
             items.push(Item::Forward);
@@ -1606,8 +1618,7 @@ impl App {
     }
 
     /// A right-click at (x, y) on thread reply `i`: a link's menu on a
-    /// link, otherwise the reply's actions at the pointer. No Reply yet:
-    /// egui's thread composer can quote a reply, this one can't.
+    /// link, otherwise the reply's actions at the pointer.
     pub fn open_thread_context_menu(&mut self, i: usize, x: f32, y: f32) {
         let Some(row) = self.thread.as_ref().and_then(|t| t.c.messages.get(i)) else {
             return;
@@ -1619,7 +1630,7 @@ impl App {
             menu.link = link;
             menu
         } else {
-            let Some((id, items)) = self.message_items(&id, pinned, false) else {
+            let Some((id, items)) = self.message_items(&id, pinned, true) else {
                 return;
             };
             Menu::new(i, id, items, x, y, y, self.h)
@@ -1727,7 +1738,9 @@ impl App {
             return;
         };
         match item {
+            Item::Reply if menu.in_thread => return self.select_thread_reply(&m.id),
             Item::Reply => return self.select_reply(menu.row),
+            Item::Thread => return self.reply_in_thread(&m.id),
             Item::Forward => return self.open_forward(&m.id, false),
             Item::Edit if live.can_edit(&m) => self.open_dialog(Dialog::edit(m)),
             Item::Delete if live.can_delete(&m) => self.open_dialog(Dialog::delete(m)),

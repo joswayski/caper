@@ -1043,6 +1043,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
         Id::ThreadPart(TPart::Row(_)) => UIA_ListItemControlTypeId,
+        Id::ThreadPart(TPart::Reply) => UIA_TextControlTypeId,
         Id::ThreadPart(TPart::Broadcast) => UIA_CheckBoxControlTypeId,
         Id::ThreadPart(TPart::Field) => UIA_EditControlTypeId,
         Id::ThreadPart(_) => UIA_ButtonControlTypeId,
@@ -1149,6 +1150,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
                     Tool::Reply => 3,
                     Tool::Emoji => 4,
                     Tool::More => 5,
+                    Tool::Thread => 6,
                 },
         ),
         Id::MenuClose => (16, 0),
@@ -1224,6 +1226,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Format(crate::composer::Style::Strikethrough) => (22, 11),
             TPart::Format(crate::composer::Style::Quote) => (22, 12),
             TPart::Format(crate::composer::Style::Spoiler) => (22, 13),
+            TPart::Reply => (22, 14),
+            TPart::CancelReply => (22, 15),
             TPart::Row(i) => (23, i),
             TPart::Chip(i, k) => (24, i * 64 + k.min(62)),
             TPart::Add(i) => (24, i * 64 + 63),
@@ -1519,7 +1523,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::DmItem(_) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Title | Part::Message) => false,
             Id::Forward(_, ForwardPart::Body)
-            | Id::ThreadPart(TPart::Forward(_, ForwardPart::Body)) => false,
+            | Id::ThreadPart(TPart::Forward(_, ForwardPart::Body) | TPart::Reply) => false,
             Id::Forward(..) => pattern == UIA_InvokePatternId,
             Id::Rec(p) => p.button() && pattern == UIA_InvokePatternId,
             Id::MenuItem(_)
@@ -2971,6 +2975,7 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
             | TPart::Gif
             | TPart::Emoji
             | TPart::RemovePreview
+            | TPart::CancelReply
             | TPart::Send,
         )
         | Id::ProfilePart(CPart::Close | CPart::Open | CPart::More | CPart::Send)

@@ -63,6 +63,7 @@ icons! {
     Settings => "settings.svg",
     Smile => "smile.svg",
     SmilePlus => "smile-plus.svg",
+    Thread => "thread.svg",
     Trash => "trash-2.svg",
     Users => "users.svg",
     Volume => "volume-2.svg",

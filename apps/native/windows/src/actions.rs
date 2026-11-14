@@ -1,6 +1,6 @@
-//! The hover toolbar over a message (quick reactions, Reply, Add reaction
-//! and More), the reaction picker it opens, and the reply shown above the
-//! composer. Each looks and behaves like the egui client's: the same
+//! The hover toolbar over a message (quick reactions, Reply in thread,
+//! Reply, Add reaction and More), the reaction picker it opens, and the
+//! reply shown above the composer. Each looks and behaves like egui's: the same
 //! controls in the same order, the same picker categories, order and search
 //! (`caper_client::emoji`), and the same "Replying to" panel.
 use crate::composer::{Composer, LINE};
@@ -39,6 +39,7 @@ pub const BAR_MAX_W: f32 = 7.0 * SLOT + 6.0;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Tool {
     Quick(usize),
+    Thread,
     Reply,
     Emoji,
     More,
@@ -48,6 +49,7 @@ impl Tool {
     pub fn label(self) -> String {
         match self {
             Self::Quick(k) => format!("React with {}", QUICK[k]),
+            Self::Thread => "Reply in thread".into(),
             Self::Reply => "Reply".into(),
             Self::Emoji => "Add reaction".into(),
             Self::More => "Message actions".into(),
@@ -57,6 +59,7 @@ impl Tool {
     fn icon(self) -> Icon {
         match self {
             Self::Quick(_) | Self::Emoji => Icon::SmilePlus,
+            Self::Thread => Icon::Thread,
             Self::Reply => Icon::Reply,
             Self::More => Icon::More,
         }
@@ -423,7 +426,7 @@ impl Picker {
 // ---------------------------------------------------------------------------
 // The reply above the composer.
 
-const REPLY_GAP: f32 = 6.0;
+pub const REPLY_GAP: f32 = 6.0;
 
 /// The "Replying to" panel's layouts at its current width.
 pub struct ReplyBar {
@@ -435,7 +438,7 @@ pub struct ReplyBar {
 }
 
 impl ReplyBar {
-    fn new(g: &Gfx, target: core::MessageReply, width: f32) -> Result<Self> {
+    pub fn new(g: &Gfx, target: core::MessageReply, width: f32) -> Result<Self> {
         let inner = (width - 18.0 - 44.0 - 8.0).max(40.0);
         let name = g.layout(
             &gfx::wide(&format!("Replying to {}", target.author.name)),
@@ -478,27 +481,24 @@ impl ReplyBar {
         })
     }
 
-    fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, w: f32) {
-        unsafe {
-            dc.Clear(Some(&D2D1_COLOR_F::default()));
-        }
+    pub fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32) {
         // A card: 1px border, 8px corners, 3% white over the conversation,
         // and a 2px terracotta accent along its rounded left edge.
         let h = self.height;
-        fill_round(dc, rect(0.0, 0.0, w, h), 8.0, &g.brushes.terracotta);
-        fill_round(dc, rect(2.0, 0.0, w, h), 8.0, &g.brushes.border);
+        fill_round(dc, rect(x, y, x + w, y + h), 8.0, &g.brushes.terracotta);
+        fill_round(dc, rect(x + 2.0, y, x + w, y + h), 8.0, &g.brushes.border);
         fill_round(
             dc,
-            rect(3.0, 1.0, w - 1.0, h - 1.0),
+            rect(x + 3.0, y + 1.0, x + w - 1.0, y + h - 1.0),
             7.0,
             &g.solid(0x20282A),
         );
-        crate::text::draw(dc, &self.name, 10.0, 8.0, &g.brushes.muted);
+        crate::text::draw(dc, &self.name, x + 10.0, y + 8.0, &g.brushes.muted);
         if let Some(t) = &self.text {
-            let y = 8.0 + gfx::metrics(&self.name).height + 3.0;
-            crate::text::draw(dc, t, 10.0, y, &g.brushes.muted);
+            let y = y + 8.0 + gfx::metrics(&self.name).height + 3.0;
+            crate::text::draw(dc, t, x + 10.0, y, &g.brushes.muted);
         }
-        let (cx, cy) = (w - 8.0 - 44.0, 8.0);
+        let (cx, cy) = (x + w - 8.0 - 44.0, y + 8.0);
         if self.cancel_hover {
             fill_round(
                 dc,
@@ -537,8 +537,8 @@ impl App {
     }
 
     /// Row `i`'s toolbar controls, as the egui client offers them: quick
-    /// reactions, Reply and Add reaction unless the message is deleted
-    /// (usable once you can react), then More.
+    /// reactions, Reply in thread, Reply and Add reaction, then More.
+    /// A deleted message's existing thread remains reachable.
     pub fn tools(&self, i: usize) -> Vec<ToolState> {
         let Some(m) = self.c.messages.get(i) else {
             return Vec::new();
@@ -559,6 +559,19 @@ impl App {
                     on,
                 });
             }
+        }
+        if !deleted
+            || self
+                .live
+                .as_ref()
+                .and_then(|l| l.message(&m.id))
+                .is_some_and(|m| m.thread.is_some() || m.thread_root_id.is_some())
+        {
+            out.push(ToolState {
+                tool: Tool::Thread,
+                enabled: self.live.is_some(),
+                on: false,
+            });
         }
         if can_react {
             out.push(ToolState {
@@ -644,6 +657,7 @@ impl App {
                     eprintln!("reaction update failed: {e:?}");
                 }
             }
+            Tool::Thread => self.reply_in_thread(&self.c.messages[i].id.clone()),
             Tool::Reply => self.select_reply(i),
             Tool::Emoji => self.open_picker(i),
             Tool::More => self.open_menu(i),
@@ -1102,7 +1116,8 @@ impl App {
                     self.reply_p.ensure(g, px(w), px(h))?;
                     self.reply_p.offset((x * s).round(), (y * s).round())?;
                     self.reply_p.draw(s, |dc| {
-                        r.draw(g, dc, w);
+                        unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
+                        r.draw(g, dc, 0.0, 0.0, w);
                         Ok(())
                     })?;
                 }

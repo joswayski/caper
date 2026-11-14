@@ -809,10 +809,15 @@ impl App {
                     Some(root) => {
                         let t = self.thread.as_mut().filter(|t| t.root == root);
                         let broadcast = t.as_ref().is_some_and(|t| t.broadcast);
+                        let reply = t
+                            .as_ref()
+                            .and_then(|t| t.reply.as_ref())
+                            .map(|r| r.target.id.clone());
                         if let Some(t) = t {
                             t.at_end = true;
                         }
-                        (None, Some((root, broadcast)))
+                        self.cancel_thread_reply();
+                        (reply, Some((root, broadcast)))
                     }
                     None => {
                         let reply = self.reply.as_ref().map(|r| r.target.id.clone());
