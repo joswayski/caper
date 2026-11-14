@@ -233,22 +233,89 @@ impl Zoom {
     }
 }
 
-enum VideoState {
+pub(crate) enum VideoState {
     Probing(Receiver<Option<caper_client::ffmpeg::Probe>>),
     Ready(Box<Player>),
     Failed(String),
 }
 
-struct Video {
-    id: String,
+pub(crate) struct Video {
+    pub id: String,
     url: String,
     local: Option<String>,
-    state: VideoState,
+    pub state: VideoState,
     /// One refresh-and-retry after a failure.
     retried: bool,
-    frame: Option<ID2D1Bitmap1>,
+    pub frame: Option<ID2D1Bitmap1>,
     /// The time label last drawn, so the controls redraw once a second.
     shown_ms: u64,
+}
+
+impl Video {
+    /// Shared probe-to-player transition for the viewer and inline tiles.
+    /// Some means the probe finished; true asks for one signed-URL refresh.
+    pub fn poll(&mut self, duration: Option<u64>, animated: bool, fit: [f32; 2]) -> Option<bool> {
+        let VideoState::Probing(rx) = &self.state else {
+            return None;
+        };
+        let Ok(probe) = rx.try_recv() else {
+            return None;
+        };
+        let mut refresh = false;
+        self.state = match (probe, caper_client::ffmpeg::binary(), &self.local) {
+            (Some(probe), Some(binary), Some(local)) if probe.video.is_some() => {
+                let stream = probe.video.as_ref().expect("checked");
+                let mut player = Player::new(
+                    binary,
+                    local.clone(),
+                    stream.width,
+                    stream.height,
+                    probe.duration_ms.or(duration),
+                    stream.fps,
+                    [fit[0].min(MAX_VIDEO[0]), fit[1].min(MAX_VIDEO[1])],
+                );
+                if animated {
+                    player.toggle_mute();
+                }
+                player.play();
+                VideoState::Ready(Box::new(player))
+            }
+            _ => {
+                refresh = !self.retried;
+                VideoState::Failed(
+                    "This video can\u{2019}t be played here. Open it in your browser instead."
+                        .into(),
+                )
+            }
+        };
+        Some(refresh)
+    }
+
+    /// Uploads frames through the same Direct2D path in either presentation.
+    pub fn tick(
+        &mut self,
+        dc: &ID2D1DeviceContext,
+        animated: bool,
+    ) -> (bool, bool, Option<Duration>) {
+        let VideoState::Ready(player) = &mut self.state else {
+            return (false, false, None);
+        };
+        let mut shown = false;
+        let mut next = player.update(|size, rgba| {
+            show_frame(dc, &mut self.frame, size, rgba);
+            shown = true;
+        });
+        if animated && player.state() == State::Ended {
+            player.seek(0, true);
+        }
+        let at = player.position_ms() / 250;
+        let clock = at != self.shown_ms;
+        self.shown_ms = at;
+        if matches!(player.state(), State::Playing | State::Loading) {
+            next = Some(next.unwrap_or(Duration::from_millis(33)));
+        }
+        (shown, clock, next)
+    }
 }
 
 /// Pixels for the clipboard: a DIBV5 (with alpha) and a PNG.
@@ -993,7 +1060,7 @@ impl App {
         self.set_composer_focus(true);
     }
 
-    fn stop_viewer_video(&mut self, video: Option<Video>) {
+    pub(crate) fn stop_viewer_video(&mut self, video: Option<Video>) {
         if let Some(Video {
             local: Some(local), ..
         }) = video
@@ -1048,6 +1115,16 @@ impl App {
         let retried = v.video.as_ref().is_some_and(|video| video.id == current.id);
         let old = self.viewer.as_mut().and_then(|v| v.video.take());
         self.stop_viewer_video(old);
+        let video = self.start_video(&current, retried);
+        if let Some(v) = &mut self.viewer {
+            v.video = Some(video);
+            v.media = true;
+            v.chrome = true;
+        }
+    }
+
+    pub(crate) fn start_video(&mut self, current: &Attachment, retried: bool) -> Video {
+        let url = current.url.clone().unwrap_or_default();
         let failed = |message: &str| Video {
             id: current.id.clone(),
             url: url.clone(),
@@ -1057,7 +1134,7 @@ impl App {
             frame: None,
             shown_ms: 0,
         };
-        let video = match caper_client::ffmpeg::binary() {
+        match caper_client::ffmpeg::binary() {
             None => failed("Video playback needs the FFmpeg that ships with Caper."),
             Some(binary) => match (self.playback.proxy(), caper_client::api::media_url(&url)) {
                 (Some(proxy), Some(_)) => {
@@ -1083,11 +1160,6 @@ impl App {
                 }
                 _ => failed("This video could not be streamed."),
             },
-        };
-        if let Some(v) = &mut self.viewer {
-            v.video = Some(video);
-            v.media = true;
-            v.chrome = true;
         }
     }
 
@@ -1163,40 +1235,13 @@ impl App {
         let id = v.current().id.clone();
         let mut refresh = false;
         if let Some(video) = &mut v.video
-            && let VideoState::Probing(rx) = &video.state
-            && let Ok(probe) = rx.try_recv()
+            && let Some(retry) = video.poll(
+                duration,
+                animated,
+                [stage.0 * self.scale, stage.1 * self.scale],
+            )
         {
-            video.state = match (probe, caper_client::ffmpeg::binary(), &video.local) {
-                (Some(probe), Some(binary), Some(local)) if probe.video.is_some() => {
-                    let stream = probe.video.as_ref().expect("checked");
-                    let fit = [
-                        (stage.0 * self.scale).min(MAX_VIDEO[0]),
-                        (stage.1 * self.scale).min(MAX_VIDEO[1]),
-                    ];
-                    let mut player = Player::new(
-                        binary,
-                        local.clone(),
-                        stream.width,
-                        stream.height,
-                        probe.duration_ms.or(duration),
-                        stream.fps,
-                        fit,
-                    );
-                    // GIF-style videos loop silently, like a GIF.
-                    if animated {
-                        player.toggle_mute();
-                    }
-                    player.play();
-                    VideoState::Ready(Box::new(player))
-                }
-                _ => {
-                    refresh = !video.retried;
-                    VideoState::Failed(
-                        "This video can\u{2019}t be played here. Open it in your browser instead."
-                            .into(),
-                    )
-                }
-            };
+            refresh = retry;
             changed = true;
         }
         if refresh && let Some(live) = &mut self.live {
@@ -1221,30 +1266,14 @@ impl App {
         let dc = self.g.dc.clone();
         let animated = v.current().animated;
         let scrubbing = v.scrub.is_some();
-        if let Some(video) = &mut v.video
-            && let VideoState::Ready(player) = &mut video.state
-        {
-            let frame = &mut video.frame;
-            let mut shown = false;
-            let due = player.update(|size, rgba| {
-                show_frame(&dc, frame, size, rgba);
-                shown = true;
-            });
-            // Looping GIF-style videos never stop.
-            if animated && player.state() == State::Ended {
-                player.seek(0, true);
-            }
+        if let Some(video) = &mut v.video {
+            let (shown, clock, due) = video.tick(&dc, animated);
             next = due;
             if shown {
                 v.media = true;
             }
-            let at = player.position_ms() / 250;
-            if at != video.shown_ms || scrubbing {
-                video.shown_ms = at;
+            if clock || scrubbing {
                 v.chrome = true;
-            }
-            if matches!(player.state(), State::Playing | State::Loading) {
-                next = Some(next.unwrap_or(Duration::from_millis(33)));
             }
         }
         if v.video.is_none() {
