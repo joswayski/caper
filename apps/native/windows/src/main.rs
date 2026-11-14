@@ -66,6 +66,7 @@ mod uploads;
 mod versions;
 mod viewer;
 mod web_player;
+mod window_state;
 
 use bench::{Action, Bench};
 use composer::Composer;
@@ -122,6 +123,8 @@ const TIMER_MUTE: usize = 10;
 /// Who is typing: their dots' bounce, their entries' expiry and the end of
 /// your own typing.
 const TIMER_TYPING: usize = 19;
+/// Hides the zoom notice.
+const TIMER_ZOOM: usize = 22;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
 pub(crate) const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -169,6 +172,8 @@ struct Dirty {
     typing: bool,
     /// The Pins dialog.
     pins: bool,
+    /// The zoom notice.
+    zoom: bool,
 }
 
 impl Dirty {
@@ -196,6 +201,7 @@ impl Dirty {
             tip: true,
             typing: true,
             pins: true,
+            zoom: true,
         }
     }
 }
@@ -252,7 +258,14 @@ pub struct App {
     bench: Bench,
     pub rows: Rows,
     pub composer: Composer,
+    /// DIPs to pixels: the monitor's DPI scale times the zoom.
     pub scale: f32,
+    /// The monitor's DPI scale; Ctrl +/−/0 zoom on top of it, as egui's,
+    /// and whether its notice shows.
+    dpi: f32,
+    zoom: f32,
+    zoom_notice: bool,
+    zoom_p: Panel,
     pub w: f32,
     pub h: f32,
     _target: IDCompositionTarget,
@@ -476,6 +489,7 @@ impl App {
             let profile_p = Panel::new(&g)?;
             let suggest_p = Panel::new(&g)?;
             let tip_p = Panel::new(&g)?;
+            let zoom_p = Panel::new(&g)?;
             let settings_p = Panel::new(&g)?;
             let dm_menu_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
@@ -522,6 +536,7 @@ impl App {
             root.AddVisual(&settings_p.visual, true, &viewer_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &settings_p.visual)?;
             root.AddVisual(&tip_p.visual, true, &signin_p.visual)?;
+            root.AddVisual(&zoom_p.visual, true, &tip_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
             let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
@@ -535,6 +550,10 @@ impl App {
                 rows: Rows::new(n),
                 composer: Composer::formatted(),
                 scale,
+                dpi: scale,
+                zoom: 1.0,
+                zoom_notice: false,
+                zoom_p,
                 w: rc.right as f32 / scale,
                 h: rc.bottom as f32 / scale,
                 _target: target,
@@ -1869,6 +1888,19 @@ impl App {
         {
             live.active();
         }
+        // Ctrl +/−/0 zoom everywhere, as in egui; no field types these.
+        if msg == WM_KEYDOWN && ctrl {
+            let steps = match VIRTUAL_KEY(wp.0 as u16) {
+                VK_OEM_PLUS | VK_ADD => Some(1),
+                VK_OEM_MINUS | VK_SUBTRACT => Some(-1),
+                VK_0 | VK_NUMPAD0 => Some(0),
+                _ => None,
+            };
+            if let Some(steps) = steps {
+                self.zoom_by(steps);
+                return Some(LRESULT(0));
+            }
+        }
         // A click Caper saw was outside the player: keys come back here.
         if matches!(msg, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
             && let Some(player) = &self.web_player
@@ -1941,27 +1973,7 @@ impl App {
         match msg {
             WM_SIZE => {
                 let (pw, ph) = ((lp.0 & 0xffff) as f32, ((lp.0 >> 16) & 0xffff) as f32);
-                if pw > 0.0 && ph > 0.0 {
-                    self.w = pw / self.scale;
-                    self.h = ph / self.scale;
-                    self.dirty.layout = true;
-                    self.dirty.signin = true;
-                    self.dirty.profile = true;
-                    self.close_menu();
-                    self.dialog_changed();
-                    if self.attachment_editor.is_some() {
-                        self.attachment_editor_changed();
-                    }
-                    self.viewer_changed();
-                    if self.pins.is_some() {
-                        self.pins_changed();
-                    }
-                    if self.settings.is_some() {
-                        self.settings_changed();
-                    }
-                    self.dirty.settings = true;
-                    self.need = true;
-                }
+                self.resized(pw, ph);
             }
             WM_TIMER => match wp.0 {
                 TIMER_BENCH if self.bench.tick() => self.quit = true,
@@ -1989,6 +2001,14 @@ impl App {
                     self.need = true;
                 }
                 TIMER_CARD => self.show_card(),
+                TIMER_ZOOM => {
+                    unsafe {
+                        let _ = KillTimer(Some(self.hwnd), TIMER_ZOOM);
+                    }
+                    self.zoom_notice = false;
+                    self.dirty.zoom = true;
+                    self.need = true;
+                }
                 invite_people::TIMER_COPIED => self.copied_tick(),
                 TIMER_MEDIA => self.next_gif_frame(),
                 thread::TIMER_MEDIA => self.thread_media_tick(),
@@ -2838,10 +2858,113 @@ impl App {
 
     // ---- frame ----
 
-    fn set_scale(&mut self, scale: f32) {
-        self.scale = scale;
+    fn set_scale(&mut self, dpi: f32) {
+        self.dpi = dpi;
+        self.scale = dpi * self.zoom;
         self.dirty = Dirty::all();
         self.need = true;
+    }
+
+    /// The client area is `pw` × `ph` pixels: everything is laid out again.
+    fn resized(&mut self, pw: f32, ph: f32) {
+        if pw <= 0.0 || ph <= 0.0 {
+            return;
+        }
+        self.w = pw / self.scale;
+        self.h = ph / self.scale;
+        self.dirty.layout = true;
+        self.dirty.signin = true;
+        self.dirty.profile = true;
+        self.dirty.zoom = true;
+        self.close_menu();
+        self.dialog_changed();
+        if self.attachment_editor.is_some() {
+            self.attachment_editor_changed();
+        }
+        self.viewer_changed();
+        if self.pins.is_some() {
+            self.pins_changed();
+        }
+        if self.settings.is_some() {
+            self.settings_changed();
+        }
+        self.dirty.settings = true;
+        self.need = true;
+    }
+
+    /// Ctrl+Plus (1), Ctrl+Minus (−1) or Ctrl+0 (0): egui's zoom, shown in
+    /// a notice at the top right for two seconds when it changes.
+    fn zoom_by(&mut self, steps: i32) {
+        let zoom = window_state::zoomed(self.zoom, steps);
+        if zoom == self.zoom {
+            return;
+        }
+        self.zoom = zoom;
+        self.set_scale(self.dpi);
+        let mut rc = RECT::default();
+        unsafe {
+            let _ = GetClientRect(self.hwnd, &mut rc);
+        }
+        self.resized((rc.right - rc.left) as f32, (rc.bottom - rc.top) as f32);
+        self.zoom_notice = true;
+        self.events |= EV_SCREEN;
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_ZOOM, 2000, None);
+        }
+    }
+
+    fn draw_zoom(&mut self) -> Result<()> {
+        if !std::mem::take(&mut self.dirty.zoom) {
+            return Ok(());
+        }
+        if !self.zoom_notice {
+            return self.zoom_p.offset(-100_000.0, 0.0);
+        }
+        let g = &self.g;
+        let label = format!("Zoom {:.0}%", self.zoom * 100.0);
+        let l = g.layout(&gfx::wide(&label), &g.formats.label, 1e6)?;
+        let m = gfx::metrics(&l);
+        let (w, h) = (
+            m.widthIncludingTrailingWhitespace.ceil() + 24.0,
+            m.height.ceil() + 24.0,
+        );
+        let s = self.scale;
+        let px = |v: f32| (v * s).ceil().max(1.0) as u32;
+        self.zoom_p.ensure(g, px(w), px(h))?;
+        self.zoom_p
+            .offset(((self.w - 16.0 - w) * s).round(), (16.0 * s).round())?;
+        self.zoom_p.draw(s, |dc| unsafe {
+            dc.Clear(Some(
+                &windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F::default(),
+            ));
+            let r = rect(0.5, 0.5, w - 0.5, h - 0.5);
+            fill_round(dc, r, RADIUS, &g.brushes.surface);
+            stroke_round(dc, r, RADIUS, &g.brushes.border);
+            text::draw(dc, &l, 12.0, 12.0, &g.brushes.text);
+            Ok(())
+        })
+    }
+
+    /// Remembers the window's normal rectangle and whether it is maximized
+    /// (a minimized window by how it restores), as egui does.
+    pub fn save_placement(&mut self) {
+        let Some(live) = &mut self.live else { return };
+        let mut wp = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetWindowPlacement(self.hwnd, &mut wp) }.is_err() {
+            return;
+        }
+        let r = wp.rcNormalPosition;
+        let maximized = wp.showCmd == SW_SHOWMAXIMIZED.0 as u32
+            || (wp.showCmd == SW_SHOWMINIMIZED.0 as u32
+                && wp.flags.contains(WPF_RESTORETOMAXIMIZED));
+        let placement = window_state::Placement {
+            rect: (r.left, r.top, r.right, r.bottom),
+            maximized,
+        };
+        live.preferences.set(window_state::KEY, placement.format());
     }
 
     fn apply_layout(&mut self) -> Result<()> {
@@ -3811,6 +3934,7 @@ impl App {
             Action::Quit => self.quit = true,
             Action::None => {}
         }
+        self.draw_zoom()?;
         if self.signin.is_some() {
             // The sign-in screen covers everything; the rest waits until it closes.
             self.draw_signin()?;
@@ -3940,6 +4064,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     return UiaReturnRawElementProvider(hwnd, wp, lp, &uia::node(uia::Id::Root));
                 }
                 return DefWindowProcW(hwnd, msg, wp, lp);
+            }
+            // Before the window hides, while its placement is still current.
+            WM_CLOSE => {
+                with_app(App::save_placement);
+            }
+            WM_ENDSESSION if wp.0 != 0 => {
+                with_app(App::save_placement);
+                return LRESULT(0);
             }
             WM_DESTROY => {
                 // The player's child window goes with ours.
@@ -4100,6 +4232,35 @@ fn draw_typing(
     Ok(())
 }
 
+/// Shows the window at a remembered placement; false when no monitor
+/// shows any of it now.
+fn restore_placement(hwnd: HWND, p: window_state::Placement) -> bool {
+    let (left, top, right, bottom) = p.rect;
+    let r = RECT {
+        left,
+        top,
+        right,
+        bottom,
+    };
+    unsafe {
+        if MonitorFromRect(&r, MONITOR_DEFAULTTONULL).0.is_null() {
+            return false;
+        }
+        let wp = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            showCmd: if p.maximized {
+                SW_SHOWMAXIMIZED
+            } else {
+                SW_SHOWNORMAL
+            }
+            .0 as u32,
+            rcNormalPosition: r,
+            ..Default::default()
+        };
+        SetWindowPlacement(hwnd, &wp).is_ok()
+    }
+}
+
 fn resize_window(hwnd: HWND, w: f32, h: f32) {
     unsafe {
         let dpi = GetDpiForWindow(hwnd);
@@ -4207,7 +4368,17 @@ fn main() -> Result<()> {
         // Opens maximized for people, as egui does; development and bench
         // runs keep the 1440 by 900 window.
         let people = !cfg!(debug_assertions) && !active && live::production();
-        let _ = ShowWindow(hwnd, if people { SW_SHOWMAXIMIZED } else { SW_SHOW });
+        // Where the window was last, unless that monitor is gone.
+        let placement = with_app(|a| {
+            a.live
+                .as_ref()
+                .and_then(|l| l.preferences.get(window_state::KEY))
+                .and_then(window_state::Placement::parse)
+        })
+        .flatten();
+        if !placement.is_some_and(|p| restore_placement(hwnd, p)) {
+            let _ = ShowWindow(hwnd, if people { SW_SHOWMAXIMIZED } else { SW_SHOW });
+        }
         let mut clock = true;
         loop {
             let mut msg = MSG::default();
@@ -4259,6 +4430,7 @@ fn main() -> Result<()> {
                 uia::raise_screen_changed();
             }
             if quit {
+                with_app(App::save_placement);
                 let _ = DestroyWindow(hwnd);
                 continue;
             }
