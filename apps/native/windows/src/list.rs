@@ -1881,6 +1881,15 @@ impl crate::App {
                 } else if crate::playback::is_voice(&a) {
                     return self.play_attachment(&a, None);
                 } else if crate::files::clickable(&a) {
+                    if crate::video::playable(&a) {
+                        return self.video_activate(crate::video::Control {
+                            thread,
+                            forward: true,
+                            row: i,
+                            file: k,
+                            part: crate::video::Part::Play,
+                        });
+                    }
                     if crate::viewer::viewable(&a) {
                         let (items, index) = crate::viewer::gallery(
                             &m.attachments,

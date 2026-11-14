@@ -4,8 +4,8 @@
 //! striped cover until clicked, and a revealed one can be hidden again.
 //! Images load through the shared media cache (`caper_client::media`),
 //! which also refreshes expiring signed URLs and plays GIFs. Clicking a
-//! ready image or video opens the media viewer (`viewer`) with the rest of
-//! the message's images and videos; other files open in the browser.
+//! ready video plays in the row; its expand button and ready images open
+//! the media viewer with the gallery. Other files open in the browser.
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::theme::*;
@@ -324,6 +324,8 @@ pub struct Ctx<'a> {
     pub animated: Vec<usize>,
     /// The voice message loaded, as its card shows it.
     pub voice: Option<crate::playback::View>,
+    pub video: Option<crate::video::View>,
+    pub video_focus: Option<(String, crate::video::Part)>,
     /// The link preview player that is playing: its row, card and picture.
     pub web_player: Option<(usize, usize, usize)>,
 }
@@ -341,6 +343,8 @@ impl<'a> Ctx<'a> {
             next: None,
             animated: Vec::new(),
             voice: None,
+            video: None,
+            video_focus: None,
             web_player: None,
         }
     }
@@ -591,6 +595,11 @@ fn tile(
     let video = a.kind == AttachmentKind::Video;
     let mut shown = false;
     let mut failed_load = false;
+    let playing = ctx.as_deref().and_then(|c| c.video.clone());
+    let video_focus = ctx
+        .as_deref()
+        .and_then(|c| c.video_focus.as_ref())
+        .and_then(|(id, p)| (id == &a.id).then_some(*p));
     if !removed
         && !failed
         && let Some(c) = ctx
@@ -668,6 +677,33 @@ fn tile(
         }
     }
     stroke_round(dc, r, radius, &g.brushes.border);
+    if crate::video::playable(a) {
+        let mask = unsafe {
+            dc.GetFactory()?
+                .CreateRoundedRectangleGeometry(&D2D1_ROUNDED_RECT {
+                    rect: r,
+                    radiusX: radius,
+                    radiusY: radius,
+                })?
+        };
+        unsafe {
+            dc.PushLayer(
+                &D2D1_LAYER_PARAMETERS1 {
+                    contentBounds: r,
+                    geometricMask: std::mem::ManuallyDrop::new(Some(mask.cast()?)),
+                    maskTransform: Matrix3x2::identity(),
+                    opacity: 1.0,
+                    ..Default::default()
+                },
+                None,
+            );
+        }
+        let result = crate::video::draw(g, dc, a, playing.as_ref(), video_focus, r);
+        unsafe {
+            dc.PopLayer();
+        }
+        result?;
+    }
     if a.spoiler {
         hide_button(g, dc, r)?;
     }
@@ -775,6 +811,7 @@ impl App {
         if self.viewer.is_some() {
             self.viewer_changed();
         }
+        self.inline_video_retry();
         // The composer's link card waits for its thumbnail.
         if self.preview_card().is_some() {
             self.dirty.composer = true;
@@ -984,6 +1021,15 @@ impl App {
         }
         if !clickable(&a) {
             return;
+        }
+        if crate::video::playable(&a) {
+            return self.video_activate(crate::video::Control {
+                thread: false,
+                forward: false,
+                row: i,
+                file: k,
+                part: crate::video::Part::Play,
+            });
         }
         // Images and videos open in the viewer with the rest of the
         // message's media; other files open in the browser, after a

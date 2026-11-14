@@ -386,6 +386,8 @@ struct Current {
 pub struct Playback {
     current: Option<Current>,
     proxy: Option<MediaProxy>,
+    pub video: Option<crate::video::Inline>,
+    pub video_focus: Option<(crate::video::Target, crate::video::Part)>,
     /// A drag across a waveform: its row, attachment and how far.
     pub scrub: Option<(usize, usize, f32)>,
 }
@@ -663,6 +665,7 @@ impl App {
 
     /// Shared by ordinary rows and a forwarded original's voice card.
     pub fn play_attachment(&mut self, a: &Attachment, at: Option<u64>) {
+        self.stop_inline_video();
         self.playback.play(a, at);
         self.voice_message_redraw(Some(a.id.clone()));
         self.arm_playback();
@@ -696,6 +699,7 @@ impl App {
     /// The conversation changed (another channel, sign-out): a voice
     /// message no longer shown stops.
     pub fn playback_follow(&mut self) {
+        self.inline_video_follow();
         if let Some(id) = self.playback.id().map(str::to_owned)
             && self.voice_message_rows(&id).is_empty()
             && !self.thread_voice_shown(&id)

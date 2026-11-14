@@ -252,6 +252,12 @@ pub(crate) struct Video {
 }
 
 impl Video {
+    pub fn needs_retry(&self, a: &Attachment) -> bool {
+        matches!(self.state, VideoState::Failed(_))
+            && !self.retried
+            && a.url.as_deref().is_some_and(|url| url != self.url)
+    }
+
     /// Shared probe-to-player transition for the viewer and inline tiles.
     /// Some means the probe finished; true asks for one signed-URL refresh.
     pub fn poll(&mut self, duration: Option<u64>, animated: bool, fit: [f32; 2]) -> Option<bool> {
@@ -1031,8 +1037,22 @@ impl App {
         self.set_thread_focus(false);
         self.close_menu();
         self.close_dialog();
-        self.viewer = Some(Viewer::open(items, index));
+        let mut viewer = Viewer::open(items, index);
+        if let Some(inline) = self.playback.video.take() {
+            if inline.attachment.id == viewer.current().id {
+                viewer.video = Some(inline.video);
+            } else {
+                self.stop_viewer_video(Some(inline.video));
+            }
+        }
+        self.playback.video_focus = None;
+        self.playback.stop();
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), crate::video::TIMER_VIDEO);
+        }
+        self.viewer = Some(viewer);
         self.viewer_changed();
+        self.viewer_tick();
         self.events |= EV_SCREEN | EV_FOCUS;
     }
 

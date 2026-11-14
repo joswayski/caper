@@ -68,6 +68,7 @@ mod uia;
 mod updates;
 mod uploads;
 mod versions;
+mod video;
 mod viewer;
 mod web_player;
 mod window_state;
@@ -2070,6 +2071,9 @@ impl App {
         if let Some(r) = self.call_input(msg, wp, x, y, shift) {
             return Some(r);
         }
+        if let Some(r) = self.video_input(msg, wp, x, y, ctrl, shift) {
+            return Some(r);
+        }
         if self.thread.is_some()
             && let Some(r) = self.thread_input(msg, wp, x, y, ctrl, shift)
         {
@@ -2127,6 +2131,7 @@ impl App {
                 drop_overlay::TIMER_DROP => self.need = true,
                 autoscroll::TIMER_AUTOSCROLL => self.autoscroll_tick(),
                 motion::TIMER_ARRIVAL => self.arrivals_tick(),
+                video::TIMER_VIDEO => self.inline_video_tick(),
                 thread::TIMER_MEDIA => self.thread_media_tick(),
                 pins::TIMER_PINS => self.pins_tick(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
@@ -3257,11 +3262,15 @@ impl App {
             .and_then(|id| self.ids.rows.get(id).copied());
         let kb = self.kb_control();
         let voice = self.voice_message_view();
+        let video = self.inline_video_view();
+        let video_focus = self.video_focus_view();
         let web_player = self.web_player_spot();
         let (g, c, rows) = (&self.g, &self.c, &mut self.rows);
         let mut tex = files::D2d(g.dc.clone());
         let mut media = self.live.as_mut().map(|l| files::Ctx {
             voice,
+            video,
+            video_focus,
             web_player,
             ..files::Ctx::new(&mut l.media, &mut tex)
         });
@@ -4095,6 +4104,7 @@ impl App {
             self.apply_layout()?;
         }
         self.update_history()?;
+        self.inline_video_follow();
         self.tint_drafts()?;
         // Before the panels, which take the rest of the damage flags.
         self.draw_actions()?;

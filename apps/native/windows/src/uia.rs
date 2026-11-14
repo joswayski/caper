@@ -119,6 +119,7 @@ pub enum Id {
     Edited(usize),
     /// Row `i`'s attachment `k`.
     File(usize, usize),
+    Video(crate::video::Control),
     /// Row `i`'s link preview part `k` (a link, image or player).
     Embed(usize, usize),
     /// Row `i`'s hidden text spoiler `k` (its index in `list::Row::spoilers`),
@@ -276,6 +277,11 @@ fn focused(a: &App) -> Option<Id> {
     }
     if a.member_search.as_ref().is_some_and(|s| s.field.focused) {
         return Some(Id::MemberSearch(SPartM::Field));
+    }
+    if !a.composer.focused
+        && let Some(c) = a.video_focus()
+    {
+        return Some(Id::Video(c));
     }
     if !a.composer.focused
         && let Some(p) = a.call_ui.focus
@@ -486,6 +492,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             )
             .chain(a.edited_rect(i).map(|_| Id::Edited(i)))
             .chain(a.file_ids(i).into_iter().map(move |k| Id::File(i, k)))
+            .chain(a.video_controls(false,i).into_iter().map(Id::Video))
             .chain((0..a.embed_parts(i).len()).map(move |k| Id::Embed(i, k)))
             .chain({
                 let mut parts: Vec<_> = a.forward_parts(false, i).into_iter().map(|(p, _, _)| Id::Forward(i, p)).collect();
@@ -506,6 +513,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 matches!(p, TPart::Chip(r, _) | TPart::Add(r) | TPart::Spoiler(r, _) | TPart::Forward(r, _) | TPart::Tool(r, _) if *r == i)
             })
             .map(Id::ThreadPart)
+            .chain(a.video_controls(true,i).into_iter().map(Id::Video))
             .collect(),
         _ => Vec::new(),
     }
@@ -514,6 +522,13 @@ fn children(a: &App, id: Id) -> Vec<Id> {
 fn parent(id: Id) -> Option<Id> {
     Some(match id {
         Id::Root => return None,
+        Id::Video(c) => {
+            if c.thread {
+                Id::ThreadPart(TPart::Row(c.row))
+            } else {
+                Id::Row(c.row)
+            }
+        }
         Id::Viewer(MPart::Panel) => Id::Root,
         Id::Viewer(_) => Id::Viewer(MPart::Panel),
         Id::Pins(PinPart::Go(k)) => Id::Pins(PinPart::Card(k)),
@@ -654,6 +669,7 @@ fn exists(a: &App, id: Id) -> bool {
         }
         Id::Edited(i) => a.dialog.is_none() && a.edited_rect(i).is_some(),
         Id::File(i, k) => a.dialog.is_none() && a.file_rect(i, k).is_some(),
+        Id::Video(c) => a.dialog.is_none() && a.video_rect(c).is_some(),
         Id::BoxPart(p) => {
             a.c.has_conversation()
                 && a.dialog.is_none()
@@ -857,6 +873,7 @@ fn name(a: &App, id: Id) -> String {
             .map_or_else(String::new, |(_, _, name)| name),
         Id::Edited(_) => "Message history".into(),
         Id::File(i, k) => a.file_label(i, k),
+        Id::Video(c) => a.video_name(c),
         Id::BoxPart(p) => a.box_part_label(p),
         Id::Embed(i, k) => a.embed_label(i, k),
         Id::Spoiler(..) => "Spoiler, reveal".into(),
@@ -1056,6 +1073,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         | Id::ThreadPart(TPart::Forward(_, ForwardPart::Link(_))) => UIA_HyperlinkControlTypeId,
         Id::Forward(..) => UIA_ButtonControlTypeId,
         Id::Edited(_) | Id::File(..) | Id::Spoiler(..) | Id::BoxPart(_) => UIA_ButtonControlTypeId,
+        Id::Video(c) => match c.part {
+            crate::video::Part::Seek => UIA_SliderControlTypeId,
+            crate::video::Part::Time => UIA_TextControlTypeId,
+            _ => UIA_ButtonControlTypeId,
+        },
         Id::Tool(..)
         | Id::MenuClose
         | Id::Pick(_)
@@ -1241,6 +1263,10 @@ fn runtime_id(id: Id) -> [i32; 3] {
         }
         Id::Edited(i) => (28, i),
         Id::File(i, k) => (29, i * 16 + k.min(15)),
+        Id::Video(c) => (
+            56 + i32::from(c.thread) * 2 + i32::from(c.forward),
+            c.row * 128 + c.file * 8 + c.part as usize,
+        ),
         Id::Embed(i, k) => (31, i * 64 + k.min(63)),
         Id::Spoiler(i, k) => (53, i * 64 + k.min(63)),
         Id::BoxPart(p) => (
@@ -1470,6 +1496,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .map_or((0.0, 0.0, 0.0, 0.0), |(_, r, _)| r),
         Id::Edited(i) => a.edited_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::File(i, k) => a.file_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Video(c) => a.video_rect(c).unwrap_or_default(),
         Id::BoxPart(p) => a.box_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Embed(i, k) => a.embed_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Spoiler(i, k) => a.spoiler_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
@@ -1572,6 +1599,11 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::Settings(p) if p.is_toggle() => pattern == UIA_TogglePatternId,
             Id::Settings(p) if p.is_slider() => pattern == UIA_RangeValuePatternId,
+            Id::Video(c) => match c.part {
+                crate::video::Part::Seek => pattern == UIA_RangeValuePatternId,
+                crate::video::Part::Time => false,
+                _ => pattern == UIA_InvokePatternId,
+            },
             Id::Voice(crate::call::VPart::Volume) => pattern == UIA_RangeValuePatternId,
             Id::Voice(crate::call::VPart::LocalMute) => pattern == UIA_TogglePatternId,
             // A formatting button is pressed while the selection has its style.
@@ -1771,6 +1803,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         matches!(id, Id::Settings(p) if !matches!(p, SPart::Text(_) | SPart::Meter)),
                     )
                 }
+                UIA_IsKeyboardFocusablePropertyId if matches!(id, Id::Video(_)) => {
+                    VARIANT::from(matches!(id,Id::Video(c) if c.part!=crate::video::Part::Time))
+                }
                 UIA_IsKeyboardFocusablePropertyId if matches!(id, Id::ForwardDialog(_)) => {
                     VARIANT::from(
                         matches!(id, Id::ForwardDialog(p) if crate::forward::focusable(p)),
@@ -1881,6 +1916,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 )),
                 UIA_HasKeyboardFocusPropertyId => VARIANT::from(focused(a) == Some(id)),
                 UIA_IsEnabledPropertyId => VARIANT::from(match (id, &a.signin) {
+                    (Id::Video(c), _) => c.part == crate::video::Part::Time || a.video_enabled(c),
                     (Id::Sign(Part::Field), Some(s)) => s.editable(),
                     (Id::Sign(Part::Title | Part::Message), _) => true,
                     (Id::Dialog(p) | Id::ProfileEdit(p) | Id::ForwardDialog(p), _) => {
@@ -1995,6 +2031,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
             }
             match id {
                 Id::Composer => a.set_composer_focus(true),
+                Id::Video(c) if a.video_enabled(c) => a.focus_video(c),
                 Id::Voice(p) if p != crate::call::VPart::Status => a.focus_voice(p),
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
@@ -2087,6 +2124,14 @@ impl IRawElementProviderFragmentRoot_Impl for Node_Impl {
             };
             let mut best = Id::Root;
             if let Some(top) = children(a, Id::Root).into_iter().find(|t| inside(*t)) {
+                if matches!(top, Id::History | Id::Thread)
+                    && let Some(c) = a
+                        .all_video_controls()
+                        .into_iter()
+                        .find(|c| inside(Id::Video(*c)))
+                {
+                    return Ok(Id::Video(c));
+                }
                 if top == Id::Thread
                     && let Some(part @ TPart::Tool(..)) = a.thread_hit(px, py)
                 {
@@ -2161,6 +2206,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Forward(i, p) => a.forward_activate(false, i, p),
                 Id::Edited(i) => a.open_history_of(i),
                 Id::File(i, k) => a.file_activate(i, k, false),
+                Id::Video(c) if a.video_enabled(c) => a.video_activate(c),
                 Id::BoxPart(p) => a.box_activate(p),
                 Id::Embed(i, k) => a.embed_activate(i, k),
                 Id::Spoiler(i, k) => a.reveal_spoiler(i, k),
@@ -2335,6 +2381,7 @@ impl IRangeValueProvider_Impl for Node_Impl {
             }
             let enabled = match id {
                 Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
+                Id::Video(c) => a.video_enabled(c),
                 Id::Voice(crate::call::VPart::Volume) => a.call_playback().is_some(),
                 _ => false,
             };
@@ -2347,6 +2394,7 @@ impl IRangeValueProvider_Impl for Node_Impl {
             }
             match id {
                 Id::Settings(p) => a.set_gauge(p, val.round() as u16, true),
+                Id::Video(c) => a.video_seek(c, val as f32 / 1000.0),
                 Id::Voice(crate::call::VPart::Volume) => a.set_call_volume(val.round() as u16),
                 _ => {}
             }
@@ -2364,6 +2412,7 @@ impl IRangeValueProvider_Impl for Node_Impl {
         with(|a| {
             Ok(match id {
                 Id::Settings(p) => !a.settings.as_ref().is_some_and(|s| s.enabled(p)),
+                Id::Video(c) => !a.video_enabled(c),
                 Id::Voice(crate::call::VPart::Volume) => a.call_playback().is_none(),
                 _ => true,
             }
@@ -2392,6 +2441,7 @@ impl IRangeValueProvider_Impl for Node_Impl {
 fn gauge(a: &App, id: Id) -> Option<(u16, u16, u16)> {
     match id {
         Id::Settings(p) => a.settings.as_ref()?.gauge(p),
+        Id::Video(c) => a.video_gauge(c),
         Id::Voice(crate::call::VPart::Volume) => {
             a.call_playback().map(|p| (p.gain_percent, 200, 1))
         }

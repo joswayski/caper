@@ -1286,6 +1286,19 @@ impl App {
             && y < self.h
     }
 
+    pub fn thread_file_rect(&self, i: usize, k: usize) -> Option<crate::overlay::Rect> {
+        let t = self.thread.as_ref()?;
+        let m = t.c.messages.get(i)?;
+        let r = t.rows.file_rect(i, m.grouped, k)?;
+        let y = HEADER_H + t.row_y(i)? - t.scroll;
+        Some((
+            self.thread_x() + r.left,
+            y + r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+        ))
+    }
+
     /// The live thread changed (opened, loaded, a reply arrived, closed):
     /// the pane follows it.
     pub fn thread_refresh(&mut self) -> Result<()> {
@@ -2181,6 +2194,8 @@ impl App {
         let thumb = self.preview_thumb(true);
         let (x, h, vh) = (self.thread_x(), self.h, self.thread_vh());
         let (bx, by, bw, bh) = self.thread_box_rect().unwrap_or_default();
+        let video = self.inline_video_view();
+        let video_focus = self.video_focus_view();
         let g = &self.g;
         let fresh = self.thread_p.ensure(g, px(THREAD_W), px(h))?;
         self.thread_p.offset((x * s).round(), 0.0)?;
@@ -2190,6 +2205,8 @@ impl App {
             let mut tex = crate::files::D2d(g.dc.clone());
             let mut media = self.live.as_mut().map(|l| crate::files::Ctx {
                 voice: self.playback.view(),
+                video,
+                video_focus,
                 ..crate::files::Ctx::new(&mut l.media, &mut tex)
             });
             self.thread_p
