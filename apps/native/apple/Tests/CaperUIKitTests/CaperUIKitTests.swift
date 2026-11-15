@@ -1151,7 +1151,8 @@ final class CaperUIKitTests: XCTestCase {
         app.buttons["Invite people…"].firstMatch.tap()
         XCTAssertTrue(app.buttons["default-invite-link-copy"].waitForExistence(timeout: 10))
         app.buttons["default-invite-link-options"].firstMatch.tap()
-        app.buttons["Custom links"].firstMatch.tap()
+        // The menu's item, not the page's own Custom links toggle (still listed beside an iPad menu).
+        app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@", "Custom links", "space-custom-links")).firstMatch.tap()
         let maxUses = app.textFields["invite-link-max-uses"]
         XCTAssertTrue(maxUses.waitForExistence(timeout: 5))
         let scroll = app.scrollViews["space-settings-scroll"]
