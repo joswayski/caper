@@ -143,10 +143,10 @@ import AppKit
         let popover = NSPopover(); popover.behavior = .transient
         let account = model.account?.id
         let close = { [weak popover] in popover?.animates = false; popover?.close() }
-        popover.contentViewController = NSHostingController(rootView: ReactionPicker(close: close) { [model, weak popover] emoji in
+        popover.contentViewController = AppKitReactionPicker(close: close) { [model, weak popover] emoji in
             popover?.animates = false; popover?.close()
             Task { if model.account?.id == account { await model.reactToActivity(item, emoji: emoji) } }
-        }.preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
+        }
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         picker = popover; popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
@@ -214,7 +214,7 @@ import AppKit
         // keyboard focus away from the reply field as soon as it was clicked.
         if expanded, replyHost == nil || replyStale != model.activityStale {
             replyStale = model.activityStale
-            let content = AnyView(MentionCardView(model: model, activity: item)
+            let content = AnyView(NativeQuickComposerSheet(model: model, activity: item)
                 .modifier(Entrance.anchored)
                 .disabled(model.activityStale).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
             if let replyHost { replyHost.rootView = content }
@@ -489,7 +489,7 @@ import Observation
         let expanded = model.activityExpanded[item.id] != nil
         reply.configuration?.title = expanded ? "Close reply" : "Reply"
         if expanded {
-            let content = AnyView(MentionCardView(model: model, activity: item)
+            let content = AnyView(NativeQuickComposerSheet(model: model, activity: item)
                 .modifier(Entrance.anchored)
                 .disabled(model.activityStale).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
             if let replyHost { replyHost.rootView = content }

@@ -7,7 +7,7 @@ import Combine
 import AppKit
 
 @MainActor final class NativeDialogComposer: NSView {
-    let controller = ComposerAutocompleteController()
+    let controller: ComposerAutocompleteController
     private var configuration: NativeMessageTextEditor!
     private var coordinator: NativeMessageTextEditor.Coordinator!
     private var editor: NSScrollView!
@@ -17,11 +17,17 @@ import AppKit
     private var suggestionHeight: NSLayoutConstraint!
     private var changes: AnyCancellable?
     private var buttons: [AppKitKitButton] = []
+    private var editorHeight: NSLayoutConstraint!
+    private let grows: Bool
 
-    init(text: Binding<String>, placeholder: String, identifier: String, height: CGFloat) {
+    init(text: Binding<String>, placeholder: String, identifier: String, height: CGFloat,
+         controller: ComposerAutocompleteController = ComposerAutocompleteController(), submit: (() -> Void)? = nil,
+         pasteAttachments: (() -> Bool)? = nil, highlightSource: MentionSource? = nil, grows: Bool = false) {
+        self.controller = controller; self.grows = grows
         super.init(frame: .zero)
         configuration = NativeMessageTextEditor(text: text, placeholder: placeholder, controller: controller,
-            mentions: .empty, submit: {}, submitOnReturn: false, accessibilityID: identifier)
+            mentions: .empty, submit: submit ?? {}, submitOnReturn: submit != nil, accessibilityID: identifier,
+            pasteAttachments: pasteAttachments, highlightSource: highlightSource)
         coordinator = configuration.makeCoordinator()
         editor = configuration.makeNativeView(coordinator: coordinator)
         (editor.documentView as? ComposerTextView)?.placeholder = placeholder
@@ -39,7 +45,7 @@ import AppKit
         suggestionHeight = suggestionScroll.heightAnchor.constraint(equalToConstant: 0)
         suggestionHeight.isActive = true
         editor.translatesAutoresizingMaskIntoConstraints = false
-        editor.heightAnchor.constraint(equalToConstant: height).isActive = true
+        editorHeight = editor.heightAnchor.constraint(equalToConstant: height); editorHeight.isActive = true
         let stack = AppKitKit.stack([toolbar, editor, suggestionScroll], spacing: 4)
         AppKitKit.fillWidth(editor, of: stack); AppKitKit.fillWidth(suggestionScroll, of: stack)
         wantsLayer = true; layer?.backgroundColor = AppKitKit.composer.cgColor
@@ -59,9 +65,17 @@ import AppKit
     func update(editable: Bool) {
         configuration.editable = editable
         configuration.updateNativeView(editor, coordinator: coordinator)
-        renderControls()
+        renderControls(); needsLayout = true
     }
     func focus() { controller.restoreFocus() }
+
+    override func layout() {
+        super.layout()
+        guard grows, let text = editor.documentView as? NSTextView, let container = text.textContainer, let layout = text.layoutManager else { return }
+        layout.ensureLayout(for: container)
+        let height = min(140, max(42, ceil(layout.usedRect(for: container).height + text.textContainerInset.height * 2)))
+        if editorHeight.constant != height { editorHeight.constant = height }
+    }
 
     private func renderControls() {
         toolbar.isHidden = !controller.formattingSelection
@@ -97,7 +111,7 @@ import AppKit
 import UIKit
 
 @MainActor final class NativeDialogComposer: UIView {
-    let controller = ComposerAutocompleteController()
+    let controller: ComposerAutocompleteController
     private var configuration: NativeMessageTextEditor!
     private var coordinator: NativeMessageTextEditor.Coordinator!
     private var editor: UITextView!
@@ -109,11 +123,17 @@ import UIKit
     private var suggestionHeight: NSLayoutConstraint!
     private var changes: AnyCancellable?
     private var buttons: [UIButton] = []
+    private var editorHeight: NSLayoutConstraint!
+    private let grows: Bool
 
-    init(text: Binding<String>, placeholder: String, identifier: String, height: CGFloat) {
+    init(text: Binding<String>, placeholder: String, identifier: String, height: CGFloat,
+         controller: ComposerAutocompleteController = ComposerAutocompleteController(), submit: (() -> Void)? = nil,
+         pasteAttachments: (() -> Bool)? = nil, highlightSource: MentionSource? = nil, grows: Bool = false) {
+        self.controller = controller; self.grows = grows
         super.init(frame: .zero)
         configuration = NativeMessageTextEditor(text: text, placeholder: placeholder, controller: controller,
-            mentions: .empty, submit: {}, submitOnReturn: false, accessibilityID: identifier)
+            mentions: .empty, submit: submit ?? {}, submitOnReturn: submit != nil, accessibilityID: identifier,
+            pasteAttachments: pasteAttachments, highlightSource: highlightSource)
         coordinator = configuration.makeCoordinator()
         editor = configuration.makeNativeView(coordinator: coordinator)
         placeholderLabel.text = placeholder; placeholderLabel.font = editor.font
@@ -154,7 +174,7 @@ import UIKit
             suggestions.widthAnchor.constraint(equalTo: suggestionScroll.frameLayoutGuide.widthAnchor),
         ])
         suggestionHeight = suggestionScroll.heightAnchor.constraint(equalToConstant: 0); suggestionHeight.isActive = true
-        editor.heightAnchor.constraint(equalToConstant: height).isActive = true
+        editorHeight = editor.heightAnchor.constraint(equalToConstant: height); editorHeight.isActive = true
         let stack = UIStackView(arrangedSubviews: [toolbarScroll, editor, suggestionScroll])
         stack.axis = .vertical; stack.spacing = 4; stack.translatesAutoresizingMaskIntoConstraints = false
         backgroundColor = UIColor(CaperTheme.composer); layer.cornerRadius = 8
@@ -174,10 +194,18 @@ import UIKit
     func update(editable: Bool) {
         configuration.editable = editable
         configuration.updateNativeView(editor, coordinator: coordinator)
-        editor.accessibilityHint = "Return adds a new line. Use the dialog's button to save or forward."
-        renderControls()
+        editor.accessibilityHint = configuration.submitOnReturn ? "Return sends. Shift-Return adds a new line."
+            : "Return adds a new line. Use the dialog's button to save or forward."
+        renderControls(); setNeedsLayout()
     }
     func focus() { controller.restoreFocus() }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard grows, editor.bounds.width > 0 else { return }
+        let height = min(140, max(42, ceil(editor.sizeThatFits(CGSize(width: editor.bounds.width, height: .greatestFiniteMagnitude)).height)))
+        if editorHeight.constant != height { editorHeight.constant = height }
+    }
 
     private func renderControls() {
         placeholderLabel.isHidden = !configuration.text.isEmpty

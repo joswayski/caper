@@ -56,6 +56,29 @@ final class MediaViewerTests: XCTestCase {
         XCTAssertEqual(MediaViewerPolicy.latest(opened, in: messages + [pinned])[0].url, refreshed.url, "the first loaded copy wins")
     }
 
+    @MainActor
+    func testNativeViewerKeepsRemovedPagesAndClosesWhenItsSourceDisappears() {
+        let removed = [file("A", .image, unavailable: true), file("B", .video, unavailable: true), file("C", .image, unavailable: true)]
+        var available = true
+        var closed = 0
+        let viewer = NativeMediaViewing(request: MediaViewerRequest(items: removed, start: 1, chat: nil,
+            hideSpoiler: { _ in }, isAvailable: { available })) { closed += 1 }
+        viewer.start()
+        XCTAssertEqual(viewer.item?.id, "B")
+        XCTAssertFalse(viewer.available)
+        viewer.scale = 2; viewer.offset = CGSize(width: 30, height: 10)
+        viewer.move(1)
+        XCTAssertEqual(viewer.item?.id, "C", "unavailable pages keep their position instead of shifting the opened set")
+        XCTAssertEqual(viewer.scale, 1); XCTAssertEqual(viewer.offset, .zero)
+        viewer.move(1); XCTAssertEqual(viewer.item?.id, "C")
+        viewer.move(-1); XCTAssertEqual(viewer.item?.id, "B")
+        viewer.perform { _, _ in XCTFail("removed files cannot be copied, opened or shared"); return nil }
+        XCTAssertFalse(viewer.busy)
+        available = false; viewer.synchronize(); viewer.synchronize()
+        XCTAssertEqual(closed, 1)
+        XCTAssertNil(viewer.item); XCTAssertNil(viewer.image); XCTAssertNil(viewer.player)
+    }
+
     // MARK: Zoom
 
     func testFittingKeepsTheAspectRatio() {

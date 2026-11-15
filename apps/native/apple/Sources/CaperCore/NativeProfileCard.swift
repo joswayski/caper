@@ -144,7 +144,7 @@ import AppKit
             // wrapping draft drew past the host over the header. Fixing the
             // width to the card's lets the height include every wrapped line.
             let width = composerSize?.width ?? (state.person.isSelf ? 280 : 320) - 32
-            let content = AnyView(MentionCardView(model: state.model, person: state.person, requestBlock: requestBlock, close: close, nativeComposerOnly: true)
+            let content = AnyView(NativeQuickComposerSheet(model: state.model, person: state.person, close: close)
                 .frame(width: width)
                 .disabled(state.pending != nil).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
                 .onPreferenceChange(ProfileComposerPresentationSize.self) { [weak self] size in
@@ -350,8 +350,8 @@ import Observation
             choiceButtons[space.id]?.isEnabled = !state.busy && state.invited[space.id] == nil
         }
         if state.canMessage {
-            let content = AnyView(MentionCardView(model: model, person: person, requestBlock: requestBlock,
-                close: { [weak self] in self?.dismiss(animated: true) }, nativeComposerOnly: true)
+            let content = AnyView(NativeQuickComposerSheet(model: model, person: person,
+                close: { [weak self] in self?.dismiss(animated: true) })
                 .disabled(state.pending != nil).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
             if let composer { composer.rootView = content }
             else {

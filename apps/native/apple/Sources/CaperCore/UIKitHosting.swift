@@ -57,7 +57,10 @@ import UniformTypeIdentifiers
 
     /// The full emoji picker, for a reaction.
     public static func reactionPicker(select: @escaping (String) -> Void) -> UIViewController {
-        let host = controller { close in ReactionPicker { emoji in close(); select(emoji) } }
+        let box = WeakController()
+        let close: () -> Void = { box.value?.dismiss(animated: false) }
+        let host = UIKitReactionPicker(close: close) { emoji in close(); select(emoji) }
+        box.value = host
         sheet(host, background: CaperTheme.surface)
         return host
     }
@@ -179,17 +182,18 @@ import UniformTypeIdentifiers
 
     static func mediaViewer(_ present: @escaping Present) -> MediaViewerAction {
         MediaViewerAction { request in
-            let host = controller { close in MediaViewer(request: request, close: close) }
-            host.view.backgroundColor = .black
-            host.modalPresentationStyle = .overFullScreen
+            let box = WeakController()
+            let host = UIKitMediaViewer(request: request) { box.value?.dismiss(animated: false) }
+            box.value = host
             present(host)
         }
     }
 
     static func attachmentEditor(_ present: @escaping Present) -> AttachmentEditorAction {
         AttachmentEditorAction { request in
-            let host = controller(clear: true) { close in AttachmentEditor(request: request, close: close) }
-            host.modalPresentationStyle = .overFullScreen
+            let box = WeakController()
+            let host = UIKitAttachmentEditor(request: request) { box.value?.dismiss(animated: false) }
+            box.value = host
             present(host)
         }
     }

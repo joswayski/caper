@@ -72,6 +72,31 @@ final class MentionCardTests: XCTestCase {
         XCTAssertTrue(MentionCard.resolve(author, members: [], people: nil, peers: [], account: nil, viewerID: author.id).isSelf)
     }
 
+    @MainActor
+    func testNativeQuickComposerRetainsDraftAndRejectsIncomingOrReplacedAccounts() {
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        model.account = me
+        let person = resolve(maya)
+        let first = NativeQuickDraft(model: model, person: person, close: {})
+        first.draft.text = "kept when the card closes"
+        first.showingEmoji = true; first.synchronizePresentation()
+        XCTAssertFalse(first.canSend, "a picker blocks sending")
+        first.stop()
+        let reopened = NativeQuickDraft(model: model, person: person, close: {})
+        XCTAssertEqual(reopened.draft.text, "kept when the card closes")
+        XCTAssertTrue(reopened.canSend)
+        model.directMessages = [DirectMessageConversation(id: "Dm0000000001",
+            peer: DirectMessagePeer(id: maya.id, username: "maya", displayName: "Maya"),
+            lastSeq: "1", readSeq: "0", status: .incoming)]
+        XCTAssertFalse(reopened.canSend, "the card must not accept a message request by sending")
+        model.directMessages = []
+        model.account = Account(id: "Other0000001", username: "another", displayName: "Another")
+        XCTAssertFalse(reopened.editable)
+        XCTAssertFalse(reopened.canSend)
+        XCTAssertEqual(reopened.draft.text, "kept when the card closes", "invalidation does not send or erase someone else's draft")
+        reopened.stop()
+    }
+
     func testPillLinksRoundTripAndIgnoreOtherURLs() throws {
         let pill = MentionPill(id: "AbC123xyz_-9", username: "alice")
         let url = try XCTUnwrap(MentionCard.url(for: pill))

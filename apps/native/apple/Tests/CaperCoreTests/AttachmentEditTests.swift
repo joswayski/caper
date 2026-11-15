@@ -322,6 +322,36 @@ final class AttachmentEditTests: XCTestCase {
         XCTAssertEqual(cropped.brushDiameter(points: 20), 20, accuracy: 1e-9, "a crop doesn't change the on-screen width")
     }
 
+    @MainActor
+    func testNativeEditorKeepsDraftOnlyTextAndCancelledGesturesThroughUndoAndSave() throws {
+        var saved: AttachmentEdit?
+        var closed = 0
+        let request = AttachmentEditRequest(name: "Picture", kind: .image, original: URL(fileURLWithPath: "/unused"),
+            edit: .original, tool: .draw, pictureMode: true, deferredPicture: true) { edit, _ in saved = edit }
+        let editor = NativeAttachmentEditing(request: request) { closed += 1 }
+        let context = try XCTUnwrap(CGContext(data: nil, width: 400, height: 200, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        editor.picture = AttachmentEditorPicture(image: try XCTUnwrap(context.makeImage()))
+        // 28-point padding: the uncropped image occupies (28, 78)–(428, 278).
+        let box = CGSize(width: 456, height: 356)
+        editor.begin(at: CGPoint(x: 128, y: 128), size: box)
+        editor.drag(to: CGPoint(x: 328, y: 228), size: box)
+        editor.cancelGesture()
+        XCTAssertEqual(editor.history.current, .original, "a cancelled stroke is never committed")
+        editor.choose(.text)
+        editor.begin(at: CGPoint(x: 128, y: 228), size: box); editor.end(size: box)
+        editor.setText("  first\nsecond  ")
+        editor.chooseSize(40); editor.commitField()
+        let mark = TextMark(color: "#E5484D", size: 0.1, x: 0.25, y: 0.75, text: "first second")
+        XCTAssertEqual(editor.history.current.marks, [.text(mark)])
+        XCTAssertNil(saved, "typing and applying a tool do not publish a profile or edit the attachment draft")
+        editor.undo(); XCTAssertEqual(editor.history.current, .original)
+        editor.redo(); XCTAssertEqual(editor.history.current.marks, [.text(mark)])
+        editor.done(); editor.done()
+        XCTAssertEqual(saved?.marks, [.text(mark)])
+        XCTAssertEqual(closed, 1, "Apply crop commits once, including two clicks before dismissal")
+    }
+
     func testBrushRingFollowsHoveringPointersOnly() {
         let start = Date(timeIntervalSince1970: 1000)
         var touch = AttachmentEditBrushPointer()

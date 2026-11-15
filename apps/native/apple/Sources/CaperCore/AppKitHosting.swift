@@ -27,7 +27,7 @@ import SwiftUI
     private let model: AppModel
     /// The open dialog: native, or SwiftUI for items not yet rebuilt in AppKit.
     private var host: NSViewController?
-    private var dialogMedia: NSHostingController<AnyView>?
+    private var dialogMedia: NSViewController?
     private weak var mediaResponder: NSResponder?
     private var state: AppKitWorkspaceDialogState?
     private let observation = AppKitObservation()
@@ -262,8 +262,7 @@ import SwiftUI
     private func showDialogMedia(_ request: MediaViewerRequest) {
         guard dialogMedia == nil, let host,
               let container = host.parent?.view as? AppKitWorkspaceContainer else { return }
-        let media = NSHostingController(rootView: AnyView(MediaViewer(request: request) { [weak self] in self?.closeDialogMedia() }
-            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)))
+        let media = AppKitMediaViewer(request: request) { [weak self] in self?.closeDialogMedia() }
         dialogMedia = media; mediaResponder = host.view.window?.firstResponder
         host.addChild(media)
         media.view.frame = host.view.bounds; media.view.autoresizingMask = [.width, .height]
@@ -759,7 +758,7 @@ private final class AppKitPointerPassthroughView: NSView {
 @MainActor public final class AppKitMediaPresenter {
     private let model: AppModel
     private weak var parent: NSViewController?
-    private var host: NSHostingController<AnyView>?
+    private var host: NSViewController?
     private weak var previousResponder: NSResponder?
 
     public init(model: AppModel, parent: NSViewController) { self.model = model; self.parent = parent }
@@ -768,7 +767,7 @@ private final class AppKitPointerPassthroughView: NSView {
         AppKitAttachmentSurface {
             AppKitComposerAttachments(chat: model.chat, inThread: inThread)
             .environment(\.attachmentEditor, AttachmentEditorAction { [weak self] request in
-                self?.show { close in AttachmentEditor(request: request, close: close) }
+                self?.showController { close in AppKitAttachmentEditor(request: request, close: close) }
             })
         }
     }
@@ -806,7 +805,7 @@ private final class AppKitPointerPassthroughView: NSView {
     }
 
     fileprivate func showViewer(_ request: MediaViewerRequest) {
-        show { close in MediaViewer(request: request, close: close) }
+        showController { close in AppKitMediaViewer(request: request, close: close) }
     }
 
     public func pendingMessage(_ pending: PendingMessage) -> AppKitAttachmentSurface {
@@ -851,10 +850,15 @@ private final class AppKitPointerPassthroughView: NSView {
     }
 
     private func show<Content: View>(@ViewBuilder content: (@escaping () -> Void) -> Content) {
+        showController { close in
+            NSHostingController(rootView: content(close).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
+        }
+    }
+
+    private func showController(_ content: (@escaping () -> Void) -> NSViewController) {
         guard host == nil, let parent, let container = parent.view as? AppKitWorkspaceContainer,
               container.dialogView == nil else { return }
-        let host = NSHostingController(rootView: AnyView(content { [weak self] in self?.close() }
-            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)))
+        let host = content { [weak self] in self?.close() }
         self.host = host
         previousResponder = parent.view.window?.firstResponder
         parent.addChild(host)
@@ -958,8 +962,8 @@ public enum AppKitComposerCounter {
     public func reaction(to message: ChatMessage, from anchor: NSView, composer: ComposerTextView) {
         let chat = model.chat, context = model.chat.editingContext
         guard chat.canInteract, !message.isDeleted, chat.channelID == message.channelId else { return }
-        show(from: anchor, composer: composer) { close in
-            ReactionPicker(close: close) { emoji in
+        showController(from: anchor, composer: composer) { close in
+            AppKitReactionPicker(close: close) { emoji in
                 close()
                 Task {
                     guard chat.editingContext == context, chat.canInteract,
@@ -975,8 +979,8 @@ public enum AppKitComposerCounter {
         guard composer.isEditable, !composer.hasMarkedText(), model.chat.canInteract else { return }
         let text = composer.string, selection = composer.selectedRange()
         let context = model.chat.editingContext, root = model.chat.threadRootID
-        show(from: anchor, composer: composer) { close in
-            ReactionPicker(title: "Insert emoji", close: close) { [weak self, weak composer] emoji in
+        showController(from: anchor, composer: composer) { close in
+            AppKitReactionPicker(title: "Insert emoji", close: close) { [weak self, weak composer] emoji in
                 close()
                 guard let self, let composer, composer.isEditable, !composer.hasMarkedText(),
                       self.model.chat.editingContext == context, !self.inThread || self.model.chat.threadRootID == root,
@@ -1011,6 +1015,16 @@ public enum AppKitComposerCounter {
 
     private func show<Content: View>(from anchor: NSView, composer: ComposerTextView,
                                     @ViewBuilder content: (@escaping () -> Void) -> Content) {
+        showController(from: anchor, composer: composer) { close in
+            let host = NSHostingController(rootView: content(close)
+                .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright).onExitCommand(perform: close))
+            host.sizingOptions = [.preferredContentSize]
+            return host
+        }
+    }
+
+    private func showController(from anchor: NSView, composer: ComposerTextView,
+                                content: (@escaping () -> Void) -> NSViewController) {
         guard let window = anchor.window, window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
         close(restoringFocus: false)
         let context = model.chat.editingContext, root = model.chat.threadRootID
@@ -1025,11 +1039,7 @@ public enum AppKitComposerCounter {
         popover.behavior = .transient
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         popover.delegate = self
-        let host = NSHostingController(rootView: content { [weak self] in self?.close() }
-            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
-            .onExitCommand { [weak self] in self?.close() })
-        host.sizingOptions = [.preferredContentSize]
-        popover.contentViewController = host
+        popover.contentViewController = content { [weak self] in self?.close() }
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
     }
 

@@ -6202,7 +6202,7 @@ private struct MentionCardHost: ViewModifier {
 
 #if os(iOS)
 /// Observe only the sheet's backdrop, keeping native detents, dragging and keyboard handling.
-private struct ProfileSheetOutsideTap: UIViewControllerRepresentable {
+struct ProfileSheetOutsideTap: UIViewControllerRepresentable {
     let close: () -> Void
 
     func makeUIViewController(context: Context) -> Controller { Controller() }
@@ -7954,113 +7954,17 @@ struct ComposerExpressionPicker: View {
 
 struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-    @State private var category = "smileys_people"
-    private let categories = [
-        ("smileys_people", "Smileys & people", "😀"), ("animals_nature", "Animals & nature", "🐱"),
-        ("food_drink", "Food & drink", "🍔"), ("travel_places", "Travel & places", "🚌"),
-        ("activities", "Activities", "⚽"), ("objects", "Objects", "👕"),
-        ("symbols", "Symbols", "🎵"), ("flags", "Flags", "🏁")
-    ]
-    #if os(macOS)
-    @FocusState private var focusedEmoji: String?
-    #endif
     var title = "Add reaction"
     var embedded = false
     var close: (() -> Void)? = nil
     let select: (String) -> Void
-    private var choices: [EmojiCatalogEntry] {
-        let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !term.isEmpty else { return EmojiArtwork.pickerChoices.filter { $0.category == category } }
-        return EmojiArtwork.pickerChoices.filter { $0.name.lowercased().contains(term) || $0.keywords.lowercased().contains(term) || $0.category.replacingOccurrences(of: "_", with: " ").contains(term) }
-    }
     var body: some View {
+        NativeReactionPickerBridge(title: title, embedded: embedded, close: { if let close { close() } else { dismiss() } }, select: select)
         #if os(macOS)
-        // NavigationStack's cancellation toolbar is not shown in a macOS
-        // popover. Keep both the header and accessible bounds in its content.
-        VStack(spacing: 0) {
-            HStack {
-                Text(title).font(CaperTheme.font(14, weight: .bold))
-                Spacer()
-                Button("Cancel") { if let close { close() } else { dismiss() } }
-                    .keyboardShortcut(.cancelAction)
-            }.padding(.horizontal, 12).padding(.top, 12)
-            content
-        }
-        .frame(width: 352, height: 420)
-        .accessibilityElement(children: .contain)
-        // Containers otherwise report only their children's union, which
-        // shrinks when the scrolling catalog becomes an empty-search message.
-        .contentShape(.accessibility, Rectangle())
-        .accessibilityIdentifier("reaction-picker")
+            .frame(width: 352, height: 420)
         #else
-        if embedded {
-            content
-        } else {
-            NavigationStack {
-                content
-                    .navigationTitle(title)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { dismiss() }
-                        }
-                    }
-            }
             .frame(minWidth: 320, minHeight: 420)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("reaction-picker")
-        }
         #endif
-    }
-    private var content: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                ForEach(categories, id: \.0) { item in
-                    let active = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && category == item.0
-                    Button { category = item.0; query = "" } label: {
-                        VStack(spacing: 0) {
-                            EmojiArtworkView(emoji: item.2, size: 22).frame(maxWidth: .infinity, minHeight: 42)
-                            Rectangle().fill(active ? CaperTheme.terracottaBright : .clear).frame(height: 2)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .modifier(ControlHover())
-                    .accessibilityLabel(item.1)
-                    .accessibilityIdentifier("emoji-category-\(item.0)")
-                    .accessibilityAddTraits(active ? .isSelected : [])
-                }
-            }.padding(.horizontal, 8)
-            TextField("Search emoji", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("reaction-picker-search")
-                .padding(12)
-            Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? categories.first { $0.0 == category }!.1 : "Search results")
-                .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12)
-            if choices.isEmpty {
-                ContentUnavailableView("No emoji found", systemImage: "magnifyingglass", description: Text("Try another search."))
-                    .accessibilityIdentifier("reaction-picker-empty")
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 42), spacing: 8)], spacing: 8) {
-                        ForEach(choices) { entry in
-                            Button { select(entry.emoji) } label: {
-                                EmojiArtworkView(emoji: entry.emoji, size: 30).frame(width: 42, height: 42)
-                            }
-                            .buttonStyle(.plain)
-                            #if os(macOS)
-                            .focused($focusedEmoji, equals: entry.id)
-                            .modifier(ControlHover(isFocused: focusedEmoji == entry.id))
-                            #else
-                            .modifier(ControlHover())
-                            #endif
-                            .accessibilityLabel(entry.name)
-                        }
-                    }.padding(12)
-                }.id("\(category):\(query)").accessibilityIdentifier("reaction-picker-grid")
-            }
-        }
     }
 }
 
@@ -9590,117 +9494,7 @@ private struct LoginActionLabel: View {
 struct ProfileSheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
-    @State private var draft: ProfileEditDraft?
-    @State private var saveError: String?
-    @State private var saving = false
-    @State private var pictureBusy = false
-    @State private var confirmingDiscard = false
-    @State private var dismissID = UUID()
-    @State private var epoch: Int?
-    @FocusState private var displayNameFocused: Bool
-
-    var body: some View {
-        VStack(spacing: 0) {
-            SheetHeader(title: "Edit profile", closeLabel: "Close profile", closeDisabled: saving, close: requestClose)
-            if let draft { form(draft) }
-        }.background(CaperTheme.surface)
-            .onAppear {
-                if draft == nil, let account = model.account {
-                    draft = ProfileEditDraft(account: account)
-                    epoch = model.accountEpoch
-                }
-            }
-            .preference(key: ProfileDismissPreference.self, value: ProfileDismissAction(id: dismissID, action: requestClose))
-            .onPreferenceChange(PictureEditorBusy.self) { pictureBusy = $0 }
-            .interactiveDismissDisabled(saving || pictureBusy || draft?.hasChanges == true)
-            #if os(iOS)
-            .background(ProfileEditDismissObserver(preventDismissal: saving || pictureBusy || draft?.hasChanges == true, attempt: requestClose))
-            .background(ProfileSheetOutsideTap(close: requestClose))
-            .background(Button("Close profile", action: requestClose).keyboardShortcut(.cancelAction).hidden())
-            #else
-            .onExitCommand(perform: requestClose)
-            #endif
-            .alert("Discard profile changes?", isPresented: $confirmingDiscard) {
-                Button("Keep editing", role: .cancel) {}
-                Button("Discard", role: .destructive) { if !saving { close() } }
-            } message: { Text("Your unsaved profile changes will be lost.") }
-    }
-
-    private func form(_ draft: ProfileEditDraft) -> some View {
-        @Bindable var draft = draft
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                pictureSection(draft)
-                CaperField(title: "Username", text: $draft.username)
-                    .submitLabel(.next).onSubmit { displayNameFocused = true }
-                Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                CaperField(title: "Display name", text: $draft.displayName, focus: $displayNameFocused)
-                    .submitLabel(.done).onSubmit(save)
-                let nameError = ProfileValidation.hiddenCharacterError(displayName: draft.displayName, saved: draft.baseline.displayName)
-                Text(nameError ?? "This is what people see in conversations.").font(CaperTheme.font(12))
-                    .foregroundStyle(nameError == nil ? CaperTheme.muted : CaperTheme.error)
-                Text(saveError ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
-                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                    .opacity(saveError == nil ? 0 : 1).accessibilityHidden(saveError == nil)
-                HStack {
-                    HStack(spacing: 6) {
-                        Circle().fill(CaperTheme.terracotta).frame(width: 5, height: 5)
-                        Text("Unsaved changes").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    }.opacity(draft.hasChanges ? 1 : 0).accessibilityHidden(!draft.hasChanges)
-                        .accessibilityIdentifier("profile-unsaved")
-                    Spacer()
-                    Button(saving ? "Saving…" : "Save profile", action: save)
-                        .buttonStyle(CaperPrimaryButton()).frame(width: 148)
-                        .disabled(saving || pictureBusy || model.busy || !draft.canSave)
-                        .accessibilityIdentifier("profile-save")
-                }
-            }.disabled(saving).padding(22).frame(maxWidth: .infinity, alignment: .leading)
-        }.frame(maxHeight: 620).scrollDismissesKeyboard(.interactively)
-    }
-
-    private func pictureSection(_ draft: ProfileEditDraft) -> some View {
-        let name = draft.displayName.isEmpty ? draft.username : draft.displayName
-        let side = PictureEditor<EmptyView>.side
-        let hasPicture = draft.preparedPicture != nil || draft.avatarAsset != nil
-        return VStack(alignment: .leading) {
-            PictureEditor(purpose: .avatar, hasPicture: hasPicture, currentURL: draft.avatarPicture?.url,
-                          currentData: draft.preparedPicture?.data, deferred: true,
-                          upload: { draft.usePicture($0) }, remove: { draft.removePicture() },
-                          currentAsset: draft.avatarAsset, history: { cursor in
-                              guard model.account?.id == draft.baseline.id, model.accountEpoch == epoch else { throw CancellationError() }
-                              return try await model.avatarHistory(cursor: cursor)
-                          }, select: { picture in draft.useHistory(picture) },
-                          regenerate: { draft.regenerate() }, mascot: !hasPicture && CaperAvatar.index(for: draft.avatarId) != nil) {
-                if let prepared = draft.preparedPicture {
-                    PreparedPicturePreview(picture: prepared, size: side)
-                } else if !hasPicture {
-                    ChangeMeMascot(name: name, avatarID: draft.avatarId, size: side)
-                } else {
-                    Avatar(name: name, size: side, avatarID: draft.avatarId, picture: draft.avatarPicture)
-                }
-            }
-            Divider().overlay(CaperTheme.border)
-        }
-    }
-
-    private func requestClose() {
-        guard !saving else { return }
-        if pictureBusy { confirmingDiscard = true; return }
-        switch draft?.closeDecision ?? .close {
-        case .close: close()
-        case .confirmDiscard: confirmingDiscard = true
-        case .blocked: break
-        }
-    }
-
-    private func save() {
-        guard let draft, draft.canSave, !saving, !pictureBusy, !model.busy, model.accountEpoch == epoch else { return }
-        saving = true; saveError = nil
-        Task {
-            do { try await model.saveProfile(draft: draft); saving = false; close() }
-            catch { saveError = ProfileEditDraft.saveError(error); saving = false }
-        }
-    }
+    var body: some View { NativeProfileEditorSheet(model: model, close: close) }
 }
 
 /// Hosts route backdrop/Escape/popover dismissal to the editor, rather than

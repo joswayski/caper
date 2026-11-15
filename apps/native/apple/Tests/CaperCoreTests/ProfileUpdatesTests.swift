@@ -318,6 +318,27 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertEqual(detail.with(members: [other]).channelMembers, detail.channelMembers)
     }
 
+    @MainActor
+    func testNativeProfileEditorKeepsChangesLocalAndProtectsDiscard() throws {
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let account = Account(id: "Self00000001", username: "before", displayName: "Before", avatarId: 7)
+        model.account = account
+        var closed = 0
+        let editor = NativeProfileEditing(model: model) { closed += 1 }
+        let draft = try XCTUnwrap(editor.draft)
+        draft.displayName = "After"
+        XCTAssertTrue(editor.canSave)
+        editor.requestClose()
+        XCTAssertTrue(editor.confirmingDiscard)
+        XCTAssertEqual(closed, 0)
+        XCTAssertEqual(model.account, account, "preview and a dismissal attempt never publish")
+        editor.confirmingDiscard = false
+        editor.discard()
+        XCTAssertEqual(closed, 1)
+        XCTAssertFalse(editor.canSave, "a dismissed controller cannot send its old draft")
+        XCTAssertEqual(model.account, account)
+    }
+
     func testCustomPicturesAreRoundedSquares() {
         XCTAssertEqual(ProfilePicturePolicy.cornerRadius(side: 40), 12, accuracy: 0.0001)
         XCTAssertEqual(ProfilePicturePolicy.cornerRadius(side: 72), 21.6, accuracy: 0.0001)
