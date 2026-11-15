@@ -53,9 +53,12 @@ record = {"args": args}
 if stage == "export":
     with open(args[args.index("-exportOptionsPlist") + 1], "rb") as options:
         record["options"] = plistlib.load(options)
-    leftover = Path(os.environ["TMPDIR"]) / "XcodeDistPipeline.~~~fixture"
-    leftover.mkdir()
-    record["leftover"] = str(leftover)
+    # Xcode's distribution pipeline writes to the per-user temp folder, not TMPDIR.
+    ours = Path(os.environ["TEST_SYSTEM_TMP"]) / "XcodeDistPipeline.~~~fixture"
+    (ours / "Root/Payload/Caper.app").mkdir(parents=True)
+    other = Path(os.environ["TEST_SYSTEM_TMP"]) / "XcodeDistPipeline.~~~other"
+    (other / "Root/Payload/Captures.app").mkdir(parents=True)
+    record["leftover"] = [str(ours), str(other)]
 with open(os.environ["TEST_LOG"], "a") as log:
     log.write(json.dumps(record) + "\\n")
 if os.environ.get("FAIL_STAGE") == stage:
@@ -74,6 +77,11 @@ if stage == "archive":
             plistlib.dump(versions, info, fmt=plistlib.FMT_BINARY)
 """)
         xcodebuild.chmod(0o755)
+        self.system_tmp = self.root / "system tmp"
+        self.system_tmp.mkdir()
+        getconf = binary / "getconf"
+        getconf.write_text(f'#!/usr/bin/env bash\n[[ "$1" == DARWIN_USER_TEMP_DIR ]] && echo "{self.system_tmp}/"\n')
+        getconf.chmod(0o755)
         self.log = self.root / "commands.jsonl"
         self.env = {
             **os.environ,
@@ -81,6 +89,7 @@ if stage == "archive":
             "TEST_APP_ROOT": str(self.app),
             "TEST_LOG": str(self.log),
             "TEST_SOURCE_REVISION": self.revision,
+            "TEST_SYSTEM_TMP": str(self.system_tmp),
             "APPLE_TEAM_ID": "FIXTURETEAM",
             "NOTARY_KEY_PATH": str(self.root / "key with spaces.p8"),
             "NOTARY_KEY_ID": "fixture-key-id",
@@ -101,6 +110,9 @@ if stage == "archive":
         return result, commands
 
     def test_archive_is_certificate_free_but_export_uses_cloud_distribution(self):
+        older = self.system_tmp / "XcodeDistPipeline.~~~older"
+        (older / "Root/Payload/Caper.app").mkdir(parents=True)
+        os.utime(older, (0, 0))
         result, commands = self.upload()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(commands), 2)
@@ -142,9 +154,16 @@ if stage == "archive":
             },
         )
         self.assertIn("Uploaded chat.fixture.custom build 37.2", result.stdout)
-        # Export temp folders stay out of the shared runner's TMPDIR and go with the run.
-        self.assertFalse(Path(export["leftover"]).exists())
-        self.assertNotEqual(Path(export["leftover"]).parent, Path(tempfile.gettempdir()))
+        # This export's pipeline folder goes; another app's and an earlier run's stay.
+        ours, other = map(Path, export["leftover"])
+        self.assertFalse(ours.exists())
+        self.assertTrue(other.exists())
+        self.assertTrue(older.exists())
+
+    def test_failed_export_still_removes_its_pipeline_folder(self):
+        result, commands = self.upload(fail_stage="export")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(Path(commands[-1]["leftover"][0]).exists())
 
     def test_mismatched_release_metadata_stops_before_upload(self):
         for overrides, key in (

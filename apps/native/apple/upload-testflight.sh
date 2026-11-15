@@ -23,11 +23,27 @@ auth=(
   -authenticationKeyIssuerID "$NOTARY_ISSUER"
 )
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-# Every export leaves ~600 MB XcodeDistPipeline.* folders and app analysis zips
-# in TMPDIR; keep them inside $work so the trap removes them on the shared Mac.
-export TMPDIR="$work/tmp"
-mkdir "$TMPDIR"
+system_tmp="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+# xcodebuild -exportArchive leaves ~600 MB XcodeDistPipeline.* folders and app
+# analysis zips in the per-user temp folder, whatever TMPDIR says, and they
+# filled the shared Mac. Remove this run's, even after a failure. Other jobs on
+# that Mac export too, so only items holding Caper.app are ours.
+cleanup() {
+  set +e
+  if [[ -n "$system_tmp" && -e "$work/export-started" ]]; then
+    while IFS= read -r -d '' item; do
+      if [[ -d "$item" ]]; then
+        [[ -n "$(find "$item" -name Caper.app -prune -print -quit 2>/dev/null)" ]] || continue
+      else
+        unzip -Z1 "$item" 2>/dev/null | grep -c '\(^\|/\)Caper\.app/' >/dev/null || continue
+      fi
+      rm -rf "$item"
+    done < <(find "$system_tmp" -maxdepth 1 -newer "$work/export-started" \
+      \( -name 'XcodeDistPipeline.*' -o -name 'DTAppAnalyzerExtractorOutput-*.zip' \) -print0 2>/dev/null)
+  fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
 
 "$ROOT/prepare.sh"
 source_revision="$(sed -n 's/^CAPER_SOURCE_REVISION = //p' "$ROOT/.build/SourceRevision.xcconfig")"
@@ -80,10 +96,7 @@ cat >"$work/ExportOptions.plist" <<EOF
   <key>uploadSymbols</key><true/>
 </dict></plist>
 EOF
+touch "$work/export-started"
 xcodebuild -exportArchive -archivePath "$work/Caper.xcarchive" \
   -exportOptionsPlist "$work/ExportOptions.plist" -exportPath "$work/export" "${auth[@]}"
-system_tmp="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
-if [[ -n "$system_tmp" && -n "$(find "$system_tmp" -maxdepth 1 -name 'XcodeDistPipeline.*' -newer "$work/ExportOptions.plist" 2>/dev/null)" ]]; then
-  echo "::warning::New XcodeDistPipeline folders appeared in $system_tmp despite TMPDIR; they need cleaning up there."
-fi
 echo "Uploaded $IOS_BUNDLE_ID build $BUILD_NUMBER to App Store Connect; it appears in TestFlight after processing."
