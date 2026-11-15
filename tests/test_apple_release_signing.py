@@ -58,7 +58,9 @@ if stage == "export":
     (ours / "Root/Payload/Caper.app").mkdir(parents=True)
     other = Path(os.environ["TEST_SYSTEM_TMP"]) / "XcodeDistPipeline.~~~other"
     (other / "Root/Payload/Captures.app").mkdir(parents=True)
-    record["leftover"] = [str(ours), str(other)]
+    empty = Path(os.environ["TEST_SYSTEM_TMP"]) / "XcodeDistPipeline.~~~empty"
+    empty.mkdir()
+    record["leftover"] = [str(ours), str(other), str(empty)]
 with open(os.environ["TEST_LOG"], "a") as log:
     log.write(json.dumps(record) + "\\n")
 if os.environ.get("FAIL_STAGE") == stage:
@@ -155,8 +157,9 @@ if stage == "archive":
         )
         self.assertIn("Uploaded chat.fixture.custom build 37.2", result.stdout)
         # This export's pipeline folder goes; another app's and an earlier run's stay.
-        ours, other = map(Path, export["leftover"])
+        ours, other, empty = map(Path, export["leftover"])
         self.assertFalse(ours.exists())
+        self.assertFalse(empty.exists())
         self.assertTrue(other.exists())
         self.assertTrue(older.exists())
 

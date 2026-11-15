@@ -33,6 +33,12 @@ cleanup() {
   if [[ -n "$system_tmp" && -e "$work/export-started" ]]; then
     while IFS= read -r -d '' item; do
       if [[ -d "$item" ]]; then
+        # Xcode also leaves an empty folder; another job's export may be filling
+        # its own, so remove empty ones only while no other xcodebuild runs.
+        if [[ -z "$(find "$item" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+          pgrep -x xcodebuild >/dev/null || rmdir "$item"
+          continue
+        fi
         [[ -n "$(find "$item" -name Caper.app -prune -print -quit 2>/dev/null)" ]] || continue
       else
         unzip -Z1 "$item" 2>/dev/null | grep -c '\(^\|/\)Caper\.app/' >/dev/null || continue
