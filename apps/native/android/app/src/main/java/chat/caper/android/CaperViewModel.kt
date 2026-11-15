@@ -2290,14 +2290,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = state.copy(composerFocusRequest = chat.caper.android.model.ComposerFocusRequest(channel, root, java.util.UUID.randomUUID().toString(), keyboardOnly = true))
     }
 
-    /** A screen, Browse or the member drawer covers the composers (set by the UI each composition). */
+    /** Narrow Browse or the member drawer covers the composers (set by the UI each composition). */
     var composerCovered = false
+    /** A screen (settings, profile editor, dialogs) covers the conversation. */
+    var overlayShown = false
 
     /** Type to compose: hardware-keyboard text typed while nothing had focus goes to the open composer. */
     fun typeToCompose(text: String): Boolean {
         val state = mutable.value
         val channel = state.selectedChannel?.id ?: return false
-        if (composerCovered || !state.canParticipate || state.pendingMessage != null) return false
+        if (composerCovered || overlayShown || !state.canParticipate || state.pendingMessage != null) return false
         val previous = state.composerFocusRequest?.takeIf { it.keyboardOnly }?.typed.orEmpty()
         mutable.value = state.copy(composerFocusRequest = chat.caper.android.model.ComposerFocusRequest(channel, state.thread?.rootId, java.util.UUID.randomUUID().toString(), keyboardOnly = true, typed = previous + text))
         return true

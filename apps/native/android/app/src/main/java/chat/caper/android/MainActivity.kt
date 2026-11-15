@@ -347,6 +347,7 @@ internal data class VoiceJoinIntent(
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
     val whatsNew by viewModel.whatsNew.state.collectAsStateWithLifecycle()
     var overlay by remember { mutableStateOf<Overlay?>(null) }
+    SideEffect { viewModel.overlayShown = overlay != null }
     // Startup's "fully drawn" (macrobenchmarks, Android vitals): past the brand screen and the first history page.
     androidx.activity.compose.ReportDrawnWhen { state.screen != SessionScreen.Loading && !state.restoring && !state.messagesLoading }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -640,7 +641,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             LaunchedEffect(narrow) { if (narrow) membersVisible = false }
             // The member list only shows in a joined channel; elsewhere Back must reach the system.
             val membersShown = membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null
-            SideEffect { viewModel.composerCovered = overlay != null || (narrow && (navigationOpen || membersShown)) }
+            SideEffect { viewModel.composerCovered = narrow && (navigationOpen || membersShown) }
             BackHandler(enabled = narrow && (membersShown || navigationOpen)) {
                 if (membersShown && !navigationOpen) membersVisible = false else setNavigationOpen(false)
             }
