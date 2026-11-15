@@ -1125,6 +1125,7 @@ impl App {
             _ => None,
         };
         self.dm_menu_changed();
+        self.events |= crate::EV_FOCUS;
     }
 
     /// The open space's notification scope, in a live account.
@@ -1207,6 +1208,7 @@ impl App {
     pub fn close_dm_menu(&mut self) {
         if self.dm_menu.take().is_some() {
             self.dm_menu_changed();
+            self.events |= crate::EV_FOCUS;
         }
     }
 
@@ -1328,6 +1330,7 @@ impl App {
                     _ => return done,
                 }
                 self.dirty.dm_menu = true;
+                self.events |= crate::EV_FOCUS;
                 self.need = true;
                 done
             }

@@ -265,6 +265,17 @@ fn focused(a: &App) -> Option<Id> {
         }
         return d.field.focused.then_some(Id::Dialog(DPart::Field));
     }
+    // An open menu takes the keys, so it has focus: the highlighted item,
+    // or the menu before one is.
+    if let Some(m) = &a.menu {
+        return Some(m.hover.map_or(Id::Menu, Id::MenuItem));
+    }
+    if let Some(m) = &a.account_menu {
+        return Some(m.hover.map_or(Id::AccountMenu, Id::AccountItem));
+    }
+    if let Some(m) = &a.dm_menu {
+        return Some(m.hover.map_or(Id::DmMenu, Id::DmItem));
+    }
     if let Some(p) = &a.picker {
         return p.search.focused.then_some(Id::Pick(PPart::Search));
     }
@@ -1958,7 +1969,10 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::PinsButton
                         | Id::Pins(PinPart::Close | PinPart::Go(_))
                         | Id::UpdateDock
+                        | Id::Menu
+                        | Id::AccountMenu
                         | Id::AccountItem(_)
+                        | Id::DmMenu
                         | Id::DirectOptions(_)
                         | Id::SpaceOptions
                         | Id::ChannelOptions(_)

@@ -1789,7 +1789,7 @@ impl App {
         };
         self.dirty.settings = true;
         self.dirty.sidebar = true;
-        self.events |= EV_SCREEN;
+        self.events |= EV_SCREEN | EV_FOCUS;
         self.need = true;
     }
 
@@ -1861,6 +1861,7 @@ impl App {
                     _ => return done,
                 }
                 self.dirty.settings = true;
+                self.events |= EV_FOCUS;
                 self.need = true;
                 done
             }

@@ -1563,7 +1563,7 @@ impl App {
         let (tx, ty, tw, th) = self.bar_rect_for(i);
         self.close_picker();
         self.menu = Some(Menu::new(i, id, items, tx + tw, ty, ty + th, self.h));
-        self.overlay_changed();
+        self.menu_opened();
     }
 
     /// Message `id`'s actions in egui's order. The thread pane offers Reply
@@ -1651,7 +1651,7 @@ impl App {
         menu.place_at(x, y, self.w, self.h);
         self.close_picker();
         self.menu = Some(menu);
-        self.overlay_changed();
+        self.menu_opened();
     }
 
     /// A right-click at (x, y) on row `i`, as in egui: a link opens its own
@@ -1689,7 +1689,7 @@ impl App {
             menu.selection = selection;
         }
         menu.place_at(x, y, w, h);
-        self.overlay_changed();
+        self.menu_opened();
     }
 
     /// History attachments and profile pictures share these actions and the
@@ -1703,7 +1703,7 @@ impl App {
         menu.image = Some(image);
         menu.place_at(x, y, self.w, self.h);
         self.menu = Some(menu);
-        self.overlay_changed();
+        self.menu_opened();
     }
 
     /// An image menu's finished copy: onto the clipboard, then its status.
@@ -1725,7 +1725,14 @@ impl App {
     pub fn close_menu(&mut self) {
         if self.menu.take().is_some() {
             self.overlay_changed();
+            self.events |= EV_FOCUS;
         }
+    }
+
+    /// A menu opened: it takes focus (`uia::focused`).
+    fn menu_opened(&mut self) {
+        self.overlay_changed();
+        self.events |= EV_FOCUS;
     }
 
     /// Clicks, Enter and UIA Invoke on a menu item.
@@ -1749,6 +1756,7 @@ impl App {
         }
         let Some(menu) = self.menu.take() else { return };
         self.overlay_changed();
+        self.events |= EV_FOCUS;
         let (Some(item), Some(live)) = (menu.items.get(k).copied(), &mut self.live) else {
             return;
         };
@@ -2309,6 +2317,7 @@ impl App {
                     _ => return done,
                 }
                 self.dirty.overlay = true;
+                self.events |= EV_FOCUS;
                 self.need = true;
                 done
             }
