@@ -61,7 +61,10 @@ impl Run {
 
 impl App {
     fn autoscroll_covered(&self) -> bool {
-        self.signin.is_some()
+        self.browsing()
+            || self.narrow.menu
+            || (self.is_narrow() && self.members_w() > 0.0)
+            || self.signin.is_some()
             || self.settings.is_some()
             || self.dialog.is_some()
             || self.viewer.is_some()

@@ -47,6 +47,7 @@ icons! {
     Link => "link.svg",
     Lock => "lock.svg",
     MessageCircle => "message-circle.svg",
+    Menu => "menu.svg",
     Mic => "mic.svg",
     MicOff => "mic-off.svg",
     More => "ellipsis.svg",

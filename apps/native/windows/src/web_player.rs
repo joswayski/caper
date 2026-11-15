@@ -271,7 +271,7 @@ impl crate::App {
         let r = self
             .rows
             .embed_picture(i, m.grouped, key.card, key.picture)?;
-        let y = crate::theme::HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        let y = self.history_y() + (self.rows.top[i] - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,
@@ -282,7 +282,10 @@ impl crate::App {
 
     /// Anything drawn over the history that the view would cover.
     fn web_player_covered(&self) -> bool {
-        self.viewer.is_some()
+        !self.chat_shown()
+            || self.narrow.menu
+            || (self.members_w() > 0.0 && !self.members_tiled())
+            || self.viewer.is_some()
             || self.dialog.is_some()
             || self.menu.is_some()
             || self.attachment_editor.is_some()
@@ -307,8 +310,8 @@ impl crate::App {
         let rect = self.web_player_rect();
         let history = (
             self.list_x(),
-            crate::theme::HEADER_H,
-            self.list_w(),
+            self.history_y(),
+            self.chat_width(),
             self.vh(),
         );
         let shown = rect.filter(|r| !self.web_player_covered() && inside(*r, history));

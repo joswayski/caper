@@ -414,7 +414,7 @@ impl App {
     /// The header's Pins button (client DIPs), left of the member-list
     /// toggle, as in egui.
     pub fn pins_button_rect(&self) -> Option<Rect> {
-        (self.c.is_live() && self.c.has_conversation()).then(|| {
+        (!self.is_narrow() && self.c.is_live() && self.c.has_conversation()).then(|| {
             let right = self
                 .members_toggle_rect()
                 .map_or(self.list_x() + self.list_w() - 18.0, |(x, ..)| x - 6.0);

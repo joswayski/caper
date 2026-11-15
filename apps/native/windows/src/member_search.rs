@@ -52,15 +52,18 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
 impl App {
     /// The member column's left edge (client DIPs).
     pub fn members_x(&self) -> f32 {
-        self.w - self.member_width()
+        self.w - self.member_width() - if self.is_narrow() { 8.0 } else { 0.0 }
     }
 
     /// Search members in the heading while the search is closed.
     pub fn member_search_button_rect(&self) -> Option<Rect> {
         (self.members_w() > 0.0 && self.c.is_live() && self.member_search.is_none()).then(|| {
             (
-                self.members_x() + self.member_width() - 16.0 - BUTTON,
-                (HEADER_H - BUTTON) / 2.0,
+                self.members_x() + self.member_width()
+                    - 16.0
+                    - BUTTON
+                    - if self.members_tiled() { 0.0 } else { 36.0 },
+                self.members_y() + (HEADER_H - BUTTON) / 2.0,
                 BUTTON,
                 BUTTON,
             )
@@ -79,13 +82,13 @@ impl App {
             Part::Open => return None,
             Part::Field => (
                 x + 8.0,
-                FIELD_Y,
+                self.members_y() + FIELD_Y,
                 self.member_width() - 16.0 - BUTTON - 4.0,
                 FIELD_H,
             ),
             Part::Close => (
                 x + self.member_width() - 8.0 - BUTTON,
-                FIELD_Y + (FIELD_H - BUTTON) / 2.0,
+                self.members_y() + FIELD_Y + (FIELD_H - BUTTON) / 2.0,
                 BUTTON,
                 BUTTON,
             ),
@@ -349,7 +352,8 @@ impl App {
 /// Draws the heading's button or the field row on the member column's
 /// surface (`x0` is the column's client left edge).
 pub fn draw(g: &Gfx, dc: &ID2D1DeviceContext, a: &App, x0: f32) -> Result<()> {
-    let local = |(x, y, w, h): Rect| rect(x - x0, y, x - x0 + w, y + h);
+    let y0 = a.members_y();
+    let local = |(x, y, w, h): Rect| rect(x - x0, y - y0, x - x0 + w, y - y0 + h);
     if let Some(r) = a.member_search_button_rect() {
         let r = local(r);
         let lit = a.member_search_hover;
@@ -388,7 +392,7 @@ pub fn draw(g: &Gfx, dc: &ID2D1DeviceContext, a: &App, x0: f32) -> Result<()> {
         let hint = g.layout(&gfx::wide(PLACEHOLDER), &g.formats.composer, 1e6)?;
         let (ox, oy) = a.member_search_text_origin();
         s.field
-            .draw_text(g, dc, ox - x0, oy, Some((&hint, &g.brushes.hint)));
+            .draw_text(g, dc, ox - x0, oy - y0, Some((&hint, &g.brushes.hint)));
         unsafe { dc.PopAxisAlignedClip() };
     }
     if let Some(r) = a.member_search_rect(Part::Close) {

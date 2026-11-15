@@ -607,7 +607,7 @@ impl App {
         let y = ((self.rows.top[i] - self.scroll_top) as f32 + self.row_lead(i) - 12.0).max(0.0);
         (
             self.list_x() + self.list_w() - w - 16.0,
-            HEADER_H + y,
+            self.history_y() + y,
             w,
             BAR_H,
         )

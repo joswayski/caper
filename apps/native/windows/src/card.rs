@@ -3,7 +3,7 @@
 //! summary ("You, Alex and Maya reacted with :fire:"). Names load on demand
 //! through the shared reactor cache; until they arrive the summary counts.
 use crate::gfx::{self, fill_round, rect, stroke_round};
-use crate::theme::{HEADER_H, SURFACE_RAISED};
+use crate::theme::SURFACE_RAISED;
 use crate::{App, TIMER_CARD, emoji, list};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
@@ -159,14 +159,15 @@ impl App {
         else {
             return false;
         };
-        let top = HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        let history_y = self.history_y();
+        let top = history_y + (self.rows.top[i] - self.scroll_top) as f32;
         let (cx, ct, cb) = (self.list_x() + r.left, top + r.top, top + r.bottom);
         let (w, wh) = (self.w, self.h);
         let Some(card) = &mut self.card else {
             return false;
         };
         let x = cx.min(w - card.w - 8.0).max(8.0);
-        let y = if ct - GAP - card.h >= HEADER_H {
+        let y = if ct - GAP - card.h >= history_y {
             ct - GAP - card.h
         } else {
             (cb + GAP).min(wh - card.h - 8.0)

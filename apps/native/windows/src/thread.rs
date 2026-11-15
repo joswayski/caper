@@ -417,6 +417,7 @@ impl Pane {
         dc: &ID2D1DeviceContext,
         h: f32,
         vh: f32,
+        narrow: bool,
         media: Option<&mut crate::files::Ctx>,
     ) -> Result<()> {
         let w = self.width;
@@ -426,16 +427,21 @@ impl Pane {
             dc.FillRectangle(&rect(0.0, 0.0, 1.0, h), &g.brushes.border);
             dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, w, HEADER_H), &g.brushes.border);
         }
-        crate::text::draw(dc, &self.title, PAD, 8.0, &g.brushes.text);
-        crate::text::draw(dc, &self.sub, PAD, 30.0, &g.brushes.muted);
-        let (cx, cy, cw, ch) = close_local(w);
+        let text_x = if narrow { 60.0 } else { PAD };
+        crate::text::draw(dc, &self.title, text_x, 8.0, &g.brushes.text);
+        crate::text::draw(dc, &self.sub, text_x, 30.0, &g.brushes.muted);
+        let (cx, cy, cw, ch) = close_local(w, narrow);
         let lit = self.hover == Some(Part::Close);
         if lit {
             fill_round(dc, rect(cx, cy, cx + cw, cy + ch), 6.0, &g.brushes.hover);
         }
         icons::draw(
             dc,
-            Icon::Close,
+            if narrow {
+                Icon::ChevronLeft
+            } else {
+                Icon::Close
+            },
             rect(cx + 9.0, cy + 9.0, cx + cw - 9.0, cy + ch - 9.0),
             if lit { TEXT } else { TEXT_MUTED },
             1.0,
@@ -600,8 +606,12 @@ impl Pane {
 }
 
 /// Close in the heading, relative to the pane.
-fn close_local(width: f32) -> Rect {
-    (width - PAD - CLOSE, (HEADER_H - CLOSE) / 2.0, CLOSE, CLOSE)
+fn close_local(width: f32, narrow: bool) -> Rect {
+    if narrow {
+        (8.0, 5.0, 44.0, 44.0)
+    } else {
+        (width - PAD - CLOSE, (HEADER_H - CLOSE) / 2.0, CLOSE, CLOSE)
+    }
 }
 
 /// The reply box's width.
@@ -643,14 +653,20 @@ impl App {
     /// The open thread's width beside the conversation.
     pub fn thread_w(&self) -> f32 {
         if self.thread.is_some() {
-            self.panes.width(crate::panes::Pane::Thread)
+            if self.is_narrow() {
+                self.w
+            } else {
+                self.panes
+                    .width(crate::panes::Pane::Thread)
+                    .min((self.w - self.list_x() - self.members_reserved()).max(0.0))
+            }
         } else {
             0.0
         }
     }
 
     pub fn thread_x(&self) -> f32 {
-        self.w - self.members_w() - self.thread_w()
+        self.w - self.members_reserved() - self.thread_w()
     }
 
     /// Rewrap only on width changes, keeping the visible reply anchored.
@@ -934,7 +950,7 @@ impl App {
         let clip = |r: Rect| (r.1 + r.3 > HEADER_H && r.1 < HEADER_H + vh).then_some(r);
         match part {
             Part::Close => {
-                let (x, y, w, h) = close_local(t.width);
+                let (x, y, w, h) = close_local(t.width, self.is_narrow());
                 Some((x0 + x, y, w, h))
             }
             Part::Row(i) => {
@@ -1222,7 +1238,13 @@ impl App {
             return String::new();
         };
         match part {
-            Part::Close => "Close thread".into(),
+            Part::Close => {
+                if self.is_narrow() {
+                    format!("Back to {}", t.destination)
+                } else {
+                    "Close thread".into()
+                }
+            }
             Part::Tool(_, tool) => tool.label(),
             Part::Older => {
                 let head = t.head();
@@ -1321,7 +1343,8 @@ impl App {
     }
 
     pub fn in_thread(&self, x: f32, y: f32) -> bool {
-        self.thread.is_some()
+        self.thread_shown()
+            && !self.on_member_overlay(x, y)
             && x >= self.thread_x()
             && x < self.thread_x() + self.thread_w()
             && y < self.h
@@ -1391,7 +1414,7 @@ impl App {
             self.thread_box_changed();
         }
         let vh = self.thread_vh();
-        let watching = self.watching_arrivals();
+        let watching = self.watching_arrivals() && self.thread_shown();
         if let Some(p) = &mut self.thread {
             p.set(&self.g, view, state, vh, watching)?;
         }
@@ -1519,7 +1542,7 @@ impl App {
         if !self.in_history(x, y) || self.live.is_none() {
             return None;
         }
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let ry = (ay - self.rows.top[i]) as f32;
         let r = self.rows.thread_link(i, self.c.messages[i].grouped)?;
@@ -1529,6 +1552,7 @@ impl App {
 
     pub fn set_thread_focus(&mut self, focused: bool) {
         if focused {
+            self.narrow.focus = None;
             self.clear_pane_focus();
         }
         let Some(t) = &mut self.thread else {
@@ -2246,6 +2270,7 @@ impl App {
         let video = self.inline_video_view();
         let video_focus = self.video_focus_view();
         let width = self.thread_w();
+        let narrow = self.is_narrow();
         let g = &self.g;
         let fresh = self.thread_p.ensure(g, px(width), px(h))?;
         self.thread_p.offset((x * s).round(), 0.0)?;
@@ -2260,7 +2285,7 @@ impl App {
                 ..crate::files::Ctx::new(&mut l.media, &mut tex)
             });
             self.thread_p.draw(s, |dc| {
-                t.draw(g, dc, h, vh, media.as_mut())?;
+                t.draw(g, dc, h, vh, narrow, media.as_mut())?;
                 if self.panes.focus == Some(crate::panes::Pane::Thread) {
                     unsafe {
                         dc.FillRectangle(&rect(0.0, 0.0, 2.0, h), &g.brushes.terracotta);

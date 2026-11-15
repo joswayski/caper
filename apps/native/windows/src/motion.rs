@@ -276,6 +276,9 @@ pub fn space_glow(
 impl App {
     pub fn watching_arrivals(&self) -> bool {
         crate::files::motion()
+            && !self.browsing()
+            && !self.narrow.menu
+            && !(self.is_narrow() && self.members_w() > 0.0)
             && self.signin.is_none()
             && self.dialog.is_none()
             && self.viewer.is_none()
@@ -301,13 +304,22 @@ impl App {
 
     pub fn arrivals_tick(&mut self) {
         let enabled = self.watching_arrivals();
-        for id in self.rows.arrivals.tick(enabled && self.at_end) {
+        for id in self
+            .rows
+            .arrivals
+            .tick(enabled && self.chat_shown() && self.at_end)
+        {
             if let Some(&i) = self.ids.rows.get(&id) {
                 self.redraw.push(i);
             }
         }
+        let thread_shown = self.thread_shown();
         if let Some(t) = &mut self.thread {
-            self.dirty.thread |= !t.rows.arrivals.tick(enabled && t.at_end).is_empty();
+            self.dirty.thread |= !t
+                .rows
+                .arrivals
+                .tick(enabled && thread_shown && t.at_end)
+                .is_empty();
         }
         if !self.rows.arrivals.active()
             && self

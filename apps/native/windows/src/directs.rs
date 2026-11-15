@@ -1155,7 +1155,12 @@ impl App {
 
     /// The sidebar header's space options button (client DIPs).
     pub fn space_options_rect(&self) -> Rect {
-        (RAIL_W + self.sidebar_w() - 40.0, 13.0, 28.0, 28.0)
+        (
+            RAIL_W + self.sidebar_w() - 40.0 - if self.is_narrow() { 44.0 } else { 0.0 },
+            13.0,
+            28.0,
+            28.0,
+        )
     }
 
     /// Channel `i`'s options button (client DIPs), shown while its row is
@@ -1414,6 +1419,9 @@ impl App {
         if row.kind == RowKind::Feedback {
             return self.open_support(crate::settings::Page::Feedback);
         }
+        if !matches!(row.kind, RowKind::Requests { .. }) {
+            self.set_browsing(false);
+        }
         let Some(live) = &mut self.live else { return };
         match (row.kind, row.own, row.id) {
             (RowKind::Requests { open }, ..) => {
@@ -1430,7 +1438,12 @@ impl App {
 
     /// The members column's width: none in a DM, as in egui.
     pub fn members_w(&self) -> f32 {
-        if self.c.direct.is_some() || !self.c.has_conversation() || self.members_hidden {
+        let hidden = if self.is_narrow() {
+            !self.narrow.members || !self.chat_shown()
+        } else {
+            self.members_hidden
+        };
+        if self.c.direct.is_some() || !self.c.has_conversation() || hidden {
             0.0
         } else {
             self.member_width()
@@ -1476,7 +1489,7 @@ impl App {
         self.empty_p.ensure(g, px(w), px(h))?;
         self.empty_p.offset(
             ((self.list_x() + 24.0) * s).round(),
-            ((HEADER_H + (vh - h) / 2.0) * s).round(),
+            ((self.history_y() + (vh - h) / 2.0) * s).round(),
         )?;
         self.empty_p.draw(s, |dc| {
             unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };

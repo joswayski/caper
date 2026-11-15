@@ -566,7 +566,7 @@ impl App {
         }
         let m = self.c.messages.get(i)?;
         let r = self.rows.edited_marker(i, m.time.ends_with("(edited)"))?;
-        let y = HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        let y = self.history_y() + (self.rows.top[i] - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,
@@ -580,7 +580,7 @@ impl App {
         if !self.in_history(x, y) {
             return None;
         }
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let (l, t, w, h) = self.edited_rect(i)?;
         (x >= l && x < l + w && y >= t && y < t + h).then_some(i)

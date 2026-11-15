@@ -66,7 +66,10 @@ fn bitmap(dc: &ID2D1DeviceContext, svg: &[u8], w: u32, h: u32) -> Option<ID2D1Bi
 impl App {
     /// Only an uncovered, writable conversation pane is a destination.
     fn drop_target_at(&self, point: POINT) -> Option<(Option<String>, Rect)> {
-        if self.signin.is_some()
+        if self.browsing()
+            || self.narrow.menu
+            || (self.is_narrow() && self.members_w() > 0.0)
+            || self.signin.is_some()
             || self.settings.is_some()
             || self.dialog.is_some()
             || self.viewer.is_some()
@@ -84,10 +87,11 @@ impl App {
             return None;
         }
         let (x, y) = (point.x as f32 / self.scale, point.y as f32 / self.scale);
-        if y < HEADER_H || y >= self.h {
+        if y < HEADER_H || y >= self.h || self.on_member_overlay(x, y) {
             return None;
         }
         if let Some(t) = &self.thread
+            && self.thread_shown()
             && x >= self.thread_x()
             && x < self.thread_x() + self.thread_w()
         {
@@ -101,10 +105,20 @@ impl App {
                 ),
             ));
         }
-        if x >= self.list_x() && x < self.list_x() + self.list_w() && self.rec().is_none() {
+        if self.chat_shown()
+            && y >= self.history_y()
+            && x >= self.list_x()
+            && x < self.list_x() + self.chat_width()
+            && self.rec().is_none()
+        {
             return Some((
                 None,
-                (self.list_x(), HEADER_H, self.list_w(), self.h - HEADER_H),
+                (
+                    self.list_x(),
+                    self.history_y(),
+                    self.chat_width(),
+                    self.h - self.history_y(),
+                ),
             ));
         }
         None

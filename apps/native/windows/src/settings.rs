@@ -1748,7 +1748,9 @@ impl App {
     }
 
     pub fn foot_shown(&self) -> bool {
-        self.live.as_ref().is_some_and(|l| l.account_id.is_some()) && self.c.is_live()
+        self.navigation_shown()
+            && self.live.as_ref().is_some_and(|l| l.account_id.is_some())
+            && self.c.is_live()
     }
 
     pub fn on_gear(&self, x: f32, y: f32) -> bool {
@@ -1904,9 +1906,15 @@ impl App {
         let Some(live) = &self.live else {
             return Ok(());
         };
-        self.draw_update_dock(g, dc)?;
+        if !self.is_narrow() {
+            self.draw_update_dock(g, dc)?;
+        }
         let top = h - FOOT_H;
-        let width = self.sidebar_w();
+        let width = if self.is_narrow() {
+            self.w
+        } else {
+            self.sidebar_w()
+        };
         unsafe {
             dc.FillRectangle(&rect(0.0, top, width, h), &g.solid(SURFACE_SIDEBAR));
             dc.FillRectangle(&rect(0.0, top, width, top + 1.0), &g.brushes.border);
@@ -1926,7 +1934,7 @@ impl App {
         let nm = gfx::metrics(&name);
         text::draw(dc, &name, cx + 21.0, cy - nm.height / 2.0, &g.brushes.text);
         let (gx, gy, gw, gh) = self.gear_rect();
-        let gx = gx - RAIL_W;
+        let gx = gx - if self.is_narrow() { 0.0 } else { RAIL_W };
         let lit = self.gear_hover || self.account_menu.is_some();
         if lit {
             fill_round(dc, rect(gx, gy, gx + gw, gy + gh), 6.0, &g.brushes.hover);

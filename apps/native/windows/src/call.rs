@@ -121,7 +121,7 @@ fn label(
     Ok(())
 }
 
-fn face(
+pub fn face(
     g: &Gfx,
     dc: &ID2D1DeviceContext,
     p: &VoiceOccupant,
@@ -564,6 +564,9 @@ impl App {
 
     /// The card (client DIPs), above the account footer.
     pub fn call_rect(&self) -> Option<Rect> {
+        if !self.navigation_shown() {
+            return None;
+        }
         let h = match self.voice_card()? {
             Card::Call(_) => CARD_H + self.call_extra(),
             Card::Error(_) => ERROR_H,
@@ -615,6 +618,9 @@ impl App {
     }
 
     pub fn voice_rect(&self, p: VPart) -> Option<Rect> {
+        if !self.navigation_shown() {
+            return None;
+        }
         if let VPart::Join(i) = p {
             return self.join_action(i).map(|_| self.join_rect(i));
         }
@@ -658,6 +664,9 @@ impl App {
 
     /// The control under (x, y): a hovered row's Join, or a card button.
     pub fn voice_at(&self, x: f32, y: f32) -> Option<VPart> {
+        if !self.navigation_shown() {
+            return None;
+        }
         if let Some(card) = self.call_rect()
             && contains(card, x, y)
         {
@@ -864,6 +873,8 @@ impl App {
         }
         self.dirty.sidebar = true;
         self.dirty.rail = true;
+        self.dirty.narrow = true;
+        self.dirty.header = true;
         self.events |= EV_ROWS;
         self.need = true;
         let calling = self.live.as_ref().is_some_and(|l| l.in_voice());

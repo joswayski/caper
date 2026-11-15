@@ -83,6 +83,7 @@ pub enum Id {
     /// The member list's Search members, its field and Clear and close.
     MemberSearch(SPartM),
     Resize(crate::panes::Pane),
+    Narrow(crate::narrow::Part),
     Composer,
     /// A part of the sign-in form, which replaces the tree while shown.
     Sign(Part),
@@ -282,6 +283,9 @@ fn focused(a: &App) -> Option<Id> {
     if let Some(p) = a.panes.focus {
         return Some(Id::Resize(p));
     }
+    if let Some(p) = a.narrow.focus.filter(|p| a.narrow_rect(*p).is_some()) {
+        return Some(Id::Narrow(p));
+    }
     if !a.composer.focused
         && let Some(c) = a.video_focus()
     {
@@ -309,6 +313,9 @@ fn focused(a: &App) -> Option<Id> {
 }
 
 fn children(a: &App, id: Id) -> Vec<Id> {
+    if !surface_shown(a, id) {
+        return Vec::new();
+    }
     if let Some(v) = &a.viewer {
         return match id {
             Id::Root => vec![Id::Viewer(MPart::Panel)],
@@ -366,6 +373,8 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 .chain(a.profile.as_ref().map(|_| Id::Profile))
                 .collect();
             if a.profile_emoji_open() { out.insert(0, Id::Picker); }
+            out.extend(a.narrow_parts().into_iter().map(Id::Narrow));
+            if a.members_w() > 0.0 && !a.members_tiled() { out.push(Id::Members); }
             out.extend(crate::panes::Pane::ALL.into_iter().filter(|&p| a.pane_rect(p).is_some()).map(Id::Resize));
             out.extend([Id::Rail, Id::Channels]);
             if !a.direct_rows().is_empty() {
@@ -395,7 +404,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             if a.members_toggle_rect().is_some() {
                 out.push(Id::MembersToggle);
             }
-            if a.members_w() > 0.0 {
+            if a.members_w() > 0.0 && a.members_tiled() {
                 out.push(Id::Members);
             }
             out.extend(a.voice_parts().into_iter().map(Id::Voice));
@@ -409,6 +418,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             out.extend(a.dm_menu.as_ref().map(|_| Id::DmMenu));
             if !a.profile_emoji_open() { out.extend(a.picker.as_ref().map(|_| Id::Picker)); }
             out.extend(a.gifs.as_ref().map(|_| Id::Gifs));
+            out.retain(|id| surface_shown(a, *id));
             out
         }
         Id::Gifs => a
@@ -471,7 +481,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .collect(),
         Id::History => a
             .head_rect()
-            .filter(|(_, y, _, h)| *y + *h > crate::theme::HEADER_H)
+            .filter(|(_, y, _, h)| *y + *h > a.history_y())
             .map(|_| Id::Older)
             .into_iter()
             .chain(a.visible_rows().map(Id::Row))
@@ -574,7 +584,35 @@ fn parent(id: Id) -> Option<Id> {
     })
 }
 
+/// Hidden shell layers are absent, including stale providers kept by clients.
+fn surface_shown(a: &App, id: Id) -> bool {
+    match id {
+        Id::Rail | Id::Channels | Id::Directs | Id::Gear | Id::UpdateDock | Id::Voice(_) => {
+            a.navigation_shown()
+        }
+        Id::History
+        | Id::Composer
+        | Id::BoxPart(_)
+        | Id::Reply
+        | Id::ReplyCancel
+        | Id::Waiting
+        | Id::Bar(_)
+        | Id::Rec(_)
+        | Id::MembersToggle
+        | Id::PinsButton => {
+            a.chat_shown() && !a.narrow.menu && !(a.is_narrow() && a.members_w() > 0.0)
+        }
+        Id::Members => a.members_w() > 0.0,
+        Id::Thread => a.thread_shown(),
+        Id::Narrow(p) => a.narrow_rect(p).is_some(),
+        _ => parent(id).is_none_or(|p| p == Id::Root || surface_shown(a, p)),
+    }
+}
+
 fn exists(a: &App, id: Id) -> bool {
+    if !surface_shown(a, id) {
+        return false;
+    }
     if let Some(v) = &a.viewer {
         return match id {
             Id::Root => true,
@@ -630,6 +668,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Member(i) => a.shown_members().contains(&i),
         Id::MemberSearch(p) => a.member_search_rect(p).is_some(),
         Id::Resize(p) => a.pane_rect(p).is_some(),
+        Id::Narrow(p) => a.narrow_rect(p).is_some(),
         Id::Space(i) => i < a.c.spaces.len(),
         Id::Invite(s) => a.invite_spots().contains(&s),
         Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
@@ -700,6 +739,7 @@ fn name(a: &App, id: Id) -> String {
     let c = &a.c;
     match id {
         Id::Resize(p) => p.name().into(),
+        Id::Narrow(p) => a.narrow_name(p),
         Id::Viewer(p) => a.viewer.as_ref().map_or_else(String::new, |v| v.label(p)),
         Id::AttachmentEditor(p) => a
             .attachment_editor
@@ -1048,6 +1088,7 @@ fn chip_name(c: &crate::model::Conversation, i: usize, k: usize) -> String {
 fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
     match id {
         Id::Resize(_) => UIA_SliderControlTypeId,
+        Id::Narrow(_) => UIA_ButtonControlTypeId,
         Id::Root => UIA_PaneControlTypeId,
         Id::Rail => UIA_ListControlTypeId,
         Id::Space(_) => UIA_ListItemControlTypeId,
@@ -1170,6 +1211,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
 fn runtime_id(id: Id) -> [i32; 3] {
     let (k, i) = match id {
         Id::Resize(p) => (67, p as usize),
+        Id::Narrow(p) => (68, p as usize),
         Id::Root => (0, 0),
         Id::Rail => (1, 0),
         Id::Space(i) => (2, i),
@@ -1366,8 +1408,9 @@ fn runtime_id(id: Id) -> [i32; 3] {
 }
 
 fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
-    match id {
+    let r = match id {
         Id::Resize(p) => a.pane_rect(p).unwrap_or_default(),
+        Id::Narrow(p) => a.narrow_rect(p).unwrap_or_default(),
         Id::Root => (0.0, 0.0, a.w, a.h),
         Id::Rail => (0.0, 0.0, crate::theme::RAIL_W, a.h),
         Id::Space(i) => App::space_rect(i),
@@ -1410,7 +1453,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::DmMenu => a.dm_menu_rect(),
         Id::DmItem(k) => a.dm_item_rect(k),
         Id::AccountItem(k) => a.account_item_rect(k),
-        Id::History => (a.list_x(), crate::theme::HEADER_H, a.list_w(), a.vh()),
+        Id::History => (a.list_x(), a.history_y(), a.list_w(), a.vh()),
         Id::Row(i) => a.row_rect(i),
         Id::Control(i, action) => {
             let (_, y, _, _) = a.row_rect(i);
@@ -1426,7 +1469,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
                     )
                 })
         }
-        Id::Members => (a.w - a.members_w(), 0.0, a.members_w(), a.h),
+        Id::Members => (a.members_x(), a.members_y(), a.members_w(), a.members_h()),
         Id::Member(i) => a.member_rect(i),
         Id::MemberSearch(p) => a.member_search_rect(p).unwrap_or_default(),
         Id::Composer => a.box_rect(),
@@ -1528,7 +1571,29 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .as_ref()
             .and_then(|s| s.part_rect(p))
             .map_or((0.0, 0.0, 0.0, 0.0), |(r, _)| r),
+    };
+    // The conversation can be narrower than its text measurement minimum.
+    // Match the composition clip so UIA and tooltips cannot hit its neighbor.
+    let mut owner = id;
+    while let Some(p) = parent(owner).filter(|p| *p != Id::Root) {
+        owner = p;
     }
+    let (left, right) = match owner {
+        Id::History
+        | Id::Composer
+        | Id::BoxPart(_)
+        | Id::Reply
+        | Id::ReplyCancel
+        | Id::Waiting
+        | Id::Bar(_)
+        | Id::Rec(_)
+        | Id::MembersToggle
+        | Id::PinsButton => (a.list_x(), a.list_x() + a.chat_width()),
+        _ => return r,
+    };
+    let (x, y, w, h) = r;
+    let start = x.max(left);
+    (start, y, ((x + w).min(right) - start).max(0.0), h)
 }
 
 fn screen_origin(a: &App) -> (f64, f64) {
@@ -1613,6 +1678,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
     fn GetPatternProvider(&self, pattern: UIA_PATTERN_ID) -> Result<IUnknown> {
         let ok = match self.id {
             Id::Resize(_) => pattern == UIA_RangeValuePatternId,
+            Id::Narrow(_) => pattern == UIA_InvokePatternId,
             Id::Space(_) | Id::Channel(_) | Id::Direct(_) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
@@ -1846,6 +1912,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     id,
                     Id::Composer
                         | Id::Resize(_)
+                        | Id::Narrow(_)
                         | Id::ProfilePart(_)
                         | Id::Viewer(
                             MPart::Link
@@ -1940,6 +2007,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 )),
                 UIA_HasKeyboardFocusPropertyId => VARIANT::from(focused(a) == Some(id)),
                 UIA_IsEnabledPropertyId => VARIANT::from(match (id, &a.signin) {
+                    (Id::Narrow(p), _) => a.narrow_enabled(p),
                     (Id::Video(c), _) => c.part == crate::video::Part::Time || a.video_enabled(c),
                     (Id::Sign(Part::Field), Some(s)) => s.editable(),
                     (Id::Sign(Part::Title | Part::Message), _) => true,
@@ -2056,9 +2124,13 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
             if !matches!(id, Id::Resize(_)) {
                 a.clear_pane_focus();
             }
+            if !matches!(id, Id::Narrow(_)) {
+                a.narrow.focus = None;
+            }
             match id {
                 Id::Composer => a.set_composer_focus(true),
                 Id::Resize(p) => a.focus_pane(p),
+                Id::Narrow(p) => a.focus_narrow(p),
                 Id::Video(c) if a.video_enabled(c) => a.focus_video(c),
                 Id::Voice(p) if p != crate::call::VPart::Status => a.focus_voice(p),
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
@@ -2199,6 +2271,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Bar(p) => a.bar_activate(p),
                 Id::Rec(p) => a.rec_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
+                Id::Narrow(p) => a.narrow_activate(p),
                 Id::Voice(p) => a.voice_activate(p),
                 Id::Gear => a.toggle_account_menu(),
                 Id::MembersToggle => a.toggle_members(),
@@ -3159,7 +3232,9 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
     let cards = top
         .iter()
         .take_while(|id| {
-            matches!(id, Id::Suggest | Id::Profile) || **id == Id::Picker && a.profile_emoji_open()
+            matches!(id, Id::Suggest | Id::Profile | Id::Narrow(_))
+                || **id == Id::Members && !a.members_tiled()
+                || **id == Id::Picker && a.profile_emoji_open()
         })
         .count();
     top[cards..].reverse();
@@ -3190,6 +3265,7 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
         | Id::MembersToggle
         | Id::PinsButton
         | Id::Pins(PinPart::Close)
+        | Id::Narrow(_)
         | Id::MemberSearch(SPartM::Open | SPartM::Close)
         | Id::ReplyCancel
         | Id::Tool(..)

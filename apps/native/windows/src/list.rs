@@ -1745,8 +1745,8 @@ impl crate::App {
                 &self.c,
                 &self.rows,
                 self.list_x(),
-                crate::theme::HEADER_H + (self.rows.top[i] - self.scroll_top) as f32,
-                crate::theme::HEADER_H + self.vh(),
+                self.history_y() + (self.rows.top[i] - self.scroll_top) as f32,
+                self.history_y() + self.vh(),
             )
         };
         let Some((m, row)) = c.messages.get(i).zip(rows.row(i)) else {
@@ -1755,7 +1755,11 @@ impl crate::App {
         row.forward_parts(m.grouped)
             .into_iter()
             .filter_map(|(p, r, name)| {
-                let top = (y + r.top).max(crate::theme::HEADER_H);
+                let top = (y + r.top).max(if thread {
+                    crate::theme::HEADER_H
+                } else {
+                    self.history_y()
+                });
                 let end = (y + r.bottom).min(bottom);
                 (end > top).then_some((
                     p,
@@ -1772,7 +1776,7 @@ impl crate::App {
         }
         let i = self
             .rows
-            .row_at(self.scroll_top + (y - crate::theme::HEADER_H) as f64)?;
+            .row_at(self.scroll_top + (y - self.history_y()) as f64)?;
         self.forward_parts(false, i)
             .into_iter()
             .find_map(|(p, r, _)| {

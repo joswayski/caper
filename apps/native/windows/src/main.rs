@@ -59,6 +59,7 @@ mod live;
 mod member_search;
 mod model;
 mod motion;
+mod narrow;
 mod panes;
 mod pins;
 mod signin;
@@ -146,6 +147,7 @@ pub fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
 #[derive(Default, Clone, Copy)]
 struct Dirty {
     layout: bool,
+    narrow: bool,
     rail: bool,
     sidebar: bool,
     header: bool,
@@ -185,6 +187,7 @@ impl Dirty {
     fn all() -> Self {
         Self {
             layout: true,
+            narrow: true,
             rail: true,
             sidebar: true,
             header: true,
@@ -296,6 +299,13 @@ pub struct App {
     pub w: f32,
     pub h: f32,
     panes: panes::State,
+    narrow: narrow::State,
+    navigation_layer: IDCompositionVisual2,
+    conversation_layer: IDCompositionVisual2,
+    thread_layer: IDCompositionVisual2,
+    narrow_p: Panel,
+    narrow_menu_p: Panel,
+    members_backdrop: Panel,
     _target: IDCompositionTarget,
     background: IDCompositionVisual2,
     rail: Panel,
@@ -305,6 +315,7 @@ pub struct App {
     composer_p: Panel,
     toolbar: Panel,
     history_clip: IDCompositionVisual2,
+    history_y_drawn: f32,
     content: IDCompositionVisual2,
     vs: IDCompositionVirtualSurface,
     vs_w: u32,
@@ -534,6 +545,12 @@ impl App {
             let autoscroll_p = Panel::new(&g)?;
             let settings_p = Panel::new(&g)?.entering(&g, motion::Kind::Fade);
             let dm_menu_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
+            let narrow_p = Panel::new(&g)?;
+            let narrow_menu_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
+            let members_backdrop = Panel::new(&g)?;
+            let navigation_layer = g.visual()?;
+            let conversation_layer = g.visual()?;
+            let thread_layer = g.visual()?;
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -547,10 +564,12 @@ impl App {
             history_clip.AddVisual(&toolbar.visual, true, &content)?;
             history_clip.AddVisual(&lip_p.visual, true, &content)?;
             root.AddVisual(&background, false, None)?;
-            let mut prev: IDCompositionVisual = background.cast()?;
+            navigation_layer.AddVisual(&rail.visual, false, None)?;
+            navigation_layer.AddVisual(&sidebar.visual, true, &rail.visual)?;
+            thread_layer.AddVisual(&thread_p.visual, false, None)?;
+            thread_layer.AddVisual(&thread_box_p.visual, true, &thread_p.visual)?;
+            let mut prev: Option<IDCompositionVisual> = None;
             for v in [
-                &rail.visual,
-                &sidebar.visual,
                 &header.visual,
                 &history_clip,
                 &empty_p.visual,
@@ -558,9 +577,19 @@ impl App {
                 &reply_p.visual,
                 &note_p.visual,
                 &typing_p.visual,
-                &thread_p.visual,
-                &thread_box_p.visual,
+            ] {
+                conversation_layer.AddVisual(v, true, prev.as_ref())?;
+                prev = Some(v.cast()?);
+            }
+            let mut prev: IDCompositionVisual = background.cast()?;
+            for v in [
+                &navigation_layer,
+                &conversation_layer,
+                &thread_layer,
+                &narrow_p.visual,
+                &members_backdrop.visual,
                 &members.visual,
+                &narrow_menu_p.visual,
                 &drop_p.visual,
             ] {
                 root.AddVisual(v, true, &prev)?;
@@ -600,6 +629,13 @@ impl App {
                 zoom_notice: false,
                 zoom_p,
                 panes: panes::State::default(),
+                narrow: narrow::State::default(),
+                navigation_layer,
+                conversation_layer,
+                thread_layer,
+                narrow_p,
+                narrow_menu_p,
+                members_backdrop,
                 w: rc.right as f32 / scale,
                 h: rc.bottom as f32 / scale,
                 _target: target,
@@ -611,6 +647,7 @@ impl App {
                 composer_p,
                 toolbar,
                 history_clip,
+                history_y_drawn: HEADER_H,
                 content,
                 vs,
                 vs_w: 1,
@@ -778,15 +815,20 @@ impl App {
         if avatars::poll() {
             self.avatars_changed();
         }
+        let showing =
+            self.chat_shown() && !self.narrow.menu && !(self.is_narrow() && self.members_w() > 0.0);
         let Some(live) = self.live.as_mut() else {
             return Ok(());
         };
         // A toast asks whether its conversation is being read by waking the
         // window; renewing the lease here answers without drawing a frame.
-        live.showing(unsafe {
-            GetForegroundWindow() == self.hwnd
-                && !windows::Win32::UI::WindowsAndMessaging::IsIconic(self.hwnd).as_bool()
-        });
+        live.showing(
+            showing
+                && unsafe {
+                    GetForegroundWindow() == self.hwnd
+                        && !windows::Win32::UI::WindowsAndMessaging::IsIconic(self.hwnd).as_bool()
+                },
+        );
         let updates = live.drain();
         let images = live.pump_media(&mut files::D2d(self.g.dc.clone()));
         let requests = live
@@ -987,6 +1029,7 @@ impl App {
                     }
                     let watching = self.at_end
                         && self.watching_arrivals()
+                        && self.chat_shown()
                         && self.live.as_ref().is_some_and(|l| !l.has_newer());
                     let mut new = live::message(&m, author, grouped, me.as_deref());
                     new.reaction_error = error;
@@ -1137,11 +1180,15 @@ impl App {
     }
 
     pub fn list_x(&self) -> f32 {
-        RAIL_W + self.sidebar_w()
+        if self.is_narrow() {
+            0.0
+        } else {
+            RAIL_W + self.sidebar_w()
+        }
     }
 
     pub fn list_w(&self) -> f32 {
-        (self.w - self.list_x() - self.members_w() - self.thread_w()).max(160.0)
+        self.chat_width().max(160.0)
     }
 
     pub fn box_rect(&self) -> (f32, f32, f32, f32) {
@@ -1157,10 +1204,13 @@ impl App {
     pub fn vh(&self) -> f32 {
         // 16px above the composer (and its reply), matching the 16px below it,
         // so the composer sits centered in its band.
-        (self.box_rect().1 - 16.0 - HEADER_H - self.reply_h() - self.note_h()).max(0.0)
+        (self.box_rect().1 - 16.0 - self.history_y() - self.reply_h() - self.note_h()).max(0.0)
     }
 
     pub fn visible_rows(&self) -> Range<usize> {
+        if !self.chat_shown() {
+            return 0..0;
+        }
         self.rows
             .range(self.scroll_top, self.scroll_top + self.vh() as f64)
     }
@@ -1179,7 +1229,7 @@ impl App {
         let ty = self.rows.row(i).map_or(0.0, |r| r.text_y);
         (
             self.list_x() + list::BODY_X,
-            HEADER_H
+            self.history_y()
                 + (self.rows.top[i] - self.scroll_top) as f32
                 + list::content_top(self.c.messages[i].grouped)
                 + ty,
@@ -1217,7 +1267,7 @@ impl App {
     pub fn member_slot_rect(&self, slot: usize) -> (f32, f32, f32, f32) {
         (
             self.members_x() + 8.0,
-            MEMBER_TOP + self.members_top() + MEMBER_H * slot as f32,
+            self.members_y() + MEMBER_TOP + self.members_top() + MEMBER_H * slot as f32,
             self.member_width() - 16.0,
             MEMBER_H,
         )
@@ -1231,7 +1281,7 @@ impl App {
     pub fn row_rect(&self, i: usize) -> (f32, f32, f32, f32) {
         (
             self.list_x(),
-            HEADER_H + (self.rows.top[i] - self.scroll_top) as f32,
+            self.history_y() + (self.rows.top[i] - self.scroll_top) as f32,
             self.list_w(),
             self.rows.height(i),
         )
@@ -1281,16 +1331,18 @@ impl App {
     /// The header's member-list toggle (client DIPs), in a space's channel
     /// with members, as in egui.
     pub fn members_toggle_rect(&self) -> Option<(f32, f32, f32, f32)> {
-        (self.c.has_conversation() && self.c.direct.is_none() && !self.c.members.is_empty()).then(
-            || {
-                (
-                    self.list_x() + self.list_w() - 18.0 - 28.0,
-                    (HEADER_H - 28.0) / 2.0,
-                    28.0,
-                    28.0,
-                )
-            },
-        )
+        (!self.is_narrow()
+            && self.c.has_conversation()
+            && self.c.direct.is_none()
+            && !self.c.members.is_empty())
+        .then(|| {
+            (
+                self.list_x() + self.list_w() - 18.0 - 28.0,
+                (HEADER_H - 28.0) / 2.0,
+                28.0,
+                28.0,
+            )
+        })
     }
 
     pub fn on_members_toggle(&self, x: f32, y: f32) -> bool {
@@ -1300,9 +1352,14 @@ impl App {
 
     /// Shows or hides the member list; the conversation takes its width.
     pub fn toggle_members(&mut self) {
-        self.members_hidden = !self.members_hidden;
+        if self.is_narrow() {
+            self.narrow.members = !self.narrow.members;
+        } else {
+            self.members_hidden = !self.members_hidden;
+        }
         self.hover_member = None;
         self.member_search_follow();
+        self.dirty.narrow = true;
         self.dirty.layout = true;
         self.dirty.header = true;
         self.events |= EV_SCREEN;
@@ -1337,6 +1394,7 @@ impl App {
             focused && self.c.has_conversation() && self.dm_bar().is_none() && self.rec().is_none();
         // One text field has focus: the reply box in the thread gives it up.
         if focused {
+            self.narrow.focus = None;
             self.clear_pane_focus();
             self.set_thread_focus(false);
         }
@@ -1668,6 +1726,7 @@ impl App {
     }
 
     pub fn select_channel(&mut self, i: usize) {
+        self.set_browsing(false);
         if let Some(live) = &mut self.live {
             if i != self.c.channel
                 && let Some(id) = self.ids.channels.get(i)
@@ -1721,7 +1780,7 @@ impl App {
     }
 
     fn msg_hit(&self, x: f32, y: f32) -> Option<(usize, u32)> {
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let vis = self.visible_rows();
         if vis.is_empty() {
             return None;
@@ -1741,7 +1800,7 @@ impl App {
 
     /// Whether (`x`, `y`) is on a shown message's text.
     fn over_text(&self, x: f32, y: f32) -> bool {
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let Some(i) = self.rows.row_at(ay) else {
             return false;
         };
@@ -1773,14 +1832,22 @@ impl App {
 
     fn in_box(&self, x: f32, y: f32) -> bool {
         let (bx, by, bw, bh) = self.box_rect();
-        self.c.has_conversation() && x >= bx && x < bx + bw && y >= by && y < by + bh
+        self.chat_shown()
+            && self.c.has_conversation()
+            && x < self.list_x() + self.chat_width()
+            && x >= bx
+            && x < bx + bw
+            && y >= by
+            && y < by + bh
     }
 
     pub(crate) fn in_history(&self, x: f32, y: f32) -> bool {
-        x >= self.list_x()
-            && x < self.list_x() + self.list_w()
-            && y >= HEADER_H
-            && y < HEADER_H + self.vh()
+        self.chat_shown()
+            && !self.on_member_overlay(x, y)
+            && x >= self.list_x()
+            && x < self.list_x() + self.chat_width()
+            && y >= self.history_y()
+            && y < self.history_y() + self.vh()
     }
 
     fn update_hover(&mut self) {
@@ -1810,12 +1877,22 @@ impl App {
             });
             space_options = self.space_scope().is_some() && inside(self.space_options_rect(), x, y);
         }
+        if !self.navigation_shown() {
+            space = None;
+            channel = None;
+            direct = None;
+            channel_options = false;
+            space_options = false;
+        }
         if direct != self.hover_direct {
             self.hover_direct = direct;
             self.dirty.sidebar = true;
             self.need = true;
         }
-        let invite = self.pointer.and_then(|(x, y)| self.invite_at(x, y));
+        let invite = self
+            .pointer
+            .filter(|_| self.navigation_shown())
+            .and_then(|(x, y)| self.invite_at(x, y));
         if invite != self.hover_invite {
             self.hover_invite = invite;
             self.dirty.rail = true;
@@ -1891,7 +1968,8 @@ impl App {
         {
             return Some(i);
         }
-        self.rows.row_at(self.scroll_top + (y - HEADER_H) as f64)
+        self.rows
+            .row_at(self.scroll_top + (y - self.history_y()) as f64)
     }
 
     /// Sends the composer's text and files (to the local development mock
@@ -2072,16 +2150,32 @@ impl App {
         {
             return r;
         }
+        // The account footer is behind Browse in the narrow shell, but the
+        // account's Settings shortcut remains available from either view.
+        if msg == WM_KEYDOWN
+            && ctrl
+            && wp.0 == VK_OEM_COMMA.0 as usize
+            && self.c.is_live()
+            && self.live.as_ref().is_some_and(|l| l.account_id.is_some())
+        {
+            self.open_settings();
+            return Some(LRESULT(0));
+        }
         if let Some(r) = self.pane_input(msg, wp, x, y, shift) {
             return Some(r);
         }
-        if let Some(r) = self.call_input(msg, wp, x, y, shift) {
+        if let Some(r) = self.narrow_input(msg, wp, x, y, ctrl, shift) {
+            return Some(r);
+        }
+        if self.navigation_shown()
+            && let Some(r) = self.call_input(msg, wp, x, y, shift)
+        {
             return Some(r);
         }
         if let Some(r) = self.video_input(msg, wp, x, y, ctrl, shift) {
             return Some(r);
         }
-        if self.thread.is_some()
+        if self.thread_shown()
             && let Some(r) = self.thread_input(msg, wp, x, y, ctrl, shift)
         {
             return r;
@@ -2090,6 +2184,20 @@ impl App {
             && let Some(r) = self.member_search_input(msg, wp, x, y, ctrl, shift)
         {
             return r;
+        }
+        if self.is_narrow()
+            && (!self.chat_shown() || self.narrow.menu || self.members_w() > 0.0)
+            && matches!(
+                msg,
+                WM_KEYDOWN
+                    | WM_CHAR
+                    | WM_LBUTTONDOWN
+                    | WM_LBUTTONDBLCLK
+                    | WM_CONTEXTMENU
+                    | WM_MOUSEWHEEL
+            )
+        {
+            return Some(LRESULT(0));
         }
         match msg {
             WM_SIZE => {
@@ -2330,7 +2438,9 @@ impl App {
                         self.open_menu(i);
                     }
                 } else if self.in_history(x, y)
-                    && let Some(i) = self.rows.row_at(self.scroll_top + (y - HEADER_H) as f64)
+                    && let Some(i) = self
+                        .rows
+                        .row_at(self.scroll_top + (y - self.history_y()) as f64)
                     && i < self.c.messages.len()
                 {
                     self.open_context_menu(i, x, y);
@@ -2666,7 +2776,7 @@ impl App {
         if !self.in_history(x, y) {
             return None;
         }
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let ry = (ay - self.rows.top[i]) as f32;
         let action = self.row_controls(i).into_iter().find(|(_, r)| {
@@ -2845,11 +2955,6 @@ impl App {
     }
 
     fn key(&mut self, vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> bool {
-        // Ctrl+, opens Settings, as in the egui client.
-        if ctrl && vk == VK_OEM_COMMA && self.foot_shown() {
-            self.open_settings();
-            return true;
-        }
         if ctrl && vk == VIRTUAL_KEY('C' as u16) {
             let text = if self.composer.focused {
                 self.composer.copied()
@@ -3000,8 +3105,19 @@ impl App {
         if pw <= 0.0 || ph <= 0.0 {
             return;
         }
+        let was_narrow = self.is_narrow();
         self.w = pw / self.scale;
         self.h = ph / self.scale;
+        if was_narrow != self.is_narrow() {
+            self.narrow = narrow::State::default();
+            self.stop_autoscroll();
+            self.clear_pane_focus();
+            self.set_composer_focus(false);
+            self.set_thread_focus(false);
+            self.member_search_follow();
+            self.events |= EV_SCREEN;
+        }
+        self.dirty.narrow = true;
         self.dirty.layout = true;
         self.dirty.signin = true;
         self.dirty.profile = true;
@@ -3098,6 +3214,7 @@ impl App {
     }
 
     fn apply_layout(&mut self) -> Result<()> {
+        self.history_y_drawn = self.history_y();
         let s = self.scale;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         let (w, h, lx, lw) = (self.w, self.h, self.list_x(), self.list_w());
@@ -3120,15 +3237,53 @@ impl App {
         }
         self.dirty.rail |= self.rail.ensure(&self.g, px(RAIL_W), px(h))?;
         self.dirty.sidebar |= self.sidebar.ensure(&self.g, px(sw), px(h))?;
+        self.dirty.narrow = true;
+        unsafe {
+            self.navigation_layer
+                .SetOffsetX2(if self.navigation_shown() {
+                    0.0
+                } else {
+                    -100_000.0
+                })?;
+            self.conversation_layer.SetOffsetX2(if self.chat_shown() {
+                0.0
+            } else {
+                -100_000.0
+            })?;
+            self.conversation_layer.SetClip2(&rect(
+                lx * s,
+                0.0,
+                (lx + self.chat_width()) * s,
+                h * s,
+            ))?;
+            self.thread_layer
+                .SetOffsetX2(if self.thread_shown() { 0.0 } else { -100_000.0 })?;
+        }
         self.sidebar.offset((RAIL_W * s).round(), 0.0)?;
         self.dirty.header |= self.header.ensure(&self.g, px(lw), px(HEADER_H))?;
         self.header.offset((lx * s).round(), 0.0)?;
-        self.dirty.members |= self.members.ensure(&self.g, px(mw), px(h))?;
+        self.dirty.members |= self.members.ensure(&self.g, px(mw), px(self.members_h()))?;
         // A DM has no member list: the column steps aside.
         if self.members_w() > 0.0 {
-            self.members.offset(((w - mw) * s).round(), 0.0)?;
+            self.members.offset(
+                (self.members_x() * s).round(),
+                (self.members_y() * s).round(),
+            )?;
         } else {
             self.members.offset(-10_000.0, 0.0)?;
+        }
+        if self.is_narrow() && self.members_w() > 0.0 {
+            self.members_backdrop
+                .ensure(&self.g, px(w), px(h - HEADER_H))?;
+            self.members_backdrop.offset(0.0, (HEADER_H * s).round())?;
+            self.members_backdrop.draw(s, |dc| {
+                unsafe {
+                    dc.Clear(Some(&gfx::color(0, 0.25)));
+                }
+                Ok(())
+            })?;
+        } else {
+            self.members_backdrop.offset(-100_000.0, 0.0)?;
         }
         let bw = lw - 36.0;
         self.box_h = self.box_height(bw)?;
@@ -3161,7 +3316,8 @@ impl App {
         let vh = self.vh();
         unsafe {
             self.history_clip.SetOffsetX2((lx * s).round())?;
-            self.history_clip.SetOffsetY2((HEADER_H * s).round())?;
+            self.history_clip
+                .SetOffsetY2((self.history_y() * s).round())?;
             self.history_clip
                 .SetClip2(&rect(0.0, 0.0, (lw * s).round(), (vh * s).round()))?;
         }
@@ -3703,7 +3859,8 @@ impl App {
                     dc.FillRectangle(&rect(sw - 2.0, 0.0, sw, self.h), &g.brushes.terracotta);
                 }
                 if let Some((muted, lit)) = space_menu {
-                    let b = rect(sw - 40.0, 13.0, sw - 12.0, 41.0);
+                    let (x, y, w, h) = self.space_options_rect();
+                    let b = rect(x - RAIL_W, y, x - RAIL_W + w, y + h);
                     if lit {
                         fill_round(dc, b, 6.0, &g.brushes.hover);
                     }
@@ -3730,7 +3887,17 @@ impl App {
                 let title = c.spaces.get(c.space).map_or("Caper", |s| s.name.as_str());
                 let t = g.layout(&gfx::wide(title), &g.formats.space, 10_000.0)?;
                 emoji::apply(&t, title, 17.0, 1.0)?;
+                dc.PushAxisAlignedClip(
+                    &rect(
+                        20.0,
+                        0.0,
+                        (sw - if self.is_narrow() { 106.0 } else { 62.0 }).max(20.0),
+                        HEADER_H,
+                    ),
+                    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                );
                 text::draw(dc, &t, 20.0, 16.0, &g.brushes.text);
+                dc.PopAxisAlignedClip();
                 dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, sw, HEADER_H), &g.brushes.border);
                 let label = g.layout(
                     &gfx::wide(&format!("Channels  {}", c.channels.len())),
@@ -3860,7 +4027,11 @@ impl App {
                 invites::draw_sidebar(g, dc, &side_invites, invites_top, invite_hover, sw)?;
                 directs::draw(g, dc, &drows, (dtop, sw), dhover, dmenu)?;
                 self.draw_call(g, dc)?;
-                self.draw_foot(g, dc, self.h)?;
+                if self.is_narrow() {
+                    self.draw_update_dock(g, dc)?;
+                } else {
+                    self.draw_foot(g, dc, self.h)?;
+                }
                 Ok(())
             })?;
         }
@@ -3892,6 +4063,11 @@ impl App {
             .max(40.0);
             self.header.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
+                if self.is_narrow() {
+                    self.draw_narrow_header(dc)?;
+                    dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, lw, HEADER_H), &g.brushes.border);
+                    return Ok(());
+                }
                 if hashed {
                     let hash = g.layout(&gfx::wide("#"), &g.formats.header, 40.0)?;
                     text::draw(dc, &hash, 24.0, 16.0, &g.brushes.muted);
@@ -3945,7 +4121,13 @@ impl App {
             let x0 = self.members_x();
             let this = &*self;
             self.members.draw(s, |dc| unsafe {
-                dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
+                dc.Clear(Some(&gfx::color(0, 0.0)));
+                fill_round(
+                    dc,
+                    rect(0.0, 0.0, mw, self.members_h()),
+                    if self.is_narrow() { 16.0 } else { 0.0 },
+                    &g.solid(SURFACE_SIDEBAR),
+                );
                 dc.FillRectangle(&rect(0.0, 0.0, 1.0, 100_000.0), &g.brushes.border);
                 if self.panes.focus == Some(panes::Pane::Members) {
                     dc.FillRectangle(&rect(0.0, 0.0, 2.0, self.h), &g.brushes.terracotta);
@@ -3955,7 +4137,17 @@ impl App {
                     &g.formats.section,
                     10_000.0,
                 )?;
+                dc.PushAxisAlignedClip(
+                    &rect(
+                        20.0,
+                        0.0,
+                        mw - if self.members_tiled() { 52.0 } else { 88.0 },
+                        HEADER_H,
+                    ),
+                    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                );
                 text::draw(dc, &t, 20.0, 18.0, &g.brushes.text);
+                dc.PopAxisAlignedClip();
                 dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, mw, HEADER_H), &g.brushes.border);
                 member_search::draw(g, dc, this, x0)?;
                 let online = shown.iter().filter(|&&i| c.members[i].online).count();
@@ -4115,6 +4307,7 @@ impl App {
             self.bench.log_frame(started.elapsed());
             return Ok(());
         }
+        self.dirty.layout |= self.history_y_drawn != self.history_y();
         if self.dirty.layout {
             self.dirty.layout = false;
             self.apply_layout()?;
@@ -4136,14 +4329,23 @@ impl App {
         self.draw_profile()?;
         self.draw_suggest()?;
         self.draw_tip()?;
+        self.dirty.narrow |= self.dirty.sidebar;
+        self.draw_narrow()?;
         self.draw_panels()?;
         self.draw_drop()?;
         self.draw_autoscroll()?;
         unsafe { self.g.dcomp.Commit()? };
         self.place_web_player();
+        let showing =
+            self.chat_shown() && !self.narrow.menu && !(self.is_narrow() && self.members_w() > 0.0);
         if let Some(live) = &mut self.live {
             // Renews the worker's lease on the open conversation while focused.
-            live.showing(unsafe { GetForegroundWindow() } == self.hwnd);
+            live.showing(
+                showing
+                    && unsafe {
+                        GetForegroundWindow() == self.hwnd && !IsIconic(self.hwnd).as_bool()
+                    },
+            );
         }
         self.bench.log_frame(started.elapsed());
         Ok(())

@@ -597,7 +597,7 @@ impl crate::App {
         if self.live.is_none() || !self.in_history(x, y) {
             return None;
         }
-        let ay = self.scroll_top + (y - crate::theme::HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let m = self.c.messages.get(i)?;
         let (rx, ry) = (x - self.list_x(), (ay - self.rows.top[i]) as f32);
@@ -624,7 +624,7 @@ impl crate::App {
     /// Part `k` of row `i`'s link previews in client DIPs.
     pub fn embed_rect(&self, i: usize, k: usize) -> Option<crate::overlay::Rect> {
         let (r, _, _) = self.embed_parts(i).into_iter().nth(k)?;
-        let y = crate::theme::HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        let y = self.history_y() + (self.rows.top[i] - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,

@@ -285,9 +285,17 @@ impl App {
     }
 
     pub fn video_rect(&self, c: Control) -> Option<crate::overlay::Rect> {
+        if !(if c.thread {
+            self.thread_shown()
+        } else {
+            self.chat_shown()
+        }) {
+            return None;
+        }
         self.video_attachment(c)?;
         let r = self.video_tile_rect(c)?;
-        let bottom = HEADER_H
+        let history_y = if c.thread { HEADER_H } else { self.history_y() };
+        let bottom = history_y
             + if c.thread {
                 self.thread_vh()
             } else {
@@ -295,7 +303,7 @@ impl App {
             };
         let (p, r) = controls(r).into_iter().find(|(p, _)| *p == c.part)?;
         let _ = p;
-        let top = r.1.max(HEADER_H);
+        let top = r.1.max(history_y);
         let end = (r.1 + r.3).min(bottom);
         (end > top).then_some((r.0, top, r.2, end - top))
     }
@@ -596,16 +604,23 @@ impl App {
             self.stop_inline_video();
             return;
         };
-        let visible = self.viewer.is_none()
+        let history_y = if c.thread { HEADER_H } else { self.history_y() };
+        let visible = (if c.thread {
+            self.thread_shown()
+        } else {
+            self.chat_shown()
+        }) && !self.narrow.menu
+            && !(self.members_w() > 0.0 && !self.members_tiled())
+            && self.viewer.is_none()
             && self.signin.is_none()
             && self.settings.is_none()
             && self.dialog.is_none()
             && self.pins.is_none()
             && !unsafe { IsIconic(self.hwnd) }.as_bool()
             && self.video_tile_rect(c).is_some_and(|r| {
-                r.1 + r.3 > HEADER_H
+                r.1 + r.3 > history_y
                     && r.1
-                        < HEADER_H
+                        < history_y
                             + if c.thread {
                                 self.thread_vh()
                             } else {

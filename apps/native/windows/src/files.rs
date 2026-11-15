@@ -882,7 +882,7 @@ impl App {
         if self.live.is_none() || !self.in_history(x, y) {
             return None;
         }
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let m = self.c.messages.get(i)?;
         let ry = (ay - self.rows.top[i]) as f32;
@@ -897,7 +897,7 @@ impl App {
             return None;
         }
         let r = self.rows.file_rect(i, self.c.messages.get(i)?.grouped, k)?;
-        let y = HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        let y = self.history_y() + (self.rows.top[i] - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,
@@ -912,7 +912,7 @@ impl App {
         if !self.in_history(x, y) {
             return None;
         }
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let grouped = self.c.messages.get(i)?.grouped;
         let ry = (ay - self.rows.top[i]) as f32;
@@ -928,7 +928,7 @@ impl App {
         let r = self
             .rows
             .spoiler_rect(i, self.c.messages.get(i)?.grouped, k)?;
-        let y = HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        let y = self.history_y() + (self.rows.top[i] - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,

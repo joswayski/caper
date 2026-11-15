@@ -858,6 +858,9 @@ impl App {
 
     /// The composer box's control under client point (x, y).
     pub fn box_part_at(&self, x: f32, y: f32) -> Option<Part> {
+        if !self.chat_shown() {
+            return None;
+        }
         for style in composer::Style::ALL {
             if self
                 .box_part_rect(Part::Format(style))

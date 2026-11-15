@@ -8,7 +8,6 @@
 use crate::list::{self, HEAD_H, Head};
 use crate::live::{self, Older};
 use crate::model::Conversation;
-use crate::theme::HEADER_H;
 use crate::{App, EV_ROWS, side_layouts};
 use windows::core::Result;
 
@@ -33,7 +32,7 @@ impl App {
         let top = self.head_top()?;
         let state = self.live.as_ref()?.older();
         let r = list::head_rect(&self.g, state, self.list_w()).ok()?;
-        let y = HEADER_H + (top - self.scroll_top) as f32;
+        let y = self.history_y() + (top - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,
@@ -145,7 +144,7 @@ impl App {
         }
         let r = list::head_button_rect(&self.g, &self.foot_head(k), self.list_w()).ok()?;
         let top = self.rows.bottom() + (k as f32 * HEAD_H) as f64;
-        let y = HEADER_H + (top - self.scroll_top) as f32;
+        let y = self.history_y() + (top - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,
@@ -280,7 +279,7 @@ impl App {
         if !self.in_history(x, y) || self.live.is_none() {
             return None;
         }
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let ry = (ay - self.rows.top[i]) as f32;
         let r = self.rows.quote_link(i)?;
@@ -294,7 +293,7 @@ impl App {
             return None;
         }
         let r = self.rows.quote_link(i)?;
-        let y = HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        let y = self.history_y() + (self.rows.top[i] - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,

@@ -667,7 +667,7 @@ impl App {
         if !self.in_history(x, y) || self.live.is_none() {
             return None;
         }
-        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let grouped = self.c.messages.get(i)?.grouped;
         let who = self.rows.who_at(

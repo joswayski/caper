@@ -99,12 +99,18 @@ impl State {
 
 impl App {
     pub fn sidebar_w(&self) -> f32 {
+        if self.is_narrow() {
+            return (self.w - crate::theme::RAIL_W).max(0.0);
+        }
         self.panes
             .width(Pane::Sidebar)
             .min(self.pane_max(Pane::Sidebar))
     }
 
     pub fn member_width(&self) -> f32 {
+        if self.is_narrow() {
+            return (self.w - 64.0).clamp(0.0, 280.0);
+        }
         self.panes
             .width(Pane::Members)
             .min(self.pane_max(Pane::Members))
@@ -130,7 +136,8 @@ impl App {
     }
 
     pub fn pane_rect(&self, p: Pane) -> Option<Rect> {
-        if self.signin.is_some()
+        if self.is_narrow()
+            || self.signin.is_some()
             || self.dialog.is_some()
             || self.settings.is_some()
             || self.viewer.is_some()
@@ -145,7 +152,12 @@ impl App {
             Pane::Thread if self.thread.is_some() => self.thread_x(),
             _ => return None,
         };
-        Some((x - 3.0, 0.0, 7.0, self.h))
+        let y = if p == Pane::Members {
+            self.members_y()
+        } else {
+            0.0
+        };
+        Some((x - 3.0, y, 7.0, self.h - y))
     }
 
     pub fn pane_at(&self, x: f32, y: f32) -> Option<Pane> {
@@ -291,7 +303,12 @@ impl App {
                     _ => return None,
                 }
             }
-            WM_KEYDOWN if wp.0 == VK_TAB.0 as usize && self.composer.focused && !shift => {
+            WM_KEYDOWN
+                if wp.0 == VK_TAB.0 as usize
+                    && self.composer.focused
+                    && !shift
+                    && !self.is_narrow() =>
+            {
                 self.focus_pane(Pane::Sidebar);
             }
             WM_LBUTTONDOWN => {
