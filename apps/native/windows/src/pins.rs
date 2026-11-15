@@ -435,7 +435,10 @@ impl App {
         self.close_picker();
         self.close_gifs(false);
         self.set_composer_focus(false);
-        self.pins = Some(Pins::new(c, about));
+        // Focus starts on Close, so Narrator announces Pins as it opens.
+        let mut pins = Pins::new(c, about);
+        pins.focus = Some(Part::Close);
+        self.pins = Some(pins);
         self.pins_hover = false;
         self.dirty.header = true;
         self.pins_changed();
@@ -452,6 +455,13 @@ impl App {
             self.events |= EV_SCREEN | EV_FOCUS;
             self.need = true;
         }
+    }
+
+    /// Close and Escape give the keyboard back to the composer Pins took
+    /// it from.
+    fn close_pins_refocus(&mut self) {
+        self.close_pins();
+        self.set_composer_focus(true);
     }
 
     /// Pins laid out again for the window or its contents.
@@ -500,7 +510,7 @@ impl App {
     pub fn pins_activate(&mut self, part: Part) {
         let Some(p) = &self.pins else { return };
         match part {
-            Part::Close => self.close_pins(),
+            Part::Close => self.close_pins_refocus(),
             Part::Card(k) | Part::Go(k) => {
                 let (Some(m), Some((_, root))) = (p.c.messages.get(k), p.about.get(k)) else {
                     return;
@@ -602,7 +612,7 @@ impl App {
                         return done;
                     }
                     VK_ESCAPE => {
-                        self.close_pins();
+                        self.close_pins_refocus();
                         return done;
                     }
                     VK_UP => p.scroll_by(-(WHEEL_STEP as f32)),
