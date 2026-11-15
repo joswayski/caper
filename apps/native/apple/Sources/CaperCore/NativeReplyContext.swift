@@ -89,7 +89,7 @@ import AppKit
     private var loads: [Task<Void, Never>] = []
     private let observation = AppKitObservation()
     private var scrolling: NSKeyValueObservation?
-    private var expanded = false, hidden = false, lastHeight: CGFloat = 0
+    private var expanded = false, blocked = false, lastHeight: CGFloat = 0
     override var isFlipped: Bool { true }
     init(reference: MessageReply, motionKey: String, chat: ChatModel) {
         self.reference = reference; self.chat = chat; wire = NativeReplyWire(key: motionKey)
@@ -115,19 +115,19 @@ import AppKit
     }
     @objc private func motionChanged() { wire.stop(); moveWire() }
     private func render() {
-        let wasHidden = hidden; hidden = chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID
-        name.stringValue = hidden ? "Blocked message" : reference.author.name + (reference.hasAttachments && reference.deleted != true ? (reference.hasVoice ? "  ◉" : "  📎") : "")
-        excerpt.stringValue = hidden ? "" : replyExcerpt(reference); excerpt.maximumNumberOfLines = expanded ? 0 : 3
-        avatar.isHidden = hidden; hint.isHidden = reference.deleted == true; open.isEnabled = reference.deleted != true
-        open.setAccessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
-        open.setAccessibilityHelp(hidden ? nil : excerpt.stringValue)
+        let wasHidden = blocked; blocked = chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID
+        name.stringValue = blocked ? "Blocked message" : reference.author.name + (reference.hasAttachments && reference.deleted != true ? (reference.hasVoice ? "  ◉" : "  📎") : "")
+        excerpt.stringValue = blocked ? "" : replyExcerpt(reference); excerpt.maximumNumberOfLines = expanded ? 0 : 3
+        avatar.isHidden = blocked; hint.isHidden = reference.deleted == true; open.isEnabled = reference.deleted != true
+        open.setAccessibilityLabel(blocked ? "View original blocked message" : "View original message from \(reference.author.name)")
+        open.setAccessibilityHelp(blocked ? nil : excerpt.stringValue)
         expand.title = expanded ? "Show less" : "Show more"; expand.setAccessibilityValue(expanded ? "Expanded" : "Collapsed")
-        if thumbnails.arrangedSubviews.isEmpty || wasHidden != hidden { makeThumbnails() }
+        if thumbnails.arrangedSubviews.isEmpty || wasHidden != blocked { makeThumbnails() }
         needsLayout = true; invalidateIntrinsicContentSize()
     }
     private func makeThumbnails() {
         loads.forEach { $0.cancel() }; loads = []; thumbnails.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        guard !hidden, reference.deleted != true else { return }
+        guard !blocked, reference.deleted != true else { return }
         let attachments = reference.attachments ?? []
         for file in attachments.prefix(3) {
             let image = NSImageView(); image.imageScaling = .scaleProportionallyUpOrDown; image.wantsLayer = true
@@ -146,8 +146,8 @@ import AppKit
         if attachments.count > 3 { thumbnails.addArrangedSubview(AppKitKit.label("+\(attachments.count - 3)", size: 12, color: AppKitKit.muted)) }
     }
     private func metrics(_ width: CGFloat) -> (text: CGFloat, expand: Bool, height: CGFloat) {
-        let full = hidden ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.stringValue, attributes: [.font: AppKitKit.font(12)]), width: max(1, width - 68))
-        let more = !hidden && reference.deleted != true && (expanded || full > 48)
+        let full = blocked ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.stringValue, attributes: [.font: AppKitKit.font(12)]), width: max(1, width - 68))
+        let more = !blocked && reference.deleted != true && (expanded || full > 48)
         let text = expanded ? full : min(48, full)
         return (text, more, 20 + 20 + text + (thumbnails.arrangedSubviews.isEmpty ? 0 : 47) + (more ? 32 : 0) + 13)
     }
@@ -156,7 +156,7 @@ import AppKit
         super.layout(); let width = max(1, bounds.width - 68), m = metrics(bounds.width)
         CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 44, y: 0, width: max(1, bounds.width - 44), height: m.height - 13); CATransaction.commit()
         avatar.frame = CGRect(x: 56, y: 12, width: 16, height: 16)
-        let nameX: CGFloat = hidden ? 56 : 78
+        let nameX: CGFloat = blocked ? 56 : 78
         name.frame = CGRect(x: nameX, y: 10, width: max(1, bounds.width - nameX - (hint.isHidden ? 12 : 86)), height: 20)
         hint.frame = CGRect(x: max(56, bounds.width - 86), y: 10, width: 74, height: 20)
         excerpt.preferredMaxLayoutWidth = width; excerpt.frame = CGRect(x: 56, y: 33, width: width, height: m.text)
@@ -166,7 +166,7 @@ import AppKit
         expand.isHidden = !m.expand; expand.frame = CGRect(x: 56, y: bottom - 4, width: width, height: 32)
         moveWire(); if lastHeight != m.height { lastHeight = m.height; invalidateIntrinsicContentSize(); heightChanged?() }
     }
-    private func moveWire() { wire.update(y: convert(NSPoint.zero, to: nil).y, height: intrinsicContentSize.height, hidden: hidden) }
+    private func moveWire() { wire.update(y: convert(NSPoint.zero, to: nil).y, height: intrinsicContentSize.height, hidden: blocked) }
 }
 #elseif os(iOS)
 import UIKit
@@ -179,7 +179,7 @@ import UIKit
     private let name = UIKitMessageDialog.label("", size: 12, bold: true), excerpt = UIKitMessageDialog.label("", size: 12), hint = UIKitMessageDialog.label("View original", size: 11)
     private let open = UIButton(type: .custom), expand = UIButton(type: .system), thumbnails = UIStackView()
     private var loads: [Task<Void, Never>] = [], scrolling: NSKeyValueObservation?
-    private var expanded = false, hidden = false, generation = 0, lastHeight: CGFloat = 0
+    private var expanded = false, blocked = false, generation = 0, lastHeight: CGFloat = 0
     public init(reference: MessageReply, motionKey: String, chat: ChatModel) {
         self.reference = reference; self.motionKey = motionKey; self.chat = chat; wire = NativeReplyWire(key: motionKey)
         super.init(frame: .zero); layer.addSublayer(panel); layer.addSublayer(wire.layer)
@@ -216,18 +216,18 @@ import UIKit
     private func observe(_ token: Int) { guard window != nil, token == generation else { return }; withObservationTracking { render() } onChange: { [weak self] in Task { @MainActor in self?.observe(token) } } }
     @objc private func motionChanged() { wire.stop(); moveWire() }
     private func render() {
-        let wasHidden = hidden; hidden = chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID
-        name.text = hidden ? "Blocked message" : reference.author.name + (reference.hasAttachments && reference.deleted != true ? (reference.hasVoice ? "  ◉" : "  📎") : "")
-        excerpt.text = hidden ? "" : replyExcerpt(reference); excerpt.numberOfLines = expanded ? 0 : 3
-        avatar.show(name: reference.author.name, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture); avatar.isHidden = hidden
+        let wasHidden = blocked; blocked = chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID
+        name.text = blocked ? "Blocked message" : reference.author.name + (reference.hasAttachments && reference.deleted != true ? (reference.hasVoice ? "  ◉" : "  📎") : "")
+        excerpt.text = blocked ? "" : replyExcerpt(reference); excerpt.numberOfLines = expanded ? 0 : 3
+        avatar.show(name: reference.author.name, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture); avatar.isHidden = blocked
         hint.isHidden = reference.deleted == true; open.isEnabled = reference.deleted != true
-        open.accessibilityLabel = hidden ? "View original blocked message" : "View original message from \(reference.author.name)"; open.accessibilityHint = hidden ? nil : excerpt.text
+        open.accessibilityLabel = blocked ? "View original blocked message" : "View original message from \(reference.author.name)"; open.accessibilityHint = blocked ? nil : excerpt.text
         expand.setTitle(expanded ? "Show less" : "Show more", for: .normal); expand.accessibilityValue = expanded ? "Expanded" : "Collapsed"
-        if wasHidden != hidden { makeThumbnails() }; setNeedsLayout(); invalidateIntrinsicContentSize()
+        if wasHidden != blocked { makeThumbnails() }; setNeedsLayout(); invalidateIntrinsicContentSize()
     }
     private func makeThumbnails() {
         loads.forEach { $0.cancel() }; loads = []; thumbnails.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        guard !hidden, reference.deleted != true else { return }
+        guard !blocked, reference.deleted != true else { return }
         let attachments = reference.attachments ?? []
         for file in attachments.prefix(3) {
             let image = UIImageView(); image.contentMode = .scaleAspectFill; image.clipsToBounds = true; image.layer.cornerRadius = 6; image.backgroundColor = UIColor(CaperTheme.raised)
@@ -244,8 +244,8 @@ import UIKit
         if attachments.count > 3 { thumbnails.addArrangedSubview(UIKitMessageDialog.label("+\(attachments.count - 3)", size: 12)) }
     }
     private func metrics(_ width: CGFloat) -> (text: CGFloat, expand: Bool, height: CGFloat) {
-        let full = hidden ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.text ?? "", attributes: [.font: excerpt.font!]), width: max(1, width - 68))
-        let limit = ceil(excerpt.font.lineHeight * 3), more = !hidden && reference.deleted != true && (expanded || full > limit), text = expanded ? full : min(limit, full)
+        let full = blocked ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.text ?? "", attributes: [.font: excerpt.font!]), width: max(1, width - 68))
+        let limit = ceil(excerpt.font.lineHeight * 3), more = !blocked && reference.deleted != true && (expanded || full > limit), text = expanded ? full : min(limit, full)
         return (text, more, max(44, 40 + text + (thumbnails.arrangedSubviews.isEmpty ? 0 : 47)) + (more ? 44 : 0) + 13)
     }
     public override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: metrics(bounds.width).height) }
@@ -253,7 +253,7 @@ import UIKit
         super.layoutSubviews(); let width = max(1, bounds.width - 68), m = metrics(bounds.width)
         CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 44, y: 0, width: max(1, bounds.width - 44), height: m.height - 13); CATransaction.commit()
         avatar.frame = CGRect(x: 56, y: 12, width: 16, height: 16)
-        let nameX: CGFloat = hidden ? 56 : 78
+        let nameX: CGFloat = blocked ? 56 : 78
         name.frame = CGRect(x: nameX, y: 10, width: max(1, bounds.width - nameX - (hint.isHidden ? 12 : 86)), height: 20)
         hint.frame = CGRect(x: max(56, bounds.width - 86), y: 10, width: 74, height: 20)
         excerpt.frame = CGRect(x: 56, y: 33, width: width, height: m.text); thumbnails.frame = CGRect(x: 56, y: 36 + m.text, width: width, height: 44)
@@ -262,6 +262,6 @@ import UIKit
         expand.isHidden = !m.expand; expand.frame = CGRect(x: 56, y: bottom - 4, width: width, height: 44)
         moveWire(); if lastHeight != m.height { lastHeight = m.height; invalidateIntrinsicContentSize() }
     }
-    private func moveWire() { wire.update(y: convert(CGPoint.zero, to: nil).y, height: intrinsicContentSize.height, hidden: hidden) }
+    private func moveWire() { wire.update(y: convert(CGPoint.zero, to: nil).y, height: intrinsicContentSize.height, hidden: blocked) }
 }
 #endif
