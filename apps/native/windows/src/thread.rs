@@ -1423,6 +1423,9 @@ impl App {
             && let Some(p) = &mut self.thread
         {
             p.scroll_to(&id, vh);
+            // Pins, inbox and forwarded sources arrive here from a control
+            // that has closed or scrolled away; keep the keyboard somewhere.
+            self.set_thread_focus(true);
         }
         if self
             .thread

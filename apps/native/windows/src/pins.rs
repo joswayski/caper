@@ -519,11 +519,17 @@ impl App {
                 self.close_pins();
                 // A thread reply opens its thread at the reply, as egui's
                 // load_context(root, id).
+                // The thread's reply box takes focus once the thread lands;
+                // a channel message leaves the keyboard on the composer.
+                let thread = root.is_some();
                 if let Some(live) = &mut self.live {
                     match root {
                         Some(root) => live.open_thread_at(&root, &id),
                         None => live.view_original(&id, None),
                     }
+                }
+                if !thread {
+                    self.set_composer_focus(true);
                 }
             }
         }
