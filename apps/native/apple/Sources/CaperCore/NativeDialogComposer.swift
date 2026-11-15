@@ -21,8 +21,9 @@ import AppKit
     private let grows: Bool
 
     init(text: Binding<String>, placeholder: String, identifier: String, height: CGFloat,
-         controller: ComposerAutocompleteController = ComposerAutocompleteController(), submit: (() -> Void)? = nil,
+         controller: ComposerAutocompleteController? = nil, submit: (() -> Void)? = nil,
          pasteAttachments: (() -> Bool)? = nil, highlightSource: MentionSource? = nil, grows: Bool = false) {
+        let controller = controller ?? ComposerAutocompleteController()
         self.controller = controller; self.grows = grows
         super.init(frame: .zero)
         configuration = NativeMessageTextEditor(text: text, placeholder: placeholder, controller: controller,
@@ -125,10 +126,14 @@ import UIKit
     private var buttons: [UIButton] = []
     private var editorHeight: NSLayoutConstraint!
     private let grows: Bool
+    private var textChanges: NSObjectProtocol?
+    /// Called after a growing editor changes height, so its host re-measures.
+    var heightChanged: (() -> Void)?
 
     init(text: Binding<String>, placeholder: String, identifier: String, height: CGFloat,
-         controller: ComposerAutocompleteController = ComposerAutocompleteController(), submit: (() -> Void)? = nil,
+         controller: ComposerAutocompleteController? = nil, submit: (() -> Void)? = nil,
          pasteAttachments: (() -> Bool)? = nil, highlightSource: MentionSource? = nil, grows: Bool = false) {
+        let controller = controller ?? ComposerAutocompleteController()
         self.controller = controller; self.grows = grows
         super.init(frame: .zero)
         configuration = NativeMessageTextEditor(text: text, placeholder: placeholder, controller: controller,
@@ -184,6 +189,12 @@ import UIKit
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 6), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
+        // Typing does not lay this view out, so a growing editor re-measures here.
+        if grows {
+            textChanges = NotificationCenter.default.addObserver(forName: UITextView.textDidChangeNotification, object: editor, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.setNeedsLayout() }
+            }
+        }
         changes = controller.objectWillChange.sink { [weak self] in
             DispatchQueue.main.async { [weak self] in self?.renderControls() }
         }
@@ -204,7 +215,10 @@ import UIKit
         super.layoutSubviews()
         guard grows, editor.bounds.width > 0 else { return }
         let height = min(140, max(42, ceil(editor.sizeThatFits(CGSize(width: editor.bounds.width, height: .greatestFiniteMagnitude)).height)))
-        if editorHeight.constant != height { editorHeight.constant = height }
+        if editorHeight.constant != height {
+            editorHeight.constant = height
+            DispatchQueue.main.async { [weak self] in self?.heightChanged?() }
+        }
     }
 
     private func renderControls() {

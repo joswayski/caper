@@ -235,7 +235,7 @@ struct NativeAttachmentEditorBridge: UIViewControllerRepresentable {
         accessibilityLabel = state.request.kind == .video ? "Video frame being edited" : "Image being edited"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool { state.tool == nil && state.playback == nil }
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool { state.tool == nil && state.playback == nil }
     func refresh() {
         setNeedsDisplay(); setNeedsLayout()
         isAccessibilityElement = state.picture != nil && state.field == nil && state.playback == nil

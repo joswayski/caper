@@ -57,7 +57,9 @@ struct NativeReactionPickerBridge: NSViewControllerRepresentable {
         let header = NSStackView(views: [title, NSView(), cancel]); header.spacing = 8
         let tabs = NSStackView(); tabs.distribution = .fillEqually; tabs.spacing = 0
         for item in NativeEmojiPickerCatalog.categories {
-            let button = AppKitKitButton(item.1, kind: .plain) { [weak self] in
+            // The category name is the accessibility label and tooltip; as a
+            // title AppKitKitButton would draw it over the emoji.
+            let button = AppKitKitButton("", kind: .plain) { [weak self] in
                 self?.category = item.0; self?.search.stringValue = ""; self?.reload()
             }
             button.imagePosition = .imageOnly

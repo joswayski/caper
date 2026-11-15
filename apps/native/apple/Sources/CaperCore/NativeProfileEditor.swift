@@ -227,6 +227,11 @@ struct NativeProfileForm: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIKitProfileEditor { UIKitProfileEditor(state: state, choose: choose) }
     func updateUIViewController(_ controller: UIKitProfileEditor, context: Context) { controller.render() }
     static func dismantleUIViewController(_ controller: UIKitProfileEditor, coordinator: ()) { controller.stop() }
+    // The workspace dialog sizes to its content and proposes no height.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiViewController: UIKitProfileEditor, context: Context) -> CGSize? {
+        guard let width = proposal.width else { return nil }
+        return CGSize(width: width, height: proposal.height ?? uiViewController.fittingHeight(width: width))
+    }
 }
 
 @MainActor final class UIKitProfileEditor: UIKitMessageDialog, UITextFieldDelegate {
@@ -246,7 +251,7 @@ struct NativeProfileForm: UIViewControllerRepresentable {
     private var decoding: Task<Void, Never>?
     override var dismissDisabled: Bool { state.saving }
     init(state: NativeProfileEditing, choose: @escaping () -> Void) {
-        self.state = state; self.choose = choose; super.init(title: "Edit profile", close: state.requestClose)
+        self.state = state; self.choose = choose; super.init(title: "Edit profile", closeLabel: "Close profile", close: state.requestClose)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {

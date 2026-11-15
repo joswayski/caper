@@ -66,7 +66,9 @@ struct NativeMediaViewerBridge: NSViewControllerRepresentable {
         canvas.step = { [weak self] in self?.move($0) }
     }
     private func button(_ title: String, icon: String, id: String, action: @escaping () -> Void) -> AppKitKitButton {
-        let button = AppKitKitButton(title, kind: .plain, action: action)
+        // AppKitKitButton draws any title itself, over the icon; the name stays
+        // the accessibility label and tooltip.
+        let button = AppKitKitButton("", kind: .plain, action: action)
         button.imagePosition = .imageOnly; button.minimumHeight = 36
         button.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)
         button.setAccessibilityLabel(title); button.setAccessibilityIdentifier("media-viewer-\(id)"); button.toolTip = title
@@ -201,6 +203,9 @@ struct NativeMediaViewerBridge: NSViewControllerRepresentable {
 
 private final class AppKitMediaImage: NSImageView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    // A non-editable image view otherwise reports a generic role, so
+    // VoiceOver would not announce the viewed file as an image.
+    override func accessibilityRole() -> NSAccessibility.Role? { .image }
 }
 #elseif os(iOS)
 struct NativeMediaViewerBridge: UIViewControllerRepresentable {
@@ -221,7 +226,7 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
     private let notice = UIKitMessageDialog.label("")
     private let status = UIKitMessageDialog.label("")
     private var previous: UIButton!
-    private var next: UIButton!
+    private var nextButton: UIButton!
     private var hide: UIButton!
     private var play: UIButton!
     private var more: UIButton!
@@ -251,20 +256,20 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
         let names = UIStackView(arrangedSubviews: [titleLabel, details]); names.axis = .vertical; names.spacing = 2
         let header = UIStackView(arrangedSubviews: [names, more, close]); header.spacing = 8
         previous = control("Previous file", icon: "chevron.left", id: "previous") { [weak self] in self?.move(-1) }
-        next = control("Next file", icon: "chevron.right", id: "next") { [weak self] in self?.move(1) }
+        nextButton = control("Next file", icon: "chevron.right", id: "next") { [weak self] in self?.move(1) }
         play = UIKitMessageDialog.button("Play animation") { [state] in state.toggleAnimation() }
         play.accessibilityIdentifier = "media-viewer-animation-toggle"
         hide = UIKitMessageDialog.button("Hide spoiler") { [state] in state.hideSpoiler() }; hide.accessibilityIdentifier = "media-viewer-hide-spoiler"
         let actions = UIStackView(arrangedSubviews: [play, hide]); actions.spacing = 8
         let footer = UIStackView(arrangedSubviews: [status, actions]); footer.axis = .vertical; footer.alignment = .center; footer.spacing = 4
-        for child in [header, previous!, next!, notice, footer] {
+        for child in [header, previous!, nextButton!, notice, footer] {
             child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child)
         }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
             header.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             previous.centerYAnchor.constraint(equalTo: view.centerYAnchor), previous.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
-            next.centerYAnchor.constraint(equalTo: view.centerYAnchor), next.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            nextButton.centerYAnchor.constraint(equalTo: view.centerYAnchor), nextButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
             notice.centerXAnchor.constraint(equalTo: view.centerXAnchor), notice.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             notice.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
             footer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8), footer.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -298,8 +303,8 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
         titleLabel.text = item?.name; view.accessibilityLabel = item?.kind == .video ? "Video viewer" : "Image viewer"
         counter.text = MediaViewerPolicy.counter(position: state.position, count: state.items.count)
         counter.accessibilityLabel = "\(state.position + 1) of \(state.items.count)"; fileSize.text = item.flatMap(MediaViewerPolicy.size)
-        previous.isHidden = state.items.count < 2; next.isHidden = previous.isHidden
-        previous.isEnabled = state.position > 0; next.isEnabled = state.position < state.items.count - 1
+        previous.isHidden = state.items.count < 2; nextButton.isHidden = previous.isHidden
+        previous.isEnabled = state.position > 0; nextButton.isEnabled = state.position < state.items.count - 1
         more.isHidden = !state.available; more.isEnabled = !state.busy
         hide.isHidden = item?.spoiler != true; play.isHidden = !state.animated || state.failed
         var configuration = play.configuration; configuration?.title = state.playing ? "Pause animation" : "Play animation"; play.configuration = configuration

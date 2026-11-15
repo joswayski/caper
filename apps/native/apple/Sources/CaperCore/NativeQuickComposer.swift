@@ -232,12 +232,17 @@ import AppKit
 struct NativeQuickComposerBridge: NSViewRepresentable {
     @Bindable var state: NativeQuickDraft
     func makeNSView(context: Context) -> AppKitQuickComposer { AppKitQuickComposer(state: state) }
-    func updateNSView(_ view: AppKitQuickComposer, context: Context) { view.render() }
+    // The view renders from its own observation. Rendering here, inside SwiftUI's
+    // update, reads the editor's binding as its creation-time snapshot (the
+    // empty draft) and resets the text being typed.
+    func updateNSView(_ view: AppKitQuickComposer, context: Context) {}
     static func dismantleNSView(_ view: AppKitQuickComposer, coordinator: ()) { view.stop() }
+    // Measuring here would lay out the hosted leaves inside this graph's
+    // update, which aborts ("setting value during update"). The view measures
+    // itself in AppKit's layout pass and invalidates its size when it changes.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: AppKitQuickComposer, context: Context) -> CGSize? {
         guard let width = proposal.width else { return nil }
-        nsView.setFrameSize(CGSize(width: width, height: nsView.frame.height)); nsView.layoutSubtreeIfNeeded()
-        return CGSize(width: width, height: nsView.fittingSize.height)
+        return CGSize(width: width, height: nsView.measuredHeight)
     }
 }
 
@@ -252,6 +257,7 @@ struct NativeQuickComposerBridge: NSViewRepresentable {
     private var emoji: AppKitKitButton!
     private var send: AppKitKitButton!
     private var contentWidth: CGFloat = 0
+    private(set) var measuredHeight: CGFloat = 96
     init(state: NativeQuickDraft) {
         self.state = state; files = NSHostingView(rootView: AnyView(QuickComposerFiles(state: state)))
         voice = NSHostingView(rootView: AnyView(QuickComposerVoice(state: state)))
@@ -280,7 +286,15 @@ struct NativeQuickComposerBridge: NSViewRepresentable {
             voice.rootView = AnyView(QuickComposerVoice(state: state).frame(width: contentWidth))
         }
         super.layout()
+        guard bounds.width > 0 else { return }
+        let width = widthAnchor.constraint(equalToConstant: bounds.width); width.isActive = true
+        let height = ceil(fittingSize.height); width.isActive = false
+        if abs(height - measuredHeight) > 0.5 {
+            measuredHeight = height
+            DispatchQueue.main.async { [weak self] in self?.invalidateIntrinsicContentSize() }
+        }
     }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: measuredHeight) }
     func render() {
         let recording = VoiceMessageRecorder.shared.isRecording(state.voiceTarget.owner)
         editor.update(editable: state.editable && !recording)
@@ -298,7 +312,10 @@ import UIKit
 struct NativeQuickComposerBridge: UIViewControllerRepresentable {
     @Bindable var state: NativeQuickDraft
     func makeUIViewController(context: Context) -> UIKitQuickComposer { UIKitQuickComposer(state: state) }
-    func updateUIViewController(_ controller: UIKitQuickComposer, context: Context) { controller.render() }
+    // The controller renders from its own observation. Rendering here, inside
+    // SwiftUI's update, reads the editor's binding as its creation-time snapshot
+    // (the empty draft) and resets the text being typed.
+    func updateUIViewController(_ controller: UIKitQuickComposer, context: Context) {}
     static func dismantleUIViewController(_ controller: UIKitQuickComposer, coordinator: ()) { controller.stop() }
     func sizeThatFits(_ proposal: ProposedViewSize, uiViewController: UIKitQuickComposer, context: Context) -> CGSize? {
         guard let width = proposal.width else { return nil }
@@ -324,6 +341,7 @@ struct NativeQuickComposerBridge: UIViewControllerRepresentable {
         editor = NativeDialogComposer(text: Binding(get: { [state] in state.draft.text }, set: { [state] in if state.editable { state.draft.text = $0 } }),
             placeholder: state.placeholder, identifier: "mention-card-composer", height: 42, controller: state.autocomplete,
             submit: state.send, pasteAttachments: state.paste, highlightSource: state.highlight, grows: true)
+        editor.heightChanged = { [weak self] in self?.view.invalidateIntrinsicContentSize() }
         files = UIHostingController(rootView: AnyView(QuickComposerFiles(state: state))); voice = UIHostingController(rootView: AnyView(QuickComposerVoice(state: state)))
         for host in [files!, voice!] { host.sizingOptions = [.intrinsicContentSize]; host.view.backgroundColor = .clear; addChild(host) }
         attach = UIKitMessageDialog.button("Attach files") { [state] in state.pickFiles() }; attach.accessibilityIdentifier = "mention-card-files"

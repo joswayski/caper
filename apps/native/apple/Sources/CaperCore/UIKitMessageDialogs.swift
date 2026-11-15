@@ -29,8 +29,11 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
     private var originals: [String: (message: ChatMessage, host: UIHostingController<AnyView>)] = [:]
     var dismissDisabled: Bool { false }
 
-    init(title: String, close: @escaping () -> Void) {
-        self.close = close
+    private let closeLabel: String
+    private var header: UIStackView?
+
+    init(title: String, closeLabel: String = "Close", close: @escaping () -> Void) {
+        self.close = close; self.closeLabel = closeLabel
         super.init(nibName: nil, bundle: nil)
         self.title = title
     }
@@ -41,8 +44,8 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         view.backgroundColor = UIColor(CaperTheme.raised); overrideUserInterfaceStyle = .dark
         let title = Self.label(self.title ?? "", size: 20, bold: true)
         let close = Self.button("Close") { [weak self] in if let self, !self.dismissDisabled { self.close() } }
-        closeButton = close
-        let header = UIStackView(arrangedSubviews: [title, close]); header.spacing = 12
+        close.accessibilityLabel = closeLabel; closeButton = close
+        let header = UIStackView(arrangedSubviews: [title, close]); header.spacing = 12; self.header = header
         title.setContentHuggingPriority(.defaultLow, for: .horizontal)
         close.setContentHuggingPriority(.required, for: .horizontal)
         let scroll = UIScrollView(); scroll.keyboardDismissMode = .interactive
@@ -63,6 +66,16 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
             body.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -20),
             body.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32),
         ])
+    }
+    /// The height the header and every row need at this width, for hosts
+    /// that size a dialog to its content rather than giving it a full sheet.
+    func fittingHeight(width: CGFloat) -> CGFloat {
+        loadViewIfNeeded()
+        let inner = CGSize(width: max(1, width - 32), height: UIView.layoutFittingCompressedSize.height)
+        func fit(_ view: UIView?) -> CGFloat {
+            view?.systemLayoutSizeFitting(inner, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height ?? 0
+        }
+        return ceil(16 + fit(header) + 12 + 4 + fit(body) + 20)
     }
     func observe() {
         guard active else { return }
