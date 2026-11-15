@@ -1565,6 +1565,7 @@ impl App {
         if focused {
             self.narrow.focus = None;
             self.clear_pane_focus();
+            self.clear_side_focus();
         }
         let Some(t) = &mut self.thread else {
             return;

@@ -1351,6 +1351,7 @@ impl App {
         self.close_dialog();
         self.close_gifs(false);
         self.set_composer_focus(false);
+        self.clear_side_focus();
         let (launch, error) = if launch_allowed() {
             match caper_client::startup::enabled() {
                 Ok(on) => (on, None),
@@ -1377,6 +1378,7 @@ impl App {
         self.close_dialog();
         self.close_gifs(false);
         self.set_composer_focus(false);
+        self.clear_side_focus();
         self.settings = Some(Settings::inbox());
         if let Some(live) = &mut self.live {
             live.open_activity();
@@ -1423,10 +1425,13 @@ impl App {
     }
 
     /// Close, Done, Escape and a click outside give the keyboard back to
-    /// the composer.
+    /// the composer, or, as web's dialog does, to the sidebar row that
+    /// opened the page.
     fn close_settings_refocus(&mut self) {
         self.close_settings();
-        self.set_composer_focus(true);
+        if self.side_focus.is_none() {
+            self.set_composer_focus(true);
+        }
     }
 
     pub fn close_settings(&mut self) {

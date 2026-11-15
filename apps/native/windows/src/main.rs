@@ -281,6 +281,13 @@ impl Panel {
 /// A text selection across message rows: (row, UTF-16 position) anchor and focus.
 pub type Sel = ((usize, u32), (usize, u32));
 
+/// The sidebar row that has the keyboard: the channel or DM picked last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Channel(usize),
+    Direct(usize),
+}
+
 pub struct App {
     pub hwnd: HWND,
     pub g: Gfx,
@@ -380,6 +387,9 @@ pub struct App {
     settings_p: Panel,
     /// `settings_p` last drew Settings rather than the gear's menu.
     settings_shown: bool,
+    pub side_focus: Option<Side>,
+    /// Its ring shows after keyboard or Narrator moves, not a pointer click.
+    pub side_ring: bool,
     pointer: Option<(f32, f32)>,
     tracking: bool,
     autoscroll: Option<autoscroll::Run>,
@@ -691,6 +701,8 @@ impl App {
                 pending_invite: None,
                 settings_p,
                 settings_shown: false,
+                side_focus: None,
+                side_ring: false,
                 pointer: None,
                 tracking: false,
                 sel: None,
@@ -1400,6 +1412,7 @@ impl App {
             self.narrow.focus = None;
             self.clear_pane_focus();
             self.set_thread_focus(false);
+            self.clear_side_focus();
         }
         if focused
             && let Some(p) = &mut self.gifs
@@ -1726,6 +1739,86 @@ impl App {
             self.dirty.sidebar = true;
             self.need = true;
         }
+    }
+
+    /// A pointer click, Enter or Narrator's Invoke on a channel row: as on
+    /// web, the row it picked keeps the keyboard.
+    pub fn pick_channel(&mut self, i: usize) {
+        self.select_channel(i);
+        self.focus_side(Side::Channel(i));
+    }
+
+    /// The same for a DM row. Notifications and Feedback open over the
+    /// conversation, which takes the keys until it closes.
+    pub fn pick_direct(&mut self, k: usize) {
+        self.open_direct_row(k);
+        self.focus_side(Side::Direct(k));
+    }
+
+    pub fn focus_side(&mut self, side: Side) {
+        // Narrow navigation closes as it picks, so its rows can't keep focus.
+        if self.is_narrow() {
+            return;
+        }
+        self.set_composer_focus(false);
+        self.set_thread_focus(false);
+        self.set_member_search_focus(false);
+        self.clear_pane_focus();
+        self.set_kb(None);
+        self.narrow.focus = None;
+        self.side_focus = Some(side);
+        self.side_ring = false;
+        self.dirty.sidebar = true;
+        self.events |= EV_FOCUS;
+        self.need = true;
+    }
+
+    pub fn clear_side_focus(&mut self) {
+        if self.side_focus.take().is_some() {
+            self.dirty.sidebar = true;
+            self.events |= EV_FOCUS;
+            self.need = true;
+        }
+    }
+
+    /// Narrator moved focus to the message list: nothing else keeps the keys.
+    pub fn focus_history(&mut self) {
+        self.set_composer_focus(false);
+        self.set_thread_focus(false);
+        self.set_member_search_focus(false);
+        self.clear_pane_focus();
+        self.set_kb(None);
+        self.narrow.focus = None;
+        self.clear_side_focus();
+        self.events |= EV_FOCUS;
+        self.need = true;
+    }
+
+    /// Up and Down move between rows of the focused list, Enter and Space
+    /// pick, and Tab or Escape go to the composer.
+    fn side_key(&mut self, side: Side, vk: VIRTUAL_KEY, shift: bool) -> bool {
+        let (k, n) = match side {
+            Side::Channel(i) => (i, self.c.channels.len()),
+            Side::Direct(k) => (k, self.direct_rows().len()),
+        };
+        let to = |k: usize| match side {
+            Side::Channel(_) => Side::Channel(k),
+            Side::Direct(_) => Side::Direct(k),
+        };
+        match vk {
+            VK_UP if k > 0 => self.focus_side(to(k - 1)),
+            VK_DOWN if k + 1 < n => self.focus_side(to(k + 1)),
+            VK_UP | VK_DOWN => {}
+            VK_RETURN | VK_SPACE => match side {
+                Side::Channel(i) => self.pick_channel(i),
+                Side::Direct(k) => self.pick_direct(k),
+            },
+            VK_TAB if !shift => self.set_composer_focus(true),
+            VK_ESCAPE => self.set_composer_focus(true),
+            _ => return false,
+        }
+        self.side_ring = true;
+        true
     }
 
     pub fn select_channel(&mut self, i: usize) {
@@ -2356,6 +2449,7 @@ impl App {
                     self.set_composer_focus(false);
                     self.set_thread_focus(false);
                     self.set_kb(None);
+                    self.clear_side_focus();
                     if let Some((i, k)) = self.tool_at(x, y) {
                         if let Some(t) = self.tools(i).get(k) {
                             self.tool_activate(i, t.tool);
@@ -2418,8 +2512,10 @@ impl App {
                             let scope = self.channel_scope(i);
                             self.toggle_scope_menu(scope);
                         } else {
-                            self.select_channel(i);
+                            self.pick_channel(i);
                         }
+                    } else if let Some(directs::Spot::Row(k)) = self.hover_direct {
+                        self.pick_direct(k);
                     } else if let Some(spot) = self.hover_direct {
                         self.direct_click(spot);
                     } else if let Some(i) = self.hover_space {
@@ -2574,6 +2670,19 @@ impl App {
             }
             WM_CHAR => {
                 let c = wp.0 as u16;
+                // Type-to-compose: a letter typed with nothing else focused (or
+                // the history after a click) starts a message. Space still
+                // belongs to the history.
+                if !self.composer.focused
+                    && !ctrl
+                    && c > 0x20
+                    && c != 0x7f
+                    && self.picker.is_none()
+                    && self.gifs.is_none()
+                    && matches!(uia::focused(self), None | Some(uia::Id::History))
+                {
+                    self.set_composer_focus(true);
+                }
                 if self.composer.focused && !ctrl && c >= 0x20 && c != 0x7f {
                     self.composer.insert(&[c]);
                     self.composer_changed();
@@ -2841,6 +2950,7 @@ impl App {
         if let Some((i, action)) = to {
             self.set_composer_focus(false);
             self.set_thread_focus(false);
+            self.clear_side_focus();
             self.redraw.push(i);
             if let Some((_, r)) = self.row_controls(i).into_iter().find(|(a, _)| *a == action) {
                 let (top, bottom) = (
@@ -2967,6 +3077,15 @@ impl App {
             if !text.is_empty() {
                 set_clipboard(self.hwnd, &text);
             }
+            return true;
+        }
+        if let Some(side) = self.side_focus
+            && matches!(
+                uia::focused(self),
+                Some(uia::Id::Channel(_) | uia::Id::Direct(_))
+            )
+            && self.side_key(side, vk, shift)
+        {
             return true;
         }
         if self.history_key(vk, shift) {
@@ -3856,6 +3975,9 @@ impl App {
                 .map(|i| self.join_action(i).filter(|_| hover == Some(i)))
                 .collect();
             let voice_hover = self.voice_hover;
+            let side_ring = self
+                .side_focus
+                .filter(|_| self.side_ring && !self.is_narrow());
             self.sidebar.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
                 if self.panes.focus == Some(panes::Pane::Sidebar) {
@@ -4029,6 +4151,20 @@ impl App {
                 invites::draw_channel_plus(g, dc, channel_plus, invite_hover, sw);
                 invites::draw_sidebar(g, dc, &side_invites, invites_top, invite_hover, sw)?;
                 directs::draw(g, dc, &drows, (dtop, sw), dhover, dmenu)?;
+                let ring = match side_ring {
+                    Some(Side::Channel(i)) if i < c.channels.len() => Some(self.channel_rect(i)),
+                    Some(Side::Direct(k)) if k < drows.len() => Some(self.direct_rect(k)),
+                    _ => None,
+                };
+                if let Some((x, y, w, h)) = ring {
+                    let x = x - RAIL_W;
+                    stroke_round(
+                        dc,
+                        rect(x + 1.0, y + 1.0, x + w - 1.0, y + h - 1.0),
+                        RADIUS,
+                        &g.brushes.terracotta,
+                    );
+                }
                 self.draw_call(g, dc)?;
                 if self.is_narrow() {
                     self.draw_update_dock(g, dc)?;

@@ -218,6 +218,7 @@ impl App {
         self.account_menu = None;
         self.set_composer_focus(false);
         self.set_thread_focus(false);
+        self.clear_side_focus();
         self.settings = Some(Settings {
             page,
             ..Settings::new(false, None)

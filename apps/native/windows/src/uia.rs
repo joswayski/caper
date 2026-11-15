@@ -237,7 +237,7 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
 }
 
 /// The node of the focused text field, while one is focused.
-fn focused(a: &App) -> Option<Id> {
+pub fn focused(a: &App) -> Option<Id> {
     if let Some(s) = &a.settings {
         return s.focus.map(Id::Settings);
     }
@@ -317,10 +317,20 @@ fn focused(a: &App) -> Option<Id> {
     {
         return Some(Id::Control(i, action));
     }
-    match &a.signin {
-        Some(s) => s.field().focused.then_some(Id::Sign(Part::Field)),
-        None => a.composer.focused.then_some(Id::Composer),
+    if let Some(s) = &a.signin {
+        return s.field().focused.then_some(Id::Sign(Part::Field));
     }
+    if a.composer.focused {
+        return Some(Id::Composer);
+    }
+    // The channel or DM picked by pointer keeps focus, as web's link does;
+    // otherwise the keys scroll the history (after a click in it).
+    let side = a.side_focus.map(|s| match s {
+        crate::Side::Channel(i) => Id::Channel(i),
+        crate::Side::Direct(k) => Id::Direct(k),
+    });
+    side.filter(|&id| exists(a, id))
+        .or_else(|| (a.c.has_conversation() && exists(a, Id::History)).then_some(Id::History))
 }
 
 fn children(a: &App, id: Id) -> Vec<Id> {
@@ -1936,6 +1946,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
+                        | Id::History
                         | Id::Resize(_)
                         | Id::Narrow(_)
                         | Id::ProfilePart(_)
@@ -2157,6 +2168,15 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
             }
             match id {
                 Id::Composer => a.set_composer_focus(true),
+                Id::History => a.focus_history(),
+                Id::Channel(i) => {
+                    a.focus_side(crate::Side::Channel(i));
+                    a.side_ring = true;
+                }
+                Id::Direct(k) => {
+                    a.focus_side(crate::Side::Direct(k));
+                    a.side_ring = true;
+                }
                 Id::Resize(p) => a.focus_pane(p),
                 Id::Narrow(p) => a.focus_narrow(p),
                 Id::Video(c) if a.video_enabled(c) => a.focus_video(c),
@@ -2292,8 +2312,8 @@ impl IInvokeProvider_Impl for Node_Impl {
             }
             match id {
                 Id::Space(i) => a.select_space(i),
-                Id::Channel(i) => a.select_channel(i),
-                Id::Direct(k) => a.open_direct_row(k),
+                Id::Channel(i) => a.pick_channel(i),
+                Id::Direct(k) => a.pick_direct(k),
                 Id::NewDirect => a.open_start_direct(),
                 Id::Invite(s) => a.invite_activate(s),
                 Id::Bar(p) => a.bar_activate(p),
