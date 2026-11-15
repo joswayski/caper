@@ -24,6 +24,10 @@ auth=(
 )
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+# Every export leaves ~600 MB XcodeDistPipeline.* folders and app analysis zips
+# in TMPDIR; keep them inside $work so the trap removes them on the shared Mac.
+export TMPDIR="$work/tmp"
+mkdir "$TMPDIR"
 
 "$ROOT/prepare.sh"
 source_revision="$(sed -n 's/^CAPER_SOURCE_REVISION = //p' "$ROOT/.build/SourceRevision.xcconfig")"
@@ -78,4 +82,8 @@ cat >"$work/ExportOptions.plist" <<EOF
 EOF
 xcodebuild -exportArchive -archivePath "$work/Caper.xcarchive" \
   -exportOptionsPlist "$work/ExportOptions.plist" -exportPath "$work/export" "${auth[@]}"
+system_tmp="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+if [[ -n "$system_tmp" && -n "$(find "$system_tmp" -maxdepth 1 -name 'XcodeDistPipeline.*' -newer "$work/ExportOptions.plist" 2>/dev/null)" ]]; then
+  echo "::warning::New XcodeDistPipeline folders appeared in $system_tmp despite TMPDIR; they need cleaning up there."
+fi
 echo "Uploaded $IOS_BUNDLE_ID build $BUILD_NUMBER to App Store Connect; it appears in TestFlight after processing."

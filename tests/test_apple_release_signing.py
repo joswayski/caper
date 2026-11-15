@@ -53,6 +53,9 @@ record = {"args": args}
 if stage == "export":
     with open(args[args.index("-exportOptionsPlist") + 1], "rb") as options:
         record["options"] = plistlib.load(options)
+    leftover = Path(os.environ["TMPDIR"]) / "XcodeDistPipeline.~~~fixture"
+    leftover.mkdir()
+    record["leftover"] = str(leftover)
 with open(os.environ["TEST_LOG"], "a") as log:
     log.write(json.dumps(record) + "\\n")
 if os.environ.get("FAIL_STAGE") == stage:
@@ -139,6 +142,9 @@ if stage == "archive":
             },
         )
         self.assertIn("Uploaded chat.fixture.custom build 37.2", result.stdout)
+        # Export temp folders stay out of the shared runner's TMPDIR and go with the run.
+        self.assertFalse(Path(export["leftover"]).exists())
+        self.assertNotEqual(Path(export["leftover"]).parent, Path(tempfile.gettempdir()))
 
     def test_mismatched_release_metadata_stops_before_upload(self):
         for overrides, key in (
