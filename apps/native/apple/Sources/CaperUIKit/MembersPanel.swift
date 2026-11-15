@@ -333,7 +333,11 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
 
     /// Escape in member search ends it, as on web.
     override var keyCommands: [UIKeyCommand]? {
-        searchRow.isHidden ? nil : [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeSearch))]
+        guard !searchRow.isHidden else { return nil }
+        // The search field would otherwise take Escape as a system key.
+        let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeSearch))
+        escape.wantsPriorityOverSystemBehavior = true
+        return [escape]
     }
     @objc private func escapeSearch() { endSearch() }
 

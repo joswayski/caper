@@ -259,7 +259,12 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     override func accessibilityPerformEscape() -> Bool { close(); return true }
     /// Escape in the reply box closes the thread, as on web; open suggestions
     /// take Escape first because the text view's own command wins.
-    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeThread))] }
+    override var keyCommands: [UIKeyCommand]? {
+        // The reply box would otherwise take Escape as a system key.
+        let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeThread))
+        escape.wantsPriorityOverSystemBehavior = true
+        return [escape]
+    }
     @objc private func escapeThread() { close() }
     func returnFocusToComposer() { composer.returnFocus() }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
