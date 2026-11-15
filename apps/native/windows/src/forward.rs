@@ -8,7 +8,7 @@ use crate::overlay::{Dialog, Kind, Part, Rect, height, layout};
 use crate::{App, EV_FOCUS, EV_SCREEN, theme::*};
 use caper_client::api::Api;
 use caper_client::forwarding::{Operation, Picker, Response};
-use caper_client::model::{ForwardConversation, Message};
+use caper_client::model::{AttachmentKind, ForwardConversation, Message};
 use caper_client::worker::SendFailure;
 use std::cell::RefCell;
 use std::sync::mpsc;
@@ -130,6 +130,21 @@ impl Original {
         if !m.is_deleted() {
             if m.content.text.is_empty() && m.content.attachments.iter().any(|a| a.voice) {
                 summary.push_str("Voice message\n");
+            }
+            // The preview draws no attachment cards, so name each file
+            // instead of silently dropping it; a spoiler keeps its name hidden.
+            for a in m.content.attachments.iter().filter(|a| !a.voice) {
+                let kind = match a.kind {
+                    AttachmentKind::Image => "Image",
+                    AttachmentKind::Video => "Video",
+                    AttachmentKind::Audio => "Audio",
+                    AttachmentKind::File => "File",
+                };
+                if a.spoiler {
+                    summary.push_str(&format!("Spoiler {}\n", kind.to_lowercase()));
+                } else {
+                    summary.push_str(&format!("{kind} · {}\n", a.name));
+                }
             }
             summary.push_str(
                 &m.reactions
@@ -564,7 +579,6 @@ impl Dialog {
         }
         parts.extend(controls);
         parts.insert(0, (Part::Title, (cx + 16.0, cy + 16.0, inner - 40.0, 28.0)));
-        parts.push((Part::Close, (cx + cw - 44.0, cy + 12.0, 32.0, 32.0)));
         if picker {
             if formatting > 0.0 {
                 for (k, style) in Style::ALL.into_iter().enumerate() {
@@ -587,6 +601,9 @@ impl Dialog {
             ));
             parts.push((Part::Primary, (cx + 16.0, cy + ch - 44.0, inner, 36.0)));
         }
+        // Last in Tab order: from a destination, Tab reaches the note and
+        // Forward before the button that discards them.
+        parts.push((Part::Close, (cx + cw - 44.0, cy + 12.0, 32.0, 32.0)));
         self.parts = parts;
         self.field_origin = self.forward_origin(Part::Forward(Control::Search));
         Ok(())

@@ -398,13 +398,18 @@ impl Row {
         out.push((
             ForwardPart::Body,
             body,
-            format!(
-                "Forwarded from {}. {}. {} {}",
-                c.members[0].name,
+            // An image-only original has no text or time; skip empty parts
+            // rather than reading out stray periods.
+            [
+                format!("Forwarded from {}", c.members[0].name),
                 row.spoken(),
-                m.time,
-                card.summary_text
-            ),
+                m.time.clone(),
+                card.summary_text.clone(),
+            ]
+            .into_iter()
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(". "),
         ));
         out
     }
