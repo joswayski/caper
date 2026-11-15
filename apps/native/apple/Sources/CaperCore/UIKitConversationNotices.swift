@@ -95,6 +95,7 @@ import Observation
     private var context = ""
     private var pending: String?
     private var error: String?
+    private var lastShown: String?
     public init(model: AppModel, block: @escaping (BlockTarget) -> Void) {
         self.model = model; self.block = block; super.init(frame: .zero)
         axis = .vertical; spacing = 8; isLayoutMarginsRelativeArrangement = true
@@ -112,6 +113,14 @@ import Observation
     private func render() {
         let next = "\(model.selectedChannelID ?? "")|\(model.selectedDirectMessageID ?? "")"
         if context != next { context = next; pending = nil; error = nil }
+        // Rebuild only when what shows changes: replacing the buttons on every
+        // observed change drops a tap that lands mid-rebuild.
+        let request = model.selectedDirectMessage
+        let shown = [next, "\(model.previewingChannel)", model.chat.channelName, "\(request?.status == .incoming)", "\(request?.blocked == true)",
+                     request.map { MessageRequests.prompt(for: $0.peer).name + MessageRequests.prompt(for: $0.peer).detail } ?? "",
+                     "\(request?.peer.canBlock == true)", pending ?? "", error ?? ""].joined(separator: "|")
+        guard shown != lastShown else { return }
+        lastShown = shown
         arrangedSubviews.forEach { removeArrangedSubview($0); $0.removeFromSuperview() }
         accessibilityIdentifier = nil
         if model.previewingChannel, let channel = model.selectedChannel {

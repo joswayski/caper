@@ -172,7 +172,8 @@ import Observation
     }
     private func render() {
         custom.isHidden = !state.expanded; expiry.isHidden = state.expiryUnit == .never
-        expiry.isEnabled = !state.busy; uses.isEnabled = !state.busy; unit.isEnabled = !state.busy
+        // Disabling the focused field would resign it and drop the keyboard mid-create.
+        expiry.isEnabled = !state.busy || expiry.isFirstResponder; uses.isEnabled = !state.busy || uses.isFirstResponder; unit.isEnabled = !state.busy
         unit.configuration?.title = state.expiryUnit.label; unit.accessibilityLabel = "Expiry unit"; unit.accessibilityValue = state.expiryUnit.label
         unit.menu = UIMenu(children: InviteExpiryUnit.allCases.map { value in UIAction(title: value.label, state: value == state.expiryUnit ? .on : .off) { [state] _ in state.expiryUnit = value; state.expiryError = nil } })
         let channels = state.publicChannels
