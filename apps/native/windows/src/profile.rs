@@ -852,6 +852,17 @@ impl App {
         ctrl: bool,
         shift: bool,
     ) -> Option<Option<LRESULT>> {
+        // A right-click's context menu (sent on release) over the card is
+        // the card's: its picture menu opened on the press, and the history
+        // row beneath must not replace it.
+        if msg == WM_CONTEXTMENU
+            && let Some(v) = self.profile_view()
+            && self
+                .profile_geometry(&v)
+                .is_some_and(|geo| contains(geo.card, x, y))
+        {
+            return Some(Some(LRESULT(0)));
+        }
         if self.profile_emoji_open() || self.menu.is_some() {
             return None;
         }
