@@ -995,14 +995,7 @@ impl App {
             .connect_clicked(move |_| app.open_create_channel());
         for button in ui.thread_back.iter().chain([&ui.thread_close]) {
             let app = self.clone();
-            button.connect_clicked(move |_| {
-                {
-                    let mut state = app.state.borrow_mut();
-                    state.thread = None;
-                    state.focused = None;
-                }
-                app.render();
-            });
+            button.connect_clicked(move |_| app.close_thread());
         }
 
         let app = self.clone();
@@ -1068,15 +1061,19 @@ impl App {
             entry.set_text("");
             entry.set_visible(false);
             app.render_members();
+            // The hidden field can't keep focus; its button opened it.
+            app.ui.member_search_button.grab_focus();
         });
         let entry = ui.member_search.clone();
         ui.member_search_button.connect_clicked(move |_| {
             entry.set_visible(true);
             entry.grab_focus();
         });
-        let toggle = ui.members_toggle.clone();
-        ui.members_close
-            .connect_clicked(move |_| toggle.set_active(false));
+        let app = self.clone();
+        ui.members_close.connect_clicked(move |_| {
+            app.ui.members_toggle.set_active(false);
+            app.focus_composer();
+        });
         let app = self.clone();
         ui.pins_button
             .connect_clicked(move |button| app.open_pins(button.upcast_ref()));
@@ -1125,6 +1122,11 @@ impl App {
                 }
                 if key == gdk::Key::Escape && !thread && app.state.borrow().compose.is_some() {
                     app.cancel_compose();
+                    return glib::Propagation::Stop;
+                }
+                // As on web, Escape in the reply box closes the thread.
+                if key == gdk::Key::Escape && thread {
+                    app.close_thread();
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed
@@ -2993,6 +2995,31 @@ impl App {
         self.render();
     }
 
+    /// Closes the thread pane. Its reply box goes with it, so focus returns
+    /// to the composer instead of GTK's first control, the rail.
+    fn close_thread(self: &Rc<Self>) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.thread = None;
+            state.focused = None;
+        }
+        self.render();
+        self.focus_composer();
+    }
+
+    /// Puts keyboard focus in the composer (the thread's when a narrow
+    /// thread covers it) after a card, menu action, dialog or pane over the
+    /// conversation closes; a popover closed any way but Escape leaves it
+    /// on the rail.
+    pub(super) fn focus_composer(&self) {
+        let ui = &self.ui;
+        if ui.composer.view.is_mapped() {
+            ui.composer.view.grab_focus();
+        } else if ui.thread_composer.view.is_mapped() {
+            ui.thread_composer.view.grab_focus();
+        }
+    }
+
     fn cancel_compose(self: &Rc<Self>) {
         let editing = matches!(
             self.state.borrow_mut().compose.take(),
@@ -3765,6 +3792,7 @@ impl App {
             self.close_start_direct();
             self.close_profile();
             self.open_direct(id);
+            self.focus_composer();
         }
         self.render_profile();
         self.render_inbox();

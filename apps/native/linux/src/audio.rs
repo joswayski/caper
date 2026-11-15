@@ -634,9 +634,12 @@ impl App {
             if let Some(label) = button.child().and_downcast::<gtk::Label>() {
                 label.set_xalign(0.0);
             }
-            let (weak, menu) = (Rc::downgrade(self), popover.clone());
+            let (weak, menu, opener) = (Rc::downgrade(self), popover.clone(), anchor.clone());
             button.connect_clicked(move |_| {
                 menu.popdown();
+                // The window it opens hands focus back to the gear, as on
+                // web, rather than to the rail a closed popover leaves it on.
+                opener.grab_focus();
                 let weak = weak.clone();
                 glib::idle_add_local_once(move || {
                     if let Some(app) = weak.upgrade() {

@@ -187,6 +187,14 @@ impl App {
             glib::Propagation::Proceed
         });
         window.add_controller(keys);
+        // Its opener, a menu or card, is gone: focus goes back to the
+        // composer rather than the rail.
+        let weak = Rc::downgrade(self);
+        window.connect_destroy(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.focus_composer();
+            }
+        });
         let app = Rc::downgrade(self);
         window.connect_close_request(move |_| {
             if let Some(app) = app.upgrade() {

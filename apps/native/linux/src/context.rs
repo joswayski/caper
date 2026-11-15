@@ -34,6 +34,8 @@ impl App {
     pub(super) fn jump_to_message(self: &Rc<Self>, id: String, root: Option<String>) {
         if let Some(pins) = self.pins.borrow_mut().take() {
             pins.popover.popdown();
+            // Pins held focus; leave it in the conversation, not on the rail.
+            self.focus_composer();
         }
         if let Some(root) = root {
             self.open_thread_at(root, Some(id));

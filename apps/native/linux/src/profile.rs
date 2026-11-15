@@ -133,7 +133,10 @@ impl App {
         close.set_child(Some(&self.images.icon_image(Icon::Close, "#b9bcbe", 18)));
         close.add_css_class("flat");
         let app = self.clone();
-        close.connect_clicked(move |_| app.close_profile());
+        close.connect_clicked(move |_| {
+            app.close_profile();
+            app.focus_composer();
+        });
         for button in [
             more.upcast_ref::<gtk::Widget>(),
             open.upcast_ref(),
