@@ -576,6 +576,14 @@ impl App {
         }
     }
 
+    /// Close or Escape: the card goes and the keys return to the composer.
+    fn dismiss_profile(&mut self) {
+        self.close_profile();
+        if self.profile.is_none() {
+            self.set_composer_focus(true);
+        }
+    }
+
     /// The card's message was sent (or its DM opened): it closed.
     pub fn profile_finished(&mut self, person: Option<(String, bool)>) {
         if let Some((person, clear)) = person {
@@ -762,7 +770,7 @@ impl App {
             card.more = false;
         }
         match part {
-            PPart::Close => self.close_profile(),
+            PPart::Close => self.dismiss_profile(),
             PPart::Edit => self.open_profile_editor(),
             PPart::Picture => {
                 let title = v.profile.title();
@@ -1006,7 +1014,7 @@ impl App {
                     VK_ESCAPE if card.recording.is_some() => {
                         self.profile_compose_activate(PPart::DiscardRecording)
                     }
-                    VK_ESCAPE => self.close_profile(),
+                    VK_ESCAPE => self.dismiss_profile(),
                     VK_RETURN if card.recording.is_some() => {
                         self.profile_compose_activate(PPart::Stop)
                     }
