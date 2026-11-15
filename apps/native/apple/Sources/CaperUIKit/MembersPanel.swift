@@ -29,6 +29,7 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
     /// Opens a member's profile, when profiles are available.
     var openProfile: ((Member) -> Void)?
     var closed: (() -> Void)?
+    var searchClosed: (() -> Void)?
     private(set) var isOpen = false
     /// Wide layouts' leading-edge resize handle.
     let handle = ResizeHandle(label: "Member list width", identifier: "members-panel-resize")
@@ -330,7 +331,15 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         search.becomeFirstResponder()
     }
 
+    /// Escape in member search ends it, as on web.
+    override var keyCommands: [UIKeyCommand]? {
+        searchRow.isHidden ? nil : [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeSearch))]
+    }
+    @objc private func escapeSearch() { endSearch() }
+
     private func endSearch() {
+        let wasSearching = !searchRow.isHidden
+        defer { if wasSearching { searchClosed?() } }
         search.text = ""
         model.presence.query = ""
         searchRow.isHidden = true

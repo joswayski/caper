@@ -33,6 +33,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     var react: ((String, String) -> Void)?
     var openAuthor: ((ChatAuthor, NSView) -> Void)?
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
+    /// Text typed after a click in the history goes to the composer.
+    var typeToCompose: ((NSEvent) -> Bool)?
     var makeAttachments: ((ChatMessage) -> AppKitAttachmentSurface?)?
     var makeReply: ((ChatMessage) -> AppKitAttachmentSurface?)?
     var makePending: ((PendingMessage) -> AppKitAttachmentSurface?)?
@@ -235,6 +237,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             row = MessageCell()
             row.openAuthor = { [weak self] author, view in self?.openAuthor?(author, view) }
             row.body.openMention = { [weak self] mention, view, rect in self?.openMention?(mention, view, rect) }
+            row.body.typeToCompose = { [weak self] event in self?.typeToCompose?(event) ?? false }
             row.makeAttachments = { [weak self] in self?.makeAttachments?($0) }
             row.makeReply = { [weak self] in self?.makeReply?($0) }
             row.messageMenu = { [weak self] message, view in self?.messageMenu?(message, view) }
@@ -761,6 +764,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
 @MainActor final class MessageTextView: NSTextView {
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
     var messageMenu: (() -> NSMenu?)?
+    var typeToCompose: ((NSEvent) -> Bool)?
     /// Reveals hidden spoiler groups (a click, or VoiceOver's "Spoiler, reveal").
     var revealSpoilers: ((Set<Int>) -> Void)?
     private var people: [String: MessageMention] = [:]
@@ -809,6 +813,21 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     override func accessibilityValue() -> String? {
         guard let text = textStorage, !NativePresentation.hiddenSpoilers(in: text).isEmpty else { return super.accessibilityValue() }
         return NativePresentation.spokenText(text)
+    }
+
+    /// A printable key on selected message text types into the composer;
+    /// ⌘/⌃ shortcuts and navigation keys stay with the selection.
+    override func keyDown(with event: NSEvent) {
+        if Self.composes(event), typeToCompose?(event) == true { return }
+        super.keyDown(with: event)
+    }
+
+    static func composes(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .function]).isEmpty,
+              let characters = event.characters, !characters.isEmpty else { return false }
+        // Control characters (Escape, Tab, Return, Delete) and the private-use
+        // function-key range (arrows, Page Up) are not text.
+        return characters.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value) }
     }
 
     override func mouseDown(with event: NSEvent) {

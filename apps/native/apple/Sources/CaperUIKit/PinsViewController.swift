@@ -42,6 +42,11 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if isBeingDismissed { CaperFocus.presentationDidClose() }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIKitStyle.conversation

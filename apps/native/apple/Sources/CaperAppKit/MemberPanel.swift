@@ -15,10 +15,12 @@ import CaperCore
         self?.setSearching(true)
     }
     private lazy var clearButton = NativeButton.icon("Clear and close member search", symbol: "xmark") { [weak self] in
-        self?.setSearching(false)
+        self?.setSearching(false, focus: .composer)
     }
     private lazy var closeButton = NativeButton.icon("Close member list", symbol: "xmark") { [weak self] in self?.close?() }
     var close: (() -> Void)?
+    var focusComposer: (() -> Void)?
+    private enum SearchFocus { case keep, button, composer }
     var openProfile: ((Member, NSView) -> Void)?
     private var searching = false
     private var spaceID: String?
@@ -102,7 +104,7 @@ import CaperCore
         realize()
     }
 
-    private func setSearching(_ value: Bool) {
+    private func setSearching(_ value: Bool, focus: SearchFocus = .keep) {
         searching = value
         search.isHidden = !value; clearButton.isHidden = !value
         searchButton.isHidden = value || model.detail?.space.demo == true
@@ -113,7 +115,13 @@ import CaperCore
         needsLayout = true
         layoutSubtreeIfNeeded()
         if value { window?.makeFirstResponder(search) }
-        else if window?.firstResponder === search.currentEditor() { window?.makeFirstResponder(nil) }
+        else if focus == .button, searchButton.acceptsFirstResponder, !searchButton.isHidden {
+            // Escape returns to the button that opened search, as on web.
+            window?.makeFirstResponder(searchButton)
+        } else if focus != .keep {
+            if window?.firstResponder === search.currentEditor() { window?.makeFirstResponder(nil) }
+            focusComposer?()
+        } else if window?.firstResponder === search.currentEditor() { window?.makeFirstResponder(nil) }
     }
 
     func controlTextDidChange(_ notification: Notification) {
@@ -122,7 +130,7 @@ import CaperCore
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         guard commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
-        setSearching(false)
+        setSearching(false, focus: .button)
         return true
     }
 

@@ -58,7 +58,7 @@ import UIKit
         guard !closing else { return }; closing = true
         (content as? UIKitProfilePresentation)?.stop(); (content as? UIKitMessageDialog)?.stop()
         // From the presenter, so a confirmation shown over the editor closes with the frame.
-        (presentingViewController ?? self).dismiss(animated: false)
+        (presentingViewController ?? self).dismiss(animated: false) { CaperFocus.presentationDidClose() }
     }
     func replace(with next: UIViewController) {
         (content as? UIKitMessageDialog)?.stop()

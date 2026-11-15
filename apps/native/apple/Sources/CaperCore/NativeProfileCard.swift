@@ -287,7 +287,7 @@ import Observation
     }
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        if isBeingDismissed || presentingViewController == nil { active = false }
+        if isBeingDismissed || presentingViewController == nil { active = false; CaperFocus.presentationDidClose() }
     }
     func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool {
         if let dismissAction { dismissAction.action(); return false }

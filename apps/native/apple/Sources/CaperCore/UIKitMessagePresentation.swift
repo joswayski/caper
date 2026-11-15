@@ -80,7 +80,7 @@ import Observation
         guard !closing else { return }
         closing = true; clearRequest()
         let old = owned; owned = nil; (old as? UIKitMessageDialog)?.stop()
-        let complete: () -> Void = { [weak self] in self?.closing = false; then?(); self?.render() }
+        let complete: () -> Void = { [weak self] in self?.closing = false; then?(); self?.render(); CaperFocus.presentationDidClose() }
         // Dismiss from the presenter so an editor or picker stacked on the sheet goes too;
         // a sheet the reader already swiped away has no presenter and finishes at once.
         if let presenter = old?.presentingViewController { presenter.dismiss(animated: false, completion: complete) } else { complete() }
