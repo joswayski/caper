@@ -2274,7 +2274,34 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun closeThread() { uploadSend?.cancel(); ++threadRequest; mutable.value = mutable.value.copy(thread = null, composerFocusRequest = null) }
+    fun closeThread(refocus: Boolean = true) {
+        uploadSend?.cancel(); ++threadRequest
+        // Its reply box goes with it: focus returns to the channel composer, as on web and Win32.
+        val channel = mutable.value.selectedChannel?.id
+        mutable.value = mutable.value.copy(thread = null, composerFocusRequest = if (refocus && channel != null)
+            chat.caper.android.model.ComposerFocusRequest(channel, null, java.util.UUID.randomUUID().toString(), keyboardOnly = true) else null)
+    }
+
+    /** After a sheet, dialog or Pins over the conversation closes, unless a reply already asked for focus. */
+    fun returnFocusToComposer(root: String?) {
+        val state = mutable.value
+        val channel = state.selectedChannel?.id ?: return
+        if (state.composerFocusRequest?.keyboardOnly == false) return
+        mutable.value = state.copy(composerFocusRequest = chat.caper.android.model.ComposerFocusRequest(channel, root, java.util.UUID.randomUUID().toString(), keyboardOnly = true))
+    }
+
+    /** A screen, Browse or the member drawer covers the composers (set by the UI each composition). */
+    var composerCovered = false
+
+    /** Type to compose: hardware-keyboard text typed while nothing had focus goes to the open composer. */
+    fun typeToCompose(text: String): Boolean {
+        val state = mutable.value
+        val channel = state.selectedChannel?.id ?: return false
+        if (composerCovered || !state.canParticipate || state.pendingMessage != null) return false
+        val previous = state.composerFocusRequest?.takeIf { it.keyboardOnly }?.typed.orEmpty()
+        mutable.value = state.copy(composerFocusRequest = chat.caper.android.model.ComposerFocusRequest(channel, state.thread?.rootId, java.util.UUID.randomUUID().toString(), keyboardOnly = true, typed = previous + text))
+        return true
+    }
 
     fun replyInThread(message: ChatMessage) {
         val state = mutable.value
@@ -2329,7 +2356,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 )
             } catch (error: Throwable) {
                 if (request != threadRequest || channelRequest != generation) return@launch
-                if (error is ApiException && error.status in listOf(401, 403, 404)) { closeThread(); resyncChannel(channel) }
+                if (error is ApiException && error.status in listOf(401, 403, 404)) { closeThread(refocus = false); resyncChannel(channel) }
                 else mutable.value = mutable.value.copy(thread = thread.copy(loading = false, error = message(error), failedOlder = older, failedNewer = newer))
             }
         }

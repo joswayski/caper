@@ -251,6 +251,15 @@ class MainActivity : ComponentActivity() {
     // Any touch or key counts as using Caper here, so this phone (not another device) alerts.
     override fun onUserInteraction() { super.onUserInteraction(); viewModel.reportActivity() }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openFromIntent(intent) }
+    // Type to compose, as on Win32: a hardware key no field took (nothing has focus, as after a
+    // click on the history) types into the composer.
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (super.dispatchKeyEvent(event)) return true
+        if (event.action != android.view.KeyEvent.ACTION_DOWN || event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
+        val character = event.unicodeChar
+        if (character == 0 || Character.isISOControl(character)) return false
+        return viewModel.typeToCompose(String(Character.toChars(character)))
+    }
 
     /** A notification tap, or an invite link from the manifest's VIEW filters. */
     private fun openFromIntent(intent: Intent) {
@@ -481,7 +490,7 @@ internal data class VoiceJoinIntent(
             }
         }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }, pendingLabel = "Leaving…", error = state.error) { viewModel.leaveCurrentSpace { overlay = null } }
-        Overlay.Profile -> ProfileEditor(state, viewModel) { overlay = null }
+        Overlay.Profile -> ProfileEditor(state, viewModel) { overlay = null; viewModel.returnFocusToComposer(null) }
         Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin,
             notifications = { NotificationSettingsSection(state, viewModel) },
             openWhatsNew = { overlay = Overlay.WhatsNew(); viewModel.refreshWhatsNew() }) { overlay = Overlay.Privacy }
@@ -631,6 +640,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             LaunchedEffect(narrow) { if (narrow) membersVisible = false }
             // The member list only shows in a joined channel; elsewhere Back must reach the system.
             val membersShown = membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null
+            SideEffect { viewModel.composerCovered = overlay != null || (narrow && (navigationOpen || membersShown)) }
             BackHandler(enabled = narrow && (membersShown || navigationOpen)) {
                 if (membersShown && !navigationOpen) membersVisible = false else setNavigationOpen(false)
             }
@@ -1381,19 +1391,19 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
             if (!detail.space.demo && !searching) IconButton({ searching = true }, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_search), "Search members", tint = TextMuted)
             }
-            if (close != null) IconButton(close, Modifier.size(48.dp)) {
+            if (close != null) IconButton({ close(); viewModel.returnFocusToComposer(null) }, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_x), "Close member list", tint = TextMuted)
             }
         }
         HorizontalDivider(color = Border)
         if (searching) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 BasicTextField(query, { query = it }, Modifier.weight(1f).focusRequester(searchFocus).onPreviewKeyEvent {
-                    if (it.key == Key.Escape) { query = ""; searching = false; true } else false
+                    if (it.key == Key.Escape) { query = ""; searching = false; viewModel.returnFocusToComposer(null); true } else false
                 }, singleLine = true, textStyle = TextStyle(color = Text, fontSize = 12.sp), decorationBox = { inner ->
                     if (query.isEmpty()) Text("Name or username", color = TextMuted, fontSize = 12.sp)
                     inner()
                 })
-                IconButton({ query = ""; searching = false }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_x), "Clear and close member search", tint = TextMuted) }
+                IconButton({ query = ""; searching = false; viewModel.returnFocusToComposer(null) }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_x), "Clear and close member search", tint = TextMuted) }
         }
         if (detail.space.demo) Text("General is open to everyone. People in voice appear in the channel sidebar.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
@@ -1870,6 +1880,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     fun updateDraft(value: TextFieldValue) { draft = value; viewModel.drafts[channel.id] = value.text }
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
+    // Closing Pins, however it closes, returns focus to the composer (a reply from it already has).
+    var pinsWereShown by remember(channel.id) { mutableStateOf(false) }
+    LaunchedEffect(showingPins) { if (pinsWereShown && !showingPins) viewModel.returnFocusToComposer(null); pinsWereShown = showingPins }
     // Switching to Pins must not discard the channel's measured scroll position.
     val timelineState = key(channel.id) { rememberLazyListState() }
     val timelineFollow = rememberSaveable(channel.id, saver = TimelineFollow.Saver) { TimelineFollow() }
@@ -2178,15 +2191,27 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val view = androidx.compose.ui.platform.LocalView.current
     val keyboard = LocalSoftwareKeyboardController.current
     val requester = remember(scope) { androidx.compose.ui.focus.FocusRequester() }
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val hardwareKeyboard = configuration.keyboard == android.content.res.Configuration.KEYBOARD_QWERTY &&
+        configuration.hardKeyboardHidden == android.content.res.Configuration.HARDKEYBOARDHIDDEN_NO
+    val latestDraft by rememberUpdatedState(draft)
     LaunchedEffect(focusRequest, focusEnabled) {
         val request = focusRequest ?: return@LaunchedEffect
         if (!focusEnabled) return@LaunchedEffect
+        // A return of focus is for keyboard users; on touch it would raise the keyboard unasked.
+        if (request.keyboardOnly && request.typed.isEmpty() && !hardwareKeyboard) { consumeFocus(request.id); return@LaunchedEffect }
         // Modal sheets own the window until disposed. Wait for the destination's
         // window and mounted/enabled field, not an arbitrary animation delay.
         do { withFrameNanos { } } while (!view.hasWindowFocus())
         if (requester.requestFocus()) {
             withFrameNanos { }
-            keyboard?.show()
+            if (!request.keyboardOnly) keyboard?.show()
+            if (request.typed.isNotEmpty()) {
+                val current = latestDraft
+                val start = minOf(current.selection.min, current.text.length)
+                val end = minOf(current.selection.max, current.text.length)
+                onDraft(TextFieldValue(current.text.replaceRange(start, end, request.typed), TextRange(start + request.typed.length)))
+            }
             consumeFocus(request.id)
         }
     }
@@ -2407,6 +2432,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     // Mentions, author avatars and author names share the same profile sheet.
     var mentionTarget by remember { mutableStateOf<MentionCard?>(null) }
+    // A sheet or dialog over the history leaves focus nowhere when it closes; it returns to
+    // this history's composer, as on web and Win32.
+    val covered = actionTarget != null || pickerTarget != null || forwardTarget != null || conversationTarget != null || editTarget != null ||
+        deleteTarget != null || historyTarget != null || reactorsTarget != null || mentionTarget != null
+    var wasCovered by remember { mutableStateOf(false) }
+    LaunchedEffect(covered) {
+        if (wasCovered && !covered) viewModel.returnFocusToComposer(if (inThread) state.thread?.rootId else null)
+        wasCovered = covered
+    }
     // Above the list, so new messages scrolling a row away don't close its viewer.
     val viewerHost = remember { MediaViewerHost() }
     // Remembered from the fields they derive from: typing, presence and the composer recompose this

@@ -574,8 +574,13 @@ fun voiceJoinUnavailableLabel(available: Boolean?): String? = when (available) {
     null -> "Checking voice availability…"
 }
 
-/** One-shot intent, independent of reply metadata so selecting the same reply refocuses. */
-data class ComposerFocusRequest(val channelId: String, val rootId: String?, val id: String)
+/**
+ * One-shot intent, independent of reply metadata so selecting the same reply refocuses.
+ * [keyboardOnly] returns focus after a sheet, dialog or thread closes, as web does off touch
+ * layouts: only with a hardware keyboard, without raising the on-screen one. [typed] is text a
+ * hardware keyboard typed while nothing had focus, inserted once the composer has it.
+ */
+data class ComposerFocusRequest(val channelId: String, val rootId: String?, val id: String, val keyboardOnly: Boolean = false, val typed: String = "")
 
 data class AppUiState(
     val screen: SessionScreen = SessionScreen.Loading,
