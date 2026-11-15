@@ -67,6 +67,8 @@ import Observation
         resize.addAction(UIAction { [weak self] _ in guard let self else { return }; self.expanded.toggle(); self.resizePanel(animated: true) }, for: .touchUpInside)
         resize.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let titleRow = UIStackView(arrangedSubviews: [titleLabel, cancel]); titleRow.spacing = 12
+        // The title takes the slack so Close keeps its own width at the trailing edge.
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal); cancel.setContentHuggingPriority(.required, for: .horizontal)
         let header = UIStackView(arrangedSubviews: [resize, titleRow, hint]); header.axis = .vertical; header.spacing = 4
         header.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(pan)))
         grid.backgroundColor = .clear; grid.dataSource = self; grid.delegate = self
