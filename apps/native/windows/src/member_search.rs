@@ -173,10 +173,15 @@ impl App {
         self.need = true;
     }
 
-    /// Clear and close and Escape give the keyboard back to the composer.
+    /// Clear and close and Escape give the keyboard back to the composer,
+    /// or to the narrow drawer's Close while the drawer covers it.
     fn close_member_search_refocus(&mut self) {
         self.close_member_search();
-        self.set_composer_focus(true);
+        if self.members_w() > 0.0 && !self.members_tiled() {
+            self.focus_narrow(crate::narrow::Part::CloseMembers);
+        } else {
+            self.set_composer_focus(true);
+        }
     }
 
     /// After the space or the list's visibility changed.
