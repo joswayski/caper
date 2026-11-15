@@ -125,6 +125,25 @@ pub fn hidden(a: &Attachment, revealed: &HashSet<String>) -> bool {
     a.spoiler && !revealed.contains(&a.id)
 }
 
+/// An attachment as words, where no card speaks for it: an attachment-only
+/// row's name and a forward preview. A hidden spoiler keeps its name hidden.
+pub fn spoken(a: &Attachment, revealed: &HashSet<String>) -> String {
+    if a.voice {
+        return "Voice message".into();
+    }
+    let kind = match a.kind {
+        AttachmentKind::Image => "Image",
+        AttachmentKind::Video => "Video",
+        AttachmentKind::Audio => "Audio",
+        AttachmentKind::File => "File",
+    };
+    if hidden(a, revealed) {
+        format!("Spoiler {}", kind.to_lowercase())
+    } else {
+        format!("{kind} · {}", a.name)
+    }
+}
+
 pub fn processing_label() -> &'static str {
     "Processing\u{2026}"
 }

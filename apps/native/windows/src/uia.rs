@@ -1054,7 +1054,16 @@ fn name(a: &App, id: Id) -> String {
 /// and text, as the egui client's accessibility labels read.
 fn row_name(c: &crate::model::Conversation, i: usize, text: Option<String>) -> String {
     let m = &c.messages[i];
-    let text = text.unwrap_or_default();
+    let mut text = text.unwrap_or_default();
+    // An image-only message would otherwise read "Maya, 10:56 AM: ".
+    if text.trim().is_empty() {
+        text = m
+            .attachments
+            .iter()
+            .map(|a| crate::files::spoken(a, &m.revealed))
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
     let mut name = String::new();
     // egui's divider is its own label; here it leads the first unread row.
     if m.unread {

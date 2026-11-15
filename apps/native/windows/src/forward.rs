@@ -8,7 +8,7 @@ use crate::overlay::{Dialog, Kind, Part, Rect, height, layout};
 use crate::{App, EV_FOCUS, EV_SCREEN, theme::*};
 use caper_client::api::Api;
 use caper_client::forwarding::{Operation, Picker, Response};
-use caper_client::model::{AttachmentKind, ForwardConversation, Message};
+use caper_client::model::{ForwardConversation, Message};
 use caper_client::worker::SendFailure;
 use std::cell::RefCell;
 use std::sync::mpsc;
@@ -132,19 +132,10 @@ impl Original {
                 summary.push_str("Voice message\n");
             }
             // The preview draws no attachment cards, so name each file
-            // instead of silently dropping it; a spoiler keeps its name hidden.
+            // instead of silently dropping it.
             for a in m.content.attachments.iter().filter(|a| !a.voice) {
-                let kind = match a.kind {
-                    AttachmentKind::Image => "Image",
-                    AttachmentKind::Video => "Video",
-                    AttachmentKind::Audio => "Audio",
-                    AttachmentKind::File => "File",
-                };
-                if a.spoiler {
-                    summary.push_str(&format!("Spoiler {}\n", kind.to_lowercase()));
-                } else {
-                    summary.push_str(&format!("{kind} · {}\n", a.name));
-                }
+                summary.push_str(&crate::files::spoken(a, &Default::default()));
+                summary.push('\n');
             }
             summary.push_str(
                 &m.reactions
