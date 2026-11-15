@@ -953,8 +953,10 @@ import XCTest
         XCTAssertTrue(reforward.waitForExistence(timeout: 5)); XCTAssertTrue(reforward.isEnabled); reforward.click()
         XCTAssertTrue(note.waitForExistence(timeout: 5)); XCTAssertEqual(note.value as? String, "")
         XCTAssertFalse(composer.exists)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", editedText, editedText)).firstMatch.exists)
-        XCTAssertFalse(app.staticTexts[wrapperNote].exists, "Re-forward previews the original, never the previous wrapper's note")
+        // The preview's selectable text may surface as static text or a text view.
+        let previewText = { (text: String) in app.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", text, text)).firstMatch }
+        XCTAssertTrue(previewText(editedText).exists)
+        XCTAssertFalse(previewText(wrapperNote).exists, "Re-forward previews the original, never the previous wrapper's note")
         let next = app.buttons["forward-destination-\(nextChannel)"]
         XCTAssertTrue(next.waitForExistence(timeout: 10)); next.click()
         let nextNote = "TEST FIXTURE — a fresh note on the same original"
@@ -1009,9 +1011,9 @@ import XCTest
         let readerTitle = app.staticTexts["Forwarded conversation"]
         XCTAssertTrue(readerTitle.waitForExistence(timeout: 10))
         XCTAssertFalse(composer.exists); XCTAssertFalse(timeline.exists); XCTAssertFalse(app.textViews["thread-composer"].exists)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", editedText, editedText)).firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", editedText, editedText)).firstMatch.exists)
         let oldestText = try XCTUnwrap((reply["content"] as? [String: Any])?["text"] as? String)
-        let oldestReply = app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", oldestText, oldestText)).firstMatch
+        let oldestReply = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", oldestText, oldestText)).firstMatch
         XCTAssertFalse(oldestReply.exists, "The oldest reply starts outside the initial reader page")
         let loadOlder = app.buttons["Load older replies"]
         XCTAssertTrue(loadOlder.waitForExistence(timeout: 10))

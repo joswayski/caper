@@ -67,6 +67,8 @@ import UniformTypeIdentifiers
     private func failure(_ error: Error) { self.error = ProfilePicturePolicy.message(for: error, purpose: .spaceIcon); unavailable = unavailable || ProfilePicturePolicy.uploadsUnavailable(error) }
     func closeCrop() { editing = nil; if let staged { AttachmentStaging.remove(staged) }; staged = nil }
     func stop() { stopped = true; task?.cancel(); task = nil; closeCrop(); animation = nil }
+    /// A view that returns to a window (a reused settings page) edits again.
+    func resume() { stopped = false }
 }
 
 #if os(macOS)
@@ -95,7 +97,7 @@ import AppKit
     isolated deinit { state.stop() }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { observation.start(reading: { [weak self] in self?.render() }, apply: { _ in }) }
+        if window != nil { state.resume(); observation.start(reading: { [weak self] in self?.render() }, apply: { _ in }) }
         else { observation.stop(); state.stop(); picker?.cancel(nil); picker = nil; closeChild(); if let alert { alert.window.sheetParent?.endSheet(alert.window) }; alert = nil }
     }
     private func render() {
@@ -161,7 +163,7 @@ import UIKit
     override func didMoveToWindow() {
         super.didMoveToWindow(); generation += 1
         // A full-screen camera can temporarily detach the presenting window.
-        if window != nil { observe(generation) }
+        if window != nil { state.resume(); observe(generation) }
         else if child == nil { state.stop() }
     }
     private func observe(_ token: Int) {

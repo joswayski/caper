@@ -35,7 +35,14 @@ import AppKit
         label.frame = bounds
         if measuredWidth != bounds.width { measuredWidth = bounds.width; invalidateIntrinsicContentSize() }
     }
+    /// The drawn GIF. The control spans the row; only the picture opens it.
+    private var pictureRect: NSRect {
+        failed ? bounds : NSRect(x: 0, y: 0, width: min(bounds.width, CGFloat(gif.width) * min(1, (gif.kind == .sticker ? 160 : 300) / CGFloat(max(gif.width, gif.height)))), height: bounds.height)
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { pictureRect.contains(convert(point, from: superview)) ? super.hitTest(point) : nil }
     override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityFrame() -> NSRect { window?.convertToScreen(convert(pictureRect, to: nil)) ?? super.accessibilityFrame() }
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? { self }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityLabel() -> String? { failed ? "GIF unavailable" : "Open \(gif.accessibilityLabel)" }
     override func accessibilityPerformPress() -> Bool { open(); return true }

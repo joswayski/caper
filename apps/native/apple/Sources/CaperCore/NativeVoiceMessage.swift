@@ -37,7 +37,7 @@ import AppKit
         }
         transcript.isSelectable = true
         for view in [play!, waveform, time, transcript, expand!] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = true }
-        setAccessibilityElement(false); setAccessibilityIdentifier("voice-message-\(file.id)")
+        setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityIdentifier("voice-message-\(file.id)")
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(motionChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         transcript.setAccessibilityIdentifier("voice-transcript-text"); render()
     }
