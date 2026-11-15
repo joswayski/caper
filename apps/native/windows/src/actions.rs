@@ -1016,6 +1016,17 @@ impl App {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 match vk {
                     VK_ESCAPE => self.close_picker_refocus(),
+                    // The grid takes no keyboard focus, so Enter picks the
+                    // best search match; otherwise a keyboard could only
+                    // search, never choose.
+                    VK_RETURN
+                        if p.search.focused
+                            && !p.search.composing
+                            && !p.search.text.is_empty()
+                            && !p.choices.is_empty() =>
+                    {
+                        self.picker_activate(PPart::Emoji(0));
+                    }
                     _ if ctrl && vk == VIRTUAL_KEY('C' as u16) => {
                         let (a, b) = p.search.selection();
                         if b > a {
