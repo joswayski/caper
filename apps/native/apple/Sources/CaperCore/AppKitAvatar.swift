@@ -108,7 +108,7 @@ import AppKit
         saved.isHidden = !pictureLayer.isHidden
         initial.isHidden = !pictureLayer.isHidden || saved.image != nil
         layer?.cornerRadius = corner ?? (pictureLayer.isHidden ? bounds.width / 2 : ProfilePicturePolicy.cornerRadius(side: bounds.width))
-        if let frames, frames.animated, window != nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if let frames, frames.animated, window != nil, !CaperAccessibility.reduceMotion {
             let total = frames.durations.reduce(0, +)
             if total > 0 {
                 var elapsed = 0.0

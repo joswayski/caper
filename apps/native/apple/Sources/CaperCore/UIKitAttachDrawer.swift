@@ -63,7 +63,7 @@ import Observation
         let name = picking ? "picture chooser" : "attachment drawer"
         let cancel = UIKitMessageDialog.button("Close") { [weak self] in self?.close() }; cancel.accessibilityLabel = "Close \(name)"
         resize = UIButton(type: .system); resize.setTitle("━", for: .normal); resize.tintColor = UIColor(CaperTheme.muted)
-        resize.accessibilityIdentifier = "attach-drawer-resize"
+        resize.accessibilityIdentifier = "attach-drawer-resize"; resize.accessibilityLabel = "Expand \(name)"
         resize.addAction(UIAction { [weak self] _ in guard let self else { return }; self.expanded.toggle(); self.resizePanel(animated: true) }, for: .touchUpInside)
         resize.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let titleRow = UIStackView(arrangedSubviews: [titleLabel, cancel]); titleRow.spacing = 12
@@ -224,7 +224,7 @@ import Observation
     private func chooseFiles() {
         guard !full else { nudge(); return }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: picking ? [.image] : [.item], asCopy: true)
-        picker.allowsMultipleSelection = !picking; picker.delegate = self; present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
+        picker.allowsMultipleSelection = !picking; picker.delegate = self; present(picker, animated: !CaperAccessibility.reduceMotion)
     }
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         if picking {
@@ -245,7 +245,7 @@ import Observation
         var configuration = PHPickerConfiguration(photoLibrary: .shared())
         configuration.selectionLimit = picking ? 1 : max(1, AttachmentPolicy.maxAttachments - used)
         configuration.filter = picking ? .images : .any(of: [.images, .videos]); configuration.preferredAssetRepresentationMode = .current
-        let picker = PHPickerViewController(configuration: configuration); picker.delegate = self; present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
+        let picker = PHPickerViewController(configuration: configuration); picker.delegate = self; present(picker, animated: !CaperAccessibility.reduceMotion)
     }
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: false) { [self] in
@@ -290,7 +290,7 @@ import Observation
                 else { AttachmentStaging.remove(file.url); self.nudge() }
             }
         }
-        picker.delegate = cameraDelegate; present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
+        picker.delegate = cameraDelegate; present(picker, animated: !CaperAccessibility.reduceMotion)
     }
 }
 
@@ -308,6 +308,8 @@ import Observation
         picture.contentMode = .scaleAspectFill; picture.clipsToBounds = true; picture.isUserInteractionEnabled = false
         badge.textColor = .white; badge.backgroundColor = UIColor.black.withAlphaComponent(0.7); badge.textAlignment = .center
         badge.layer.cornerRadius = 8; badge.clipsToBounds = true; badge.isUserInteractionEnabled = false
+        // The tile button already speaks the attach order and duration.
+        badge.isAccessibilityElement = false
         button.addAction(UIAction { [weak self] _ in self?.pick?() }, for: .touchUpInside)
         motion = NotificationCenter.default.addObserver(forName: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { guard let self else { return }; self.clear(); if self.window != nil, let asset = self.asset { self.load(asset) } }

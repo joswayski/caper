@@ -53,7 +53,7 @@ import UIKit
     }
     private static func image(_ frames: ProfilePictureFrames, scale: CGFloat) -> UIImage? {
         guard let first = frames.images.first else { return nil }
-        guard frames.animated, !UIAccessibility.isReduceMotionEnabled else { return UIImage(cgImage: first, scale: scale, orientation: .up) }
+        guard frames.animated, !CaperAccessibility.reduceMotion else { return UIImage(cgImage: first, scale: scale, orientation: .up) }
         return UIImage.animatedImage(with: frames.images.map { UIImage(cgImage: $0, scale: scale, orientation: .up) },
                                      duration: frames.durations.reduce(0, +))
     }

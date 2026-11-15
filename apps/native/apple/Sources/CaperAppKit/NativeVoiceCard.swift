@@ -117,7 +117,7 @@ import CaperCore
         needsLayout = true
         if wasLive != live {
             changed?()
-            if live && window != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if live && window != nil && !CaperAccessibility.reduceMotion {
                 let fade = CABasicAnimation(keyPath: "opacity")
                 fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.14
                 fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)

@@ -40,7 +40,7 @@ import CaperCore
         showSelection()
         needsLayout = true
         scroll.contentView.scroll(to: .zero)
-        if opening, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if opening, !CaperAccessibility.reduceMotion {
             let opacity = CABasicAnimation(keyPath: "opacity")
             opacity.fromValue = 0; opacity.toValue = 1
             let offset = CABasicAnimation(keyPath: "transform.translation.y")

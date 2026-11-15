@@ -166,8 +166,9 @@ final class VoiceMessageRecorder {
         default: permitted = false
         }
         guard permitted else {
-            if attempt == generation { reset() }
-            show(VoiceMessage.permissionDenied, for: owner, seconds: 6)
+            // Cancelled while the system asked: the composer has moved on, so no notice.
+            guard attempt == generation else { return false }
+            reset(); show(VoiceMessage.permissionDenied, for: owner, seconds: 6)
             return false
         }
         guard attempt == generation else { return false }
@@ -738,6 +739,7 @@ final class VoiceMessagePlayer {
     @ObservationIgnored private var player: AVPlayer?
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var failure: NSKeyValueObservation?
     @ObservationIgnored private var request = 0
     @ObservationIgnored private var durationMs: Int?
     @ObservationIgnored private var pendingSeekMs: Int?
@@ -793,6 +795,7 @@ final class VoiceMessagePlayer {
         player?.pause()
         if let timeObserver { player?.removeTimeObserver(timeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        failure?.invalidate(); failure = nil
         timeObserver = nil; endObserver = nil; player = nil
         attachmentID = nil; playing = false; elapsedMs = 0; durationMs = nil; pendingSeekMs = nil
         endSession()
@@ -826,6 +829,15 @@ final class VoiceMessagePlayer {
                 forName: AVPlayerItem.didPlayToEndTimeNotification, object: player.currentItem, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
+                    guard let self, self.request == attempt else { return }
+                    self.stop()
+                }
+            }
+            // A note that can't load or decode ends like a finished one, rather
+            // than showing Pause over a playhead that never moves.
+            self.failure = player.currentItem?.observe(\.status) { [weak self] item, _ in
+                guard item.status == .failed else { return }
+                Task { @MainActor [weak self] in
                     guard let self, self.request == attempt else { return }
                     self.stop()
                 }

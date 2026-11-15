@@ -430,7 +430,7 @@ import CaperCore
             addChild(pane)
             view.addSubview(pane.view, positioned: .below, relativeTo: members)
             threadPane = pane
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if !CaperAccessibility.reduceMotion {
                 let fade = CABasicAnimation(keyPath: "opacity")
                 fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.14
                 fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
@@ -499,7 +499,7 @@ import CaperCore
             let navigationWasHidden = navigation.isHidden
             navigation.isHidden = narrow && !browsing
             navigation.frame = NSRect(x: 0, y: 0, width: narrow ? width : navigationWidth, height: height)
-            if browsing && navigationWasHidden && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if browsing && navigationWasHidden && !CaperAccessibility.reduceMotion {
                 let fade = CABasicAnimation(keyPath: "opacity")
                 fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.14
                 fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)

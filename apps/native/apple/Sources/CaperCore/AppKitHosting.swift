@@ -474,7 +474,7 @@ private struct AppKitWorkspaceDialog: View {
         let popover = NSPopover()
         self.popover = popover
         popover.behavior = .transient
-        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         let host = makeContent { [weak self] in self?.close() }
         host.preferredContentSize = NSSize(width: width, height: 360)
@@ -542,7 +542,7 @@ private struct AppKitWorkspaceDialog: View {
         draft = model.profileMessageDraft(person: person)
         dismissAction = nil
         popover.behavior = .transient
-        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         let host = AppKitProfileCard(model: model, person: person,
             requestBlock: { [weak self, weak window] target in
@@ -1022,7 +1022,7 @@ public enum AppKitComposerCounter {
         let popover = NSPopover()
         self.popover = popover
         popover.behavior = .transient
-        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         popover.contentViewController = content { [weak self] in self?.close() }
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)

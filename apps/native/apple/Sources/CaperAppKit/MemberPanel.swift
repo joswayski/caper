@@ -70,7 +70,7 @@ import CaperCore
             discardRows()
         } else {
             needsLayout = true
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if !CaperAccessibility.reduceMotion {
                 let opacity = CABasicAnimation(keyPath: "opacity")
                 opacity.fromValue = 0; opacity.toValue = 1
                 let offset = CABasicAnimation(keyPath: "transform.translation.x")

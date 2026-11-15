@@ -603,7 +603,7 @@ private final class NativeSidebarHeading: NativeView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         chevron?.setAffineTransform(CGAffineTransform(rotationAngle: to))
         CATransaction.commit()
-        if window != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if window != nil && !CaperAccessibility.reduceMotion {
             let animation = CABasicAnimation(keyPath: "transform.rotation.z")
             animation.fromValue = from; animation.toValue = to; animation.duration = 0.15
             animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)

@@ -452,7 +452,7 @@ struct NativeQuickComposerBridge: UIViewControllerRepresentable {
         presenting = true
         if state.showingEmoji || state.showingGIF { UIKitHosting.sheet(controller, background: CaperTheme.surface) }
         controller.presentationController?.delegate = self
-        present(controller, animated: !UIAccessibility.isReduceMotionEnabled)
+        present(controller, animated: !CaperAccessibility.reduceMotion)
     }
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { clearPresentation() }
     private func closePresentation() {

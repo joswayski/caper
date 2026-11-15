@@ -22,7 +22,7 @@ import AppKit
     override var isFlipped: Bool { true }
     init(file: ChatAttachment, chat: ChatModel?, available: (() -> Bool)?) {
         self.file = file; self.chat = chat; self.available = available
-        super.init(frame: .zero); wantsLayer = true
+        super.init(frame: .zero); wantsLayer = true; Self.rows.add(self)
         panel.cornerRadius = 8; panel.backgroundColor = AppKitKit.surface.cgColor
         panel.borderWidth = 1; panel.borderColor = AppKitKit.border.cgColor; layer?.addSublayer(panel)
         rule.backgroundColor = AppKitKit.border.cgColor; layer?.addSublayer(rule)
@@ -49,7 +49,19 @@ import AppKit
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { observation.start(reading: { [weak self] in self?.render() }, apply: { _ in }) }
-        else { observation.stop(); transcript.layer?.removeAllAnimations() }
+        else { observation.stop(); transcript.layer?.removeAllAnimations(); stopWhenGone() }
+    }
+    /// Leaving the conversation stops this note, as the SwiftUI row did on
+    /// disappear. Rows are rebuilt when playback state changes, so the
+    /// deferred check stops only when no row for the note is still shown.
+    private static let rows = NSHashTable<AppKitVoiceMessage>.weakObjects()
+    private func stopWhenGone() {
+        let id = file.id
+        DispatchQueue.main.async {
+            guard VoiceMessagePlayer.shared.attachmentID == id,
+                  !Self.rows.allObjects.contains(where: { $0.window != nil && $0.file.id == id }) else { return }
+            VoiceMessagePlayer.shared.stop()
+        }
     }
     private func render() {
         let player = VoiceMessagePlayer.shared, elapsed = player.elapsed(for: file)
@@ -135,7 +147,7 @@ import UIKit
     private let panel = CALayer(), rule = CALayer()
     private var expanded = false, generation = 0
     init(file: ChatAttachment, chat: ChatModel?, available: (() -> Bool)?) {
-        self.file = file; self.chat = chat; self.available = available; super.init(frame: .zero)
+        self.file = file; self.chat = chat; self.available = available; super.init(frame: .zero); Self.rows.add(self)
         panel.cornerRadius = 8; panel.backgroundColor = UIColor(CaperTheme.surface).cgColor
         panel.borderWidth = 1; panel.borderColor = UIColor(CaperTheme.border).cgColor; layer.addSublayer(panel)
         rule.backgroundColor = UIColor(CaperTheme.border).cgColor; layer.addSublayer(rule)
@@ -165,7 +177,19 @@ import UIKit
     func update(_ file: ChatAttachment) { self.file = file; render() }
     override func didMoveToWindow() {
         super.didMoveToWindow(); generation += 1
-        if window != nil { observe(generation) } else { transcript.layer.removeAllAnimations() }
+        if window != nil { observe(generation) } else { transcript.layer.removeAllAnimations(); stopWhenGone() }
+    }
+    /// Leaving the conversation stops this note, as the SwiftUI row did on
+    /// disappear. Rows are rebuilt when playback state changes, so the
+    /// deferred check stops only when no row for the note is still shown.
+    private static let rows = NSHashTable<UIKitVoiceMessage>.weakObjects()
+    private func stopWhenGone() {
+        let id = file.id
+        DispatchQueue.main.async {
+            guard VoiceMessagePlayer.shared.attachmentID == id,
+                  !Self.rows.allObjects.contains(where: { $0.window != nil && $0.file.id == id }) else { return }
+            VoiceMessagePlayer.shared.stop()
+        }
     }
     private func observe(_ token: Int) {
         guard window != nil, token == generation else { return }

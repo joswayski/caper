@@ -147,7 +147,7 @@ import AppKit
             popover?.animates = false; popover?.close()
             Task { if model.account?.id == account { await model.reactToActivity(item, emoji: emoji) } }
         }
-        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.animates = !CaperAccessibility.reduceMotion
         picker = popover; popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
 }
