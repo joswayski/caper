@@ -122,10 +122,10 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
             empty.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             empty.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
         ])
-        let host = UIHostingController(rootView: UIKitPresentationHost(state: presentations, model: model) { [weak self] then in
+        let host = UIKitNativePresentations(state: presentations, model: model) { [weak self] then in
             guard let self else { return then() }
-            self.dismiss(animated: true, completion: then)
-        })
+            self.dismiss(animated: false, completion: then)
+        }
         host.view.backgroundColor = .clear
         host.view.isUserInteractionEnabled = false
         host.view.frame = CGRect(x: 0, y: 0, width: 1, height: 1)

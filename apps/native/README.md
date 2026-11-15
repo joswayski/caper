@@ -5,8 +5,8 @@ local HTTP server, Tauri, or Electron; the website remains available.
 
 | Platform | Presentation / networking | Project |
 | --- | --- | --- |
-| macOS | Swift / AppKit (shared SwiftUI dialogs) / URLSession | [Apple](apple/README.md) |
-| iPhone | Swift / UIKit (shared SwiftUI sheets) / URLSession | [Apple](apple/README.md) |
+| macOS | Swift / AppKit / URLSession | [Apple](apple/README.md) |
+| iPhone | Swift / UIKit / URLSession | [Apple](apple/README.md) |
 | Windows | Rust / Win32, DirectComposition, Direct2D, DirectWrite, UI Automation / native HTTP and WebSocket | [Windows](windows/README.md) |
 | Linux | Rust / GTK 4 / native HTTP and WebSocket | `linux/` (below) |
 | Android | Kotlin / Android Compose / native HTTP and WebSocket | [Android](android/README.md) |

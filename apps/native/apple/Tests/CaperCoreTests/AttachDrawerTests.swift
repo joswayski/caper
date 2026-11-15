@@ -36,5 +36,16 @@ final class AttachDrawerTests: XCTestCase {
         XCTAssertFalse(queue.isPending("a"))
         // A copy finishing after its tap was undone is not added.
         XCTAssertEqual(queue.finish("a", file("a")), [])
+
+        queue.enqueue("slow"); queue.enqueue("ready"); queue.enqueue("later")
+        XCTAssertEqual(queue.finish("ready", file("ready")), [])
+        XCTAssertNil(queue.cancel("slow"))
+        // Cancelling the first tap releases a completed later copy immediately,
+        // without waiting for another provider callback or allowing Send early.
+        XCTAssertEqual(queue.takeReady().map(\.name), ["ready"])
+        XCTAssertEqual(queue.order, ["later"])
+        XCTAssertEqual(queue.finish("slow", file("slow")), [])
+        XCTAssertEqual(queue.finish("later", file("later")).map(\.name), ["later"])
+        XCTAssertTrue(queue.order.isEmpty)
     }
 }

@@ -32,6 +32,11 @@ struct AttachDrawerQueue {
     mutating func finish(_ source: String, _ file: LocalAttachmentFile?) -> [LocalAttachmentFile] {
         guard order.contains(source) else { return [] }
         if let file { staged[source] = file } else { order.removeAll { $0 == source } }
+        return takeReady()
+    }
+
+    /// Also drain after cancelling a tap: later copies may already be ready.
+    mutating func takeReady() -> [LocalAttachmentFile] {
         var ready: [LocalAttachmentFile] = []
         while let first = order.first, let file = staged.removeValue(forKey: first) {
             order.removeFirst()
@@ -229,7 +234,7 @@ struct AttachDrawer: View {
     init(draft: AttachDrawerDraft) { self.mode = .attach(draft) }
     init(mode: AttachDrawerMode) { self.mode = mode }
 
-    static func source(_ identifier: String) -> String { "photos:\(identifier)" }
+    nonisolated static func source(_ identifier: String) -> String { "photos:\(identifier)" }
 
     private var draft: AttachDrawerDraft? {
         if case .attach(let draft) = mode { return draft }
@@ -538,6 +543,8 @@ struct AttachDrawer: View {
         if queue.isPending(source) {
             copies.removeValue(forKey: source)?.cancel()
             if let staged = queue.cancel(source) { AttachmentStaging.remove(staged.url) }
+            let ready = queue.takeReady()
+            if draft.valid() { draft.add(ready) } else { ready.forEach { AttachmentStaging.remove($0.url) } }
             notice = nil
             return
         }

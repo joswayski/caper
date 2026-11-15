@@ -11,10 +11,12 @@ import AppKit
     private var requestID: String?
     private var frames: ProfilePictureFrames?
     private var loading: Task<Void, Never>?
+    private let corner: CGFloat?
 
     public override var isFlipped: Bool { true }
 
-    public init() {
+    public init(corner: CGFloat? = nil) {
+        self.corner = corner
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = AppKitKit.raised.cgColor
@@ -58,7 +60,7 @@ import AppKit
         initial.frame = NSRect(x: 0, y: (bounds.height - 17) / 2, width: bounds.width, height: 17)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         pictureLayer.frame = bounds
-        layer?.cornerRadius = frames == nil ? bounds.width / 2 : ProfilePicturePolicy.cornerRadius(side: bounds.width)
+        layer?.cornerRadius = corner ?? (frames == nil ? bounds.width / 2 : ProfilePicturePolicy.cornerRadius(side: bounds.width))
         CATransaction.commit()
         refreshPicture()
     }
@@ -105,7 +107,7 @@ import AppKit
         pictureLayer.isHidden = frames?.images.first == nil
         saved.isHidden = !pictureLayer.isHidden
         initial.isHidden = !pictureLayer.isHidden || saved.image != nil
-        layer?.cornerRadius = pictureLayer.isHidden ? bounds.width / 2 : ProfilePicturePolicy.cornerRadius(side: bounds.width)
+        layer?.cornerRadius = corner ?? (pictureLayer.isHidden ? bounds.width / 2 : ProfilePicturePolicy.cornerRadius(side: bounds.width))
         if let frames, frames.animated, window != nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let total = frames.durations.reduce(0, +)
             if total > 0 {

@@ -21,16 +21,21 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
     static func dismantleUIViewController(_ controller: UIKitMessageDialog, coordinator: ()) { controller.stop() }
 }
 
-@MainActor class UIKitMessageDialog: UIViewController {
+@MainActor class UIKitMessageDialog: UIViewController, UIAdaptivePresentationControllerDelegate {
     let body = UIStackView()
     let close: () -> Void
     private var active = true
     private var closeButton: UIButton?
-    private var originals: [String: (message: ChatMessage, host: UIHostingController<AnyView>)] = [:]
+    private var originals: [String: (message: ChatMessage, view: UIKitOriginalMessage)] = [:]
     var dismissDisabled: Bool { false }
 
     private let closeLabel: String
     private var header: UIStackView?
+    private var titleLabel: UILabel?
+    private var scrollBottom: NSLayoutConstraint!
+    private var scroll: UIScrollView!
+    private var footer: UIView?
+    var idealHeight: CGFloat?
 
     init(title: String, closeLabel: String = "Close", close: @escaping () -> Void) {
         self.close = close; self.closeLabel = closeLabel
@@ -39,19 +44,32 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if presentationController?.delegate == nil { presentationController?.delegate = self }
+    }
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if isBeingDismissed || isMovingFromParent { stop() }
+    }
+    func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool { !dismissDisabled }
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { stop(); close() }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIColor(CaperTheme.raised); overrideUserInterfaceStyle = .dark
         let title = Self.label(self.title ?? "", size: 20, bold: true)
+        titleLabel = title
         let close = Self.button("Close") { [weak self] in if let self, !self.dismissDisabled { self.close() } }
         close.accessibilityLabel = closeLabel; closeButton = close
         let header = UIStackView(arrangedSubviews: [title, close]); header.spacing = 12; self.header = header
         title.setContentHuggingPriority(.defaultLow, for: .horizontal)
         close.setContentHuggingPriority(.required, for: .horizontal)
-        let scroll = UIScrollView(); scroll.keyboardDismissMode = .interactive
+        let scroll = UIScrollView(); scroll.keyboardDismissMode = .interactive; self.scroll = scroll
         body.axis = .vertical; body.spacing = 14
         for child in [header, scroll] { child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child) }
         body.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(body)
+        scrollBottom = scroll.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
             header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
@@ -59,7 +77,7 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
             scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
             scroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+            scrollBottom,
             body.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 16),
             body.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -16),
             body.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 4),
@@ -75,18 +93,35 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         func fit(_ view: UIView?) -> CGFloat {
             view?.systemLayoutSizeFitting(inner, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height ?? 0
         }
-        return ceil(16 + fit(header) + 12 + 4 + fit(body) + 20)
+        return idealHeight ?? ceil(16 + fit(header) + 12 + 4 + fit(body) + 20 + fit(footer))
+    }
+    func setTitle(_ title: String) { self.title = title; titleLabel?.text = title }
+    func setFooter(_ footer: UIView) {
+        self.footer = footer; scrollBottom.isActive = false
+        footer.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(footer)
+        NSLayoutConstraint.activate([
+            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            footer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+        ])
     }
     func observe() {
         guard active else { return }
         withObservationTracking {
             render()
-            closeButton?.isEnabled = !dismissDisabled
+            updateDismissGuard()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.observe() }
         }
+        var ancestor = parent
+        while let controller = ancestor {
+            if controller is UIKitWorkspaceFrame { controller.view.setNeedsLayout(); break }
+            ancestor = controller.parent
+        }
     }
     func render() {}
+    func updateDismissGuard() { closeButton?.isEnabled = !dismissDisabled }
     func stop() { active = false }
 
     static func label(_ text: String, size: CGFloat = 12, bold: Bool = false, error: Bool = false) -> UILabel {
@@ -281,29 +316,30 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
 }
 
 extension UIKitMessageDialog {
-    /// Keep the existing rich-message/media leaf until that separate migration;
-    /// never replace attachment, spoiler, link or reaction behavior with plain text.
+    /// Retain realized originals across observation updates, including a
+    /// revealed spoiler or a playing attachment inside the forward preview.
     fileprivate func setOriginals(_ messages: [ChatMessage], in stack: UIStackView, available: (() -> Bool)? = nil) {
         let ids = Set(messages.map(\.id))
         for id in originals.keys.filter({ !ids.contains($0) }) {
-            guard let old = originals.removeValue(forKey: id)?.host else { continue }
-            old.willMove(toParent: nil); old.view.removeFromSuperview(); old.removeFromParent()
+            originals.removeValue(forKey: id)?.view.removeFromSuperview()
         }
         for (index, message) in messages.enumerated() {
-            let content = AnyView(SharedOriginalView(message: message, isAvailable: available)
-                .modifier(MediaViewerHost()).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
-            let host: UIHostingController<AnyView>
+            let view: UIKitOriginalMessage
             if let previous = originals[message.id] {
-                host = previous.host
-                if previous.message != message { host.rootView = content }
+                view = previous.view
+                if previous.message != message { view.update(message) }
             } else {
-                host = UIHostingController(rootView: content)
-                host.sizingOptions = [.intrinsicContentSize]; host.view.backgroundColor = .clear
-                addChild(host); stack.insertArrangedSubview(host.view, at: index); host.didMove(toParent: self)
+                view = UIKitOriginalMessage(message, available: available) { [weak self] request in
+                    guard let self, self.presentedViewController == nil else { return }
+                    let viewer = UIKitMediaViewer(request: request) { [weak self] in self?.presentedViewController?.dismiss(animated: false) }
+                    viewer.modalPresentationStyle = .fullScreen
+                    self.present(viewer, animated: false)
+                }
+                stack.insertArrangedSubview(view, at: index)
             }
-            originals[message.id] = (message, host)
-            if !stack.arrangedSubviews.indices.contains(index) || stack.arrangedSubviews[index] !== host.view {
-                stack.removeArrangedSubview(host.view); stack.insertArrangedSubview(host.view, at: index)
+            originals[message.id] = (message, view)
+            if !stack.arrangedSubviews.indices.contains(index) || stack.arrangedSubviews[index] !== view {
+                stack.removeArrangedSubview(view); stack.insertArrangedSubview(view, at: index)
             }
         }
     }

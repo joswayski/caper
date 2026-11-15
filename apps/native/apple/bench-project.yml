@@ -1,4 +1,4 @@
-# Device benchmark apps (bench.sh): the UIKit client and the shipping SwiftUI
+# Device benchmark apps (bench.sh): the UIKit client and the retained SwiftUI
 # app built against the TEST FIXTURE only. CaperCore is compiled with
 # CAPER_DEVICE_FIXTURE here, so a launch without a valid loopback or
 # private-LAN fixture stops instead of reaching caper.chat. The apps use

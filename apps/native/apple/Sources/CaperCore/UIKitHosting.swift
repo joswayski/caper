@@ -3,25 +3,10 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// The SwiftUI surfaces the UIKit iPhone client hosts rather than rewrites:
-/// on-demand pickers, drawers, editors and viewers, and attachment content
-/// inside message rows. Scrolling lists, rows and the composer bar stay UIKit.
-/// Presentations go through `present`, a UIKit presenter, because a hosted
-/// leaf view has no SwiftUI presentation context of its own.
+/// Native picker, drawer, editor and viewer factories for the UIKit client.
+/// Presentation ownership stays with the calling conversation or workspace.
 @MainActor public enum UIKitHosting {
     public typealias Present = @MainActor (UIViewController) -> Void
-
-    /// A SwiftUI root in Caper's dark appearance; `close` dismisses it.
-    static func controller<Content: View>(clear: Bool = false, _ content: (_ close: @escaping () -> Void) -> Content) -> UIViewController {
-        let box = WeakController()
-        // CaperView's root tint: switches and selection in terracotta, not system green.
-        let host = UIHostingController(rootView: AnyView(content({ box.value?.dismiss(animated: false) })
-            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)))
-        box.value = host
-        host.overrideUserInterfaceStyle = .dark
-        if clear { host.view.backgroundColor = .clear }
-        return host
-    }
 
     /// The composer's attach drawer: recent photos and videos, the camera,
     /// Files, and Send. Nil when the conversation can't take files.
@@ -34,8 +19,9 @@ import UniformTypeIdentifiers
             canSend: { chat.canPressSend(inThread: inThread) },
             send: { Task { await chat.send(inThread: inThread) } },
             valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })
-        let host = controller(clear: true) { _ in AttachDrawer(draft: draft) }
-        host.modalPresentationStyle = .overFullScreen
+        let box = WeakController()
+        let host = UIKitAttachDrawer(mode: .attach(draft)) { box.value?.dismiss(animated: false) }
+        box.value = host
         return host
     }
 
@@ -44,13 +30,20 @@ import UniformTypeIdentifiers
 
     /// Emojis, GIFs and stickers. An emoji goes to `insert`; a GIF or sticker sends at once.
     public static func expressionPicker(chat: ChatModel, inThread: Bool = false, insert: @escaping (String) -> Void) -> UIViewController {
-        let host = controller { close in
-            ComposerExpressionPicker(configuration: chat.klipy, mediaEnabled: chat.canSendGif(inThread: inThread), select: { emoji in
-                insert(emoji); close()
+        let box = WeakController(), context = chat.editingContext, root = chat.threadRootID
+        let close: () -> Void = { box.value?.dismiss(animated: false) }
+        let host = UIKitExpressionPicker(configuration: chat.klipy, mediaEnabled: chat.canSendGif(inThread: inThread), close: close,
+            select: { emoji in
+                close()
+                if chat.editingContext == context, !inThread || chat.threadRootID == root { insert(emoji) }
             }, send: { gif, query in
-                close(); Task { await chat.sendGif(gif, inThread: inThread, query: query) }
+                close()
+                Task {
+                    guard chat.editingContext == context, !inThread || chat.threadRootID == root, chat.canSendGif(inThread: inThread) else { return }
+                    await chat.sendGif(gif, inThread: inThread, query: query)
+                }
             })
-        }
+        box.value = host
         sheet(host, background: CaperTheme.surface)
         return host
     }
@@ -68,7 +61,9 @@ import UniformTypeIdentifiers
     /// New direct message: an exact username, with suggestions. Opening the
     /// conversation selects it on the model and closes the sheet.
     public static func newDirectMessage(model: AppModel) -> UIViewController {
-        let host = controller { close in NewDirectMessageSheet(model: model, close: close) }
+        let box = WeakController()
+        let host = UIKitNewDirectMessage(model: model) { box.value?.dismiss(animated: false) }
+        box.value = host
         sheet(host, background: CaperTheme.surface)
         host.sheetPresentationController?.detents = [.large()]
         return host
@@ -76,7 +71,9 @@ import UniformTypeIdentifiers
 
     /// A message's edit history, as SwiftUI's "(edited)" opens.
     public static func messageHistory(chat: ChatModel, message: ChatMessage) -> UIViewController {
-        let host = controller { close in MessageHistoryView(chat: chat, message: message, close: close) }
+        let box = WeakController()
+        let host = UIKitNativeMessageHistory(chat: chat, message: message) { box.value?.dismiss(animated: false) }
+        box.value = host
         sheet(host, background: CaperTheme.surface)
         host.sheetPresentationController?.detents = [.large()]
         return host
@@ -115,46 +112,71 @@ import UniformTypeIdentifiers
         UIKitProfileCard(model: model, person: person, requestBlock: requestBlock)
     }
 
-    /// SwiftUI's full-screen pages for an account in no spaces: the
-    /// first-space page, or, when spaces fail to load, the page with Try
-    /// again and Direct messages. Each fills the window like CaperRootView.
+    /// Native full-screen pages for accounts with no spaces or an unfinished profile.
     public static func firstSpace(model: AppModel) -> UIViewController {
-        page(FirstSpaceView(model: model))
+        UIKitOnboarding(model: model, page: .firstSpace)
     }
 
-    /// A new account's profile: SwiftUI's own page, with its validation and Log out.
     public static func profile(model: AppModel) -> UIViewController {
-        page(ProfileView(model: model))
+        UIKitOnboarding(model: model, page: .profile)
     }
 
     public static func spacesUnavailable(model: AppModel) -> UIViewController {
-        page(UIKitSpacesUnavailable(model: model))
-    }
-
-    private static func page<Content: View>(_ content: Content) -> UIViewController {
-        let host = controller { _ in
-            content.foregroundStyle(CaperTheme.text).tint(CaperTheme.terracottaBright)
-                .buttonStyle(CaperSecondaryButton()).background(CaperTheme.blackout.ignoresSafeArea())
-        }
-        host.view.backgroundColor = UIColor(CaperTheme.blackout)
-        return host
+        UIKitOnboarding(model: model, page: .unavailable)
     }
 
     /// A workspace dialog (space and channel settings, invites, create and
     /// join, profile, privacy, notifications, audio, leave), drawn as on
     /// SwiftUI's iPhone: a scrim, then a card fitted to its content.
     public static func workspaceDialog(model: AppModel, _ item: WorkspaceSheet) -> UIViewController {
-        let state = UIKitWorkspaceDialogState(item: item)
-        let box = WeakController()
-        let host = FocusRevealingHostingController(rootView: UIKitWorkspaceDialog(model: model, state: state) {
-            box.value?.dismiss(animated: false)
-        })
-        box.value = host
-        host.overrideUserInterfaceStyle = .dark
-        host.view.backgroundColor = .clear
-        host.modalPresentationStyle = .overFullScreen
-        host.view.accessibilityViewIsModal = true
-        return host
+        let native: UIViewController
+        let holder = WeakController()
+        let close: () -> Void = { (holder.value as? UIKitWorkspaceFrame)?.close() }
+        switch item {
+        case .profile: native = UIKitProfilePresentation(model: model, close: close)
+        case .joinInvite(let opened): native = UIKitJoinInvite(model: model, opened: opened, close: close)
+        case .createSpace, .manageSpace:
+            native = UIKitSpaceEditor(model: model, managing: item.id == "manage-space", close: close) {
+                (holder.value as? UIKitWorkspaceFrame)?.replace(with: UIKitJoinInvite(model: model, opened: nil, close: close))
+            }
+        case .invitePeople(let spaceID, let channelID):
+            if model.detail?.space.id == spaceID {
+                native = UIKitSpaceEditor(model: model, managing: true, inviteOnly: true, channelID: channelID, close: close, joinInvite: {})
+            } else {
+                let notice = UIKitMessageDialog(title: "Invite people", close: close)
+                notice.body.addArrangedSubview(UIKitMessageDialog.label("Open that space to invite people.")); native = notice
+            }
+        case .createChannel: native = UIKitChannelEditor(model: model, channel: nil, close: close)
+        case .manageChannel(let channel): native = UIKitChannelEditor(model: model, channel: channel, close: close)
+        case .privacy: native = UIKitPrivacyDialog(model: model, close: close)
+        case .notifications: native = UIKitNotificationsDialog(model: model, close: close)
+        case .audio: native = UIKitAudioTest(voice: model.voice, debugEnabled: model.account?.debugEnabled == true, close: close)
+        case .connection: native = UIKitAudioDiagnostics(voice: model.voice, kind: .connection, close: close)
+        case .diagnostics:
+            native = model.account?.debugEnabled == true ? UIKitAudioDiagnostics(voice: model.voice, kind: .processing, close: close)
+                : UIKitMessageDialog(title: "Audio diagnostics", close: close)
+        case .newDirectMessage: native = UIKitNewDirectMessage(model: model, close: close)
+        case .leaveSpace:
+            native = UIKitConfirmationDialog(title: "Leave \(model.detail?.space.name ?? "space")?",
+                detail: "You will lose access to its channels and conversations. An owner can add you again later.",
+                action: "Leave space", pendingLabel: "Leaving…", close: close) { try await model.leaveCurrentSpace() }
+        case .invitation(let space):
+            let inviter = space.inviter.map { "\n\($0.displayName) (@\($0.username)) invited you." } ?? ""
+            native = UIKitConfirmationDialog(title: "You’re invited!", detail: "Join \(space.name)?\(inviter)", action: "Accept", pendingLabel: "Accepting…",
+                invitationArt: true, close: close, decline: { try await model.declineInvitation(space) }) { try await model.acceptInvitation(space) }
+        case .channelInvitation(let invitation):
+            native = UIKitConfirmationDialog(title: "Private channel invitation",
+                detail: "\(invitation.inviter.displayName) (@\(invitation.inviter.username)) invited you to private channel #\(invitation.channel.name).",
+                action: "Accept", pendingLabel: "Accepting…", close: close, decline: { try await model.declineChannelInvitation(invitation) }) {
+                    try await model.acceptChannelInvitation(invitation)
+                }
+        case .login:
+            // Authentication belongs to the native root, not a workspace dialog.
+            native = UIViewController()
+        }
+        let frame = UIKitWorkspaceFrame(content: native, width: item.id.contains("manage") ? 600 : 560)
+        holder.value = frame
+        return frame
     }
 
     /// "Leave #name?", as the channel options menu confirms on SwiftUI.
@@ -162,10 +184,10 @@ import UniformTypeIdentifiers
         let detail = channel.private && !model.isOwner
             ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call."
             : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call."
-        let host = controller { close in
-            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: detail, action: "Leave channel", pendingLabel: "Leaving…",
-                              close: close) { try await model.leaveChannel(channel) }
-        }
+        let box = WeakController()
+        let host = UIKitConfirmationDialog(title: "Leave #\(channel.name)?", detail: detail, action: "Leave channel", pendingLabel: "Leaving…",
+            close: { box.value?.dismiss(animated: false) }, perform: { try await model.leaveChannel(channel) })
+        box.value = host
         sheet(host, background: CaperTheme.surface)
         host.sheetPresentationController?.detents = [.medium()]
         return host
@@ -245,56 +267,6 @@ struct UIKitWorkspaceDialog: View {
     private func tappedOutside() {
         if state.item.id == "profile" { state.profileDismissAction?.action() }
         else if !state.dismissDisabled { dismiss() }
-    }
-}
-
-/// A workspace dialog shrinks above the keyboard, which can leave the field
-/// being edited under its bottom edge; its scroll view never sees the
-/// keyboard itself. Once the keyboard settles, scroll that field into view.
-private final class FocusRevealingHostingController<Content: View>: UIHostingController<Content> {
-    override init(rootView: Content) {
-        super.init(rootView: rootView)
-        for name in [UIResponder.keyboardDidShowNotification, UIResponder.keyboardDidChangeFrameNotification] {
-            NotificationCenter.default.addObserver(self, selector: #selector(revealFocus), name: name, object: nil)
-        }
-    }
-    @MainActor required dynamic init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    @objc private func revealFocus() {
-        guard let field = Self.firstResponder(in: view) else { return }
-        var scroll = field.superview
-        while let candidate = scroll, !(candidate is UIScrollView) { scroll = candidate.superview }
-        guard let scroll = scroll as? UIScrollView else { return }
-        view.layoutIfNeeded()
-        scroll.scrollRectToVisible(field.convert(field.bounds, to: scroll).insetBy(dx: 0, dy: -12),
-                                   animated: !UIAccessibility.isReduceMotionEnabled)
-    }
-
-    private static func firstResponder(in view: UIView) -> UIView? {
-        if view.isFirstResponder { return view }
-        for subview in view.subviews { if let found = firstResponder(in: subview) { return found } }
-        return nil
-    }
-}
-
-/// Reports when its sheet has finished closing, so a follow-up can present.
-private final class DisappearingHostingController: UIHostingController<AnyView> {
-    var disappeared: (() -> Void)?
-    var dismissGuard: DismissGuard?
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        if isBeingDismissed || presentingViewController == nil { disappeared?() }
-    }
-}
-
-/// Refuses a swipe-down while a profile edit or a draft is unsaved.
-@MainActor private final class DismissGuard: NSObject, UIAdaptivePresentationControllerDelegate {
-    var profileEditor: ProfileDismissAction?
-    var allow: () -> Bool = { true }
-
-    func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool {
-        if let profileEditor { profileEditor.action(); return false }
-        return allow()
     }
 }
 
@@ -421,29 +393,41 @@ public struct UIKitComposerAccessories: View {
     let chat: ChatModel
     let inThread: Bool
     let controller = ComposerAutocompleteController()
+    private lazy var session = NativeVoiceSession { [weak self, chat, inThread] in
+        self?.target ?? VoiceTarget(owner: VoiceComposerID(chat: chat, inThread: inThread), enabled: false,
+            unavailableReason: "Composer is closed", identifier: inThread ? "thread-voice" : "composer-voice",
+            send: { AttachmentStaging.remove($0.fileURL) }, stage: { AttachmentStaging.remove($0.fileURL) }, isCurrent: { false })
+    }
+    private lazy var microphone = UIKitVoiceControls(session: session, kind: .microphone)
+    private lazy var recordingBar = UIKitVoiceControls(session: session, kind: .bar)
 
     public init(chat: ChatModel, inThread: Bool = false, dictate: @escaping (String) -> Bool) {
         self.chat = chat; self.inThread = inThread
         controller.dictateAction = dictate
     }
 
-    var target: VoiceTarget { .chat(chat, inThread: inThread, controller: controller) }
+    var target: VoiceTarget {
+        let base = VoiceTarget.chat(chat, inThread: inThread, controller: controller)
+        let context = chat.editingContext, owner = base.owner
+        let current = { [weak self] in
+            guard let self else { return false }
+            return self.chat.editingContext == context && VoiceComposerID(chat: self.chat, inThread: self.inThread) == owner && self.chat.canInteract
+        }
+        return VoiceTarget(owner: owner, enabled: base.enabled, unavailableReason: base.unavailableReason, identifier: base.identifier,
+            send: { if current() { await base.send($0) } else { AttachmentStaging.remove($0.fileURL) } },
+            stage: { if current() { base.stage($0) } else { AttachmentStaging.remove($0.fileURL) } },
+            transcribe: { recording in guard current(), let transcribe = base.transcribe else { throw CancellationError() }; return try await transcribe(recording) },
+            insert: { current() && (base.insert?($0) ?? false) }, isCurrent: current)
+    }
 
     /// While recording, the bar covers the field.
     public var isRecording: Bool { VoiceMessageRecorder.shared.isRecording(target.owner) }
 
     /// Tap to dictate, hold for a voice message, slide up to lock.
-    public var button: some View {
-        VoiceRecordButton(target: target, height: 42)
-            // The lock hint draws above the microphone, outside the composer box.
-            .modifier(VoiceLockLayer())
-            .preferredColorScheme(.dark)
-    }
+    public var button: UIView { microphone }
 
     /// Discard, the timer, live bars and "Voice note".
-    public var bar: some View {
-        VoiceRecordingBar(target: target, height: 42).preferredColorScheme(.dark)
-    }
+    public var bar: UIView { recordingBar }
 }
 /// What a UIKit conversation asks SwiftUI to present: message actions (the
 /// long-press sheet), who reacted, a block confirmation. `chat.forwardTarget`
@@ -883,20 +867,11 @@ public struct UIKitTimelineEntry {
     }
 }
 
-/// SwiftUI's What's new: the release-notes sheet, opened from the account
-/// menu or shown once for a new build's unread notes. Its zero-size host
-/// sits in the root; the automatic check waits, as on SwiftUI, until nothing
-/// else is presented and no call is starting. The same host drives the call's
-/// speaking rings and chimes, as SwiftUI's root does.
+/// Release notes and call effects live with the native root. Automatic notes
+/// wait until no other presentation or starting call owns the screen.
 @MainActor public enum UIKitWhatsNew {
     public static func presenter(model: AppModel) -> UIViewController {
-        let host = UIHostingController(rootView: Color.clear.modifier(WhatsNewPresentation(model: model))
-            .modifier(VoiceCallEffects(model: model)).preferredColorScheme(.dark))
-        host.overrideUserInterfaceStyle = .dark
-        host.view.backgroundColor = .clear
-        host.view.isUserInteractionEnabled = false
-        host.view.accessibilityElementsHidden = true
-        return host
+        UIKitReleaseNotesPresenter(model: model)
     }
 
     public static func open(model: AppModel) { model.whatsNew.open() }

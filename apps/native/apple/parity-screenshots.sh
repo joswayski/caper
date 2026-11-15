@@ -22,11 +22,15 @@ curl --silent --fail http://127.0.0.1:3001/api/spaces -H 'authorization: Bearer 
 "$ROOT/prepare.sh"
 rm -rf "$ROOT/ParityResults.xcresult" "$ROOT/parity-artifacts"
 if [[ "$PLATFORM" == macos ]]; then
-  scheme=CaperMacOSParityTests
+  scheme=CaperAppKitTests
+  project=CaperNative
+  spec=native-project.yml
   # CAPER_MACOS_ARCH=x86_64 on Apple silicon runs the Intel app under Rosetta.
   destination="platform=macOS,arch=${CAPER_MACOS_ARCH:-$(uname -m)}"
 else
-  scheme=CaperIOSParityTests
+  scheme=CaperUIKit
+  project=CaperUIKit
+  spec=uikit-project.yml
   # The composer tests measure the software keyboard; a connected hardware
   # keyboard (the simulator default on CI hosts) keeps it offscreen.
   defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
@@ -34,8 +38,12 @@ else
   # The attach drawer test picks photos from the simulator's library.
   "$ROOT/seed-simulator-photos.sh" "$destination"
 fi
+# The retired SwiftUI apps are not test hosts. Run each native client's own
+# suite, whose accessibility contracts and screenshot names match that client.
+xcodegen=("$ROOT"/.build/xcodegen-*)
+swift run --package-path "${xcodegen[0]}" xcodegen --spec "$ROOT/$spec" --project "$ROOT"
 set +e
-xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$scheme" -configuration Debug \
+xcodebuild -project "$ROOT/$project.xcodeproj" -scheme "$scheme" -configuration Debug \
   -destination "$destination" -derivedDataPath "$ROOT/DerivedData-Parity" \
   -resultBundlePath "$ROOT/ParityResults.xcresult" \
   -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 "$@" test

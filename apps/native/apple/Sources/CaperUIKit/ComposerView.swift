@@ -44,18 +44,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     private var dismissed = false
     private let recordingBar = HostedView()
     /// The draft's link card inside the box, and the length counter under it.
-    /// A sizing host, so the box grows when the card loads after typing pauses.
-    private let linkPreview: UIHostingController<AnyView> = {
-        // Zero height until a card shows: an EmptyView host still reports a size.
-        let host = UIHostingController(rootView: AnyView(Color.clear.frame(height: 0)))
-        host.sizingOptions = .intrinsicContentSize
-        host.view.backgroundColor = .clear
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        host.view.setContentHuggingPriority(.required, for: .vertical)
-        host.view.setContentCompressionResistancePriority(.required, for: .vertical)
-        return host
-    }()
-    private var linkPreviewShown = false
+    private let linkPreview = HostedView()
     private let counter = UIKitStyle.label(size: 10, color: UIKitStyle.muted)
     private var fieldToBottom: NSLayoutConstraint!
     private var fieldToCounter: [NSLayoutConstraint] = []
@@ -134,7 +123,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         fieldRow.alignment = .bottom
         fieldRow.translatesAutoresizingMaskIntoConstraints = false
         field.addSubview(fieldRow)
-        field.addSubview(linkPreview.view)
+        field.addSubview(linkPreview)
         counter.translatesAutoresizingMaskIntoConstraints = false
         // Satoshi with tabular digits, as SwiftUI's .monospacedDigit().
         let base = UIKitStyle.font(10, scaled: false)
@@ -175,10 +164,10 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             fieldRow.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 4),
             fieldRow.trailingAnchor.constraint(equalTo: microphone.leadingAnchor),
             fieldRow.topAnchor.constraint(equalTo: field.topAnchor),
-            linkPreview.view.topAnchor.constraint(equalTo: fieldRow.bottomAnchor),
-            linkPreview.view.leadingAnchor.constraint(equalTo: field.leadingAnchor),
-            linkPreview.view.trailingAnchor.constraint(equalTo: field.trailingAnchor),
-            linkPreview.view.bottomAnchor.constraint(equalTo: field.bottomAnchor),
+            linkPreview.topAnchor.constraint(equalTo: fieldRow.bottomAnchor),
+            linkPreview.leadingAnchor.constraint(equalTo: field.leadingAnchor),
+            linkPreview.trailingAnchor.constraint(equalTo: field.trailingAnchor),
+            linkPreview.bottomAnchor.constraint(equalTo: field.bottomAnchor),
             microphone.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -2),
             microphone.bottomAnchor.constraint(equalTo: fieldRow.bottomAnchor),
             microphone.widthAnchor.constraint(equalToConstant: 36),
@@ -228,11 +217,9 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     }
 
     /// The channel or thread draft's link card.
-    /// Set once per conversation: the hosted view follows the draft itself.
-    func showLinkPreview<Content: View>(_ content: Content?) {
-        guard (content != nil) != linkPreviewShown else { return }
-        linkPreviewShown = content != nil
-        linkPreview.rootView = content.map { AnyView($0) } ?? AnyView(Color.clear.frame(height: 0))
+    /// The retained native card observes the draft independently of typing.
+    func showLinkPreview(_ content: UIView?) {
+        linkPreview.show(content)
     }
 
     /// SwiftUI's "3,214 / 4,000" from 3,000 characters, warming near the limit.
@@ -249,12 +236,12 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     }
 
     /// Staged files and voice notices above the box, when there are any.
-    func showAccessories<Content: View>(_ content: Content?) {
+    func showAccessories(_ content: UIView?) {
         accessories.show(content)
     }
 
     /// The microphone and, while it records, the bar over the field.
-    func showVoice<Button: View, Bar: View>(button: Button?, bar: Bar, recording: Bool) {
+    func showVoice(button: UIView?, bar: UIView, recording: Bool) {
         microphone.show(button)
         microphone.isHidden = button == nil
         recordingBar.show(recording ? bar : nil)
@@ -486,10 +473,10 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     }
 }
 
-/// A SwiftUI leaf inside UIKit layout, sized to its content. Hidden and
+/// A native accessory inside UIKit layout, sized to its content. Hidden and
 /// zero-height when there is nothing to show.
 final class HostedView: UIView {
-    private var content: (UIView & UIContentView)?
+    private var native: UIView?
     private var collapsed: NSLayoutConstraint!
 
     init() {
@@ -501,32 +488,18 @@ final class HostedView: UIView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show<Content: View>(_ view: Content?) {
-        guard let view else {
-            content?.removeFromSuperview()
-            content = nil
-            collapsed.isActive = true
-            return
-        }
-        let configuration = UIHostingConfiguration { view }.margins(.all, 0).background(.clear)
-        if let content {
-            content.configuration = configuration
-        } else {
-            let made = configuration.makeContentView()
-            made.translatesAutoresizingMaskIntoConstraints = false
-            made.backgroundColor = .clear
-            addSubview(made)
-            NSLayoutConstraint.activate([
-                made.topAnchor.constraint(equalTo: topAnchor),
-                made.leadingAnchor.constraint(equalTo: leadingAnchor),
-                made.trailingAnchor.constraint(equalTo: trailingAnchor),
-                made.bottomAnchor.constraint(equalTo: bottomAnchor),
-            ])
-            content = made
-        }
-        collapsed.isActive = false
-        content?.invalidateIntrinsicContentSize()
+    func show(_ view: UIView?) {
+        guard native !== view else { return }
+        native?.removeFromSuperview(); native = view
+        collapsed.isActive = view == nil
+        guard let view else { return }
+        view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: leadingAnchor), view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor), view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
     }
+
 }
 
 /// The composer's lip, as SwiftUI's ComposerLip: an 8pt shade over the bottom

@@ -21,12 +21,12 @@ import SwiftUI
     }
 }
 
-/// Workspace dialogs share the shipping validation, permissions and pending /
-/// unsaved-edit guards. Only the open dialog has a SwiftUI hosting controller.
+/// Workspace dialogs share validation, permissions and pending / unsaved-edit
+/// guards. The presenter owns native content, focus and modal accessibility.
 @MainActor public final class AppKitWorkspacePresenter {
     private let model: AppModel
-    /// The open dialog: native, or SwiftUI for items not yet rebuilt in AppKit.
     private var host: NSViewController?
+    private var profile: AppKitProfilePresentation?
     private var dialogMedia: NSViewController?
     private weak var mediaResponder: NSResponder?
     private var state: AppKitWorkspaceDialogState?
@@ -138,10 +138,12 @@ import SwiftUI
             guard let self, self.state === state else { return }
             self.close()
         }
-        let host: NSViewController
-        if let content = nativeContent(state.item, close: dismiss) {
-            host = NSViewController()
-            host.view = AppKitDialogFrame(content: content, width: state.item.width, requestClose: dismiss)
+        guard let content = nativeContent(state.item, close: dismiss) else { return }
+        let host = NSViewController()
+            if let profile { host.addChild(profile) }
+            host.view = AppKitDialogFrame(content: content, width: state.item.width, requestClose: { [weak self] in
+                if let profile = self?.profile { profile.requestClose() } else { dismiss() }
+            })
             // As the SwiftUI dialog: message dialogs end with their conversation,
             // and every dialog ends with the account.
             let messageScoped = state.item.messageID != nil
@@ -149,9 +151,6 @@ import SwiftUI
             observation.start(reading: { [model] in (model.chat.editingContext, model.account?.id) }) { now in
                 if now.1 != account || (messageScoped && now.0 != context) { dismiss() }
             }
-        } else {
-            host = NSHostingController(rootView: AppKitWorkspaceDialog(model: model, state: state, dismiss: dismiss))
-        }
         self.host = host
         self.state = state
         previousResponder = parent.view.window?.firstResponder
@@ -168,7 +167,6 @@ import SwiftUI
         model.whatsNew.workspaceModalOpen = true
     }
 
-    /// Dialogs rebuilt in AppKit; the rest still use the SwiftUI dialog.
     private func nativeContent(_ item: AppKitWorkspaceDialogItem, close: @escaping () -> Void) -> AppKitDialogContent? {
         switch item {
         case .activity:
@@ -213,13 +211,41 @@ import SwiftUI
             return AppKitPrivacyDialog(model: model, close: close)
         case .workspace(.notifications):
             return AppKitNotificationsDialog(model: model, close: close)
+        case .workspace(.audio):
+            return AppKitAudioTest(voice: model.voice, debugEnabled: model.account?.debugEnabled == true, close: close)
+        case .workspace(.connection):
+            return AppKitAudioDiagnostics(voice: model.voice, kind: .connection, close: close)
+        case .workspace(.diagnostics):
+            if model.account?.debugEnabled == true { return AppKitAudioDiagnostics(voice: model.voice, kind: .processing, close: close) }
+            return AppKitSettingsDialog(title: "Audio diagnostics", detail: "Local processing counters", closeLabel: "Close audio diagnostics", identifier: "audio-diagnostics", close: close)
+        case .workspace(.profile):
+            let profile = AppKitProfilePresentation(model: model, close: close)
+            self.profile = profile
+            _ = profile.view
+            return profile.form
+        case .workspace(.joinInvite(let opened)):
+            return AppKitJoinInvite(model: model, opened: opened, close: close)
+        case .workspace(.createSpace), .workspace(.manageSpace):
+            let managing = item.id == "manage-space"
+            return AppKitSpaceEditor(model: model, managing: managing, close: close) { [weak self] in
+                guard let self, let parent = self.host?.parent else { return }
+                self.close(); self.show(.joinInvite(nil), in: parent)
+            }
+        case .workspace(.invitePeople(let spaceID, let channelID)):
+            guard model.detail?.space.id == spaceID else { return nil }
+            return AppKitSpaceEditor(model: model, managing: true, inviteOnly: true, channelID: channelID, close: close, joinInvite: {})
+        case .workspace(.createChannel):
+            return AppKitChannelEditor(model: model, channel: nil, close: close)
+        case .workspace(.manageChannel(let channel)):
+            return AppKitChannelEditor(model: model, channel: channel, close: close)
         case .workspace(.newDirectMessage):
             return AppKitNewDirectMessageDialog(model: model, close: close)
         case .workspace(.leaveSpace):
             return AppKitConfirmationDialog(title: "Leave \(model.detail?.space.name ?? "space")?",
                 detail: "You will lose access to its channels and conversations. An owner can add you again later.",
                 action: "Leave space", pendingLabel: "Leaving…", close: close) { [model] in try await model.leaveCurrentSpace() }
-        default:
+        case .workspace(.login):
+            // Authentication belongs to the native root, not a workspace dialog.
             return nil
         }
     }
@@ -227,6 +253,7 @@ import SwiftUI
     private func close() {
         guard let host, let state else { return }
         closeDialogMedia()
+        profile?.stop(); profile?.removeFromParent(); profile = nil
         let item = state.item
         let window = host.view.window
         let parent = host.parent
@@ -709,47 +736,27 @@ private final class AppKitPointerPassthroughView: NSView {
 }
 
 /// A measured media leaf, created only for staged files or realized messages.
-/// The native parent owns its width and scrolling; SwiftUI owns the existing
-/// gallery/editor controls and reports content-height changes (including loads).
+/// Its parent supplies width; native content reports asynchronous height changes.
 @MainActor public final class AppKitAttachmentSurface: NSView {
     public var heightChanged: (() -> Void)?
-    private let content: AnyView
-    private let host = NSHostingView(rootView: AnyView(EmptyView()))
-    private var measuredWidth: CGFloat = 0
-    private var reportedHeight: CGFloat = 0
+    private let native: NSView
+    private var nativeWidth: NSLayoutConstraint?
     public override var isFlipped: Bool { true }
 
-    fileprivate init<Content: View>(@ViewBuilder content: () -> Content) {
-        self.content = AnyView(content().preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
-        super.init(frame: .zero)
-        host.sizingOptions = [.intrinsicContentSize]
-        addSubview(host)
+    init(native: NSView) {
+        self.native = native; super.init(frame: .zero)
+        native.translatesAutoresizingMaskIntoConstraints = false; addSubview(native)
+        let width = native.widthAnchor.constraint(equalToConstant: 1); nativeWidth = width
+        NSLayoutConstraint.activate([width, native.leadingAnchor.constraint(equalTo: leadingAnchor), native.topAnchor.constraint(equalTo: topAnchor)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     public func height(for width: CGFloat) -> CGFloat {
         let width = max(1, width)
-        if measuredWidth != width {
-            measuredWidth = width
-            host.rootView = AnyView(content.frame(width: width, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .background(GeometryReader { geometry in
-                    Color.clear.onChange(of: geometry.size.height, initial: true) { [weak self] _, value in
-                        // Never re-enter native layout from a SwiftUI layout pass.
-                        DispatchQueue.main.async { [weak self] in
-                            guard let self, self.measuredWidth == width, abs(self.reportedHeight - value) > 0.5 else { return }
-                            self.reportedHeight = value
-                            self.heightChanged?()
-                        }
-                    }
-                }.allowsHitTesting(false)))
-        }
-        return ceil(host.fittingSize.height)
-    }
-
-    public override func layout() {
-        super.layout()
-        host.frame = bounds
+        nativeWidth?.constant = width
+        native.setFrameSize(NSSize(width: width, height: native.frame.height))
+        native.layoutSubtreeIfNeeded()
+        return ceil(native.fittingSize.height)
     }
 }
 
@@ -764,44 +771,30 @@ private final class AppKitPointerPassthroughView: NSView {
     public init(model: AppModel, parent: NSViewController) { self.model = model; self.parent = parent }
 
     public func composerAttachments(inThread: Bool = false) -> AppKitAttachmentSurface {
-        AppKitAttachmentSurface {
-            AppKitComposerAttachments(chat: model.chat, inThread: inThread)
-            .environment(\.attachmentEditor, AttachmentEditorAction { [weak self] request in
-                self?.showController { close in AppKitAttachmentEditor(request: request, close: close) }
-            })
+        let chat = model.chat
+        let content = AppKitComposerAccessories(chat: chat, inThread: inThread) { [weak self] file in
+            self?.showController { close in
+                if let request = NativeStagedFile.editRequest(file, chat: chat, inThread: inThread) {
+                    return AppKitAttachmentEditor(request: request, close: close)
+                }
+                return AppKitFilePreview(url: file.localURL, close: close)
+            }
         }
+        let surface = AppKitAttachmentSurface(native: content)
+        // Never re-enter AppKit layout from inside a child's layout pass.
+        content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }
+        return surface
     }
 
     public func messageAttachments(_ message: ChatMessage, beforeViewing: (() -> Void)? = nil) -> AppKitAttachmentSurface? {
         let files = message.content.attachments ?? []
-        guard !message.isDeleted, !files.isEmpty || message.content.gif != nil || message.forward != nil else { return nil }
-        let chat = model.chat
-        return AppKitAttachmentSurface {
-            VStack(alignment: .leading, spacing: 8) {
-                if let gif = message.content.gif { MessageGifView(gif: gif) }
-                if !files.isEmpty {
-                    MessageAttachmentsView(attachments: files, chat: chat, isAvailable: {
-                        chat.channelID == message.channelId
-                            && (chat.displayedMessages.first { $0.id == message.id }
-                                ?? chat.displayedPins.first { $0.id == message.id })?.isDeleted == false
-                    })
-                }
-                ForwardCardView(message: message, chat: chat) {
-                    Task {
-                        guard chat.channelID == message.channelId,
-                              let current = chat.displayedMessages.first(where: { $0.id == message.id })
-                                ?? chat.displayedPins.first(where: { $0.id == message.id }),
-                              !current.isDeleted, current.forward?.message != nil else { return }
-                        _ = await chat.onOpenForward?(current)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
-                beforeViewing?()
-                self?.showViewer(request)
-            })
+        guard !message.isDeleted, !files.isEmpty || message.content.gif != nil || message.forward != nil
+            || !(message.content.embeds ?? []).isEmpty || MentionAutocomplete.asksFeedback(message) else { return nil }
+        let content = AppKitMessageExtras(message, chat: model.chat) { [weak self] request in
+            beforeViewing?(); self?.showViewer(request)
         }
+        let surface = AppKitAttachmentSurface(native: content)
+        content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }; return surface
     }
 
     fileprivate func showViewer(_ request: MediaViewerRequest) {
@@ -809,25 +802,33 @@ private final class AppKitPointerPassthroughView: NSView {
     }
 
     public func pendingMessage(_ pending: PendingMessage) -> AppKitAttachmentSurface {
-        AppKitAttachmentSurface { AppKitPendingMessage(pending: pending, chat: model.chat) }
+        let content = AppKitPendingRow(pending, chat: model.chat) { [weak self] in self?.showViewer($0) }
+        let surface = AppKitAttachmentSurface(native: content)
+        content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }; return surface
     }
 
     /// Keep the shipping quote's thumbnails, blocked/deleted states, expansion
     /// and reduced-motion behavior without hosting either conversation list.
     public func replyContext(_ message: ChatMessage) -> AppKitAttachmentSurface? {
         guard !message.isDeleted, let reference = message.replyTo else { return nil }
-        return AppKitAttachmentSurface {
-            NativeReplyContext(reference: reference, motionKey: message.id, chat: model.chat)
-        }
+        let content = AppKitReplyContext(reference: reference, motionKey: message.id, chat: model.chat)
+        let surface = AppKitAttachmentSurface(native: content)
+        content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }; return surface
     }
 
     public func replyDraft(inThread: Bool = false) -> AppKitAttachmentSurface {
-        AppKitAttachmentSurface { AppKitReplyDraft(chat: model.chat, inThread: inThread) }
+        let content = AppKitComposerAccessories(chat: model.chat, inThread: inThread, onlyReply: true, preview: { _ in })
+        let surface = AppKitAttachmentSurface(native: content)
+        content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }
+        return surface
     }
 
     /// The draft's first link as a card above the composer, with × to send without it.
     public func composerLinkPreview(inThread: Bool = false) -> AppKitAttachmentSurface {
-        AppKitAttachmentSurface { AppKitComposerLinkPreview(chat: model.chat, inThread: inThread) }
+        let content = AppKitComposerPreview(chat: model.chat, inThread: inThread)
+        let surface = AppKitAttachmentSurface(native: content)
+        content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }
+        return surface
     }
 
     public func pickFiles(inThread: Bool = false) {
@@ -846,12 +847,6 @@ private final class AppKitPointerPassthroughView: NSView {
             } else if panel.urls.count > AttachmentPolicy.maxAttachments, chat.attachmentNotice(target: target) == nil {
                 chat.setAttachmentNotice("You can attach up to \(AttachmentPolicy.maxAttachments) files.", target: target)
             }
-        }
-    }
-
-    private func show<Content: View>(@ViewBuilder content: (@escaping () -> Void) -> Content) {
-        showController { close in
-            NSHostingController(rootView: content(close).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
         }
     }
 
@@ -1000,8 +995,8 @@ public enum AppKitComposerCounter {
         let chat = model.chat, inThread = self.inThread
         guard composer.isEditable, !composer.hasMarkedText(), chat.canSendGif(inThread: inThread), let configuration = chat.klipy else { return }
         let context = chat.editingContext, root = chat.threadRootID
-        show(from: anchor, composer: composer) { close in
-            KlipyPicker(configuration: configuration, close: close) { gif, query in
+        showController(from: anchor, composer: composer) { close in
+            AppKitKlipyPicker(configuration: configuration, close: close) { gif, query in
                 close()
                 Task {
                     // Navigation/account changes must not retarget a queued selection.
@@ -1010,16 +1005,6 @@ public enum AppKitComposerCounter {
                     await chat.sendGif(gif, inThread: inThread, query: query)
                 }
             }
-        }
-    }
-
-    private func show<Content: View>(from anchor: NSView, composer: ComposerTextView,
-                                    @ViewBuilder content: (@escaping () -> Void) -> Content) {
-        showController(from: anchor, composer: composer) { close in
-            let host = NSHostingController(rootView: content(close)
-                .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright).onExitCommand(perform: close))
-            host.sizingOptions = [.preferredContentSize]
-            return host
         }
     }
 

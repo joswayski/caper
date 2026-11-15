@@ -107,8 +107,8 @@ import Observation
     }
 }
 
-/// The retained recorder, GIF chooser and attachment chips are separate leaves;
-/// the rich field, formatting, autocomplete and composer actions are native.
+/// Compatibility entry point for the retired SwiftUI clients. The native
+/// composer owns its presentations and does not host any SwiftUI descendants.
 struct NativeQuickComposerSheet: View {
     @State private var state: NativeQuickDraft
     @Environment(\.isEnabled) private var enabled
@@ -120,48 +120,9 @@ struct NativeQuickComposerSheet: View {
         _state = State(initialValue: NativeQuickDraft(model: model, person: person, activity: activity, close: {}))
     }
     var body: some View {
-        #if os(macOS)
-        ZStack {
-            content.opacity(state.editing == nil ? 1 : 0).disabled(state.editing != nil).accessibilityHidden(state.editing != nil)
-            if let request = state.editing {
-                NativeAttachmentEditorBridge(request: request) { state.editing = nil; state.synchronizePresentation() }
-                    .frame(width: 720, height: 600).id(request.id)
-            }
-        }.preference(key: ProfileComposerPresentationSize.self, value: state.editing == nil ? nil : CGSize(width: 720, height: 600))
-        #else
-        content.fullScreenCover(item: $state.editing, onDismiss: state.synchronizePresentation) { request in
-            NativeAttachmentEditorBridge(request: request) { state.editing = nil; state.synchronizePresentation() }
-                .preferredColorScheme(.dark)
-        }
-        #endif
-    }
-    private var content: some View {
         NativeQuickComposerBridge(state: state)
             .accessibilityIdentifier("mention-card-composer-leaf")
-            .task { await state.start() }
             .onChange(of: enabled, initial: true) { _, value in state.enabled = value }
-            .onChange(of: state.showingFiles) { _, _ in state.synchronizePresentation() }
-            .onChange(of: state.showingEmoji) { _, _ in state.synchronizePresentation() }
-            .onChange(of: state.showingGIF) { _, _ in state.synchronizePresentation() }
-            .onChange(of: state.previewFile) { _, _ in state.synchronizePresentation() }
-            .quickLookPreview($state.previewFile)
-            #if os(macOS)
-            .popover(isPresented: $state.showingEmoji) { ReactionPicker(title: "Insert emoji", select: state.pickEmoji).onDisappear(perform: state.finishPicker) }
-            .fileImporter(isPresented: $state.showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-                defer { state.synchronizePresentation() }
-                guard case .success(let urls) = result else { return }
-                let files = urls.prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
-                state.draft.add(files)
-                if files.count < min(urls.count, AttachmentPolicy.maxAttachments) { state.draft.error = "Some files couldn’t be added." }
-            }
-            #else
-            .sheet(isPresented: $state.showingEmoji, onDismiss: state.finishPicker) { ReactionPicker(title: "Insert emoji", select: state.pickEmoji) }
-            .fullScreenCover(isPresented: $state.showingFiles, onDismiss: state.synchronizePresentation) {
-                AttachDrawer(draft: AttachDrawerDraft(files: { state.draft.files.map { AttachDrawerFile(id: $0.id, source: $0.local.source) } },
-                    add: { state.draft.add($0) }, remove: { state.draft.remove(id: $0) }, canSend: { state.draft.canSend && !state.draft.sending },
-                    send: { state.showingFiles = false; state.synchronizePresentation(); state.send() }, valid: { state.uploadsAvailable && state.editable }))
-            }.task { AttachGalleryCache.warm() }
-            #endif
     }
 }
 
@@ -246,45 +207,69 @@ struct NativeQuickComposerBridge: NSViewRepresentable {
     }
 }
 
-@MainActor final class AppKitQuickComposer: NSStackView {
-    private let state: NativeQuickDraft
+@MainActor final class AppKitQuickComposer: NSStackView, NSPopoverDelegate {
+    let state: NativeQuickDraft
     private let observation = AppKitObservation()
     private var editor: NativeDialogComposer!
-    private let files: NSHostingView<AnyView>
-    private let voice: NSHostingView<AnyView>
+    private let files: AppKitStagedFiles
+    private let session: NativeVoiceSession
+    private let voice: AppKitVoiceControls
+    private let recordingBar: AppKitVoiceControls
+    private let voiceNotice: AppKitVoiceControls
+    private let incoming = AppKitKit.label("Open the conversation and accept this message request before replying.", size: 12, color: AppKitKit.muted)
+    private let voiceRetry = AppKitKit.stack([], spacing: 6)
+    private let voiceRetryText = AppKitKit.label("", size: 12, color: AppKitKit.error)
+    private var voiceRetryButton: AppKitKitButton!
     private let status = AppKitKit.label("", size: 12, color: AppKitKit.error)
     private var attach: AppKitKitButton!
     private var emoji: AppKitKitButton!
+    private var gif: AppKitKitButton!
     private var send: AppKitKitButton!
-    private var contentWidth: CGFloat = 0
+    private var startTask: Task<Void, Never>?
+    private var popover: NSPopover?
+    private var sheet: NSWindow?
+    private var filePanel: NSOpenPanel?
+    private var presenting = false
+    private var started = false
     private(set) var measuredHeight: CGFloat = 96
     init(state: NativeQuickDraft) {
-        self.state = state; files = NSHostingView(rootView: AnyView(QuickComposerFiles(state: state)))
-        voice = NSHostingView(rootView: AnyView(QuickComposerVoice(state: state)))
+        self.state = state; files = AppKitStagedFiles { NativeStagedFile.quick(state) }
+        session = NativeVoiceSession { state.voiceTarget }
+        voice = AppKitVoiceControls(session: session, kind: .microphone)
+        recordingBar = AppKitVoiceControls(session: session, kind: .bar)
+        voiceNotice = AppKitVoiceControls(session: session, kind: .notice)
         super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 8
         editor = NativeDialogComposer(text: Binding(get: { state.draft.text }, set: { if state.editable { state.draft.text = $0 } }),
             placeholder: state.placeholder, identifier: "mention-card-composer", height: 42, controller: state.autocomplete,
             submit: state.send, pasteAttachments: state.paste, highlightSource: state.highlight, grows: true)
-        attach = AppKitKitButton("Attach files", kind: .plain) { state.pickFiles() }; attach.setAccessibilityIdentifier("mention-card-files")
-        emoji = AppKitKitButton("Insert emoji", kind: .plain) { state.openEmoji() }; emoji.setAccessibilityIdentifier("mention-card-emoji")
+        attach = AppKitKitButton("", kind: .plain) { state.pickFiles() }; attach.setAccessibilityIdentifier("mention-card-files")
+        emoji = AppKitKitButton("", kind: .plain) { state.openEmoji() }; emoji.setAccessibilityIdentifier("mention-card-emoji")
+        for (button, symbol, label) in [(attach!, "plus", "Attach files"), (emoji!, "face.smiling", "Insert emoji")] {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.imagePosition = .imageOnly
+            button.setAccessibilityLabel(label); button.toolTip = label; button.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        }
+        gif = AppKitKitButton("GIF", kind: .plain) { state.showingGIF = true; state.synchronizePresentation() }; gif.setAccessibilityIdentifier("mention-card-gif")
         send = AppKitKitButton("Send", kind: .primary) { state.send() }; send.setAccessibilityIdentifier("mention-card-send")
-        let row = NSStackView(views: [attach, emoji, NSView(), send]); row.spacing = 4
-        files.sizingOptions = [.intrinsicContentSize]; voice.sizingOptions = [.intrinsicContentSize]
-        for child in [files, editor!, row, voice, status] { addArrangedSubview(child); AppKitKit.fillWidth(child, of: self) }
+        let row = NSStackView(views: [attach, emoji, gif, NSView(), voice, send]); row.spacing = 4
+        for child in [incoming, files, editor!, recordingBar, row, voiceNotice, voiceRetry, status] { addArrangedSubview(child); AppKitKit.fillWidth(child, of: self) }
+        voiceRetryButton = AppKitKitButton("Retry") { state.retryVoice() }; voiceRetryButton.setAccessibilityIdentifier("mention-card-voice-retry")
+        let discardVoice = AppKitKitButton("Discard") { state.draft.discardVoice() }; discardVoice.setAccessibilityIdentifier("mention-card-voice-discard")
+        voiceRetry.addArrangedSubview(voiceRetryText); AppKitKit.fillWidth(voiceRetryText, of: voiceRetry)
+        voiceRetry.addArrangedSubview(NSStackView(views: [voiceRetryButton, discardVoice]))
+        files.heightChanged = { [weak self] in self?.needsLayout = true }
         status.setAccessibilityIdentifier("mention-card-error"); render()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit { startTask?.cancel(); session.stop(); state.stop() }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { observation.start(reading: { [weak self] in self?.render() }, apply: { _ in }) } else { observation.stop() }
+        if window != nil {
+            if !started { started = true; startTask = Task { [state] in await state.start() } }
+            observation.start(reading: { [weak self] in self?.render() }, apply: { _ in })
+        } else { observation.stop() }
     }
-    func stop() { observation.stop(); state.stop() }
+    func stop() { observation.stop(); startTask?.cancel(); session.stop(); closePresentation(); state.stop() }
     override func layout() {
-        if bounds.width > 0, contentWidth != bounds.width {
-            contentWidth = bounds.width
-            files.rootView = AnyView(QuickComposerFiles(state: state).frame(width: contentWidth))
-            voice.rootView = AnyView(QuickComposerVoice(state: state).frame(width: contentWidth))
-        }
         super.layout()
         guard bounds.width > 0 else { return }
         let width = widthAnchor.constraint(equalToConstant: bounds.width); width.isActive = true
@@ -297,13 +282,66 @@ struct NativeQuickComposerBridge: NSViewRepresentable {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: measuredHeight) }
     func render() {
         let recording = VoiceMessageRecorder.shared.isRecording(state.voiceTarget.owner)
+        session.synchronize(); recordingBar.isHidden = !recording; editor.isHidden = recording
+        incoming.isHidden = !state.incoming
         editor.update(editable: state.editable && !recording)
         attach.isEnabled = state.uploadsAvailable && state.editable && !state.draft.presentingDialog && state.draft.files.count < AttachmentPolicy.maxAttachments && !recording
         emoji.isEnabled = state.editable && !recording; send.isEnabled = state.canSend && !recording
         send.title = state.draft.pending == nil ? "Send" : "Retry send"
         status.stringValue = state.draft.error ?? (state.draft.pending != nil && !state.draft.sending ? "Delivery isn’t confirmed. Send retries the same message." : state.draft.progress ?? "")
         status.isHidden = status.stringValue.isEmpty
-        files.isHidden = state.draft.files.isEmpty && !state.incoming
+        files.isHidden = state.draft.files.isEmpty; files.render()
+        gif.isHidden = state.model.chat.klipy == nil; gif.isEnabled = state.editable && !state.incoming && !state.draft.presentingDialog
+        voiceRetryText.stringValue = VoiceMessage.retryNotice(unconfirmed: state.draft.voice?.command != nil)
+        voiceRetryButton.isEnabled = state.allowed && !state.draft.presentingDialog
+        voiceRetry.isHidden = state.draft.voice == nil || state.draft.sending
+        presentIfNeeded()
+    }
+    private func presentIfNeeded() {
+        guard !presenting, let window else { return }
+        if state.showingFiles {
+            presenting = true
+            let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+            filePanel = panel
+            panel.beginSheetModal(for: window) { [weak self] result in
+                guard let self else { return }; self.filePanel = nil
+                if result == .OK, self.state.allowed {
+                    let files = panel.urls.prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
+                    self.state.draft.add(files)
+                    if files.count < min(panel.urls.count, AttachmentPolicy.maxAttachments) { self.state.draft.error = "Some files couldn’t be added." }
+                }
+                self.closePresentation()
+            }
+        } else if state.showingEmoji || state.showingGIF {
+            let popover = NSPopover(); popover.behavior = .transient; popover.delegate = self
+            let close: () -> Void = { [weak self] in self?.closePresentation() }
+            if state.showingEmoji {
+                popover.contentViewController = AppKitReactionPicker(title: "Insert emoji", close: close) { [state] in state.pickEmoji($0); close() }
+            } else if let configuration = state.model.chat.klipy {
+                popover.contentViewController = AppKitKlipyPicker(configuration: configuration, close: close) { [state] gif, query in close(); state.sendGIF(gif, query: query) }
+            } else { closePresentation(); return }
+            presenting = true; self.popover = popover
+            popover.show(relativeTo: (state.showingEmoji ? emoji : gif).bounds, of: state.showingEmoji ? emoji : gif, preferredEdge: .maxY)
+        } else if let request = state.editing {
+            presentSheet(AppKitAttachmentEditor(request: request) { [weak self] in self?.closePresentation() }, window: window)
+        } else if let url = state.previewFile {
+            presentSheet(AppKitFilePreview(url: url) { [weak self] in self?.closePresentation() }, window: window)
+        }
+    }
+    private func presentSheet(_ controller: NSViewController, window: NSWindow) {
+        let sheet = NSWindow(contentViewController: controller); sheet.setContentSize(NSSize(width: 720, height: 600))
+        presenting = true; self.sheet = sheet; window.beginSheet(sheet)
+    }
+    func popoverDidClose(_ notification: Notification) { popover = nil; clearPresentation() }
+    private func closePresentation() {
+        let panel = filePanel; filePanel = nil; panel?.cancel(nil)
+        let popover = popover; self.popover = nil; popover?.close()
+        if let sheet { sheet.sheetParent?.endSheet(sheet); sheet.orderOut(nil); self.sheet = nil }
+        clearPresentation()
+    }
+    private func clearPresentation() {
+        presenting = false; state.showingFiles = false; state.showingEmoji = false; state.showingGIF = false
+        state.previewFile = nil; state.editing = nil; state.finishPicker()
     }
 }
 #elseif os(iOS)
@@ -323,37 +361,56 @@ struct NativeQuickComposerBridge: UIViewControllerRepresentable {
     }
 }
 
-@MainActor final class UIKitQuickComposer: UIViewController {
-    private let state: NativeQuickDraft
+@MainActor final class UIKitQuickComposer: UIViewController, UIAdaptivePresentationControllerDelegate {
+    let state: NativeQuickDraft
     private let body = UIStackView()
     private var editor: NativeDialogComposer!
-    private var files: UIHostingController<AnyView>!
-    private var voice: UIHostingController<AnyView>!
+    private var files: UIKitStagedFiles!
+    private var voice: UIKitVoiceControls!
+    private var recordingBar: UIKitVoiceControls!
+    private var voiceNotice: UIKitVoiceControls!
+    private lazy var session = NativeVoiceSession { [state] in state.voiceTarget }
+    private let incoming = UIKitMessageDialog.label("Open the conversation and accept this message request before replying.", size: 12)
+    private let voiceRetry = UIStackView()
+    private let voiceRetryText = UIKitMessageDialog.label("", size: 12, error: true)
+    private var voiceRetryButton: UIButton!
     private let status = UIKitMessageDialog.label("", error: true)
     private var attach: UIButton!
     private var emoji: UIButton!
+    private var gif: UIButton!
     private var send: UIButton!
     private var active = true
+    private var startTask: Task<Void, Never>?
+    private var presenting = false
     init(state: NativeQuickDraft) { self.state = state; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit { startTask?.cancel(); state.stop() }
     override func loadView() {
         view = body; body.axis = .vertical; body.spacing = 8
         editor = NativeDialogComposer(text: Binding(get: { [state] in state.draft.text }, set: { [state] in if state.editable { state.draft.text = $0 } }),
             placeholder: state.placeholder, identifier: "mention-card-composer", height: 42, controller: state.autocomplete,
             submit: state.send, pasteAttachments: state.paste, highlightSource: state.highlight, grows: true)
         editor.heightChanged = { [weak self] in self?.view.invalidateIntrinsicContentSize() }
-        files = UIHostingController(rootView: AnyView(QuickComposerFiles(state: state))); voice = UIHostingController(rootView: AnyView(QuickComposerVoice(state: state)))
-        for host in [files!, voice!] { host.sizingOptions = [.intrinsicContentSize]; host.view.backgroundColor = .clear; addChild(host) }
+        files = UIKitStagedFiles { [state] in NativeStagedFile.quick(state) }
+        voice = UIKitVoiceControls(session: session, kind: .microphone)
+        recordingBar = UIKitVoiceControls(session: session, kind: .bar); voiceNotice = UIKitVoiceControls(session: session, kind: .notice)
+        voiceRetry.axis = .vertical; voiceRetry.spacing = 6
+        voiceRetryButton = UIKitMessageDialog.button("Retry") { [state] in state.retryVoice() }; voiceRetryButton.accessibilityIdentifier = "mention-card-voice-retry"
+        let discardVoice = UIKitMessageDialog.button("Discard") { [state] in state.draft.discardVoice() }; discardVoice.accessibilityIdentifier = "mention-card-voice-discard"
+        let retryActions = UIStackView(arrangedSubviews: [voiceRetryButton, discardVoice]); retryActions.spacing = 8
+        voiceRetry.addArrangedSubview(voiceRetryText); voiceRetry.addArrangedSubview(retryActions)
         attach = UIKitMessageDialog.button("Attach files") { [state] in state.pickFiles() }; attach.accessibilityIdentifier = "mention-card-files"
         emoji = UIKitMessageDialog.button("Insert emoji") { [state] in state.openEmoji() }; emoji.accessibilityIdentifier = "mention-card-emoji"
+        gif = UIKitMessageDialog.button("GIF") { [state] in state.showingGIF = true; state.synchronizePresentation() }; gif.accessibilityIdentifier = "mention-card-gif"
         send = UIKitMessageDialog.button("Send", primary: true) { [state] in state.send() }; send.accessibilityIdentifier = "mention-card-send"
         let row = UIStackView(arrangedSubviews: [attach, emoji, send]); row.spacing = 4; row.distribution = .fillEqually
-        [files.view!, editor!, row, voice.view!, status].forEach { body.addArrangedSubview($0) }
-        for host in [files!, voice!] { host.didMove(toParent: self) }
+        let voiceRow = UIStackView(arrangedSubviews: [gif, recordingBar, voice]); voiceRow.spacing = 8
+        [incoming, files!, editor!, row, voiceRow, voiceNotice!, voiceRetry, status].forEach { body.addArrangedSubview($0) }
+        files.heightChanged = { [weak self] in self?.view.invalidateIntrinsicContentSize() }
         status.accessibilityIdentifier = "mention-card-error"
     }
-    override func viewDidLoad() { super.viewDidLoad(); observe() }
-    func stop() { active = false; state.stop() }
+    override func viewDidLoad() { super.viewDidLoad(); startTask = Task { [state] in await state.start() }; AttachGalleryCache.warm(); observe() }
+    func stop() { active = false; startTask?.cancel(); session.stop(); closePresentation(); state.stop() }
     private func observe() {
         guard active else { return }
         withObservationTracking { render() } onChange: { [weak self] in Task { @MainActor in self?.observe() } }
@@ -361,13 +418,50 @@ struct NativeQuickComposerBridge: UIViewControllerRepresentable {
     func render() {
         guard isViewLoaded else { return }
         let recording = VoiceMessageRecorder.shared.isRecording(state.voiceTarget.owner)
+        session.synchronize(); recordingBar.isHidden = !recording; editor.isHidden = recording; incoming.isHidden = !state.incoming
         editor.update(editable: state.editable && !recording)
         attach.isEnabled = state.uploadsAvailable && state.editable && !state.draft.presentingDialog && state.draft.files.count < AttachmentPolicy.maxAttachments && !recording
         emoji.isEnabled = state.editable && !recording; send.isEnabled = state.canSend && !recording
         send.configuration?.title = state.draft.pending == nil ? "Send" : "Retry send"
         status.text = state.draft.error ?? (state.draft.pending != nil && !state.draft.sending ? "Delivery isn’t confirmed. Send retries the same message." : state.draft.progress)
-        status.isHidden = status.text == nil; files.view.isHidden = state.draft.files.isEmpty && !state.incoming
+        status.isHidden = status.text == nil; files.isHidden = state.draft.files.isEmpty; files.render()
+        gif.isHidden = state.model.chat.klipy == nil; gif.isEnabled = state.editable && !state.incoming && !state.draft.presentingDialog
+        voiceRetryText.text = VoiceMessage.retryNotice(unconfirmed: state.draft.voice?.command != nil)
+        voiceRetryButton.isEnabled = state.allowed && !state.draft.presentingDialog
+        voiceRetry.isHidden = state.draft.voice == nil || state.draft.sending
         view.invalidateIntrinsicContentSize()
+        presentIfNeeded()
+    }
+    private func presentIfNeeded() {
+        guard !presenting, view.window != nil else { return }
+        let close: () -> Void = { [weak self] in self?.closePresentation() }
+        let controller: UIViewController
+        if state.showingFiles {
+            controller = UIKitAttachDrawer(mode: .attach(AttachDrawerDraft(files: { [state] in state.draft.files.map { AttachDrawerFile(id: $0.id, source: $0.local.source) } },
+                add: { [state] in state.draft.add($0) }, remove: { [state] in state.draft.remove(id: $0) },
+                canSend: { [state] in state.draft.canSend && !state.draft.sending }, send: { [state] in close(); state.send() },
+                valid: { [state] in state.uploadsAvailable && state.editable })), close: close)
+        } else if state.showingEmoji {
+            controller = UIKitReactionPicker(title: "Insert emoji", close: close) { [state] in state.pickEmoji($0); close() }
+        } else if state.showingGIF, let configuration = state.model.chat.klipy {
+            controller = UIKitKlipyPicker(configuration: configuration, close: close) { [state] gif, query in close(); state.sendGIF(gif, query: query) }
+        } else if let request = state.editing {
+            controller = UIKitAttachmentEditor(request: request, close: close)
+        } else if let url = state.previewFile { controller = UIKitFilePreview(url: url, close: close) }
+        else { return }
+        presenting = true
+        if state.showingEmoji || state.showingGIF { UIKitHosting.sheet(controller, background: CaperTheme.surface) }
+        controller.presentationController?.delegate = self
+        present(controller, animated: !UIAccessibility.isReduceMotionEnabled)
+    }
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { clearPresentation() }
+    private func closePresentation() {
+        presentedViewController?.dismiss(animated: false)
+        clearPresentation()
+    }
+    private func clearPresentation() {
+        presenting = false; state.showingFiles = false; state.showingEmoji = false; state.showingGIF = false
+        state.previewFile = nil; state.editing = nil; state.finishPicker()
     }
 }
 #endif

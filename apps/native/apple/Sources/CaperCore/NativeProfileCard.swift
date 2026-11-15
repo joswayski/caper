@@ -33,8 +33,8 @@ import AppKit
     private var more: AppKitKitButton!
     private var message: AppKitKitButton!
     private var done: AppKitKitButton!
-    private var composer: NSHostingView<AnyView>?
-    private var overlay: NSHostingController<AnyView>?
+    private var composer: AppKitQuickComposer?
+    private var overlay: NSViewController?
     private var composerSize: CGSize?
     private var chrome: [NSView] = []
 
@@ -140,25 +140,12 @@ import AppKit
             choiceButtons[space.id]?.isEnabled = !state.busy && state.invited[space.id] == nil
         }
         if state.canMessage {
-            // Intrinsic sizing reports SwiftUI's unwrapped ideal height, so a
-            // wrapping draft drew past the host over the header. Fixing the
-            // width to the card's lets the height include every wrapped line.
-            let width = composerSize?.width ?? (state.person.isSelf ? 280 : 320) - 32
-            let content = AnyView(NativeQuickComposerSheet(model: state.model, person: state.person, close: close)
-                .frame(width: width)
-                .disabled(state.pending != nil).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
-                .onPreferenceChange(ProfileComposerPresentationSize.self) { [weak self] size in
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self, self.composerSize != size else { return }
-                        self.composerSize = size; self.render(); self.view.needsLayout = true
-                    }
-                })
-            if let composer { composer.rootView = content }
-            else {
-                let host = NSHostingView(rootView: content); host.sizingOptions = [.intrinsicContentSize]
+            if composer == nil {
+                let host = AppKitQuickComposer(state: NativeQuickDraft(model: state.model, person: state.person, close: close))
                 body.addArrangedSubview(host); AppKitKit.fillWidth(host, of: body); composer = host
             }
-        } else { composer?.removeFromSuperview(); composer = nil }
+            composer?.state.enabled = state.pending == nil
+        } else { composer?.stop(); composer?.removeFromSuperview(); composer = nil }
         view.needsLayout = true
     }
     private func showMore() {
@@ -181,19 +168,18 @@ import AppKit
         else { let target = state.blockTarget; close(); requestBlock(target) }
     }
     private func editProfile() {
-        showOverlay(AnyView(ProfileSheet(model: state.model, close: close)
-            .onPreferenceChange(ProfileDismissPreference.self) { [dismissChanged] in dismissChanged($0) }
-            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)), size: CGSize(width: 520, height: 620))
+        let controller = AppKitProfilePresentation(model: state.model, close: close)
+        showOverlay(controller, size: CGSize(width: 520, height: 620))
+        dismissChanged(ProfileDismissAction(id: UUID(), action: { [weak controller] in controller?.requestClose() }))
     }
     @objc private func openPicture() {
         guard let request = profilePictureRequest(state.person) else { return }
-        showOverlay(AnyView(MediaViewer(request: request) { [weak self] in self?.closeOverlay() }
-            .preferredColorScheme(.dark)), size: CGSize(width: 720, height: 600))
+        showOverlay(AppKitMediaViewer(request: request) { [weak self] in self?.closeOverlay() }, size: CGSize(width: 720, height: 600))
         dismissChanged(ProfileDismissAction(id: UUID(), action: { [weak self] in self?.closeOverlay() }))
     }
-    private func showOverlay(_ content: AnyView, size: CGSize) {
+    private func showOverlay(_ host: NSViewController, size: CGSize) {
         guard overlay == nil else { return }
-        let host = NSHostingController(rootView: content); overlay = host; addChild(host)
+        overlay = host; addChild(host)
         view.subviews.forEach { $0.isHidden = true }
         host.view.frame = view.bounds; host.view.autoresizingMask = [.width, .height]; view.addSubview(host.view)
         preferredContentSize = size
@@ -231,8 +217,8 @@ import Observation
     private var more: UIButton!
     private var message: UIButton!
     private var done: UIButton!
-    private var composer: UIHostingController<AnyView>?
-    private var editor: UIHostingController<AnyView>?
+    private var composer: UIKitQuickComposer?
+    private var editor: UIKitProfilePresentation?
     private var dismissAction: ProfileDismissAction?
     private var active = false
 
@@ -350,16 +336,13 @@ import Observation
             choiceButtons[space.id]?.isEnabled = !state.busy && state.invited[space.id] == nil
         }
         if state.canMessage {
-            let content = AnyView(NativeQuickComposerSheet(model: model, person: person,
-                close: { [weak self] in self?.dismiss(animated: true) })
-                .disabled(state.pending != nil).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
-            if let composer { composer.rootView = content }
-            else {
-                let host = UIHostingController(rootView: content); host.sizingOptions = [.intrinsicContentSize]; host.view.backgroundColor = .clear
+            if composer == nil {
+                let host = UIKitQuickComposer(state: NativeQuickDraft(model: model, person: person, close: { [weak self] in self?.dismiss(animated: true) }))
                 addChild(host); body.addArrangedSubview(host.view); host.didMove(toParent: self); composer = host
             }
+            composer?.state.enabled = state.pending == nil
         } else if let composer {
-            composer.willMove(toParent: nil); composer.view.removeFromSuperview(); composer.removeFromParent(); self.composer = nil
+            composer.stop(); composer.willMove(toParent: nil); composer.view.removeFromSuperview(); composer.removeFromParent(); self.composer = nil
         }
     }
     private func block() {
@@ -369,17 +352,15 @@ import Observation
     }
     private func editProfile() {
         guard editor == nil else { return }
-        let host = UIHostingController(rootView: AnyView(ProfileSheet(model: model, close: { [weak self] in self?.dismiss(animated: true) })
-            .onPreferenceChange(ProfileDismissPreference.self) { [weak self] action in MainActor.assumeIsolated { self?.dismissAction = action } }
-            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)))
+        let host = UIKitProfilePresentation(model: model, close: { [weak self] in self?.dismiss(animated: true) })
+        dismissAction = ProfileDismissAction(id: UUID(), action: { [weak host] in host?.requestClose() })
         editor = host; addChild(host)
         view.subviews.forEach { $0.isHidden = true }; host.view.frame = view.bounds; host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(host.view); host.didMove(toParent: self)
     }
     @objc private func openPicture() {
         guard let request = profilePictureRequest(person) else { return }
-        let host = UIKitHosting.controller { close in MediaViewer(request: request, close: close) }
-        UIKitHosting.sheet(host, background: .black); host.sheetPresentationController?.detents = [.large()]
+        let host = UIKitMediaViewer(request: request) { [weak self] in self?.presentedViewController?.dismiss(animated: false) }
         present(host, animated: true)
     }
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {

@@ -15,6 +15,10 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let composer = ComposerView()
+    private lazy var composerPreview = UIKitNativeComposerPreview(chat: model.chat, inThread: true)
+    private lazy var composerAccessories = UIKitNativeComposerAccessories(chat: model.chat, inThread: true) { [weak self] in
+        if self?.presentedViewController == nil { self?.present($0, animated: false) }
+    }
     private let broadcast = UIButton(type: .custom)
     private var collection: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Int, Item>!
@@ -34,14 +38,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private var broadcastRow: UIView?
     private lazy var fileDrop = UIKitFileDrop(model: model, inThread: true)
     /// The preview note, a failed action, Retry session and the pending note.
-    private lazy var notices: UIHostingController<UIKitThreadNotices> = {
-        let host = UIHostingController(rootView: UIKitThreadNotices(chat: model.chat, direct: model.selectedDirectMessageID != nil))
-        host.sizingOptions = .intrinsicContentSize
-        host.view.backgroundColor = .clear
-        host.view.setContentHuggingPriority(.required, for: .vertical)
-        host.view.setContentCompressionResistancePriority(.required, for: .vertical)
-        return host
-    }()
+    private lazy var notices = UIKitConversationNotices(model: model, inThread: true)
     var closed: (() -> Void)?
 
     init(model: AppModel) {
@@ -190,7 +187,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             self.present(UIKitHosting.expressionPicker(chat: self.chat, inThread: true) { composer.insert($0) }, animated: true)
         }
 
-        let host = UIHostingController(rootView: UIKitPresentationHost(state: presentations, model: model, inThread: true))
+        let host = UIKitNativePresentations(state: presentations, model: model, inThread: true)
         host.view.backgroundColor = .clear
         host.view.isUserInteractionEnabled = false
         host.view.translatesAutoresizingMaskIntoConstraints = false
@@ -388,11 +385,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         composer.show(draft: chat.threadDraft, conversation: "\(chat.editingContext):\(chat.threadRootID ?? "")")
         composer.refreshContext()
         composer.textView.pasteAttachments = chat.canAttach ? { [weak chat] in chat?.pasteAttachments(inThread: true) ?? false } : nil
-        composer.showLinkPreview(ready ? UIKitComposerLinkPreview(chat: chat, inThread: true) : nil)
+        composer.showLinkPreview(ready ? composerPreview : nil)
         composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat, inThread: true)
-                                 ? UIKitComposerAccessories(chat: chat, inThread: true, present: { [weak self] in
-                                     if self?.presentedViewController == nil { self?.present($0, animated: false) }
-                                 }) : nil)
+                                 ? composerAccessories : nil)
         composer.showVoice(button: ready ? voice.button : nil, bar: voice.bar, recording: ready && voice.isRecording)
 
         let on = chat.threadBroadcast
