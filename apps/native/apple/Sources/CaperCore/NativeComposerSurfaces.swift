@@ -39,11 +39,14 @@ import AppKit
         }
         cancel.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
         cancel.imagePosition = .imageOnly; cancel.setAccessibilityLabel("Cancel reply")
-        reply.orientation = .horizontal; reply.alignment = .top; reply.spacing = 7
+        reply.orientation = .horizontal; reply.alignment = .top; reply.spacing = 7; reply.distribution = .fill
         reply.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 4)
         reply.wantsLayer = true; reply.layer?.backgroundColor = NSColor(CaperTheme.replyDraft).cgColor
         reply.layer?.borderColor = AppKitKit.border.cgColor; reply.layer?.borderWidth = 1; reply.layer?.cornerRadius = 8
         reply.addArrangedSubview(words); reply.addArrangedSubview(cancel)
+        // The text takes the bar's slack so × sits at the trailing edge.
+        words.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cancel.setContentHuggingPriority(.required, for: .horizontal)
         if onlyReply { addArrangedSubview(reply); AppKitKit.fillWidth(reply, of: self) }
         else {
             for view in [notice, voice, waiting, files] as [NSView] { addArrangedSubview(view); AppKitKit.fillWidth(view, of: self) }

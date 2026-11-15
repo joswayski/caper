@@ -99,6 +99,8 @@ import AppKit
                 menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
             }
             options.setAccessibilityLabel("More invite options"); options.setAccessibilityIdentifier("default-invite-link-options"); options.isEnabled = !state.busy; actions.addArrangedSubview(options)
+            // The menu button matches Copy link's height beside it.
+            options.heightAnchor.constraint(equalTo: copy.heightAnchor).isActive = true
         } else {
             let revoke = AppKitKitButton(state.pending == link.code ? "Revoking…" : "Revoke", kind: .destructive) { [weak self] in self?.confirm(link, regenerate: false) }; revoke.isEnabled = !state.busy; actions.addArrangedSubview(revoke)
         }
