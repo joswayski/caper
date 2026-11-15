@@ -99,6 +99,8 @@ struct Original {
     c: Conversation,
     rows: RefCell<Rows>,
     summary: String,
+    /// Its attachments named for Narrator; the preview draws their cards.
+    files: String,
 }
 
 impl Original {
@@ -124,18 +126,16 @@ impl Original {
         shown.thread_context = false;
         shown.forward = None;
         shown.reactions.clear();
-        shown.attachments.clear();
+        // As on web and GTK, the original shows its pictures and files.
         shown.embeds.clear();
         let mut summary = String::new();
+        let mut files = Vec::new();
         if !m.is_deleted() {
             if m.content.text.is_empty() && m.content.attachments.iter().any(|a| a.voice) {
-                summary.push_str("Voice message\n");
+                files.push("Voice message".to_owned());
             }
-            // The preview draws no attachment cards, so name each file
-            // instead of silently dropping it.
             for a in m.content.attachments.iter().filter(|a| !a.voice) {
-                summary.push_str(&crate::files::spoken(a, &Default::default()));
-                summary.push('\n');
+                files.push(crate::files::spoken(a, &Default::default()));
             }
             summary.push_str(
                 &m.reactions
@@ -150,6 +150,7 @@ impl Original {
             c: Conversation::live(Vec::new(), 0, Vec::new(), 0, vec![person], vec![shown]),
             rows: RefCell::new(Rows::new(1)),
             summary,
+            files: files.join(". "),
         }
     }
 
@@ -171,16 +172,18 @@ impl Original {
     }
 
     fn name(&self) -> String {
-        format!(
-            "{}. {} {} {}",
-            self.c.members[0].name,
-            self.rows
-                .borrow()
-                .row(0)
-                .map_or_else(String::new, |r| r.spoken()),
-            self.c.messages[0].time,
-            self.summary
-        )
+        let text = self
+            .rows
+            .borrow()
+            .row(0)
+            .map_or_else(String::new, |r| r.spoken());
+        let parts = [&text, &self.c.messages[0].time, &self.files, &self.summary];
+        let rest: Vec<&str> = parts
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .collect();
+        format!("{}. {}", self.c.members[0].name, rest.join(" "))
     }
 
     fn controls(&self, i: usize, r: Rect) -> Vec<(Part, Rect)> {
@@ -214,7 +217,13 @@ impl Original {
         parts
     }
 
-    fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, r: Rect) -> Result<()> {
+    fn draw(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        r: Rect,
+        files: Option<&mut crate::files::Ctx>,
+    ) -> Result<()> {
         let mut rows = self.rows.borrow_mut();
         let mut transform = windows_numerics::Matrix3x2::default();
         unsafe {
@@ -226,7 +235,7 @@ impl Original {
         unsafe {
             dc.SetTransform(&inset);
         }
-        let result = list::draw_row(g, dc, &self.c, &mut rows, 0, r.1, None, None);
+        let result = list::draw_row(g, dc, &self.c, &mut rows, 0, r.1, None, files);
         unsafe {
             dc.SetTransform(&transform);
         }
@@ -600,7 +609,12 @@ impl Dialog {
         Ok(())
     }
 
-    pub fn draw_forward(&self, g: &Gfx, dc: &ID2D1DeviceContext) -> Result<()> {
+    pub fn draw_forward(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        mut media: Option<&mut crate::files::Ctx>,
+    ) -> Result<()> {
         let f = self.forwarding.as_ref().unwrap();
         for &(p, r @ (x, y, w, h)) in &self.parts {
             if matches!(
@@ -626,7 +640,7 @@ impl Dialog {
                 }
                 let result = (|| -> Result<()> {
                     if let Part::Forward(Control::Message(i)) = p {
-                        return f.originals[i].draw(g, dc, r);
+                        return f.originals[i].draw(g, dc, r, media.as_deref_mut());
                     }
                     let bounds = rect(x, y, x + w, y + h);
                     let enabled = self.forward_enabled(p);

@@ -852,6 +852,10 @@ impl App {
             self.dirty.pins = true;
             self.need = true;
         }
+        if self.dialog.as_ref().is_some_and(|d| d.forwarding.is_some()) {
+            self.dirty.overlay = true;
+            self.need = true;
+        }
         if self
             .c
             .messages

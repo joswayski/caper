@@ -1232,7 +1232,14 @@ impl Dialog {
     /// Draws the card over a `w` × `h` window; its scrim is a separate
     /// stationary surface so the entrance never uncovers a window edge. Call after
     /// [`Dialog::relayout`].
-    pub fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, w: f32, h: f32) -> Result<()> {
+    pub fn draw(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        w: f32,
+        h: f32,
+        media: Option<&mut crate::files::Ctx>,
+    ) -> Result<()> {
         unsafe {
             dc.Clear(None);
             let _ = (w, h);
@@ -1241,7 +1248,7 @@ impl Dialog {
             fill_round(dc, card, RADIUS, &g.brushes.surface);
             stroke_round(dc, card, RADIUS, &g.brushes.border);
             if self.forwarding.is_some() {
-                return self.draw_forward(g, dc);
+                return self.draw_forward(g, dc, media);
             }
             if self.kind == Kind::Profile {
                 return self.draw_profile(g, dc);
@@ -2626,7 +2633,20 @@ impl App {
                 self.dialog_card_p.ensure(g, px(self.w), px(self.h))?;
                 self.dialog_card_p.offset(0.0, 0.0)?;
                 let (w, h) = (self.w, self.h);
-                self.dialog_card_p.draw(s, |dc| d.draw(g, dc, w, h))?;
+                // The forward chooser's original draws its pictures.
+                let mut tex = crate::files::D2d(g.dc.clone());
+                let mut media = self
+                    .live
+                    .as_mut()
+                    .filter(|_| d.forwarding.is_some())
+                    .map(|l| crate::files::Ctx::new(&mut l.media, &mut tex));
+                self.dialog_card_p
+                    .draw(s, |dc| d.draw(g, dc, w, h, media.as_mut()))?;
+                if media.is_some_and(|m| m.media.busy()) {
+                    unsafe {
+                        SetTimer(Some(self.hwnd), crate::TIMER_LIVE, 100, None);
+                    }
+                }
             }
             None => {
                 self.dialog_p.offset(-100_000.0, 0.0)?;
