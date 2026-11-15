@@ -62,6 +62,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     init() {
         super.init(frame: .zero)
+        _ = SoftwareKeyboard.observer
         translatesAutoresizingMaskIntoConstraints = false
         field.translatesAutoresizingMaskIntoConstraints = false
         field.backgroundColor = UIKitStyle.composer
@@ -434,8 +435,11 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     /// Puts the caret back when something over the conversation closes. Only
     /// with a hardware keyboard: it never raises the software keyboard.
+    /// GCKeyboard can stay connected while the software keyboard shows (a
+    /// remembered keyboard, the simulator), so the last keyboard shown must
+    /// also have been the hardware shortcut bar or nothing.
     func returnFocus() {
-        guard GCKeyboard.coalesced != nil, window != nil, !isHidden, textView.isEditable, presentedByNothing,
+        guard GCKeyboard.coalesced != nil, !SoftwareKeyboard.lastShownWasFull, window != nil, !isHidden, textView.isEditable, presentedByNothing,
               !textView.isFirstResponder else { return }
         textView.becomeFirstResponder()
     }
@@ -811,5 +815,25 @@ private final class SuggestionRow: UIControl {
     override func accessibilityActivate() -> Bool {
         action()
         return true
+    }
+}
+
+/// Whether the last keyboard on screen was a full software keyboard, rather
+/// than the hardware keyboard's shortcut bar (about 55 pt) or nothing. Before
+/// any keyboard shows, it counts as no software keyboard.
+@MainActor enum SoftwareKeyboard {
+    private(set) static var lastShownWasFull = false
+    static let observer: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main
+    ) { notification in
+        guard let end = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+        let object = notification.object as? UIScreen
+        MainActor.assumeIsolated {
+            // Frames are in the screen's coordinates; a hidden keyboard ends off it.
+            guard let screen = object?.bounds ?? UIApplication.shared.connectedScenes.lazy
+                .compactMap({ ($0 as? UIWindowScene)?.screen.bounds }).first else { return }
+            let shown = end.intersection(screen).height
+            if shown > 0 { lastShownWasFull = shown > 100 }
+        }
     }
 }
