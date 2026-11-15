@@ -1847,6 +1847,14 @@ impl App {
         }
     }
 
+    /// The reader dismissed the dialog (Close, Cancel, Escape, a click
+    /// outside) or what it showed went away: the keyboard goes back to the
+    /// composer rather than to nothing.
+    pub fn dismiss_dialog(&mut self) {
+        self.close_dialog();
+        self.set_composer_focus(true);
+    }
+
     fn overlay_changed(&mut self) {
         self.dirty.overlay = true;
         self.events |= EV_SCREEN;
@@ -1975,7 +1983,7 @@ impl App {
                     },
                 }
             }
-            Part::Cancel | Part::Close => return self.close_dialog(),
+            Part::Cancel | Part::Close => return self.dismiss_dialog(),
             Part::Version(k) => {
                 if let Some(v) = &mut d.history {
                     let revision = v.list.get(k).map(|v| v.revision);
@@ -2399,7 +2407,7 @@ impl App {
                     self.events |= EV_FOCUS;
                     self.dialog_changed();
                 } else if part.is_none() && !d.on_card(x, y) && !d.busy && !d.unsaved() {
-                    self.close_dialog();
+                    self.dismiss_dialog();
                 } else {
                     self.dirty.overlay = true;
                     self.need = true;
@@ -2469,7 +2477,7 @@ impl App {
                         d.invite_back();
                         self.dialog_changed();
                     }
-                    VK_ESCAPE if !d.busy => self.close_dialog(),
+                    VK_ESCAPE if !d.busy => self.dismiss_dialog(),
                     // Enter invites the typed username.
                     VK_RETURN if d.kind == Kind::InvitePeople => {
                         // In Expire after or Max uses it creates the link,

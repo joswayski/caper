@@ -353,7 +353,7 @@ impl App {
             return;
         };
         let Some(message) = live.reactor_message(&view.id) else {
-            self.close_dialog();
+            self.dismiss_dialog();
             return;
         };
         let revision = message.reaction_seq.as_deref().unwrap_or("0");
@@ -369,7 +369,7 @@ impl App {
             live.reactor_cache(&view.id),
             &live.reactor_self(),
         ) else {
-            self.close_dialog();
+            self.dismiss_dialog();
             return;
         };
         if shown == view.shown {
@@ -405,7 +405,7 @@ impl App {
         let Some(v) = &mut d.reactors else { return };
         match p {
             Part::Close => {
-                self.close_dialog();
+                self.dismiss_dialog();
                 return;
             }
             Part::Retry => {
@@ -431,7 +431,7 @@ impl App {
         let Some(v) = &d.reactors else { return };
         let focus = v.focus;
         match vk {
-            VK_ESCAPE => self.close_dialog(),
+            VK_ESCAPE => self.dismiss_dialog(),
             VK_RETURN | VK_SPACE => self.reactors_activate(focus),
             VK_TAB => {
                 let choices: Vec<_> = d.parts().filter(|p| button(*p)).collect();

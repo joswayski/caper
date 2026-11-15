@@ -561,7 +561,7 @@ impl App {
                     self.dialog_changed();
                 }
             }
-            Part::Cancel | Part::Close => self.close_dialog(),
+            Part::Cancel | Part::Close => self.dismiss_dialog(),
             _ => {}
         }
     }

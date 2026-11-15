@@ -817,7 +817,7 @@ impl App {
         let f = d.forwarding.as_mut().unwrap();
         let mut operation = None;
         match p {
-            Part::Close => return self.close_dialog(),
+            Part::Close => return self.dismiss_dialog(),
             Part::Primary => {
                 if let View::Picker(p) = &mut f.view {
                     operation = p.next(&f.token, &String::from_utf16_lossy(&f.note.text), true);
@@ -928,7 +928,7 @@ impl App {
                     }
                     if let View::Picker(p) = &mut f.view {
                         if p.sent(&message) {
-                            self.close_dialog();
+                            self.dismiss_dialog();
                             return;
                         }
                         if let Some(op) =
@@ -1011,7 +1011,7 @@ impl App {
                         f.move_to(f.hit(x - ox, y - oy), shift);
                     }
                 } else if !d.on_card(x, y) {
-                    self.close_dialog();
+                    self.dismiss_dialog();
                 }
             }
             WM_LBUTTONUP => {
@@ -1044,7 +1044,7 @@ impl App {
                     return Some(None);
                 }
                 match vk {
-                    VK_ESCAPE => self.close_dialog(),
+                    VK_ESCAPE => self.dismiss_dialog(),
                     VK_TAB => {
                         let mut choices: Vec<_> =
                             d.parts().filter(|p| d.forward_enabled(*p)).collect();
