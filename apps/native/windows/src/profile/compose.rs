@@ -190,7 +190,10 @@ impl App {
                 PPart::Spoiler(_) => "Mark spoiler",
                 _ => "Retry upload",
             };
-            return format!("{action} {} {}", file.name(), file.upload_status().0);
+            // A ready file has no status text.
+            return format!("{action} {} {}", file.name(), file.upload_status().0)
+                .trim_end()
+                .to_owned();
         }
         if part == PPart::Send && self.profile_draft().is_some_and(|d| d.retry.is_some()) {
             return "Retry message with the same ID".into();

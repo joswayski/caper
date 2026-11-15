@@ -593,6 +593,8 @@ impl App {
                 }
                 self.profile = None;
                 self.events |= EV_FOCUS;
+                // The send opened the DM; keep typing there.
+                self.set_composer_focus(true);
             }
         }
         self.profile_changed();
@@ -1005,6 +1007,20 @@ impl App {
                     VK_RETURN | VK_SPACE if !focused && card.key_focus.is_some() => {
                         let part = card.key_focus.unwrap();
                         self.profile_activate(part);
+                        // Remove (and others) can take their own button away;
+                        // the keyboard goes back to the field, not to nothing.
+                        let gone = !self
+                            .profile_parts()
+                            .iter()
+                            .any(|(p, _)| *p == part && self.profile_part_enabled(*p));
+                        if gone
+                            && self
+                                .profile
+                                .as_ref()
+                                .is_some_and(|c| c.key_focus == Some(part))
+                        {
+                            self.set_profile_focus(true);
+                        }
                     }
                     _ if focused && ctrl && vk == VIRTUAL_KEY('C' as u16) => {
                         let copied = card.field.copied();
