@@ -871,7 +871,12 @@ fn name(a: &App, id: Id) -> String {
         Id::Control(_, Action::Add) => "Add reaction".into(),
         Id::Control(_, Action::Retry) => "Retry".into(),
         Id::Control(_, Action::Dismiss) => "Dismiss".into(),
-        Id::Members => format!("Members, {}", c.members.len()),
+        // A search names what it found, including that nothing matched.
+        Id::Members => match a.shown_members().len() {
+            n if n == c.listed_members => format!("Members, {}", c.members.len()),
+            0 => format!("Members, {}", crate::member_search::NO_MATCH),
+            n => format!("Members, {n} of {} match", c.listed_members),
+        },
         Id::MemberSearch(p) => App::member_search_name(p).into(),
         Id::Member(i) => format!(
             "{}, {}",

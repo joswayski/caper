@@ -173,6 +173,12 @@ impl App {
         self.need = true;
     }
 
+    /// Clear and close and Escape give the keyboard back to the composer.
+    fn close_member_search_refocus(&mut self) {
+        self.close_member_search();
+        self.set_composer_focus(true);
+    }
+
     /// After the space or the list's visibility changed.
     pub fn member_search_follow(&mut self) {
         let space = self.ids.spaces.get(self.c.space);
@@ -236,7 +242,7 @@ impl App {
         match p {
             Part::Open => self.open_member_search(),
             Part::Field => self.set_member_search_focus(true),
-            Part::Close => self.close_member_search(),
+            Part::Close => self.close_member_search_refocus(),
         }
     }
 
@@ -288,7 +294,7 @@ impl App {
                         done
                     }
                     Some(Part::Close) => {
-                        self.close_member_search();
+                        self.close_member_search_refocus();
                         done
                     }
                     Some(Part::Field) => {
@@ -324,7 +330,7 @@ impl App {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 let s = self.member_search.as_mut()?;
                 if vk == VK_ESCAPE {
-                    self.close_member_search();
+                    self.close_member_search_refocus();
                 } else if ctrl && vk == VIRTUAL_KEY('C' as u16) {
                     let (a, b) = s.field.selection();
                     if b > a {
