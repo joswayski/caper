@@ -4884,7 +4884,11 @@ impl Live {
                     out.push(Update::Typing);
                     self.detail = detail.clone();
                     let mut timeline = core::Timeline::default();
-                    if let Err(e) = timeline.reset(history.messages, &history.cursor) {
+                    // The history's pinned messages seed Pins, as in egui.
+                    if let Err(e) = timeline
+                        .reset(history.messages, &history.cursor)
+                        .and_then(|()| timeline.reset_pins(history.pinned_messages))
+                    {
                         out.push(Update::Failed(e));
                         return;
                     }
@@ -6937,6 +6941,70 @@ mod tests {
         assert!(
             updates.iter().any(|u| matches!(u, Update::Warning(_))),
             "report an unavailable reply in the same update, not on a later wake"
+        );
+    }
+
+    #[test]
+    fn opening_a_conversation_shows_its_existing_pins() {
+        let api = Api::new("http://127.0.0.1:9").unwrap();
+        let host = WinHost {
+            hwnd: 0,
+            requests: Arc::default(),
+        };
+        let voice = Voice::new(
+            api.base().clone(),
+            caper_client::voice::Repaint::new(|_| {}),
+        );
+        let mut live = Live::fresh(
+            Worker::new(api, host.clone()),
+            caper_client::media::Media::new(None, Arc::new(|| {})),
+            Arc::default(),
+            host,
+            1,
+            voice,
+            crate::settings::preferences::Preferences::load(None),
+        );
+        let pinned = serde_json::json!({
+            "id": "b00000000000001", "channelId": "general", "seq": "1",
+            "author": { "id": "member000002", "name": "Alex", "isGuest": false },
+            "content": { "version": 1, "type": "text", "text": "pinned before opening" },
+            "clientMessageId": "00000000-0000-4000-9000-000000000001",
+            "createdAt": "2026-10-01T09:00:00Z",
+            "pin": {
+                "author": { "id": "member000001", "name": "Maya", "isGuest": false },
+                "createdAt": "2026-10-01T09:05:00Z"
+            },
+            "pinSeq": "2",
+        });
+        let history: core::History = serde_json::from_value(serde_json::json!({
+            "messages": [pinned],
+            "pinnedMessages": [pinned],
+            "cursor": "2",
+            "hasMore": false,
+            "space": { "id": "", "name": "Direct messages" },
+            "channel": { "id": "general", "name": "general" },
+        }))
+        .unwrap();
+        let mut updates = Vec::new();
+        live.handle(
+            Event::NavigationPrepared {
+                generation: live.generation,
+                navigation: live.navigation,
+                result: Ok(caper_client::worker::PreparedNavigation {
+                    detail: None,
+                    conversation: Some((history, Err("no session in this test".into()))),
+                }),
+            },
+            &mut updates,
+        );
+        let (pins, _) = live.pinned_view().unwrap();
+        assert_eq!(
+            pins.messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b00000000000001"],
+            "pins made before opening the conversation are listed"
         );
     }
 
