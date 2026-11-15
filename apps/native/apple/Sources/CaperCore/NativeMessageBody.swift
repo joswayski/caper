@@ -17,7 +17,7 @@ import AppKit
         }
     }
     init() {
-        let storage = NSTextStorage(), layout = DraftLinkLayoutManager(), container = NSTextContainer(size: NSSize(width: 1, height: .greatestFiniteMagnitude))
+        let storage = NSTextStorage(), layout = DraftLinkLayoutManager(), container = NSTextContainer(size: NSSize(width: 1, height: CGFloat.greatestFiniteMagnitude))
         storage.addLayoutManager(layout); layout.addTextContainer(container); container.lineFragmentPadding = 0
         super.init(frame: .zero, textContainer: container)
         isEditable = false; isSelectable = true; drawsBackground = false

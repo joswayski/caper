@@ -608,7 +608,7 @@ private struct BrowseLayer: ViewModifier {
         quietUntil = max(quietUntil, Date().addingTimeInterval(seconds))
     }
     /// A control was "tapped" by a swipe.
-    static var swiping: Bool { Date() < quietUntil }
+    public static var swiping: Bool { Date() < quietUntil }
     /// `action`, skipped when a swipe's lift triggered it.
     static func unlessSwiping(_ action: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
         { if !swiping { action() } }

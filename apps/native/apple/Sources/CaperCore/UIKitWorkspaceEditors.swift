@@ -70,8 +70,8 @@ import UIKit
             let heading = Self.label("Members  \(members.count)", size: 14, bold: true); heading.accessibilityLabel = "Members \(members.count)"; heading.accessibilityIdentifier = "space-members-heading"
             membership.addArrangedSubview(heading)
             for member in members {
-                membership.addArrangedSubview(Self.workspaceMember(member, action: member.owner ? nil : "Remove", enabled: !state.pending) { [weak self] in
-                    self?.confirm("Remove \(member.displayName)?", detail: "They’ll lose access to \(self?.state.name ?? "this space") and its channels. You can invite them again later.", action: "Remove") { [state] in try await state.model.removeSpaceMember(member) }
+                membership.addArrangedSubview(Self.workspaceMember(member, action: member.owner ? nil : "Remove", enabled: !state.pending) { [weak self, state] in
+                    self?.confirm("Remove \(member.displayName)?", detail: "They’ll lose access to \(state.name ?? "this space") and its channels. You can invite them again later.", action: "Remove") { try await state.model.removeSpaceMember(member) }
                 })
             }
         }
@@ -161,8 +161,8 @@ import UIKit
         shownMembers = next; shownInvitations = pending; memberEnabled = enabled
         for stack in [members, invitations] { stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() } }
         for member in next {
-            members.addArrangedSubview(Self.workspaceMember(member, action: member.owner ? nil : "Remove", enabled: enabled) { [weak self] in
-                self?.confirm("Remove \(member.displayName) from #\(self?.state.channel?.name ?? "channel")?", detail: "They’ll lose access to this private channel. You can add them again later.", action: "Remove") { [state] in try await state.remove(member) }
+            members.addArrangedSubview(Self.workspaceMember(member, action: member.owner ? nil : "Remove", enabled: enabled) { [weak self, state] in
+                self?.confirm("Remove \(member.displayName) from #\(state.channel?.name ?? "channel")?", detail: "They’ll lose access to this private channel. You can add them again later.", action: "Remove") { try await state.remove(member) }
             })
         }
         for member in pending { invitations.addArrangedSubview(Self.workspaceMember(member, action: "Cancel", enabled: enabled) { [state] in state.run { try await state.remove(member) } }) }

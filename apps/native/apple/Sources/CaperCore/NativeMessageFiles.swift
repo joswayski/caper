@@ -341,7 +341,7 @@ import UIKit
         if let start = items.firstIndex(where: { $0.id == id }) { show(MediaViewerRequest(items: items, start: start, chat: chat, hideSpoiler: { [weak self] in self?.hide($0) }, isAvailable: available)) }
         else { Task { [chat] in
             let url: URL?; if let chat { url = await chat.currentURL(for: file) } else { url = file.url.flatMap(URL.init(string:)) }
-            if let url, available?() != false { UIApplication.shared.open(url) }
+            if let url, available?() != false { _ = await UIApplication.shared.open(url) }
         } }
     }
     override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: frames.map(\.maxY).max() ?? 0) }
