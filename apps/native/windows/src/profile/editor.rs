@@ -467,10 +467,12 @@ impl Dialog {
             r.1 += self.body.1 - self.scroll;
         }
         parts.insert(0, (Part::Title, (cx + 20.0, cy + 16.0, inner - 36.0, 28.0)));
-        parts.push((Part::Close, (cx + cw - 48.0, cy + 12.0, 32.0, 32.0)));
         let bw = (inner - 8.0) / 2.0;
         parts.push((Part::Cancel, (cx + 20.0, cy + ch - 52.0, bw, 36.0)));
         parts.push((Part::Primary, (cx + 28.0 + bw, cy + ch - 52.0, bw, 36.0)));
+        // Last in Tab order, so Tab from Display name reaches Cancel and
+        // Save rather than the button that discards the edit.
+        parts.push((Part::Close, (cx + cw - 48.0, cy + 12.0, 32.0, 32.0)));
         self.parts = parts;
         self.field_origin = self.profile_field_origin(Part::Field);
         Ok(())
@@ -634,7 +636,7 @@ impl App {
             d.scroll = f32::MAX / 2.0;
             self.dialog_changed();
         } else {
-            self.close_dialog();
+            self.dismiss_dialog();
         }
     }
 
@@ -656,7 +658,7 @@ impl App {
             }
             Part::Cancel => return self.close_profile_editor(),
             Part::Primary if e.confirm() => {
-                self.close_dialog();
+                self.dismiss_dialog();
                 return;
             }
             Part::Primary => {
@@ -841,7 +843,7 @@ impl App {
                     if let Some(live) = &mut self.live {
                         live.profile_saved(&account);
                     }
-                    self.close_dialog();
+                    self.dismiss_dialog();
                     self.refresh_saved_profile();
                     return;
                 }
