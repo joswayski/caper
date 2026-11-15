@@ -1422,6 +1422,13 @@ impl App {
         self.need = true;
     }
 
+    /// Close, Done, Escape and a click outside give the keyboard back to
+    /// the composer.
+    fn close_settings_refocus(&mut self) {
+        self.close_settings();
+        self.set_composer_focus(true);
+    }
+
     pub fn close_settings(&mut self) {
         if let Some(s) = self.settings.take() {
             if matches!(
@@ -1494,10 +1501,16 @@ impl App {
     pub fn settings_changed(&mut self) {
         let snap = self.settings_snapshot();
         let (g, w, h) = (&self.g, self.w, self.h);
-        if let Some(s) = &mut self.settings
-            && let Err(e) = s.relayout(g, snap, w, h)
-        {
-            eprintln!("settings layout failed: {e:?}");
+        if let Some(s) = &mut self.settings {
+            if let Err(e) = s.relayout(g, snap, w, h) {
+                eprintln!("settings layout failed: {e:?}");
+            }
+            // A focused part that went away, such as Retry once it worked,
+            // hands focus to Close rather than to nothing.
+            if s.focus.is_some_and(|f| !s.parts().contains(&f)) {
+                s.focus = Some(SPart::Close);
+                self.events |= EV_FOCUS;
+            }
         }
         if let Some(s) = self.settings.as_ref().filter(|s| s.page == Page::Audio) {
             self.arm_audio_timer(
@@ -1527,7 +1540,7 @@ impl App {
             | SPart::FeedbackArchived
             | SPart::FeedbackOpen(_)
             | SPart::FeedbackArchive(_) => return self.support_activate(part),
-            SPart::Close | SPart::Done => return self.close_settings(),
+            SPart::Close | SPart::Done => return self.close_settings_refocus(),
             SPart::WhatsNew => return self.open_highlights(),
             SPart::RetryHighlights => {
                 if let Some(live) = &mut self.live {
@@ -1657,7 +1670,7 @@ impl App {
                     return done;
                 }
                 if part.is_none() && !s.on_card(x, y) {
-                    self.close_settings();
+                    self.close_settings_refocus();
                 } else {
                     self.dirty.settings = true;
                     self.need = true;
@@ -1714,7 +1727,7 @@ impl App {
                         return done;
                     }
                     VK_ESCAPE => {
-                        self.close_settings();
+                        self.close_settings_refocus();
                         return done;
                     }
                     VK_UP => s.scroll_by(-48.0),
