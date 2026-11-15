@@ -1447,6 +1447,8 @@ impl App {
             t.scroll = if t.at_end { max } else { t.scroll.min(max) };
         }
         self.dirty.layout = true;
+        // The narrow header leaves out its buttons under a thread.
+        self.dirty.header = true;
         self.dirty.thread = true;
         self.dirty.thread_box = true;
         self.drawn = None;
