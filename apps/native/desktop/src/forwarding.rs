@@ -53,14 +53,18 @@ impl Forwarding {
         }
     }
     fn dispatch(&mut self, worker: &Worker, generation: u64, operation: Operation) {
+        worker.send(self.command(generation, operation));
+    }
+    /// Starts `operation`; the caller sends the returned command.
+    fn command(&mut self, generation: u64, operation: Operation) -> Command {
         self.request += 1;
         self.busy = true;
         self.error = None;
-        worker.send(Command::Forward {
+        Command::Forward {
             generation,
             request: self.request,
             operation,
-        });
+        }
     }
     pub fn picker(&mut self, worker: &Worker, generation: u64, token: String, source: Message) {
         self.resolving = false;
@@ -151,22 +155,27 @@ impl Forwarding {
         }
         None
     }
+    /// Draws the open view and returns the worker commands it started.
+    #[must_use]
     pub fn show(
         &mut self,
         context: &egui::Context,
-        worker: &Worker,
         generation: u64,
         token: Option<&str>,
         messages: &[Message],
         textures: &mut crate::emoji::Textures,
-    ) {
+        // Draws a message's files and GIF as its row does: the app owns the
+        // media cache.
+        files: &mut dyn FnMut(&mut egui::Ui, &Message),
+    ) -> Vec<Command> {
+        let mut commands = Vec::new();
         let Some(token) = token else {
             self.close();
-            return;
+            return Vec::new();
         };
         // Resolve access before displaying anything; authorized readers navigate.
         if self.resolving {
-            return;
+            return Vec::new();
         }
         if let Some(View::Conversation { wrapper, .. }) = &self.view
             && messages
@@ -181,7 +190,7 @@ impl Forwarding {
                 })
         {
             self.close();
-            return;
+            return Vec::new();
         }
         if let Some(View::Conversation {
             wrapper,
@@ -206,11 +215,11 @@ impl Forwarding {
                     pages: *pages,
                     oldest: oldest.clone(),
                 };
-                self.dispatch(worker, generation, operation);
+                commands.push(self.command(generation, operation));
             }
         }
         let Some(view) = &mut self.view else {
-            return;
+            return commands;
         };
         let frame = context.cumulative_frame_nr();
         let fresh = *self.shown_since.get_or_insert(frame) == frame;
@@ -226,7 +235,9 @@ impl Forwarding {
                     View::Picker { picker, search, text } => {
                         let pending = &picker.pending;
                         ui.label(RichText::new("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.").size(12.0).color(crate::MUTED));
-                        original(ui, picker.source.forward.as_ref().and_then(|forward| forward.message.as_ref()).unwrap_or(&picker.source), textures);
+                        let source = picker.source.forward.as_ref().and_then(|forward| forward.message.as_ref()).unwrap_or(&picker.source);
+                        original(ui, source, textures);
+                        files(ui, source);
                         ui.add_enabled(pending.is_none(), egui::TextEdit::singleline(search).hint_text("Find a space, channel or DM"));
                         let mut changes = vec![];
                         for destination in picker.visible(search) {
@@ -267,13 +278,14 @@ impl Forwarding {
                     }
                     View::Conversation { wrapper, page, pages, oldest, .. } => {
                         if let Some(page) = page {
-                            if let Some(root) = &page.root { original(ui, root, textures); }
+                            if let Some(root) = &page.root { original(ui, root, textures); files(ui, root); }
                             if page.has_more && ui.add_enabled(!self.busy, egui::Button::new("Load older replies")).clicked() { *pages += 1; operation = Some(Operation::Conversation { token: token.into(), wrapper: wrapper.clone(), pages: *pages, oldest: oldest.clone() }); }
-                            for message in &page.messages { original(ui, message, textures); }
+                            for message in &page.messages { original(ui, message, textures); files(ui, message); }
                             if page.root.is_none() { ui.label("Original conversation unavailable."); }
                             else if page.messages.is_empty() { ui.label("No replies yet."); }
                         } else if self.error.is_none() && let Some(root) = wrapper.forward.as_ref().and_then(|forward| forward.message.as_ref()) {
                             original(ui, root, textures);
+                            files(ui, root);
                         }
                         if self.error.is_some() && ui.add_enabled(!self.busy, egui::Button::new("Retry")).clicked() { operation = Some(Operation::Conversation { token: token.into(), wrapper: wrapper.clone(), pages: *pages, oldest: oldest.clone() }); }
                     }
@@ -300,8 +312,9 @@ impl Forwarding {
         {
             self.close();
         } else if let Some(operation) = operation {
-            self.dispatch(worker, generation, operation);
+            commands.push(self.command(generation, operation));
         }
+        commands
     }
 }
 
@@ -365,10 +378,6 @@ mod tests {
     fn picker_keeps_same_space_rows_compact_and_search_preserves_hidden_selections() {
         let context = egui::Context::default();
         context.enable_accesskit();
-        let worker = Worker::new(
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-            crate::host::Repaint(context.clone()),
-        );
         let source = serde_json::from_value(serde_json::json!({
             "id":"source", "channelId":"private", "seq":"1", "clientMessageId":"source-key",
             "author":{"id":"author","name":"Author","isGuest":false},
@@ -423,7 +432,16 @@ mod tests {
                         )),
                         ..Default::default()
                     },
-                    |context| state.show(context, &worker, 0, Some("token"), &[], &mut textures),
+                    |context| {
+                        let _ = state.show(
+                            context,
+                            0,
+                            Some("token"),
+                            &[],
+                            &mut textures,
+                            &mut |_, _| {},
+                        );
+                    },
                 );
             }
             let labels: Vec<_> = output

@@ -408,6 +408,13 @@ impl EmojiTarget {
     }
 }
 
+/// Returns keyboard focus to the channel composer once something over the
+/// conversation closes, as web and the Win32 client do; egui's modals and
+/// windows leave it nowhere.
+fn focus_composer(context: &egui::Context) {
+    context.memory_mut(|memory| memory.request_focus(EmojiTarget::Channel.editor()));
+}
+
 #[derive(Clone, Copy)]
 enum NavIcon {
     Search,
@@ -1349,6 +1356,9 @@ struct CaperApp {
     members_width: f32,
     /// A dialog opened from the User Settings menu is showing.
     settings_menu_dialog: bool,
+    /// Pins, a card, a dialog or another window covered the conversation
+    /// last pass, with what had focus then.
+    covered: Option<Option<egui::Id>>,
     /// One pass after such a dialog closes from the keyboard, focus returns
     /// to the User Settings button, as on web.
     focus_user_settings: bool,
@@ -1726,6 +1736,7 @@ impl CaperApp {
             sidebar_channels_fraction: 0.5,
             members_width: 220.0,
             settings_menu_dialog: false,
+            covered: None,
             focus_user_settings: false,
             navigation_open: false,
             narrow_layout: false,
@@ -9989,6 +10000,72 @@ impl CaperApp {
         }
     }
 
+    /// Pins, a dialog or another window over the conversation leaves focus
+    /// nowhere, or on its own vanished control, when it closes; it returns
+    /// to the composer, as on web and Win32. A profile card hands focus back
+    /// to its opener itself, and a mouse close from the User Settings menu
+    /// leaves it alone.
+    fn return_focus(&mut self, context: &egui::Context) {
+        let focused = context.memory(|memory| memory.focused());
+        let covered = self.showing_pins
+            || self.reactors_view.is_some()
+            || self.dialog.is_some()
+            || self.message_editor.is_some()
+            || self.edit_history.is_some()
+            || self.message_delete.is_some()
+            || self.forwarding.is_open()
+            || self.updates.has_available();
+        if let Some(inside) = std::mem::replace(&mut self.covered, covered.then_some(focused))
+            && !covered
+            && !self.settings_menu_dialog
+            && (focused.is_none() || focused == inside)
+        {
+            focus_composer(context);
+        }
+    }
+
+    /// Type to compose, as on Win32: text typed while nothing has focus, as
+    /// after a click on the history, goes to the composer, the thread's when
+    /// the pointer is over the thread or a narrow thread covers the channel.
+    fn type_to_compose(&self, context: &egui::Context, raw_input: &egui::RawInput) {
+        let typed = raw_input.events.iter().any(
+            |event| matches!(event, egui::Event::Text(text) if !text.chars().all(char::is_control)),
+        );
+        let composing = raw_input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Ime(_)));
+        if !typed
+            || composing
+            || self.covered.is_some()
+            || self.mention_card.is_some()
+            || self.composer_emoji.is_some()
+            || self.gif_picker.is_some()
+            || self.viewer.is_some()
+            || self.attachment_editor_shown
+            || self.feedback_open
+            || (self.selected_channel.is_none() && self.selected_direct.is_none())
+            || (self.narrow_layout && self.navigation_open)
+            || context.memory(|memory| memory.focused().is_some())
+        {
+            return;
+        }
+        let pointer = context.input(|input| input.pointer.latest_pos());
+        let target = match &self.thread_view {
+            Some(thread)
+                if self.narrow_layout
+                    || self
+                        .thread_drop_rect
+                        .zip(pointer)
+                        .is_some_and(|(rect, pointer)| rect.contains(pointer)) =>
+            {
+                EmojiTarget::Thread(thread.root.clone())
+            }
+            _ => EmojiTarget::Channel,
+        };
+        context.memory_mut(|memory| memory.request_focus(target.editor()));
+    }
+
     /// At the start of each frame, which is when the one before it was drawn.
     fn bench_frame(&mut self, context: &egui::Context) {
         self.bench.painted();
@@ -10015,6 +10092,8 @@ impl eframe::App for CaperApp {
         self.autoscroll.input(raw_input);
         if self.bench.active() {
             self.bench_input(context, raw_input);
+        } else {
+            self.type_to_compose(context, raw_input);
         }
     }
 
@@ -10171,6 +10250,7 @@ impl eframe::App for CaperApp {
                     .into_iter()
                     .any(|key| input.key_pressed(key))
             });
+        self.return_focus(context);
         self.settings_menu_dialog = from_settings_menu;
         // Only an open forward looks messages up: don't copy the whole
         // timeline every frame otherwise.
@@ -10184,14 +10264,28 @@ impl eframe::App for CaperApp {
             } else {
                 Vec::new()
             };
-            self.forwarding.show(
+            // Out of `self` while it draws, so the source's files can use
+            // the row renderer and its media cache (thumbnails, as web).
+            let mut forwarding = std::mem::take(&mut self.forwarding);
+            let mut textures = self.reaction_textures.clone();
+            let token = self.token.clone();
+            let commands = forwarding.show(
                 context,
-                &self.worker,
                 self.generation,
-                self.token.as_deref(),
+                token.as_deref(),
                 &messages,
-                &mut self.reaction_textures,
+                &mut textures,
+                &mut |ui, message| {
+                    self.attachment_list_inset(ui, &message.content.attachments, false, 0);
+                    if let Some(gif) = &message.content.gif {
+                        self.message_gif(ui, gif, 0);
+                    }
+                },
             );
+            self.forwarding = forwarding;
+            for command in commands {
+                self.worker.send(command);
+            }
         }
         if !matches!(self.dialog, Some(Dialog::Audio)) {
             if !matches!(self.voice.microphone, MicrophoneState::Idle) {
@@ -16053,12 +16147,14 @@ impl CaperApp {
                     if drawn_icon_button(ui, NavIcon::Close, "Clear and close member search").clicked() {
                         self.member_search.clear();
                         self.member_search_open = false;
+                        focus_composer(ui.ctx());
                     }
                 });
                 ui.add_space(4.0);
                 if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                     self.member_search.clear();
                     self.member_search_open = false;
+                    focus_composer(ui.ctx());
                 }
             }
             if demo {
@@ -16468,6 +16564,7 @@ impl CaperApp {
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
             self.close_thread();
+            focus_composer(ui.ctx());
         }
     }
 
@@ -16573,6 +16670,7 @@ impl CaperApp {
                         .clicked()
                         {
                             self.close_thread();
+                            focus_composer(ui.ctx());
                         }
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.label(bold("Thread").size(15.0));
@@ -22382,7 +22480,9 @@ impl CaperApp {
         {
             self.mention_card = None;
             self.composer_emoji = None;
-            if escape {
+            // Escape or Close hands focus back to the name or picture that
+            // opened the card; a click elsewhere keeps it where it landed.
+            if escape || close {
                 context.memory_mut(|memory| memory.request_focus(card.pill.id));
             }
             return;
@@ -58307,5 +58407,86 @@ mod tests {
         let id = history.message.id.clone();
         app.accept_versions(request + 1, &id, Err("Obsolete request".into()));
         assert!(app.edit_history.as_ref().unwrap().error.is_none());
+    }
+
+    #[test]
+    fn typing_and_closing_overlays_return_focus_to_the_composer() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let composer = egui::Id::unique("message-composer");
+        let focused = |context: &egui::Context| context.memory(|memory| memory.focused());
+        // Type to compose while nothing has focus.
+        assert!(focused(&context).is_none(), "start with no focus");
+        let raw = egui::RawInput {
+            events: vec![egui::Event::Text("hi".into())],
+            ..Default::default()
+        };
+        app.type_to_compose(&context, &raw);
+        render(&mut app, &context, raw.events.clone());
+        assert_eq!(app.draft, "hi", "typed text reaches the composer");
+        assert_eq!(focused(&context), Some(composer));
+        // Focus elsewhere (a field) keeps its keys.
+        let other = egui::Id::unique("other-field");
+        context.memory_mut(|memory| memory.request_focus(other));
+        app.type_to_compose(&context, &raw);
+        assert_eq!(focused(&context), Some(other));
+        // Pins closes with focus on its vanished control: back to the composer.
+        app.showing_pins = true;
+        app.return_focus(&context);
+        let inside = egui::Id::unique("pins-close");
+        context.memory_mut(|memory| memory.request_focus(inside));
+        app.return_focus(&context);
+        app.showing_pins = false;
+        app.return_focus(&context);
+        assert_eq!(
+            focused(&context),
+            Some(composer),
+            "Pins close returns focus"
+        );
+        // A close that put focus somewhere else keeps it there.
+        app.dialog = Some(Dialog::Profile);
+        app.return_focus(&context);
+        context.memory_mut(|memory| memory.request_focus(inside));
+        app.return_focus(&context);
+        context.memory_mut(|memory| memory.request_focus(other));
+        app.dialog = None;
+        app.return_focus(&context);
+        assert_eq!(
+            focused(&context),
+            Some(other),
+            "focus moved by the close stays"
+        );
+        // Escape in the thread reply box closes the thread; focus to the composer.
+        let root = app.timeline.messages().next().unwrap().id.clone();
+        app.open_thread(root.clone());
+        render(&mut app, &context, vec![]);
+        let thread = egui::Id::unique(("thread-draft", root.clone()));
+        context.memory_mut(|memory| memory.request_focus(thread));
+        render(&mut app, &context, vec![]);
+        assert_eq!(focused(&context), Some(thread));
+        let escape = [true, false]
+            .map(|pressed| egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .to_vec();
+        render(&mut app, &context, escape);
+        render(&mut app, &context, vec![]);
+        assert!(app.thread_view.is_none(), "Escape closes the thread");
+        assert_eq!(
+            focused(&context),
+            Some(composer),
+            "focus returns to the composer"
+        );
     }
 }
