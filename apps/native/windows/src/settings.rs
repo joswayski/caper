@@ -1972,6 +1972,11 @@ impl App {
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         let g = &self.g;
         if let Some(st) = &self.settings {
+            // Settings takes over the gear menu's panel: hiding it first makes
+            // the move to the full window an entrance instead of cancelling it.
+            if !std::mem::replace(&mut self.settings_shown, true) {
+                self.settings_p.offset(-100_000.0, 0.0)?;
+            }
             self.settings_p.ensure(g, px(self.w), px(self.h))?;
             self.settings_p.offset(0.0, 0.0)?;
             self.settings_p.draw(s, |dc| st.draw(g, dc))?;
@@ -1984,6 +1989,7 @@ impl App {
             }
             return Ok(());
         }
+        self.settings_shown = false;
         let Some(m) = &self.account_menu else {
             return self.settings_p.offset(-100_000.0, 0.0);
         };

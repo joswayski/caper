@@ -378,6 +378,8 @@ pub struct App {
     pub app_links: Option<std::sync::mpsc::Receiver<String>>,
     pub pending_invite: Option<String>,
     settings_p: Panel,
+    /// `settings_p` last drew Settings rather than the gear's menu.
+    settings_shown: bool,
     pointer: Option<(f32, f32)>,
     tracking: bool,
     autoscroll: Option<autoscroll::Run>,
@@ -688,6 +690,7 @@ impl App {
                 app_links: None,
                 pending_invite: None,
                 settings_p,
+                settings_shown: false,
                 pointer: None,
                 tracking: false,
                 sel: None,
