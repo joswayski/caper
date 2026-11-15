@@ -2851,7 +2851,9 @@ mod tests {
             crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
         let worker = std::thread::spawn(move || {
             let detail = r#"{"space":{"id":"s","name":"Space","ownerId":"owner"},"channels":[{"id":"first","spaceId":"s","name":"first","private":false},{"id":"second","spaceId":"s","name":"second","private":true}],"members":[]}"#;
-            for (path, body) in [
+            // The requested channel's history is fetched beside the space
+            // detail, so requests are matched by path, not arrival order.
+            let mut expected = vec![
                 ("GET /api/spaces/s", detail),
                 (
                     "GET /api/chat/channels/second/messages",
@@ -2863,7 +2865,8 @@ mod tests {
                 ),
                 ("GET /api/spaces/s", detail),
                 ("GET /api/spaces/s", detail),
-            ] {
+            ];
+            while !expected.is_empty() {
                 let (stream, _) = server.accept().unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(2)))
@@ -2871,7 +2874,11 @@ mod tests {
                 let mut reader = BufReader::new(stream);
                 let mut request = String::new();
                 reader.read_line(&mut request).unwrap();
-                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                let index = expected
+                    .iter()
+                    .position(|(path, _)| request == format!("{path} HTTP/1.1\r\n"))
+                    .unwrap_or_else(|| panic!("unexpected request {request:?}"));
+                let (_, body) = expected.remove(index);
                 loop {
                     let mut line = String::new();
                     reader.read_line(&mut line).unwrap();
