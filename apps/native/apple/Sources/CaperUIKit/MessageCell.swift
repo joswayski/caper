@@ -30,7 +30,7 @@ struct MessageRowState: Equatable {
     /// The edit history's version count, read with "(edited)".
     var revision = 1
     var deleted: Bool
-    /// Files, a GIF, link cards or a forward, drawn by CaperCore's SwiftUI leaves.
+    /// Files, a GIF, link cards or a forward, drawn by CaperCore's native views.
     var extras: ChatMessage?
     /// The optimistic row's files, GIF and link card.
     var pendingContent: PendingMessage?
@@ -90,7 +90,7 @@ struct MessageRowState: Equatable {
         edited = message.forward == nil && !message.isDeleted && (message.revision ?? 1) > 1
         revision = message.revision ?? 1
         deleted = message.isDeleted
-        extras = UIKitMessageExtras.shows(message) ? message : nil
+        extras = UIKitNativeMessageExtras.shows(message) ? message : nil
         pendingContent = nil
         pending = false
         pendingError = nil
@@ -296,6 +296,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let body = MessageTextView()
     private let note = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let extras = HostedView()
+    private var nativeExtras: UIKitNativeMessageExtras?
     private let chips = ReactionChipsView()
     /// A failed reaction or pin inline with Retry and Dismiss; a failed send
     /// as SwiftUI's PendingMessageRow, its actions under the message.
@@ -318,6 +319,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let press = UIView()
     private let pinBadge = UIKitStyle.label(size: 10, weight: .medium, color: UIKitStyle.muted)
     private let replyContext = HostedView()
+    private var nativeReply: UIKitNativeReplyContext?
     private let above = UIStackView()
     private let threadLink = ThreadLinkButton()
     private var top: NSLayoutConstraint!
@@ -488,10 +490,12 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         // "Pinned by …" heads the row, over the text column.
         pinBadge.isHidden = row.pinnedBy == nil
         if let host, let reply = row.replyTo {
-            replyContext.show(UIKitReplyContext(reference: reply, motionKey: row.id, chat: host.chat))
+            if let nativeReply { nativeReply.update(reference: reply, motionKey: row.id) }
+            else { nativeReply = UIKitNativeReplyContext(reference: reply, motionKey: row.id, chat: host.chat) }
+            replyContext.show(nativeReply)
             replyContext.isHidden = false
         } else {
-            replyContext.show(Optional<EmptyView>.none)
+            replyContext.show(nil as UIView?); nativeReply = nil
             replyContext.isHidden = true
         }
         let hasAbove = !pinBadge.isHidden || !replyContext.isHidden
@@ -525,14 +529,17 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         accent.isHidden = !(highlighted || row.revealedBlocked)
         accent.backgroundColor = highlighted ? UIKitStyle.terracotta : UIKitStyle.border
 
-        if let host, let message = row.extras {
-            extras.show(UIKitMessageExtras(message: message, chat: host.chat, present: host.present, openForward: { host.openForward(message) }))
-        } else if let host, let pending = row.pendingContent, UIKitMessageExtras.shows(pending) {
-            extras.show(UIKitMessageExtras(pending: pending, chat: host.chat, present: host.present))
+        if let host, row.extras != nil || row.pendingContent.map(UIKitNativeMessageExtras.shows) == true {
+            if nativeExtras == nil {
+                nativeExtras = UIKitNativeMessageExtras(chat: host.chat, present: host.present, openForward: host.openForward)
+            }
+            if let message = row.extras { nativeExtras?.update(message) }
+            else if let pending = row.pendingContent { nativeExtras?.update(pending) }
+            extras.show(nativeExtras)
         } else {
-            extras.show(Optional<EmptyView>.none)
+            extras.show(nil as UIView?); nativeExtras = nil
         }
-        extras.isHidden = row.extras == nil && !(row.pendingContent.map(UIKitMessageExtras.shows) ?? false)
+        extras.isHidden = row.extras == nil && !(row.pendingContent.map(UIKitNativeMessageExtras.shows) ?? false)
         chips.configure(row.reactions, messageID: row.messageID, canInteract: row.canInteract, width: max(columnWidth, 120))
         chipsWidth = columnWidth
         if let error = row.pendingError {

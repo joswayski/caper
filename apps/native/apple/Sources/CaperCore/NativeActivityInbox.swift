@@ -161,8 +161,7 @@ import AppKit
     private var reactButton: AppKitKitButton!
     private let time = AppKitKit.label("", size: 11, color: AppKitKit.muted)
     private let replyBody = AppKitKit.stack([], spacing: 8)
-    private var replyHost: NSHostingView<AnyView>?
-    private var replyStale: Bool?
+    private var replyHost: AppKitQuickComposer?
 
     init(model: AppModel, item: ActivityItem, close: @escaping () -> Void,
          react: @escaping (ActivityItem, NSView) -> Void) {
@@ -209,24 +208,20 @@ import AppKit
         reply.isEnabled = !model.activityStale; reactButton.isEnabled = !model.activityStale
         let expanded = model.activityExpanded[item.id] != nil
         reply.title = expanded ? "Close reply" : "Reply"
-        // The composer observes the model itself. Rebuild its root only when
-        // the inbox goes stale or fresh: replacing it on every render took
-        // keyboard focus away from the reply field as soon as it was clicked.
-        if expanded, replyHost == nil || replyStale != model.activityStale {
-            replyStale = model.activityStale
-            let content = AnyView(NativeQuickComposerSheet(model: model, activity: item)
-                .modifier(Entrance.anchored)
-                .disabled(model.activityStale).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
-            if let replyHost { replyHost.rootView = content }
-            else {
-                let host = NSHostingView(rootView: content); host.sizingOptions = [.intrinsicContentSize]
+        // Retain the editor even across stale/fresh changes; only its permission
+        // changes, never its identity or first responder.
+        if expanded {
+            if replyHost == nil {
+                let person = MentionCardPerson(id: item.actorId, username: item.actorName, displayName: nil, avatarId: item.avatarId, isSelf: false)
+                let host = AppKitQuickComposer(state: NativeQuickDraft(model: model, person: person, activity: item, close: {}))
                 let label = AppKitKit.label(item.replyLabel, size: 13, color: AppKitKit.muted)
                 replyBody.addArrangedSubview(label); replyBody.addArrangedSubview(host)
                 AppKitKit.fillWidth(label, of: replyBody); AppKitKit.fillWidth(host, of: replyBody)
                 replyHost = host
             }
+            replyHost?.state.enabled = !model.activityStale
         } else if !expanded, replyHost != nil {
-            replyBody.arrangedSubviews.forEach { $0.removeFromSuperview() }; replyHost = nil; replyStale = nil
+            replyHost?.stop(); replyBody.arrangedSubviews.forEach { $0.removeFromSuperview() }; replyHost = nil
         }
         replyBody.isHidden = !expanded
     }
@@ -442,7 +437,7 @@ import Observation
     private var reactButton: UIButton!
     private let time = UIKitMessageDialog.label("", size: 11)
     private let replyBody = UIStackView()
-    private var replyHost: UIHostingController<AnyView>?
+    private var replyHost: UIKitQuickComposer?
 
     init(model: AppModel, item: ActivityItem, parent: UIViewController, close: @escaping () -> Void,
          react: @escaping (ActivityItem) -> Void) {
@@ -489,22 +484,20 @@ import Observation
         let expanded = model.activityExpanded[item.id] != nil
         reply.configuration?.title = expanded ? "Close reply" : "Reply"
         if expanded {
-            let content = AnyView(NativeQuickComposerSheet(model: model, activity: item)
-                .modifier(Entrance.anchored)
-                .disabled(model.activityStale).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
-            if let replyHost { replyHost.rootView = content }
-            else if let parent {
-                let host = UIHostingController(rootView: content); host.sizingOptions = [.intrinsicContentSize]
+            if replyHost == nil, let parent {
+                let person = MentionCardPerson(id: item.actorId, username: item.actorName, displayName: nil, avatarId: item.avatarId, isSelf: false)
+                let host = UIKitQuickComposer(state: NativeQuickDraft(model: model, person: person, activity: item, close: {}))
                 host.view.backgroundColor = .clear; parent.addChild(host)
                 replyBody.addArrangedSubview(UIKitMessageDialog.label(item.replyLabel))
                 replyBody.addArrangedSubview(host.view); host.didMove(toParent: parent); replyHost = host
             }
+            replyHost?.state.enabled = !model.activityStale
         } else { removeReply() }
         replyBody.isHidden = !expanded
     }
     func removeReply() {
         guard let host = replyHost else { return }
-        host.willMove(toParent: nil); replyBody.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        host.stop(); host.willMove(toParent: nil); replyBody.arrangedSubviews.forEach { $0.removeFromSuperview() }
         host.removeFromParent(); replyHost = nil
     }
 }

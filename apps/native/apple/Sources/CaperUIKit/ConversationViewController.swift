@@ -50,6 +50,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let skeleton = MessageSkeletonView(rows: 5, label: "Loading messages")
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
+    private lazy var composerPreview = UIKitNativeComposerPreview(chat: model.chat)
+    private lazy var composerAccessories = UIKitNativeComposerAccessories(chat: model.chat, present: presentHosted)
     private lazy var members = MembersPanel(model: model)
     /// SwiftUI's phone layout, or the wide one beside Browse.
     private var narrow = true
@@ -169,10 +171,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }, selector: #selector(FirstFrame.tick)).add(to: .main, forMode: .common)
     }
 
-    /// SwiftUI presents message actions, who reacted, forwarding and block
-    /// confirmations from an invisible child, as CaperView's conversation does.
+    /// The native owner serializes message sheets and their follow-up actions.
     private func addPresentationHost() {
-        let host = UIHostingController(rootView: UIKitPresentationHost(state: presentations, model: model))
+        let host = UIKitNativePresentations(state: presentations, model: model)
         host.view.backgroundColor = .clear
         host.view.isUserInteractionEnabled = false
         host.view.translatesAutoresizingMaskIntoConstraints = false
@@ -592,28 +593,17 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     // MARK: Rendering
 
-    /// Your call, or Join for the open channel's voice: SwiftUI's PhoneVoiceStrip.
-    private lazy var voiceStrip = Self.sized(UIKitVoiceStrip(model: model) { [weak self] in self?.browse?() })
+    /// Your call, or Join for the open channel's voice.
+    private lazy var voiceStrip = NativeVoiceStripController(model: model) { [weak self] in self?.browse?() }
     /// A failed action or a voice error, above the composer.
-    private lazy var notices = Self.sized(UIKitComposerNotices(model: model) { [weak self] in
+    private lazy var notices = UIKitConversationNotices(model: model) { [weak self] in
         guard let self else { return }
         self.returningToLatest = true
         let chat = self.model.chat
         Task { await chat.retryLoad() }
-    })
+    }
     /// Back to latest was pressed: once the reopened window is in, follow the tail.
     private var returningToLatest = false
-
-    /// A SwiftUI child that sizes to its content, collapsing when it draws nothing.
-    private static func sized<Content: View>(_ root: Content) -> UIHostingController<Content> {
-        let host = UIHostingController(rootView: root)
-        host.sizingOptions = .intrinsicContentSize
-        host.view.backgroundColor = .clear
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        host.view.setContentHuggingPriority(.required, for: .vertical)
-        host.view.setContentCompressionResistancePriority(.required, for: .vertical)
-        return host
-    }
 
     private func embed(_ child: UIViewController) {
         addChild(child)
@@ -622,6 +612,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     }
 
     private let directBar = HostedView()
+    private lazy var directActions = UIKitNativeDirectBar(model: model) { [weak self] target in self?.presentations.block = target }
     private var directBarKey: String?
     private var directBarHeight: NSLayoutConstraint?
 
@@ -679,7 +670,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
         renderHeaderActions()
         applyMembers()
-        let inVoice = live ? UIKitVoiceStrip.inVoice(model) : 0
+        let inVoice = live ? NativeVoiceStripController.inVoice(model) : 0
         let parts = [visit == nil ? memberSummary(live: live, channelID: channelID) : nil, inVoice > 0 ? "\(inVoice) in voice" : nil]
         subtitle.text = parts.compactMap { $0 }.isEmpty ? nil : parts.compactMap { $0 }.joined(separator: " · ")
         // Wide headers show the name alone, as SwiftUI's.
@@ -1019,10 +1010,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         composer.show(draft: chat.draft, conversation: chat.editingContext)
         composer.refreshContext()
         composer.textView.pasteAttachments = chat.canAttach ? { [weak chat] in chat?.pasteAttachments() ?? false } : nil
-        composer.showLinkPreview(ready ? UIKitComposerLinkPreview(chat: chat) : nil)
+        composer.showLinkPreview(ready ? composerPreview : nil)
         composer.showCount(ready ? chat.draft.unicodeScalars.count : 0)
         composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat)
-                                 ? UIKitComposerAccessories(chat: chat, present: presentHosted) : nil)
+                                 ? composerAccessories : nil)
         composer.showVoice(button: ready ? voice.button : nil, bar: voice.bar, recording: ready && voice.isRecording)
     }
 
@@ -1032,7 +1023,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let key = shows ? "\(conversationID ?? "")|\(model.previewingChannel)|\(model.selectedDirectMessage?.status == .incoming)" : nil
         guard key != directBarKey else { return }
         directBarKey = key
-        directBar.show(shows ? UIKitDirectBar(model: model) { [weak self] target in self?.presentations.block = target } : nil)
+        directBar.show(shows ? directActions : nil)
         directBar.isHidden = !shows
         composer.isHidden = shows
         composer.accessibilityElementsHidden = shows

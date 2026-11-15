@@ -1,7 +1,6 @@
 #if os(macOS)
 import AppKit
 import Observation
-import SwiftUI
 
 /// The shared recording controls surround, but never replace, the native editor.
 /// A target captures this composer's lifetime before permission, audio decoding
@@ -14,8 +13,13 @@ import SwiftUI
     private var context: String
     private var generation = 0
     private var visible = true
-    @ObservationIgnored private lazy var microphone: NSHostingView<AppKitVoiceControl> = NSHostingView(rootView: AppKitVoiceControl(bar: false) { [weak self] in self?.target })
-    @ObservationIgnored private lazy var recordingBar: AppKitVoiceBar = AppKitVoiceBar(rootView: AppKitVoiceControl(bar: true) { [weak self] in self?.target })
+    @ObservationIgnored private lazy var session = NativeVoiceSession { [weak self, chat, inThread] in
+        self?.target ?? VoiceTarget(owner: VoiceComposerID(chat: chat, inThread: inThread), enabled: false,
+            unavailableReason: "Composer is closed", identifier: inThread ? "thread-voice" : "composer-voice",
+            send: { AttachmentStaging.remove($0.fileURL) }, stage: { AttachmentStaging.remove($0.fileURL) }, isCurrent: { false })
+    }
+    @ObservationIgnored private lazy var microphone = AppKitVoiceControls(session: session, kind: .microphone)
+    @ObservationIgnored private lazy var recordingBar = AppKitVoiceControls(session: session, kind: .bar)
 
     public init(chat: ChatModel, inThread: Bool, editor: NSTextView) {
         self.chat = chat; self.inThread = inThread; self.editor = editor
@@ -42,6 +46,7 @@ import SwiftUI
 
     public func cancel() {
         generation += 1
+        session.stop()
         let recorder = VoiceMessageRecorder.shared
         if recorder.isActive(owner) { recorder.cancel() }
         if recorder.dictation?.target.owner == owner { VoiceTarget.dropDictation() }
@@ -114,47 +119,4 @@ import SwiftUI
     }
 }
 
-@MainActor private struct AppKitVoiceControl: View {
-    let bar: Bool
-    let target: () -> VoiceTarget?
-
-    var body: some View {
-        Group {
-            if let target = target() {
-                let recording = VoiceMessageRecorder.shared.isRecording(target.owner)
-                if bar {
-                    if recording {
-                        GeometryReader { geometry in
-                            VoiceRecordingBar(target: target, compact: geometry.size.width < 300)
-                        }.modifier(Entrance.anchored)
-                    }
-                } else {
-                    // Keep the microphone's recording-lifetime modifier mounted
-                    // while the bar covers it, as VoiceComposerCover does.
-                    VoiceRecordButton(target: target)
-                        .opacity(recording ? 0 : 1).allowsHitTesting(!recording)
-                        .accessibilityHidden(recording)
-                }
-            }
-        }.preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
-    }
-}
-
-/// The native text view must give up Return/Escape while its bar covers it.
-/// Handle those keys even when focus is on the hosting view, not a SwiftUI button.
-private final class AppKitVoiceBar: NSHostingView<AppKitVoiceControl> {
-    override var acceptsFirstResponder: Bool { true }
-
-    override func keyDown(with event: NSEvent) {
-        if event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
-           let target = rootView.target(), VoiceMessageRecorder.shared.isRecording(target.owner) {
-            if event.keyCode == 53 { VoiceMessageRecorder.shared.cancel(); return }
-            if event.keyCode == 36 || event.keyCode == 76 {
-                Task { await VoiceTarget.finish(target) }
-                return
-            }
-        }
-        super.keyDown(with: event)
-    }
-}
 #endif

@@ -1,5 +1,4 @@
 import CaperCore
-import SwiftUI
 import UIKit
 
 /// Browse on iPhone: the space rail beside the selected space's channels and
@@ -58,22 +57,11 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private var channelSearch = ""
     private var browseRows: [String: Channel] = [:]
     private var browsedSpaceID: String?
-    /// Message requests, pushed over the lists as SwiftUI does on iPhone.
-    private lazy var requests: UIHostingController<UIKitMessageRequests> = {
-        let host = UIHostingController(rootView: UIKitMessageRequests(model: model))
-        host.view.backgroundColor = UIKitStyle.sidebar
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        host.view.accessibilityIdentifier = "message-requests-page"
-        return host
-    }()
-    /// The feedback team's inbox, pushed the same way; it wins over requests.
-    private lazy var feedback: UIHostingController<UIKitFeedbackInbox> = {
-        let host = UIHostingController(rootView: UIKitFeedbackInbox(model: model))
-        host.view.backgroundColor = UIKitStyle.sidebar
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        host.view.accessibilityIdentifier = "feedback-page"
-        return host
-    }()
+    private lazy var requests = UIKitBrowsePage(model: model, kind: .requests)
+    private lazy var feedback = UIKitBrowsePage(model: model, kind: .feedback)
+    private var nativeChannels: [String: NativeChannelView] = [:]
+    private lazy var liveNow = NativeLiveNowView(model: model) { [weak self] controller in self?.present(controller, animated: false) }
+    private lazy var notificationError = NativeNotificationError(model: model)
     private let accountAvatar = AvatarView(side: 30)
     private let accountName = UIKitStyle.label(size: 13, weight: .medium)
     private let presenceDot = UIView()
@@ -203,6 +191,8 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         list.showsSeparators = false
         channels = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewCompositionalLayout.list(using: list))
         channels.backgroundColor = .clear
+        // Native rows grow when voice cards or live-now rows change, without a reconfigure.
+        channels.selfSizingInvalidation = .enabledIncludingConstraints
         channels.delegate = self
         channels.translatesAutoresizingMaskIntoConstraints = false
         channels.accessibilityIdentifier = "channel-list"
@@ -212,21 +202,24 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         directs.translatesAutoresizingMaskIntoConstraints = false
         directs.accessibilityIdentifier = "direct-message-list"
         directs.contentInset.top = 6
-        // Joined channels are SwiftUI's own rows: name, unread and mute, quick
-        // join and ⋯ options, growing into a voice card in place when live.
-        let registration = UICollectionView.CellRegistration<UICollectionViewListCell, Item> { [weak self] cell, _, item in
+        // Channel views retain their controls as presence expands a live card.
+        let registration = UICollectionView.CellRegistration<NativeBrowseCell, Item> { [weak self] cell, _, item in
             guard let self else { return }
             cell.backgroundConfiguration = .clear()
             switch item {
             case let .channel(id):
-                guard let channel = self.channelRows[id] else { return }
-                cell.contentConfiguration = UIHostingConfiguration {
-                    UIKitChannelRow(model: self.model, channel: channel) { [weak self] in self?.dialog($0) }
-                }.margins(.horizontal, 16).margins(.vertical, 0)
+                guard self.channelRows[id] != nil else { return }
+                let row = self.nativeChannels[id] ?? NativeChannelView(model: self.model, id: id,
+                    show: { [weak self] in self?.dialog($0) }, present: { [weak self] in self?.present($0, animated: false) },
+                    open: { [weak self] in
+                        guard let self, let channel = self.model.detail?.channels.first(where: { $0.id == id }) else { return }
+                        Task { await self.model.select(channel: channel) }
+                    })
+                self.nativeChannels[id] = row; cell.show(row)
             case .liveNow:
-                cell.contentConfiguration = UIHostingConfiguration { UIKitLiveNow(model: self.model) }.margins(.horizontal, 16).margins(.vertical, 0)
+                cell.show(self.liveNow)
             case .notificationError:
-                cell.contentConfiguration = UIHostingConfiguration { UIKitNotificationErrorRow(model: self.model) }.margins(.all, 0)
+                cell.show(self.notificationError)
             default:
                 break
             }
@@ -530,7 +523,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
         snapshot.appendSections([0])
         if live && model.notificationError != nil { snapshot.appendItems([.notificationError]) }
-        if live && UIKitLiveNow.shows(model) { snapshot.appendItems([.liveNow]) }
+        if live && NativeLiveNowView.shows(model) { snapshot.appendItems([.liveNow]) }
         snapshot.appendItems([.channelsHeader])
         snapshot.reconfigureItems(dataSource.snapshot().indexOfItem(.channelsHeader) != nil ? [.channelsHeader] : [])
         snapshot.appendItems(joined.map { .channel($0.id) })
@@ -553,8 +546,9 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         channelInvitations = Dictionary(invitations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         snapshot.appendItems(invitations.map { .channelInvitation($0.id) })
         // Selection and unread state live in the cell; reconfigure all visible rows cheaply.
-        // Hosted rows observe the model themselves; reconfigure only a changed channel.
+        // Native rows observe the model themselves; reconfigure only a changed channel.
         snapshot.reconfigureItems(joined.filter { previous[$0.id] != nil && previous[$0.id] != $0 }.map { .channel($0.id) })
+        nativeChannels = nativeChannels.filter { channelRows[$0.key] != nil }
         listError = live ? model.error ?? model.directMessagesError : nil
         if listError != nil {
             snapshot.appendItems([.listError])
@@ -591,7 +585,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private var listError: String?
 
     private func renderRail(_ spaces: [Space], selected: String?, unreadSpaces: Set<String>) {
-        // Live tiles are SwiftUI's and follow selection, unread and voice themselves.
+        // Live tiles follow selection, unread and voice independently.
         let key = spaces.map { live ? "\($0.id)|\($0.name)|\($0.iconAsset ?? "")"
             : "\($0.id)|\($0.name)|\($0.id == selected)|\(unreadSpaces.contains($0.id))|\($0.iconAsset ?? "")" }
             + [live ? "live" : "", "\(model.canCreateSpace)"] + (live ? model.invitations.map { "invite|\($0.id)|\($0.name)" } : [])
@@ -600,8 +594,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         rail.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for space in spaces {
             if live {
-                let tile = HostedView()
-                tile.show(UIKitSpaceRailTile(model: model, space: space))
+                let tile = NativeSpaceTile(model: model, space: space)
                 NSLayoutConstraint.activate([tile.widthAnchor.constraint(equalToConstant: 44), tile.heightAnchor.constraint(equalToConstant: 44)])
                 rail.addArrangedSubview(tile)
                 continue

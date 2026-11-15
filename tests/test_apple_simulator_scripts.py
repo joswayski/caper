@@ -33,7 +33,7 @@ class AppleSimulatorScriptTests(unittest.TestCase):
         config.write_text(f"CAPER_SOURCE_REVISION = {'a' * 40}\n")
         binary = self.root / "bin"
         binary.mkdir()
-        for name in ("node", "curl", "defaults"):
+        for name in ("node", "curl", "defaults", "swift"):
             tool = binary / name
             # No fixture server or network is needed for shell argument tests.
             tool.write_text("#!/usr/bin/env bash\nexit 0\n")
@@ -119,7 +119,8 @@ if tool == "xcrun":
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(len(commands), 2)
                 args = commands[0]
-                self.assertEqual(args[args.index("-scheme") + 1], "CaperIOSParityTests")
+                self.assertEqual(args[args.index("-scheme") + 1], "CaperUIKit")
+                self.assertEqual(args[args.index("-project") + 1], str(self.apple / "CaperUIKit.xcodeproj"))
                 self.assertEqual(args[args.index("-destination") + 1], destination or DEFAULT_DESTINATION)
                 self.assertEqual((self.apple / "seeded").read_text(), destination or DEFAULT_DESTINATION)
                 self.assertEqual(
@@ -145,9 +146,9 @@ if tool == "xcrun":
             "en GB",
             'FIXTURE_SETTING=spaces "quotes" * $HOME ; literal',
         ]
-        for platform, scheme, destination in (
-            ("ios", "CaperIOSParityTests", CUSTOM_DESTINATION),
-            ("macos", "CaperMacOSParityTests", "platform=macOS,arch=arm64"),
+        for platform, scheme, project, destination in (
+            ("ios", "CaperUIKit", "CaperUIKit", CUSTOM_DESTINATION),
+            ("macos", "CaperAppKitTests", "CaperNative", "platform=macOS,arch=arm64"),
         ):
             with self.subTest(platform=platform):
                 result, commands = self.run_script(
@@ -157,6 +158,7 @@ if tool == "xcrun":
                 self.assertEqual(len(commands), 2)
                 args = commands[0]
                 self.assertEqual(args[args.index("-scheme") + 1], scheme)
+                self.assertEqual(args[args.index("-project") + 1], str(self.apple / f"{project}.xcodeproj"))
                 self.assertEqual(args[args.index("-destination") + 1], destination)
                 self.assertEqual(args[-len(extra) - 1 :], [*extra, "test"])
                 self.assertNotIn(platform, args)

@@ -71,6 +71,8 @@ import AppKit
     let header: AppKitDialogHeader
     var dismissDisabled: Bool { false }
     private var fitsContent: NSLayoutConstraint!
+    private var scrollBottom: NSLayoutConstraint!
+    private var scroll: NSScrollView!
 
     init(title: String, detail: String, closeLabel: String, identifier: String, close: @escaping () -> Void) {
         header = AppKitDialogHeader(title: title, detail: detail, closeLabel: closeLabel, close: close)
@@ -80,12 +82,14 @@ import AppKit
         setAccessibilityElement(true); setAccessibilityRole(.group)
         setAccessibilityIdentifier(identifier)
         let scroll = appKitKitScroll(body, insets: NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22))
+        self.scroll = scroll
         addSubview(header); addSubview(scroll)
+        scrollBottom = scroll.bottomAnchor.constraint(equalTo: bottomAnchor)
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: leadingAnchor), header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.topAnchor.constraint(equalTo: topAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: header.bottomAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.topAnchor.constraint(equalTo: header.bottomAnchor), scrollBottom,
         ])
         fitsContent = scroll.heightAnchor.constraint(equalTo: scroll.documentView!.heightAnchor).withPriority(.defaultHigh)
         fitsContent.isActive = true
@@ -99,6 +103,17 @@ import AppKit
         heightAnchor.constraint(equalToConstant: height).withPriority(.defaultHigh).isActive = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// A reserved action row stays reachable while the body scrolls.
+    func setFooter(_ footer: NSView) {
+        scrollBottom.isActive = false
+        footer.translatesAutoresizingMaskIntoConstraints = false; addSubview(footer)
+        NSLayoutConstraint.activate([
+            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            footer.leadingAnchor.constraint(equalTo: leadingAnchor), footer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
 
     /// Replaces the body's rows, each filling the dialog's width.
     func setRows(_ rows: [NSView]) {

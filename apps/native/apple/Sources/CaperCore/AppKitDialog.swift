@@ -80,13 +80,15 @@ import AppKit
 /// A dialog header: the title, an optional muted detail, and a close button.
 @MainActor final class AppKitDialogHeader: NSView {
     let close: AppKitKitButton
+    let titleLabel: NSTextField
 
     init(title: String, detail: String? = nil, closeLabel: String = "Close", close action: @escaping () -> Void) {
         close = AppKitKitButton("✕", kind: .plain, action: action)
+        titleLabel = AppKitKit.label(title, size: 20, weight: .bold)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         close.setAccessibilityLabel(closeLabel)
-        var rows: [NSView] = [AppKitKit.label(title, size: 20, weight: .bold)]
+        var rows: [NSView] = [titleLabel]
         if let detail { rows.append(AppKitKit.label(detail, size: 12, color: AppKitKit.muted)) }
         let text = AppKitKit.stack(rows, spacing: 6)
         for row in rows { AppKitKit.fillWidth(row, of: text) }

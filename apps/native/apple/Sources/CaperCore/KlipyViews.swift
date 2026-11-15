@@ -531,7 +531,7 @@ private struct KlipyAdRow: View {
 /// script message handlers and no Caper origin (`about:blank`), so it can
 /// never reach Caper's session. Taps on web links open the system browser
 /// and never navigate in place.
-private struct KlipyAdWebView: UIViewRepresentable {
+struct KlipyAdWebView: UIViewRepresentable {
     let html: String
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -570,7 +570,7 @@ private struct KlipyAdWebView: UIViewRepresentable {
         view.uiDelegate = nil
     }
 
-    private static func document(_ html: String) -> String {
+    static func document(_ html: String) -> String {
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             + "<style>html,body{margin:0;padding:0;background:transparent;overflow:hidden}</style></head><body>"
             + html + "</body></html>"

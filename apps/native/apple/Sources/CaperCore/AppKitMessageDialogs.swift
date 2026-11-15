@@ -83,8 +83,7 @@ import SwiftUI
             placeholder: "Add a note (optional)", identifier: "forward-note", height: 64)
         retry = AppKitKitButton("Retry loading") { state.load() }
         send = AppKitKitButton("Forward (0)", kind: .primary) { state.send() }
-        let preview = NSHostingView(rootView: appKitForwardOriginal(message.forward?.message ?? message, showMedia: showMedia))
-        preview.sizingOptions = [.intrinsicContentSize]
+        let preview = AppKitOriginalMessage(message.forward?.message ?? message, show: showMedia)
         setRows([preview, search, destinations, status,
                  composer, error, retry, send])
         preferHeight(560)
@@ -139,7 +138,7 @@ import SwiftUI
     private let state: NativeForwardConversation
     private let showMedia: (MediaViewerRequest) -> Void
     private let messages = AppKitKit.stack([], spacing: 16)
-    private var previews: [String: (message: ChatMessage, host: NSHostingView<AnyView>)] = [:]
+    private var previews: [String: (message: ChatMessage, host: AppKitOriginalMessage)] = [:]
     private let count = AppKitKit.label("", size: 13, weight: .bold)
     private let status = AppKitKit.label("", size: 12, color: AppKitKit.muted)
     private let error = AppKitKit.label("", size: 12, color: AppKitKit.error)
@@ -164,15 +163,14 @@ import SwiftUI
         let ids = Set(next.map(\.id))
         for id in previews.keys.filter({ !ids.contains($0) }) { previews.removeValue(forKey: id)?.host.removeFromSuperview() }
         for (index, message) in next.enumerated() {
-            let host: NSHostingView<AnyView>
+            let host: AppKitOriginalMessage
             if let previous = previews[message.id] {
                 host = previous.host
                 if previous.message != message {
-                    host.rootView = appKitForwardOriginal(message, available: { [state] in state.available }, showMedia: showMedia)
+                    host.update(message)
                 }
             } else {
-                host = NSHostingView(rootView: appKitForwardOriginal(message, available: { [state] in state.available }, showMedia: showMedia))
-                host.sizingOptions = [.intrinsicContentSize]
+                host = AppKitOriginalMessage(message, available: { [state] in state.available }, show: showMedia)
                 messages.insertArrangedSubview(host, at: index)
                 AppKitKit.fillWidth(host, of: messages)
             }
@@ -200,13 +198,4 @@ import SwiftUI
     }
 }
 
-/// The existing source-message leaf keeps avatar, links, spoilers, reactions
-/// and media behavior during this dialog migration. It is not dialog chrome:
-/// search, selection, editing, paging, errors and actions above are AppKit.
-@MainActor private func appKitForwardOriginal(_ message: ChatMessage, available: (() -> Bool)? = nil,
-                                            showMedia: @escaping (MediaViewerRequest) -> Void) -> AnyView {
-    AnyView(SharedOriginalView(message: message, isAvailable: available)
-        .environment(\.mediaViewer, MediaViewerAction(perform: showMedia))
-        .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright))
-}
 #endif
