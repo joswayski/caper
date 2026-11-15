@@ -2221,12 +2221,10 @@ impl App {
                         self.send_thread_reply();
                         return done;
                     }
+                    // As on web and in egui, Escape closes the thread even
+                    // from its reply box (suggestions and IME take it first).
                     VK_ESCAPE => {
-                        if t.reply.is_some() {
-                            self.cancel_thread_reply();
-                        } else {
-                            self.set_thread_focus(false);
-                        }
+                        self.dismiss_thread();
                         return done;
                     }
                     _ if t.composer.edit_key(hwnd, vk, ctrl, shift, true) => {}
