@@ -13,7 +13,9 @@ shift
 export CAPER_MACOS_BUNDLE_ID="${CAPER_MACOS_BUNDLE_ID:-chat.caper.macos}"
 export CAPER_IOS_BUNDLE_ID="${CAPER_IOS_BUNDLE_ID:-chat.caper.ios}"
 
-node "$REPO/scripts/native-parity-fixture.mjs" >"${TMPDIR:-/tmp}/caper-native-parity-fixture.log" 2>&1 &
+# The UIKit suite's timeline tests read the generated bench history (as uikit.sh).
+bench=0; [[ "$PLATFORM" == ios ]] && bench=3000
+CAPER_BENCH_MESSAGES=$bench node "$REPO/scripts/native-parity-fixture.mjs" >"${TMPDIR:-/tmp}/caper-native-parity-fixture.log" 2>&1 &
 FIXTURE_PID=$!
 trap 'kill "$FIXTURE_PID" 2>/dev/null || true' EXIT
 for _ in {1..50}; do curl --silent --fail http://127.0.0.1:3001/api/spaces -H 'authorization: Bearer fixture-owner-token' >/dev/null && break; sleep .1; done
