@@ -100,7 +100,7 @@ enum UIKitStyle {
     /// A server timestamp, with or without fractional seconds.
     static func date(_ value: String) -> Date? { fractionalDates.date(from: value) ?? wholeDates.date(from: value) }
 
-    static var reduceMotion: Bool { UIAccessibility.isReduceMotionEnabled }
+    static var reduceMotion: Bool { CaperAccessibility.reduceMotion }
     /// shared/design.css --motion-fast and --ease-out.
     static let motionFast: TimeInterval = 0.16
     static let easeOut = UICubicTimingParameters(controlPoint1: CGPoint(x: 0.2, y: 0.8), controlPoint2: CGPoint(x: 0.2, y: 1))

@@ -150,7 +150,7 @@ import UIKit
     }
     private func show(_ controller: UIViewController, kind: String) {
         child = controller; childKind = kind; controller.overrideUserInterfaceStyle = .dark
-        present(controller, animated: !UIAccessibility.isReduceMotionEnabled)
+        present(controller, animated: !CaperAccessibility.reduceMotion)
     }
     private func dismissChild() {
         guard let child, !closing else { return }; closing = true

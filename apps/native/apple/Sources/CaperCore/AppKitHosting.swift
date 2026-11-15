@@ -34,6 +34,8 @@ import SwiftUI
     private weak var previousResponder: NSResponder?
     private var previousContext: String?
     private var focusContext: String { [model.chat.editingContext, model.chat.threadRootID ?? "channel"].joined(separator: ":") }
+    /// Set by the workspace: focuses its composer when nothing else should have focus.
+    public var focusComposer: (() -> Void)?
 
     public init(model: AppModel) { self.model = model }
 
@@ -274,13 +276,18 @@ import SwiftUI
         }
         // Opening an inbox destination can replace the old conversation/root.
         // Never put focus back into a detached or different conversation editor.
+        var restoreComposer = false
         if previousContext == focusContext,
-           let responder = previousResponder as? NSView, responder.window === window, !responder.isHiddenOrHasHiddenAncestor {
+           let responder = previousResponder as? NSView, responder.window === window, !responder.isHiddenOrHasHiddenAncestor,
+           (responder as? NSTextView)?.isEditable != false {
             window?.makeFirstResponder(responder)
-        }
+        } else { restoreComposer = true }
         previousResponder = nil
         previousContext = nil
         model.whatsNew.workspaceModalOpen = false
+        // Nothing useful to restore (message text, the window, another
+        // conversation): focus returns to the composer, as on web.
+        if restoreComposer { focusComposer?() }
         if let parent { presentInvitations(in: parent) }
     }
 
@@ -474,7 +481,7 @@ private struct AppKitWorkspaceDialog: View {
         let popover = NSPopover()
         self.popover = popover
         popover.behavior = .transient
-        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         let host = makeContent { [weak self] in self?.close() }
         host.preferredContentSize = NSSize(width: width, height: 360)
@@ -507,6 +514,8 @@ private struct AppKitWorkspaceDialog: View {
     private var draft: ProfileMessageDraft?
     private var dismissAction: ProfileDismissAction?
     private weak var anchor: NSView?
+    /// Set by the workspace: where focus goes when the card closes and its opener can't take it.
+    public var focusComposer: (() -> Void)?
 
     public init(model: AppModel) { self.model = model }
 
@@ -542,7 +551,7 @@ private struct AppKitWorkspaceDialog: View {
         draft = model.profileMessageDraft(person: person)
         dismissAction = nil
         popover.behavior = .transient
-        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         let host = AppKitProfileCard(model: model, person: person,
             requestBlock: { [weak self, weak window] target in
@@ -579,6 +588,15 @@ private struct AppKitWorkspaceDialog: View {
         // A delayed old notification must never tear down its replacement.
         guard popover === closed else { return }
         popover = nil; personID = nil; draft = nil; dismissAction = nil
+        // As on web, closing the card returns focus to its opener, or to the
+        // composer when the opener can't take focus. A click that closed the
+        // card into a field keeps that field.
+        DispatchQueue.main.async { [weak self, weak anchor] in
+            guard let self, self.popover == nil, let anchor, let window = anchor.window,
+                  (window.firstResponder as? NSTextView)?.isEditable != true else { return }
+            if anchor.acceptsFirstResponder, !anchor.isHiddenOrHasHiddenAncestor { window.makeFirstResponder(anchor) }
+            else { self.focusComposer?() }
+        }
     }
 
     public func confirmBlock(_ target: BlockTarget, window: NSWindow) {
@@ -1022,7 +1040,7 @@ public enum AppKitComposerCounter {
         let popover = NSPopover()
         self.popover = popover
         popover.behavior = .transient
-        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         popover.contentViewController = content { [weak self] in self?.close() }
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)

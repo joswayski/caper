@@ -1,5 +1,6 @@
 import CaperCore
 import CoreText
+import GameController
 import SwiftUI
 import UIKit
 
@@ -429,6 +430,31 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             } else { focusing = nil }
         }
         attempt(60)
+    }
+
+    /// Puts the caret back when something over the conversation closes. Only
+    /// with a hardware keyboard: it never raises the software keyboard.
+    func returnFocus() {
+        guard GCKeyboard.coalesced != nil, window != nil, !isHidden, textView.isEditable, presentedByNothing,
+              !textView.isFirstResponder else { return }
+        textView.becomeFirstResponder()
+    }
+
+    /// A hardware key no field took (after selecting message text) types here.
+    func typeToCompose(_ text: String) -> Bool {
+        guard window != nil, !isHidden, textView.isEditable, presentedByNothing, textView.becomeFirstResponder() else { return false }
+        return insert(text)
+    }
+
+    /// The printable text of hardware presses without ⌘ or ⌃; nil for
+    /// shortcuts, navigation and control keys.
+    static func typed(_ presses: Set<UIPress>) -> String? {
+        let keys = presses.compactMap(\.key)
+        guard !keys.isEmpty, keys.allSatisfy({ $0.modifierFlags.intersection([.command, .control]).isEmpty }) else { return nil }
+        let text = keys.map(\.characters).joined()
+        guard !text.isEmpty, !text.hasPrefix("UIKeyInput"),
+              text.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value) }) else { return nil }
+        return text
     }
 
     /// No sheet covers the composer's screen.

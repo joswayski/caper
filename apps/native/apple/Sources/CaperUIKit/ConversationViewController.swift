@@ -101,6 +101,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(self, selector: #selector(returnFocusToComposer), name: CaperFocus.presentationClosed, object: nil)
         view.backgroundColor = UIKitStyle.conversation
         view.addLayoutGuide(content)
         // The tiled member list's width comes off the safe area's trailing edge.
@@ -122,7 +123,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         membersSideTrailing = members.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor)
         membersSideWidth = members.widthAnchor.constraint(equalToConstant: WideLayout.defaultMembers)
         // The reader's own Close, tap outside or swipe; not a layout change.
-        members.closed = { [weak self] in self?.membersPreference = false; self?.applyMembers() }
+        members.closed = { [weak self] in self?.membersPreference = false; self?.applyMembers(); self?.returnFocusToComposer() }
+        members.searchClosed = { [weak self] in if self?.members.side == true { self?.returnFocusToComposer() } }
         members.handle.dragged = { [weak self] travel in
             guard let self else { return }
             guard let travel else {
@@ -447,6 +449,21 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         headerClose.isHidden = hidden || model.visit == nil
     }
 
+    /// Sheets, cards, dialogs, the member list and the thread hand focus back
+    /// to the composer when they close (hardware keyboard only), as on web.
+    @objc private func returnFocusToComposer() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.model.navigationOpen, self.members.side || !self.members.isOpen,
+                  self.model.chat.composerFocusRequest(inThread: self.thread != nil) == nil else { return }
+            if let thread = self.thread { thread.returnFocusToComposer() } else { self.composer.returnFocus() }
+        }
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if thread == nil, !members.isOpen || members.side, let text = ComposerView.typed(presses), composer.typeToCompose(text) { return }
+        super.pressesBegan(presses, with: event)
+    }
+
     private func showPins() {
         let pins = PinsViewController(model: model)
         pins.requestBlock = { [weak self] target in self?.presentations.block = target }
@@ -640,7 +657,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             guard let self, self.thread?.presentingViewController == nil, self.model.chat.threadRootID != nil else { return }
             let controller = ThreadViewController(model: self.model)
             self.thread = controller
-            controller.closed = { [weak self] in self?.thread = nil }
+            controller.closed = { [weak self] in self?.thread = nil; self?.returnFocusToComposer() }
             self.view.endEditing(true)
             let top = self.presentedViewController ?? self
             if top !== self { self.dismiss(animated: false) { self.present(controller, animated: !UIKitStyle.reduceMotion) } }

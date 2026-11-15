@@ -224,7 +224,7 @@ import Observation
     private func chooseFiles() {
         guard !full else { nudge(); return }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: picking ? [.image] : [.item], asCopy: true)
-        picker.allowsMultipleSelection = !picking; picker.delegate = self; present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
+        picker.allowsMultipleSelection = !picking; picker.delegate = self; present(picker, animated: !CaperAccessibility.reduceMotion)
     }
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         if picking {
@@ -245,7 +245,7 @@ import Observation
         var configuration = PHPickerConfiguration(photoLibrary: .shared())
         configuration.selectionLimit = picking ? 1 : max(1, AttachmentPolicy.maxAttachments - used)
         configuration.filter = picking ? .images : .any(of: [.images, .videos]); configuration.preferredAssetRepresentationMode = .current
-        let picker = PHPickerViewController(configuration: configuration); picker.delegate = self; present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
+        let picker = PHPickerViewController(configuration: configuration); picker.delegate = self; present(picker, animated: !CaperAccessibility.reduceMotion)
     }
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: false) { [self] in
@@ -290,7 +290,7 @@ import Observation
                 else { AttachmentStaging.remove(file.url); self.nudge() }
             }
         }
-        picker.delegate = cameraDelegate; present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
+        picker.delegate = cameraDelegate; present(picker, animated: !CaperAccessibility.reduceMotion)
     }
 }
 

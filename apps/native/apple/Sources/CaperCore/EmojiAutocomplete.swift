@@ -449,7 +449,7 @@ public final class ComposerTextView: UITextView {
         label.frame = CGRect(x: min(max(safe.minX, anchor.midX - width / 2), safe.maxX - width),
                              y: min(max(safe.minY, above >= safe.minY ? above : anchor.maxY + 6), safe.maxY - height), width: width, height: height)
         window.addSubview(label); emojiTooltip = label
-        if !UIAccessibility.isReduceMotionEnabled {
+        if !CaperAccessibility.reduceMotion {
             label.alpha = 0; label.transform = CGAffineTransform(translationX: 0, y: 4)
             UIView.animate(withDuration: 0.14, delay: 0, options: .curveEaseOut) { label.alpha = 1; label.transform = .identity }
         }

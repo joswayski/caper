@@ -9,6 +9,13 @@ import UIKit
 /// the parity UI fixture can force it with CAPER_REDUCE_MOTION=1, so UI tests
 /// render the still poses without changing the Mac's settings; Release builds
 /// read only the system setting.
+/// Posted when a sheet, card or dialog over an iPhone/iPad conversation
+/// closes; the conversation returns focus to its composer (hardware keyboard only).
+public enum CaperFocus {
+    public static let presentationClosed = Notification.Name("CaperFocusPresentationClosed")
+    public static func presentationDidClose() { NotificationCenter.default.post(name: presentationClosed, object: nil) }
+}
+
 public enum CaperAccessibility {
     public static var reduceMotion: Bool {
         #if DEBUG

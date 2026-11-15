@@ -72,7 +72,7 @@ import UniformTypeIdentifiers
     /// A message's edit history, as SwiftUI's "(edited)" opens.
     public static func messageHistory(chat: ChatModel, message: ChatMessage) -> UIViewController {
         let box = WeakController()
-        let host = UIKitNativeMessageHistory(chat: chat, message: message) { box.value?.dismiss(animated: false) }
+        let host = UIKitNativeMessageHistory(chat: chat, message: message) { box.value?.dismiss(animated: false) { CaperFocus.presentationDidClose() } }
         box.value = host
         sheet(host, background: CaperTheme.surface)
         host.sheetPresentationController?.detents = [.large()]

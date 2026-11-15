@@ -8,6 +8,8 @@ import CaperCore
     var showWhatsNew: (() -> Void)?
     private var presentationParent: NSViewController { parent as? WorkspaceController ?? self }
     private var threadPane: WorkspaceController?
+    /// Closing the thread with its button or Escape focuses the composer.
+    private var focusAfterThreadClose = false
     private let threadObservation = NativeObservation()
     private var preferredThreadWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.threadPanelWidth") as? Double ?? 340)
     private var threadDragWidth: CGFloat?
@@ -229,10 +231,18 @@ import CaperCore
             members.close = { [weak self] in
                 self?.membersPreference = false
                 self?.view.needsLayout = true
+                self?.focusComposer()
             }
+            members.focusComposer = { [weak self] in self?.focusComposer() }
             members.openProfile = { [weak self] member, view in
                 self?.profiles.show(member: member, relativeTo: view.bounds, of: view)
             }
+        }
+        dialogs.focusComposer = { [weak self] in self?.focusComposer() }
+        profiles.focusComposer = { [weak self] in self?.focusComposer() }
+        timeline.typeToCompose = { [weak self] event in
+            guard let self, self.focusComposer() else { return false }
+            self.composer.keyDown(with: event); return true
         }
         timeline.openAuthor = { [weak self] author, view in
             self?.profiles.show(author: author, relativeTo: view.bounds, of: view)
@@ -425,12 +435,13 @@ import CaperCore
 
     private func updateThreadPane(_ root: String?) {
         pins.close(restoringFocus: false)
+        let requested = focusAfterThreadClose; focusAfterThreadClose = false
         if root != nil, threadPane == nil {
             let pane = WorkspaceController(model: model, inThread: true)
             addChild(pane)
             view.addSubview(pane.view, positioned: .below, relativeTo: members)
             threadPane = pane
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if !CaperAccessibility.reduceMotion {
                 let fade = CABasicAnimation(keyPath: "opacity")
                 fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.14
                 fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
@@ -445,14 +456,26 @@ import CaperCore
             stage.isHidden = false
             updateComposer()
             model.threadVisibilityChanged(rootID: nil, seq: nil)
-            if returnFocus { view.window?.makeFirstResponder(composer) }
+            if returnFocus || requested { focusComposer() }
         }
         view.needsLayout = true
     }
 
     private func closeThread() {
         picker.close(restoringFocus: false)
+        // The channel's controller removes the pane; it focuses its composer.
+        (inThread ? parent as? WorkspaceController : self)?.focusAfterThreadClose = true
         model.chat.closeThread()
+    }
+
+    /// Returns keyboard focus to this pane's composer when something over the
+    /// conversation closes, as on web. A narrow layout that shows only the
+    /// thread hands off to the thread's composer.
+    @discardableResult private func focusComposer() -> Bool {
+        if stage.isHidden, let threadPane { return threadPane.focusComposer() }
+        guard composer.isEditable, !stage.isHiddenOrHasHiddenAncestor, !dialogs.isPresenting,
+              let window = view.window, window.isKeyWindow, window.attachedSheet == nil else { return false }
+        return window.makeFirstResponder(composer)
     }
 
     private func acknowledgeVisibleThread() {
@@ -499,7 +522,7 @@ import CaperCore
             let navigationWasHidden = navigation.isHidden
             navigation.isHidden = narrow && !browsing
             navigation.frame = NSRect(x: 0, y: 0, width: narrow ? width : navigationWidth, height: height)
-            if browsing && navigationWasHidden && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if browsing && navigationWasHidden && !CaperAccessibility.reduceMotion {
                 let fade = CABasicAnimation(keyPath: "opacity")
                 fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.14
                 fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)

@@ -257,6 +257,15 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
 
 
     override func accessibilityPerformEscape() -> Bool { close(); return true }
+    /// Escape in the reply box closes the thread, as on web; open suggestions
+    /// take Escape first because the text view's own command wins.
+    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeThread))] }
+    @objc private func escapeThread() { close() }
+    func returnFocusToComposer() { composer.returnFocus() }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let text = ComposerView.typed(presses), composer.typeToCompose(text) { return }
+        super.pressesBegan(presses, with: event)
+    }
 
     /// `slid`: a swipe already moved the thread aside; it leaves without the
     /// modal's slide down.

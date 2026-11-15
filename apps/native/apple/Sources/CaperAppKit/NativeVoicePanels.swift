@@ -25,7 +25,7 @@ import CaperCore
         let popover = NSPopover()
         self.popover = popover
         popover.behavior = .transient
-        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         let controller = NSViewController(); controller.view = content
         controller.preferredContentSize = content.frame.size
