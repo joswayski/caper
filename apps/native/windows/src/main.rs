@@ -2990,7 +2990,7 @@ impl App {
                     self.need = true;
                 }
                 // As on web, Escape closes the thread when nothing else takes it.
-                VK_ESCAPE if self.thread.is_some() => self.close_thread(),
+                VK_ESCAPE if self.thread.is_some() => self.dismiss_thread(),
                 _ => return false,
             }
             return true;

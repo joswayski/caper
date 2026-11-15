@@ -1542,6 +1542,12 @@ impl App {
         }
     }
 
+    /// Close (Back when narrow) or Escape: the keys return to the composer.
+    pub fn dismiss_thread(&mut self) {
+        self.close_thread();
+        self.set_composer_focus(true);
+    }
+
     /// The channel row `i`'s thread link under client point (x, y).
     pub fn thread_link_at(&self, x: f32, y: f32) -> Option<usize> {
         if !self.in_history(x, y) || self.live.is_none() {
@@ -1853,7 +1859,7 @@ impl App {
                     self.thread_composer_changed();
                 }
             }
-            Part::Close => self.close_thread(),
+            Part::Close => self.dismiss_thread(),
             Part::CancelReply => self.cancel_thread_reply(),
             Part::Older => {
                 let Some(t) = &self.thread else { return };
