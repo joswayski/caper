@@ -28,7 +28,7 @@ import AppKit
             card.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
             card.wantsLayer = true; card.layer?.backgroundColor = AppKitKit.surface.cgColor
             card.layer?.cornerRadius = 8; card.layer?.borderWidth = 1; card.layer?.borderColor = AppKitKit.border.cgColor
-            card.setAccessibilityElement(false); card.setAccessibilityIdentifier("forward-card-\(message.id)")
+            card.setAccessibilityElement(true); card.setAccessibilityRole(.group); card.setAccessibilityLabel("Forwarded message"); card.setAccessibilityIdentifier("forward-card-\(message.id)")
             if let original = forward.message {
                 let preview = AppKitOriginalMessage(original, available: {
                     available() && (chat.displayedMessages.first { $0.id == message.id } ?? chat.displayedPins.first { $0.id == message.id })?.forward?.message != nil
@@ -89,7 +89,7 @@ import AppKit
         [retry!, edit!, dismiss!].forEach(actions.addArrangedSubview); actions.spacing = 12
         words.addArrangedSubview(error); AppKitKit.fillWidth(error, of: words); words.addArrangedSubview(actions)
         let row = NSStackView(views: [avatar, words]); row.orientation = .horizontal; row.alignment = .top; row.spacing = 10
-        addArrangedSubview(row); AppKitKit.fillWidth(row, of: self); setAccessibilityElement(false); setAccessibilityIdentifier("pending-message-\(pending.id)")
+        addArrangedSubview(row); AppKitKit.fillWidth(row, of: self); setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityIdentifier("pending-message-\(pending.id)")
         render()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

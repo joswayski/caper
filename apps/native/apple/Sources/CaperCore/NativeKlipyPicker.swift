@@ -148,9 +148,13 @@ import WebKit
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let stack = NSStackView(); stack.distribution = .fillEqually; stack.spacing = 8
         if case .tiles(_, let items) = rows[row] {
-            for item in items { stack.addArrangedSubview(AppKitKlipyTile(item: item) { [weak self] in
-                guard let self else { return }; self.select(item.gif, self.model.resultsQuery)
-            }) }
+            for item in items {
+                let tile = AppKitKlipyTile(item: item) { [weak self] in
+                    guard let self else { return }; self.select(item.gif, self.model.resultsQuery)
+                }
+                // A titleless borderless button has almost no intrinsic height; tiles fill the row.
+                stack.addArrangedSubview(tile); tile.heightAnchor.constraint(equalTo: stack.heightAnchor).isActive = true
+            }
             for _ in items.count..<3 { stack.addArrangedSubview(NSView()) }
         }
         if row == rows.count - 1 { Task { @MainActor [weak self] in self?.model.loadMore() } }
