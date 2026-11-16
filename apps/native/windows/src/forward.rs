@@ -558,10 +558,12 @@ impl Dialog {
             }
         }
         // Search/preview/destinations scroll; the note and send never fall below
-        // a tall original or a large destination list.
+        // a tall original or a large destination list. As on web and GTK, the
+        // card grows to the window (16 DIP margins) so a picture leaves room
+        // for the destinations.
         let formatting = if picker { f.note.format_height() } else { 0.0 };
         let footer = if picker { 124.0 + formatting } else { 16.0 };
-        let bh = y.clamp(48.0, 420.0).min((h - 92.0 - footer).max(40.0));
+        let bh = y.max(48.0).min((h - 92.0 - footer).max(40.0));
         let ch = bh + 60.0 + footer;
         let (cx, cy) = ((w - cw) / 2.0, (h - ch) / 2.0);
         self.card = (cx, cy, cw, ch);
