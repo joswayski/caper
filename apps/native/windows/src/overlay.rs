@@ -575,6 +575,9 @@ pub struct Dialog {
     pub profile_edit: Option<Box<crate::profile::editor::Editor>>,
     pub reactors: Option<Box<crate::reactors::View>>,
     pub forwarding: Option<Box<crate::forward::Forward>>,
+    /// A confirmation's keyboard focus, Cancel or its action: Cancel
+    /// first, as web's dialog autofocuses it.
+    pub button: Option<Part>,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -656,6 +659,11 @@ impl Dialog {
             profile_edit: None,
             reactors: None,
             forwarding: None,
+            button: matches!(
+                kind,
+                Kind::Delete | Kind::Block | Kind::LeaveSpace | Kind::LeaveChannel
+            )
+            .then_some(Part::Cancel),
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -1485,7 +1493,17 @@ impl Dialog {
         } else {
             1
         };
-        draw_button(g, dc, label, r, tone, state)
+        draw_button(g, dc, label, r, tone, state)?;
+        if self.button == Some(part) {
+            let (x, y, w, h) = r;
+            stroke_round(
+                dc,
+                rect(x - 3.0, y - 3.0, x + w + 3.0, y + h + 3.0),
+                RADIUS + 3.0,
+                &g.brushes.terracotta,
+            );
+        }
+        Ok(())
     }
 }
 
@@ -2485,6 +2503,22 @@ impl App {
                         self.dialog_changed();
                     }
                     VK_ESCAPE if !d.busy => self.dismiss_dialog(),
+                    // A confirmation's Tab and arrows move between Cancel and
+                    // its action; Enter and Space press the focused one.
+                    VK_TAB | VK_LEFT | VK_RIGHT if d.button.is_some() => {
+                        d.button = Some(if d.button == Some(Part::Cancel) {
+                            Part::Primary
+                        } else {
+                            Part::Cancel
+                        });
+                        self.events |= crate::EV_FOCUS;
+                        self.dialog_changed();
+                    }
+                    VK_RETURN | VK_SPACE if d.button.is_some() => {
+                        if let Some(part) = d.button.filter(|p| d.enabled(*p)) {
+                            self.dialog_activate(part);
+                        }
+                    }
                     // Enter invites the typed username.
                     VK_RETURN if d.kind == Kind::InvitePeople => {
                         // In Expire after or Max uses it creates the link,

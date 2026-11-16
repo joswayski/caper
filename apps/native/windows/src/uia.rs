@@ -263,6 +263,9 @@ pub fn focused(a: &App) -> Option<Id> {
         if let Some(k) = d.number_focus() {
             return Some(Id::Dialog(DPart::Number(k)));
         }
+        if let Some(p) = d.button {
+            return Some(Id::Dialog(p));
+        }
         return d.field.focused.then_some(Id::Dialog(DPart::Field));
     }
     // An open menu takes the keys, so it has focus: the highlighted item,
@@ -1943,6 +1946,12 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 {
                     VARIANT::from(true)
                 }
+                UIA_IsKeyboardFocusablePropertyId
+                    if matches!(id, Id::Dialog(DPart::Cancel | DPart::Primary))
+                        && a.dialog.as_ref().is_some_and(|d| d.button.is_some()) =>
+                {
+                    VARIANT::from(true)
+                }
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
@@ -2184,6 +2193,15 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Dialog(DPart::Number(k)) => a.dialog_activate(DPart::Number(k)),
+                Id::Dialog(p @ (DPart::Cancel | DPart::Primary))
+                    if a.dialog.as_ref().is_some_and(|d| d.button.is_some()) =>
+                {
+                    if let Some(d) = &mut a.dialog {
+                        d.button = Some(p);
+                    }
+                    a.events |= crate::EV_FOCUS;
+                    a.dialog_changed();
+                }
                 Id::Dialog(p) if a.dialog.as_ref().is_some_and(|d| d.kind == Kind::Reactions) => {
                     if let Some(d) = &mut a.dialog {
                         d.reactor_focus(p);
