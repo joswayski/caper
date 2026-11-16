@@ -17342,6 +17342,9 @@ impl CaperApp {
                         .collect();
                     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 16.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.set_min_height(16.0);
+                        // A polite live region that stays while nobody types, so
+                        // screen readers announce the line when it appears or changes.
+                        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| node.set_live(egui::accesskit::Live::Polite));
                         if names.is_empty() { return; }
                         ui.spacing_mut().item_spacing.x = 7.0;
                         typing_dots(ui);
@@ -23559,6 +23562,9 @@ impl CaperApp {
                                             Dialog::LeaveSpace { id, .. } => {
                                                 ui.label("You will lose access to its channels and conversations. An owner can add you again later.");
                                                 let (cancel, leave) = dialog_buttons(ui, "Cancel", if self.loading { "Leaving…" } else { "Leave space" }, DANGER_TONE, !self.loading, !self.loading);
+                                                if self.focus_dialog_field {
+                                                    cancel.request_focus();
+                                                }
                                                 if cancel.clicked() {
                                                     self.dialog = None;
                                                 }
@@ -23572,9 +23578,12 @@ impl CaperApp {
                                             Dialog::LeaveChannel { space, channel, .. } => {
                                                 let private_loss = !self.owner() && self.detail.as_ref().is_some_and(|detail| detail.channels.iter().any(|item| item.id == channel && item.private));
                                                 ui.label(if private_loss { "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." } else { "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call." });
-                                                let (cancel, leave) = dialog_actions(ui, if self.loading { "Leaving…" } else { "Leave channel" }, !self.loading, false);
-                                                if cancel { self.dialog = None; }
-                                                if leave { self.admin(AdminOperation::LeaveChannel { space, channel }); }
+                                                let (cancel, leave) = dialog_buttons(ui, "Cancel", if self.loading { "Leaving…" } else { "Leave channel" }, PRIMARY_TONE, true, !self.loading);
+                                                if self.focus_dialog_field {
+                                                    cancel.request_focus();
+                                                }
+                                                if cancel.clicked() { self.dialog = None; }
+                                                if leave.clicked() { self.admin(AdminOperation::LeaveChannel { space, channel }); }
                                             }
                                             Dialog::CreateChannel => self.channel_dialog(ui, None),
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
@@ -23582,6 +23591,9 @@ impl CaperApp {
                                                 ui.label("You won't see their messages unless you choose to, and they can't send you DMs or requests.");
                                                 let allowed = !self.block_busy && !self.protected_account(&account.id);
                                                 let (cancel, block) = dialog_buttons(ui, "Cancel", if self.block_busy { "Blocking…" } else { "Block" }, DANGER_TONE, !self.block_busy, allowed);
+                                                if self.focus_dialog_field {
+                                                    cancel.request_focus();
+                                                }
                                                 if cancel.clicked() { close = true; }
                                                 if block.clicked() {
                                                     self.block_busy = true;
@@ -33444,13 +33456,30 @@ fn dialog_buttons(
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().button_padding.x = 12.0;
-            let action = toned(
-                ui,
-                tone,
-                action_enabled,
-                egui::Button::new(bold(action).size(12.0)).min_size(egui::vec2(112.0, 36.0)),
-            );
+            let button =
+                || egui::Button::new(bold(action).size(12.0)).min_size(egui::vec2(112.0, 36.0));
+            // Tab follows registration order: reserve the action's slot with
+            // an invisible (unfocusable) copy so Cancel registers first and
+            // Tab goes Cancel, then the action, as in web's DOM.
+            let slot = ui.add_visible(false, button()).rect;
             let secondary = secondary_button(ui, secondary, secondary_enabled);
+            let action = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(slot), |ui| {
+                    toned(ui, tone, action_enabled, button())
+                })
+                .inner;
+            // Web's focus-visible outline: a focused button otherwise only
+            // takes its pressed tone, which reads as no focus at all.
+            for button in [&secondary, &action] {
+                if button.has_focus() {
+                    ui.painter().rect_stroke(
+                        button.rect.expand(2.0),
+                        10.0,
+                        Stroke::new(2.0_f32, TERRACOTTA),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+            }
             (secondary, action)
         })
         .inner
@@ -57267,6 +57296,30 @@ mod tests {
                     text_position(&output, "Maya is typing…").y < composer.top(),
                     "typing belongs above the input"
                 );
+                // Screen readers announce it: the label inherits a polite live region.
+                let nodes = &output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes;
+                let mut id = nodes
+                    .iter()
+                    .find(|(_, node)| node.value() == Some("Maya is typing…"))
+                    .map(|(id, _)| *id)
+                    .expect("typing label node");
+                let live = loop {
+                    let node = &nodes.iter().find(|(node, _)| *node == id).unwrap().1;
+                    if let Some(live) = node.live() {
+                        break live;
+                    }
+                    id = nodes
+                        .iter()
+                        .find(|(_, parent)| parent.children().contains(&id))
+                        .map(|(parent, _)| *parent)
+                        .expect("a live ancestor");
+                };
+                assert_eq!(live, egui::accesskit::Live::Polite);
             }
             let last = app.timeline.messages().last().unwrap().content.text.clone();
             let current = (composer, text_position(&output, &last));
@@ -58180,6 +58233,101 @@ mod tests {
             app.message_editor.is_none(),
             "Author/account loss closes the obsolete editor"
         );
+    }
+
+    #[test]
+    fn destructive_confirmations_start_on_cancel_with_a_ring() {
+        // Web's focus-visible outline around the focused dialog button.
+        let ring = |output: &egui::FullOutput| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.stroke.color == super::TERRACOTTA && rect.stroke.width == 2.0 =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+        };
+        let maya = model::BlockedAccount {
+            id: "fixture-maya".into(),
+            username: "maya".into(),
+            display_name: "Maya".into(),
+            avatar_id: Some(15),
+            avatar_asset: None,
+            avatar_url: None,
+        };
+        for (case, open) in ["delete", "block", "leave space", "leave channel"]
+            .into_iter()
+            .zip([
+                None,
+                Some(Dialog::Block {
+                    account: maya,
+                    request: None,
+                }),
+                Some(Dialog::LeaveSpace {
+                    id: "space0000001".into(),
+                    name: "Caper".into(),
+                }),
+                Some(Dialog::LeaveChannel {
+                    space: "space0000001".into(),
+                    channel: "chan00000003".into(),
+                    name: "planning".into(),
+                }),
+            ])
+        {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(if open.is_none() {
+                    "parity-edits-editor"
+                } else {
+                    "parity-channel"
+                }),
+            );
+            app.dialog = None;
+            render(&mut app, &context, vec![]);
+            match open {
+                Some(dialog) => app.dialog = Some(dialog),
+                None => {
+                    let original = app.message_editor.as_ref().unwrap().original.clone();
+                    app.open_delete(&original);
+                }
+            }
+            // Past the entrance fade, which tints the ring.
+            for _ in 0..40 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = render(&mut app, &context, vec![]);
+            let cancel = ring(&output).unwrap_or_else(|| panic!("{case}: Cancel has a ring"));
+            assert!(
+                cancel.contains(text_position(&output, "Cancel")),
+                "{case}: the ring is around Cancel"
+            );
+            // Tab moves the ring to the action, and back.
+            render(&mut app, &context, press(egui::Key::Tab));
+            let output = render(&mut app, &context, vec![]);
+            let action = ring(&output).unwrap_or_else(|| panic!("{case}: the action has a ring"));
+            assert!(
+                action.left() > cancel.right(),
+                "{case}: the action follows Cancel"
+            );
+            render(&mut app, &context, press(egui::Key::ArrowLeft));
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(
+                ring(&output),
+                Some(cancel),
+                "{case}: Left returns to Cancel"
+            );
+            // Enter presses Cancel: nothing is deleted, blocked or left.
+            render(&mut app, &context, press(egui::Key::Enter));
+            render(&mut app, &context, vec![]);
+            assert!(
+                app.dialog.is_none() && app.message_delete.is_none(),
+                "{case}"
+            );
+            assert!(!app.loading && !app.block_busy, "{case}");
+        }
     }
 
     #[test]

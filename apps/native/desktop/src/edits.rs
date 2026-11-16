@@ -37,6 +37,9 @@ pub struct Deletion {
     pub busy: bool,
     pub error: Option<String>,
     pub request: u64,
+    /// Cancel takes keyboard focus in the frame the confirmation opens, so
+    /// Enter or Space never deletes by accident.
+    pub focus: bool,
 }
 
 impl CaperApp {
@@ -83,6 +86,7 @@ impl CaperApp {
             busy: false,
             error: None,
             request: 0,
+            focus: true,
         });
     }
 
@@ -150,7 +154,7 @@ impl CaperApp {
     }
 
     fn message_delete_dialog(&mut self, context: &egui::Context) {
-        let Some(deletion) = self.message_delete.take() else {
+        let Some(mut deletion) = self.message_delete.take() else {
             return;
         };
         if !deletion.busy
@@ -160,6 +164,7 @@ impl CaperApp {
         }
         let mut close = false;
         let mut confirm = false;
+        let focus = std::mem::take(&mut deletion.focus);
         let modal = egui::Modal::new(egui::Id::unique("message-delete"))
             .frame(dialog_frame(context))
             .show(context, |ui| {
@@ -188,6 +193,9 @@ impl CaperApp {
                     !deletion.busy,
                     !deletion.busy,
                 );
+                if focus {
+                    cancel.request_focus();
+                }
                 close = cancel.clicked();
                 confirm = delete.clicked();
             });
