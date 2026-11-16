@@ -92,11 +92,14 @@ import Observation
     private func confirmBlock(_ target: BlockTarget) {
         guard target.canBlock, target.id != model.account?.id else { state.block = nil; return }
         let alert = UIAlertController(title: target.confirmationTitle, message: BlockTarget.confirmationMessage, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.finish() })
+        let cancel = UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.finish() }
+        alert.addAction(cancel)
         alert.addAction(UIAlertAction(title: "Block", style: .destructive) { [weak self, model] _ in
             self?.finish()
             Task { do { try await model.block(target) } catch { model.chat.error = FriendlyError.message(for: error) } }
         })
+        // Return presses Cancel, never Block; Escape cancels too.
+        alert.preferredAction = cancel
         kind = "block"; owned = alert; present(alert, animated: !CaperAccessibility.reduceMotion)
     }
 }
@@ -194,11 +197,14 @@ import Observation
             button("Delete message", id: "message-action-delete") { [weak self] in
                 guard let self, chat.canDelete(self.current) else { return }
                 let alert = UIAlertController(title: MessageDeletion.confirmTitle, message: MessageDeletion.confirmMessage, preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                let cancel = UIAlertAction(title: "Cancel", style: .cancel)
+                alert.addAction(cancel)
                 alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
                     guard let self else { return }; let current = self.current
                     self.finish { Task { await chat.deleteMessage(current) } }
-                }); self.present(alert, animated: !CaperAccessibility.reduceMotion)
+                })
+                // Return presses Cancel, never Delete; Escape cancels too.
+                alert.preferredAction = cancel; self.present(alert, animated: !CaperAccessibility.reduceMotion)
             }
         }
         let viewer = chat.currentAuthor?.id ?? model.account?.id

@@ -2794,11 +2794,15 @@ import XCTest
         XCTAssertFalse(requests.exists)
         // Row options take clicks only while the row is hovered, as in the shipping sidebar.
         app.buttons["dm-dm0000000003"].hover(); app.buttons["dm-options-dm0000000003"].click(); app.menuItems["Block @jordan…"].click()
-        let confirmation = app.sheets.containing(.staticText, identifier: "Block Jordan?").firstMatch
-        XCTAssertTrue(confirmation.buttons["Cancel"].waitForExistence(timeout: 5)); confirmation.buttons["Cancel"].click()
+        // Block is the in-window confirmation: it opens on Cancel, so Return cancels.
+        XCTAssertTrue(app.staticTexts["Block Jordan?"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["confirm-destructive-cancel"].exists)
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.buttons["confirm-destructive-action"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(composer.exists)
+        XCTAssertFalse(app.buttons["dm-blocked-unblock"].exists)
         app.buttons["dm-dm0000000003"].hover(); app.buttons["dm-options-dm0000000003"].click(); app.menuItems["Block @jordan…"].click()
-        confirmation.buttons["Block"].click()
+        XCTAssertTrue(app.buttons["confirm-destructive-action"].waitForExistence(timeout: 5)); app.buttons["confirm-destructive-action"].click()
         let unblock = app.buttons["dm-blocked-unblock"]
         XCTAssertTrue(unblock.waitForExistence(timeout: 10))
         XCTAssertFalse(composer.exists)
@@ -2840,8 +2844,8 @@ import XCTest
             XCTAssertTrue(decline.waitForExistence(timeout: 10))
             if block {
                 app.buttons["message-request-block"].click()
-                let confirmation = app.sheets.containing(.staticText, identifier: "Block Jordan?").firstMatch
-                XCTAssertTrue(confirmation.buttons["Block"].waitForExistence(timeout: 5)); confirmation.buttons["Block"].click()
+                let confirm = app.buttons["confirm-destructive-action"]
+                XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.click()
             } else { decline.click() }
             XCTAssertTrue(requests.waitForNonExistence(timeout: 10))
             XCTAssertFalse(app.buttons["dm-dm0000000003"].exists)
@@ -3643,10 +3647,10 @@ import XCTest
         XCTAssertEqual(composer.value as? String, "TEST FIXTURE — independent profile draft")
         app.descendants(matching: .any)["mention-card-more"].click()
         app.descendants(matching: .any)["mention-card-block"].click()
-        let confirmation = app.sheets.containing(.staticText, identifier: "Block Maya?").firstMatch
-        XCTAssertTrue(confirmation.buttons["Block"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Block Maya?"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["confirm-destructive-action"].exists)
         capture("profile block confirmation", app: app)
-        confirmation.buttons["Cancel"].click()
+        app.buttons["confirm-destructive-cancel"].click()
         author.click()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, "TEST FIXTURE — independent profile draft")

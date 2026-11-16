@@ -174,6 +174,19 @@ import UIKit
         }
         let actions = UIStackView(arrangedSubviews: [cancel, confirm]); actions.spacing = 8; body.addArrangedSubview(actions); render()
     }
+    /// As on web, a destructive confirmation starts on Cancel: Return or Space
+    /// presses the focused button, so Return alone never confirms. Escape cancels.
+    override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if decline == nil, let cancel { return [cancel] }
+        return super.preferredFocusEnvironments
+    }
+    override var keyCommands: [UIKeyCommand]? {
+        guard decline == nil else { return super.keyCommands }
+        let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(cancelConfirmation))
+        escape.wantsPriorityOverSystemBehavior = true
+        return [escape]
+    }
+    @objc private func cancelConfirmation() { if pending == nil { close() } }
     override func render() {
         confirm.configuration?.title = pending == "confirm" ? pendingLabel : action
         cancel.configuration?.title = pending == "decline" ? "Declining…" : decline == nil ? "Cancel" : "Decline"
