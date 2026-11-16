@@ -214,6 +214,7 @@ import AppKit
     content.widthAnchor.constraint(equalToConstant: width).isActive = true
     sheet.contentView = content; content.layoutSubtreeIfNeeded()
     sheet.setContentSize(NSSize(width: width, height: ceil(content.fittingSize.height)))
+    sheet.initialFirstResponder = content.initialFocus
     window.beginSheet(sheet)
 }
 
