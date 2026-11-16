@@ -165,6 +165,7 @@ impl App {
         self.call_ui.focus = Some(p);
         self.events |= EV_FOCUS;
         self.dirty.sidebar = true;
+        self.dirty.narrow |= self.inline_voice_error();
         self.need = true;
     }
 
@@ -562,8 +563,32 @@ impl App {
         }
     }
 
-    /// The card (client DIPs), above the account footer.
+    /// Whether the narrow conversation, rather than Browse's account area,
+    /// shows the voice error, as egui, web, Android and Apple do on phones.
+    pub fn inline_voice_error(&self) -> bool {
+        self.is_narrow()
+            && self.chat_shown()
+            && self.c.has_conversation()
+            && matches!(self.voice_card(), Some(Card::Error(_)))
+    }
+
+    /// The inline voice error's height and the gap under it; 0 without one.
+    pub fn voice_error_h(&self) -> f32 {
+        if self.inline_voice_error() {
+            ERROR_H + 6.0
+        } else {
+            0.0
+        }
+    }
+
+    /// The card (client DIPs), above the account footer, or a narrow
+    /// conversation's voice error above the composer.
     pub fn call_rect(&self) -> Option<Rect> {
+        if self.inline_voice_error() {
+            let (bx, by, bw, _) = self.box_rect();
+            let y = by - self.reply_h() - self.note_h() - self.voice_error_h();
+            return Some((bx, y, bw, ERROR_H));
+        }
         if !self.navigation_shown() {
             return None;
         }
@@ -618,11 +643,11 @@ impl App {
     }
 
     pub fn voice_rect(&self, p: VPart) -> Option<Rect> {
-        if !self.navigation_shown() {
-            return None;
-        }
         if let VPart::Join(i) = p {
-            return self.join_action(i).map(|_| self.join_rect(i));
+            return self
+                .join_action(i)
+                .filter(|_| self.navigation_shown())
+                .map(|_| self.join_rect(i));
         }
         let call = matches!(self.voice_card()?, Card::Call(_));
         let (x, y, w, h) = self.call_rect()?;
@@ -664,15 +689,15 @@ impl App {
 
     /// The control under (x, y): a hovered row's Join, or a card button.
     pub fn voice_at(&self, x: f32, y: f32) -> Option<VPart> {
-        if !self.navigation_shown() {
-            return None;
-        }
         if let Some(card) = self.call_rect()
             && contains(card, x, y)
         {
             return self.voice_parts().into_iter().find(|&p| {
                 p != VPart::Status && self.voice_rect(p).is_some_and(|r| contains(r, x, y))
             });
+        }
+        if !self.navigation_shown() {
+            return None;
         }
         (0..self.c.channels.len())
             .find(|&i| contains(self.join_rect(i), x, y) && self.join_action(i).is_some())
@@ -897,6 +922,7 @@ impl App {
         }
         self.voice_hover = hover;
         self.dirty.sidebar = true;
+        self.dirty.narrow |= self.inline_voice_error();
         self.need = true;
         if let Some(VPart::Join(i)) = hover
             && let Some(id) = self.ids.channels.get(i).cloned()
@@ -906,16 +932,17 @@ impl App {
         }
     }
 
-    /// Draws the card in the sidebar (sidebar-local DIPs).
-    pub fn draw_call(&self, g: &Gfx, dc: &ID2D1DeviceContext) -> Result<()> {
+    /// Draws the card on a surface whose left edge is `left` client DIPs:
+    /// the sidebar, or the narrow layer for an inline error.
+    pub fn draw_call(&self, g: &Gfx, dc: &ID2D1DeviceContext, left: f32) -> Result<()> {
         let (Some(card), Some((cx, cy, cw, ch))) = (self.voice_card(), self.call_rect()) else {
             return Ok(());
         };
-        let x = cx - RAIL_W;
+        let x = cx - left;
         let r = rect(x, cy, x + cw, cy + ch);
         let local = |p: VPart| {
             self.voice_rect(p)
-                .map(|(px, py, pw, ph)| (px - RAIL_W, py, pw, ph))
+                .map(|(px, py, pw, ph)| (px - left, py, pw, ph))
         };
         match card {
             Card::Error(e) => {

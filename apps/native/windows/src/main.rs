@@ -325,6 +325,9 @@ pub struct App {
     toolbar: Panel,
     history_clip: IDCompositionVisual2,
     history_y_drawn: f32,
+    /// The narrow voice error's band when last laid out, which reflows the
+    /// history and composer when it comes or goes.
+    voice_error_drawn: f32,
     content: IDCompositionVisual2,
     vs: IDCompositionVirtualSurface,
     vs_w: u32,
@@ -662,6 +665,7 @@ impl App {
                 toolbar,
                 history_clip,
                 history_y_drawn: HEADER_H,
+                voice_error_drawn: 0.0,
                 content,
                 vs,
                 vs_w: 1,
@@ -1222,7 +1226,13 @@ impl App {
     pub fn vh(&self) -> f32 {
         // 16px above the composer (and its reply), matching the 16px below it,
         // so the composer sits centered in its band.
-        (self.box_rect().1 - 16.0 - self.history_y() - self.reply_h() - self.note_h()).max(0.0)
+        (self.box_rect().1
+            - 16.0
+            - self.history_y()
+            - self.reply_h()
+            - self.note_h()
+            - self.voice_error_h())
+        .max(0.0)
     }
 
     pub fn visible_rows(&self) -> Range<usize> {
@@ -1309,7 +1319,8 @@ impl App {
     /// history's 16 px gap is: who is typing shows there, as in egui.
     pub fn typing_rect(&self) -> (f32, f32, f32, f32) {
         let (bx, by, bw, _) = self.box_rect();
-        (bx, by - 16.0 - self.reply_h() - self.note_h(), bw, 16.0)
+        let above = self.reply_h() + self.note_h() + self.voice_error_h();
+        (bx, by - 16.0 - above, bw, 16.0)
     }
 
     /// What the typing band says, such as "Maya is typing…", while
@@ -2276,7 +2287,7 @@ impl App {
         if let Some(r) = self.narrow_input(msg, wp, x, y, ctrl, shift) {
             return Some(r);
         }
-        if self.navigation_shown()
+        if (self.navigation_shown() || self.inline_voice_error())
             && let Some(r) = self.call_input(msg, wp, x, y, shift)
         {
             return Some(r);
@@ -3350,6 +3361,7 @@ impl App {
 
     fn apply_layout(&mut self) -> Result<()> {
         self.history_y_drawn = self.history_y();
+        self.voice_error_drawn = self.voice_error_h();
         let s = self.scale;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         let (w, h, lx, lw) = (self.w, self.h, self.list_x(), self.list_w());
@@ -4178,7 +4190,9 @@ impl App {
                         &g.brushes.terracotta,
                     );
                 }
-                self.draw_call(g, dc)?;
+                if !self.inline_voice_error() {
+                    self.draw_call(g, dc, RAIL_W)?;
+                }
                 if self.is_narrow() {
                     self.draw_update_dock(g, dc)?;
                 } else {
@@ -4459,7 +4473,8 @@ impl App {
             self.bench.log_frame(started.elapsed());
             return Ok(());
         }
-        self.dirty.layout |= self.history_y_drawn != self.history_y();
+        self.dirty.layout |= self.history_y_drawn != self.history_y()
+            || self.voice_error_drawn != self.voice_error_h();
         if self.dirty.layout {
             self.dirty.layout = false;
             self.apply_layout()?;

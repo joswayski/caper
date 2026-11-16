@@ -627,6 +627,9 @@ impl App {
                 self.narrow_button(dc, Part::CloseBrowse, Icon::Close, None)?;
                 self.draw_foot(&self.g, dc, self.h)?;
             }
+            if self.inline_voice_error() {
+                self.draw_call(&self.g, dc, 0.0)?;
+            }
             if self.strip_shown() {
                 unsafe {
                     dc.FillRectangle(

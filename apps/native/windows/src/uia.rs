@@ -617,9 +617,13 @@ fn parent(id: Id) -> Option<Id> {
 /// Hidden shell layers are absent, including stale providers kept by clients.
 fn surface_shown(a: &App, id: Id) -> bool {
     match id {
-        Id::Rail | Id::Channels | Id::Directs | Id::Gear | Id::UpdateDock | Id::Voice(_) => {
-            a.navigation_shown()
-        }
+        Id::Rail
+        | Id::Channels
+        | Id::Directs
+        | Id::Gear
+        | Id::UpdateDock
+        | Id::Voice(crate::call::VPart::Join(_)) => a.navigation_shown(),
+        Id::Voice(_) => a.navigation_shown() || a.inline_voice_error(),
         Id::History
         | Id::Composer
         | Id::BoxPart(_)
