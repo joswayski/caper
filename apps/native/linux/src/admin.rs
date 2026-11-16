@@ -1474,6 +1474,7 @@ impl App {
         {
             let window = self.build_confirm(confirm);
             window.window.present();
+            window.window.set_focus_visible(true);
             window.cancel.grab_focus();
             *self.confirm_window.borrow_mut() = Some(window);
         }

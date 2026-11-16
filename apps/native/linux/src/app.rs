@@ -3110,6 +3110,12 @@ impl App {
             app.ui.composer.view.grab_focus();
         });
         dialog.present();
+        // As web: Cancel starts focused, with its ring, so Enter never deletes.
+        dialog.set_focus_visible(true);
+        #[allow(deprecated)]
+        if let Some(cancel) = dialog.widget_for_response(gtk::ResponseType::Cancel) {
+            cancel.grab_focus();
+        }
     }
 
     fn pin(self: &Rc<Self>, id: String, active: bool) {

@@ -591,6 +591,12 @@ impl App {
             dialog.close();
         });
         dialog.present();
+        // As web: Cancel starts focused, with its ring, so Enter never blocks.
+        dialog.set_focus_visible(true);
+        #[allow(deprecated)]
+        if let Some(cancel) = dialog.widget_for_response(gtk::ResponseType::Cancel) {
+            cancel.grab_focus();
+        }
     }
 
     pub(super) fn set_block(
