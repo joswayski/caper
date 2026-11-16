@@ -95,11 +95,14 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
     var working by remember(message.id) { mutableStateOf(false) }
     var error by remember(message.id) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    // As web and ConfirmDialog: Cancel takes the initial focus, so Enter never confirms.
+    val cancelFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
     CaperDialog("Delete message?", { if (!working) close() }, busy = working) {
         Text("This removes the message for everyone. This can’t be undone.", color = TextMuted)
         error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(close, enabled = !working, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }
+            TextButton(close, Modifier.focusRequester(cancelFocus), enabled = !working, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }
             Spacer(Modifier.width(8.dp))
             Button({
                 working = true; error = null

@@ -486,11 +486,11 @@ internal data class VoiceJoinIntent(
                 owner && shown.channel.private -> "It will leave your sidebar. You keep owner access and can rejoin from Browse channels."
                 else -> "It will leave your sidebar. You can still preview it and rejoin from Browse channels."
             }
-            ConfirmDialog("Leave #${shown.channel.name}?", "$consequence If you’re in its voice call, you’ll disconnect.", "Leave channel", state.busy, { overlay = null }, pendingLabel = "Leaving…") {
+            ConfirmDialog("Leave #${shown.channel.name}?", "$consequence If you’re in its voice call, you’ll disconnect.", "Leave channel", state.busy, { overlay = null }, pendingLabel = "Leaving…", focusCancel = true) {
                 viewModel.leaveChannel(shown.channel); overlay = null
             }
         }
-        Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }, pendingLabel = "Leaving…", error = state.error) { viewModel.leaveCurrentSpace { overlay = null } }
+        Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }, pendingLabel = "Leaving…", error = state.error, focusCancel = true) { viewModel.leaveCurrentSpace { overlay = null } }
         Overlay.Profile -> ProfileEditor(state, viewModel) { overlay = null; viewModel.returnFocusToComposer(null) }
         Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin,
             notifications = { NotificationSettingsSection(state, viewModel) },

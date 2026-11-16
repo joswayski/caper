@@ -12,6 +12,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -129,11 +131,14 @@ import kotlinx.coroutines.launch
     var working by remember(account.id) { mutableStateOf(false) }
     var error by remember(account.id) { mutableStateOf<String?>(null) }
     val name = account.displayName.ifBlank { "@${account.username}" }
+    // As web and ConfirmDialog: Cancel takes the initial focus, so Enter never confirms.
+    val cancelFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
     CaperDialog("Block $name?", { if (!working) close() }) {
         Text("You won't see their messages unless you choose to, and they can't send you DMs or requests.", color = TextMuted)
         error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(close, enabled = !working, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }
+            TextButton(close, Modifier.focusRequester(cancelFocus), enabled = !working, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }
             Spacer(Modifier.width(8.dp))
             Button(
                 { working = true; error = null; viewModel.block(account, { close(); blocked() }) { working = false; error = it } },
