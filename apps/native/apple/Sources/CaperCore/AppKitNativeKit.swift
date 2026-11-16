@@ -118,6 +118,11 @@ import SwiftUI
     var minimumHeight: CGFloat = 0 { didSet { invalidateIntrinsicContentSize() } }
     var fillsWidth = false
     var showsSelection = false { didSet { if oldValue != showsSelection { refresh() } } }
+    /// Keys for a button that takes keyboard focus whatever the system's
+    /// keyboard-navigation setting, such as a confirmation's Cancel.
+    var keyPressed: ((NSEvent) -> Bool)?
+    override var acceptsFirstResponder: Bool { keyPressed != nil || super.acceptsFirstResponder }
+    override func keyDown(with event: NSEvent) { if keyPressed?(event) != true { super.keyDown(with: event) } }
 
     init(_ title: String, kind: Kind = .secondary, action: @escaping () -> Void) {
         handler = action; self.kind = kind

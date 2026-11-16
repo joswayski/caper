@@ -604,10 +604,17 @@ final class TypingIndicatorView: UIView {
 
     func show(_ text: String) {
         guard text != label.text || isHidden != text.isEmpty else { return }
+        let started = !text.isEmpty && text != label.text
         label.text = text
         isHidden = text.isEmpty
         isAccessibilityElement = !text.isEmpty
         accessibilityLabel = text
+        // A polite announcement, like web's role="status": queued behind current
+        // speech and never moving VoiceOver's focus. Keepalives don't repeat it.
+        if started {
+            UIAccessibility.post(notification: .announcement,
+                                 argument: NSAttributedString(string: text, attributes: [.accessibilitySpeechQueueAnnouncement: true]))
+        }
         text.isEmpty ? stop() : animate()
     }
 

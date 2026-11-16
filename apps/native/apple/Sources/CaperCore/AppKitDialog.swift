@@ -5,7 +5,10 @@ import AppKit
 /// running), Escape and the backdrop keep the dialog open.
 @MainActor protocol AppKitDialogContent: NSView {
     var dismissDisabled: Bool { get }
+    /// The control that starts with keyboard focus; nil focuses the frame.
+    var initialFocus: NSView? { get }
 }
+extension AppKitDialogContent { var initialFocus: NSView? { nil } }
 
 /// The workspace dialog frame: a dimmed backdrop and a card 10% from the top,
 /// as wide as the dialog asks and as tall as its content up to 680pt.
@@ -134,8 +137,14 @@ import AppKit
         dismiss = { [weak self] in if self?.dismissDisabled == false { close() } }
         cancel = AppKitKitButton("Cancel") { [weak self] in if self?.dismissDisabled == false { close() } }
         cancel.keyEquivalent = "\u{1b}"
+        cancel.setAccessibilityIdentifier("confirm-destructive-cancel")
         confirm = AppKitKitButton(action, kind: .destructive) { [weak self] in self?.run() }
         confirm.setAccessibilityIdentifier("confirm-destructive-action")
+        // As on web: Cancel starts focused, Tab and the arrows move between the
+        // two buttons, and Return or Space presses the focused one. Return never
+        // confirms on its own; Escape cancels.
+        let keys: (NSEvent) -> Bool = { [weak self] event in self?.handleKey(event) ?? false }
+        cancel.keyPressed = keys; confirm.keyPressed = keys
         error.isHidden = true
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let buttons = NSStackView(views: [spacer, cancel, confirm]); buttons.orientation = .horizontal; buttons.spacing = 8
@@ -152,6 +161,20 @@ import AppKit
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var initialFocus: NSView? { cancel }
+
+    private func handleKey(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty, let window else { return false }
+        switch event.keyCode {
+        case 48, 123, 124, 125, 126: // Tab (and Shift-Tab), arrows
+            window.makeFirstResponder(window.firstResponder === cancel ? confirm : cancel); return true
+        case 36, 76, 49: // Return, Enter, Space
+            if let button = window.firstResponder as? AppKitKitButton, button.isEnabled { button.performClick(nil) }
+            return true
+        default: return false
+        }
+    }
 
     private func setPending(_ pending: Bool) {
         dismissDisabled = pending

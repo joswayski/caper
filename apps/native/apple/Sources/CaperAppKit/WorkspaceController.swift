@@ -91,6 +91,7 @@ import CaperCore
     private let lip = AppKitComposerLip()
     private let header = NativeStyle.label("", size: 16, bold: true)
     private let status = NativeStyle.label("", size: 12)
+    private var announcedTyping = ""
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
     private let attachmentScroll = NSScrollView()
@@ -244,6 +245,7 @@ import CaperCore
             guard let self, self.focusComposer() else { return false }
             self.composer.keyDown(with: event); return true
         }
+        profiles.requestBlock = { [weak self] target in self?.confirmBlock(target) }
         timeline.openAuthor = { [weak self] author, view in
             self?.profiles.show(author: author, relativeTo: view.bounds, of: view)
         }
@@ -734,6 +736,15 @@ import CaperCore
         status.stringValue = error
             ?? (inThread ? (chat.threadLoading ? "Loading replies…" : chat.threadMessages.isEmpty ? "No replies yet. Start the thread." : "")
                 : model.previewingChannel ? "Preview · Join #\(chat.channelName) to interact with people here" : chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? (model.selectedDirectMessage?.status == .outgoing ? model.selectedDirectMessage.flatMap(NativePresentation.directMessageNotice) ?? "" : "") : "\(chat.typingNames.joined(separator: ", ")) typing…")
+        // Who is typing is announced politely when it starts or changes, like
+        // web's role="status", without moving VoiceOver's focus.
+        let typingShown = !inThread && error == nil && !chat.typingNames.isEmpty && status.stringValue.hasSuffix(" typing…") ? status.stringValue : ""
+        if !typingShown.isEmpty, typingShown != announcedTyping {
+            NSAccessibility.post(element: status, notification: .announcementRequested, userInfo: [
+                .announcement: typingShown, .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+            ])
+        }
+        announcedTyping = typingShown
         // Layout consumes focus only once the requested pane is on screen.
         _ = chat.composerFocusRequest(inThread: inThread)
         view.needsLayout = true
@@ -920,8 +931,7 @@ import CaperCore
     }
 
     private func confirmBlock(_ target: BlockTarget) {
-        guard let window = view.window else { return }
-        profiles.confirmBlock(target, window: window)
+        dialogs.confirmBlock(target, in: presentationParent)
     }
 
     func textView(_ view: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {

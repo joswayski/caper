@@ -113,6 +113,13 @@ import SwiftUI
         show(AppKitWorkspaceDialogState(item: .reactions(current, emoji)), in: parent)
     }
 
+    /// Block starts on Cancel like the other destructive confirmations; a system
+    /// alert would make Block the Return default.
+    public func confirmBlock(_ target: BlockTarget, in parent: NSViewController) {
+        guard target.canBlock, target.id != model.account?.id else { return }
+        show(AppKitWorkspaceDialogState(item: .block(target)), in: parent)
+    }
+
     public func deleteMessage(_ message: ChatMessage, in parent: NSViewController) {
         guard canDelete(message) else { return }
         show(AppKitWorkspaceDialogState(item: .delete(message)), in: parent)
@@ -165,7 +172,9 @@ import SwiftUI
         // The parent is an AX group. Restrict its children instead of hiding
         // ignored layout views, whose controls AppKit flattens into the tree.
         container.dialogView = host.view
-        parent.view.window?.makeFirstResponder(host.view)
+        if let focus = content.initialFocus, parent.view.window?.makeFirstResponder(focus) == true {} else {
+            parent.view.window?.makeFirstResponder(host.view)
+        }
         model.whatsNew.workspaceModalOpen = true
     }
 
@@ -190,6 +199,9 @@ import SwiftUI
         case .delete(let message):
             return AppKitConfirmationDialog(title: MessageDeletion.confirmTitle, detail: MessageDeletion.confirmMessage,
                 action: "Delete", pendingLabel: "Deleting…", close: close) { [model] in await model.chat.deleteMessage(message) }
+        case .block(let target):
+            return AppKitConfirmationDialog(title: target.confirmationTitle, detail: BlockTarget.confirmationMessage,
+                action: "Block", pendingLabel: "Blocking…", close: close) { [model] in await model.chat.block(target) }
         case .history(let message):
             return AppKitMessageHistory(chat: model.chat, message: message, close: close)
         case .reactions(let message, let emoji):
@@ -321,6 +333,7 @@ private enum AppKitWorkspaceDialogItem {
     case edit(ChatMessage), history(ChatMessage), delete(ChatMessage)
     case reactions(ChatMessage, String)
     case forward(ChatMessage), forwardConversation(ChatMessage)
+    case block(BlockTarget)
     var id: String {
         switch self {
         case .workspace(let item): item.id
@@ -332,6 +345,7 @@ private enum AppKitWorkspaceDialogItem {
         case .reactions(let message, let emoji): "reactions-\(message.id)-\(emoji)"
         case .forward(let message): "forward-\(message.id)"
         case .forwardConversation(let message): "forward-conversation-\(message.id)"
+        case .block(let target): "block-\(target.id)"
         }
     }
     var messageID: String? {
@@ -434,6 +448,8 @@ private struct AppKitWorkspaceDialog: View {
             ForwardPickerView(chat: model.chat, message: message, close: dismiss)
         case .forwardConversation(let message):
             ForwardConversationView(chat: model.chat, messageID: message.id, close: dismiss)
+        case .block:
+            EmptyView()
         }
     }
 
@@ -516,6 +532,8 @@ private struct AppKitWorkspaceDialog: View {
     private weak var anchor: NSView?
     /// Set by the workspace: where focus goes when the card closes and its opener can't take it.
     public var focusComposer: (() -> Void)?
+    /// Set by the workspace: shows the Block confirmation dialog.
+    public var requestBlock: ((BlockTarget) -> Void)?
 
     public init(model: AppModel) { self.model = model }
 
@@ -537,7 +555,7 @@ private struct AppKitWorkspaceDialog: View {
     }
 
     private func show(_ person: MentionCardPerson, rect: NSRect, view: NSView) {
-        guard let window = view.window else { return }
+        guard view.window != nil else { return }
         if let popover, popover.isShown {
             // Hover and click on the same pinner must not recreate their draft.
             guard personID != person.id else { return }
@@ -554,10 +572,7 @@ private struct AppKitWorkspaceDialog: View {
         popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         let host = AppKitProfileCard(model: model, person: person,
-            requestBlock: { [weak self, weak window] target in
-                guard let self, let window else { return }
-                self.confirmBlock(target, window: window)
-            }, close: { [weak popover] in
+            requestBlock: { [weak self] target in self?.requestBlock?(target) }, close: { [weak popover] in
                 // Entrances animate, closing is instant on every motion setting.
                 popover?.animates = false
                 popover?.close()
@@ -599,17 +614,6 @@ private struct AppKitWorkspaceDialog: View {
         }
     }
 
-    public func confirmBlock(_ target: BlockTarget, window: NSWindow) {
-        guard target.canBlock, target.id != model.account?.id else { return }
-        let alert = NSAlert()
-        alert.messageText = target.confirmationTitle
-        alert.informativeText = BlockTarget.confirmationMessage
-        alert.addButton(withTitle: "Block"); alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            Task { await self.model.chat.block(target) }
-        }
-    }
 }
 
 /// The shipping 400ms hover bubble, outside the scroll clip and without a
