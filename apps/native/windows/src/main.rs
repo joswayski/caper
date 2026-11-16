@@ -110,6 +110,8 @@ pub(crate) const EV_FOCUS: u8 = 2;
 const EV_ROWS: u8 = 4;
 /// The sign-in screen appeared, changed step or went away.
 pub(crate) const EV_SCREEN: u8 = 8;
+/// Who is typing changed.
+const EV_TYPING: u8 = 16;
 const TIMER_BENCH: usize = 1;
 pub(crate) const TIMER_CARET: usize = 2;
 pub(crate) const TIMER_LIVE: usize = 3;
@@ -1093,6 +1095,7 @@ impl App {
                 live::Update::Typing => {
                     self.dirty.typing = true;
                     self.need = true;
+                    self.events |= EV_TYPING;
                     self.arm_typing();
                 }
                 live::Update::Voice => self.voice_changed(),
@@ -1309,6 +1312,13 @@ impl App {
         (bx, by - 16.0 - self.reply_h() - self.note_h(), bw, 16.0)
     }
 
+    /// What the typing band says, such as "Maya is typing…", while
+    /// someone types.
+    pub fn typing_label(&self) -> Option<String> {
+        let names = self.live.as_ref()?.typing.names();
+        (!names.is_empty()).then(|| typing::label(&names))
+    }
+
     /// The dots bounce while someone types, unless animations are off or
     /// the window is in the background, as in egui.
     fn typing_animates(&self) -> bool {
@@ -1336,6 +1346,9 @@ impl App {
 
     fn typing_tick(&mut self) {
         let changed = self.live.as_mut().is_some_and(|l| l.typing_tick());
+        if changed {
+            self.events |= EV_TYPING;
+        }
         if changed || self.typing_animates() {
             self.dirty.typing = true;
             self.need = true;
@@ -4957,6 +4970,9 @@ fn main() -> Result<()> {
             }
             if events & EV_SCREEN != 0 {
                 uia::raise_screen_changed();
+            }
+            if events & EV_TYPING != 0 {
+                uia::raise_typing_changed();
             }
             if quit {
                 with_app(App::save_placement);

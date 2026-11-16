@@ -51,6 +51,9 @@ pub enum Id {
     Rec(crate::recording::RPart),
     /// "Waiting for @x to accept" above the composer.
     Waiting,
+    /// Who is typing, above the composer: a polite live region, as web's
+    /// `role="status"`.
+    Typing,
     /// A part of Settings, which replaces the tree while shown.
     Settings(crate::settings::SPart),
     /// Row `k`'s options button, and the conversation menu it opens with
@@ -409,6 +412,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             if a.note.is_some() {
                 out.push(Id::Waiting);
             }
+            if a.typing_label().is_some() {
+                out.push(Id::Typing);
+            }
             if a.reply.is_some() {
                 out.extend([Id::Reply, Id::ReplyCancel]);
             }
@@ -620,6 +626,7 @@ fn surface_shown(a: &App, id: Id) -> bool {
         | Id::Reply
         | Id::ReplyCancel
         | Id::Waiting
+        | Id::Typing
         | Id::Bar(_)
         | Id::Rec(_)
         | Id::MembersToggle
@@ -674,6 +681,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Bar(p) => a.bar_parts().iter().any(|(q, _)| *q == p),
         Id::Rec(p) => a.rec_parts().iter().any(|(q, _)| *q == p),
         Id::Waiting => a.note.is_some(),
+        Id::Typing => a.typing_label().is_some(),
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
         Id::Gear => a.foot_shown(),
         Id::MembersToggle => a.members_toggle_rect().is_some() && a.dialog.is_none(),
@@ -819,6 +827,7 @@ fn name(a: &App, id: Id) -> String {
         Id::Bar(p) => a.dm_bar().map_or_else(String::new, |b| b.label(p)),
         Id::Rec(p) => a.rec_label(p),
         Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
+        Id::Typing => a.typing_label().unwrap_or_default(),
         Id::Settings(p) => a.settings.as_ref().map_or_else(String::new, |s| s.name(p)),
         Id::Gear | Id::AccountMenu => "User Settings".into(),
         Id::PinsButton => "Pins".into(),
@@ -1171,9 +1180,9 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         | Id::ReplyCancel
         | Id::NewDirect
         | Id::Invite(_) => UIA_ButtonControlTypeId,
-        Id::Bar(crate::directs::BarPart::Text | crate::directs::BarPart::Error) | Id::Waiting => {
-            UIA_TextControlTypeId
-        }
+        Id::Bar(crate::directs::BarPart::Text | crate::directs::BarPart::Error)
+        | Id::Waiting
+        | Id::Typing => UIA_TextControlTypeId,
         Id::Bar(_) => UIA_ButtonControlTypeId,
         Id::Rec(crate::recording::RPart::Status) => UIA_TextControlTypeId,
         Id::Rec(_) => UIA_ButtonControlTypeId,
@@ -1291,6 +1300,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::ChannelOptions(i) => (47, i),
         Id::AccountItem(k) => (41, k),
         Id::Waiting => (42, 0),
+        Id::Typing => (94, 0),
         Id::History => (5, 0),
         Id::Row(i) => (6, i),
         Id::Members => (7, 0),
@@ -1469,6 +1479,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .find(|(q, _)| *q == p)
             .map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| r),
         Id::Waiting => a.note_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Typing => a.typing_rect(),
         Id::Settings(p) => a
             .settings
             .as_ref()
@@ -1623,6 +1634,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         | Id::Reply
         | Id::ReplyCancel
         | Id::Waiting
+        | Id::Typing
         | Id::Bar(_)
         | Id::Rec(_)
         | Id::MembersToggle
@@ -2100,6 +2112,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_LiveSettingPropertyId if id == Id::Sign(Part::Message) => {
                     VARIANT::from(Assertive.0)
                 }
+                UIA_LiveSettingPropertyId if id == Id::Typing => VARIANT::from(Polite.0),
                 UIA_IsOffscreenPropertyId => {
                     let (_, y, _, h) = node_rect(a, id);
                     VARIANT::from(y + h < 0.0 || y > a.h)
@@ -3204,6 +3217,25 @@ pub fn raise_rows_changed() {
                 id.as_mut_ptr(),
                 3,
             );
+        }
+    }
+}
+
+/// Who is typing changed: the indicator came, went or changed its text, and
+/// is announced politely.
+pub fn raise_typing_changed() {
+    unsafe {
+        if UiaClientsAreListening().as_bool() {
+            let mut id = runtime_id(Id::Root);
+            let _ = UiaRaiseStructureChangedEvent(
+                &node(Id::Root),
+                StructureChangeType_ChildrenInvalidated,
+                id.as_mut_ptr(),
+                3,
+            );
+            if crate::with_app(|a| a.typing_label().is_some()) == Some(true) {
+                let _ = UiaRaiseAutomationEvent(&node(Id::Typing), UIA_LiveRegionChangedEventId);
+            }
         }
     }
 }
