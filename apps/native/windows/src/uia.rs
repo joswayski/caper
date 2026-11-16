@@ -54,6 +54,9 @@ pub enum Id {
     /// Who is typing, above the composer: a polite live region, as web's
     /// `role="status"`.
     Typing,
+    /// Row `i`'s failed reaction text, an assertive live region before its
+    /// Retry reaction and Dismiss.
+    ReactionError(usize),
     /// A part of Settings, which replaces the tree while shown.
     Settings(crate::settings::SPart),
     /// Row `k`'s options button, and the conversation menu it opens with
@@ -523,10 +526,14 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map(Id::MemberSearch)
             .chain(a.shown_members().into_iter().map(Id::Member))
             .collect(),
+        // The error's text reads before its Retry reaction and Dismiss.
         Id::Row(i) => a
             .row_controls(i)
             .into_iter()
-            .map(|(action, _)| Id::Control(i, action))
+            .flat_map(|(action, _)| {
+                let error = (action == Action::Retry).then_some(Id::ReactionError(i));
+                error.into_iter().chain([Id::Control(i, action)])
+            })
             .chain(a.tools(i).into_iter().map(|t| Id::Tool(i, t.tool)))
             .chain(a.quote_link_rect(i).map(|_| Id::Original(i)))
             .chain(
@@ -588,7 +595,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::AccountItem(_) => Id::AccountMenu,
         Id::DmItem(_) => Id::DmMenu,
         Id::Row(_) => Id::History,
-        Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
+        Id::Control(i, _) | Id::Tool(i, _) | Id::ReactionError(i) => Id::Row(i),
         Id::Older | Id::Newer(_) => Id::History,
         Id::Original(i)
         | Id::Edited(i)
@@ -674,6 +681,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Control(i, action) => {
             a.visible_rows().contains(&i) && a.row_controls(i).iter().any(|(c, _)| *c == action)
         }
+        Id::ReactionError(i) => a.visible_rows().contains(&i) && a.row_error(i).is_some(),
         Id::Channel(i) => i < a.c.channels.len(),
         Id::ChannelOptions(i) => a.channel_scope(i).is_some(),
         Id::SpaceOptions => a.space_scope().is_some(),
@@ -895,7 +903,8 @@ fn name(a: &App, id: Id) -> String {
             .map_or_else(String::new, |t| chip_name(&t.c, i, k)),
         Id::ThreadPart(p) => a.thread_part_name(p),
         Id::Control(_, Action::Add) => "Add reaction".into(),
-        Id::Control(_, Action::Retry) => "Retry".into(),
+        Id::Control(_, Action::Retry) => crate::list::RETRY_REACTION.into(),
+        Id::ReactionError(i) => a.row_error(i).map(|(e, _)| e).unwrap_or_default(),
         Id::Control(_, Action::Dismiss) => "Dismiss".into(),
         // A search names what it found, including that nothing matched.
         Id::Members => match a.shown_members().len() {
@@ -1200,6 +1209,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Settings(_) | Id::Gear | Id::UpdateDock | Id::MembersToggle => UIA_ButtonControlTypeId,
         Id::PinsButton | Id::Pins(PinPart::Close | PinPart::Go(_)) => UIA_ButtonControlTypeId,
         Id::Pins(PinPart::Card(_)) => UIA_ListItemControlTypeId,
+        Id::Pins(PinPart::Empty) | Id::ReactionError(_) => UIA_TextControlTypeId,
         Id::AccountMenu | Id::DmMenu => UIA_MenuControlTypeId,
         Id::DmItem(_) => UIA_MenuItemControlTypeId,
         Id::DirectOptions(_) | Id::SpaceOptions | Id::ChannelOptions(_) => UIA_ButtonControlTypeId,
@@ -1294,6 +1304,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Pins(PinPart::Close) => (54, 0),
         Id::Pins(PinPart::Card(k)) => (54, 1 + 2 * k),
         Id::Pins(PinPart::Go(k)) => (54, 2 + 2 * k),
+        Id::Pins(PinPart::Empty) => (95, 0),
+        Id::ReactionError(i) => (96, i),
         Id::AccountMenu => (40, 0),
         Id::DirectOptions(k) => (43, k),
         Id::DmMenu => (44, 0),
@@ -1521,6 +1533,17 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
                         r.bottom - r.top,
                     )
                 })
+        }
+        Id::ReactionError(i) => {
+            let (_, y, _, _) = a.row_rect(i);
+            a.row_error(i).map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| {
+                (
+                    a.list_x() + r.left,
+                    y + r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                )
+            })
         }
         Id::Members => (a.members_x(), a.members_y(), a.members_w(), a.members_h()),
         Id::Member(i) => a.member_rect(i),
@@ -1753,7 +1776,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 pattern == UIA_InvokePatternId || pattern == UIA_TogglePatternId
             }
             Id::Settings(crate::settings::SPart::Text(_) | crate::settings::SPart::Meter) => false,
-            Id::Voice(crate::call::VPart::Status) => false,
+            Id::Voice(crate::call::VPart::Status)
+            | Id::Pins(PinPart::Empty)
+            | Id::ReactionError(_) => false,
             Id::Settings(_)
             | Id::Voice(_)
             | Id::Gear
@@ -2117,6 +2142,10 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     VARIANT::from(Assertive.0)
                 }
                 UIA_LiveSettingPropertyId if id == Id::Typing => VARIANT::from(Polite.0),
+                // A reaction's failure is an alert, as web's role="alert".
+                UIA_LiveSettingPropertyId if matches!(id, Id::ReactionError(_)) => {
+                    VARIANT::from(Assertive.0)
+                }
                 UIA_IsOffscreenPropertyId => {
                     let (_, y, _, h) = node_rect(a, id);
                     VARIANT::from(y + h < 0.0 || y > a.h)
@@ -3240,6 +3269,16 @@ pub fn raise_typing_changed() {
             if crate::with_app(|a| a.typing_label().is_some()) == Some(true) {
                 let _ = UiaRaiseAutomationEvent(&node(Id::Typing), UIA_LiveRegionChangedEventId);
             }
+        }
+    }
+}
+
+/// Row `i`'s reaction failed: its error text is announced.
+pub fn raise_reaction_error(i: usize) {
+    unsafe {
+        if UiaClientsAreListening().as_bool() {
+            let _ =
+                UiaRaiseAutomationEvent(&node(Id::ReactionError(i)), UIA_LiveRegionChangedEventId);
         }
     }
 }

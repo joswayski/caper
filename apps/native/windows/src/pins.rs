@@ -30,6 +30,8 @@ const GO_H: f32 = 32.0;
 const CARD_TOP: f32 = 8.0;
 const CARD_FOOT: f32 = 6.0 + GO_H + 12.0 + 8.0;
 const EMPTY_H: f32 = 80.0;
+const EMPTY_HEAD: &str = "No pinned messages.";
+const EMPTY_NOTE: &str = "Messages you pin will appear here.";
 const GO_LABEL: &str = "Go to message";
 /// egui's tints: your pins in terracotta, others' in a faint yellow.
 const MINE: (u32, f32) = (TERRACOTTA, 31.0 / 255.0);
@@ -41,6 +43,8 @@ pub enum Part {
     /// Pinned message `k`'s card, and its Go to message.
     Card(usize),
     Go(usize),
+    /// "No pinned messages." and its note, without pins.
+    Empty,
 }
 
 pub struct Pins {
@@ -153,6 +157,13 @@ impl Pins {
                     GO_H,
                 ))
             }
+            Part::Empty => {
+                let (bx, _, bw, _) = self.body;
+                self.c
+                    .messages
+                    .is_empty()
+                    .then_some((bx, by + PAD, bw, EMPTY_H))
+            }
         }
     }
 
@@ -166,6 +177,9 @@ impl Pins {
     /// The shown parts, in reading order.
     pub fn parts(&self) -> Vec<Part> {
         let mut out = vec![Part::Close];
+        if self.c.messages.is_empty() {
+            out.push(Part::Empty);
+        }
         for k in 0..self.c.messages.len() {
             if self.shown(Part::Card(k)) {
                 out.push(Part::Card(k));
@@ -253,6 +267,7 @@ impl Pins {
             Part::Close => "Close pins".into(),
             Part::Go(_) => GO_LABEL.into(),
             Part::Card(_) => String::new(),
+            Part::Empty => format!("{EMPTY_HEAD} {EMPTY_NOTE}"),
         }
     }
 
@@ -312,12 +327,8 @@ impl Pins {
         let (bx, by, bw, _) = self.body;
         if self.c.messages.is_empty() {
             let mid = by + PAD + EMPTY_H / 2.0;
-            let head = g.layout(&gfx::wide("No pinned messages."), &g.formats.label, 1e6)?;
-            let note = g.layout(
-                &gfx::wide("Messages you pin will appear here."),
-                &g.formats.quote,
-                1e6,
-            )?;
+            let head = g.layout(&gfx::wide(EMPTY_HEAD), &g.formats.label, 1e6)?;
+            let note = g.layout(&gfx::wide(EMPTY_NOTE), &g.formats.quote, 1e6)?;
             let (hm, nm) = (gfx::metrics(&head), gfx::metrics(&note));
             let top = mid - (hm.height + 2.0 + nm.height) / 2.0;
             text::draw(dc, &head, bx + (bw - hm.width) / 2.0, top, &g.brushes.text);
@@ -502,6 +513,7 @@ impl App {
         next.focus = focus.filter(|f| match f {
             Part::Close => true,
             Part::Card(k) | Part::Go(k) => *k < next.c.messages.len(),
+            Part::Empty => false,
         });
         *p = next;
         self.pins_changed();
@@ -511,6 +523,7 @@ impl App {
         let Some(p) = &self.pins else { return };
         match part {
             Part::Close => self.close_pins_refocus(),
+            Part::Empty => {}
             Part::Card(k) | Part::Go(k) => {
                 let (Some(m), Some((_, root))) = (p.c.messages.get(k), p.about.get(k)) else {
                     return;

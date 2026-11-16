@@ -328,6 +328,8 @@ pub struct App {
     /// The narrow voice error's band when last laid out, which reflows the
     /// history and composer when it comes or goes.
     voice_error_drawn: f32,
+    /// A row whose reaction just failed, announced after the frame.
+    reaction_alert: Option<usize>,
     content: IDCompositionVisual2,
     vs: IDCompositionVirtualSurface,
     vs_w: u32,
@@ -666,6 +668,7 @@ impl App {
                 history_clip,
                 history_y_drawn: HEADER_H,
                 voice_error_drawn: 0.0,
+                reaction_alert: None,
                 content,
                 vs,
                 vs_w: 1,
@@ -1020,6 +1023,9 @@ impl App {
                         // redraw below it when its height changed.
                         let old = &self.c.messages[i];
                         let mut new = live::message(&m, old.author, old.grouped, me.as_deref());
+                        if error.is_some() && error != old.reaction_error {
+                            self.reaction_alert = Some(i);
+                        }
                         new.reaction_error = error;
                         new.date = old.date.clone();
                         new.unread = old.unread;
@@ -2930,6 +2936,17 @@ impl App {
             return Vec::new();
         }
         self.rows.controls(i, m.grouped)
+    }
+
+    /// Row `i`'s failed-reaction text and its rectangle from the row's top
+    /// in list coordinates, while it shows.
+    pub fn row_error(&self, i: usize) -> Option<(String, Common::D2D_RECT_F)> {
+        let m = self.c.messages.get(i)?;
+        if self.live.is_none() || m.deleted {
+            return None;
+        }
+        let r = self.rows.error_rect(i, m.grouped)?;
+        Some((m.reaction_error.clone()?, r))
     }
 
     /// Clicks on a row's reaction chip (toggle yours) or its error's Retry
@@ -4960,11 +4977,15 @@ fn main() -> Result<()> {
                     a.pending_resize.take(),
                     std::mem::take(&mut a.events),
                     a.web_player_to_start(),
+                    a.reaction_alert.take(),
                 )
             });
-            let Some((rendered, quit, resize, events, player)) = state else {
+            let Some((rendered, quit, resize, events, player, alert)) = state else {
                 continue;
             };
+            if let Some(i) = alert {
+                uia::raise_reaction_error(i);
+            }
             if let Some(page) = player {
                 // WebView2 pumps window messages while it starts, so the app
                 // is not borrowed meanwhile.

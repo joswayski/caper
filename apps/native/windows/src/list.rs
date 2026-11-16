@@ -101,6 +101,9 @@ impl Row {
     }
 }
 
+/// A failed reaction's retry button, worded as web's.
+pub const RETRY_REACTION: &str = "Retry reaction";
+
 /// What a click on a row's controls does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -823,7 +826,7 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
             Some((
                 l.clone(),
                 gfx::metrics(&l).widthIncludingTrailingWhitespace,
-                [button("Retry")?, button("Dismiss")?],
+                [button(RETRY_REACTION)?, button("Dismiss")?],
             ))
         }
         None => None,
@@ -1022,6 +1025,15 @@ impl Rows {
         self.row(i)
             .map(|row| controls(row, content_top(grouped)))
             .unwrap_or_default()
+    }
+
+    /// Row `i`'s failed-reaction text in list coordinates from the row's
+    /// top, beside its Retry reaction and Dismiss.
+    pub fn error_rect(&self, i: usize, grouped: bool) -> Option<Common::D2D_RECT_F> {
+        let row = self.row(i)?;
+        let (_, w, _) = row.error.as_ref()?;
+        let y = content_top(grouped) + row.error_y;
+        Some(rect(BODY_X, y, BODY_X + w, y + ERROR_H - 2.0))
     }
 
     /// Row `i`'s link into a thread, from the row's top: a root's "N replies
