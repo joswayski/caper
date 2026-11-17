@@ -26,6 +26,8 @@ import jwt
 API = "https://api.appstoreconnect.apple.com/v1"
 PROCESSING_TIMEOUT_S = 40 * 60
 GROUP_VISIBILITY_TIMEOUT_S = 10 * 60
+GET_ATTEMPTS = 10
+GET_RETRY_S = 30
 
 
 def token() -> str:
@@ -41,6 +43,19 @@ def token() -> str:
 
 
 def call(method: str, path: str, body: dict | None = None, query: dict | None = None) -> tuple[int, dict]:
+    # Apple's API sometimes answers 5xx for a few minutes. Reads are safe to
+    # repeat, so retry them with a bound; writes keep their own handling below.
+    attempts = GET_ATTEMPTS if method == "GET" else 1
+    for attempt in range(1, attempts + 1):
+        status, detail = request_once(method, path, body, query)
+        if status < 500 or attempt == attempts:
+            return status, detail
+        print(f"{method} {path}: Apple returned HTTP {status}; retrying in {GET_RETRY_S} seconds", flush=True)
+        time.sleep(GET_RETRY_S)
+    raise AssertionError("unreachable")
+
+
+def request_once(method: str, path: str, body: dict | None, query: dict | None) -> tuple[int, dict]:
     url = f"{API}{path}"
     if query:
         url += "?" + urllib.parse.urlencode(query)
