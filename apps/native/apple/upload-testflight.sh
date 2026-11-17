@@ -107,13 +107,13 @@ touch "$work/export-started"
 # "Error Downloading App Information"; only that failure is retried, so a
 # failed or partial upload is never sent twice.
 for attempt in 1 2 3; do
-  if xcodebuild -exportArchive -archivePath "$work/Caper.xcarchive" \
+  status=0
+  xcodebuild -exportArchive -archivePath "$work/Caper.xcarchive" \
     -exportOptionsPlist "$work/ExportOptions.plist" -exportPath "$work/export" "${auth[@]}" 2>&1 |
-    tee "$work/export.log"; then
-    break
-  fi
+    tee "$work/export.log" || status=$?
+  ((status == 0)) && break
   if [[ $attempt == 3 ]] || ! grep -q "Error Downloading App Information" "$work/export.log"; then
-    exit 1
+    exit "$status"
   fi
   echo "App Store Connect did not return the app information; retrying the export in 60 seconds."
   rm -rf "$work/export"
