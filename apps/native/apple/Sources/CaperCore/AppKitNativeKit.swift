@@ -148,11 +148,47 @@ import SwiftUI
     }
 }
 
+/// "Version 0.1.654", as on every client: a click, Return or Space copies
+/// "Caper 0.1.654 for macOS (5c00469)" and the label reads "Copied" for two
+/// seconds, announced to VoiceOver. A development build is plain text.
+@MainActor func appKitVersionControl(_ installed: InstalledVersion = .current) -> NSView {
+    guard let copy = installed.copyText else { return AppKitKit.label(installed.label, size: 12, wraps: false) }
+    final class Feedback { weak var button: AppKitKitButton?; var generation = 0 }
+    let feedback = Feedback()
+    let button = AppKitKitButton(installed.label, kind: .text) {
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(copy, forType: .string)
+        guard let button = feedback.button else { return }
+        feedback.generation += 1
+        let generation = feedback.generation
+        button.title = InstalledVersion.copied
+        NSAccessibility.post(element: button, notification: .announcementRequested, userInfo: [
+            .announcement: "Copied \(copy)", .priority: NSAccessibilityPriorityLevel.high.rawValue,
+        ])
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(InstalledVersion.feedbackSeconds))
+            guard feedback.generation == generation, let button = feedback.button else { return }
+            button.title = installed.label
+        }
+    }
+    feedback.button = button
+    button.setAccessibilityLabel(installed.accessibilityLabel)
+    button.setAccessibilityHelp(InstalledVersion.hint); button.toolTip = InstalledVersion.hint
+    button.setAccessibilityIdentifier("copy-version")
+    // Space presses a focused button already; Return and Enter copy too.
+    button.keyPressed = { [weak button] event in
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              [36, 76].contains(event.keyCode), let button else { return false }
+        button.performClick(nil); return true
+    }
+    return button
+}
+
 /// Caper's button: secondary (raised, bordered) or primary (eggshell). The
 /// terracotta focus ring shows only on the control that has keyboard focus,
 /// which Tab gives it and a click does not.
 @MainActor final class AppKitKitButton: NSButton {
-    enum Kind { case primary, secondary, plain, destructive }
+    /// `text`: no fill, in the normal text colour, such as the copyable version.
+    enum Kind { case primary, secondary, plain, destructive, text }
     private let handler: () -> Void
     private let kind: Kind
     private var hovered = false
@@ -201,8 +237,9 @@ import SwiftUI
 
     override var intrinsicContentSize: NSSize {
         let text = attributedTitle.size()
-        let horizontal: CGFloat = kind == .plain ? 4 : 24
-        let vertical: CGFloat = kind == .plain ? 4 : 16
+        let bare = kind == .plain || kind == .text
+        let horizontal: CGFloat = bare ? 4 : 24
+        let vertical: CGFloat = bare ? 4 : 16
         return NSSize(width: ceil(text.width) + horizontal, height: max(ceil(text.height) + vertical, minimumHeight))
     }
 
@@ -224,6 +261,9 @@ import SwiftUI
         case .plain:
             color = hovered ? AppKitKit.text : AppKitKit.muted
             fill = .clear
+        case .text:
+            color = AppKitKit.text
+            fill = hovered ? NSColor.white.withAlphaComponent(0.06) : .clear
         }
         if showsSelection {
             color = AppKitKit.terracottaBright

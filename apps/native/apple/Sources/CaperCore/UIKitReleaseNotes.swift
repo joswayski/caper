@@ -109,6 +109,8 @@ import Observation
 @MainActor private final class UIKitReleaseNotes: UIKitMessageDialog {
     private let notes: WhatsNewModel
     private(set) var display: WhatsNewDisplay
+    /// Kept across renders so its "Copied" feedback and focus survive.
+    private let version = UIKitVersionControl()
     init(notes: WhatsNewModel, display: WhatsNewDisplay, close: @escaping () -> Void) {
         self.notes = notes; self.display = display; super.init(title: "What’s new", closeLabel: "Close What’s new", close: close)
     }
@@ -120,8 +122,7 @@ import Observation
         let face = UIImageView(image: UIImage(named: "caper-face", in: caperResourceBundle, compatibleWith: nil))
         face.contentMode = .scaleAspectFit; face.heightAnchor.constraint(equalToConstant: 36).isActive = true; face.isAccessibilityElement = false
         body.addArrangedSubview(face)
-        let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String).map { "Installed version \($0)" } ?? "Development build"
-        body.addArrangedSubview(WhatsNewSnapshot.validRevision(notes.revision) ? link(version, revision: notes.revision) : Self.label(version))
+        body.addArrangedSubview(version)
         if let releases = display.releases {
             if releases.isEmpty { body.addArrangedSubview(Self.label("No release highlights for this version yet.")) }
             let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
@@ -151,6 +152,55 @@ import Observation
         button.accessibilityHint = "View this version on GitHub"
         button.contentHorizontalAlignment = .leading
         return button
+    }
+}
+
+/// "Version 0.1.654", as on every client: a tap (or Return or Space with a
+/// keyboard) copies "Caper 0.1.654 for iOS (5c00469)" and the label reads
+/// "Copied" for two seconds, announced to VoiceOver. Development builds show
+/// "Development build" and can't be pressed.
+@MainActor final class UIKitVersionControl: UIButton {
+    private let installed: InstalledVersion
+    private var generation = 0
+
+    init(_ installed: InstalledVersion = .current) {
+        self.installed = installed
+        super.init(frame: .zero)
+        var config = UIButton.Configuration.plain()
+        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+        config.baseForegroundColor = UIColor(CaperTheme.text)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attributes = incoming
+            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Satoshi-Regular", size: 13) ?? .systemFont(ofSize: 13))
+            return attributes
+        }
+        config.title = installed.label
+        configuration = config
+        contentHorizontalAlignment = .leading
+        heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        accessibilityIdentifier = "copy-version"
+        accessibilityLabel = installed.accessibilityLabel
+        if installed.copyText == nil {
+            isUserInteractionEnabled = false; accessibilityTraits = .staticText
+        } else {
+            accessibilityHint = InstalledVersion.hint
+            addAction(UIAction { [weak self] _ in self?.copyVersion() }, for: .primaryActionTriggered)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func copyVersion() {
+        guard let copy = installed.copyText else { return }
+        UIPasteboard.general.string = copy
+        generation += 1
+        let current = generation
+        configuration?.title = InstalledVersion.copied
+        UIAccessibility.post(notification: .announcement, argument: "Copied \(copy)")
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(InstalledVersion.feedbackSeconds))
+            guard let self, self.generation == current else { return }
+            self.configuration?.title = self.installed.label
+        }
     }
 }
 #endif

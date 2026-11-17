@@ -106,6 +106,20 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         let whatsNew = UIAction(title: "What’s new") { _ in UIKitWhatsNew.open(model: model) }
         whatsNew.accessibilityIdentifier = "open-whats-new"
         items.append(whatsNew)
+        // The installed version, as Settings shows it on the other clients. A menu
+        // closes on choice, so "Copied" is announced rather than shown in place.
+        let installed = InstalledVersion.current
+        if let copy = installed.copyText {
+            let version = UIAction(title: installed.label, subtitle: InstalledVersion.hint) { _ in
+                UIPasteboard.general.string = copy
+                UIAccessibility.post(notification: .announcement, argument: "Copied \(copy)")
+            }
+            version.accessibilityLabel = installed.accessibilityLabel
+            version.accessibilityIdentifier = "copy-version"
+            items.append(version)
+        } else {
+            items.append(UIAction(title: installed.label, attributes: .disabled) { _ in })
+        }
         let notifications = UIAction(title: "Notifications") { [weak self] _ in self?.dialog(.notifications) }
         notifications.accessibilityIdentifier = "open-notifications"
         let privacy = UIAction(title: "Privacy and blocked accounts") { [weak self] _ in self?.dialog(.privacy) }

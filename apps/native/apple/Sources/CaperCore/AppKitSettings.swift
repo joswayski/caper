@@ -128,6 +128,8 @@ import ServiceManagement
         check.setAccessibilityIdentifier("check-for-updates")
         notes.setAccessibilityIdentifier("open-whats-new")
         version.orientation = .horizontal; version.spacing = 4
+        // Built once, so its "Copied" feedback and keyboard focus survive renders.
+        version.addArrangedSubview(appKitVersionControl())
         func section(_ title: String, _ rows: [NSView]) -> NSStackView {
             AppKitKit.stack([AppKitKit.label(title, size: 12, weight: .bold, color: AppKitKit.muted)] + rows, spacing: 14)
         }
@@ -208,12 +210,6 @@ import ServiceManagement
         sendOnStop.isOn = voiceMessages.sendOnStop
 
         let c = controls
-        version.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        version.addArrangedSubview(AppKitKit.label(c.installedVersion, size: 12, color: AppKitKit.muted, wraps: false))
-        if let revision = c.sourceRevision, let url = c.commitURL {
-            version.addArrangedSubview(AppKitKit.label("·", size: 12, color: AppKitKit.muted, wraps: false))
-            version.addArrangedSubview(AppKitKitLink(String(revision.prefix(7)), url: url, size: 12))
-        }
         status.stringValue = c.isChecking ? "Checking for updates…" : c.review != nil ? "An update is available."
             : c.lastSuccessfulCheck != nil ? "Caper is up to date." : "Not checked yet."
         check.isEnabled = c.check != nil && !c.isChecking
@@ -344,11 +340,6 @@ import ServiceManagement
         }
     }
 
-    private var installedVersion: String {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
-            .map { "Installed version \($0)" } ?? "Development build"
-    }
-
     private func makeContent() -> NSView {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 540))
         root.wantsLayer = true
@@ -360,12 +351,7 @@ import ServiceManagement
         let title = AppKitKit.label("What’s new", size: 20, weight: .bold, wraps: false)
         title.setAccessibilityRole(.staticText)
         var heading: [NSView] = [AppKitKit.image("caper-face", size: 36), title]
-        if WhatsNewSnapshot.validRevision(notes.revision),
-           let url = URL(string: "https://github.com/joswayski/caper/commit/\(notes.revision)") {
-            heading.append(AppKitKitLink(installedVersion, url: url))
-        } else {
-            heading.append(AppKitKit.label(installedVersion, size: 13, color: AppKitKit.muted, wraps: false))
-        }
+        heading.append(appKitVersionControl())
         let headingStack = AppKitKit.stack(heading, spacing: 2)
         headingStack.setCustomSpacing(10, after: heading[0])
         let closeButton = AppKitKitButton("Close") { [weak self] in self?.finish() }
