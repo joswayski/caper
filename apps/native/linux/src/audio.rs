@@ -553,7 +553,7 @@ impl App {
                 "GtkButton",
                 &format!("{} {name} audio sample", if this { "Stop" } else { "Play" }),
             );
-            play.set_label(if this { "Stop" } else { "Play" });
+            crate::app::show_text(&play, if this { "Stop" } else { "Play" });
             play.set_sensitive(!processing && (playing.is_none() || this));
             let weak = Rc::downgrade(self);
             play.connect_clicked(move |_| {

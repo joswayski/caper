@@ -577,7 +577,7 @@ impl App {
                     "GtkButton",
                     &format!("{} #{name}", if switching { "Switch to" } else { "Join" }),
                 );
-                button.set_label(if switching { "Switch" } else { "Join" });
+                crate::app::show_text(&button, if switching { "Switch" } else { "Join" });
                 button.set_sensitive(enabled);
                 button.set_tooltip_text(Some(
                     &state.join_unavailable(id).filter(|_| !enabled).map_or_else(
@@ -735,8 +735,7 @@ impl App {
                     ),
                 };
                 // Named with its channel, as the call card's Join: "Join
-                // voice in #general". A child label: `set_label` would
-                // replace the name.
+                // voice in #general".
                 let name = match action {
                     Action::Join { switching, .. } => format!(
                         "{} #{}",
@@ -750,7 +749,7 @@ impl App {
                     _ => text.to_owned(),
                 };
                 if ui.voice_join.widget_name() != name.as_str() {
-                    ui.voice_join.set_child(Some(&gtk::Label::new(Some(text))));
+                    crate::app::show_text(&ui.voice_join, text);
                     ui.voice_join.set_widget_name(&name);
                     crate::app::rename(ui.voice_join.upcast_ref(), &name);
                 }

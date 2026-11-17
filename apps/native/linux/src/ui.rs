@@ -1068,7 +1068,7 @@ impl Ui {
         visit_back.set_visible(false);
         header.append(&visit_back);
         let voice_join: gtk::Button = crate::app::named("GtkButton", "Join voice");
-        voice_join.set_child(Some(&gtk::Label::new(Some("Join voice"))));
+        crate::app::show_text(&voice_join, "Join voice");
         voice_join.add_css_class("primary");
         voice_join.add_css_class("voice-join");
         voice_join.set_valign(gtk::Align::Center);

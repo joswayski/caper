@@ -153,7 +153,14 @@ impl App {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             line.add_css_class("composer");
             line.add_css_class("profile-composer");
-            let view: gtk::TextView = crate::app::named("GtkTextView", "Message");
+            // Named by its placeholder, as web's field.
+            let view: gtk::TextView = crate::app::named(
+                "GtkTextView",
+                &format!(
+                    "Message @{}",
+                    profile.username.as_deref().unwrap_or_default()
+                ),
+            );
             view.set_wrap_mode(gtk::WrapMode::WordChar);
             view.set_accepts_tab(false);
             view.set_hexpand(true);

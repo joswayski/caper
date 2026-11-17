@@ -3185,7 +3185,7 @@ impl App {
         for space in &state.admin.invitations {
             let tile: gtk::Button =
                 crate::app::named("GtkButton", &format!("Invitation to {}", space.name));
-            tile.set_label(&caper_client::space_initial(&space.name));
+            crate::app::show_text(&tile, &caper_client::space_initial(&space.name));
             tile.set_tooltip_text(Some(&format!("Invitation to {}", space.name)));
             tile.add_css_class("invited");
             let weak = Rc::downgrade(self);

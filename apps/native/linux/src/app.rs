@@ -101,6 +101,13 @@ pub fn named<T: IsA<glib::Object>>(class: &str, name: &str) -> T {
         .expect("a GTK widget class")
 }
 
+/// Shows `text` on a `named` button, keeping its accessible name, which
+/// `set_label` would replace with the text.
+pub fn show_text(button: &gtk::Button, text: &str) {
+    button.set_child(Some(&gtk::Label::new(Some(text))));
+    button.add_css_class("text-button");
+}
+
 /// Gives an existing widget the accessible name `name`, the same way: a
 /// template's `<accessibility>` element applied to it.
 pub fn rename(widget: &gtk::Widget, name: &str) {
@@ -3935,7 +3942,9 @@ impl App {
             self.close_start_direct();
             self.close_profile();
             self.open_direct(id);
-            self.focus_composer();
+            // After the card's popover has handed focus back to its anchor.
+            let app = self.clone();
+            glib::idle_add_local_once(move || app.focus_composer());
         }
         self.render_profile();
         self.render_inbox();
@@ -5983,7 +5992,7 @@ impl App {
                     button.set_child(Some(&view.root));
                     button.add_css_class("icon");
                 }
-                None => button.set_label(&caper_client::space_initial(&space.name)),
+                None => show_text(&button, &caper_client::space_initial(&space.name)),
             }
             button.set_tooltip_text(Some(&space.name));
             if state.space.as_deref() == Some(&space.id) && state.direct.is_none() {

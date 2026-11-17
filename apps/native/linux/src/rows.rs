@@ -1264,7 +1264,7 @@ fn build_widgets() -> Widgets {
     let time = label("time");
     let marker = || {
         let button: gtk::Button = crate::app::named("GtkButton", "Message history");
-        button.set_label("(edited)");
+        crate::app::show_text(&button, "(edited)");
         tooltip(&button, "Message history");
         button.add_css_class("flat");
         button.add_css_class("edited");
@@ -1945,11 +1945,7 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
                 if chip.mine { ", including you" } else { "" }
             ),
         );
-        // A child label: `set_label` would replace the accessible name.
-        button.set_child(Some(&gtk::Label::new(Some(&format!(
-            "{} {}",
-            chip.emoji, chip.count
-        )))));
+        crate::app::show_text(&button, &format!("{} {}", chip.emoji, chip.count));
         button.add_css_class("reaction");
         if chip.mine {
             button.add_css_class("mine");

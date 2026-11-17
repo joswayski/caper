@@ -493,4 +493,6 @@ pub fn open(
     });
     window.add_controller(keys);
     window.present();
+    // As web's viewer, focus starts on Close.
+    close.grab_focus();
 }
