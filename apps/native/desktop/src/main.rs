@@ -28012,8 +28012,8 @@ fn channel_button(
             active,
             if extras.feedback_waiting > 0 {
                 format!(
-                    "{name}, {} feedback conversations waiting for a reply",
-                    extras.feedback_waiting
+                    "{name}, {}",
+                    caper_client::feedback::waiting_label(extras.feedback_waiting)
                 )
             } else if let Some(count) = extras.unread_count {
                 format!("{name}, {count} unread messages")

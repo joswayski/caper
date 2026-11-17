@@ -168,6 +168,17 @@ impl Report {
     }
 }
 
+/// The Feedback row's count for screen readers, as web words it: "1
+/// feedback conversation waiting for a reply", "3 … conversations …".
+pub fn waiting_label(waiting: u64) -> String {
+    let noun = if waiting == 1 {
+        "conversation"
+    } else {
+        "conversations"
+    };
+    format!("{waiting} feedback {noun} waiting for a reply")
+}
+
 /// A compact age: "now", "5m", "3h", "2d", then the date ("Oct 3", with the
 /// year once it differs).
 pub fn relative_time(created_at: &str, now: DateTime<Utc>) -> String {
@@ -382,6 +393,18 @@ impl Visit {
 mod tests {
     use super::*;
     use crate::model::HistoryPlace;
+
+    #[test]
+    fn waiting_label_is_singular_for_one() {
+        assert_eq!(
+            waiting_label(1),
+            "1 feedback conversation waiting for a reply"
+        );
+        assert_eq!(
+            waiting_label(12),
+            "12 feedback conversations waiting for a reply"
+        );
+    }
 
     fn page() -> Page {
         serde_json::from_value(serde_json::json!({

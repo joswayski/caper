@@ -349,7 +349,10 @@ impl App {
         ui.feedback_waiting.set_visible(waiting > 0);
         ui.feedback_waiting.set_label(&waiting.to_string());
         let name = if waiting > 0 {
-            format!("Feedback, {waiting} feedback conversations waiting for a reply")
+            format!(
+                "Feedback, {}",
+                caper_client::feedback::waiting_label(waiting)
+            )
         } else {
             "Feedback".into()
         };

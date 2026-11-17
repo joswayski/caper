@@ -216,7 +216,19 @@ impl Row {
     pub fn label(&self) -> String {
         match self.kind {
             RowKind::Requests { .. } => return self.name.clone(),
-            RowKind::Notifications | RowKind::Feedback => {
+            // As the other clients: "Feedback, 1 feedback conversation
+            // waiting for a reply".
+            RowKind::Feedback => {
+                return match self.count {
+                    Some(n) => format!(
+                        "{}, {}",
+                        self.name,
+                        caper_client::feedback::waiting_label(n)
+                    ),
+                    None => self.name.clone(),
+                };
+            }
+            RowKind::Notifications => {
                 return match self.count {
                     Some(n) => format!("{} \u{b7} {n}", self.name),
                     None => self.name.clone(),

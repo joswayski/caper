@@ -1196,7 +1196,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             Text(state.feedbackWaiting.toString(),
                                 Modifier.padding(start = 6.dp).background(Terracotta, CircleShape)
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    .clearAndSetSemantics { contentDescription = "${state.feedbackWaiting} feedback conversations waiting for a reply" },
+                                    .clearAndSetSemantics { contentDescription = "${state.feedbackWaiting} feedback ${if (state.feedbackWaiting == 1) "conversation" else "conversations"} waiting for a reply" },
                                 color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
                     }

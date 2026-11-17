@@ -82,7 +82,10 @@ export default function FeedbackInbox({
           <ChevronDown className="feedback-chevron" aria-hidden="true" />
         </button>
         {waiting > 0 && (
-          <span className="feedback-waiting-count" aria-label={`${waiting} feedback conversations waiting for a reply`}>
+          <span
+            className="feedback-waiting-count"
+            aria-label={`${waiting} feedback ${waiting === 1 ? "conversation" : "conversations"} waiting for a reply`}
+          >
             {waiting}
           </span>
         )}
