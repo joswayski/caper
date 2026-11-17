@@ -2416,6 +2416,7 @@ impl App {
                     self.need = true;
                 }
                 settings::TIMER_INBOX => self.inbox_tick(),
+                settings::TIMER_VERSION_COPIED => self.version_copied_tick(),
                 TIMER_TYPING => self.typing_tick(),
                 settings::audio::TIMER_AUDIO => self.audio_tick(),
                 playback::TIMER_PLAYBACK => self.playback_tick(),

@@ -73,6 +73,8 @@ use worker::{
 const ARRIVE_OFFSET: egui::Vec2 = egui::vec2(0.0, 6.0);
 /// Longest the loading page waits for the first conversation at launch.
 const RESTORE_LIMIT: Duration = Duration::from_secs(5);
+/// Settings' version reads "Copied" this long after a copy.
+const VERSION_COPIED_FOR: Duration = Duration::from_secs(2);
 use model::DELETE_ACCOUNT_URL;
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
 const SURFACE: Color32 = Color32::from_rgb(21, 23, 25);
@@ -1115,6 +1117,10 @@ struct CaperApp {
     /// "Send voice messages as soon as I stop recording": off stages the
     /// recording in the composer, on sends it at once. Per device.
     voice_send_on_stop: bool,
+    /// Settings' copyable version, and when it was last copied: it reads
+    /// "Copied" for [`VERSION_COPIED_FOR`].
+    installed: updates::InstalledVersion,
+    version_copied: Option<Instant>,
     launch_at_login: bool,
     startup_error: Option<String>,
     announced_voice: Option<u64>,
@@ -1559,6 +1565,8 @@ impl CaperApp {
             effects: Effects::new(fixture.is_none()),
             sound_effects: true,
             voice_send_on_stop: false,
+            installed: updates::InstalledVersion::current(),
+            version_copied: None,
             launch_at_login: false,
             startup_error: None,
             announced_voice: None,
@@ -23047,7 +23055,7 @@ impl CaperApp {
         };
         let text = format!(
             "@feedback My Caper update didn’t finish.\n\n{error}\n\n{} → Caper {target_version} on {platform}",
-            updates::installed_version().trim_start_matches("Installed: "),
+            updates::installed_version(),
         );
         let client_id = uuid::Uuid::new_v4().to_string();
         self.update_report = Some(UpdateReport {
@@ -23920,18 +23928,7 @@ impl CaperApp {
         ui.add_space(18.0);
         ui.label(bold("Updates").size(12.0).color(MUTED));
         ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(updates::installed_version()).color(MUTED));
-            ui.hyperlink_to(
-                RichText::new(&whats_new::REVISION[..7])
-                    .color(TEXT)
-                    .underline(),
-                format!(
-                    "https://github.com/joswayski/caper/commit/{}",
-                    whats_new::REVISION
-                ),
-            );
-        });
+        self.version_control(ui);
         let status = self.updates.status();
         let checking = status == updates::Status::Checking;
         if secondary_button(
@@ -23974,6 +23971,58 @@ impl CaperApp {
             self.blocked_settings(ui);
             ui.add_space(14.0);
             delete_account_settings(ui);
+        }
+    }
+
+    /// Settings' "Version 0.1.654": a click, Enter or Space copies one line
+    /// for bug reports, and it reads "Copied" for two seconds in a polite
+    /// live region. A development build's is plain text.
+    fn version_control(&mut self, ui: &mut egui::Ui) {
+        let installed = &self.installed;
+        let (Some(copy), Some(details)) = (&installed.copy_text, &installed.details) else {
+            ui.label(RichText::new(&installed.label).color(TEXT));
+            return;
+        };
+        let copied = self
+            .version_copied
+            .and_then(|at| VERSION_COPIED_FOR.checked_sub(at.elapsed()));
+        if let Some(left) = copied {
+            ui.ctx().request_repaint_after(left);
+        }
+        let shown = if copied.is_some() {
+            updates::VERSION_COPIED
+        } else {
+            installed.label.as_str()
+        };
+        let response = ui.add(
+            egui::Button::new(RichText::new(shown).color(TEXT))
+                .frame(false)
+                .min_size(egui::vec2(0.0, 28.0)),
+        );
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                response.rect.expand(2.0),
+                8.0,
+                Stroke::new(1.0_f32, TERRACOTTA_BRIGHT),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let name = if copied.is_some() {
+            updates::VERSION_COPIED.to_owned()
+        } else {
+            installed.accessible_name.clone()
+        };
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
+        let description = details.clone();
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_live(egui::accesskit::Live::Polite);
+            node.set_description(description);
+        });
+        let copy = copy.clone();
+        if response.on_hover_text(details).clicked() {
+            ui.ctx().copy_text(copy);
+            self.version_copied = Some(Instant::now());
+            ui.ctx().request_repaint();
         }
     }
 
@@ -44001,7 +44050,7 @@ mod tests {
     }
 
     #[test]
-    fn update_settings_keep_controls_still_and_link_the_installed_commit() {
+    fn update_settings_keep_controls_still_and_copy_the_installed_version() {
         use crate::{updates, whats_new};
         for width in [440.0, 320.0] {
             let context = egui::Context::default();
@@ -44054,8 +44103,32 @@ mod tests {
                 );
             }
             let output = frame(&mut app, vec![]);
-            let pos = node_center(&output, &whats_new::REVISION[..7]);
-            let mut opened = None;
+            // A development build's version is plain text.
+            assert!(texts(&output).contains(&"Development build"));
+            assert!(node_bounds(&output, "Development build, copy").is_none());
+
+            // A release's copies one line for bug reports, then reads Copied.
+            app.installed = updates::InstalledVersion::of(Some(654), whats_new::REVISION, "Linux");
+            let output = frame(&mut app, vec![]);
+            assert_eq!(text_color(&output, "Version 0.1.654"), TEXT);
+            let line = format!("Caper 0.1.654 for Linux ({})", &whats_new::REVISION[..7]);
+            let (target, node) = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Version 0.1.654, copy"))
+                .unwrap()
+                .clone();
+            assert_eq!(node.live(), Some(egui::accesskit::Live::Polite));
+            assert!(
+                node.description()
+                    .is_some_and(|text| text.starts_with("Click to copy the version"))
+            );
+            let pos = node_center(&output, "Version 0.1.654, copy");
+            let mut copies = Vec::new();
             for pressed in [true, false] {
                 let output = frame(
                     &mut app,
@@ -44069,16 +44142,30 @@ mod tests {
                         },
                     ],
                 );
-                opened = opened.or_else(|| opened_url(&output).map(str::to_owned));
+                copies.extend(copied(&output));
             }
-            assert_eq!(
-                opened,
-                Some(format!(
-                    "https://github.com/joswayski/caper/commit/{}",
-                    whats_new::REVISION
-                )),
-                "width {width}"
+            assert_eq!(copies, std::slice::from_ref(&line), "width {width}");
+            let output = frame(&mut app, vec![]);
+            assert!(texts(&output).contains(&"Copied"));
+            assert!(node_bounds(&output, "Copied").is_some());
+            app.version_copied = Some(std::time::Instant::now() - crate::VERSION_COPIED_FOR);
+            let output = frame(&mut app, vec![]);
+            assert!(texts(&output).contains(&"Version 0.1.654"));
+
+            // Enter on the focused control copies too.
+            frame(
+                &mut app,
+                vec![egui::Event::AccessKitActionRequest(
+                    egui::accesskit::ActionRequest {
+                        action: egui::accesskit::Action::Focus,
+                        target_tree: egui::accesskit::TreeId::ROOT,
+                        target_node: target,
+                        data: None,
+                    },
+                )],
             );
+            let output = frame(&mut app, press(egui::Key::Enter));
+            assert_eq!(copied(&output), [line], "width {width}");
         }
     }
 

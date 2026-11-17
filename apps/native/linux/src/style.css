@@ -2248,6 +2248,14 @@ button.inline-link {
   font-size: inherit;
 }
 
+/* Settings' installed version: body text that copies itself. */
+button.version-copy {
+  min-height: 0;
+  margin-left: -6px;
+  padding: 2px 6px;
+  color: @caper_text;
+}
+
 /* A composer's voice recording, in place of its input row: discard, the
    live dot and timer, the input meter, "Voice note" and Done. */
 .recording-bar {

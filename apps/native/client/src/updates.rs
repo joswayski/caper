@@ -352,13 +352,59 @@ pub fn version_label() -> String {
     )
 }
 
-/// The installed app, not the latest release returned by the update server.
+/// The installed app, not the latest release returned by the update server:
+/// "Caper 0.1.654", or "Development build".
 pub fn installed_version() -> String {
-    let version = match build_number() {
-        Some(build) => format!("Caper 0.1.{build} (build {build})"),
-        None => "Development build".into(),
-    };
-    format!("Installed: {version} ·")
+    build_number().map_or_else(
+        || "Development build".into(),
+        |build| format!("Caper 0.1.{build}"),
+    )
+}
+
+/// Settings' copyable version control, in place of a raw commit. Clicking
+/// it (or Enter/Space) copies [`InstalledVersion::copy_text`] and shows
+/// [`VERSION_COPIED`] briefly. Development builds have nothing to copy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledVersion {
+    /// "Version 0.1.654", or "Development build".
+    pub label: String,
+    /// One line for bug reports: "Caper 0.1.654 for Linux (5c00469)".
+    pub copy_text: Option<String>,
+    /// The tooltip and accessible description.
+    pub details: Option<String>,
+    /// "Version 0.1.654, copy".
+    pub accessible_name: String,
+}
+
+/// The version control's feedback after a copy, read by screen readers.
+pub const VERSION_COPIED: &str = "Copied";
+/// The platform in the copied version line.
+pub const PLATFORM_NAME: &str = if cfg!(windows) { "Windows" } else { "Linux" };
+
+impl InstalledVersion {
+    pub fn current() -> Self {
+        Self::of(build_number(), crate::whats_new::REVISION, PLATFORM_NAME)
+    }
+
+    pub fn of(build: Option<u64>, revision: &str, platform: &str) -> Self {
+        let Some(build) = build else {
+            return Self {
+                label: "Development build".into(),
+                copy_text: None,
+                details: None,
+                accessible_name: "Development build".into(),
+            };
+        };
+        let short = &revision[..7.min(revision.len())];
+        Self {
+            label: format!("Version 0.1.{build}"),
+            copy_text: Some(format!("Caper 0.1.{build} for {platform} ({short})")),
+            details: Some(format!(
+                "Click to copy the version\nCaper 0.1.{build} for {platform}, build {build}, commit {revision}"
+            )),
+            accessible_name: format!("Version 0.1.{build}, copy"),
+        }
+    }
 }
 
 fn locate() -> Option<Install> {
@@ -463,6 +509,26 @@ mod tests {
             download_size: None,
             patch: false,
         }
+    }
+
+    #[test]
+    fn the_installed_version_reads_as_a_version_and_copies_one_report_line() {
+        let sha = "5c004697a8d1b0c2e3f4a5b6c7d8e9f0a1b2c3d4";
+        let version = InstalledVersion::of(Some(654), sha, "Windows");
+        assert_eq!(version.label, "Version 0.1.654");
+        assert_eq!(
+            version.copy_text.as_deref(),
+            Some("Caper 0.1.654 for Windows (5c00469)")
+        );
+        assert_eq!(version.accessible_name, "Version 0.1.654, copy");
+        let details = version.details.unwrap();
+        assert!(details.starts_with("Click to copy the version\n"));
+        assert!(details.contains(sha) && details.contains("build 654"));
+
+        let development = InstalledVersion::of(None, sha, "Linux");
+        assert_eq!(development.label, "Development build");
+        assert_eq!(development.copy_text, None);
+        assert_eq!(development.details, None);
     }
 
     #[test]

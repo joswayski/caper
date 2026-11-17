@@ -88,6 +88,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     }
     // Who can start a DM with you, and the accounts you blocked.
     if (state.account != null) MenuButton("Privacy and blocked accounts") { openPrivacy() }
+    InstalledVersionControl()
     MenuButton("What’s new") { openWhatsNew() }
     if (state.account != null) MenuButton(if (state.loggingOut) "Logging out…" else "Log out") { if (!state.loggingOut) { close(); logout() } }
     else MenuButton("Sign in") { close(); signIn() }
@@ -169,6 +170,37 @@ internal fun audioRouteIcon(type: Int, input: Boolean = false): Int = when (type
     AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> R.drawable.audio_earpiece
     AudioDeviceInfo.TYPE_BUILTIN_MIC -> R.drawable.lucide_mic
     else -> if (input) R.drawable.lucide_mic else R.drawable.lucide_audio_lines
+}
+
+/**
+ * The installed version, as caper_client::updates::InstalledVersion on desktop: a tap copies one
+ * line for bug reports ("Caper 0.1.654 for Android (5c00469)") and the label reads "Copied" for 2 s
+ * in a polite live region. A development build's is plain text.
+ */
+@Composable private fun InstalledVersionControl() {
+    val revision = BuildConfig.SOURCE_REVISION
+    if (!chat.caper.android.data.isReleaseRevision(revision)) {
+        Text("Development build", fontSize = 13.sp)
+        return
+    }
+    val version = BuildConfig.VERSION_NAME
+    val clipboard = LocalClipboardManager.current
+    var copies by remember { mutableIntStateOf(0) }
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copies) { if (copies > 0) { delay(2_000); copied = false } }
+    OutlinedButton(
+        {
+            copied = runCatching { clipboard.setText(AnnotatedString("Caper $version for Android (${revision.take(7)})")) }.isSuccess
+            copies++
+        },
+        Modifier.fillMaxWidth().semantics {
+            contentDescription = if (copied) "Copied" else "Version $version, copy"
+            liveRegion = LiveRegionMode.Polite
+        },
+        shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+    ) {
+        Text(if (copied) "Copied" else "Version $version", Modifier.fillMaxWidth(), color = Text)
+    }
 }
 
 @Composable private fun MenuButton(label: String, enabled: Boolean = true, action: () -> Unit) =

@@ -44,6 +44,8 @@ const CHIP_H: f32 = 28.0;
 const ROW_SIDE: f32 = 104.0;
 /// Refreshes the open inbox's times and polls it, as egui's repaint.
 pub const TIMER_INBOX: usize = 11;
+/// Settings' version reads "Copied" until this fires.
+pub const TIMER_VERSION_COPIED: usize = 47;
 /// The gap around a section's separator.
 const SECTION_GAP: f32 = 18.0;
 pub const LEVELS: [NotificationLevel; 3] = [
@@ -81,6 +83,8 @@ pub enum SPart {
     WhatsNew,
     RetryHighlights,
     InstalledRevision,
+    /// "Version 0.1.654": copies one line for bug reports.
+    CopyVersion,
     ReleaseRevision(usize),
     Done,
     Level(usize),
@@ -180,6 +184,7 @@ impl SPart {
             Self::FeedbackRefresh => 52,
             Self::FeedbackMore => 53,
             Self::FeedbackArchived => 54,
+            Self::CopyVersion => 55,
             Self::FeedbackOpen(k) => 2_000_000 + 2 * k,
             Self::FeedbackArchive(k) => 2_000_001 + 2 * k,
             Self::ReleaseRevision(k) => 4000 + k,
@@ -221,6 +226,7 @@ impl SPart {
                 | Self::WhatsNew
                 | Self::RetryHighlights
                 | Self::InstalledRevision
+                | Self::CopyVersion
                 | Self::ReleaseRevision(_)
                 | Self::Done
                 | Self::RetryNotifications
@@ -301,6 +307,8 @@ pub struct Snapshot {
     pub audio: Option<audio::AudioSnap>,
     pub support: Option<support::Snapshot>,
     pub debug_enabled: bool,
+    /// The version was just copied: it reads "Copied".
+    pub version_copied: bool,
 }
 
 /// What the inbox shows (`Live::inbox_snapshot`).
@@ -369,6 +377,8 @@ pub struct Settings {
     pub launch: bool,
     pub startup_error: Option<String>,
     pub notice: String,
+    /// The version reads "Copied" until `TIMER_VERSION_COPIED`.
+    pub version_copied: bool,
 }
 
 impl Settings {
@@ -389,6 +399,7 @@ impl Settings {
             launch,
             startup_error,
             notice: String::new(),
+            version_copied: false,
         }
     }
 
@@ -475,6 +486,9 @@ impl Settings {
             SPart::Close if self.page == Page::Connection => "Close connection details".into(),
             SPart::Close if self.page == Page::Diagnostics => "Close audio diagnostics".into(),
             SPart::Close => "Close settings".into(),
+            SPart::CopyVersion if !self.snap.version_copied => {
+                caper_client::updates::InstalledVersion::current().accessible_name
+            }
             _ => self
                 .items
                 .iter()
@@ -641,11 +655,14 @@ impl Builder<'_> {
         b.separator();
         b.text("Updates", Style::Section)?;
         b.y += 6.0;
-        b.text(&caper_client::updates::installed_version(), Style::Detail)?;
-        b.button(
-            SPart::InstalledRevision,
-            &caper_client::whats_new::REVISION[..7],
-        )?;
+        let installed = caper_client::updates::InstalledVersion::current();
+        if installed.copy_text.is_none() {
+            b.text(&installed.label, Style::Label)?;
+        } else if snap.version_copied {
+            b.button(SPart::CopyVersion, caper_client::updates::VERSION_COPIED)?;
+        } else {
+            b.button(SPart::CopyVersion, &installed.label)?;
+        }
         b.button(SPart::CheckUpdates, "Check for updates")?;
         let (message, error) = snap.updates.message();
         b.text(&message, Style::Status(error))?;
@@ -1486,6 +1503,7 @@ impl App {
                 .is_some_and(|l| l.preferences.voice_send_on_stop()),
             updates: crate::updates::Check::new(&self.updates),
             highlights: self.live.as_ref().map(|l| l.highlights.clone()),
+            version_copied: s.is_some_and(|s| s.version_copied),
             ..Snapshot::default()
         };
         if let Some(live) = self.live.as_ref().filter(|_| self.c.is_live()) {
@@ -1553,6 +1571,23 @@ impl App {
                 }
             }
             SPart::CheckUpdates => self.updates.check_now(),
+            SPart::CopyVersion => {
+                if let Some(copy) = caper_client::updates::InstalledVersion::current().copy_text {
+                    crate::set_clipboard(self.hwnd, &crate::gfx::wide(&copy));
+                    s.version_copied = true;
+                    unsafe {
+                        SetTimer(
+                            Some(self.hwnd),
+                            TIMER_VERSION_COPIED,
+                            crate::invite_people::COPIED_MS,
+                            None,
+                        );
+                    }
+                    self.settings_changed();
+                    crate::uia::raise_settings_live(SPart::CopyVersion);
+                    return;
+                }
+            }
             SPart::InstalledRevision => {
                 if let Some(url) =
                     caper_client::updates::commit_url(caper_client::whats_new::REVISION)
@@ -1633,6 +1668,17 @@ impl App {
             }
         }
         self.settings_changed();
+    }
+
+    /// Settings' version reads its label again after "Copied".
+    pub fn version_copied_tick(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_VERSION_COPIED);
+        }
+        if let Some(s) = &mut self.settings {
+            s.version_copied = false;
+            self.settings_changed();
+        }
     }
 
     /// Input while Settings is open: it is modal, as egui's dialog.

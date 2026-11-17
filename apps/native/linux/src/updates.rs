@@ -1,13 +1,14 @@
 //! Updates and What's new, as on the egui desktop. Settings shows the
-//! installed version and its commit, "Check for updates" with its status
-//! and "What's new". A release build with `caper-updater` beside it checks
-//! in the background (`caper_client::updates`); an update shows "Update
-//! available" above the account bar and opens its review: the highlights
-//! being installed, a failed install's error with "Send this to the Caper
-//! team", and Restart to update (or Download when this copy can't update in
-//! place). What's new lists this revision's release highlights
-//! (`caper_client::whats_new`), and opens by itself once after an update
-//! brings unread ones. A child of `app`.
+//! installed version, which copies itself for bug reports, "Check for
+//! updates" with its status and "What's new". A release build with
+//! `caper-updater` beside it checks in the background
+//! (`caper_client::updates`); an update shows "Update available" above the
+//! account bar and opens its review: the highlights being installed, a
+//! failed install's error with "Send this to the Caper team", and Restart to
+//! update (or Download when this copy can't update in place). What's new
+//! lists this revision's release highlights (`caper_client::whats_new`),
+//! and opens by itself once after an update brings unread ones. A child of
+//! `app`.
 
 use super::{App, Page, State, clear};
 use crate::images::Icon;
@@ -62,6 +63,50 @@ fn link(text: &str, url: &str, classes: &[&str]) -> gtk::LinkButton {
     }
     button.set_halign(gtk::Align::Start);
     button
+}
+
+/// Settings' "Version 0.1.654": a click, Enter or Space copies one line for
+/// bug reports and reads "Copied" for 2 s, renamed so Orca announces it
+/// (GTK 4.8 has no announcement API). A development build's is plain text.
+fn version_control() -> gtk::Widget {
+    let version = updates::InstalledVersion::current();
+    let (Some(copy), Some(details)) = (version.copy_text, version.details) else {
+        let text = label(&version.label, &[]);
+        text.set_xalign(0.0);
+        return text.upcast();
+    };
+    let xml = format!(
+        "<interface><object class=\"GtkButton\" id=\"widget\"><accessibility><property name=\"label\">{}</property><property name=\"description\">{}</property></accessibility></object></interface>",
+        glib::markup_escape_text(&version.accessible_name),
+        glib::markup_escape_text(&details),
+    );
+    let button: gtk::Button = gtk::Builder::from_string(&xml)
+        .object("widget")
+        .expect("a GtkButton");
+    crate::app::show_text(&button, &version.label);
+    button.add_css_class("flat");
+    button.add_css_class("version-copy");
+    button.set_halign(gtk::Align::Start);
+    button.set_tooltip_text(Some(&details));
+    let copies = Rc::new(std::cell::Cell::new(0u32));
+    let (name, shown) = (version.accessible_name, version.label);
+    button.connect_clicked(move |button| {
+        button.clipboard().set_text(&copy);
+        crate::app::show_text(button, updates::VERSION_COPIED);
+        crate::app::rename(button.upcast_ref(), updates::VERSION_COPIED);
+        copies.set(copies.get().wrapping_add(1));
+        let (copy_count, copies) = (copies.get(), copies.clone());
+        let (button, name, shown) = (button.downgrade(), name.clone(), shown.clone());
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            if let Some(button) = button.upgrade()
+                && copies.get() == copy_count
+            {
+                crate::app::show_text(&button, &shown);
+                crate::app::rename(button.upcast_ref(), &name);
+            }
+        });
+    });
+    button.upcast()
 }
 
 /// "Version 0.1.82" (or the short commit) linking the release's commit.
@@ -367,14 +412,7 @@ impl App {
         rule.add_css_class("settings-rule");
         root.append(&rule);
         root.append(&label("Updates", &["settings-section"]));
-        let installed = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        installed.append(&label(&updates::installed_version(), &["muted"]));
-        installed.append(&link(
-            &REVISION[..7.min(REVISION.len())],
-            &format!("https://github.com/joswayski/caper/commit/{REVISION}"),
-            &["release-link"],
-        ));
-        root.append(&installed);
+        root.append(&version_control());
         let check = gtk::Button::with_label("Check for updates");
         check.set_halign(gtk::Align::Start);
         root.append(&check);
@@ -762,7 +800,7 @@ impl App {
             };
             let text = format!(
                 "@feedback My Caper update didn’t finish.\n\n{error}\n\n{} → Caper {target_version} on Linux",
-                updates::installed_version().trim_start_matches("Installed: "),
+                updates::installed_version(),
             );
             let client_id = uuid::Uuid::new_v4().to_string();
             state.update_report = Some(Report {

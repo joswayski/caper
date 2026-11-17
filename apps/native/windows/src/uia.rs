@@ -1964,6 +1964,11 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     }
                     // egui's tooltip on its dock.
                     Id::UpdateDock => VARIANT::from(BSTR::from(a.update_dock_help())),
+                    Id::Settings(SPart::CopyVersion) => {
+                        caper_client::updates::InstalledVersion::current()
+                            .details
+                            .map_or_else(VARIANT::default, |d| VARIANT::from(BSTR::from(d)))
+                    }
                     _ => VARIANT::default(),
                 },
                 UIA_IsKeyboardFocusablePropertyId if matches!(id, Id::Settings(_)) => {
@@ -2142,6 +2147,10 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     VARIANT::from(Assertive.0)
                 }
                 UIA_LiveSettingPropertyId if id == Id::Typing => VARIANT::from(Polite.0),
+                // Settings' version announces "Copied" after a copy.
+                UIA_LiveSettingPropertyId if id == Id::Settings(SPart::CopyVersion) => {
+                    VARIANT::from(Polite.0)
+                }
                 // A reaction's failure is an alert, as web's role="alert".
                 UIA_LiveSettingPropertyId if matches!(id, Id::ReactionError(_)) => {
                     VARIANT::from(Assertive.0)
@@ -3273,6 +3282,16 @@ pub fn raise_typing_changed() {
     }
 }
 
+/// A Settings part's new text is announced, as "Copied" after a copy.
+pub fn raise_settings_live(part: SPart) {
+    unsafe {
+        if UiaClientsAreListening().as_bool() {
+            let _ =
+                UiaRaiseAutomationEvent(&node(Id::Settings(part)), UIA_LiveRegionChangedEventId);
+        }
+    }
+}
+
 /// Row `i`'s reaction failed: its error text is announced.
 pub fn raise_reaction_error(i: usize) {
     unsafe {
@@ -3392,6 +3411,9 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
     let text = match id {
         Id::Space(i) => a.c.spaces.get(i)?.name.clone(),
         Id::UpdateDock => a.update_dock_help(),
+        Id::Settings(SPart::CopyVersion) => {
+            caper_client::updates::InstalledVersion::current().details?
+        }
         Id::Invite(
             crate::invites::Spot::Space(_)
             | crate::invites::Spot::Create
