@@ -216,6 +216,8 @@ import AppKit
     sheet.setContentSize(NSSize(width: width, height: ceil(content.fittingSize.height)))
     sheet.initialFirstResponder = content.initialFocus
     window.beginSheet(sheet)
+    // A sheet doesn't apply initialFirstResponder; start on Cancel explicitly.
+    if let focus = content.initialFocus { sheet.makeFirstResponder(focus) }
 }
 
 @MainActor private func appKitWorkspaceMember(_ member: Member, action: String?, enabled: Bool, perform: @escaping () -> Void) -> NSView {

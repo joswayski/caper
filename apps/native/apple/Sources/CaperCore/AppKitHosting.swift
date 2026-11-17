@@ -605,10 +605,11 @@ private struct AppKitWorkspaceDialog: View {
         popover = nil; personID = nil; draft = nil; dismissAction = nil
         // As on web, closing the card returns focus to its opener, or to the
         // composer when the opener can't take focus. A click that closed the
-        // card into a field keeps that field.
+        // card into a field keeps that field, and a dialog the card opened
+        // (Block's confirmation starts on Cancel) keeps its button.
         DispatchQueue.main.async { [weak self, weak anchor] in
             guard let self, self.popover == nil, let anchor, let window = anchor.window,
-                  (window.firstResponder as? NSTextView)?.isEditable != true else { return }
+                  (window.firstResponder as? NSTextView)?.isEditable != true, !(window.firstResponder is AppKitKitButton) else { return }
             if anchor.acceptsFirstResponder, !anchor.isHiddenOrHasHiddenAncestor { window.makeFirstResponder(anchor) }
             else { self.focusComposer?() }
         }
