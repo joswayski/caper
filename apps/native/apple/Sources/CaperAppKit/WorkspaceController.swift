@@ -676,6 +676,8 @@ import CaperCore
         composer.placeholder = inThread ? "Reply to thread…"
             : model.visit?.direct == true ? "Message \(chat.channelName)"
             : "Message \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
+        // VoiceOver reads the drawn placeholder too, naming where a message goes.
+        composer.setAccessibilityPlaceholderValue(composer.placeholder)
         let ready = !inThread || (root != nil && !chat.threadLoading)
         let hidden = model.previewingChannel || !directBar.isHidden
         voiceComposer.synchronize(visible: ready && !hidden && chat.canInteract && view.window != nil && !stage.isHiddenOrHasHiddenAncestor)
