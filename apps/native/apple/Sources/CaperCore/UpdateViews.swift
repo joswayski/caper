@@ -33,28 +33,25 @@ public struct DesktopUpdate: Equatable, Sendable {
     /// Bytes the update downloads: a patch from this build when the release
     /// has one, else the full archive. `nil` from updaters that predate it.
     public let downloadSize: Int64?
-    /// Whether `downloadSize` is a patch (only what changed).
-    public let patch: Bool
 
     public init(version: String, notes: String, changelog: [ChangelogEntry],
                 historyComplete: Bool, canApply: Bool, lastError: String?,
                 highlights: [Highlight]? = nil, released: String? = nil,
                 revision: String? = nil, sequence: Int64? = nil,
-                downloadSize: Int64? = nil, patch: Bool = false) {
+                downloadSize: Int64? = nil) {
         self.version = version; self.notes = notes; self.changelog = changelog
         self.historyComplete = historyComplete; self.canApply = canApply; self.lastError = lastError
         self.highlights = highlights; self.released = released
         self.revision = revision; self.sequence = sequence
-        self.downloadSize = downloadSize; self.patch = patch
+        self.downloadSize = downloadSize
     }
 
-    /// "1.5 MB download, only what changed" or "129.8 MB download", matching
-    /// the Windows and Linux review.
+    /// "1.5 MB" or "Under 0.1 MB", shown beside the version, matching the
+    /// Windows and Linux review.
     public var downloadLabel: String? {
         guard let downloadSize else { return nil }
         let megabytes = Double(downloadSize) / 1_000_000
-        let amount = megabytes < 0.1 ? "Under 0.1 MB" : String(format: "%.1f MB", megabytes)
-        return patch ? "\(amount) download, only what changed" : "\(amount) download"
+        return megabytes < 0.1 ? "Under 0.1 MB" : String(format: "%.1f MB", megabytes)
     }
 
     /// This version's commit on GitHub, only for a full source SHA.

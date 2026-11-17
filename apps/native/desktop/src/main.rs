@@ -1862,7 +1862,6 @@ impl CaperApp {
                 can_apply: name != "parity-update-download",
                 // Release 418 → 419's measured Linux patch.
                 download_size: Some(1_516_875),
-                patch: true,
                 last_error: (name == "parity-update-error").then(|| "Could not replace the installed app: Access denied (os error 5)".into()),
             });
         }
@@ -10606,8 +10605,10 @@ impl CaperApp {
                             ui.label(RichText::new(version).color(MUTED).size(13.0));
                         }
                     }
-                    if let Some(date) = date {
-                        ui.label(RichText::new(format!(" · {date}")).color(MUTED).size(13.0));
+                    // The size sits beside the version it downloads.
+                    let size = update.download_label().filter(|_| update.can_apply);
+                    for part in size.into_iter().chain(date) {
+                        ui.label(RichText::new(format!(" · {part}")).color(MUTED).size(13.0));
                     }
                 });
                 ui.add_space(12.0);
@@ -10705,7 +10706,7 @@ impl CaperApp {
                     ui.label(
                         bold("WHAT’S NEW")
                             .size(11.0)
-                            .color(MUTED)
+                            .color(TEXT)
                             .extra_letter_spacing(0.8),
                     );
                     let (rule, _) = ui.allocate_exact_size(
@@ -10719,13 +10720,9 @@ impl CaperApp {
                     );
                 });
                 ui.add_space(8.0);
-                let download = update.download_label().filter(|_| update.can_apply);
-                // The notes give up the download line's height, so the actions
-                // stay on screen at small sizes.
-                let footer = if download.is_some() { 428.0 } else { 400.0 };
                 egui::ScrollArea::vertical()
                     .id_salt("update-notes")
-                    .max_height((viewport.height() - footer).clamp(64.0, 300.0))
+                    .max_height((viewport.height() - 400.0).clamp(64.0, 300.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if !update.history_complete {
@@ -10775,10 +10772,6 @@ impl CaperApp {
                             .color(MUTED)
                             .size(13.0),
                     );
-                }
-                if let Some(size) = download {
-                    ui.add_space(12.0);
-                    ui.label(RichText::new(size).color(MUTED).size(13.0));
                 }
                 ui.add_space(12.0);
                 let in_call = !matches!(self.voice.state.phase, Phase::Idle);

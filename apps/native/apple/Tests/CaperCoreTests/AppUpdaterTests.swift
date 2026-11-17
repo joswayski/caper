@@ -107,9 +107,9 @@ final class AppUpdaterTests: XCTestCase {
 
     func testReviewNamesTheRealDownloadForAPatchOrTheFullArchive() throws {
         let patch = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.9","download_size":1259034,"patch":true}"#.utf8)))
-        XCTAssertEqual(patch.downloadLabel, "1.3 MB download, only what changed")
+        XCTAssertEqual(patch.downloadLabel, "1.3 MB")
         let full = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.9","download_size":129753283}"#.utf8)))
-        XCTAssertEqual(full.downloadLabel, "129.8 MB download")
+        XCTAssertEqual(full.downloadLabel, "129.8 MB")
         let older = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.9"}"#.utf8)))
         XCTAssertNil(older.downloadLabel)
     }

@@ -70,8 +70,9 @@ import AppKit
         } else {
             version.addArrangedSubview(AppKitKit.label("Version \(update.version)", size: 13, color: AppKitKit.muted, wraps: false))
         }
-        if let date = update.releasedLabel {
-            version.addArrangedSubview(AppKitKit.label(" · \(date)", size: 13, color: AppKitKit.muted, wraps: false))
+        // The size sits beside the version it downloads.
+        for part in [update.canApply ? update.downloadLabel : nil, update.releasedLabel].compactMap({ $0 }) {
+            version.addArrangedSubview(AppKitKit.label(" · \(part)", size: 13, color: AppKitKit.muted, wraps: false))
         }
         let face = AppKitKit.image("caper-face", size: 36)
         let heading = AppKitKit.stack([face, AppKitKit.label("A fresh Caper is ready", size: 20, weight: .bold, wraps: false), version], spacing: 2)
@@ -87,9 +88,9 @@ import AppKit
             heading.trailingAnchor.constraint(lessThanOrEqualTo: dismiss.leadingAnchor, constant: -12),
         ])
 
-        let sectionLabel = AppKitKit.label("WHAT’S NEW", size: 11, weight: .bold, color: AppKitKit.muted, wraps: false)
+        let sectionLabel = AppKitKit.label("WHAT’S NEW", size: 11, weight: .bold, color: AppKitKit.text, wraps: false)
         sectionLabel.attributedStringValue = NSAttributedString(string: "WHAT’S NEW", attributes: [
-            .font: AppKitKit.font(11, weight: .bold), .foregroundColor: AppKitKit.muted, .kern: 0.8])
+            .font: AppKitKit.font(11, weight: .bold), .foregroundColor: AppKitKit.text, .kern: 0.8])
         sectionLabel.setAccessibilityRole(.staticText)
         let rule = AppKitKit.divider()
         let section = NSStackView(views: [sectionLabel, rule]); section.orientation = .horizontal; section.spacing = 10
@@ -101,9 +102,6 @@ import AppKit
         if !update.canApply {
             footer.append(AppKitKit.label("This copy can’t update in place. Download the installer and drag Caper into a writable Applications folder.",
                                           size: 12, color: AppKitKit.muted))
-        }
-        if update.canApply, let size = update.downloadLabel {
-            footer.append(AppKitKit.label(size, size: 12, color: AppKitKit.muted))
         }
         let later = AppKitKitButton("Later") { [weak self] in self?.close() }
         later.keyEquivalent = "\u{1b}"

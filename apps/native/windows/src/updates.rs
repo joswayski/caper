@@ -147,8 +147,8 @@ pub fn line_format(g: &Gfx, line: Line) -> &IDWriteTextFormat {
 pub fn line_brush(g: &Gfx, line: Line) -> &ID2D1SolidColorBrush {
     match line {
         Line::Failed => &g.brushes.error,
-        Line::Title => &g.brushes.text,
-        Line::Heading | Line::Body => &g.brushes.muted,
+        Line::Heading | Line::Title => &g.brushes.text,
+        Line::Body => &g.brushes.muted,
     }
 }
 
@@ -165,20 +165,36 @@ impl Dialog {
         "A fresh Caper is ready"
     }
 
-    /// "Version 0.1.82 · October 18, 2026".
+    /// "Version 0.1.82 · 1.5 MB · October 18, 2026": the size sits beside
+    /// the version it downloads.
     pub(crate) fn update_note(&self) -> String {
         let Some(u) = &self.update else {
             return String::new();
         };
+        let size = u.download_label().filter(|_| u.can_apply);
         let date = u
             .released
             .as_deref()
             .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
             .map(|d| d.format("%B %-d, %Y").to_string());
-        match date {
-            Some(date) => format!("Version {} \u{b7} {date}", u.version),
-            None => format!("Version {}", u.version),
-        }
+        std::iter::once(self.update_version())
+            .chain(size)
+            .chain(date)
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ")
+    }
+
+    /// "Version 0.1.82", the note's lead, which opens its commit.
+    pub(crate) fn update_version(&self) -> String {
+        self.update
+            .as_ref()
+            .map_or_else(String::new, |u| format!("Version {}", u.version))
+    }
+
+    /// The update's commit on GitHub, when the updater named it.
+    pub(crate) fn update_commit(&self) -> Option<String> {
+        let u = self.update.as_ref()?;
+        caper_client::updates::commit_url(u.revision.as_deref()?)
     }
 
     pub(crate) fn update_primary(&self) -> &'static str {
@@ -240,13 +256,10 @@ impl Dialog {
         out
     }
 
-    /// The footer under the notes: the manual-update note or the download size.
+    /// The footer under the notes, for a copy the updater can't replace.
     pub(crate) fn update_footer(&self) -> Option<String> {
         let u = self.update.as_ref()?;
-        if !u.can_apply {
-            return Some("Download the installer to update this copy manually.".into());
-        }
-        u.download_label()
+        (!u.can_apply).then(|| "Download the installer to update this copy manually.".into())
     }
 
     /// Line `k` of the body as laid out (the notes are cut to the window).
@@ -561,6 +574,11 @@ impl App {
                     self.dialog_changed();
                 }
             }
+            Part::Release => {
+                if let Some(url) = self.dialog.as_ref().and_then(|d| d.update_commit()) {
+                    crate::open_link(&url);
+                }
+            }
             Part::Cancel | Part::Close => self.dismiss_dialog(),
             _ => {}
         }
@@ -626,12 +644,11 @@ mod tests {
                 body: "Long channels scroll smoothly.".into(),
             }]),
             released: Some("2026-11-09".into()),
-            revision: None,
+            revision: Some("4".repeat(40)),
             sequence: None,
             last_error: None,
             can_apply: true,
             download_size: Some(1_500_000),
-            patch: true,
         }
     }
 
@@ -639,7 +656,17 @@ mod tests {
     fn the_review_reads_as_egui_s() {
         let d = Dialog::update(release(), None, false);
         assert_eq!(d.title(), "A fresh Caper is ready");
-        assert_eq!(d.note(), "Version 0.1.90 \u{b7} November 9, 2026");
+        assert_eq!(
+            d.note(),
+            "Version 0.1.90 \u{b7} 1.5 MB \u{b7} November 9, 2026"
+        );
+        assert_eq!(
+            d.update_commit(),
+            Some(format!(
+                "https://github.com/joswayski/caper/commit/{}",
+                "4".repeat(40)
+            ))
+        );
         assert_eq!(d.primary_label(), "Restart to update");
         assert_eq!(d.cancel_label(), "Later");
         assert_eq!(
@@ -650,10 +677,7 @@ mod tests {
                 (Line::Body, "Long channels scroll smoothly.".into()),
             ]
         );
-        assert_eq!(
-            d.update_footer().as_deref(),
-            Some("1.5 MB download, only what changed")
-        );
+        assert_eq!(d.update_footer(), None);
         // In a call it says it will leave; a copy it can't replace downloads.
         assert_eq!(
             Dialog::update(release(), None, true).primary_label(),
@@ -665,6 +689,8 @@ mod tests {
         };
         let d = Dialog::update(manual, Some("Access denied".into()), false);
         assert_eq!(d.primary_label(), "Download");
+        // The installer's size isn't the update's, so the note leaves it out.
+        assert_eq!(d.note(), "Version 0.1.90 \u{b7} November 9, 2026");
         assert_eq!(
             d.update_lines()[..3],
             [

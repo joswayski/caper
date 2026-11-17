@@ -205,9 +205,9 @@ only the public key compiled into it.
 - Mac shows an alert and **Caper › Check for Updates…**; Windows/Linux show a
   banner and **User Settings › Settings… › Updates › Check for updates**.
   Manual checks restore an offer dismissed with **Later**.
-- The review names the download size. When the release lists a patch from the
-  installed build it is a few MB ("only what changed"); otherwise it is the full
-  archive. See
+- The review shows the download size beside the version, which links to its
+  commit. When the release lists a patch from the installed build it is a few
+  MB; otherwise it is the full archive. See
   [patch updates](../../docs/media.md#desktop-patch-updates).
 - **Restart to update** hands off to an independent updater that waits for
   Caper to quit, verifies the download's SHA-256 (and, on Mac, its Developer ID

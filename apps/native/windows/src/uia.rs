@@ -1008,6 +1008,7 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Field if d.kind == Kind::JoinInvite => "Invite link".into(),
                 DPart::Field if d.kind == Kind::InvitePeople => "Exact username".into(),
                 DPart::Line(k) if d.kind == Kind::Update => d.update_line(k),
+                DPart::Release => d.update_version(),
                 DPart::Heading(k) => d.invite_heading(k),
                 DPart::Line(k) => d.invite_line(k),
                 DPart::Link => d.invite_link_name(),
@@ -1255,6 +1256,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::LinkRow(_),
         ) => UIA_TextControlTypeId,
         Id::Dialog(DPart::Toggle) => UIA_CheckBoxControlTypeId,
+        Id::Dialog(DPart::Release) => UIA_HyperlinkControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
         Id::AttachmentEditor(EPart::Field) => UIA_EditControlTypeId,
         Id::AttachmentEditor(EPart::Title | EPart::Status) => UIA_TextControlTypeId,
@@ -1897,7 +1899,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::ManageRow(_)
                 | DPart::RemoveMember(_)
                 | DPart::ReactorTab(_)
-                | DPart::DeleteOpen,
+                | DPart::DeleteOpen
+                | DPart::Release,
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId

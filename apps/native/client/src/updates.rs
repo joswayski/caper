@@ -43,24 +43,16 @@ pub struct Available {
     /// Bytes the update downloads: a patch from this build when the release
     /// has one, else the full archive. `None` from updaters that predate it.
     pub download_size: Option<u64>,
-    /// Whether `download_size` is a patch (only what changed).
-    pub patch: bool,
 }
 
 impl Available {
-    /// "1.5 MB download, only what changed" or "80.1 MB download".
+    /// "1.5 MB" or "Under 0.1 MB", shown beside the version.
     pub fn download_label(&self) -> Option<String> {
-        let size = self.download_size?;
-        let megabytes = size as f64 / 1_000_000.0;
-        let amount = if megabytes < 0.1 {
+        let megabytes = self.download_size? as f64 / 1_000_000.0;
+        Some(if megabytes < 0.1 {
             "Under 0.1 MB".to_owned()
         } else {
             format!("{megabytes:.1} MB")
-        };
-        Some(if self.patch {
-            format!("{amount} download, only what changed")
-        } else {
-            format!("{amount} download")
         })
     }
 }
@@ -104,8 +96,6 @@ struct CheckOutput {
     can_apply: bool,
     #[serde(default)]
     download_size: Option<u64>,
-    #[serde(default)]
-    patch: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -475,7 +465,6 @@ fn parse(stdout: &[u8]) -> Result<Outcome, String> {
             last_error: output.last_error,
             can_apply: output.can_apply,
             download_size: output.download_size,
-            patch: output.patch,
         },
     ))))
 }
@@ -507,7 +496,6 @@ mod tests {
             last_error: None,
             can_apply: true,
             download_size: None,
-            patch: false,
         }
     }
 
@@ -717,7 +705,6 @@ mod tests {
                 last_error: None,
                 can_apply: true,
                 download_size: None,
-                patch: false,
             })))
         );
         // Without --install permission details the app offers a direct download.
@@ -744,21 +731,15 @@ mod tests {
             br#"{"update":true,"version":"0.1.9","download_size":1516875,"patch":true}"#,
         )
         .unwrap();
-        assert_eq!(
-            patch.download_label().as_deref(),
-            Some("1.5 MB download, only what changed")
-        );
+        assert_eq!(patch.download_label().as_deref(), Some("1.5 MB"));
         let full = parsed_update(br#"{"update":true,"version":"0.1.9","download_size":80066856}"#)
             .unwrap();
-        assert_eq!(full.download_label().as_deref(), Some("80.1 MB download"));
+        assert_eq!(full.download_label().as_deref(), Some("80.1 MB"));
         let tiny = parsed_update(
             br#"{"update":true,"version":"0.1.9","download_size":2048,"patch":true}"#,
         )
         .unwrap();
-        assert_eq!(
-            tiny.download_label().as_deref(),
-            Some("Under 0.1 MB download, only what changed")
-        );
+        assert_eq!(tiny.download_label().as_deref(), Some("Under 0.1 MB"));
     }
 
     fn parsed_update(bytes: &[u8]) -> Option<Available> {

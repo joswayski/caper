@@ -419,6 +419,8 @@ pub enum Part {
     RemoveMember(usize),
     /// The danger zone's Delete space or Delete channel.
     DeleteOpen,
+    /// The update review's "Version 0.1.82", which opens its commit.
+    Release,
     Profile(crate::profile::editor::Control),
     ReactorTab(usize),
     ReactorPerson(usize),
@@ -475,6 +477,7 @@ impl Part {
             Self::ManageRow(k) => 110_000 + k,
             Self::RemoveMember(k) => 120_000 + k,
             Self::DeleteOpen => 30_210,
+            Self::Release => 30_211,
             Self::Profile(control) => 130_000 + control.index(),
             Self::ReactorTab(k) => 140_000 + k,
             Self::ReactorPerson(k) => 150_000 + k,
@@ -952,6 +955,7 @@ impl Dialog {
             | Part::LinkAction(_)
             | Part::Invitee(_)
             | Part::LinkRow(_) => true,
+            Part::Release => self.update_commit().is_some(),
         }
     }
 
@@ -981,6 +985,7 @@ impl Dialog {
                         | Part::Reload
                         | Part::Cancel
                         | Part::Primary
+                        | Part::Release
                         | Part::Close
                         | Part::Version(_)
                         | Part::Retry
@@ -1093,6 +1098,10 @@ impl Dialog {
         if !note_text.is_empty() {
             let note = layout(g, &note_text, note_format, inner)?;
             parts.push((Part::Note, (0.0, y, inner, height(&note))));
+            if self.update_commit().is_some() {
+                let l = layout(g, &self.update_version(), note_format, 1e6)?;
+                parts.push((Part::Release, (0.0, y, width(&l), height(&l))));
+            }
             y += height(&note);
         }
         if self.kind == Kind::JoinInvite {
@@ -1286,6 +1295,17 @@ impl Dialog {
                             _ => &g.formats.dialog_note,
                         };
                         let l = layout(g, &self.note(), format, pw)?;
+                        // The review's version is a link, as on the other clients.
+                        if self.kind == Kind::Update && self.update_commit().is_some() {
+                            let range = DWRITE_TEXT_RANGE {
+                                startPosition: 0,
+                                length: gfx::wide(&self.update_version()).len() as u32,
+                            };
+                            unsafe {
+                                l.SetUnderline(true, range)?;
+                                l.SetDrawingEffect(&g.brushes.text, range)?;
+                            }
+                        }
                         crate::text::draw(dc, &l, x, y, &g.brushes.muted);
                     }
                     Part::Suggest(k) => {
@@ -2108,6 +2128,7 @@ impl App {
             | Part::SaveChanges
             | Part::RemoveMember(_)
             | Part::DeleteOpen
+            | Part::Release
             | Part::ReactorTab(_)
             | Part::ReactorPerson(_)
             | Part::Forward(_)

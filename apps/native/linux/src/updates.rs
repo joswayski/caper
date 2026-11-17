@@ -589,15 +589,15 @@ impl App {
             Some(url) => line.append(&link(&version, &url, &["release-link"])),
             None => line.append(&label(&version, &["muted", "small"])),
         }
-        if let Some(date) = update
+        // The size sits beside the version it downloads.
+        let size = update.download_label().filter(|_| update.can_apply);
+        let date = update
             .released
             .as_deref()
             .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
-        {
-            line.append(&label(
-                &format!(" · {}", date.format("%B %-d, %Y")),
-                &["muted", "small"],
-            ));
+            .map(|date| date.format("%B %-d, %Y").to_string());
+        for part in size.into_iter().chain(date) {
+            line.append(&label(&format!(" · {part}"), &["muted", "small"]));
         }
         body.append(&line);
         if let Some(error) = &error {
@@ -731,11 +731,6 @@ impl App {
                 "Download the installer to update this copy manually.",
                 &["muted", "small"],
             );
-            text.set_xalign(0.0);
-            body.append(&text);
-        }
-        if let Some(size) = update.download_label().filter(|_| update.can_apply) {
-            let text = label(&size, &["muted", "small"]);
             text.set_xalign(0.0);
             body.append(&text);
         }
