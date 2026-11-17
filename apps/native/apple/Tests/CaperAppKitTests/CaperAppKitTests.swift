@@ -4184,4 +4184,45 @@ import XCTest
         app.menuItems["Log out"].click()
         XCTAssertTrue(email.waitForExistence(timeout: 10))
     }
+
+    /// The feedback team's sidebar inbox, as on web and iPhone: the waiting
+    /// count, a visit to a space the owner is not in, Close, and archive and
+    /// restore of the report's thread.
+    func testFeedbackInboxVisitsArchivesAndRestoresAReport() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        try await Self.control(["feedbackTeam": true])
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15)); resize(app, width: 1280)
+        let entry = app.buttons["feedback-inbox"]
+        revealSidebar(entry, in: app.scrollViews["sidebar-direct-scroll"])
+        let waiting = NSPredicate(format: "value BEGINSWITH %@", "1 feedback conversation waiting for a reply")
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: waiting, evaluatedWith: entry)], timeout: 10), .completed,
+                       "The entry counts reports waiting for a reply, in the singular for one")
+        entry.click()
+        let report = app.buttons["feedback-report-chan00000009m02"]
+        revealSidebar(report, in: app.scrollViews["sidebar-direct-scroll"])
+        capture("feedback inbox", app: app)
+        report.click()
+        XCTAssertTrue(app.staticTexts["Visiting #plans · Maya's Workshop"].waitForExistence(timeout: 10), "The visit opens without joining")
+        XCTAssertEqual(composer.placeholderValue, "Message #plans")
+        XCTAssertFalse(app.buttons["toggle-members"].exists, "A visit has no member list")
+        XCTAssertEqual(report.value as? String, "Selected")
+        capture("feedback visit", app: app)
+        app.buttons["feedback-visit-close"].click()
+        XCTAssertTrue(app.buttons["feedback-visit-close"].waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["toggle-members"].waitForExistence(timeout: 10), "Close returns to the channel shown before")
+        app.buttons["feedback-archive-chan00000009m02"].click()
+        XCTAssertTrue(report.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["No feedback yet."].waitForExistence(timeout: 10))
+        app.buttons["feedback-show-archived"].click()
+        XCTAssertTrue(report.waitForExistence(timeout: 10), "Show archived lists it")
+        XCTAssertEqual(app.buttons["feedback-archive-chan00000009m02"].label, "Restore to the inbox")
+        app.buttons["feedback-archive-chan00000009m02"].click()
+        XCTAssertTrue(app.staticTexts["Nothing archived."].waitForExistence(timeout: 10))
+        app.buttons["feedback-show-archived"].click()
+        XCTAssertTrue(report.waitForExistence(timeout: 10), "Restored to the inbox")
+    }
 }

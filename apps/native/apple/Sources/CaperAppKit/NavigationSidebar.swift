@@ -61,6 +61,26 @@ import CaperCore
     private lazy var requests = NativeButton("") { [weak self] in
         guard let self else { return }; self.model.showingMessageRequests.toggle()
     }
+    // The feedback team's inbox, as web's sidebar section: open a report to
+    // visit its conversation without joining, archive or restore its thread.
+    private lazy var feedback = NativeFeedbackEntry { [weak self] in
+        guard let self else { return }
+        self.model.showingFeedback.toggle()
+        if self.model.showingFeedback { Task { await self.model.refreshFeedback() } }
+    }
+    private var feedbackRows: [String: NativeFeedbackRow] = [:]
+    private var announcedFeedbackError: String?
+    private let feedbackNote = NativeStyle.label("", size: 12)
+    private lazy var feedbackMore = NativeButton("Show more") { [weak self] in
+        guard let self else { return }; Task { await self.model.loadMoreFeedback() }
+    }
+    private lazy var feedbackArchived = NativeButton("") { [weak self] in
+        guard let self else { return }; Task { await self.model.showArchivedFeedback(!self.model.showingArchivedFeedback) }
+    }
+    private lazy var feedbackFailure = NativeDirectFailure(retry: "Retry feedback", identifier: "feedback-retry",
+                                                          messageIdentifier: "feedback-error") { [weak self] in
+        guard let self, !self.model.feedbackLoading else { return }; Task { await self.model.refreshFeedback() }
+    }
     private lazy var space = NativeButton("") { [weak self] in self?.openSpaceMenu() }
     private lazy var close = NativeButton.icon("Close navigation", symbol: "xmark") { [weak self] in self?.closeNavigation?() }
     private lazy var heading = NativeButton("") { [weak self] in
@@ -124,6 +144,15 @@ import CaperCore
         newMessage.layer?.backgroundColor = NSColor.clear.cgColor
         newMessage.setAccessibilityIdentifier("new-message")
         directAdd.setAccessibilityIdentifier("new-direct-message")
+        feedbackNote.textColor = NativeStyle.muted; feedbackNote.setAccessibilityIdentifier("feedback-empty")
+        for (button, symbol, id) in [(feedbackMore, "chevron.down", "feedback-load-older"), (feedbackArchived, "archivebox", "feedback-show-archived")] {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            button.imagePosition = .imageLeft; button.alignment = .left
+            button.font = NativeStyle.font(12); button.profileFeedback = true
+            button.contentTintColor = NativeStyle.muted
+            button.layer?.backgroundColor = NSColor.clear.cgColor
+            button.setAccessibilityIdentifier(id)
+        }
         selfNotes.open.toolTip = "Your private notes"
         search.placeholderString = "Search channels"
         search.font = NativeStyle.font(13)
@@ -272,6 +301,7 @@ import CaperCore
         directs.append(directHeading, height: 28)
         activity.update(unread: AppKitWorkspacePresenter.activityUnread(model))
         directs.append(activity, height: 28)
+        renderFeedback()
         var nextRequests: [String: NativeButton] = [:]
         if !model.messageRequests.isEmpty {
             requests.title = "\(model.showingMessageRequests ? "⌄" : "›")  Message requests  \(model.messageRequests.count)"
@@ -449,6 +479,52 @@ import CaperCore
         externalCards = next
     }
 
+    /// Team only, after Notifications as on web and iPhone.
+    private func renderFeedback() {
+        var next: [String: NativeFeedbackRow] = [:]
+        defer { feedbackRows = next }
+        guard model.isFeedbackTeam else { return }
+        let archived = model.showingArchivedFeedback, expanded = model.showingFeedback
+        feedback.update(title: archived ? FeedbackInbox.archivedTitle : FeedbackInbox.title, waiting: model.feedbackWaiting, expanded: expanded)
+        directs.append(feedback, height: 28)
+        guard expanded else { return }
+        let now = Date()
+        for report in model.feedbackReports {
+            let row = feedbackRows[report.id] ?? NativeFeedbackRow()
+            row.open = { [weak self] in guard let self else { return }; Task { await self.model.openFeedback(report) } }
+            row.archive = { [weak self] in guard let self else { return }; Task { await self.model.setFeedbackArchived(report, archived: !archived) } }
+            row.update(report, archived: archived, now: now,
+                       selected: model.visit?.channelID == report.channel.id && model.visit?.reportID == report.messageId)
+            next[report.id] = row; directs.append(row, height: 44)
+        }
+        if model.feedbackReports.isEmpty, model.feedbackError == nil {
+            feedbackNote.stringValue = model.feedbackLoaded ? (archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty)
+                : model.feedbackLoading ? "Loading…" : ""
+            if !feedbackNote.stringValue.isEmpty { directs.append(feedbackNote, height: 24) }
+        }
+        if model.feedbackCursor != nil {
+            feedbackMore.title = model.feedbackLoading ? "Loading…" : "Show more"
+            feedbackMore.setAccessibilityLabel(model.feedbackLoading ? "Loading older feedback" : "Show older feedback")
+            feedbackMore.isEnabled = !model.feedbackLoading
+            directs.append(feedbackMore, height: 28)
+        }
+        feedbackArchived.title = archived ? FeedbackInbox.backToFeedback : FeedbackInbox.showArchived
+        feedbackArchived.image = NSImage(systemSymbolName: archived ? "tray" : "archivebox", accessibilityDescription: nil)
+        feedbackArchived.setAccessibilityLabel(feedbackArchived.title)
+        directs.append(feedbackArchived, height: 28)
+        if let error = model.feedbackError {
+            feedbackFailure.update(error, pending: model.feedbackLoading)
+            directs.append(feedbackFailure)
+            // Spoken once when it appears, as web's role="alert", without moving focus.
+            if announcedFeedbackError != error {
+                NSAccessibility.post(element: feedbackFailure, notification: .announcementRequested, userInfo: [
+                    .announcement: error, .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                ])
+            }
+        }
+        announcedFeedbackError = model.feedbackError
+    }
+
     private func openSpaceMenu() {
         model.refreshNotificationSettingsIfStale()
         var items: [NSMenuItem] = [NavigationMenuItem(browsing ? "Exit Browse channels" : "Browse channels") { [weak self] in
@@ -532,14 +608,15 @@ private final class NativeSidebarList: NSScrollView {
 private final class NativeDirectFailure: NativeView {
     private let message = NativeStyle.label("", size: 11)
     private let retry: NativeButton
-    init(action: @escaping () -> Void) {
-        retry = NativeButton("Retry direct messages", action: action)
+    init(retry title: String = "Retry direct messages", identifier: String = "retry-direct-messages",
+         messageIdentifier: String = "direct-messages-error", action: @escaping () -> Void) {
+        retry = NativeButton(title, action: action)
         super.init()
         message.lineBreakMode = .byWordWrapping; message.maximumNumberOfLines = 0
         message.textColor = NSColor(CaperTheme.error)
-        message.setAccessibilityIdentifier("direct-messages-error")
+        message.setAccessibilityIdentifier(messageIdentifier)
         retry.font = NativeStyle.font(11, bold: true)
-        retry.setAccessibilityIdentifier("retry-direct-messages")
+        retry.setAccessibilityIdentifier(identifier)
         addSubview(message); addSubview(retry)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -815,5 +892,119 @@ private final class NavigationRow: NativeView {
         bell.frame = NSRect(x: trailing - 14, y: (bounds.height - 14) / 2, width: 14, height: 14)
         detail.frame = NSRect(x: trailing, y: (bounds.height - 16) / 2, width: detailWidth, height: 16)
         options.frame = NSRect(x: bounds.width - 30, y: 0, width: 28, height: bounds.height)
+    }
+}
+
+/// "Feedback" with its waiting count: one action that shows or hides the list.
+private final class NativeFeedbackEntry: NativeView {
+    private let open: NativeButton
+    private let count = NativeStyle.label("", size: 13)
+
+    init(action: @escaping () -> Void) {
+        open = NativeButton(FeedbackInbox.title, action: action)
+        super.init()
+        open.image = NSImage(systemSymbolName: "lifepreserver", accessibilityDescription: nil)
+        open.imagePosition = .imageLeft; open.alignment = .left
+        open.font = NativeStyle.font(13); open.profileFeedback = true
+        open.layer?.backgroundColor = NSColor.clear.cgColor
+        open.setAccessibilityIdentifier("feedback-inbox")
+        count.textColor = NativeStyle.accent; count.alignment = .right
+        count.setAccessibilityElement(false)
+        addSubview(open); addSubview(count)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(title: String, waiting: Int, expanded: Bool) {
+        open.title = title
+        open.setAccessibilityLabel(title)
+        count.stringValue = waiting > 0 ? String(waiting) : ""
+        open.setAccessibilityValue([waiting > 0 ? FeedbackInbox.waitingLabel(waiting) : "", expanded ? "Expanded" : "Collapsed"]
+            .filter { !$0.isEmpty }.joined(separator: ", "))
+        needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        open.frame = bounds
+        let width = count.cell?.cellSize.width ?? 0
+        count.frame = NSRect(x: bounds.width - width - 6, y: (bounds.height - 20) / 2, width: width, height: 20)
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard super.hitTest(point) != nil else { return nil }
+        return open
+    }
+}
+
+/// One report: opening visits its conversation; Archive (or Restore) is its
+/// own focus stop, as on web, and also the row's context menu.
+private final class NativeFeedbackRow: NativeView {
+    var open: (() -> Void)?
+    var archive: (() -> Void)?
+    private lazy var button = NativeButton("") { [weak self] in self?.open?() }
+    private lazy var archiveButton = NativeButton.icon("Archive", symbol: "archivebox") { [weak self] in self?.archive?() }
+    private let avatar = NativeAvatar()
+    private let name = NativeStyle.label("", size: 13, bold: true)
+    private let status = NativeStyle.label("", size: 10, bold: true)
+    private let detail = NativeStyle.label("", size: 11)
+    private var selected = false
+    private var hovered = false
+    private var tracking: NSTrackingArea?
+
+    init() {
+        super.init()
+        layer?.cornerRadius = 6
+        button.layer?.backgroundColor = NSColor.clear.cgColor
+        [button, avatar, name, status, detail, archiveButton].forEach { addSubview($0) }
+        [avatar, name, status, detail].forEach { $0.setAccessibilityElement(false) }
+        name.lineBreakMode = .byTruncatingTail; detail.lineBreakMode = .byTruncatingTail
+        detail.textColor = NativeStyle.muted
+        archiveButton.contentTintColor = NativeStyle.muted
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(_ report: FeedbackReport, archived: Bool, now: Date, selected: Bool) {
+        self.selected = selected
+        avatar.update(name: report.reporter.displayName, avatarId: report.reporter.avatarId, picture: report.reporter.avatarPicture)
+        name.stringValue = report.reporter.displayName
+        status.stringValue = archived ? "" : FeedbackInbox.status(report)
+        status.textColor = report.answered ? NativeStyle.muted : NativeStyle.accent
+        status.isHidden = archived
+        detail.stringValue = "\(FeedbackInbox.location(report)) — \(FeedbackInbox.preview(report))"
+        button.toolTip = "\(report.reporter.displayName) in \(FeedbackInbox.location(report))"
+        button.setAccessibilityLabel(FeedbackInbox.accessibilityLabel(report, now: now, archived: archived))
+        button.setAccessibilityValue(selected ? "Selected" : "")
+        button.setAccessibilityIdentifier("feedback-report-\(report.id)")
+        let label = archived ? FeedbackInbox.restore : FeedbackInbox.archiveLabel(report)
+        archiveButton.image = NSImage(systemSymbolName: archived ? "tray.and.arrow.up" : "archivebox", accessibilityDescription: nil)
+        archiveButton.setAccessibilityLabel(label)
+        archiveButton.toolTip = archived ? FeedbackInbox.restore : "Archive"
+        archiveButton.setAccessibilityIdentifier("feedback-archive-\(report.id)")
+        updateHover(); needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        let end = bounds.width - 30
+        button.frame = NSRect(x: 0, y: 0, width: max(0, end), height: bounds.height)
+        avatar.frame = NSRect(x: 9, y: 6, width: 20, height: 20)
+        let statusWidth = status.isHidden ? 0 : (status.cell?.cellSize.width ?? 0)
+        name.frame = NSRect(x: 38, y: 4, width: max(0, end - 42 - statusWidth - 4), height: 18)
+        status.frame = NSRect(x: end - statusWidth - 4, y: 6, width: statusWidth, height: 14)
+        detail.frame = NSRect(x: 38, y: 22, width: max(0, end - 42), height: 16)
+        archiveButton.frame = NSRect(x: bounds.width - 28, y: (bounds.height - 28) / 2, width: 28, height: 28)
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        let label = archiveButton.accessibilityLabel() ?? "Archive"
+        NavigationMenus.menu([NavigationMenuItem(label) { [weak self] in self?.archive?() }])
+            .popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; updateHover() }
+    override func mouseExited(with event: NSEvent) { hovered = false; updateHover() }
+    private func updateHover() {
+        layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : hovered ? NSColor.white.withAlphaComponent(0.06) : .clear).cgColor
     }
 }

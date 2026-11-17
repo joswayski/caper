@@ -86,6 +86,10 @@ import CaperCore
         self.membersPreference = self.members.isHidden
         self.view.needsLayout = true
     }
+    /// A feedback visit's Close: back to the conversation shown before it.
+    private lazy var closeVisit = NativeButton.icon("Close conversation", symbol: "xmark") { [weak self] in
+        guard let self else { return }; Task { await self.model.closeVisit() }
+    }
     private lazy var stage = AppKitFileDropView(model: model, inThread: inThread)
     private let timeline = MessageTimeline(frame: .zero)
     private let lip = AppKitComposerLip()
@@ -179,7 +183,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, lip, header, browse, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, lip, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         browse.setAccessibilityIdentifier("open-navigation")
         pinsButton.setAccessibilityIdentifier("channel-pins")
         pinsButton.isHidden = inThread
@@ -253,6 +257,7 @@ import CaperCore
             self?.profiles.show(mention: mention, relativeTo: rect, of: view)
         }
         membersToggle.setAccessibilityIdentifier("toggle-members")
+        closeVisit.setAccessibilityIdentifier("feedback-visit-close"); closeVisit.isHidden = true
         status.textColor = NativeStyle.muted
         composer.textContainer?.replaceLayoutManager(DraftLinkLayoutManager())
         composer.layoutManager?.delegate = composer.composerGlyphs
@@ -328,7 +333,12 @@ import CaperCore
         navigationObservation.start { [weak self] in
             guard let self else { return }
             self.browse.setAccessibilityValue(self.model.navigationOpen ? "Open" : "Closed")
-            self.header.stringValue = self.inThread ? "Thread" : self.model.selectedDirectMessage?.peer.displayName ?? "# \(self.model.chat.channelName)"
+            let chat = self.model.chat
+            // A visit reads as "#plans · Studio" or "Alice & Bob", as on iPhone and web.
+            self.header.stringValue = self.inThread ? "Thread"
+                : self.model.visit.map { FeedbackInbox.title(channelName: chat.channelName, spaceName: chat.spaceName, direct: $0.direct) }
+                ?? self.model.selectedDirectMessage?.peer.displayName ?? "# \(chat.channelName)"
+            self.header.setAccessibilityLabel(self.model.visit != nil && !self.inThread ? "Visiting \(self.header.stringValue)" : self.header.stringValue)
             self.back.title = self.model.selectedDirectMessageID == nil ? "Back to channel" : "Back to conversation"
             self.back.setAccessibilityLabel(self.back.title)
             if !self.inThread, !self.voicePreviewChecked, self.model.detail != nil {
@@ -578,9 +588,12 @@ import CaperCore
         browse.frame = NSRect(x: 12, y: 8, width: 32, height: 32)
         membersToggle.frame = NSRect(x: center - 48, y: 8, width: 32, height: 32)
         membersToggle.isHidden = !hasMembers
-        pinsButton.frame = NSRect(x: center - (membersToggle.isHidden ? 48 : 88), y: 8, width: 32, height: 32)
+        // A visit has no member list; its Close takes that place.
+        closeVisit.isHidden = inThread || model.visit == nil
+        closeVisit.frame = membersToggle.frame
+        pinsButton.frame = NSRect(x: center - (membersToggle.isHidden && closeVisit.isHidden ? 48 : 88), y: 8, width: 32, height: 32)
         let headerLeft: CGFloat = browse.isHidden ? 20 : 52
-        let headerRight: CGFloat = inThread ? (compactBack ? 56 : 175) : membersToggle.isHidden ? 60 : 100
+        let headerRight: CGFloat = inThread ? (compactBack ? 56 : 175) : membersToggle.isHidden && closeVisit.isHidden ? 60 : 100
         header.frame = NSRect(x: headerLeft, y: 14, width: max(0, center - headerLeft - headerRight), height: 26)
         membersToggle.setAccessibilityLabel(visible ? "Hide members" : "Show members")
         membersToggle.toolTip = visible ? "Hide members" : "Show members"
@@ -660,7 +673,9 @@ import CaperCore
             composer.setSelectedRange(NSRange(location: composer.string.utf16.count, length: 0))
             composer.needsDisplay = true
         }
-        composer.placeholder = inThread ? "Reply to thread…" : "Message \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
+        composer.placeholder = inThread ? "Reply to thread…"
+            : model.visit?.direct == true ? "Message \(chat.channelName)"
+            : "Message \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
         let ready = !inThread || (root != nil && !chat.threadLoading)
         let hidden = model.previewingChannel || !directBar.isHidden
         voiceComposer.synchronize(visible: ready && !hidden && chat.canInteract && view.window != nil && !stage.isHiddenOrHasHiddenAncestor)
