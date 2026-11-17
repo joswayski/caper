@@ -10,6 +10,20 @@ final class WhatsNewTests: XCTestCase {
         })
     }
 
+    func testInstalledVersionShowsTheVersionAndCopiesTheShortCommit() {
+        let sha = "5c004697" + String(repeating: "a", count: 32)
+        let release = InstalledVersion(version: "0.1.654", revision: sha, platform: "macOS")
+        XCTAssertEqual(release.label, "Version 0.1.654")
+        XCTAssertEqual(release.accessibilityLabel, "Version 0.1.654, copy")
+        XCTAssertEqual(release.copyText, "Caper 0.1.654 for macOS (5c00469)")
+        XCTAssertEqual(InstalledVersion(version: "0.1.654", revision: sha, platform: "iOS").copyText, "Caper 0.1.654 for iOS (5c00469)")
+        // Local builds carry the default version and no source revision.
+        let development = InstalledVersion(version: "0.1.0", revision: "", platform: "macOS")
+        XCTAssertNil(development.copyText)
+        XCTAssertEqual(development.label, "Development build")
+        XCTAssertEqual(development.accessibilityLabel, "Development build")
+    }
+
     func testBaselineCatchUpDismissalAndRetainedSettingsHistory() throws {
         var ack: Int64?
         let history = WhatsNewHistory(read: { ack }, write: { ack = $0 })

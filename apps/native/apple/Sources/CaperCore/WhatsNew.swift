@@ -92,3 +92,40 @@ public final class WhatsNewHistory {
         write(max(read() ?? 0, sequence))
     }
 }
+
+/// The installed version, as every client shows and copies it: "Version
+/// 0.1.654" on screen, "Caper 0.1.654 for macOS (5c00469)" when copied.
+/// Builds without a release revision are development builds.
+public struct InstalledVersion: Equatable, Sendable {
+    public let version: String?
+    public let revision: String?
+    public let platform: String
+
+    public init(version: String?, revision: String?, platform: String) {
+        self.version = version; self.platform = platform
+        self.revision = revision.flatMap { WhatsNewSnapshot.validRevision($0) ? $0 : nil }
+    }
+
+    public static var current: InstalledVersion {
+        #if os(iOS)
+        let platform = "iOS"
+        #else
+        let platform = "macOS"
+        #endif
+        return InstalledVersion(version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+                                revision: Bundle.main.object(forInfoDictionaryKey: "CaperSourceRevision") as? String,
+                                platform: platform)
+    }
+
+    /// Only release builds, which carry a full source revision, can be copied.
+    public var copyText: String? {
+        guard let version, let revision else { return nil }
+        return "Caper \(version) for \(platform) (\(revision.prefix(7)))"
+    }
+    public var label: String { copyText == nil ? "Development build" : "Version \(version ?? "")" }
+    public var accessibilityLabel: String { copyText == nil ? label : "\(label), copy" }
+    public static let copied = "Copied"
+    public static let hint = "Click to copy the version"
+    /// How long "Copied" replaces the label.
+    public static let feedbackSeconds: TimeInterval = 2
+}
