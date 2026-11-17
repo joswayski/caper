@@ -125,7 +125,11 @@ public struct InstalledVersion: Equatable, Sendable {
     public var label: String { copyText == nil ? "Development build" : "Version \(version ?? "")" }
     public var accessibilityLabel: String { copyText == nil ? label : "\(label), copy" }
     public static let copied = "Copied"
+    #if os(iOS)
+    public static let hint = "Tap to copy the version"
+    #else
     public static let hint = "Click to copy the version"
+    #endif
     /// How long "Copied" replaces the label.
     public static let feedbackSeconds: TimeInterval = 2
 }
