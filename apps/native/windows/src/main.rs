@@ -1848,7 +1848,8 @@ impl App {
     }
 
     /// Up and Down move between rows of the focused list, Enter and Space
-    /// pick, and Tab or Escape go to the composer.
+    /// pick, Tab goes on to the splitters, and Shift+Tab or Escape go to
+    /// the composer.
     fn side_key(&mut self, side: Side, vk: VIRTUAL_KEY, shift: bool) -> bool {
         let (k, n) = match side {
             Side::Channel(i) => (i, self.c.channels.len()),
@@ -1866,8 +1867,13 @@ impl App {
                 Side::Channel(i) => self.pick_channel(i),
                 Side::Direct(k) => self.pick_direct(k),
             },
-            // Tab goes on to the conversation; Shift+Tab wraps back to
-            // its end, the composer, as web's page order does.
+            // Tab goes on to the splitters, then the conversation; Shift+Tab
+            // wraps back to its end, the composer, as web's page order does.
+            VK_TAB if !shift && self.pane_rect(crate::panes::Pane::Sidebar).is_some() => {
+                self.clear_side_focus();
+                self.focus_pane(crate::panes::Pane::Sidebar);
+                return true;
+            }
             VK_TAB | VK_ESCAPE => self.set_composer_focus(true),
             _ => return false,
         }

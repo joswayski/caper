@@ -282,11 +282,17 @@ impl App {
                             .position(|q| *q == p)
                             .and_then(|i| parts.get(i + 1))
                             .copied();
+                        // The splitters sit between the sidebar's open row
+                        // and the composer: Shift+Tab from the first goes
+                        // back to the row, Tab from the last on to the
+                        // composer.
                         if let Some(p) = next {
                             self.focus_pane(p);
                         } else {
                             self.panes.focus = None;
-                            self.set_composer_focus(true);
+                            if !shift || !self.tab_to_sidebar() {
+                                self.set_composer_focus(true);
+                            }
                             self.panes_changed();
                         }
                     }
@@ -302,14 +308,6 @@ impl App {
                     }
                     _ => return None,
                 }
-            }
-            WM_KEYDOWN
-                if wp.0 == VK_TAB.0 as usize
-                    && self.composer.focused
-                    && !shift
-                    && !self.is_narrow() =>
-            {
-                self.focus_pane(Pane::Sidebar);
             }
             WM_LBUTTONDOWN => {
                 self.clear_pane_focus();
