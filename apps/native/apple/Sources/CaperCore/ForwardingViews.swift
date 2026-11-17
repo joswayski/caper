@@ -1,5 +1,6 @@
 import SwiftUI
 
+#if os(iOS)
 struct SharedOriginalView: View {
     let message: ChatMessage
     var isAvailable: (() -> Bool)? = nil
@@ -18,9 +19,6 @@ struct SharedOriginalView: View {
                 if MessageLinks.segments(in: message.content.text).contains(where: { $0.href != nil }) {
                     FormattedMessageText(source: message.content.text).font(CaperTheme.font(14)).tint(CaperTheme.link)
                         .modifier(MessageLinkPills())
-                        #if os(macOS)
-                        .textSelection(.enabled)
-                        #endif
                 } else {
                     FormattedMessageText(source: message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
                 }
@@ -43,7 +41,9 @@ struct SharedOriginalView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+#endif
 
+#if os(iOS)
 struct ForwardCardView: View {
     let message: ChatMessage
     let chat: ChatModel
@@ -69,7 +69,9 @@ struct ForwardCardView: View {
         }
     }
 }
+#endif
 
+#if os(iOS)
 struct ForwardPickerView: View {
     @Environment(\.dismiss) private var dismiss
     let chat: ChatModel
@@ -175,7 +177,9 @@ struct ForwardPickerView: View {
 
     private func finish() { if let close { close() } else { dismiss() } }
 }
+#endif
 
+#if os(iOS)
 struct ForwardConversationView: View {
     @Environment(\.dismiss) private var dismiss
     let chat: ChatModel
@@ -235,3 +239,4 @@ struct ForwardConversationView: View {
 
     private func finish() { if let close { close() } else { dismiss() } }
 }
+#endif

@@ -4,13 +4,12 @@ import Observation
 
 /// Presentation glue for hosts still using sheets. All editor controls are
 /// native; the existing photo/camera drawer keeps its original-byte contract.
+#if os(iOS)
 struct NativeProfileEditorSheet: View {
     @State private var state: NativeProfileEditing
     @State private var choosing = false
     @State private var dismissID = UUID()
-    #if os(iOS)
     @State private var pick: (() async throws -> Data)?
-    #endif
     init(model: AppModel, close: @escaping () -> Void) { _state = State(initialValue: NativeProfileEditing(model: model, close: close)) }
     var body: some View {
         NativeProfileForm(state: state, choose: { choosing = true })
@@ -29,23 +28,11 @@ struct NativeProfileEditorSheet: View {
             .sheet(item: $state.editing, onDismiss: state.closeCrop) { request in
                 NativeAttachmentEditorBridge(request: request, close: state.closeCrop)
                     .preferredColorScheme(.dark)
-                    #if os(macOS)
-                    .frame(minWidth: 720, minHeight: 600)
-                    #endif
             }
             .sheet(item: $state.history) { history in
                 NativeProfileHistoryForm(state: history) { state.history?.stop(); state.history = nil }
                     .preferredColorScheme(.dark)
-                    #if os(macOS)
-                    .frame(width: 360, height: 560)
-                    #endif
             }
-            #if os(macOS)
-            .fileImporter(isPresented: $choosing, allowedContentTypes: [.image]) { result in
-                if case .success(let url) = result { state.choose { try await Task.detached { try PictureFile.read(url) }.value } }
-            }
-            .onExitCommand(perform: state.requestClose)
-            #else
             .background(ProfileEditDismissObserver(preventDismissal: state.busy || state.draft?.hasChanges == true, attempt: state.requestClose))
             .background(ProfileSheetOutsideTap(close: state.requestClose))
             .dropDestination(for: DroppedAttachment.self) { items, _ in
@@ -63,20 +50,12 @@ struct NativeProfileEditorSheet: View {
             .fullScreenCover(isPresented: $choosing, onDismiss: {
                 guard let load = pick else { return }; pick = nil; state.choose(load)
             }) { AttachDrawer(mode: .picture(title: "Choose a picture", pick: { pick = $0 })) }
-            #endif
     }
 }
+#endif
 
 #if os(macOS)
 import AppKit
-
-struct NativeProfileForm: NSViewRepresentable {
-    let state: NativeProfileEditing
-    let choose: () -> Void
-    func makeNSView(context: Context) -> AppKitProfileEditor { AppKitProfileEditor(state: state, choose: choose) }
-    func updateNSView(_ view: AppKitProfileEditor, context: Context) { view.render() }
-    static func dismantleNSView(_ view: AppKitProfileEditor, coordinator: ()) { view.stop() }
-}
 
 @MainActor final class AppKitProfileEditor: AppKitSettingsDialog, NSTextFieldDelegate {
     let state: NativeProfileEditing
@@ -170,14 +149,6 @@ struct NativeProfileForm: NSViewRepresentable {
         guard !state.busy, let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], let url = urls.first else { return false }
         state.choose { try await Task.detached { try PictureFile.read(url) }.value }; return true
     }
-}
-
-struct NativeProfileHistoryForm: NSViewRepresentable {
-    let state: NativeProfileHistory
-    let close: () -> Void
-    func makeNSView(context: Context) -> AppKitProfileHistory { AppKitProfileHistory(state: state, close: close) }
-    func updateNSView(_ view: AppKitProfileHistory, context: Context) {}
-    static func dismantleNSView(_ view: AppKitProfileHistory, coordinator: ()) { view.stop() }
 }
 
 @MainActor final class AppKitProfileHistory: AppKitSettingsDialog {

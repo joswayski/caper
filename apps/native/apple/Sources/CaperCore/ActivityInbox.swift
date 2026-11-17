@@ -65,6 +65,7 @@ enum ActivityFilter: String, CaseIterable, Identifiable {
 }
 
 /// A sheet leaves the conversation, its draft, and an ongoing call intact.
+#if os(iOS)
 struct ActivityInboxEntry: View {
     @Bindable var model: AppModel
     var body: some View {
@@ -80,18 +81,16 @@ struct ActivityInboxEntry: View {
             .sheet(isPresented: $model.activityShown) { ActivityInboxView(model: model) }
     }
 }
+#endif
 
+#if os(iOS)
 struct ActivityInboxView: View {
     @Bindable var model: AppModel
     var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var reactionItem: ActivityItem?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    #if os(macOS)
-    private let actionSize: CGFloat = 32
-    #else
     private let actionSize: CGFloat = 44
-    #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -121,11 +120,7 @@ struct ActivityInboxView: View {
             HStack {
                 Toggle("Unread only", isOn: $model.activityUnreadOnly)
                     .labelsHidden().toggleStyle(.switch).tint(CaperTheme.terracotta)
-                    #if os(macOS)
-                    .controlSize(.mini)
-                    #else
                     .scaleEffect(0.75).frame(width: 40, height: 44)
-                    #endif
                     .onChange(of: model.activityUnreadOnly) { _, _ in Task { await model.loadActivity(reset: true) } }
                     .accessibilityIdentifier("activity-unread-only")
                 Text("Unread only ") + Text("(\(model.activityUnread))").foregroundColor(CaperTheme.muted)
@@ -218,14 +213,7 @@ struct ActivityInboxView: View {
                     }
                 }
             }
-            #if os(macOS)
-            // Native workspace dialogs supply the available size; the shipping
-            // sheet retains its fixed dimensions and environment dismissal.
-            .frame(idealWidth: 680, idealHeight: 640)
-            .frame(width: close == nil ? 680 : nil, height: close == nil ? 640 : nil)
-            #else
             .frame(minWidth: 300, idealWidth: 560, minHeight: 420, idealHeight: 640)
-            #endif
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("activity-inbox-dialog")
             .task {
@@ -239,3 +227,4 @@ struct ActivityInboxView: View {
 
     private func closeInbox() { if let close { close() } else { dismiss() } }
 }
+#endif

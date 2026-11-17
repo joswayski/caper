@@ -3,12 +3,6 @@ import SwiftUI
 import Observation
 
 #if os(macOS)
-struct NativeMediaViewerBridge: NSViewControllerRepresentable {
-    let request: MediaViewerRequest
-    let close: () -> Void
-    func makeNSViewController(context: Context) -> AppKitMediaViewer { AppKitMediaViewer(request: request, close: close) }
-    func updateNSViewController(_ controller: AppKitMediaViewer, context: Context) {}
-}
 
 @MainActor final class AppKitMediaViewer: NSViewController {
     private let state: NativeMediaViewing

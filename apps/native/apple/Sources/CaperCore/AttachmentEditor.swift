@@ -108,11 +108,11 @@ extension EnvironmentValues {
 /// `MediaViewerHost`: full screen on iPhone and iPad, and over the whole
 /// window on the Mac, where what it covers is disabled. Only the frontmost
 /// presentation can present, so the iPhone thread cover adds its own.
+#if os(iOS)
 struct AttachmentEditorHost: ViewModifier {
     @State private var request: AttachmentEditRequest?
 
     @ViewBuilder func body(content: Content) -> some View {
-        #if os(iOS)
         content
             .environment(\.attachmentEditor, AttachmentEditorAction { shown in withoutPresentationAnimation { request = shown } })
             .fullScreenCover(isPresented: Binding(get: { request != nil }, set: { if !$0 { request = nil } })) {
@@ -120,15 +120,6 @@ struct AttachmentEditorHost: ViewModifier {
                     .presentationBackground(.clear)
                     .preferredColorScheme(.dark)
             }
-        #else
-        ZStack {
-            content
-                .environment(\.attachmentEditor, AttachmentEditorAction { request = $0 })
-                .disabled(request != nil)
-                .accessibilityHidden(request != nil)
-            presented
-        }
-        #endif
     }
 
     @ViewBuilder private var presented: some View {
@@ -137,6 +128,7 @@ struct AttachmentEditorHost: ViewModifier {
         }
     }
 }
+#endif
 
 /// Presents or closes an editor cover without the system slide: the editor
 /// brings its own short entrance, and closing stays instant.
@@ -172,8 +164,10 @@ struct AttachmentEditorPicture: @unchecked Sendable {
 }
 
 /// Compatibility presentation for SwiftUI callers; editing is native on both platforms.
+#if os(iOS)
 struct AttachmentEditor: View {
     let request: AttachmentEditRequest
     let close: () -> Void
     var body: some View { NativeAttachmentEditorBridge(request: request, close: close) }
 }
+#endif

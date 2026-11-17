@@ -85,6 +85,7 @@ struct PeopleSuggestionState: Equatable {
 /// Down move the highlight and Escape closes the list (on the Mac without
 /// closing the dialog). Return reaches the field's `onSubmit`, which picks the
 /// highlighted row while the list is open.
+#if os(iOS)
 struct PeopleSuggestionKeys: ViewModifier {
     let text: String
     /// The rows showing; keys pass through while there are none.
@@ -98,13 +99,10 @@ struct PeopleSuggestionKeys: ViewModifier {
                 if press.key == .escape { closeList() } else { state.move(down: press.key == .downArrow, count: count) }
                 return .handled
             }
-            #if os(macOS)
-            // The dialog closes on Escape; the field keeps it while the list is open.
-            .onExitCommand(perform: count > 0 ? closeList : nil)
-            #endif
     }
     private func closeList() { state.close(for: text) }
 }
+#endif
 
 /// The list under an exact-username field, inline in its form so the dialog
 /// never clips it: the composer's person rows, at most six. As in the composer,
