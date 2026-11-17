@@ -463,7 +463,19 @@ import Observation
             guard let self, !self.model.activityStale else { return }; react(self.item)
         }
         reactButton.accessibilityIdentifier = "activity-react-\(item.id)"
-        let actions = UIStackView(arrangedSubviews: [reply, reactButton, UIView(), time, read]); actions.spacing = 8; actions.alignment = .center
+        // At accessibility text sizes the row stacks, as the dialog headers do,
+        // so Reply and React keep whole words instead of breaking per character.
+        let buttons = UIStackView(arrangedSubviews: [reply, reactButton]); buttons.spacing = 8
+        let meta = UIStackView(arrangedSubviews: [time, read]); meta.spacing = 8; meta.alignment = .center
+        let actions = UIStackView(arrangedSubviews: [buttons, UIView(), meta]); actions.spacing = 8
+        for button in [reply!, reactButton!] { button.setContentCompressionResistancePriority(.required, for: .horizontal) }
+        func fit(_ actions: UIStackView) {
+            let stacked = actions.traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+            actions.axis = stacked ? .vertical : .horizontal; actions.alignment = stacked ? .leading : .center
+            buttons.axis = stacked ? .vertical : .horizontal; buttons.alignment = stacked ? .leading : .fill
+        }
+        fit(actions)
+        actions.registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (actions: UIStackView, _) in fit(actions) }
         replyBody.axis = .vertical; replyBody.spacing = 8
         let line = UIView(); line.backgroundColor = UIColor(CaperTheme.border); line.heightAnchor.constraint(equalToConstant: 1).isActive = true
         let parts: [UIView] = [open, actions, replyBody, line]
