@@ -1244,6 +1244,12 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertFalse(members.waitForExistence(timeout: 2))
         app.buttons["Show member list"].firstMatch.tap()
         XCTAssertTrue(members.waitForExistence(timeout: 5))
+        // The side list opens profiles, as the phone's overlay does.
+        members.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Open profile for Maya")).firstMatch.tap()
+        let card = app.descendants(matching: .any)["mention-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "A member in the side list opens their card")
+        app.buttons["mention-card-close"].firstMatch.tap()
+        XCTAssertTrue(card.waitForNonExistence(timeout: 10))
         app.buttons["channel-chan00000002"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["selected-channel-name"].firstMatch.waitForExistence(timeout: 10))
         XCTAssertTrue(channels.isHittable, "Opening a channel keeps Browse")

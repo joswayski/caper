@@ -125,6 +125,13 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         // The reader's own Close, tap outside or swipe; not a layout change.
         members.closed = { [weak self] in self?.membersPreference = false; self?.applyMembers(); self?.returnFocusToComposer() }
         members.searchClosed = { [weak self] in if self?.members.side == true { self?.returnFocusToComposer() } }
+        // Rows open profiles in the overlay and in the wide layout's side panel.
+        members.openProfile = { [weak self] member in
+            guard let self else { return }
+            self.present(UIKitHosting.profileCard(model: self.model, member: member) { [weak self] target in
+                self?.presentations.block = target
+            }, animated: !UIKitStyle.reduceMotion)
+        }
         members.handle.dragged = { [weak self] travel in
             guard let self else { return }
             guard let travel else {
@@ -312,12 +319,6 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         var items: [UIMenuElement] = [
             UIAction(title: "Pins", image: UIKitStyle.icon("pin")) { [weak self] _ in self?.showPins() },
         ]
-        members.openProfile = { [weak self] member in
-            guard let self else { return }
-            self.present(UIKitHosting.profileCard(model: self.model, member: member) { [weak self] target in
-                self?.presentations.block = target
-            }, animated: !UIKitStyle.reduceMotion)
-        }
         if membersAvailable {
             let title = members.isOpen ? "Hide members" : "Members"
             items.append(UIAction(title: memberCount.map { "\(title) · \($0)" } ?? title, image: UIKitStyle.icon("users")) { [weak self] _ in

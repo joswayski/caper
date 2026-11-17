@@ -131,13 +131,21 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         return label
     }
     /// A dialog header: the title wraps at large text sizes instead of
-    /// clipping, and the trailing button keeps its full width.
+    /// clipping, and the trailing button keeps its full width. At
+    /// accessibility sizes the button goes below the title, so a long word
+    /// such as "Notifications" keeps the whole width and never breaks mid-word.
     static func header(_ title: UILabel, _ trailing: UIView, spacing: CGFloat = 12) -> UIStackView {
         title.setContentHuggingPriority(.defaultLow, for: .horizontal)
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         trailing.setContentHuggingPriority(.required, for: .horizontal)
         trailing.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let header = UIStackView(arrangedSubviews: [title, trailing]); header.spacing = spacing; header.alignment = .center
+        let header = UIStackView(arrangedSubviews: [title, trailing]); header.spacing = spacing
+        func fit(_ header: UIStackView) {
+            let stacked = header.traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+            header.axis = stacked ? .vertical : .horizontal; header.alignment = stacked ? .leading : .center
+        }
+        fit(header)
+        header.registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (header: UIStackView, _) in fit(header) }
         return header
     }
     static func button(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> UIButton {
