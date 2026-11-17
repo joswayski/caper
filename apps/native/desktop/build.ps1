@@ -13,19 +13,28 @@ $env:RUSTFLAGS = "$env:RUSTFLAGS -C target-feature=+crt-static".Trim()
 $env:LK_CUSTOM_WEBRTC = python (Join-Path $Native "voice-spike\fetch_libwebrtc.py") --platform windows
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# Verified official ONNX Runtime 1.23.2 x64 binary. Never package an
-# unverified download; the native library is loaded from beside Caper.exe.
-$OrtArchive = Join-Path $Native "target\onnxruntime-win-x64-1.23.2.zip"
+# Verified official ONNX Runtime 1.23.2 x64 binary from Microsoft's NuGet
+# package (the same DLL as the GitHub release's). Never package an unverified
+# download; the native library is loaded from beside Caper.exe. The license
+# and notices are the copies vendored for web.
+$OrtArchive = Join-Path $Native "target\microsoft.ml.onnxruntime.1.23.2.nupkg"
 $OrtExtract = Join-Path $Native "target\onnxruntime-win-x64-1.23.2"
-New-Item (Join-Path $Native "target") -ItemType Directory -Force | Out-Null
+$OrtNotices = Join-Path $Root 'apps\web\public\audio\dpdfnet8-v2'
+New-Item (Join-Path $OrtExtract "lib") -ItemType Directory -Force | Out-Null
 if (-not (Test-Path $OrtArchive)) {
-  Invoke-WebRequest 'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip' -OutFile $OrtArchive -MaximumRetryCount 6 -RetryIntervalSec 5
+  Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg' -OutFile $OrtArchive -MaximumRetryCount 6 -RetryIntervalSec 5
 }
-if ((Get-FileHash $OrtArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd') {
+if ((Get-FileHash $OrtArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a') {
   throw 'ONNX Runtime download hash mismatch'
 }
-Expand-Archive $OrtArchive -DestinationPath (Join-Path $Native "target") -Force
 $env:CAPER_ONNXRUNTIME_LIBRARY = Join-Path $OrtExtract 'lib\onnxruntime.dll'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$OrtZip = [System.IO.Compression.ZipFile]::OpenRead($OrtArchive)
+try {
+  [System.IO.Compression.ZipFileExtensions]::ExtractToFile($OrtZip.GetEntry('runtimes/win-x64/native/onnxruntime.dll'), $env:CAPER_ONNXRUNTIME_LIBRARY, $true)
+} finally {
+  $OrtZip.Dispose()
+}
 if ((Get-FileHash $env:CAPER_ONNXRUNTIME_LIBRARY -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea') {
   throw 'ONNX Runtime library hash mismatch'
 }
@@ -92,8 +101,8 @@ Get-ChildItem (Join-Path $Root 'shared\emoji\*.txt') | ForEach-Object {
     Copy-Item $_.FullName (Join-Path $Stage ("EMOJI-" + $_.Name))
 }
 Copy-Item $env:CAPER_ONNXRUNTIME_LIBRARY $Stage
-Copy-Item (Join-Path $OrtExtract 'LICENSE') (Join-Path $Stage 'ONNX-RUNTIME-LICENSE')
-Copy-Item (Join-Path $OrtExtract 'ThirdPartyNotices.txt') (Join-Path $Stage 'ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt')
+Copy-Item (Join-Path $OrtNotices 'ORT-LICENSE') (Join-Path $Stage 'ONNX-RUNTIME-LICENSE')
+Copy-Item (Join-Path $OrtNotices 'ORT-ThirdPartyNotices.txt') (Join-Path $Stage 'ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt')
 Copy-Item (Join-Path $Root 'apps\web\public\audio\dpdfnet8-v2\LICENSE-APACHE-2.0') (Join-Path $Stage 'DPDFNET-LICENSE')
 Copy-Item (Join-Path $FfmpegExtract 'ffmpeg.exe') $Stage
 $FfmpegLicenses = New-Item (Join-Path $Stage 'ffmpeg-licenses') -ItemType Directory -Force

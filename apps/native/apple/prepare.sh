@@ -22,17 +22,30 @@ for file in Satoshi-Regular.otf Satoshi-Medium.otf Satoshi-Bold.otf Satoshi-Blac
 done
 
 # Native CPU inference runs from the app bundle, never a runtime network fetch.
-# Keep the exact ORT headers and universal macOS binary from the same release.
+# Keep the exact ORT headers and macOS binaries from the same release: Microsoft's
+# 1.23.2 NuGet package, whose arm64 and x86_64 dylibs are joined into one
+# universal library. The license and notices are the copies vendored for web.
 ORT_NAME=onnxruntime-osx-universal2-1.23.2
 ORT_DIR="$ROOT/.build/$ORT_NAME"
-ORT_ARCHIVE="$ROOT/.build/$ORT_NAME.tgz"
-ORT_SHA=49ae8e3a66ccb18d98ad3fe7f5906b6d7887df8a5edd40f49eb2b14e20885809
+ORT_ARCHIVE="$ROOT/.build/microsoft.ml.onnxruntime.1.23.2.nupkg"
+ORT_SHA=25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a
+ORT_NOTICES="$REPO/apps/web/public/audio/dpdfnet8-v2"
 if [[ ! -f "$ORT_DIR/lib/libonnxruntime.1.23.2.dylib" ]]; then
   mkdir -p "$ROOT/.build"
-  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/$ORT_NAME.tgz" -o "$ORT_ARCHIVE"
+  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg' -o "$ORT_ARCHIVE"
   echo "$ORT_SHA  $ORT_ARCHIVE" | shasum -a 256 -c -
-  tar -xzf "$ORT_ARCHIVE" -C "$ROOT/.build"
+  rm -rf "$ORT_DIR" "$ORT_DIR.unpack"
+  unzip -q "$ORT_ARCHIVE" 'runtimes/osx-*/native/libonnxruntime.dylib' 'build/native/include/*' -d "$ORT_DIR.unpack"
+  echo "d306d2bc768540766c7ed8a1e0ff05d2870c77a934ebeee4a7bafa1b732ef299  $ORT_DIR.unpack/runtimes/osx-arm64/native/libonnxruntime.dylib" | shasum -a 256 -c -
+  echo "8c9c78de65ea3786f987c0d980e9c1b13a3a5fbc6b3e2965ba05b450e6e4c054  $ORT_DIR.unpack/runtimes/osx-x64/native/libonnxruntime.dylib" | shasum -a 256 -c -
+  mkdir -p "$ORT_DIR/lib"
+  mv "$ORT_DIR.unpack/build/native/include" "$ORT_DIR/include"
+  lipo -create "$ORT_DIR.unpack/runtimes/osx-arm64/native/libonnxruntime.dylib" \
+    "$ORT_DIR.unpack/runtimes/osx-x64/native/libonnxruntime.dylib" -output "$ORT_DIR/lib/libonnxruntime.1.23.2.dylib"
+  rm -rf "$ORT_DIR.unpack"
 fi
+cp "$ORT_NOTICES/ORT-LICENSE" "$ORT_DIR/LICENSE"
+cp "$ORT_NOTICES/ORT-ThirdPartyNotices.txt" "$ORT_DIR/ThirdPartyNotices.txt"
 test -f "$ORT_DIR/include/onnxruntime_cxx_api.h"
 test -f "$ORT_DIR/LICENSE"
 test -f "$ORT_DIR/ThirdPartyNotices.txt"
@@ -56,9 +69,8 @@ test -f "$IOS_ORT/LICENSE"
 test -f "$IOS_ORT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime"
 test -f "$IOS_ORT/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime"
 IOS_ORT_NOTICES="$IOS_ORT/ThirdPartyNotices.txt"
-if [[ ! -f "$IOS_ORT_NOTICES" ]]; then
-  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors https://raw.githubusercontent.com/microsoft/onnxruntime/v1.23.0/ThirdPartyNotices.txt -o "$IOS_ORT_NOTICES"
-fi
+# 1.23.0's notices are byte-identical to the 1.23.2 copy vendored for web.
+cp "$ORT_NOTICES/ORT-ThirdPartyNotices.txt" "$IOS_ORT_NOTICES"
 echo "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc  $IOS_ORT_NOTICES" | shasum -a 256 -c -
 
 # The native RNNoise fallback is built from exact upstream C sources and its

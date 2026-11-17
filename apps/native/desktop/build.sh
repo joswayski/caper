@@ -14,17 +14,21 @@ export CC="${CC:-clang-21}"
 export CXX="${CXX:-clang++-21}"
 export LK_CUSTOM_WEBRTC="${LK_CUSTOM_WEBRTC:-$(python3 "$native/voice-spike/fetch_libwebrtc.py" --platform linux)}"
 
-# Official ONNX Runtime 1.23.2, pinned independently of the Rust ort wrapper.
-# Never execute or package an unchecked download. Keep it out of git.
-ort_archive="$CARGO_TARGET_DIR/onnxruntime-linux-x64-1.23.2.tgz"
+# Official ONNX Runtime 1.23.2 from Microsoft's NuGet package, pinned
+# independently of the Rust ort wrapper. Its linux-x64 library is the same file
+# as the GitHub release's. Never execute or package an unchecked download. Keep
+# it out of git. The license and notices are the copies vendored for web.
+ort_archive="$CARGO_TARGET_DIR/microsoft.ml.onnxruntime.1.23.2.nupkg"
 ort_dir="$CARGO_TARGET_DIR/onnxruntime-linux-x64-1.23.2"
+ort_notices="$root/apps/web/public/audio/dpdfnet8-v2"
 mkdir -p "$CARGO_TARGET_DIR"
 if [[ ! -f "$ort_archive" ]]; then
-  curl -fL --retry 6 --retry-delay 5 --retry-all-errors -o "$ort_archive" 'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz'
+  curl -fL --retry 6 --retry-delay 5 --retry-all-errors -o "$ort_archive" 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg'
 fi
-echo '1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b  '"$ort_archive" | sha256sum --check --status
-mkdir -p "$ort_dir"
-tar -xzf "$ort_archive" -C "$ort_dir" --strip-components=1
+echo '25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a  '"$ort_archive" | sha256sum --check --status
+mkdir -p "$ort_dir/lib"
+python3 -c 'import shutil, sys, zipfile; shutil.copyfileobj(zipfile.ZipFile(sys.argv[1]).open(sys.argv[2]), open(sys.argv[3], "wb"))' \
+  "$ort_archive" runtimes/linux-x64/native/libonnxruntime.so "$ort_dir/lib/libonnxruntime.so.1.23.2"
 echo '13ab8084954fa4a47c777880180b90810d6020f021441395712b48a75b74c68b  '"$ort_dir/lib/libonnxruntime.so.1.23.2" | sha256sum --check --status
 export CAPER_ONNXRUNTIME_LIBRARY="$ort_dir/lib/libonnxruntime.so.1.23.2"
 echo '7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631  '"$root/apps/web/public/audio/dpdfnet8-v2/dpdfnet8_48khz_hr.onnx" | sha256sum --check --status
@@ -87,8 +91,8 @@ for notice in "$root/shared/emoji/"*.txt; do
   install -m 0644 "$notice" "$package_dir/Caper-linux-x64/EMOJI-$(basename "$notice")"
 done
 install -m 0755 "$CAPER_ONNXRUNTIME_LIBRARY" "$package_dir/Caper-linux-x64/"
-install -m 0644 "$ort_dir/LICENSE" "$package_dir/Caper-linux-x64/ONNX-RUNTIME-LICENSE"
-install -m 0644 "$ort_dir/ThirdPartyNotices.txt" "$package_dir/Caper-linux-x64/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
+install -m 0644 "$ort_notices/ORT-LICENSE" "$package_dir/Caper-linux-x64/ONNX-RUNTIME-LICENSE"
+install -m 0644 "$ort_notices/ORT-ThirdPartyNotices.txt" "$package_dir/Caper-linux-x64/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
 install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0" "$package_dir/Caper-linux-x64/DPDFNET-LICENSE"
 install -m 0755 "$ffmpeg_dir/ffmpeg" "$package_dir/Caper-linux-x64/ffmpeg"
 install -d "$package_dir/Caper-linux-x64/ffmpeg-licenses"
@@ -105,8 +109,8 @@ install -m 0755 "$CARGO_TARGET_DIR/release/caper-web-player" "$deb/usr/lib/caper
 install -m 0755 "$ffmpeg_dir/ffmpeg" "$deb/usr/lib/caper-desktop/ffmpeg"
 install -d "$deb/usr/share/doc/caper-desktop/ffmpeg-licenses"
 install -m 0644 "$ffmpeg_dir/licenses/"* "$ffmpeg_dir/SOURCES.txt" "$deb/usr/share/doc/caper-desktop/ffmpeg-licenses/"
-install -m 0644 "$ort_dir/LICENSE" "$deb/usr/share/doc/caper-desktop/ONNX-RUNTIME-LICENSE"
-install -m 0644 "$ort_dir/ThirdPartyNotices.txt" "$deb/usr/share/doc/caper-desktop/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
+install -m 0644 "$ort_notices/ORT-LICENSE" "$deb/usr/share/doc/caper-desktop/ONNX-RUNTIME-LICENSE"
+install -m 0644 "$ort_notices/ORT-ThirdPartyNotices.txt" "$deb/usr/share/doc/caper-desktop/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
 install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0" "$deb/usr/share/doc/caper-desktop/DPDFNET-LICENSE"
 install -m 0644 "$native/resources/caper.desktop" "$deb/usr/share/applications/caper.desktop"
 install -m 0644 "$native/resources/caper.svg" "$deb/usr/share/icons/hicolor/scalable/apps/caper.svg"

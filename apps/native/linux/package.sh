@@ -16,13 +16,13 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # The same pinned, checksummed downloads as apps/native/desktop/build.sh.
-ort_archive="$work/onnxruntime.tgz"
+ort_archive="$work/onnxruntime.nupkg"
 curl -fL --retry 6 --retry-delay 5 --retry-all-errors -o "$ort_archive" \
-  'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz'
-echo "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b  $ort_archive" | sha256sum --check --status
-mkdir "$work/ort"
-tar -xzf "$ort_archive" -C "$work/ort" --strip-components=1
-ort="$work/ort/lib/libonnxruntime.so.1.23.2"
+  'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg'
+echo "25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a  $ort_archive" | sha256sum --check --status
+ort="$work/libonnxruntime.so.1.23.2"
+python3 -c 'import shutil, sys, zipfile; shutil.copyfileobj(zipfile.ZipFile(sys.argv[1]).open(sys.argv[2]), open(sys.argv[3], "wb"))' \
+  "$ort_archive" runtimes/linux-x64/native/libonnxruntime.so "$ort"
 echo "13ab8084954fa4a47c777880180b90810d6020f021441395712b48a75b74c68b  $ort" | sha256sum --check --status
 ffmpeg_archive="$work/ffmpeg.zip"
 curl -fL --retry 6 --retry-delay 5 --retry-all-errors -o "$ffmpeg_archive" \
@@ -49,8 +49,8 @@ install -m 0644 "$root/LICENSE" "$native/THIRD-PARTY-NOTICES.md" "$root/shared/f
 for notice in "$root/shared/emoji/"*.txt; do
   install -m 0644 "$notice" "$licenses/EMOJI-$(basename "$notice")"
 done
-install -m 0644 "$work/ort/LICENSE" "$licenses/ONNX-RUNTIME-LICENSE"
-install -m 0644 "$work/ort/ThirdPartyNotices.txt" "$licenses/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
+install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/ORT-LICENSE" "$licenses/ONNX-RUNTIME-LICENSE"
+install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/ORT-ThirdPartyNotices.txt" "$licenses/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
 install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0" "$licenses/DPDFNET-LICENSE"
 install -m 0644 "$work/ffmpeg/licenses/"* "$work/ffmpeg/SOURCES.txt" "$licenses/ffmpeg-licenses/"
 # Named for the app id, so the desktop matches its windows to it.

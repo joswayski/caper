@@ -25,11 +25,9 @@ if [[ ! -f "$AAR" ]]; then
 fi
 echo "82048d1f462218adae4ba76477089ab0ba76093d84f733540066db1a8ba6b827  $AAR" | sha256sum -c -
 unzip -oq "$AAR" 'headers/*' 'jni/*/libonnxruntime.so' -d "$OUT/ort"
-for notice in LICENSE ThirdPartyNotices.txt; do
-  if [[ ! -f "$OUT/ort/$notice" ]]; then
-    curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.23.2/$notice" -o "$OUT/ort/$notice"
-  fi
-done
+# The same release's license and notices, as vendored for web.
+cp "$(dirname "$MODEL")/ORT-LICENSE" "$OUT/ort/LICENSE"
+cp "$(dirname "$MODEL")/ORT-ThirdPartyNotices.txt" "$OUT/ort/ThirdPartyNotices.txt"
 echo "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c  $OUT/ort/LICENSE" | sha256sum -c -
 echo "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc  $OUT/ort/ThirdPartyNotices.txt" | sha256sum -c -
 cp "$OUT/ort/LICENSE" "$OUT/assets/LICENSE-ONNXRuntime.txt"
