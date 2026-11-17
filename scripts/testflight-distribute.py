@@ -43,11 +43,19 @@ def token() -> str:
 
 
 def call(method: str, path: str, body: dict | None = None, query: dict | None = None) -> tuple[int, dict]:
-    # Apple's API sometimes answers 5xx for a few minutes. Reads are safe to
-    # repeat, so retry them with a bound; writes keep their own handling below.
+    # Apple's API sometimes answers 5xx or stops accepting connections for a few
+    # minutes. Reads are safe to repeat, so retry them with a bound; writes keep
+    # their own handling below.
     attempts = GET_ATTEMPTS if method == "GET" else 1
     for attempt in range(1, attempts + 1):
-        status, detail = request_once(method, path, body, query)
+        try:
+            status, detail = request_once(method, path, body, query)
+        except OSError as error:  # URLError, timeouts and resets
+            if attempt == attempts:
+                raise
+            print(f"{method} {path}: {error}; retrying in {GET_RETRY_S} seconds", flush=True)
+            time.sleep(GET_RETRY_S)
+            continue
         if status < 500 or attempt == attempts:
             return status, detail
         print(f"{method} {path}: Apple returned HTTP {status}; retrying in {GET_RETRY_S} seconds", flush=True)

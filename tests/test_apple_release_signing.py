@@ -14,6 +14,7 @@ from threading import Thread
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 
 UPLOAD = Path(__file__).resolve().parents[1] / "apps/native/apple/upload-testflight.sh"
@@ -198,6 +199,40 @@ if stage == "archive":
 
 
 class TestFlightDistributionTests(unittest.TestCase):
+    def test_reads_retry_network_timeouts_but_writes_do_not(self):
+        script = UPLOAD.parents[3] / "scripts/testflight-distribute.py"
+        with patch.dict(sys.modules, {"jwt": SimpleNamespace()}):
+            call = runpy.run_path(str(script))["call"]
+        timeout = urllib.error.URLError(TimeoutError("timed out"))
+        for method, outcomes, expected in (
+            ("GET", [timeout, timeout, (200, {"data": []})], (200, {"data": []})),
+            ("POST", [timeout, (201, {})], timeout),
+        ):
+            with self.subTest(method=method):
+                remaining = list(outcomes)
+                sleeps = []
+
+                def request_once(*_):
+                    outcome = remaining.pop(0)
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    return outcome
+
+                with (
+                    patch.dict(
+                        call.__globals__,
+                        {"request_once": request_once, "time": SimpleNamespace(sleep=sleeps.append)},
+                    ),
+                    redirect_stdout(io.StringIO()),
+                ):
+                    if isinstance(expected, Exception):
+                        with self.assertRaises(urllib.error.URLError):
+                            call(method, "/betaGroups", {})
+                        self.assertEqual(sleeps, [], "a write must not be repeated after a timeout")
+                    else:
+                        self.assertEqual(call(method, "/builds"), expected)
+                        self.assertEqual(len(sleeps), 2)
+
     def test_newly_valid_build_visibility_retries_but_permanent_errors_stop(self):
         script = UPLOAD.parents[3] / "scripts/testflight-distribute.py"
         # Authentication is unrelated to distribution; no Apple credentials or
