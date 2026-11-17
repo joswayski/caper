@@ -734,7 +734,26 @@ impl App {
                             }),
                     ),
                 };
-                ui.voice_join.set_label(text);
+                // Named with its channel, as the call card's Join: "Join
+                // voice in #general". A child label: `set_label` would
+                // replace the name.
+                let name = match action {
+                    Action::Join { switching, .. } => format!(
+                        "{} #{}",
+                        if switching {
+                            "Switch voice to"
+                        } else {
+                            "Join voice in"
+                        },
+                        state.channel_name
+                    ),
+                    _ => text.to_owned(),
+                };
+                if ui.voice_join.widget_name() != name.as_str() {
+                    ui.voice_join.set_child(Some(&gtk::Label::new(Some(text))));
+                    ui.voice_join.set_widget_name(&name);
+                    crate::app::rename(ui.voice_join.upcast_ref(), &name);
+                }
                 ui.voice_join.set_sensitive(enabled);
                 ui.voice_join.set_tooltip_text(Some(&tooltip));
                 // Leave lives on the call card; Switch is neutral. As on

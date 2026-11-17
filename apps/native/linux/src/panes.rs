@@ -149,10 +149,23 @@ impl App {
                 app.place_members();
             }
         });
+        // A narrow window's drawer holds the member list instead.
+        let (members, line) = (self.ui.members_panel.clone(), content.downgrade());
+        skip_line(content, move || {
+            members.is_visible()
+                && members
+                    .parent()
+                    .zip(line.upgrade())
+                    .is_some_and(|(parent, line)| parent == line)
+        });
         self.place_members();
 
         // The thread beside the conversation.
         let threads = &self.ui.thread_split;
+        // With no thread open, F8 still lands on its line first: it is the
+        // innermost one around the conversation.
+        let panel = self.ui.thread_panel.clone();
+        skip_line(threads, move || panel.is_visible());
         let app = Rc::downgrade(self);
         threads.connect_position_notify(move |threads| {
             let Some(app) = app.upgrade() else {
@@ -389,6 +402,20 @@ fn keys(paned: &gtk::Paned, apply: impl Fn(&gtk::Paned, Key) + 'static) {
         glib::Propagation::Stop
     });
     paned.add_controller(controller);
+}
+
+/// F8 passes over `paned`'s line while `shown` says the pane it resizes is
+/// hidden, as when no thread or member list is open.
+fn skip_line(paned: &gtk::Paned, shown: impl Fn() -> bool + 'static) {
+    paned.connect_has_focus_notify(move |paned| {
+        if paned.has_focus() && !shown() {
+            // Cycling from inside the focus change doesn't take.
+            let paned = paned.clone();
+            glib::idle_add_local_once(move || {
+                paned.emit_by_name::<bool>("cycle-handle-focus", &[&false]);
+            });
+        }
+    });
 }
 
 /// Double-clicking the line between panes puts it back where it started.

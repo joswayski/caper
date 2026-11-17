@@ -395,6 +395,15 @@ impl App {
             .picture()
             .and_then(|source| caper_client::attachments::profile_picture(source, name))
         {
+            // A right click offers the image menu, as on history pictures.
+            let menu = gtk::GestureClick::new();
+            menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+            let (app, image, anchor) = (self.clone(), picture.clone(), avatar.root.clone());
+            menu.connect_pressed(move |gesture, _, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                app.image_menu(image.clone(), anchor.upcast_ref());
+            });
+            avatar.root.add_controller(menu);
             let click = gtk::GestureClick::new();
             let app = self.clone();
             click.connect_released(move |_, _, _, _| {

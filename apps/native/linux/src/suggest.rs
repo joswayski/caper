@@ -86,7 +86,8 @@ impl Popup {
         popover.set_can_focus(false);
         popover.set_position(gtk::PositionType::Top);
         popover.add_css_class("suggestions");
-        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let list = role_box("list-box", "Suggestions");
+        list.set_orientation(gtk::Orientation::Vertical);
         popover.set_child(Some(&list));
         popover.set_parent(&composer.root);
         let tag = gtk::TextTag::builder().name("mention").build();
@@ -248,7 +249,18 @@ impl Popup {
     }
 
     fn row(&self, choice: &Choice, width: i32) -> gtk::Box {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        // As web's listbox: each row is an option named by what it shows.
+        let name = match choice {
+            Choice::Emoji(entry) => format!(":{}:", entry.name.replace(' ', "_")),
+            Choice::Mention(Candidate::Person(person)) => {
+                format!("{}, @{}", person.display_name, person.username)
+            }
+            Choice::Mention(Candidate::Everyone) => "@everyone".into(),
+            Choice::Mention(Candidate::Here) => "@here".into(),
+            Choice::Mention(Candidate::Feedback(name)) => format!("@{name}"),
+        };
+        let row = role_box("option", &name);
+        row.set_spacing(12);
         row.add_css_class("suggestion");
         row.set_size_request(width, 44);
         let (title, detail) = match choice {
@@ -390,4 +402,15 @@ fn at_sign() -> gtk::Label {
     let at = label("@", &["muted"]);
     at.set_size_request(24, 24);
     at
+}
+
+/// A box with the accessible `role` and name `name`.
+fn role_box(role: &str, name: &str) -> gtk::Box {
+    let xml = format!(
+        "<interface><object class=\"GtkBox\" id=\"widget\"><property name=\"accessible-role\">{role}</property><accessibility><property name=\"label\">{}</property></accessibility></object></interface>",
+        glib::markup_escape_text(name)
+    );
+    gtk::Builder::from_string(&xml)
+        .object("widget")
+        .expect("a GTK box")
 }

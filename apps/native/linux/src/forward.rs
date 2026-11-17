@@ -242,10 +242,9 @@ impl App {
         let empty = label("Join a channel or start a DM to forward here.", &["muted"]);
         empty.set_visible(false);
         body.append(&empty);
-        let note = gtk::TextView::builder()
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .accepts_tab(false)
-            .build();
+        let note: gtk::TextView = crate::app::named("GtkTextView", "Add a note");
+        note.set_wrap_mode(gtk::WrapMode::WordChar);
+        note.set_accepts_tab(false);
         note.add_css_class("forward-note");
         crate::composing::attach(&note, &root);
         let placeholder = label("Add a note (optional)", &["muted"]);

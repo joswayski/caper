@@ -273,12 +273,34 @@ impl Row {
         let text = self.markup.plain();
         let files = self.content.attachments.len() + usize::from(self.content.gif.is_some());
         let mut parts = vec![self.author.clone(), self.time.clone()];
-        parts.extend((!text.trim().is_empty()).then(|| text.trim().to_owned()));
-        parts.extend(match files {
-            0 => None,
-            1 => Some("1 attachment".to_owned()),
-            n => Some(format!("{n} attachments")),
-        });
+        let text = text.trim();
+        parts.extend((!text.is_empty()).then(|| text.to_owned()));
+        if text.is_empty() {
+            // Nothing else speaks for the files, so name them: "Image ·
+            // picture.png"; a hidden spoiler keeps its name hidden.
+            parts.extend(self.content.attachments.iter().map(|(file, hidden)| {
+                use caper_client::model::AttachmentKind;
+                let kind = match file.kind {
+                    _ if file.voice => return "Voice message".to_owned(),
+                    AttachmentKind::Image => "Image",
+                    AttachmentKind::Video => "Video",
+                    AttachmentKind::Audio => "Audio",
+                    AttachmentKind::File => "File",
+                };
+                if *hidden {
+                    format!("Spoiler {}", kind.to_lowercase())
+                } else {
+                    format!("{kind} · {}", file.name)
+                }
+            }));
+            parts.extend(self.content.gif.is_some().then(|| "GIF".to_owned()));
+        } else {
+            parts.extend(match files {
+                0 => None,
+                1 => Some("1 attachment".to_owned()),
+                n => Some(format!("{n} attachments")),
+            });
+        }
         parts.extend(self.edited.then(|| "edited".to_owned()));
         parts.extend(self.pending.then(|| "sending".to_owned()));
         parts.retain(|part| !part.is_empty());
@@ -1259,8 +1281,13 @@ fn build_widgets() -> Widgets {
     reactions.add_css_class("reactions");
     let reaction_error = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     reaction_error.add_css_class("reaction-error");
-    let reaction_error_label = label("error");
-    let retry_reaction = gtk::Button::with_label("Retry");
+    // As web's `role="alert"`, and its button's words.
+    let reaction_error_label = gtk::Label::builder()
+        .xalign(0.0)
+        .css_classes(["error"])
+        .accessible_role(gtk::AccessibleRole::Alert)
+        .build();
+    let retry_reaction = gtk::Button::with_label("Retry reaction");
     let dismiss_reaction = gtk::Button::with_label("Dismiss");
     for button in [&retry_reaction, &dismiss_reaction] {
         button.add_css_class("flat");
@@ -1903,7 +1930,26 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
         }
     }
     for chip in row.reactions.iter().filter(|_| !same_chips) {
-        let button = gtk::Button::with_label(&format!("{} {}", chip.emoji, chip.count));
+        // Named as on web: "👍, 2 reactions, including you".
+        let button: gtk::Button = crate::app::named(
+            "GtkButton",
+            &format!(
+                "{}, {} {}{}",
+                chip.emoji,
+                chip.count,
+                if chip.count == 1 {
+                    "reaction"
+                } else {
+                    "reactions"
+                },
+                if chip.mine { ", including you" } else { "" }
+            ),
+        );
+        // A child label: `set_label` would replace the accessible name.
+        button.set_child(Some(&gtk::Label::new(Some(&format!(
+            "{} {}",
+            chip.emoji, chip.count
+        )))));
         button.add_css_class("reaction");
         if chip.mine {
             button.add_css_class("mine");
@@ -2103,6 +2149,44 @@ mod tests {
         message.edited = true;
         message.pending = true;
         assert_eq!(message.accessible_label(), "Maya, 2:15 AM, edited, sending");
+        // Files with no text are named; with text, only counted.
+        let file = |name: &str, spoiler: bool| {
+            (
+                caper_client::model::Attachment {
+                    spoiler,
+                    id: name.into(),
+                    kind: caper_client::model::AttachmentKind::Image,
+                    content_type: "image/png".into(),
+                    name: name.into(),
+                    size: 2048,
+                    width: None,
+                    height: None,
+                    duration_ms: None,
+                    preview: false,
+                    url: None,
+                    preview_url: None,
+                    unavailable: false,
+                    status: caper_client::model::AttachmentStatus::Ready,
+                    animated: false,
+                    voice: false,
+                    waveform: None,
+                    transcript: None,
+                },
+                spoiler,
+            )
+        };
+        message.edited = false;
+        message.pending = false;
+        message.content.attachments = vec![file("picture.png", false), file("secret.png", true)];
+        assert_eq!(
+            message.accessible_label(),
+            "Maya, 2:15 AM, Image · picture.png, Spoiler image"
+        );
+        message.markup = crate::markup::Body::message("look", &[]);
+        assert_eq!(
+            message.accessible_label(),
+            "Maya, 2:15 AM, look, 2 attachments"
+        );
         message.blocked_run = Some(("k".into(), "2 blocked messages".into(), false));
         assert_eq!(message.accessible_label(), "2 blocked messages");
     }
