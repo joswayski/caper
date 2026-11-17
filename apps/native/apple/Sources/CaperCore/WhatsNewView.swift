@@ -89,6 +89,7 @@ struct WhatsNewDisplay: Identifiable {
     }
 }
 
+#if os(iOS)
 @MainActor struct WhatsNewPresentation: ViewModifier {
     @Bindable var model: AppModel
     // NSApplication hosts have no SwiftUI Scene to own scenePhase.
@@ -123,6 +124,7 @@ struct WhatsNewDisplay: Identifiable {
             }
     }
 }
+#endif
 
 /// A muted release-source link with pointer, press, and keyboard feedback.
 /// Used wherever a version is shown.
@@ -183,6 +185,7 @@ func releaseDayLabel(_ day: String) -> String {
     return parser.string(from: date)
 }
 
+#if os(iOS)
 @MainActor struct WhatsNewSheet: View {
     @Bindable var notes: WhatsNewModel
     @State private var display: WhatsNewDisplay
@@ -269,10 +272,7 @@ func releaseDayLabel(_ day: String) -> String {
             }
         }
         .onDisappear { notes.dismiss(display) }
-        #if os(macOS)
-        .frame(width: 520, height: 540).onExitCommand(perform: close)
-        #else
         .presentationDetents([.large]).presentationDragIndicator(.visible)
-        #endif
     }
 }
+#endif

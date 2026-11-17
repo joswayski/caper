@@ -61,6 +61,7 @@ public enum CaperTheme {
     }
 }
 
+#if os(iOS)
 @MainActor public struct CaperRootView: View {
     @State private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
@@ -93,6 +94,7 @@ public enum CaperTheme {
         .modifier(VoiceCallEffects(model: model))
     }
 }
+#endif
 
 /// The call's speaking rings and chimes: samples who is speaking while
 /// connected, and plays join and leave. SwiftUI's root and the UIKit client's
@@ -162,6 +164,7 @@ private struct MessageSkeleton: View {
 }
 
 /// Web's first-space page: an account with no spaces names one here.
+#if os(iOS)
 struct FirstSpaceView: View {
     @Bindable var model: AppModel
     @State private var name = ""
@@ -203,12 +206,7 @@ struct FirstSpaceView: View {
                     .id(opened?.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .background(CaperTheme.surface)
-                    #if os(iOS)
                     .presentationDetents([.medium, .large])
-                    #else
-                    .frame(width: 520)
-                    .frame(minHeight: 300)
-                    #endif
             }
             .onChange(of: model.deliverableInviteLink?.id, initial: true) { _, _ in
                 guard let link = model.takeInviteLink() else { return }
@@ -225,6 +223,7 @@ struct FirstSpaceView: View {
         }
     }
 }
+#endif
 
 struct SpacesUnavailableView: View {
     @Bindable var model: AppModel
@@ -808,6 +807,7 @@ struct DialogHeight: Layout {
     }
 }
 
+#if os(iOS)
 private struct WorkspaceView: View {
     @Bindable var model: AppModel
     @State private var sheet: WorkspaceSheet?
@@ -946,10 +946,8 @@ private struct WorkspaceView: View {
                         if narrow { AccountBar(model: model, sheet: $sheet) }
                     }
                     .frame(width: narrow ? nil : navigationWidth)
-                    #if os(iOS)
                     // Browse stays full-height behind the keyboard-sized conversation.
                     .ignoresSafeArea(narrow ? .keyboard : [], edges: .bottom)
-                    #endif
                     .allowsHitTesting(showsBrowse)
                     .accessibilityElement(children: .contain)
                     .accessibilityHidden(!showsBrowse)
@@ -982,12 +980,10 @@ private struct WorkspaceView: View {
                             // And under a status column, so no blackout shows beside the conversation.
                             .ignoresSafeArea(.container, edges: [.vertical, .trailing])
                     }
-                    #if os(iOS)
                     // Size before the horizontal transform, but keep keyboard avoidance
                     // enabled. Ignoring it on this fixed-height layer shifts the whole
                     // conversation down on Duo instead of just leaving Browse full-height.
                     .frame(height: narrow ? viewport.size.height : nil, alignment: .top)
-                    #endif
                     .modifier(BrowseLayer(showsBrowse: narrow && showsBrowse) { CGSize(width: narrow ? $0 * travel : 0, height: 0) })
                     .allowsHitTesting(!narrow || !showsBrowse)
                     .accessibilityElement(children: .contain)
@@ -1010,14 +1006,10 @@ private struct WorkspaceView: View {
                 .onChange(of: showsBrowse) { _, shows in if narrow && shows { endEditing() } }
                 }
             }
-            #if os(iOS)
             // The reader measures the keyboard-avoiding viewport; each layer
             // owns whether its contents resize or remain behind the keyboard.
             .frame(width: narrow ? geometry.size.width : nil, height: narrow ? geometry.size.height : nil, alignment: .topLeading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: narrow ? .topLeading : .center)
-            #else
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            #endif
             .background(CaperTheme.blackout)
             .environment(browseDrawer)
             .environment(membersDrawer)
@@ -1046,11 +1038,7 @@ private struct WorkspaceView: View {
 
     /// The hidden view stays in place to slide back, so it must not keep the keyboard.
     private func endEditing() {
-        #if os(iOS)
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        #elseif os(macOS)
-        NSApp.keyWindow?.makeFirstResponder(nil)
-        #endif
     }
 
     private var workspace: some View {
@@ -1092,12 +1080,6 @@ private struct WorkspaceView: View {
                             .accessibilityAddTraits(.isModal)
                             .onPreferenceChange(DialogDismissDisabled.self) { modalDismissDisabled = $0 }
                             .onPreferenceChange(ProfileDismissPreference.self) { profileDismissAction = $0 }
-                            #if os(macOS)
-                            .onExitCommand {
-                                if item.id == "profile" { profileDismissAction?.action() }
-                                else if !modalDismissDisabled { sheet = nil }
-                            }
-                            #endif
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -1131,9 +1113,7 @@ private struct WorkspaceView: View {
             else if CaperRuntime.voiceRosterFixtures.contains(parityFixture ?? "") { CaperRuntime.showVoiceRosterPreview(model) }
             else if parityFixture == "whats-new" { CaperRuntime.showWhatsNewPreview(model) }
         }
-        #if os(iOS)
         .overlay(alignment: .topLeading) { if parityMode { ParityPasteboardProbe() } }
-        #endif
     }
 
     private func sidebarMaximum(for viewport: CGFloat) -> Double {
@@ -1193,7 +1173,9 @@ private struct WorkspaceView: View {
         Binding(get: { if case .login = sheet { return nil }; return sheet }, set: { sheet = $0 })
     }
 }
+#endif
 
+#if os(iOS)
 private struct LoginPresentation: ViewModifier {
     @Binding var sheet: WorkspaceSheet?
     @Bindable var model: AppModel
@@ -1202,18 +1184,14 @@ private struct LoginPresentation: ViewModifier {
     }
 
     @ViewBuilder func body(content: Content) -> some View {
-        #if os(iOS)
         content.fullScreenCover(isPresented: presented) {
             LoginPage(model: model) { sheet = nil }.presentationBackground(CaperTheme.blackout)
         }
-        #else
-        content.overlay {
-            if case .login = sheet { LoginPage(model: model) { sheet = nil } }
-        }
-        #endif
     }
 }
+#endif
 
+#if os(iOS)
 private struct SpaceRail: View {
     @Bindable var model: AppModel
     let narrow: Bool
@@ -1258,9 +1236,11 @@ private struct SpaceRail: View {
         .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }
 }
+#endif
 
 /// One space in the rail. Kept out of SpaceRail's body so the Swift type
 /// checker handles each piece in reasonable time.
+#if os(iOS)
 struct SpaceRailButton: View {
     @Bindable var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1366,7 +1346,9 @@ struct SpaceRailButton: View {
         }
     }
 }
+#endif
 
+#if os(iOS)
 private struct ChannelSidebar: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
@@ -1386,10 +1368,6 @@ private struct ChannelSidebar: View {
     private var channelQuery: String {
         channelSearch.trimmingCharacters(in: .whitespaces).drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
     }
-    #if os(macOS)
-    @State private var directHeadingHovered = false
-    @FocusState private var directActionFocused: Bool
-    #endif
     /// Web's Browse channels search: trimmed, without leading "#"s.
     private var browseSearch: String {
         let trimmed = channelSearch.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1451,11 +1429,7 @@ private struct ChannelSidebar: View {
                         Button("\(channelsExpanded ? "Collapse" : "Expand") channels") { channelsExpanded.toggle() }
                     } label: { CaperIcon(name: "ellipsis") }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                        #if os(iOS)
                         .frame(width: 44, height: 44)
-                        #else
-                        .frame(width: 28, height: 28)
-                        #endif
                         .contentShape(Rectangle()).modifier(ControlHover())
                         .help("Channel options").accessibilityLabel("Channel options")
                 }
@@ -1494,9 +1468,7 @@ private struct ChannelSidebar: View {
                         }
                         // The whole row is the target, including the gap before Joined/Preview.
                         .padding(.vertical, 6)
-                        #if os(iOS)
                         .frame(minHeight: 44)
-                        #endif
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover())
                         .accessibilityLabel("\(channel.name)\(channel.private ? ", private" : ""), \(channel.joined ? "Joined" : "Read-only preview")")
@@ -1518,9 +1490,7 @@ private struct ChannelSidebar: View {
                         Text("#\(invitation.channel.name) · from @\(invitation.inviter.username)").lineLimit(1)
                             .font(CaperTheme.font(13, weight: .medium))
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
-                            #if os(iOS)
                             .frame(minHeight: 44)
-                            #endif
                             .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover())
                 }
@@ -1580,16 +1550,7 @@ private struct ChannelSidebar: View {
                 Spacer()
                 Button { if !SwipeTapGuard.swiping { sheet = .newDirectMessage } } label: { CaperIcon(name: "plus") }
                     .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
-                    #if os(macOS)
-                    .focused($directActionFocused)
-                    .opacity(directHeadingHovered || directActionFocused ? 1 : 0)
-                    .allowsHitTesting(directHeadingHovered || directActionFocused)
-                    #endif
             }.padding(.horizontal, 16).frame(height: directRowHeight)
-                #if os(macOS)
-                .contentShape(Rectangle())
-                .onHover { directHeadingHovered = $0 }
-                #endif
                 VStack(spacing: 2) {
                     ActivityInboxEntry(model: model)
                     if model.isFeedbackTeam {
@@ -1695,11 +1656,7 @@ private struct ChannelSidebar: View {
             if model.account != nil {
                 sectionDivider(height: dividerHeight, available: available, lower: lower, split: split)
                 ScrollView {
-                #if os(macOS)
-                let directRowHeight: CGFloat = 28
-                #else
                 let directRowHeight: CGFloat = 44
-                #endif
                 directMessagesList(rowHeight: directRowHeight)
                 }
                 .frame(height: available * (1 - split))
@@ -1719,6 +1676,7 @@ private struct ChannelSidebar: View {
         .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }
 }
+#endif
 
 private struct DirectUnreadBadge: View {
     let count: Int?
@@ -1738,15 +1696,13 @@ private struct DirectUnreadBadge: View {
 
 /// One DM in the sidebar, with its options menu: a context menu (press and
 /// hold on iPhone), plus a "…" on hover on macOS. Personal notes have none.
+#if os(iOS)
 private struct DirectMessageSidebarRow: View {
     @Bindable var model: AppModel
     let conversation: DirectMessageConversation
     let rowHeight: CGFloat
     /// The whole row, options included: its hover wash spans them, like web.
     @State private var hovered = false
-    #if os(macOS)
-    @FocusState private var optionsFocused: Bool
-    #endif
 
     private var selected: Bool { model.selectedDirectMessageID == conversation.id }
     private var muted: Bool { model.notificationsMuted(.direct(conversation.id)) }
@@ -1761,9 +1717,6 @@ private struct DirectMessageSidebarRow: View {
     var body: some View {
         HStack(spacing: 2) {
             rowButton
-            #if os(macOS)
-            optionsMenu
-            #endif
         }
         // Selection and hover span the row, trailing options included.
         .background { RoundedRectangle(cornerRadius: 6).fill(rowFill).allowsHitTesting(false) }
@@ -1799,28 +1752,13 @@ private struct DirectMessageSidebarRow: View {
         .contentShape(Rectangle())
     }
 
-    #if os(macOS)
-    private var optionsMenu: some View {
-        Menu { DirectMessageNotificationItems(model: model, conversationID: conversation.id) } label: { CaperIcon(name: "ellipsis") }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden)
-            .foregroundStyle(CaperTheme.muted)
-            .frame(width: 24, height: 24)
-            .focused($optionsFocused)
-            .opacity(hovered || optionsFocused ? 1 : 0)
-            .allowsHitTesting(hovered || optionsFocused)
-            // Hover feedback like the channel rows' options.
-            .contentShape(Rectangle()).modifier(ControlHover(isFocused: optionsFocused))
-            .padding(.trailing, 4)
-            .help("Conversation options for \(conversation.peer.displayName)")
-            .accessibilityLabel("Conversation options for \(conversation.peer.displayName)")
-            .accessibilityIdentifier("dm-options-\(conversation.id)")
-    }
-    #endif
 }
+#endif
 
 /// A channel's row. A live one grows into a card in place: your call's (its
 /// faces and controls beneath the row) or another room with people in voice
 /// (who is in it and Join beneath).
+#if os(iOS)
 struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
@@ -1831,10 +1769,6 @@ struct ChannelSidebarItem: View {
     /// The channel's line (name, voice count, quick join and options): its
     /// hover wash spans them, like web's `.channel-line`.
     @State private var lineHovered = false
-    #if os(macOS)
-    @FocusState private var optionsFocused: Bool
-    @FocusState private var joinFocused: Bool
-    #endif
 
     private var muted: Bool { model.notificationsMuted(.channel(spaceID: channel.spaceId, channelID: channel.id)) }
     /// Muted channels are dimmed, with a bell-slash.
@@ -1915,11 +1849,7 @@ struct ChannelSidebarItem: View {
                 .font(CaperTheme.font(13, weight: .medium))
                 .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.text : CaperTheme.muted)
                 .padding(.horizontal, 9)
-                #if os(iOS)
                 .frame(height: 44)
-                #else
-                .frame(height: 32)
-                #endif
                 .contentShape(Rectangle())
             }.buttonStyle(.plain)
                 .modifier(NavigationPrefetchModifier(wash: false) {
@@ -1937,14 +1867,7 @@ struct ChannelSidebarItem: View {
                 } label: { CaperIcon(name: "ellipsis") }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .foregroundStyle(CaperTheme.muted)
-                    #if os(iOS)
                     .frame(width: 44, height: 44)
-                    #else
-                    .frame(width: 32, height: 32)
-                    .focused($optionsFocused)
-                    .opacity(lineHovered || optionsFocused ? 1 : 0)
-                    .allowsHitTesting(lineHovered || optionsFocused)
-                    #endif
                     .contentShape(Rectangle()).modifier(ControlHover())
                     .help("Channel options for \(channel.name)")
                     .accessibilityLabel("Channel options for \(channel.name)")
@@ -1984,26 +1907,6 @@ struct ChannelSidebarItem: View {
     /// rows; a live row's card has Join instead.
     @ViewBuilder private func quickJoin(live: Bool) -> some View {
         let action = ChannelVoiceAction(model: model, channel: channel)
-        #if os(macOS)
-        if action.here {
-            Color.clear.frame(width: 28, height: 28).accessibilityHidden(true)
-        } else {
-            Button(action: action.join) {
-                CaperIcon(name: "headphones", size: 16).frame(width: 28, height: 28).contentShape(Rectangle())
-            }.buttonStyle(.plain)
-                .foregroundStyle(CaperTheme.muted)
-                .disabled(!action.enabled)
-                .focused($joinFocused)
-                .opacity((lineHovered || joinFocused) ? (action.enabled ? 1 : 0.45) : 0)
-                .allowsHitTesting(lineHovered || joinFocused)
-                .modifier(ControlHover(isFocused: joinFocused))
-                .help(action.help)
-                .accessibilityLabel(action.description)
-                .accessibilityIdentifier("join-voice-\(channel.id)")
-                .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
-                .onChange(of: joinFocused) { _, focused in if focused { model.prepareVoiceJoin(channel: channel) } }
-        }
-        #else
         if !action.here && !live {
             Button(action: SwipeTapGuard.unlessSwiping(action.join)) {
                 CaperIcon(name: "headphones", size: 18).frame(width: 44, height: 44).contentShape(Rectangle())
@@ -2014,9 +1917,9 @@ struct ChannelSidebarItem: View {
             .accessibilityLabel(action.description)
             .accessibilityIdentifier("join-voice-\(channel.id)")
         }
-        #endif
     }
 }
+#endif
 
 /// A live channel row's ending: a green waveform and how many are in voice. It
 /// is not a control; the row's name opens the chat and its card's Join joins.
@@ -2068,25 +1971,16 @@ enum VoiceSessionDuration {
 /// Prefetches a navigation target on pointer approach or keyboard focus
 /// (macOS), and gives the control its hover and focus feedback. A row that
 /// draws its own hover wash across its trailing controls passes `wash: false`.
+#if os(iOS)
 private struct NavigationPrefetchModifier: ViewModifier {
     var wash = true
     let action: () -> Void
-    #if os(macOS)
-    @FocusState private var focused: Bool
-    #endif
 
     func body(content: Content) -> some View {
-        #if os(macOS)
-        content
-            .onHover { if $0 { action() } }
-            .focused($focused)
-            .onChange(of: focused) { _, value in if value { action() } }
-            .modifier(ControlHover(isFocused: focused, wash: wash))
-        #else
         content.modifier(ControlHover(wash: wash))
-        #endif
     }
 }
+#endif
 
 struct SidebarIconButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -2280,6 +2174,7 @@ private struct LiveRoom: Identifiable {
 /// space's, or a feedback visit's), and a visited channel's live room. They
 /// stay while you browse DMs or a space without channels. Live rows of the
 /// listed space grow into their cards in place instead.
+#if os(iOS)
 struct LiveNowSection: View {
     @Bindable var model: AppModel
     let narrow: Bool
@@ -2340,11 +2235,7 @@ struct LiveNowSection: View {
                             .layoutPriority(-1)
                     }
                 }
-                #if os(iOS)
                 .frame(minHeight: 44)
-                #else
-                .frame(minHeight: 22)
-                #endif
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain).modifier(ControlHover())
@@ -2357,6 +2248,7 @@ struct LiveNowSection: View {
         }
     }
 }
+#endif
 
 /// Connecting… or Reconnecting… while your call is not connected yet.
 @MainActor private func callPending(_ voice: VoiceClient) -> String? {
@@ -2500,6 +2392,7 @@ private enum FaceTile: Identifiable {
 /// most), then Mute, Deafen and Leave. A tap anywhere but a control opens the
 /// call's chat; holding or right-clicking a face opens the full list, with
 /// another person's volume controls open. Nothing in it changes with who speaks.
+#if os(iOS)
 private struct VoiceCallCard<Heading: View>: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
@@ -2578,9 +2471,6 @@ private struct VoiceCallCard<Heading: View>: View {
         switch tile {
         case .person(let person):
             VoiceFace(person: person, size: faceSize).frame(width: facePitch, height: facePitch)
-                #if os(macOS)
-                .help(person.isSelf ? "\(person.name) (you): right-click for everyone" : "\(person.name): right-click for volume")
-                #endif
                 .accessibilityElement(children: .ignore)
                 // A tap opens the call's chat. As a button, macOS also reports its state.
                 .accessibilityAddTraits(.isButton)
@@ -2599,9 +2489,6 @@ private struct VoiceCallCard<Heading: View>: View {
                 // Someone folded in here is speaking.
                 .overlay { if folded.contains(where: \.speaking) { SpeakingRing(size: faceSize, rounded: false) } }
                 .frame(width: facePitch, height: facePitch)
-                #if os(macOS)
-                .help("Right-click for everyone in the call")
-                #endif
                 .accessibilityElement(children: .ignore)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("\(folded.count) more in the call")
@@ -2638,6 +2525,7 @@ private struct VoiceCallCard<Heading: View>: View {
         }
     }
 }
+#endif
 
 /// A face in your call: the speaking ring and, where shown, a mic-off or
 /// headphone-off badge at its corner.
@@ -2947,6 +2835,7 @@ private struct VoiceParticipantsList: View {
 /// row) the session time, and one Join (or Switch) that never changes the chat
 /// being read. A tap anywhere but a control opens its chat. No speaking rings:
 /// there is no audio from rooms you are not in.
+#if os(iOS)
 private struct LiveRoomCard<Heading: View>: View {
     @Bindable var model: AppModel
     let room: LiveRoom
@@ -2995,6 +2884,7 @@ private struct LiveRoomCard<Heading: View>: View {
         .accessibilityIdentifier("live-room-\(room.id)")
     }
 }
+#endif
 
 /// Up to `limit` overlapping faces of a room you are not in, then a "+N" chip.
 /// Not a control: a tap on them goes to the card or strip beneath.
@@ -3082,6 +2972,7 @@ private struct LiveJoinLabel: View {
 /// is. No name comes and goes with who speaks: their face's ring shows it.
 /// Otherwise a channel with people in voice offers Join, which never changes
 /// the chat being read.
+#if os(iOS)
 struct PhoneVoiceStrip: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
@@ -3171,7 +3062,9 @@ struct PhoneVoiceStrip: View {
         .padding(.leading, 13).padding(.trailing, 10)
     }
 }
+#endif
 
+#if os(iOS)
 private struct MemberPresenceView: View {
     @Bindable var model: AppModel
     @Bindable var presence: PresenceModel
@@ -3205,9 +3098,6 @@ private struct MemberPresenceView: View {
                         .font(CaperTheme.font(12))
                         .focused($searchFocused)
                         .onAppear { searchFocused = true }
-                        #if os(macOS)
-                        .onExitCommand { presence.query = ""; searching = false }
-                        #endif
                     Button { presence.query = ""; searching = false } label: { CaperIcon(name: "x") }
                         .buttonStyle(SidebarIconButton()).accessibilityLabel("Clear and close member search")
             }.padding(.horizontal, 12)
@@ -3307,22 +3197,16 @@ private struct MemberPresenceView: View {
                 .opacity(offline ? 0.6 : 1)
         }.buttonStyle(ProfileButtonStyle())
             .accessibilityLabel("Open profile for \(member.displayName)")
-            #if os(macOS)
-            .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
-                switch phase {
-                case .active(let point): pointer.location = point
-                case .ended: pointer.location = nil
-                }
-            }
-            #endif
     }
     private func statusColor(_ status: PresenceStatus) -> Color {
         switch status { case .online: CaperTheme.green; case .idle: Color(red: 0.72, green: 0.60, blue: 0.35); case .offline, .unknown: CaperTheme.border }
     }
 }
+#endif
 
 /// The member list on phones, over the conversation below its header. It
 /// slides in and out with Browse's curve and follows a finger the same way.
+#if os(iOS)
 private struct MembersOverlay: View {
     @Bindable var model: AppModel
     let shows: Bool
@@ -3393,6 +3277,7 @@ private struct MembersOverlay: View {
         }
     }
 }
+#endif
 
 #if os(macOS)
 /// Web opens a participant's audio menu on right-click. A local event monitor
@@ -3441,17 +3326,14 @@ private extension View {
 /// Web prepares a join as the pointer nears Join. Touch prepares on the press
 /// instead, in the Join buttons' styles: a touch-down gesture on each button
 /// would compete with the sidebar's scrolling.
+#if os(iOS)
 private struct PrepareVoiceOnApproach: ViewModifier {
     let prepare: () -> Void
     func body(content: Content) -> some View {
-        #if os(macOS)
-        // Hovering Join itself: a wider hover region would take clicks from neighboring rows.
-        content.onHover { if $0 { prepare() } }
-        #else
         content
-        #endif
     }
 }
+#endif
 
 private struct VoiceJoinButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -3468,20 +3350,13 @@ private struct VoiceJoinButton: ButtonStyle {
     }
 }
 
+#if os(iOS)
 private struct AccountBar: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     @Binding var sheet: WorkspaceSheet?
-    #if os(macOS)
-    @Environment(\.openSettings) private var openSettings
-    @Environment(\.desktopUpdates) private var updates
-    /// Closing a dialog returns focus here when macOS Keyboard navigation is enabled.
-    /// Native menu activation keeps the system's focus policy.
-    @FocusState private var settingsFocused: Bool
-    #else
     @Bindable private var effects = CaperEffects.shared
     @Bindable private var voiceMessages = VoiceMessageSettings.shared
-    #endif
     @State private var inputOptions = false
     @State private var outputOptions = false
     /// The narrowest sidebars leave room for a letter or two ("F…"): the avatar then stands alone.
@@ -3497,28 +3372,12 @@ private struct AccountBar: View {
                     // At least the dismiss button's height, so one line sits centred on its X.
                     Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)
-                        #if os(iOS)
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        #else
-                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                        #endif
                     Button { voice.error = nil } label: { CaperIcon(name: "x", size: 14) }
                         .buttonStyle(SidebarIconButton()).accessibilityLabel("Dismiss voice error")
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
                     .accessibilityIdentifier("voice-error")
             }
-            #if os(macOS)
-            if let review = updates.review {
-                // Keep the update outside the fixed-height profile/audio row.
-                Button(action: review) {
-                    Text("Update available").frame(maxWidth: .infinity)
-                }.buttonStyle(CaperSecondaryButton(minHeight: 36))
-                    .modifier(UpdateButtonShine())
-                    .accessibilityIdentifier("desktop-update-action")
-                    .help("Review the update before restarting Caper.")
-                    .padding(8)
-            }
-            #endif
             HStack(spacing: 5) {
                 Button { sheet = model.account == nil ? .login : .profile } label: {
                     HStack(spacing: 7) {
@@ -3535,59 +3394,13 @@ private struct AccountBar: View {
                     // Web: the account's name, else the guest chat identity, with its profile label.
                     .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
                     .accessibilityIdentifier("account-profile")
-            #if os(macOS)
-            Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
-                CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
-                    .foregroundStyle(voice.muted ? CaperTheme.voiceOff : CaperTheme.muted)
-            }.buttonStyle(SidebarIconButton()).help(voice.muted ? "Unmute" : "Mute")
-                .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
-                .accessibilityValue(voice.muted ? "Muted" : "On").accessibilityIdentifier("microphone-toggle")
-            Button { inputOptions.toggle() } label: {
-                CaperIcon(name: "chevron-down", size: 12)
-                    // Red with the microphone while muted, as on web.
-                    .foregroundStyle(voice.muted ? CaperTheme.voiceOff : CaperTheme.muted)
-                    #if os(iOS)
-                    .frame(width: 32, height: 44)
-                    #else
-                    .frame(width: 14, height: 28)
-                    #endif
-                    .contentShape(Rectangle())
-            }.buttonStyle(.plain).modifier(ControlHover()).help("Input Options").accessibilityLabel("Input Options")
-                .popover(isPresented: $inputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: true) }
-            Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
-                CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
-                    .foregroundStyle(voice.deafened ? CaperTheme.voiceOff : CaperTheme.muted)
-            }.buttonStyle(SidebarIconButton()).help(voice.deafened ? "Undeafen" : "Deafen")
-                .accessibilityLabel(voice.deafened ? "Undeafen audio" : "Deafen audio")
-                .accessibilityValue(voice.deafened ? "Deafened" : "On").accessibilityIdentifier("deafen-toggle")
-            Button { outputOptions.toggle() } label: {
-                CaperIcon(name: "chevron-down", size: 12)
-                    .foregroundStyle(voice.deafened ? CaperTheme.voiceOff : CaperTheme.muted)
-                    #if os(iOS)
-                    .frame(width: 32, height: 44)
-                    #else
-                    .frame(width: 14, height: 28)
-                    #endif
-                    .contentShape(Rectangle())
-            }.buttonStyle(.plain).modifier(ControlHover()).help("Output Options").accessibilityLabel("Output Options")
-                .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
-            #endif
             Menu {
-                #if os(macOS)
-                Button("Settings…") { openSettings() }
-                    .accessibilityIdentifier("open-settings")
-                Button(updates.isChecking ? "Checking…" : "Check for updates") { updates.check?() }
-                    .disabled(updates.check == nil || updates.isChecking)
-                    .accessibilityIdentifier("check-for-updates")
-                Divider()
-                #else
                 Section("Audio settings") {
                     Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
                         .accessibilityIdentifier("sound-effects")
                     Toggle(VoiceMessage.sendOnStopTitle, isOn: $voiceMessages.sendOnStop)
                         .accessibilityIdentifier("voice-messages-send-on-stop")
                 }
-                #endif
                 Button("Audio test") { sheet = .audio }
                     .disabled(voice.phase == .leaving)
                 if voice.phase == .connected || CaperRuntime.isAudioPreview("audio-statistics") {
@@ -3608,11 +3421,7 @@ private struct AccountBar: View {
                 else { Button("Sign in") { sheet = .login } }
             } label: {
                 CaperIcon(name: "settings", size: 20).foregroundStyle(CaperTheme.muted)
-                    #if os(iOS)
                     .frame(width: 44, height: 44)
-                    #else
-                    .frame(width: 28, height: 28)
-                    #endif
                     .contentShape(Rectangle())
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Account settings")
@@ -3622,12 +3431,7 @@ private struct AccountBar: View {
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
                 .fixedSize()
                 // The same hover and focus feedback as the microphone and deafen buttons beside it.
-                #if os(macOS)
-                .focused($settingsFocused)
-                .modifier(ControlHover(isFocused: settingsFocused))
-                #else
                 .modifier(ControlHover())
-                #endif
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
             }.padding(4)
                 .frame(height: CaperTheme.accountBarHeight)
@@ -3640,15 +3444,9 @@ private struct AccountBar: View {
         .transaction { transaction in
             if transaction.browseSlide { transaction.animation = nil }
         }
-        #if os(macOS)
-        .onChange(of: sheet?.id) { old, new in
-            guard new == nil, let old, ["audio", "connection", "diagnostics", "notifications", "privacy"].contains(old) else { return }
-            // Next turn: the workspace is re-enabled once the dialog has gone.
-            DispatchQueue.main.async { settingsFocused = true }
-        }
-        #endif
     }
 }
+#endif
 
 /// Web's Input Options / Output Options menus.
 /// Web's PresenceDot: colored by status, labelled "Online", "Idle (last known;
@@ -3666,6 +3464,7 @@ private struct PresenceDot: View {
     }
 }
 
+#if os(iOS)
 private struct AccountAudioMenu: View {
     @Bindable var voice: VoiceClient
     let input: Bool
@@ -3673,14 +3472,7 @@ private struct AccountAudioMenu: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(input ? "Microphone" : "Audio output").font(CaperTheme.font(13, weight: .bold))
-            #if os(macOS)
-            CaperDevicePicker(title: "Device", selection: Binding(get: { (input ? voice.selectedInputID : voice.selectedOutputID) ?? "" }, set: { uid in
-                let changed = input ? voice.selectInput(uid) : voice.selectOutput(uid)
-                error = changed ? nil : "Could not switch devices. Check system audio settings."
-            }), devices: input ? voice.availableInputs : voice.availableOutputs, input: input)
-            #else
             IOSCurrentAudioRoute(voice: voice, input: input)
-            #endif
             if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
             if input {
                 Text("Input volume · \(voice.inputGain)%").font(CaperTheme.font(12))
@@ -3692,12 +3484,11 @@ private struct AccountAudioMenu: View {
                     .accessibilityLabel("Output volume")
             }
         }.padding(16).frame(width: 260).background(CaperTheme.surface)
-            #if os(iOS)
             .presentationCompactAdaptation(.popover)
-            #endif
             .task { await voice.refreshAudioDevices() }
     }
 }
+#endif
 
 struct Avatar: View {
     let name: String; let size: CGFloat
@@ -3779,6 +3570,7 @@ extension CaperAvatar {
     #endif
 }
 
+#if os(iOS)
 private struct ConversationStage: View {
     @Bindable var model: AppModel
     let narrow: Bool
@@ -3802,6 +3594,7 @@ private struct ConversationStage: View {
         } else { ChatView(model: model, narrow: narrow, browse: browse, membersVisible: membersVisible, toggleMembers: toggleMembers) }
     }
 }
+#endif
 
 /// The timeline's content/viewport heights and whether its end is visible.
 extension TimelinePin {
@@ -3817,6 +3610,7 @@ extension TimelinePin {
     }
 }
 
+#if os(iOS)
 private struct ChatView: View {
     @Bindable var model: AppModel
     @Bindable var chat: ChatModel
@@ -4044,36 +3838,19 @@ private struct ChatView: View {
         GeometryReader { geometry in
             let maximum = Double(min(600, geometry.size.width - min(300, geometry.size.width / 2)))
             HStack(spacing: 0) {
-                #if os(iOS)
                 channelBody
-                #else
-                if !narrow || chat.threadRootID == nil { channelBody }
-                #endif
                 if chat.threadRootID != nil {
                     if narrow {
-                        #if os(macOS)
-                        threadContent.frame(maxWidth: .infinity).modifier(Entrance.panel)
-                        #endif
                     } else { resizableThread(maximum: maximum) }
                 }
             }
         }
-        #if os(iOS)
         .fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
             NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource, fullScreen: true)
                 // A presentation: carry the column for its header rule.
                 .environment(\.statusColumn, statusColumn)
                 .presentationBackground(.clear)
         }
-        #else
-        // Web: Escape closes the thread unless a picker or dialog is open. Sheets,
-        // popovers (Pins included) and menus are their own windows and keep
-        // Escape; the composer keeps it for its suggestions.
-        .onExitCommand {
-            guard chat.threadRootID != nil, !showingPins, reactionMessage == nil, reactorsTarget == nil, mentionCard == nil else { return }
-            chat.closeThread()
-        }
-        #endif
         }
         .overlay(alignment: .bottomTrailing) { statusColumnControls }
         .sheet(item: $chat.forwardTarget) { message in ForwardPickerView(chat: chat, message: message) }
@@ -4182,43 +3959,24 @@ private struct ChatView: View {
                     .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
                     // The first link's card, after a pause in typing (a newer link cancels it).
                     .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
-                    #if os(iOS)
                     .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
-                    #endif
                     channelGifButton
-                    #if os(macOS)
-                    ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
-                    #endif
                 }
-                #if os(iOS)
                 // The held microphone stays put while the bar covers the field.
                 .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight, controller: composerAutocomplete))
-                #endif
                 VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight, controller: composerAutocomplete).padding(.trailing, 2)
             }
             ComposerEmbedPreview(chat: chat)
         }
         .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-        #if os(macOS)
-        // The conversation draws suggestions above this box (see ComposerSuggestionsOverlay).
-        .anchorPreference(key: ChatComposerAnchorKey.self, value: .bounds) { $0 }
-        #endif
     }
     /// Its own property: inline in `channelBody` it pushed that expression past
     /// the Swift type checker's time limit.
     @ViewBuilder private var channelGifButton: some View {
-        #if os(iOS)
         ComposerEmojiButton(controller: composerAutocomplete, configuration: chat.klipy, mediaEnabled: chat.canSendGif(), send: { gif, query in
             Task { await chat.sendGif(gif, query: query) }
         }).frame(height: composerMinHeight)
-        #else
-        if let klipy = chat.klipy {
-            ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(), controller: composerAutocomplete, send: { gif, query in
-                Task { await chat.sendGif(gif, query: query) }
-            }).frame(height: composerMinHeight)
-        }
-        #endif
     }
     private var channelBody: some View {
         VStack(spacing: 0) {
@@ -4286,16 +4044,6 @@ private struct ChatView: View {
                 .task(id: voiceChannel?.id) {
                     if let channel = voiceChannel { await model.refreshVoiceAvailability(channel: channel) }
                 }
-                #if os(macOS)
-                // Use the fixed header as the native anchor. A point inside the
-                // timeline can resolve to a lazy row that live delivery removes.
-                .popover(item: $reactionMessage, attachmentAnchor: .point(.bottom), arrowEdge: .top) { message in
-                    ReactionPicker { emoji in
-                        reactionMessage = nil
-                        Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
-                    }
-                }
-                #endif
 
             // Phones: your call, or the open channel's voice, directly under the header.
             if narrow { PhoneVoiceStrip(model: model, channel: voiceChannel, browse: browse) }
@@ -4411,9 +4159,7 @@ private struct ChatView: View {
                         if timelinePin.needsReveal(to: pin, scrolling: timelineScrolling) { revealLatest(proxy) }
                     }
                 }
-                #if os(iOS)
                 .scrollDismissesKeyboard(.interactively)
-                #endif
                 .accessibilityIdentifier("chat-timeline")
                 .modifier(TimelineScrollActivity(active: $timelineScrolling))
                 // Pills report the pointer in this space; the popover anchors in it too.
@@ -4422,15 +4168,6 @@ private struct ChatView: View {
                 .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: browse))
                 // Right opens Browse; left opens Members, from anywhere in the timeline.
                 .modifier(MembersSwipe(open: false, enabled: narrow && membersAvailable && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: toggleMembers))
-                #if os(macOS)
-                // Web: End in the message list jumps to the latest message.
-                .focusable().focusEffectDisabled()
-                .onKeyPress(.end) {
-                    guard let id = chat.channelMessages.last?.id else { return .ignored }
-                    proxy.scrollTo(id, anchor: .bottom)
-                    return .handled
-                }
-                #endif
                 .onChange(of: chat.channelMessages.last?.id, initial: true) { old, id in
                     guard !timelineScrolling else { return }
                     if chat.pendingMessage != nil { revealPending(proxy) }
@@ -4494,11 +4231,7 @@ private struct ChatView: View {
                 HStack(alignment: .top, spacing: 8) {
                     Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)
-                        #if os(iOS)
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        #else
-                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                        #endif
                     Button { voice.error = nil } label: { CaperIcon(name: "x", size: 14) }
                         .buttonStyle(SidebarIconButton()).accessibilityLabel("Dismiss voice error")
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -4566,9 +4299,7 @@ private struct ChatView: View {
                             Button("Review reply") { Task { await chat.openThread(root) } }
                         }.font(CaperTheme.font(11))
                     }
-                    #if os(iOS)
                     ComposerSuggestionsView(controller: composerAutocomplete)
-                    #endif
                     channelComposerField
                 }
                 Button { Task { await chat.send() } } label: {
@@ -4585,14 +4316,7 @@ private struct ChatView: View {
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
             }
-            #if os(iOS)
             .modifier(VoiceLockLayer())
-            #endif
-            #if os(macOS)
-            // Clicking the microphone replaces this row with the recording bar.
-            .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight, controller: composerAutocomplete,
-                                         restoreFocus: { composerAutocomplete.restoreFocus() }))
-            #endif
             }
             }
             }.padding(.horizontal, 18).padding(.top, 4)
@@ -4622,11 +4346,6 @@ private struct ChatView: View {
                 }
                 chat.addAttachments(items.map(\.file), to: target)
                 fileDropTarget = nil
-                #if os(macOS)
-                // Back to the message once the new tile is in, rather than the
-                // tile's Remove button and its focus ring.
-                DispatchQueue.main.async { composerAutocomplete.restoreFocus() }
-                #endif
                 return true
             } isTargeted: {
                 fileDropTargeted = $0
@@ -4639,36 +4358,9 @@ private struct ChatView: View {
                     FileDropOverlay(title: text.title, detail: text.detail)
                 }
             }
-            #if os(macOS)
-            .modifier(ComposerSuggestionsOverlay<ChatComposerAnchorKey>(controller: composerAutocomplete))
-            // Drawn above the whole conversation so the timeline's clipping
-            // and later rows never cover a hovered chip's tooltip.
-            .overlayPreferenceValue(ReactionTooltipKey.self) { tooltip in
-                GeometryReader { proxy in
-                    if let tooltip {
-                        let chip = proxy[tooltip.anchor]
-                        ReactionTooltipBubble(emoji: tooltip.emoji, text: tooltip.text)
-                            .modifier(Entrance.anchored)
-                            // Start at the chip, kept 8 points inside the conversation.
-                            .alignmentGuide(.leading) { size in
-                                let rightmost: CGFloat = max(8, proxy.size.width - size.width - 8)
-                                return -min(max(8, chip.minX), rightmost)
-                            }
-                            // Above the chip; below it when there is no room above.
-                            .alignmentGuide(.top) { size in
-                                let top: CGFloat = chip.minY - 6 - size.height
-                                return top >= 0 ? -top : -(chip.maxY + 6)
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    }
-                }
-                .allowsHitTesting(false)
-            }
-            #endif
             .sheet(item: $reactorsTarget) { target in
                 ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: viewerID)
             }
-            #if os(iOS)
             .sheet(item: $reactionMessage) { message in
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
                                     canReact: chat.canInteract,
@@ -4697,16 +4389,9 @@ private struct ChatView: View {
                                         ? { chat.unblock(message.author) } : nil,
                                     viewReactions: { emoji in reactorContext.show(message.id, emoji) })
             }
-            #endif
-            #if os(macOS)
-            .popover(isPresented: $showingPins, attachmentAnchor: .point(.center), arrowEdge: .top) {
-                PinnedMessagesView(chat: chat, model: model, close: { showingPins = false }).frame(width: 470, height: 360)
-            }
-            #else
             .sheet(isPresented: $showingPins) {
                 PinnedMessagesView(chat: chat, model: model, close: { showingPins = false })
             }
-            #endif
             .modifier(BlockConfirmation(target: $blockTarget) { target in
                 do { try await model.block(target) } catch { chat.error = FriendlyError.message(for: error) }
             })
@@ -4770,6 +4455,7 @@ private struct ChatView: View {
         return "\(names) \(chat.typingNames.count == 1 ? "is" : "are") typing…"
     }
 }
+#endif
 
 /// A leading checkbox keeps the broadcast option away from the reply's Send button.
 private struct ThreadBroadcastToggleStyle: ToggleStyle {
@@ -4865,6 +4551,7 @@ private struct ThreadBackSwipe: ViewModifier {
 }
 #endif
 
+#if os(iOS)
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
     /// For the mention card: names from loaded members/people/DMs, and Message.
@@ -4991,7 +4678,6 @@ private struct NativeThreadView: View {
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
     }
-    #if os(iOS)
     private var canSwipeBack: Bool {
         fullScreen && !closingBack && reactionMessage == nil && !showingEmojiPicker && reactorsTarget == nil && mentionCard == nil &&
         blockTarget == nil && forwardMessage == nil && !fileDropTargeted
@@ -5015,31 +4701,19 @@ private struct NativeThreadView: View {
             }
         }
     }
-    #endif
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                #if os(iOS)
                 Button(action: SwipeTapGuard.unlessSwiping { chat.closeThread() }) {
                     CaperIcon(name: "arrow-left", size: 20)
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(.plain)
                     .accessibilityLabel(direct ? "Back to conversation" : "Back to channel")
-                #endif
                 VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text(direct ? "with \(chat.channelName)" : "in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
-                #if os(macOS)
-                Button { chat.closeThread() } label: {
-                    Text(direct ? "Back to conversation" : "Back to channel")
-                        .frame(minHeight: 28)
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
-                #endif
             }.padding(.horizontal, 18).frame(height: 50)
                 .modifier(BottomRule())
-                #if os(iOS)
                 .modifier(ThreadBackSwipe(enabled: canSwipeBack, move: moveBack, release: releaseBack))
-                #endif
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     // Read once per render, never per scroll frame in the geometry below.
@@ -5102,13 +4776,8 @@ private struct NativeThreadView: View {
                         if timelinePin.needsReveal(to: pin, scrolling: timelineScrolling), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
-                #if os(iOS)
                 .scrollDismissesKeyboard(.interactively)
                 .modifier(ThreadBackSwipe(enabled: canSwipeBack, move: moveBack, release: releaseBack))
-                #endif
-                #if os(macOS)
-                .accessibilityIdentifier("thread-timeline")
-                #endif
                 .modifier(TimelineScrollActivity(active: $timelineScrolling))
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
@@ -5166,9 +4835,7 @@ private struct NativeThreadView: View {
                 }
                 .toggleStyle(ThreadBroadcastToggleStyle())
                 .disabled(chat.pendingMessage != nil)
-                #if os(iOS)
                 ComposerSuggestionsView(controller: composerAutocomplete)
-                #endif
                 HStack(alignment: .bottom, spacing: 8) {
                     // As the channel's field: the reply draft's link preview sits below the text inside the box.
                     VStack(alignment: .leading, spacing: 0) {
@@ -5185,17 +4852,10 @@ private struct NativeThreadView: View {
                             }
                                 .frame(minHeight: 42, maxHeight: 174)
                                 .fixedSize(horizontal: false, vertical: true)
-                                #if os(iOS)
                                 .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
-                                #endif
                             threadGifButton
-                            #if os(macOS)
-                            ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading)
-                            #endif
                         }
-                        #if os(iOS)
                         .modifier(VoiceComposerCover(chat: chat, inThread: true, controller: composerAutocomplete))
-                        #endif
                         VoiceRecordButton(chat: chat, inThread: true, controller: composerAutocomplete).padding(.trailing, 2)
                     }
                         ComposerEmbedPreview(chat: chat, inThread: true)
@@ -5204,18 +4864,9 @@ private struct NativeThreadView: View {
                         // Clipped too: the fill's square corners showed outside the rounded border.
                         .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                        #if os(macOS)
-                        .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
-                        #endif
                     sendReplyButton
                 }
-                #if os(iOS)
                 .modifier(VoiceLockLayer())
-                #endif
-                #if os(macOS)
-                .modifier(VoiceComposerCover(chat: chat, inThread: true, controller: composerAutocomplete,
-                                             restoreFocus: { composerAutocomplete.restoreFocus() }))
-                #endif
                 if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
                    !chat.sending, chat.error != nil || chat.sendRejected {
                     Text("Confirm or dismiss the pending message before sending a reply.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
@@ -5237,11 +4888,6 @@ private struct NativeThreadView: View {
                 }
                 chat.addAttachments(items.map(\.file), to: target)
                 fileDropTarget = nil
-                #if os(macOS)
-                // Back to the message once the new tile is in, rather than the
-                // tile's Remove button and its focus ring.
-                DispatchQueue.main.async { composerAutocomplete.restoreFocus() }
-                #endif
                 return true
             } isTargeted: {
                 fileDropTargeted = $0
@@ -5253,11 +4899,7 @@ private struct NativeThreadView: View {
                     FileDropOverlay(title: "Add files to thread", detail: text.detail)
                 }
             }
-            #if os(macOS)
-            .modifier(ComposerSuggestionsOverlay<ThreadComposerAnchorKey>(controller: composerAutocomplete))
-            #endif
             .sheet(item: $reactionMessage) { message in
-                #if os(iOS)
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
                     canReact: chat.canInteract,
                     canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
@@ -5274,22 +4916,15 @@ private struct NativeThreadView: View {
                     unblock: BlockedMessages.canUnblock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
                         ? { chat.unblock(message.author) } : nil,
                     viewReactions: { emoji in reactors.show(message.id, emoji) })
-                #else
-                ReactionPicker { emoji in reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } }
-                #endif
             }
             .sheet(item: $reactorsTarget) { target in ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: chat.currentAuthor?.id) }
-            #if os(iOS)
             .sheet(item: $forwardMessage) { message in ForwardPickerView(chat: chat, message: message) }
-            #endif
             .onChange(of: reactionMessage?.id) { _, id in if id == nil { showingEmojiPicker = false } }
             .onChange(of: chat.editingContext) { _, _ in reactionMessage = nil; reactorsTarget = nil; forwardMessage = nil }
             .modifier(BlockConfirmation(target: $blockTarget) { await chat.block($0) })
-            #if os(iOS)
             // The thread is a cover on iPhone, which only it can present over.
             .modifier(MediaViewerHost())
             .modifier(AttachmentEditorHost())
-            #endif
             // One element for the whole panel; without it SwiftUI copies the
             // identifier onto every child and a query for the panel is ambiguous.
             .accessibilityElement(children: .contain)
@@ -5298,19 +4933,10 @@ private struct NativeThreadView: View {
 
     /// Kept out of `body`, like the channel's, for the Swift type checker.
     @ViewBuilder private var threadGifButton: some View {
-        #if os(iOS)
         ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading, configuration: chat.klipy,
                             mediaEnabled: chat.canSendGif(inThread: true), send: { gif, query in
             Task { await chat.sendGif(gif, inThread: true, query: query) }
         })
-        #else
-        if let klipy = chat.klipy {
-            ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(inThread: true), controller: composerAutocomplete,
-                              accessibilityID: "thread-composer-gif", send: { gif, query in
-                Task { await chat.sendGif(gif, inThread: true, query: query) }
-            })
-        }
-        #endif
     }
 
     private var threadComposer: some View {
@@ -5321,6 +4947,7 @@ private struct NativeThreadView: View {
             .modifier(ReplyComposerFocus(chat: chat, controller: composerAutocomplete, inThread: true))
     }
 }
+#endif
 
 /// Keep the intent until the destination is mounted and covering sheets have finished dismissing.
 private struct ReplyComposerFocus: ViewModifier {
@@ -5480,6 +5107,7 @@ enum MessageQuickReactions {
     static let emoji = ["👍", "❤️", "😂"]
 }
 
+#if os(iOS)
 private struct MessageRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
@@ -5516,21 +5144,6 @@ private struct MessageRow: View {
     @State private var confirmingDelete = false
     @State private var pressing = false
     @State private var pressWash: Task<Void, Never>?
-    #if os(macOS)
-    /// Room for the unified hover bar: 24pt controls, 3pt insets and a gap.
-    /// Read-only conversations leave out Reply.
-    private var actionsInset: CGFloat { (inThread ? 82 : 108) - (chat.canInteract ? 0 : 24) + (chat.canInteract && !message.isDeleted ? 72 : 0) }
-    @State private var controlsHovered = false
-    @State private var actionsTop: CGFloat = 6
-    @FocusState private var quickReactionFocused: String?
-    @FocusState private var replyFocused: Bool
-    @FocusState private var replyMessageFocused: Bool
-    @FocusState private var reactionFocused: Bool
-    @FocusState private var actionsFocused: Bool
-    @FocusState private var threadLinkFocused: Bool
-    @FocusState private var editedFocused: Bool
-    @FocusState private var authorFocused: String?
-    #endif
     var body: some View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
@@ -5546,17 +5159,7 @@ private struct MessageRow: View {
                     .buttonStyle(.plain).font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.muted)
                     .accessibilityLabel("Open profile for \(pin.author.name)")
                     .padding(.leading, 44)
-                    #if os(macOS)
-                    .padding(.trailing, actionsInset)
-                    .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
-                        if case .active(let point) = phase {
-                            mentionCards.pointer.location = point
-                            mentionCards.openAuthor?(pin.author)
-                        }
-                    }
-                    #else
                     .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in mentionCards.openAuthor?(pin.author) })
-                    #endif
                     .accessibilityIdentifier("pinned-by-\(message.id)")
             }
             if !message.isDeleted, let reference = message.replyTo { NativeReplyContext(reference: reference, motionKey: message.clientMessageId, chat: chat) }
@@ -5574,9 +5177,6 @@ private struct MessageRow: View {
                         Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                         if edited { editedMarker }
                     }
-                    #if os(macOS)
-                    .padding(.trailing, actionsInset)
-                    #endif
                 }
                 // A deleted message keeps its place, header and thread link; nothing else.
                 if message.isDeleted { deletedText } else {
@@ -5588,34 +5188,15 @@ private struct MessageRow: View {
                             .modifier(MessageLinkPills(enabled: rendered.hasLinks))
                             .modifier(SwipeGuardedLinks())
                             .modifier(MentionPillInteraction(pills: pills, cards: mentionCards))
-                            #if os(macOS)
-                            .textSelection(.enabled)
-                            #endif
                         if grouped && edited { editedMarker }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    #if os(macOS)
-                    // Without a header, the first line sits beside the hover actions.
-                    .padding(.trailing, grouped ? actionsInset : 0)
-                    // The 24pt targets start 6pt from the row top. A short caption
-                    // needs their full height before the attachment's 4pt gap.
-                    .frame(minHeight: grouped && (!(message.content.attachments?.isEmpty ?? true) || message.content.gif != nil) ? 28 : nil, alignment: .topLeading)
-                    #endif
                     }
                     if let attachments = message.content.attachments, !attachments.isEmpty {
                         MessageAttachmentsView(attachments: attachments, chat: chat)
-                            #if os(macOS)
-                            // File-only follow-ups need the same action strip, even
-                            // without a caption or edited marker to reserve it.
-                            .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
-                            #endif
                     }
                     if let gif = message.content.gif {
                         MessageGifView(gif: gif)
-                            #if os(macOS)
-                            // Like files: a captionless follow-up keeps room for the action strip.
-                            .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
-                            #endif
                     }
                     // Always built, so cards that arrive while the row is shown animate in.
                     MessageEmbedsView(embeds: message.content.embeds ?? [])
@@ -5659,13 +5240,7 @@ private struct MessageRow: View {
                             .padding(.horizontal, 6)
                             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                     }
-                        #if os(macOS)
-                        // The outer modifier owns this control's focus ring.
-                        .buttonStyle(ProfileButtonStyle(isFocused: false))
-                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused, wash: false))
-                        #else
                         .buttonStyle(ProfileButtonStyle())
-                        #endif
                         .accessibilityLabel(chat.threadUnread(message.threadRootId ?? message.id) ? "View thread, unread" : "View thread")
                 }
                 if let error = chat.reactionErrors[message.id] {
@@ -5678,9 +5253,6 @@ private struct MessageRow: View {
                 }
             }
             }
-            #if os(macOS)
-            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("reply-row-\(message.id)")).minY } action: { if message.replyTo != nil && !message.isDeleted { actionsTop = max(0, $0 - 4) } }
-            #endif
         // As on web, a run reads as one block: 2pt instead of 10 between its rows.
         }.padding(.horizontal, 18).padding(.top, grouped ? 2 : 10).padding(.bottom, continued ? 2 : 10)
             .coordinateSpace(name: "reply-row-\(message.id)")
@@ -5702,7 +5274,6 @@ private struct MessageRow: View {
             } message: {
                 Text(MessageDeletion.confirmMessage)
             }
-        #if os(iOS)
         row.contentShape(Rectangle())
             .onLongPressGesture(perform: showReactionPicker, onPressingChanged: { down in
                 // The wash waits 0.15s, so a finger that starts a scroll never shows it.
@@ -5717,148 +5288,14 @@ private struct MessageRow: View {
             .gesture(TapGesture().onEnded { if !SwipeTapGuard.swiping { openMessage?() } }, including: openMessage == nil ? .subviews : .all)
             .onDisappear { pressWash?.cancel(); pressing = false }
             .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
-        #else
-        row
-            .overlay(alignment: .topTrailing) {
-                HStack(spacing: 0) {
-                    if chat.canInteract && !message.isDeleted {
-                        ForEach(MessageQuickReactions.emoji, id: \.self) { emoji in
-                            Button { react(emoji, active: !reacted(emoji)) } label: {
-                                EmojiArtworkView(emoji: emoji, size: 18).frame(width: 24, height: 24)
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                                .focused($quickReactionFocused, equals: emoji)
-                                .background(reacted(emoji) ? CaperTheme.terracotta.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
-                                .modifier(ControlHover(isFocused: quickReactionFocused == emoji))
-                                .help("React with \(emoji)").accessibilityLabel("React with \(emoji)")
-                                .accessibilityAddTraits(reacted(emoji) ? .isSelected : [])
-                                .accessibilityIdentifier("quick-reaction-\(message.id)-\(emoji)")
-                        }
-                    }
-                    if !inThread && (!message.isDeleted || hasThread) {
-                        Button { chat.replyInThread(to: message) } label: {
-                            CaperIcon(name: "thread", size: 14).frame(width: 24, height: 24)
-                        }.buttonStyle(.plain).focused($replyFocused).help("Reply in thread").accessibilityLabel("Reply in thread")
-                            .modifier(ControlHover(isFocused: replyFocused))
-                    }
-                    // As on web, read-only conversations hide Reply; Add reaction stays, disabled.
-                    if chat.canInteract && !message.isDeleted {
-                        Button { chat.reply(to: message, inThread: inThread && !inPins) } label: {
-                            CaperIcon(name: "reply", size: 14).frame(width: 24, height: 24)
-                        }.buttonStyle(.plain).focused($replyMessageFocused).help("Reply").accessibilityLabel("Reply")
-                            .modifier(ControlHover(isFocused: replyMessageFocused))
-                            .disabled(chat.pendingMessage != nil)
-                    }
-                    if !message.isDeleted {
-                        Button(action: showReactionPicker) {
-                            CaperIcon(name: "smile-plus", size: 14).frame(width: 24, height: 24)
-                                .contentShape(Rectangle())
-                        }.buttonStyle(.plain).frame(width: 24, height: 24)
-                            .focused($reactionFocused).help("Add reaction").accessibilityLabel("Add reaction")
-                            .modifier(ControlHover(isFocused: reactionFocused))
-                            .disabled(!chat.canInteract)
-                            .accessibilityIdentifier("add-reaction-\(message.id)")
-                    }
-                    Menu {
-                        messageMenuItems
-                    } label: {
-                        // Lucide's ellipsis, as on the sidebar rows and web's More actions.
-                        CaperIcon(name: "ellipsis", size: 14).frame(width: 24, height: 24)
-                    }.menuStyle(.borderlessButton).menuIndicator(.hidden)
-                        // Native Menu otherwise expands the overlay to the row's
-                        // width, moving Add reaction away from the trailing edge.
-                        .frame(width: 24, height: 24).focused($actionsFocused)
-                        .modifier(ControlHover(isFocused: actionsFocused))
-                        .help("More actions")
-                        .accessibilityLabel("Message options")
-                }.padding(3)
-                    .background {
-                        // Only the shell casts a shadow, not each emoji and hover highlight.
-                        RoundedRectangle(cornerRadius: 8).fill(CaperTheme.surface)
-                            .shadow(color: .black.opacity(0.2), radius: 6, y: 4)
-                    }
-                    .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border, lineWidth: 1).allowsHitTesting(false) }
-                    .opacity(controlsHovered || quickReactionFocused != nil || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
-                    .allowsHitTesting(controlsHovered || quickReactionFocused != nil || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
-                    .padding(.trailing, 15).padding(.top, message.replyTo == nil || message.isDeleted ? 3 : max(0, actionsTop - 3))
-            }
-            // Track the whole row, including its overlay. Entering a message
-            // action must not hide that action before the pointer can click it.
-            .contentShape(Rectangle())
-            .onHover { controlsHovered = $0 }
-            .gesture(TapGesture().onEnded { openMessage?() }, including: openMessage == nil ? .subviews : .all)
-            .contextMenu { messageMenuItems }
-        #endif
     }
     @ViewBuilder private func authorProfile<Content: View>(_ control: String, @ViewBuilder _ content: () -> Content) -> some View {
         if !message.author.isGuest, let openAuthor = mentionCards.openAuthor {
             Button { openAuthor(message.author) } label: { content() }
-                #if os(macOS)
-                .buttonStyle(ProfileButtonStyle(isFocused: authorFocused == control))
-                .focused($authorFocused, equals: control)
-                #else
                 .buttonStyle(ProfileButtonStyle())
-                #endif
                 .accessibilityLabel("Open profile for \(message.author.name)")
-                #if os(macOS)
-                .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
-                    switch phase {
-                    case .active(let point): mentionCards.pointer.location = point
-                    case .ended: mentionCards.pointer.location = nil
-                    }
-                }
-                #endif
         } else { content() }
     }
-    #if os(macOS)
-    /// Message actions in the ⋯ menu and context menu; quick reactions live in the hover bar.
-    @ViewBuilder private var messageMenuItems: some View {
-        if message.isDeleted {
-            // Only the thread and the ID remain.
-            if !inThread && hasThread { Button("View thread") { Task { await chat.openThread(message.threadRootId ?? message.id) } } }
-            Button("Copy message ID") { copy(message.id) }
-        } else {
-            // The full picker, as from the hover row's Add reaction.
-            Button("Add reaction…", action: showReactionPicker).disabled(!chat.canInteract)
-            Divider()
-            Button("Reply") { chat.reply(to: message, inThread: inThread && !inPins) }.disabled(!chat.canInteract || chat.pendingMessage != nil)
-            if !inThread { Button("Reply in thread") { chat.replyInThread(to: message) } }
-            if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
-            if chat.canEdit(message) { Button("Edit message") { editing = true } }
-            if message.forward == nil && (message.revision ?? 1) > 1 { Button("Message history") { history = true } }
-            if let reaction = message.reactions?.first { Button("View reactions") { reactors.show(message.id, reaction.emoji) } }
-            Button(message.pin == nil ? "Pin message" : "Unpin message") {
-                Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
-            }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
-            // Attachment-only messages have no text to copy.
-            if !message.content.text.isEmpty { Button("Copy text") { copy(message.content.text) } }
-            MessageLinkMenuItems(text: message.content.text)
-            Button("Copy message ID") { copy(message.id) }
-            if chat.canDelete(message) {
-                Divider()
-                Button("Delete message", role: .destructive) { confirmingDelete = true }
-            }
-            if canBlockAuthor {
-                Divider()
-                Button("Block \(message.author.name)…", role: .destructive) { requestBlock?(message.author) }
-            } else if canUnblockAuthor {
-                Divider()
-                Button("Unblock \(message.author.name)") { chat.unblock(message.author) }
-            }
-        }
-    }
-    private func reacted(_ emoji: String) -> Bool {
-        guard let id = chat.currentAuthor?.id else { return false }
-        return message.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(id) == true
-    }
-    private func react(_ emoji: String, active: Bool) {
-        Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: active) }
-    }
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-    #endif
     /// The jump target (a link or search result) and the open thread's root
     /// are selections: terracotta, like web. Other people's pins are faded gold.
     private var jumpTarget: Bool { !inPins && chat.focusedMessageID == message.id }
@@ -5885,10 +5322,6 @@ private struct MessageRow: View {
     private var deletedText: some View {
         Text(MessageDeletion.placeholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
             .frame(maxWidth: .infinity, alignment: .leading)
-            #if os(macOS)
-            // Without a header, the line sits beside the hover actions.
-            .padding(.trailing, grouped ? actionsInset : 0)
-            #endif
             .accessibilityIdentifier("message-deleted-\(message.id)")
     }
     /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
@@ -5904,25 +5337,14 @@ private struct MessageRow: View {
     /// "(edited)": opens the edit history, in the header or, on a grouped row, after the text.
     private var editedMarker: some View {
         let marker = Button("(edited)") { if !SwipeTapGuard.swiping { history = true } }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-        #if os(macOS)
-        // Its own focus: the timeline is focusable, and an unbound focus ring
-        // would follow the timeline's focus instead of this control's.
-        return marker.focused($editedFocused).modifier(ControlHover(isFocused: editedFocused))
-            .accessibilityLabel("Message history, version \(message.revision ?? 1)")
-        #else
         return marker.modifier(ControlHover()).accessibilityLabel("Message history, version \(message.revision ?? 1)")
-        #endif
     }
     /// A grouped row's empty avatar column. With a pointer (macOS) it shows
     /// the short time ("8:28") while the row is hovered or one of its controls
     /// has keyboard focus; on touch it stays empty. VoiceOver always gets the
     /// author and time from it, as from the header it replaces.
     private var groupedGutter: some View {
-        #if os(macOS)
-        let visible = controlsHovered || replyFocused || reactionFocused || actionsFocused || threadLinkFocused
-        #else
         let visible = false
-        #endif
         let time = ChatDateDivider.date(message.createdAt)?.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute()) ?? ""
         // A clear colour, not opacity or `hidden()`, so VoiceOver keeps the element.
         return Text(time).font(CaperTheme.font(10)).monospacedDigit().lineLimit(1).fixedSize()
@@ -5935,8 +5357,10 @@ private struct MessageRow: View {
         return date.formatted(date: .omitted, time: .shortened)
     }
 }
+#endif
 
 /// Native menu actions use the HTTP(S) destination, including https for bare www links.
+#if os(iOS)
 private struct MessageLinkMenuItems: View {
     let text: String
     @Environment(\.openURL) private var openURL
@@ -5957,15 +5381,11 @@ private struct MessageLinkMenuItems: View {
     @ViewBuilder private func actions(_ link: LinkSegment, url: URL) -> some View {
         Button("Open link") { openURL(url) }
         Button("Copy link") {
-            #if os(macOS)
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(link.href ?? link.text, forType: .string)
-            #else
             UIPasteboard.general.string = link.href ?? link.text
-            #endif
         }
     }
 }
+#endif
 
 /// Only sent linked-text hosts opt in; composers and mention-only text stay native.
 struct MessageLinkPills: ViewModifier {
@@ -6154,6 +5574,7 @@ private extension AppModel {
 /// on iPhone. Attach it to the scroll view that names `MentionCard.timelineSpace`,
 /// so the pointer and the anchor share coordinates (the channel and the thread
 /// panel each host their own).
+#if os(iOS)
 private struct MentionCardHost: ViewModifier {
     @Binding var target: MentionCardTarget?
     let model: AppModel
@@ -6163,21 +5584,12 @@ private struct MentionCardHost: ViewModifier {
     @State private var profileDismissAction: ProfileDismissAction?
 
     @ViewBuilder func body(content: Content) -> some View {
-        #if os(macOS)
-        content.popover(item: protectedTarget, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
-                            requestBlock: { blockTarget = $0 }) { self.target = nil }
-                .onPreferenceChange(ProfileDismissPreference.self) { profileDismissAction = $0 }
-        }
-        .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
-        #else
         content.sheet(item: protectedTarget) { target in
             MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
                             requestBlock: { blockTarget = $0 }) { self.target = nil }
                 .onPreferenceChange(ProfileDismissPreference.self) { profileDismissAction = $0 }
         }
         .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
-        #endif
     }
 
     private var protectedTarget: Binding<MentionCardTarget?> {
@@ -6192,13 +5604,8 @@ private struct MentionCardHost: ViewModifier {
         })
     }
 
-    #if os(macOS)
-    private var anchor: PopoverAttachmentAnchor {
-        guard let rect = target?.anchor else { return .point(.center) }
-        return .rect(.rect(rect))
-    }
-    #endif
 }
+#endif
 
 #if os(iOS)
 /// Observe only the sheet's backdrop, keeping native detents, dragging and keyboard handling.
@@ -6262,6 +5669,7 @@ struct ProfileSheetOutsideTap: UIViewControllerRepresentable {
 /// long press. The message host enables macOS selection independently of
 /// its links, so linked text and the surrounding words remain selectable.
 /// VoiceOver gets one "Open profile for …" action per person.
+#if os(iOS)
 private struct MentionPillInteraction: ViewModifier {
     let pills: [MentionPill]
     let cards: MentionCardContext
@@ -6278,14 +5686,6 @@ private struct MentionPillInteraction: ViewModifier {
                     if let id = MentionCard.userID(from: url), let pill = pills.first(where: { $0.id == id }) { cards.open(pill) }
                     return .handled
                 })
-                #if os(macOS)
-                .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
-                    switch phase {
-                    case .active(let location): cards.pointer.location = location
-                    case .ended: cards.pointer.location = nil
-                    }
-                }
-                #endif
                 .accessibilityActions {
                     ForEach(pills) { pill in
                         Button("Open profile for " + cards.name(pill)) { cards.open(pill) }
@@ -6294,8 +5694,10 @@ private struct MentionPillInteraction: ViewModifier {
         }
     }
 }
+#endif
 
 /// Profile composition has its own per-person draft; only Send opens a DM.
+#if os(iOS)
 struct MentionCardView: View {
     @Bindable var model: AppModel
     @Bindable var draft: ProfileMessageDraft
@@ -6366,42 +5768,17 @@ struct MentionCardView: View {
             // Replace the card inside its presentation, so opening the editor
             // does not race the profile sheet's dismissal on iPhone.
             ProfileSheet(model: model, close: close)
-                #if os(macOS)
-                .frame(width: 520, height: 620)
-                #else
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(CaperTheme.surface)
-                #endif
         } else {
-            #if os(macOS)
-            // Only the popover can present over itself: the editor replaces
-            // the card inside it, which grows to fit, while the card stays
-            // underneath so its pickers and composer state carry on.
-            let covered = editingFile != nil || pictureViewer != nil
-            ZStack {
-                profileCard
-                    .opacity(covered ? 0 : 1)
-                    .disabled(covered)
-                    .accessibilityHidden(covered)
-                presentedFile
-                if let pictureViewer {
-                    MediaViewer(request: pictureViewer) { self.pictureViewer = nil }
-                        .frame(width: 720, height: 600)
-                        .id(pictureViewer.id)
-                }
-            }
-            .preference(key: ProfileComposerPresentationSize.self,
-                        value: nativeComposerOnly && covered ? CGSize(width: 720, height: 600) : nil)
-            #else
             profileCard
                 .sheet(item: $pictureViewer) { shown in
                     MediaViewer(request: shown) { pictureViewer = nil }
                         .presentationDetents([.large])
                         .presentationBackground(.black).preferredColorScheme(.dark)
                 }
-            #endif
         }
     }
 
@@ -6450,9 +5827,6 @@ struct MentionCardView: View {
     @ViewBuilder private var presentedFile: some View {
         if let editingFile {
             AttachmentEditor(request: editingFile) { withoutPresentationAnimation { self.editingFile = nil } }
-                #if os(macOS)
-                .frame(width: 720, height: 600)
-                #endif
                 .id(editingFile.id)
         }
     }
@@ -6549,14 +5923,6 @@ struct MentionCardView: View {
                 }
             }.padding(16)
         }
-        #if os(macOS)
-        // A fixed width keeps text wrapping stable; the height fits the
-        // content, and only a long space list scrolls.
-        .frame(width: person.isSelf ? 280 : 320, alignment: .topLeading)
-        .frame(maxHeight: 620)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(CaperTheme.surface)
-        #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .presentationDetents(person.isSelf ? [.height(196)] : [.medium, .large])
         .presentationDragIndicator(.visible)
@@ -6564,7 +5930,6 @@ struct MentionCardView: View {
         .background(ProfileSheetOutsideTap {
             if pending == nil && !draft.preventsImplicitDismissal { close() }
         })
-        #endif
     }
 
     private var profileCard: some View {
@@ -6615,16 +5980,12 @@ struct MentionCardView: View {
             }
         }
         .quickLookPreview($previewFile)
-        #if os(macOS)
-        .popover(isPresented: $showingEmojiPicker) { emojiPicker.onDisappear { finishEmojiPicker() } }
-        #else
         .sheet(isPresented: $showingEmojiPicker, onDismiss: finishEmojiPicker) { emojiPicker }
         .fullScreenCover(isPresented: Binding(get: { editingFile != nil }, set: { if !$0 { editingFile = nil } })) {
             presentedFile
                 .presentationBackground(.clear)
                 .preferredColorScheme(.dark)
         }
-        #endif
         .onChange(of: showingFiles) { _, _ in updateDialogState() }
         .onChange(of: showingPhotos) { _, _ in updateDialogState() }
         .onChange(of: showingEmojiPicker) { _, _ in updateDialogState() }
@@ -6681,7 +6042,6 @@ struct MentionCardView: View {
             HStack(alignment: .bottom, spacing: 0) {
                 HStack(alignment: .bottom, spacing: 0) {
                 Group {
-                #if os(iOS)
                 Button { withoutPresentationAnimation { showingDrawer = true }; updateDialogState() } label: {
                     CaperIcon(name: "plus", size: 18).foregroundStyle(showingDrawer ? CaperTheme.text : CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
@@ -6692,22 +6052,6 @@ struct MentionCardView: View {
                 .fullScreenCover(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
                 // Prepare the gallery while the composer is up, so the drawer opens filled.
                 .task { AttachGalleryCache.warm() }
-                #else
-                // One unfiltered "Upload a file", as on the desktop clients; at the limit it says so.
-                Menu {
-                    if let hint = AttachCapacity.hint(draft.files.count) { Text(hint) }
-                    Button { draft.presentingDialog = true; showingFiles = true } label: {
-                        Label("Upload a file", systemImage: "arrow.up.doc")
-                    }
-                    .disabled(draft.files.count >= AttachmentPolicy.maxAttachments)
-                } label: {
-                    CaperIcon(name: "plus", size: 18).foregroundStyle(CaperTheme.muted)
-                        .frame(width: 40, height: 42).contentShape(Rectangle())
-                }
-                .menuStyle(.button).menuOrder(.fixed).buttonStyle(.plain).menuIndicator(.hidden)
-                .fixedSize()
-                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
-                #endif
                 }
                 .opacity(uploadsAvailable ? 1 : 0.4)
                 .help(uploadsAvailable ? "Attach files" : "File uploads are unavailable")
@@ -6725,37 +6069,14 @@ struct MentionCardView: View {
                                           highlightSource: MentionSource(members: person.username.map { [.member(id: person.id, username: $0, displayName: person.title)] } ?? [], specials: false))
                 }
                 .frame(minHeight: 42, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
-                #if os(iOS)
                 ComposerEmojiButton(controller: autocomplete, enabled: draft.editable && pending == nil,
                                     configuration: model.chat.klipy, presenting: { showingGifPicker = $0; updateDialogState() },
                                     send: { gif, query in
                     sendGif(gif, query: query)
                 })
-                #else
-                Button {
-                    insertEmoji = autocomplete.insertAction
-                    draft.presentingDialog = true; showingEmojiPicker = true
-                } label: {
-                    CaperIcon(name: "smile", size: 18).foregroundStyle(CaperTheme.muted)
-                        .frame(width: 36, height: 42).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).disabled(!draft.editable || pending != nil)
-                .help("Insert emoji").accessibilityLabel("Insert emoji")
-                .accessibilityIdentifier("mention-card-emoji")
-                if let klipy = model.chat.klipy {
-                    // Sends the GIF on its own at once; the typed draft stays.
-                    ComposerGifButton(configuration: klipy, enabled: draft.editable && pending == nil, controller: autocomplete,
-                                      accessibilityID: "mention-card-gif", presenting: { showingGifPicker = $0; updateDialogState() },
-                                      send: { gif, query in
-                        sendGif(gif, query: query)
-                    })
-                }
-                #endif
-                }
-                #if os(iOS)
                 // The held microphone stays put while the bar covers the field.
                 .modifier(VoiceComposerCover(target: voiceTarget))
-                #endif
                 VoiceRecordButton(target: voiceTarget)
                 Button { send() } label: {
                     CaperIcon(name: "send", size: 15)
@@ -6770,13 +6091,7 @@ struct MentionCardView: View {
             }
             .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-            #if os(iOS)
             .modifier(VoiceLockLayer())
-            #endif
-            #if os(macOS)
-            // Clicking the microphone replaces the box with the recording bar.
-            .modifier(VoiceComposerCover(target: voiceTarget, restoreFocus: { autocomplete.restoreFocus() }))
-            #endif
             if let voice = draft.voice, !draft.sending {
                 // A voice message that didn't go stays for Retry; typed text is untouched.
                 HStack(spacing: 10) {
@@ -6908,7 +6223,6 @@ struct MentionCardView: View {
             || editingFile != nil || showingDrawer
     }
 
-    #if os(iOS)
     private var drawerDraft: AttachDrawerDraft {
         let draft = draft, uploadsAvailable = uploadsAvailable
         return AttachDrawerDraft(
@@ -6924,7 +6238,6 @@ struct MentionCardView: View {
             },
             valid: { uploadsAvailable && draft.editable })
     }
-    #endif
 
     /// Files the editor can open show in it, viewing with no tool picked,
     /// with Spoiler and Remove beside its tools (the pencil opens it too);
@@ -7007,15 +6320,14 @@ struct MentionCardView: View {
         } catch { self.error = FriendlyError.message(for: error) }
     }
 }
+#endif
 
+#if os(iOS)
 private struct ReactionRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
     let reactors: ReactorContext
     let showReactionPicker: () -> Void
-    #if os(macOS)
-    @FocusState private var addFocused: Bool
-    #endif
 
     var body: some View {
         ReactionFlowLayout(spacing: 6) {
@@ -7030,17 +6342,11 @@ private struct ReactionRow: View {
                     CaperIcon(name: "smile-plus", size: 18)
                         .foregroundStyle(CaperTheme.muted)
                         .frame(width: 28, height: 28)
-                        #if os(iOS)
                         .frame(minWidth: 44, minHeight: 44)
-                        #endif
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                #if os(macOS)
-                .focused($addFocused).modifier(ControlHover(isFocused: addFocused))
-                #else
                 .modifier(ControlHover())
-                #endif
                 .help("Add reaction").accessibilityLabel("Add reaction")
                 .accessibilityIdentifier("reaction-row-add-\(message.id)")
             }
@@ -7050,20 +6356,16 @@ private struct ReactionRow: View {
         .accessibilityIdentifier("reaction-row-\(message.id)")
     }
 }
+#endif
 
+#if os(iOS)
 private struct ReactionChip: View {
     let message: ChatMessage
     let reaction: MessageReaction
     @Bindable var chat: ChatModel
     let reactors: ReactorContext
-    #if os(iOS)
     /// The release that ends a hold must not also toggle the reaction.
     @State private var suppressTap = false
-    #else
-    @State private var hovering = false
-    @State private var tooltipVisible = false
-    @FocusState private var focused: Bool
-    #endif
     private var own: Bool { reactors.viewerID.map { reaction.authorIds.contains($0) } ?? false }
 
     /// Names once loaded; until then, or after a failure, the snapshot count.
@@ -7071,16 +6373,10 @@ private struct ReactionChip: View {
         NativePresentation.reactionSummary(message, emoji: reaction.emoji, chat: chat, viewerID: reactors.viewerID)
     }
 
-    #if os(macOS)
-    /// Read while the body is evaluated, so loading names updates the tooltip.
-    private var tooltipText: String? { tooltipVisible ? summary : nil }
-    #endif
 
     var body: some View {
         Button {
-            #if os(iOS)
             if suppressTap { suppressTap = false; return }
-            #endif
             guard !SwipeTapGuard.swiping else { return }
             Task { await chat.setReaction(messageID: message.id, emoji: reaction.emoji, active: !own) }
         } label: {
@@ -7092,25 +6388,17 @@ private struct ReactionChip: View {
             // Filled in the border's shape: a plain fill's square corners showed outside it.
             .background(own ? CaperTheme.terracotta.opacity(0.24) : CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(own ? CaperTheme.terracottaBright : CaperTheme.border))
-            #if os(iOS)
             // A 44pt touch target around the chip, which is drawn at its usual size, as on web.
             .frame(minHeight: 44)
             .contentShape(Rectangle())
-            #endif
         }
         .buttonStyle(.plain)
-        #if os(macOS)
-        .focused($focused)
-        .modifier(ControlHover(isFocused: focused))
-        #else
         .modifier(ControlHover())
-        #endif
         .disabled(!chat.canInteract)
         .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
         .accessibilityAddTraits(own ? .isSelected : [])
         // Outside .disabled: read-only previews can still see who reacted.
         .accessibilityAction(named: Text("Show who reacted")) { reactors.show(message.id, reaction.emoji) }
-        #if os(iOS)
         // Just under the row's 0.5 s hold, so the chip's sheet wins over
         // message actions; the row's handler also yields while it is open.
         .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
@@ -7119,23 +6407,9 @@ private struct ReactionChip: View {
         })
         // A hold whose touch was cancelled never delivers the suppressed tap.
         .onChange(of: reactors.sheetOpen) { _, open in if !open { suppressTap = false } }
-        #else
-        .onHover { hovering = $0 }
-        .task(id: hovering) {
-            guard hovering else { tooltipVisible = false; return }
-            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
-            tooltipVisible = true
-            _ = chat.requestReactors(messageID: message.id)
-        }
-        .onChange(of: message.reactionSeq) { _, _ in
-            if tooltipVisible { _ = chat.requestReactors(messageID: message.id) }
-        }
-        .anchorPreference(key: ReactionTooltipKey.self, value: .bounds) { [text = tooltipText, emoji = reaction.emoji] anchor in
-            text.map { ReactionTooltip(emoji: emoji, text: $0, anchor: anchor) }
-        }
-        #endif
     }
 }
+#endif
 
 /// How chips reveal who reacted: the viewer (shown as "You") and the
 /// press-and-hold sheet, which a chip must know has closed.
@@ -7150,81 +6424,6 @@ private struct ReactorsTarget: Identifiable, Equatable {
     let emoji: String
     var id: String { "\(messageID)|\(emoji)" }
 }
-
-#if os(macOS)
-private struct ReactionTooltip {
-    let emoji: String
-    let text: String
-    let anchor: Anchor<CGRect>
-}
-
-#if os(macOS)
-/// A composer box whose suggestions the surrounding conversation draws.
-private protocol ComposerAnchorKey: PreferenceKey where Value == Anchor<CGRect>? {}
-extension ComposerAnchorKey {
-    static var defaultValue: Anchor<CGRect>? { nil }
-    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = value ?? nextValue() }
-}
-private enum ChatComposerAnchorKey: ComposerAnchorKey {}
-private enum ThreadComposerAnchorKey: ComposerAnchorKey {}
-
-/// Mac suggestions cover history above the composer without resizing it or
-/// triggering bottom-follow. They are drawn by the whole conversation, not as
-/// an overflowing overlay on the composer: clicks and accessibility hit-testing
-/// only reach views inside their parent's frame.
-private struct ComposerSuggestionsOverlay<Key: ComposerAnchorKey>: ViewModifier {
-    @ObservedObject var controller: ComposerAutocompleteController
-    func body(content: Content) -> some View {
-        content.overlayPreferenceValue(Key.self) { anchor in
-            // Only while suggestions show, so no layer covers the conversation otherwise.
-            if let anchor, controller.match != nil {
-                GeometryReader { proxy in
-                    let box = proxy[anchor]
-                    ComposerSuggestionsView(controller: controller)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: box.width)
-                        .alignmentGuide(.leading) { _ in -box.minX }
-                        .alignmentGuide(.top) { size in -(box.minY - 6 - size.height) }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-            }
-        }
-    }
-}
-#endif
-
-private struct ReactionTooltipKey: PreferenceKey {
-    static var defaultValue: ReactionTooltip? { nil }
-    static func reduce(value: inout ReactionTooltip?, nextValue: () -> ReactionTooltip?) {
-        value = value ?? nextValue()
-    }
-}
-
-/// Discord-style hover card: a large emoji beside who reacted.
-struct ReactionTooltipBubble: View {
-    let emoji: String
-    let text: String
-    var body: some View {
-        HStack(spacing: 10) {
-            if EmojiArtwork.entry(for: emoji) != nil {
-                EmojiArtworkView(emoji: emoji, size: 38)
-            } else {
-                Text(emoji).font(.system(size: 32))
-            }
-            Text(text).font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.text)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(10)
-        .background(CaperTheme.blackout, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-        .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
-        .frame(maxWidth: 280, alignment: .leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(text)
-        .accessibilityIdentifier("reaction-tooltip")
-    }
-}
-#endif
 
 /// Who reacted, by emoji: tabs in chip order, then each person.
 struct ReactorsSheet: View {
@@ -7714,6 +6913,7 @@ struct MessageActionsSheet: View {
 }
 #endif
 
+#if os(iOS)
 struct PinnedMessagesView: View {
     @Bindable var chat: ChatModel
     let model: AppModel
@@ -7723,9 +6923,6 @@ struct PinnedMessagesView: View {
     @State private var reactorsTarget: ReactorsTarget?
     @State private var mentionCard: MentionCardTarget?
     @State private var mentionPointer = MentionPointer()
-    #if os(macOS)
-    @Environment(\.mediaViewer) private var mediaViewer
-    #endif
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
     private var mentionCards: MentionCardContext {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
@@ -7791,7 +6988,6 @@ struct PinnedMessagesView: View {
             .coordinateSpace(.named(MentionCard.timelineSpace))
             .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
             .sheet(item: $reactorsTarget) { target in ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: chat.currentAuthor?.id) }
-            #if os(iOS)
             .sheet(item: $actionTarget) { message in
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
                     canReact: chat.canInteract,
@@ -7805,19 +7001,11 @@ struct PinnedMessagesView: View {
                     }, selectReaction: { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } },
                     viewReactions: { emoji in reactorsTarget = ReactorsTarget(messageID: message.id, emoji: emoji) })
             }
-            #else
-            .popover(item: $actionTarget) { message in ReactionPicker { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } } }
-            #endif
             .onChange(of: chat.editingContext) { _, _ in actionTarget = nil; reactorsTarget = nil; close() }
             .onChange(of: chat.replyTargets) { _, _ in actionTarget = nil; close() }
             .onChange(of: chat.composerFocusRequest) { _, request in if request != nil { actionTarget = nil; close() } }
             .onChange(of: chat.focusRevision) { _, _ in close() }
-            #if os(iOS)
             .modifier(MediaViewerHost())
-            #else
-            // The popover closes so the window's viewer fills the window.
-            .environment(\.mediaViewer, mediaViewer.map { show in MediaViewerAction { close(); show($0) } })
-            #endif
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("pinned-messages")
     }
@@ -7828,6 +7016,7 @@ struct PinnedMessagesView: View {
         Task { if await chat.goToMessage(message) { close() } }
     }
 }
+#endif
 
 /// A muted icon control in a card header (Open conversation, Close).
 private struct CardIconButton: View {
@@ -7860,6 +7049,7 @@ private struct CardIconButton: View {
 
 /// A composer's emoji control: the emoji picker, inserting at the text view's
 /// selection when it opened. The `:name:` shortcut still works.
+#if os(iOS)
 private struct ComposerEmojiButton: View {
     let controller: ComposerAutocompleteController
     var enabled = true
@@ -7880,17 +7070,9 @@ private struct ComposerEmojiButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        #if os(iOS)
         .help("Emojis, GIFs and stickers")
         .accessibilityLabel("Emojis, GIFs and stickers")
-        #else
-        .help("Insert emoji")
-        .accessibilityLabel("Insert emoji")
-        #endif
         .accessibilityIdentifier("composer-emoji")
-        #if os(macOS)
-        .popover(isPresented: $showing) { picker.onDisappear(perform: finish) }
-        #else
         .sheet(isPresented: $showing, onDismiss: finish) {
             ComposerExpressionPicker(configuration: configuration, mediaEnabled: mediaEnabled, select: { emoji in
                 insert?(emoji); showing = false
@@ -7901,7 +7083,6 @@ private struct ComposerEmojiButton: View {
             .presentationBackground(CaperTheme.surface)
             .preferredColorScheme(.dark)
         }
-        #endif
         .onChange(of: showing) { _, value in presenting?(value) }
     }
 
@@ -7917,6 +7098,7 @@ private struct ComposerEmojiButton: View {
         controller.restoreFocus()
     }
 }
+#endif
 
 #if os(iOS)
 struct ComposerExpressionPicker: View {
@@ -7952,6 +7134,7 @@ struct ComposerExpressionPicker: View {
 }
 #endif
 
+#if os(iOS)
 struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
     var title = "Add reaction"
@@ -7960,13 +7143,10 @@ struct ReactionPicker: View {
     let select: (String) -> Void
     var body: some View {
         NativeReactionPickerBridge(title: title, embedded: embedded, close: { if let close { close() } else { dismiss() } }, select: select)
-        #if os(macOS)
-            .frame(width: 352, height: 420)
-        #else
             .frame(minWidth: 320, minHeight: 420)
-        #endif
     }
 }
+#endif
 
 struct NativeReplyContext: View {
     let reference: MessageReply
@@ -8201,6 +7381,7 @@ struct NativeReplyDraft: View {
     }
 }
 
+#if os(iOS)
 struct PendingMessageRow: View {
     let pending: PendingMessage; let author: ChatAuthor?; let error: String?
     let rejected: Bool; let canEdit: Bool
@@ -8263,6 +7444,7 @@ struct PendingMessageRow: View {
             .accessibilityIdentifier("pending-message-\(pending.id)")
     }
 }
+#endif
 
 struct ProfileView: View {
     @Bindable var model: AppModel
@@ -8349,6 +7531,7 @@ extension EnvironmentValues {
 
 #endif
 
+#if os(iOS)
 struct WorkspaceSheetView: View {
     let item: WorkspaceSheet
     @Bindable var model: AppModel
@@ -8392,6 +7575,7 @@ struct WorkspaceSheetView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
+#endif
 
 // MARK: Message requests and blocking
 
@@ -8483,6 +7667,7 @@ private struct FeedbackPullToRefresh: ViewModifier {
 /// page in Browse on narrow layouts. Newest first; a row visits its
 /// conversation at the reported message, with its thread open. "Show
 /// archived" switches it to the threads the team archived.
+#if os(iOS)
 struct FeedbackInboxList: View {
     @Bindable var model: AppModel
     let pushed: Bool
@@ -8548,11 +7733,7 @@ struct FeedbackInboxList: View {
                 Task { await model.showArchivedFeedback(!archived) }
             }
                 .buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
-                #if os(iOS)
                 .frame(minHeight: 44)
-                #else
-                .frame(minHeight: 28)
-                #endif
                 .padding(.horizontal, pushed ? 0 : 9)
                 .contentShape(Rectangle()).modifier(ControlHover())
                 .accessibilityIdentifier("feedback-show-archived")
@@ -8566,20 +7747,18 @@ struct FeedbackInboxList: View {
         .accessibilityIdentifier("feedback-list")
     }
 }
+#endif
 
 /// One report: who asked, where, what, when, and (in the inbox) whether the
 /// team answered. Archive (Restore in the archived list) is a hover button
 /// on macOS and a context menu (press and hold on iPhone) everywhere.
+#if os(iOS)
 private struct FeedbackReportRow: View {
     @Bindable var model: AppModel
     let report: FeedbackReport
     let pushed: Bool
     let archived: Bool
     let now: Date
-    #if os(macOS)
-    @State private var hovered = false
-    @FocusState private var actionFocused: Bool
-    #endif
     private var selected: Bool { model.visit?.channelID == report.channel.id && model.visit?.reportID == report.messageId }
     private var actionLabel: String { archived ? FeedbackInbox.restore : FeedbackInbox.archiveLabel(report) }
     private func toggleArchive() {
@@ -8588,22 +7767,7 @@ private struct FeedbackReportRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 2) {
             rowButton
-            #if os(macOS)
-            Button(action: toggleArchive) {
-                CaperIcon(name: archived ? "archive-restore" : "archive", size: 15)
-                    .frame(width: 28, height: 28).contentShape(Rectangle())
-            }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
-                .focused($actionFocused)
-                .opacity(hovered || actionFocused ? 1 : 0)
-                .allowsHitTesting(hovered || actionFocused)
-                .modifier(ControlHover(isFocused: actionFocused))
-                .help(actionLabel).accessibilityLabel(actionLabel)
-                .accessibilityIdentifier("feedback-archive-\(report.id)")
-            #endif
         }
-        #if os(macOS)
-        .onHover { hovered = $0 }
-        #endif
         .contextMenu {
             Button(action: toggleArchive) {
                 Label { Text(actionLabel) } icon: { caperMenuIcon(archived ? "archive-restore" : "archive") }
@@ -8637,9 +7801,7 @@ private struct FeedbackReportRow: View {
             }
             .padding(.horizontal, 9).padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            #if os(iOS)
             .frame(minHeight: 44)
-            #endif
             .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
@@ -8650,6 +7812,7 @@ private struct FeedbackReportRow: View {
             .accessibilityAction(named: Text(actionLabel), toggleArchive)
     }
 }
+#endif
 
 /// Marks a Caper admin's (feedback team member's) message, in the pin gold
 /// with a soft glow. The server stamps it, so a look-alike name can't claim it.
@@ -8666,6 +7829,7 @@ struct AdminBadge: View {
 
 /// Incoming requests: nested under the row in a sidebar, or a pushed page on
 /// narrow layouts. Opening one reads it by id and never accepts it.
+#if os(iOS)
 struct MessageRequestsList: View {
     @Bindable var model: AppModel
     let pushed: Bool
@@ -8702,9 +7866,7 @@ struct MessageRequestsList: View {
                         Spacer(minLength: 0)
                     }.foregroundStyle(selected ? CaperTheme.text : CaperTheme.muted)
                         .padding(.horizontal, 9).padding(.vertical, 5)
-                        #if os(iOS)
                         .frame(minHeight: 44)
-                        #endif
                         .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
@@ -8722,6 +7884,7 @@ struct MessageRequestsList: View {
         .accessibilityIdentifier("message-requests-list")
     }
 }
+#endif
 
 /// Replaces the composer in an incoming request.
 struct MessageRequestBar: View {
@@ -9022,6 +8185,7 @@ private struct NotificationsSheet: View {
     }
 }
 
+#if os(iOS)
 struct NewDirectMessageSheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
@@ -9042,9 +8206,7 @@ struct NewDirectMessageSheet: View {
             let choices = suggestions.choices(text: username, candidates: candidates, enabled: !pending)
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Exact username", text: Binding(get: { username }, set: { if !pending { username = ProfileValidation.normalizeUsername($0) } })).textFieldStyle(.roundedBorder)
-                    #if os(iOS)
                     .textInputAutocapitalization(.never)
-                    #endif
                     .autocorrectionDisabled()
                     // Not disabled while pending: the binding already ignores edits,
                     // and disabling drops focus, so the iPhone keyboard closed and
@@ -9117,6 +8279,7 @@ struct NewDirectMessageSheet: View {
         }
     }
 }
+#endif
 
 private struct ChannelInvitationSheet: View {
     @Bindable var model: AppModel
@@ -9172,6 +8335,7 @@ private struct SheetHeader: View {
     }
 }
 
+#if os(iOS)
 private struct LoginPage: View {
     @Bindable var model: AppModel
     let close: () -> Void
@@ -9207,12 +8371,7 @@ private struct LoginPage: View {
                             // Web accepts the unambiguous code alphabet only, uppercased, six characters.
                             let filtered = NativePresentation.signInCode(value)
                             guard filtered != value else { return }
-                            #if os(macOS)
-                            // AppKit's field editor ignores a rewrite inside its own edit; apply it next turn.
-                            DispatchQueue.main.async { code = filtered }
-                            #else
                             code = filtered
-                            #endif
                         }
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     if model.loginAttemptsRemaining == 1 {
@@ -9254,11 +8413,7 @@ private struct LoginPage: View {
             }
             .frame(maxWidth: 440)
             .padding(.horizontal, 20)
-            #if os(iOS)
             .padding(.vertical, 32)
-            #else
-            .padding(.top, 108)
-            #endif
             .frame(maxWidth: .infinity, alignment: .center)
         }.background(CaperTheme.blackout.ignoresSafeArea())
             .textSelection(.enabled)
@@ -9341,6 +8496,7 @@ private struct LoginPage: View {
         })
     }
 }
+#endif
 
 private struct LoginError: View {
     let message: String
@@ -9383,11 +8539,13 @@ private struct LoginActionLabel: View {
     }
 }
 
+#if os(iOS)
 struct ProfileSheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
     var body: some View { NativeProfileEditorSheet(model: model, close: close) }
 }
+#endif
 
 /// Hosts route backdrop/Escape/popover dismissal to the editor, rather than
 /// dropping its private draft. Identity equality avoids storing new closures on every render.
@@ -9589,6 +8747,7 @@ private struct InvitePreviewCard: View {
 }
 
 /// Opening prepares (or reuses) a link, but never touches the clipboard.
+#if os(iOS)
 private struct DefaultInviteLinkSection: View {
     @Bindable var model: AppModel
     let channelID: String?
@@ -9720,17 +8879,14 @@ private struct DefaultInviteLinkSection: View {
 
     private func copy(_ current: InviteLink) {
         let url = model.inviteLinkURL(current.code)
-        #if os(macOS)
-        NSPasteboard.general.clearContents()
-        guard NSPasteboard.general.setString(url, forType: .string) else { error = "Copy failed; try again."; return }
-        #else
         UIPasteboard.general.string = url
-        #endif
         copied = true
     }
 }
+#endif
 
 /// Manage space's "Invite link": owners create, copy and revoke shareable links.
+#if os(iOS)
 private struct InviteLinksSection: View {
     @Bindable var model: AppModel
     @Binding var mutationPending: Bool
@@ -9838,9 +8994,7 @@ private struct InviteLinksSection: View {
         TextField(placeholder, text: text)
             .textFieldStyle(CaperTextFieldStyle())
             .autocorrectionDisabled()
-            #if os(iOS)
             .keyboardType(.numberPad)
-            #endif
     }
 
     private func fieldError(_ message: String) -> some View {
@@ -9920,12 +9074,7 @@ private struct InviteLinksSection: View {
 
     private func copy(_ link: InviteLink) {
         let url = model.inviteLinkURL(link.code)
-        #if os(macOS)
-        NSPasteboard.general.clearContents()
-        guard NSPasteboard.general.setString(url, forType: .string) else { error = "Copy failed; try again."; return }
-        #else
         UIPasteboard.general.string = url
-        #endif
         copied = link.code
         copiedReset?.cancel()
         copiedReset = Task {
@@ -9935,6 +9084,7 @@ private struct InviteLinksSection: View {
         }
     }
 }
+#endif
 
 /// A labelled menu of fixed choices, styled like the audio device pickers.
 private struct InviteOptionPicker<Value: Hashable & Sendable>: View {
@@ -9970,6 +9120,7 @@ private struct InviteOptionPicker<Value: Hashable & Sendable>: View {
     }
 }
 
+#if os(iOS)
 private struct SpaceEditor: View {
     @Bindable var model: AppModel; let close: () -> Void; let managing: Bool
     var inviteOnly = false
@@ -10052,9 +9203,7 @@ private struct SpaceEditor: View {
                             HStack {
                                 TextField("Exact username", text: usernameField).textFieldStyle(CaperTextFieldStyle())
                                     .autocorrectionDisabled()
-                                    #if os(iOS)
                                     .textInputAutocapitalization(.never)
-                                    #endif
                                     .focused($memberFocused)
                                     .submitLabel(.done).onSubmit(submitMember)
                                     .modifier(PeopleSuggestionKeys(text: username, count: choices.count, state: $suggestions))
@@ -10172,7 +9321,9 @@ private struct SpaceEditor: View {
     }
     private func run(_ action: @escaping () async throws -> Void) { guard !pending else { return }; pending = true; error = nil; Task { do { try await action() } catch { self.error = FriendlyError.message(for: error) }; pending = false } }
 }
+#endif
 
+#if os(iOS)
 private struct ChannelEditor: View {
     @Bindable var model: AppModel; @State var channel: Channel?; let close: () -> Void
     @State private var name = ""; @State private var privateChannel = false; @State private var members: [Member] = []; @State private var username = ""; @State private var error: String?; @State private var pending = false
@@ -10241,9 +9392,7 @@ private struct ChannelEditor: View {
                             HStack {
                                 TextField("Exact username", text: usernameField).textFieldStyle(CaperTextFieldStyle())
                                     .autocorrectionDisabled()
-                                    #if os(iOS)
                                     .textInputAutocapitalization(.never)
-                                    #endif
                                     .focused($memberFocused)
                                     .submitLabel(.done).onSubmit { submitMember(channel) }
                                     .modifier(PeopleSuggestionKeys(text: username, count: choices.count, state: $suggestions))
@@ -10390,6 +9539,7 @@ private struct ChannelEditor: View {
     }
     private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = FriendlyError.message(for: error) }; pending = false } }
 }
+#endif
 
 struct DialogDismissDisabled: PreferenceKey {
     static let defaultValue = false
@@ -10544,34 +9694,16 @@ struct ControlPointer: ViewModifier {
 
 /// Let SwiftUI own the pointer on the divider's hit target rather than relying
 /// on a background NSView's cursor rect beneath the hosting view.
+#if os(iOS)
 private struct ResizeCursor: ViewModifier {
     var vertical = false
     @State private var pushed = false
 
     func body(content: Content) -> some View {
-        #if os(macOS)
-        if #available(macOS 15, *) {
-            content.pointerStyle(vertical ? .rowResize : .columnResize)
-        } else {
-            content.onContinuousHover { phase in
-                switch phase {
-                case .active:
-                    let cursor = vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight
-                    if !pushed { cursor.push(); pushed = true }
-                    else { cursor.set() }
-                case .ended:
-                    if pushed { NSCursor.pop(); pushed = false }
-                }
-            }
-            // A thread closing or a narrow window can remove the hovered handle
-            // without an exit event. Balance the legacy cursor stack then too.
-            .onDisappear { if pushed { NSCursor.pop(); pushed = false } }
-        }
-        #else
         content
-        #endif
     }
 }
+#endif
 
 #if os(macOS)
 private struct PointerRegion: NSViewRepresentable {
@@ -10681,6 +9813,7 @@ private struct AudioDeviceIcon: View {
     }
 }
 
+#if os(iOS)
 private struct CaperDevicePicker: View {
     let title: String
     @Binding var selection: String
@@ -10726,14 +9859,6 @@ private struct CaperDevicePicker: View {
                         }
                     }.frame(maxHeight: 280)
                         .onAppear { focusedDevice = selection }
-                        #if os(macOS)
-                        .onMoveCommand { direction in
-                            let ids = [""] + devices.map(\.id)
-                            let index = ids.firstIndex(of: focusedDevice ?? selection) ?? 0
-                            if direction == .down { focusedDevice = ids[min(index + 1, ids.count - 1)] }
-                            if direction == .up { focusedDevice = ids[max(index - 1, 0)] }
-                        }
-                        #endif
                 }.padding(16).frame(width: 280).background(CaperTheme.surface)
             }
             // Escape belongs to the open choices, not the dialog around them.
@@ -10762,8 +9887,10 @@ private struct CaperDevicePicker: View {
             .accessibilityAddTraits(selection == id ? [.isSelected] : [])
     }
 }
+#endif
 
 /// Web's "Audio test" (Call.tsx audio dialog + MicPlayback.tsx).
+#if os(iOS)
 private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
     var debugEnabled = false
@@ -10772,12 +9899,7 @@ private struct AudioPreferencesView: View {
     @State private var choosingDevice = false
     @State private var speakerTest = SpeakerTest()
     @State private var meter = Array(repeating: Float(0), count: 40)
-    #if os(macOS)
-    @State private var micTest = MacMicrophoneTest()
-    @State private var routeError: String?
-    #else
     @State private var micTest = IOSMicrophoneTest()
-    #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
@@ -10798,17 +9920,11 @@ private struct AudioPreferencesView: View {
             }
             .onPreferenceChange(DialogDismissDisabled.self) { choosingDevice = $0 }
             .accessibilityIdentifier("audio-preferences-controls")
-            #if os(macOS)
-            .frame(maxHeight: min(controlsHeight, 560))
-            #else
             .frame(maxHeight: min(controlsHeight, 620))
-            #endif
         }.padding(22)
             .frame(maxWidth: .infinity)
             .background(CaperTheme.surface)
-            #if os(iOS)
             .presentationDetents([.height(min(controlsHeight, 620) + 90)])
-            #endif
             .task { await voice.refreshAudioDevices() }
             .onChange(of: voice.phase) { _, phase in
                 if phase != .idle && phase != .failed { micTest.close() }
@@ -10828,12 +9944,8 @@ private struct AudioPreferencesView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Only you can hear these tests.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-            #if os(macOS)
-            HStack(alignment: .top, spacing: 18) { microphoneColumn; speakerColumn }
-            #else
             microphoneColumn
             speakerColumn
-            #endif
             microphoneTestCard
             if debugEnabled {
                 DisclosureGroup("Audio diagnostics") { AudioDiagnosticsView(voice: voice) }
@@ -10843,13 +9955,7 @@ private struct AudioPreferencesView: View {
 
     private var microphoneColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
-            #if os(macOS)
-            CaperDevicePicker(title: "Microphone", selection: inputRoute, devices: voice.availableInputs, input: true)
-                .accessibilityIdentifier("audio-input-device").disabled(micTest.recording)
-            if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
-            #else
             IOSCurrentAudioRoute(voice: voice, input: true)
-            #endif
             HStack { Text("Microphone volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12)).monospacedDigit()
             CaperSlider(value: inputGain, in: 0...200, step: 1, defaultValue: 100)
                 .accessibilityLabel("Test microphone volume")
@@ -10859,12 +9965,7 @@ private struct AudioPreferencesView: View {
 
     private var speakerColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
-            #if os(macOS)
-            CaperDevicePicker(title: "Speaker", selection: outputRoute, devices: voice.availableOutputs)
-                .accessibilityIdentifier("audio-output-device")
-            #else
             IOSCurrentAudioRoute(voice: voice, input: false)
-            #endif
             HStack { Text("Speaker volume"); Spacer(); Text("\(voice.outputGain)%") }.font(CaperTheme.font(12)).monospacedDigit()
             CaperSlider(value: outputGain, in: 0...200, step: 1, defaultValue: 100)
                 .accessibilityLabel("Test speaker volume")
@@ -10948,19 +10049,6 @@ private struct AudioPreferencesView: View {
     private var outputGain: Binding<Double> {
         Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) })
     }
-    #if os(macOS)
-    private var inputRoute: Binding<String> {
-        Binding(get: { voice.selectedInputID ?? "" }, set: { uid in
-            routeError = voice.selectInput(uid) ? nil : "Could not switch microphone. The previous route is still selected."
-        })
-    }
-    private var outputRoute: Binding<String> {
-        Binding(get: { voice.selectedOutputID ?? "" }, set: { uid in
-            speakerTest.stop()
-            routeError = voice.selectOutput(uid) ? nil : "Could not switch output. The previous route is still selected."
-        })
-    }
-    #endif
     private var inputGain: Binding<Double> {
         Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) })
     }
@@ -10969,9 +10057,11 @@ private struct AudioPreferencesView: View {
     }
     private var recordedPreview: Bool { CaperRuntime.isAudioPreview("audio-recorded") }
 }
+#endif
 
 /// Web's "Connection details" (Call.tsx ConnectionDiagnostics): only counters
 /// this client measures; web's join timing rows need join instrumentation.
+#if os(iOS)
 private struct ConnectionDetailsView: View {
     @Bindable var voice: VoiceClient
     let close: () -> Void
@@ -11047,13 +10137,8 @@ private struct ConnectionDetailsView: View {
         }
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
               let text = String(data: data, encoding: .utf8) else { copyStatus = "Copy failed; try again."; return }
-        #if os(macOS)
-        NSPasteboard.general.clearContents()
-        copyStatus = NSPasteboard.general.setString(text, forType: .string) ? "Copied connection details" : "Copy failed; try again."
-        #else
         UIPasteboard.general.string = text
         copyStatus = "Copied connection details"
-        #endif
     }
 
     private var statisticsPreview: Bool { CaperRuntime.isAudioPreview("audio-statistics") }
@@ -11065,7 +10150,9 @@ private struct ConnectionDetailsView: View {
                          timing: VoiceJoinTiming(joinedMs: 812, sessionMs: 214, transportMs: 391, rosterMs: 88))
     }
 }
+#endif
 
+#if os(iOS)
 private struct AudioDiagnosticsView: View {
     let voice: VoiceClient
     @State private var copyStatus = ""
@@ -11083,14 +10170,8 @@ private struct AudioDiagnosticsView: View {
                 Text(voice.noiseSuppressionStatus).font(CaperTheme.font(12))
                 HStack {
                     Button("Copy diagnostics") {
-                        #if os(macOS)
-                        NSPasteboard.general.clearContents()
-                        copyStatus = NSPasteboard.general.setString(report, forType: .string)
-                            ? "Copied diagnostics" : "Copy failed; select the report below."
-                        #else
                         UIPasteboard.general.string = report
                         copyStatus = "Copied diagnostics"
-                        #endif
                     }
                     Text(copyStatus).font(CaperTheme.font(11))
                 }
@@ -11100,11 +10181,7 @@ private struct AudioDiagnosticsView: View {
     }
 
     private var reportJSON: String {
-        #if os(macOS)
-        let platform = "macOS"
-        #else
         let platform = "iOS"
-        #endif
         var values: [String: Any] = ["platform": platform, "processing": NSNull()]
         if let stats = voice.audioProcessingReport {
             values["processing"] = [
@@ -11118,6 +10195,7 @@ private struct AudioDiagnosticsView: View {
         return report
     }
 }
+#endif
 
 private struct AudioRouteRow: View {
     let title: String

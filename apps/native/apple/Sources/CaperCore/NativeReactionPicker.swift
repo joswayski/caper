@@ -21,15 +21,6 @@ enum NativeEmojiPickerCatalog {
 #if os(macOS)
 import AppKit
 
-struct NativeReactionPickerBridge: NSViewControllerRepresentable {
-    let title: String
-    let embedded: Bool
-    let close: () -> Void
-    let select: (String) -> Void
-    func makeNSViewController(context: Context) -> AppKitReactionPicker { AppKitReactionPicker(title: title, close: close, select: select) }
-    func updateNSViewController(_ controller: AppKitReactionPicker, context: Context) {}
-}
-
 @MainActor final class AppKitReactionPicker: NSViewController, NSTextFieldDelegate, NSCollectionViewDataSource {
     private let pickerTitle: String
     private let close: () -> Void

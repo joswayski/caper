@@ -1,5 +1,6 @@
 import SwiftUI
 
+#if os(iOS)
 struct MessageEditorView: View {
     @Bindable var chat: ChatModel
     @State private var baseline: ChatMessage
@@ -45,9 +46,6 @@ struct MessageEditorView: View {
                 }
             }.padding(20)
         }.background(CaperTheme.raised)
-            #if os(macOS)
-            .frame(width: 520, height: 430)
-            #endif
             .interactiveDismissDisabled(busy)
             .preference(key: DialogDismissDisabled.self, value: busy)
             .onAppear { autocomplete.restoreFocus() }
@@ -67,7 +65,9 @@ struct MessageEditorView: View {
         }
     }
 }
+#endif
 
+#if os(iOS)
 struct MessageHistoryView: View {
     @Bindable var chat: ChatModel
     let message: ChatMessage
@@ -107,9 +107,6 @@ struct MessageHistoryView: View {
                 if more && error == nil { Button("Load older versions") { Task { await load(older: true) } }.disabled(loading) }
             }.padding(20)
         }.background(CaperTheme.raised)
-            #if os(macOS)
-            .frame(width: 820, height: 580)
-            #endif
             .task(id: currentRevision) { await load(older: false) }
             .onChange(of: chat.editingContext) { _, _ in close() }
             // A deleted message's versions are no longer available.
@@ -131,6 +128,7 @@ struct MessageHistoryView: View {
         if currentRequest == request { loading = false }
     }
 }
+#endif
 
 private func versionLabel(_ version: MessageVersion) -> String {
     let date = ChatDateDivider.date(version.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? version.createdAt

@@ -136,6 +136,7 @@ struct PictureEditorBusy: PreferenceKey {
 /// Edit profile's picture and Manage space's icon. Only the corner controls
 /// are buttons, so opening a menu or saving never dims the picture itself.
 /// Regeneration progress stays inside its button without moving the form.
+#if os(iOS)
 struct PictureEditor<Preview: View>: View {
     let purpose: PicturePurpose
     /// A custom picture is set (Remove is offered).
@@ -159,12 +160,10 @@ struct PictureEditor<Preview: View>: View {
     @State private var unavailable = false
     /// The Mac's image file importer (iPhone and iPad choose in the drawer).
     @State private var showFiles = false
-    #if os(iOS)
     /// The attach drawer in picture mode, as the composer's attach button opens it.
     @State private var showDrawer = false
     /// The drawer's choice, opened once the drawer has closed.
     @State private var pendingPick: (() async throws -> Data)?
-    #endif
     @State private var dropping = false
     @State private var editing: AttachmentEditRequest?
     @State private var stagedURL: URL?
@@ -181,12 +180,8 @@ struct PictureEditor<Preview: View>: View {
 
     /// The badges stay small beside the 112-point frame on every platform.
     private var actionSide: CGFloat { 28 }
-    #if os(macOS)
-    private var hitOutset: CGFloat { 0 }
-    #else
     /// Touch reaches 44 points around each 28-point badge.
     private var hitOutset: CGFloat { 8 }
-    #endif
 
     init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, currentData: Data? = nil, deferred: Bool = false,
          upload: @escaping (PreparedPicture) async throws -> Void,
@@ -240,20 +235,6 @@ struct PictureEditor<Preview: View>: View {
                     return true
                 } isTargeted: { dropping = $0 && phase == nil && !unavailable }
                 .overlay(alignment: .bottomLeading) {
-                    #if os(macOS)
-                    if let hoveredAction {
-                        Text(hoveredAction == .regenerate ? "Generate a new random avatar" : avatar ? "Change profile picture" : "Change space icon")
-                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text)
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(CaperTheme.raised, in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                            .fixedSize()
-                            .alignmentGuide(.bottom) { $0[.top] - 8 }
-                            .modifier(Entrance.anchored)
-                            .allowsHitTesting(false)
-                            .accessibilityIdentifier("picture-action-tooltip")
-                    }
-                    #endif
                 }
             if let notice = error ?? status {
                 Text(notice).font(CaperTheme.font(12))
@@ -269,7 +250,6 @@ struct PictureEditor<Preview: View>: View {
                     .preferredColorScheme(.dark)
             }
         }
-        #if os(iOS)
         // The same drawer as chat attachments, in picture mode: photos only,
         // one tap chooses, and the original bytes come back (GIFs stay animated).
         .fullScreenCover(isPresented: $showDrawer, onDismiss: {
@@ -280,7 +260,6 @@ struct PictureEditor<Preview: View>: View {
             AttachDrawer(mode: .picture(title: avatar ? "Choose a picture" : "Choose an icon",
                                         pick: { pendingPick = $0 }))
         }
-        #endif
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image]) { result in
             guard case .success(let url) = result else { return }
             start { try await Task.detached(priority: .userInitiated) { try PictureFile.read(url) }.value }
@@ -291,9 +270,6 @@ struct PictureEditor<Preview: View>: View {
         }) { request in
             AttachmentEditor(request: request) { editing = nil }
                 .preferredColorScheme(.dark)
-                #if os(macOS)
-                .frame(minWidth: 720, minHeight: 600)
-                #endif
         }
         .confirmationDialog("Animated picture", isPresented: $showAnimationChoice, titleVisibility: .visible) {
             Button("Use original animation") {
@@ -327,11 +303,7 @@ struct PictureEditor<Preview: View>: View {
     /// file", opens the image file importer.
     private func choosePicture() {
         guard phase == nil, !unavailable else { return }
-        #if os(iOS)
         withoutPresentationAnimation { showDrawer = true }
-        #else
-        showFiles = true
-        #endif
     }
 
     private var pencil: some View {
@@ -534,6 +506,7 @@ struct PictureEditor<Preview: View>: View {
         }
     }
 }
+#endif
 
 private struct AvatarHistoryChooser: View {
     @Environment(\.dismiss) private var dismiss
