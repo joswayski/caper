@@ -62,9 +62,7 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         titleLabel = title
         let close = Self.button("Close") { [weak self] in if let self, !self.dismissDisabled { self.close() } }
         close.accessibilityLabel = closeLabel; closeButton = close
-        let header = UIStackView(arrangedSubviews: [title, close]); header.spacing = 12; self.header = header
-        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        close.setContentHuggingPriority(.required, for: .horizontal)
+        let header = Self.header(title, close); self.header = header
         let scroll = UIScrollView(); scroll.keyboardDismissMode = .interactive; self.scroll = scroll
         body.axis = .vertical; body.spacing = 14
         for child in [header, scroll] { child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child) }
@@ -131,6 +129,16 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         label.adjustsFontForContentSizeCategory = true
         label.textColor = UIColor(error ? CaperTheme.error : CaperTheme.text)
         return label
+    }
+    /// A dialog header: the title wraps at large text sizes instead of
+    /// clipping, and the trailing button keeps its full width.
+    static func header(_ title: UILabel, _ trailing: UIView, spacing: CGFloat = 12) -> UIStackView {
+        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        trailing.setContentHuggingPriority(.required, for: .horizontal)
+        trailing.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let header = UIStackView(arrangedSubviews: [title, trailing]); header.spacing = spacing; header.alignment = .center
+        return header
     }
     static func button(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> UIButton {
         var config = UIButton.Configuration.filled()

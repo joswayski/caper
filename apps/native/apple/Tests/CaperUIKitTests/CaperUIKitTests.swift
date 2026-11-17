@@ -1043,7 +1043,7 @@ final class CaperUIKitTests: XCTestCase {
         app.buttons["back-to-browse"].tap()
         let inbox = app.cells["feedback-inbox"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 10))
-        let waiting = NSPredicate(format: "value == %@", "1 feedback conversations waiting for a reply")
+        let waiting = NSPredicate(format: "value == %@", "1 feedback conversation waiting for a reply")
         XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: waiting, evaluatedWith: inbox)], timeout: 10), .completed,
                        "The row counts reports waiting for a reply")
         screenshot("uikit-browse-feedback-rows")

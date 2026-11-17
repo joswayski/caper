@@ -474,7 +474,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         NSLayoutConstraint.activate([
             box.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 12),
             box.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
-            row.heightAnchor.constraint(equalToConstant: 52),
+            // 52pt, taller when a large text size wraps the name's line.
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 52),
+            row.heightAnchor.constraint(equalToConstant: 52).withPriority(.defaultLow),
+            identity.topAnchor.constraint(greaterThanOrEqualTo: profile.topAnchor),
             presenceDot.widthAnchor.constraint(equalToConstant: 11),
             presenceDot.heightAnchor.constraint(equalToConstant: 11),
             presenceDot.trailingAnchor.constraint(equalTo: accountAvatar.trailingAnchor, constant: 0.5),
@@ -742,7 +745,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             cell.show(icon: "chevron-right", text: FeedbackInbox.title, highlighted: model.visit != nil,
                       unread: waiting > 0 ? waiting : nil)
             cell.accessibilityLabel = FeedbackInbox.title
-            cell.accessibilityValue = waiting > 0 ? "\(waiting) feedback conversations waiting for a reply" : ""
+            cell.accessibilityValue = waiting > 0 ? FeedbackInbox.waitingLabel(waiting) : ""
             cell.accessibilityHint = "Opens the feedback inbox"
             cell.accessibilityIdentifier = "feedback-inbox"
         case .requests:
@@ -933,7 +936,7 @@ final class DirectRowCell: UICollectionViewListCell {
             avatar.leadingAnchor.constraint(equalTo: avatarBox.leadingAnchor),
             avatar.centerYAnchor.constraint(equalTo: avatarBox.centerYAnchor),
             leading, trailing,
-            count.heightAnchor.constraint(equalToConstant: 18), count.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
+            count.heightAnchor.constraint(greaterThanOrEqualToConstant: 18), count.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
             dot.widthAnchor.constraint(equalToConstant: 8), dot.heightAnchor.constraint(equalToConstant: 8),
             stack.topAnchor.constraint(equalTo: contentView.topAnchor),
             stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -1170,7 +1173,7 @@ final class SearchFieldCell: UICollectionViewListCell, UITextFieldDelegate {
             field.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             field.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
             field.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
-            field.heightAnchor.constraint(equalToConstant: 40),
+            field.heightAnchor.constraint(greaterThanOrEqualToConstant: 40),
         ])
         backgroundConfiguration = .clear()
     }

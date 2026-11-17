@@ -225,7 +225,9 @@ import Observation
     init(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void) {
         self.model = model; self.person = person; self.requestBlock = requestBlock
         super.init(nibName: nil, bundle: nil)
-        modalPresentationStyle = .pageSheet
+        // iPad shows the card at its content size, like the Mac popover; a
+        // form sheet becomes the phone's sheet in compact width.
+        modalPresentationStyle = UIDevice.current.userInterfaceIdiom == .pad ? .formSheet : .pageSheet
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
@@ -280,6 +282,17 @@ import Observation
             body.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32),
         ])
         sheetPresentationController?.detents = [.large()]; sheetPresentationController?.prefersGrabberVisible = true
+    }
+    override func viewDidLayoutSubviews() { super.viewDidLayoutSubviews(); fitToContent() }
+    /// The form sheet's size: 360pt wide and as tall as the card, or the
+    /// profile editor's size while it is open. The phone sheet ignores it.
+    private func fitToContent() {
+        guard modalPresentationStyle == .formSheet else { return }
+        let width: CGFloat = 360
+        let next = editor != nil ? CGSize(width: 540, height: 620) : CGSize(width: width, height: min(620, max(160, ceil(
+            body.systemLayoutSizeFitting(CGSize(width: width - 32, height: 0), withHorizontalFittingPriority: .required,
+                                         verticalFittingPriority: .fittingSizeLevel).height) + 32)))
+        if preferredContentSize != next { preferredContentSize = next }
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated); presentationController?.delegate = self
@@ -344,6 +357,7 @@ import Observation
         } else if let composer {
             composer.stop(); composer.willMove(toParent: nil); composer.view.removeFromSuperview(); composer.removeFromParent(); self.composer = nil
         }
+        fitToContent()
     }
     private func block() {
         guard !state.busy, state.canBlock else { return }
@@ -356,7 +370,7 @@ import Observation
         dismissAction = ProfileDismissAction(id: UUID(), action: { [weak host] in host?.requestClose() })
         editor = host; addChild(host)
         view.subviews.forEach { $0.isHidden = true }; host.view.frame = view.bounds; host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(host.view); host.didMove(toParent: self)
+        view.addSubview(host.view); host.didMove(toParent: self); fitToContent()
     }
     @objc private func openPicture() {
         guard let request = profilePictureRequest(person) else { return }

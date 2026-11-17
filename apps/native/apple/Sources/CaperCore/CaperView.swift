@@ -8568,7 +8568,7 @@ private struct FeedbackRow: View {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).modifier(ControlHover())
             .accessibilityLabel(FeedbackInbox.title)
-            .accessibilityValue(waiting > 0 ? "\(waiting) feedback conversations waiting for a reply" : "")
+            .accessibilityValue(waiting > 0 ? FeedbackInbox.waitingLabel(waiting) : "")
             .accessibilityHint(narrow ? "Opens the feedback inbox" : model.showingFeedback ? "Collapses the inbox" : "Expands the inbox")
             .accessibilityIdentifier("feedback-inbox")
     }

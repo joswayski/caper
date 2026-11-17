@@ -164,9 +164,8 @@ struct NativeReactionPickerBridge: UIViewControllerRepresentable {
         view.backgroundColor = UIColor(CaperTheme.surface); overrideUserInterfaceStyle = .dark
         view.accessibilityIdentifier = "reaction-picker"
         let cancel = UIKitMessageDialog.button("Cancel", action: close)
-        let header = UIStackView(arrangedSubviews: [UIKitMessageDialog.label(title ?? "", size: 20, bold: true), cancel])
-        header.spacing = 8; header.isHidden = embedded
-        cancel.setContentHuggingPriority(.required, for: .horizontal)
+        let header = UIKitMessageDialog.header(UIKitMessageDialog.label(title ?? "", size: 20, bold: true), cancel, spacing: 8)
+        header.isHidden = embedded
         let tabs = UIStackView(); tabs.distribution = .fillEqually
         for item in NativeEmojiPickerCatalog.categories {
             let button = UIButton(type: .system)

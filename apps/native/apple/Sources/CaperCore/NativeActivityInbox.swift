@@ -305,8 +305,7 @@ import Observation
         let done = UIKitMessageDialog.button("Done") { [weak self] in self?.finish() }
         done.accessibilityIdentifier = "activity-done"
         let title = UIKitMessageDialog.label("Notifications", size: 20, bold: true)
-        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let header = UIStackView(arrangedSubviews: [title, done]); header.spacing = 12
+        let header = UIKitMessageDialog.header(title, done)
         filters.spacing = 6
         for filter in ActivityFilter.allCases {
             let button = UIKitMessageDialog.button(filter.label) { [model] in
@@ -327,7 +326,8 @@ import Observation
         let filterScroll = UIScrollView(); filterScroll.showsHorizontalScrollIndicator = false
         filters.translatesAutoresizingMaskIntoConstraints = false; filterScroll.addSubview(filters)
         NSLayoutConstraint.activate([
-            filterScroll.heightAnchor.constraint(equalToConstant: 44),
+            // Grows with the filter buttons at large text sizes.
+            filterScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             filters.leadingAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.leadingAnchor),
             filters.trailingAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.trailingAnchor),
             filters.topAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.topAnchor),

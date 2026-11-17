@@ -200,7 +200,7 @@ import WebKit
     override func viewDidLoad() {
         super.viewDidLoad(); overrideUserInterfaceStyle = .dark; view.backgroundColor = UIColor(CaperTheme.surface)
         view.accessibilityIdentifier = "gif-picker"
-        let header = UIStackView(arrangedSubviews: [UIKitMessageDialog.label("GIFs", size: 20, bold: true), UIKitMessageDialog.button("Cancel", action: close)])
+        let header = UIKitMessageDialog.header(UIKitMessageDialog.label("GIFs", size: 20, bold: true), UIKitMessageDialog.button("Cancel", action: close))
         header.isHidden = embedded
         let tabs = UISegmentedControl(items: ["GIFs", "Stickers"]); tabs.selectedSegmentIndex = 0
         tabs.isHidden = embedded; tabs.accessibilityIdentifier = "gif-picker-kind"
@@ -301,8 +301,8 @@ import WebKit
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
         super.viewDidLoad(); overrideUserInterfaceStyle = .dark; view.backgroundColor = UIColor(CaperTheme.surface)
-        let header = UIStackView(arrangedSubviews: [UIKitMessageDialog.label("Emojis, GIFs & Stickers", size: 16, bold: true),
-            UIKitMessageDialog.button("Cancel", action: close)])
+        let header = UIKitMessageDialog.header(UIKitMessageDialog.label("Emojis, GIFs & Stickers", size: 16, bold: true),
+            UIKitMessageDialog.button("Cancel", action: close))
         tabs.selectedSegmentIndex = 0; tabs.accessibilityLabel = "Expression type"
         tabs.addTarget(self, action: #selector(changeTab), for: .valueChanged)
         let stack = UIStackView(arrangedSubviews: [header, tabs, content]); stack.axis = .vertical; stack.spacing = 12

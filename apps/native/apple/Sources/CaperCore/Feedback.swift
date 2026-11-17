@@ -223,6 +223,12 @@ public enum FeedbackInbox {
 
     public static func status(_ report: FeedbackReport) -> String { report.answered ? answered : waiting }
 
+    /// The Feedback row's count for VoiceOver, as web words it: "1 feedback
+    /// conversation waiting for a reply", "3 feedback conversations …".
+    public static func waitingLabel(_ waiting: Int) -> String {
+        "\(waiting) feedback \(waiting == 1 ? "conversation" : "conversations") waiting for a reply"
+    }
+
     /// Waiting reports among those loaded, for the navigation row's count.
     public static func waitingCount(_ reports: [FeedbackReport]) -> Int { reports.filter { !$0.answered }.count }
 

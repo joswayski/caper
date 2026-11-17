@@ -65,11 +65,13 @@ import Observation
         resize = UIButton(type: .system); resize.setTitle("━", for: .normal); resize.tintColor = UIColor(CaperTheme.muted)
         resize.accessibilityIdentifier = "attach-drawer-resize"; resize.accessibilityLabel = "Expand \(name)"
         resize.addAction(UIAction { [weak self] _ in guard let self else { return }; self.expanded.toggle(); self.resizePanel(animated: true) }, for: .touchUpInside)
-        resize.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        // A 44pt touch target; the title row follows with no extra gap.
+        resize.heightAnchor.constraint(equalToConstant: 44).isActive = true
         let titleRow = UIStackView(arrangedSubviews: [titleLabel, cancel]); titleRow.spacing = 12
         // The title takes the slack so Close keeps its own width at the trailing edge.
         titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal); cancel.setContentHuggingPriority(.required, for: .horizontal)
         let header = UIStackView(arrangedSubviews: [resize, titleRow, hint]); header.axis = .vertical; header.spacing = 4
+        header.setCustomSpacing(0, after: resize)
         header.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(pan)))
         grid.backgroundColor = .clear; grid.dataSource = self; grid.delegate = self
         grid.register(UIKitAttachTile.self, forCellWithReuseIdentifier: "photo"); grid.accessibilityIdentifier = "attach-drawer-grid"

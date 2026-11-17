@@ -1081,9 +1081,9 @@ final class BlockedRunCell: UICollectionViewCell {
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
-            toggle.heightAnchor.constraint(greaterThanOrEqualToConstant: 32),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            toggle.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

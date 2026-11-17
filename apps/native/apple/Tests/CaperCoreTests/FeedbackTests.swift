@@ -355,6 +355,8 @@ final class FeedbackTests: XCTestCase {
         let channel = page.reports[0], direct = page.reports[1]
         XCTAssertEqual(FeedbackInbox.location(channel), "#plans · Studio")
         XCTAssertEqual(FeedbackInbox.location(direct), "DM · Alice & Bob")
+        XCTAssertEqual(FeedbackInbox.waitingLabel(1), "1 feedback conversation waiting for a reply")
+        XCTAssertEqual(FeedbackInbox.waitingLabel(12), "12 feedback conversations waiting for a reply")
         XCTAssertEqual(FeedbackInbox.preview(channel), "@feedback uploads fail from the share sheet", "one line")
         XCTAssertEqual(FeedbackInbox.preview(direct), "Sent 1 file")
         let files = FeedbackReport(id: "x", messageId: "x", threadRootId: "x", createdAt: "", text: "  ", attachments: 3,
