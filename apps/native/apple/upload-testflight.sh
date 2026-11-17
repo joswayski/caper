@@ -103,6 +103,20 @@ cat >"$work/ExportOptions.plist" <<EOF
 </dict></plist>
 EOF
 touch "$work/export-started"
-xcodebuild -exportArchive -archivePath "$work/Caper.xcarchive" \
-  -exportOptionsPlist "$work/ExportOptions.plist" -exportPath "$work/export" "${auth[@]}"
+# Apple's service sometimes fails the export before anything is uploaded with
+# "Error Downloading App Information"; only that failure is retried, so a
+# failed or partial upload is never sent twice.
+for attempt in 1 2 3; do
+  if xcodebuild -exportArchive -archivePath "$work/Caper.xcarchive" \
+    -exportOptionsPlist "$work/ExportOptions.plist" -exportPath "$work/export" "${auth[@]}" 2>&1 |
+    tee "$work/export.log"; then
+    break
+  fi
+  if [[ $attempt == 3 ]] || ! grep -q "Error Downloading App Information" "$work/export.log"; then
+    exit 1
+  fi
+  echo "App Store Connect did not return the app information; retrying the export in 60 seconds."
+  rm -rf "$work/export"
+  sleep 60
+done
 echo "Uploaded $IOS_BUNDLE_ID build $BUILD_NUMBER to App Store Connect; it appears in TestFlight after processing."
