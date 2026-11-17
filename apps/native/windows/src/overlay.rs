@@ -1301,10 +1301,8 @@ impl Dialog {
                                 startPosition: 0,
                                 length: gfx::wide(&self.update_version()).len() as u32,
                             };
-                            unsafe {
-                                l.SetUnderline(true, range)?;
-                                l.SetDrawingEffect(&g.brushes.text, range)?;
-                            }
+                            l.SetUnderline(true, range)?;
+                            l.SetDrawingEffect(&g.brushes.text, range)?;
                         }
                         crate::text::draw(dc, &l, x, y, &g.brushes.muted);
                     }
