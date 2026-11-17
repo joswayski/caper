@@ -1803,6 +1803,29 @@ impl App {
         self.need = true;
     }
 
+    /// As web's page order, Tab past the composer (or the thread's reply
+    /// box) wraps to the sidebar: the open channel's or DM's row, with its
+    /// ring. False in a narrow window, whose sidebar is behind Browse.
+    pub fn tab_to_sidebar(&mut self) -> bool {
+        let direct = self
+            .direct_rows()
+            .iter()
+            .position(|row| row.active && row.kind == crate::directs::RowKind::Direct);
+        let side = match direct {
+            Some(k) if self.c.direct.is_some() => Side::Direct(k),
+            _ if self.c.channel < self.c.channels.len() => Side::Channel(self.c.channel),
+            _ if !self.c.channels.is_empty() => Side::Channel(0),
+            _ if !self.direct_rows().is_empty() => Side::Direct(0),
+            _ => return false,
+        };
+        self.focus_side(side);
+        if self.side_focus.is_none() {
+            return false;
+        }
+        self.side_ring = true;
+        true
+    }
+
     pub fn clear_side_focus(&mut self) {
         if self.side_focus.take().is_some() {
             self.dirty.sidebar = true;
@@ -1843,8 +1866,9 @@ impl App {
                 Side::Channel(i) => self.pick_channel(i),
                 Side::Direct(k) => self.pick_direct(k),
             },
-            VK_TAB if !shift => self.set_composer_focus(true),
-            VK_ESCAPE => self.set_composer_focus(true),
+            // Tab goes on to the conversation; Shift+Tab wraps back to
+            // its end, the composer, as web's page order does.
+            VK_TAB | VK_ESCAPE => self.set_composer_focus(true),
             _ => return false,
         }
         self.side_ring = true;
@@ -3160,6 +3184,9 @@ impl App {
             return false;
         }
         match vk {
+            // As web's textarea: Tab leaves for the sidebar (suggestions
+            // took it first when open); Shift+Tab went to the history.
+            VK_TAB if !ctrl && !shift => return self.tab_to_sidebar(),
             VK_RETURN if shift => self.composer.insert(&['\n' as u16]),
             VK_RETURN => {
                 if let Err(e) = self.send() {

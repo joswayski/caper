@@ -21785,6 +21785,7 @@ impl CaperApp {
         if !choices.is_empty() {
             let count = choices.len();
             state.selected = state.selected.min(count - 1);
+            let mut back = false;
             ui.input_mut(|input| {
                 if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
                     state.selected = (state.selected + 1) % count;
@@ -21792,8 +21793,12 @@ impl CaperApp {
                 if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
                     state.selected = (state.selected + count - 1) % count;
                 }
-                if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                    || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
+                // consume_key ignores Shift on these keys; as on web, the
+                // shifted ones never choose.
+                back = input.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);
+                if !input.modifiers.shift
+                    && (input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                        || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab))
                 {
                     chosen = Some(choices[state.selected].clone());
                 }
@@ -21801,6 +21806,11 @@ impl CaperApp {
                     state.dismissed = active.as_ref().map(|token| (text.to_owned(), token.end()));
                 }
             });
+            // The focus lock below keeps Shift+Tab here too; as on web it
+            // still moves focus back.
+            if back {
+                ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::Previous));
+            }
         }
         self.composer_suggestions.insert(id, state);
         SuggestionPass {
@@ -42750,6 +42760,27 @@ mod tests {
             context.memory(|memory| memory.has_focus(id)),
             "Tab must stay in the composer"
         );
+
+        // As on web, Shift+Tab leaves even with the list open, choosing nothing.
+        place_caret(&context, "hi @AL|", &mut app);
+        render(&mut app, &context, vec![]);
+        let shift_tab = [true, false]
+            .map(|pressed| egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::SHIFT,
+            })
+            .to_vec();
+        render(&mut app, &context, shift_tab);
+        render(&mut app, &context, vec![]);
+        assert_eq!(app.draft, "hi @AL");
+        assert!(
+            !context.memory(|memory| memory.has_focus(id)),
+            "Shift+Tab must leave the composer"
+        );
+        context.memory_mut(|memory| memory.request_focus(id));
 
         place_caret(&context, "(@|", &mut app);
         render(&mut app, &context, vec![]);

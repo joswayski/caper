@@ -26,7 +26,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import chat.caper.android.R
 import chat.caper.android.data.FormatStyle
@@ -70,6 +72,7 @@ import kotlin.math.roundToInt
 ) = KeyboardAttachmentInput(keyboardAttachment.takeIf { enabled }) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
     val history = remember { chat.caper.android.data.FormatEditHistory() }
     // The last value this field emitted: any other value came from outside (a draft swap, a send).
     val emitted = remember { arrayOfNulls<TextFieldValue>(1) }
@@ -154,7 +157,14 @@ import kotlin.math.roundToInt
             if (event.type == KeyEventType.KeyDown) {
                 restoringHistory = (event.isCtrlPressed || event.isMetaPressed) && (event.key == Key.Z || event.key == Key.Y)
             }
-            if (enabled && !readOnly && event.type == KeyEventType.KeyDown && (event.isCtrlPressed || event.isMetaPressed) && !event.isAltPressed && !event.isShiftPressed) {
+            // As web's textarea, a hardware Tab moves focus (Shift+Tab back) instead of typing
+            // a tab; an open suggestion list takes Tab before it reaches here.
+            if (event.key == Key.Tab && !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed) {
+                if (event.type == KeyEventType.KeyDown) {
+                    focusManager.moveFocus(if (event.isShiftPressed) FocusDirection.Previous else FocusDirection.Next)
+                }
+                true
+            } else if (enabled && !readOnly && event.type == KeyEventType.KeyDown && (event.isCtrlPressed || event.isMetaPressed) && !event.isAltPressed && !event.isShiftPressed) {
                 when (event.key) {
                     Key.B -> { format(FormatStyle.BOLD); true }
                     Key.I -> { format(FormatStyle.ITALIC); true }

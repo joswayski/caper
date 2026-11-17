@@ -2217,6 +2217,16 @@ impl App {
                     return done;
                 }
                 match vk {
+                    // As web's textarea: Tab moves on (the sidebar, past the
+                    // page's end) and Shift+Tab back to the main composer.
+                    VK_TAB if !ctrl && !shift => {
+                        self.tab_to_sidebar();
+                        return done;
+                    }
+                    VK_TAB if !ctrl => {
+                        self.set_composer_focus(true);
+                        return done;
+                    }
                     VK_RETURN if shift => t.composer.insert(&['\n' as u16]),
                     VK_RETURN => {
                         self.send_thread_reply();
