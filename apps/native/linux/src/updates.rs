@@ -31,7 +31,6 @@ pub(super) struct Report {
 pub(super) struct UpdatesRow {
     check: gtk::Button,
     status: gtk::Label,
-    note: gtk::Label,
 }
 
 pub(super) struct WhatsNewWindow {
@@ -87,6 +86,7 @@ fn version_control() -> gtk::Widget {
     button.add_css_class("flat");
     button.add_css_class("version-copy");
     button.set_halign(gtk::Align::Start);
+    button.set_cursor_from_name(Some("pointer"));
     button.set_tooltip_text(Some(&details));
     let copies = Rc::new(std::cell::Cell::new(0u32));
     let (name, shown) = (version.accessible_name, version.label);
@@ -413,21 +413,18 @@ impl App {
         root.append(&rule);
         root.append(&label("Updates", &["settings-section"]));
         root.append(&version_control());
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let check = gtk::Button::with_label("Check for updates");
-        check.set_halign(gtk::Align::Start);
-        root.append(&check);
-        // Always shown, so a fast check never moves the controls.
+        buttons.append(&check);
+        let whats_new = gtk::Button::with_label("What’s new");
+        buttons.append(&whats_new);
+        root.append(&buttons);
+        // A check's result; always shown, so a fast check never moves what
+        // follows.
         let status = label("", &[]);
         status.set_xalign(0.0);
         status.set_ellipsize(gtk::pango::EllipsizeMode::End);
         root.append(&status);
-        let note = label("", &["muted", "small"]);
-        note.set_xalign(0.0);
-        root.append(&note);
-        let whats_new = gtk::Button::with_label("What’s new");
-        whats_new.set_halign(gtk::Align::Start);
-        whats_new.set_margin_top(4);
-        root.append(&whats_new);
         let app = Rc::downgrade(self);
         check.connect_clicked(move |_| {
             if let Some(app) = app.upgrade() {
@@ -441,11 +438,7 @@ impl App {
                 app.open_whats_new();
             }
         });
-        UpdatesRow {
-            check,
-            status,
-            note,
-        }
+        UpdatesRow { check, status }
     }
 
     /// Settings' check status, the dock's "Update available", the review
@@ -475,7 +468,7 @@ impl App {
                 Status::Deferred => ("No new updates. Will check again shortly.".into(), false),
                 Status::Failed(error) => (format!("Could not check for updates: {error}"), true),
                 Status::Checking => ("Checking for updates…".into(), false),
-                Status::Idle => ("Updates are checked automatically.".into(), false),
+                Status::Idle => (String::new(), false),
             };
             row.status.set_label(&message);
             row.status.set_tooltip_text(Some(&message));
@@ -485,11 +478,6 @@ impl App {
                 row.status.remove_css_class("error");
             }
             row.status.set_opacity(if error { 1.0 } else { 0.7 });
-            row.note.set_label(if !can_check && status == Status::Idle {
-                "Update checks are available in packaged release builds."
-            } else {
-                "Checks automatically every minute."
-            });
         }
         self.ui.update_dock.set_visible(known.is_some());
         if let Some(update) = &known {

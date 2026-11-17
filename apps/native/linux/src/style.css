@@ -2248,12 +2248,21 @@ button.inline-link {
   font-size: inherit;
 }
 
-/* Settings' installed version: body text that copies itself. */
-button.version-copy {
+/* Settings' installed version: body text that copies itself, its text
+   on the section's left edge, underlined on hover like a link. */
+button.version-copy,
+button.version-copy:hover,
+button.version-copy:active {
   min-height: 0;
   margin-left: -6px;
   padding: 2px 6px;
+  background: none;
+  box-shadow: none;
   color: @caper_text;
+}
+
+button.version-copy:hover label {
+  text-decoration: underline;
 }
 
 /* A composer's voice recording, in place of its input row: discard, the

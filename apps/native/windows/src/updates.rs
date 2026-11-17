@@ -56,17 +56,9 @@ impl Check {
                 return (format!("Could not check for updates: {error}"), true);
             }
             Status::Checking => "Checking for updates…",
-            Status::Idle => "Updates are checked automatically.",
+            Status::Idle => "",
         };
         (text.into(), false)
-    }
-
-    pub fn note(&self) -> &'static str {
-        if !self.can_check && self.status == Status::Idle {
-            "Update checks are available in packaged release builds."
-        } else {
-            "Checks automatically every minute."
-        }
     }
 }
 

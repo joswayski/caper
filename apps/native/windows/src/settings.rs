@@ -368,6 +368,9 @@ pub struct Settings {
     content_h: f32,
     pub hover: Option<SPart>,
     pub pressed: Option<SPart>,
+    /// A click gave `focus`: the version, body text like web's links,
+    /// rings only for keyboard focus.
+    pub pointer_focus: bool,
     pub focus: Option<SPart>,
     /// Client DIPs: the card and its scrolling body.
     card: Rect,
@@ -393,6 +396,7 @@ impl Settings {
             content_h: 0.0,
             hover: None,
             pressed: None,
+            pointer_focus: false,
             focus: Some(SPart::Close),
             card: (0.0, 0.0, 0.0, 0.0),
             body: (0.0, 0.0, 0.0, 0.0),
@@ -550,6 +554,7 @@ impl Settings {
             return;
         }
         self.focus = Some(part);
+        self.pointer_focus = false;
         if let Some(item) = self.items.iter().find(|i| i.part == part) {
             let (_, top, _, height) = item.rect;
             if top < self.scroll {
@@ -658,17 +663,45 @@ impl Builder<'_> {
         let installed = caper_client::updates::InstalledVersion::current();
         if installed.copy_text.is_none() {
             b.text(&installed.label, Style::Label)?;
-        } else if snap.version_copied {
-            b.button(SPart::CopyVersion, caper_client::updates::VERSION_COPIED)?;
         } else {
-            b.button(SPart::CopyVersion, &installed.label)?;
+            // Body text like GTK's and Anybase's, not a second button over
+            // Check for updates; "Copied" takes its place.
+            let label = if snap.version_copied {
+                caper_client::updates::VERSION_COPIED
+            } else {
+                installed.label.as_str()
+            };
+            let h = b.measure(label, Style::Label, b.inner)?;
+            let w = b.width(label, Style::Label)?;
+            b.items.push(Item {
+                part: SPart::CopyVersion,
+                rect: (0.0, b.y + 4.0, w, h),
+                text: label.into(),
+                style: Style::Label,
+                face: None,
+            });
+            b.y += h + 12.0;
         }
-        b.button(SPart::CheckUpdates, "Check for updates")?;
+        // Check for updates and What's new side by side, then a check's
+        // result, kept mounted so a fast check never moves what follows.
+        let mut x = 0.0;
+        for (part, label) in [
+            (SPart::CheckUpdates, "Check for updates"),
+            (SPart::WhatsNew, "What’s new"),
+        ] {
+            let w = b.width(label, Style::Label)? + 24.0;
+            b.items.push(Item {
+                part,
+                rect: (x, b.y, w, BUTTON_H),
+                text: label.into(),
+                style: Style::Label,
+                face: None,
+            });
+            x += w + 8.0;
+        }
+        b.y += BUTTON_H + 8.0;
         let (message, error) = snap.updates.message();
         b.text(&message, Style::Status(error))?;
-        b.text(snap.updates.note(), Style::Detail)?;
-        b.y += 10.0;
-        b.button(SPart::WhatsNew, "What’s new")?;
         if snap.account {
             b.separator();
             b.text("Notifications", Style::Section)?;
@@ -970,7 +1003,8 @@ impl Settings {
         } else {
             &g.brushes.muted
         };
-        if self.focus == Some(item.part) {
+        if self.focus == Some(item.part) && !(item.part == SPart::CopyVersion && self.pointer_focus)
+        {
             stroke_round(
                 dc,
                 rect(x - 2.0, y - 2.0, x + w + 2.0, y + h + 2.0),
@@ -1163,6 +1197,22 @@ impl Settings {
                     }
                 }
                 text::draw(dc, &l, x, y, &g.brushes.error);
+            }
+            // Text that copies itself: underlined on hover, as Delete account.
+            SPart::CopyVersion => {
+                let l = g.layout(&gfx::wide(&item.text), &g.formats.dialog_note, 1e6)?;
+                if hover {
+                    unsafe {
+                        l.SetUnderline(
+                            true,
+                            DWRITE_TEXT_RANGE {
+                                startPosition: 0,
+                                length: item.text.encode_utf16().count() as u32,
+                            },
+                        )?;
+                    }
+                }
+                text::draw(dc, &l, x, y, &g.brushes.text);
             }
             part if part.is_button() => {
                 let state = if !enabled {
@@ -1711,6 +1761,7 @@ impl App {
             WM_LBUTTONDOWN => {
                 let part = s.hit(x, y);
                 s.focus = part;
+                s.pointer_focus = true;
                 s.pressed = part;
                 // A slider follows the pointer until it lets go.
                 if let Some(p) = part.filter(|p| p.is_slider()) {

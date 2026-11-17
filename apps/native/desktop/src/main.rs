@@ -23922,35 +23922,24 @@ impl CaperApp {
         ui.label(bold("Updates").size(12.0).color(MUTED));
         ui.add_space(6.0);
         self.version_control(ui);
-        let status = self.updates.status();
-        let checking = status == updates::Status::Checking;
-        if secondary_button(
-            ui,
-            "Check for updates",
-            self.updates.can_check() && !checking,
-        )
-        .clicked()
-        {
-            self.updates.check_now();
-        }
-        self.update_check_status(ui);
-        ui.label(
-            RichText::new(
-                if !self.updates.can_check() && status == updates::Status::Idle {
-                    "Update checks are available in packaged release builds."
-                } else {
-                    "Checks automatically every minute."
-                },
+        let checking = self.updates.status() == updates::Status::Checking;
+        ui.horizontal_wrapped(|ui| {
+            if secondary_button(
+                ui,
+                "Check for updates",
+                self.updates.can_check() && !checking,
             )
-            .size(12.0)
-            .color(MUTED),
-        );
-        ui.add_space(10.0);
-        if secondary_button(ui, "What’s new", true).clicked() {
-            self.whats_new.open_history();
-            self.dialog = Some(Dialog::WhatsNew);
-            self.load_whats_new(true);
-        }
+            .clicked()
+            {
+                self.updates.check_now();
+            }
+            if secondary_button(ui, "What’s new", true).clicked() {
+                self.whats_new.open_history();
+                self.dialog = Some(Dialog::WhatsNew);
+                self.load_whats_new(true);
+            }
+        });
+        self.update_check_status(ui);
         if self.account.is_some() {
             ui.add_space(18.0);
             ui.separator();
@@ -23987,14 +23976,38 @@ impl CaperApp {
         } else {
             installed.label.as_str()
         };
-        let response = ui.add(
-            egui::Button::new(RichText::new(shown).color(TEXT))
-                .frame(false)
-                .min_size(egui::vec2(0.0, 28.0)),
-        );
+        // Body text on the section's left edge, underlined on hover like a
+        // link; the ring shows only with keyboard focus.
+        let response = ui
+            .scope(|ui| {
+                ui.spacing_mut().button_padding.x = 0.0;
+                ui.add(
+                    egui::Button::new(RichText::new(shown).color(TEXT))
+                        .frame(false)
+                        .min_size(egui::vec2(0.0, 28.0)),
+                )
+            })
+            .inner
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.hovered() {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let width = ui
+                .painter()
+                .layout_no_wrap(shown.to_owned(), font.clone(), TEXT)
+                .size()
+                .x;
+            let y = response.rect.center().y + font.size * 0.62;
+            ui.painter().line_segment(
+                [
+                    egui::pos2(response.rect.left(), y),
+                    egui::pos2(response.rect.left() + width, y),
+                ],
+                Stroke::new(1.0_f32, TEXT),
+            );
+        }
         if response.has_focus() {
             ui.painter().rect_stroke(
-                response.rect.expand(2.0),
+                response.rect.expand2(egui::vec2(6.0, 2.0)),
                 8.0,
                 Stroke::new(1.0_f32, TERRACOTTA_BRIGHT),
                 egui::StrokeKind::Inside,
@@ -24034,7 +24047,7 @@ impl CaperApp {
                 (format!("Could not check for updates: {error}"), ERROR)
             }
             updates::Status::Checking => ("Checking for updates…".into(), MUTED),
-            updates::Status::Idle => ("Updates are checked automatically.".into(), MUTED),
+            updates::Status::Idle => (String::new(), MUTED),
         };
         ui.add(egui::Label::new(RichText::new(&message).color(color)).truncate())
             .on_hover_text(message);
