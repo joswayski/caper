@@ -112,6 +112,8 @@ const EV_ROWS: u8 = 4;
 pub(crate) const EV_SCREEN: u8 = 8;
 /// Who is typing changed.
 const EV_TYPING: u8 = 16;
+/// Settings' version now reads "Copied".
+pub(crate) const EV_VERSION_COPIED: u8 = 32;
 const TIMER_BENCH: usize = 1;
 pub(crate) const TIMER_CARET: usize = 2;
 pub(crate) const TIMER_LIVE: usize = 3;
@@ -5043,6 +5045,10 @@ fn main() -> Result<()> {
             }
             if events & EV_TYPING != 0 {
                 uia::raise_typing_changed();
+            }
+            // After the frame laid out "Copied", with the app not borrowed.
+            if events & EV_VERSION_COPIED != 0 {
+                uia::raise_settings_live(settings::SPart::CopyVersion);
             }
             if quit {
                 with_app(App::save_placement);

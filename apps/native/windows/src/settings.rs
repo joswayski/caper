@@ -1583,8 +1583,8 @@ impl App {
                             None,
                         );
                     }
+                    self.events |= crate::EV_VERSION_COPIED;
                     self.settings_changed();
-                    crate::uia::raise_settings_live(SPart::CopyVersion);
                     return;
                 }
             }
