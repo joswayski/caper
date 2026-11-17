@@ -76,28 +76,6 @@ struct PictureFrames: View {
     }
 }
 
-/// A local, prepared crop/animation. No upload URL or global cache entry is
-/// needed to preview it; the draft retains the bytes until Save or Discard.
-struct PreparedPicturePreview: View {
-    let picture: PreparedPicture
-    let size: CGFloat
-    @Environment(\.displayScale) private var scale
-    @State private var frames: ProfilePictureFrames?
-
-    var body: some View {
-        Group {
-            if let frames { PictureFrames(frames: frames, size: size) }
-            else { CaperTheme.raised.frame(width: size, height: size) }
-        }.task(id: picture.data) {
-            let data = picture.data
-            let pixels = ProfilePicturePolicy.displayPixelSize(points: size, scale: scale)
-            let decoded = await Task.detached(priority: .userInitiated) { try? ProfilePictureDecoder.decode(data, pixelSize: pixels) }.value
-            guard !Task.isCancelled else { return }
-            frames = decoded
-        }
-    }
-}
-
 /// A picture filling a `size`-point square, or `fallback` while it loads and
 /// whenever it fails. Callers clip it to their shape (space tiles).
 struct PictureImage<Fallback: View>: View {
@@ -653,23 +631,5 @@ enum PictureFile {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maxBytes { throw PictureError.tooLarge }
         return try Data(contentsOf: url)
-    }
-}
-
-/// Edit profile's frame without a custom picture: the saved mascot holding up
-/// a "change me!" sign (one vector over it, in the mascot's own square).
-struct ChangeMeMascot: View {
-    let name: String
-    let avatarID: Int?
-    let size: CGFloat
-
-    var body: some View {
-        ZStack {
-            Avatar(name: name, size: size, avatarID: avatarID)
-            Image("caper-change-me", bundle: caperResourceBundle).renderingMode(.original)
-                .resizable().scaledToFit().frame(width: size, height: size)
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
     }
 }

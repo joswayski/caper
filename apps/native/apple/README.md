@@ -1,6 +1,6 @@
 # Caper for Apple platforms
 
-The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipping iPhone app is the UIKit client (`CaperIOSUIKit`, built from `Sources/CaperUIKit` with the `chat.caper.ios` identity, entitlements and notification extension; `build.sh` and `upload-testflight.sh` always build it). Native controls render their workspaces, dialogs, pickers and media surfaces without SwiftUI hosting. Allowed embedded-player pages and KLIPY ads on iPhone use isolated WKWebViews; the app shell is not a browser. The retired `CaperIOS` and `CaperMacOS` targets are absent from `project.yml`. Shared SwiftUI views remain for the fixture-only comparison benchmark, not as shipping presentation hosts.
+The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipping iPhone app is the UIKit client (`CaperIOSUIKit`, built from `Sources/CaperUIKit` with the `chat.caper.ios` identity, entitlements and notification extension; `build.sh` and `upload-testflight.sh` always build it). Native controls render their workspaces, dialogs, pickers and media surfaces without SwiftUI hosting. Allowed embedded-player pages and KLIPY ads on iPhone use isolated WKWebViews; the app shell is not a browser. The retired SwiftUI Mac app is gone, and the SwiftUI iPhone app (`Sources/CaperIOS`) builds only as the fixture-only comparison benchmark (`bench.sh`). The shared SwiftUI views in CaperCore remain for that benchmark, not as shipping presentation hosts.
 
 ## Features
 

@@ -107,105 +107,8 @@ import Observation
     }
 }
 
-/// Compatibility entry point for the retired SwiftUI clients. The native
-/// composer owns its presentations and does not host any SwiftUI descendants.
-struct NativeQuickComposerSheet: View {
-    @State private var state: NativeQuickDraft
-    @Environment(\.isEnabled) private var enabled
-    init(model: AppModel, person: MentionCardPerson, close: @escaping () -> Void) {
-        _state = State(initialValue: NativeQuickDraft(model: model, person: person, close: close))
-    }
-    init(model: AppModel, activity: ActivityItem) {
-        let person = MentionCardPerson(id: activity.actorId, username: activity.actorName, displayName: nil, avatarId: activity.avatarId, isSelf: false)
-        _state = State(initialValue: NativeQuickDraft(model: model, person: person, activity: activity, close: {}))
-    }
-    var body: some View {
-        NativeQuickComposerBridge(state: state)
-            .accessibilityIdentifier("mention-card-composer-leaf")
-            .onChange(of: enabled, initial: true) { _, value in state.enabled = value }
-    }
-}
-
-private struct QuickComposerFiles: View {
-    let state: NativeQuickDraft
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if state.incoming { Text("Open the conversation and accept this message request before replying.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
-            let failed = state.draft.files.filter { $0.uploadError != nil }.count
-            if failed > 0 { Text(failed == 1 ? "1 file failed to upload. Send will retry it, or you can remove it." : "\(failed) files failed to upload. Send will retry them, or you can remove them.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
-            ForEach(state.draft.files.filter { $0.uploadError == AttachmentMetadata.refusalMessage }) { file in
-                Text("\(file.spoiler ? "Spoiler attachment" : file.local.name): \(AttachmentMetadata.refusalMessage)").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
-                    .accessibilityIdentifier("attachment-metadata-refusal")
-            }
-            StagedFileLayout() {
-                ForEach(state.draft.files) { file in
-                    if let duration = file.voiceDurationMs {
-                        VoiceDraftChip(id: file.id, url: file.local.url, durationMs: duration, waveform: file.voiceWaveform,
-                            status: file.uploadError ?? (file.progress != nil ? "Uploading…" : nil), failed: file.uploadError != nil,
-                            removable: state.editable, remove: { state.draft.remove(id: file.id) })
-                    } else {
-                        StagedFileChip(id: file.id, name: file.local.name, kind: AttachmentKind.local(contentType: file.local.contentType), localURL: file.local.url,
-                            thumbnailURL: file.editPreview, status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size), failed: file.uploadError != nil,
-                            busyLabel: file.progress != nil ? "Uploading…" : nil, progress: file.progress, removable: state.editable, spoiler: file.spoiler,
-                            toggleSpoiler: { state.draft.toggleSpoiler(id: file.id) }, previewable: file.editable && state.editable,
-                            preview: { state.preview(file) }, remove: { state.draft.remove(id: file.id) })
-                    }
-                }
-            }
-        }.fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-private struct QuickComposerVoice: View {
-    let state: NativeQuickDraft
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VoiceComposerNotice(owner: state.voiceTarget.owner, identifier: "mention-card-voice")
-            HStack(alignment: .bottom) {
-                if let klipy = state.model.chat.klipy {
-                    ComposerGifButton(configuration: klipy, enabled: state.editable && !state.incoming,
-                        controller: state.autocomplete, accessibilityID: "mention-card-gif",
-                        presenting: { state.showingGIF = $0; state.synchronizePresentation() }, send: state.sendGIF)
-                }
-                Spacer()
-                Color.clear.frame(height: 42)
-                    .modifier(VoiceComposerCover(target: state.voiceTarget, restoreFocus: { state.autocomplete.restoreFocus() }))
-                VoiceRecordButton(target: state.voiceTarget)
-            }
-            #if os(iOS)
-            .modifier(VoiceLockLayer())
-            #endif
-            if let voice = state.draft.voice, !state.draft.sending {
-                Text(VoiceMessage.retryNotice(unconfirmed: voice.command != nil)).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
-                HStack {
-                    Button("Retry", action: state.retryVoice).accessibilityIdentifier("mention-card-voice-retry")
-                        .disabled(!state.allowed || state.draft.presentingDialog)
-                    Button("Discard") { state.draft.discardVoice() }.accessibilityIdentifier("mention-card-voice-discard")
-                }
-            }
-        }.preferredColorScheme(.dark).fixedSize(horizontal: false, vertical: true)
-    }
-}
-
 #if os(macOS)
 import AppKit
-
-struct NativeQuickComposerBridge: NSViewRepresentable {
-    @Bindable var state: NativeQuickDraft
-    func makeNSView(context: Context) -> AppKitQuickComposer { AppKitQuickComposer(state: state) }
-    // The view renders from its own observation. Rendering here, inside SwiftUI's
-    // update, reads the editor's binding as its creation-time snapshot (the
-    // empty draft) and resets the text being typed.
-    func updateNSView(_ view: AppKitQuickComposer, context: Context) {}
-    static func dismantleNSView(_ view: AppKitQuickComposer, coordinator: ()) { view.stop() }
-    // Measuring here would lay out the hosted leaves inside this graph's
-    // update, which aborts ("setting value during update"). The view measures
-    // itself in AppKit's layout pass and invalidates its size when it changes.
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: AppKitQuickComposer, context: Context) -> CGSize? {
-        guard let width = proposal.width else { return nil }
-        return CGSize(width: width, height: nsView.measuredHeight)
-    }
-}
 
 @MainActor final class AppKitQuickComposer: NSStackView, NSPopoverDelegate {
     let state: NativeQuickDraft
@@ -346,20 +249,6 @@ struct NativeQuickComposerBridge: NSViewRepresentable {
 }
 #elseif os(iOS)
 import UIKit
-
-struct NativeQuickComposerBridge: UIViewControllerRepresentable {
-    @Bindable var state: NativeQuickDraft
-    func makeUIViewController(context: Context) -> UIKitQuickComposer { UIKitQuickComposer(state: state) }
-    // The controller renders from its own observation. Rendering here, inside
-    // SwiftUI's update, reads the editor's binding as its creation-time snapshot
-    // (the empty draft) and resets the text being typed.
-    func updateUIViewController(_ controller: UIKitQuickComposer, context: Context) {}
-    static func dismantleUIViewController(_ controller: UIKitQuickComposer, coordinator: ()) { controller.stop() }
-    func sizeThatFits(_ proposal: ProposedViewSize, uiViewController: UIKitQuickComposer, context: Context) -> CGSize? {
-        guard let width = proposal.width else { return nil }
-        return uiViewController.view.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-    }
-}
 
 @MainActor final class UIKitQuickComposer: UIViewController, UIAdaptivePresentationControllerDelegate {
     let state: NativeQuickDraft

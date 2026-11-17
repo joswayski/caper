@@ -6,7 +6,6 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .library(name: "CaperCore", targets: ["CaperCore"]),
-        .executable(name: "CaperMacOS", targets: ["CaperMacOS"]),
         .executable(name: "CaperIOS", targets: ["CaperIOS"]),
     ],
     dependencies: [
@@ -23,7 +22,6 @@ let package = Package(
         .binaryTarget(name: "CaperMobile", path: ".build/CaperMobile.xcframework"),
         .target(name: "CaperCore", dependencies: [.product(name: "WebRTC", package: "WebRTC"), .product(name: "libwebp", package: "libwebp-Xcode"), "libavif", "CaperMobile"],
                 resources: [.process("EmojiAssets"), .process("CaperAvatars.xcassets"), .process("InvitationAssets.xcassets"), .process("InvitationAssets")]),
-        .executableTarget(name: "CaperMacOS", dependencies: ["CaperCore"]),
         .executableTarget(name: "CaperIOS", dependencies: ["CaperCore"]),
         .testTarget(name: "CaperCoreTests", dependencies: ["CaperCore", .product(name: "WebRTC", package: "WebRTC")]),
     ]

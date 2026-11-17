@@ -119,7 +119,7 @@ test("native desktop icons remain packaged while daily characters stay in-app", 
   assert.match(main, /daily_icon::load\(creation\.storage\)/);
   assert.doesNotMatch(main, /ViewportCommand::Icon|app_icon::apply/);
   assert.doesNotMatch(
-    read("apps/native/apple/Sources/CaperMacOS/CaperMacOSApp.swift").toString(),
+    read("apps/native/apple/Sources/CaperAppKit/CaperAppKitApp.swift").toString(),
     /applicationIconImage|DailyDockIcon/,
   );
 });

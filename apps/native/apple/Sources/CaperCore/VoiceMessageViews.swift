@@ -1009,23 +1009,3 @@ struct VoiceDraftChip: View {
         .accessibilityIdentifier("voice-draft")
     }
 }
-
-/// The Mac's Settings section for "Send voice messages as soon as I stop
-/// recording" (iPhone has the same toggle in the account menu's Audio settings).
-struct VoiceMessageSettingsSection: View {
-    @Bindable var settings: VoiceMessageSettings
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Voice messages").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-            Toggle(isOn: $settings.sendOnStop) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(VoiceMessage.sendOnStopTitle).font(CaperTheme.font(14))
-                    Text(VoiceMessage.sendOnStopDetail).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                }
-            }
-            .toggleStyle(.switch)
-            .accessibilityIdentifier("voice-messages-send-on-stop")
-        }
-    }
-}
