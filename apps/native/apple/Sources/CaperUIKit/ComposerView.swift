@@ -87,6 +87,13 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         textView.accessibilityHint = "Use the Send button when composing with the iPhone keyboard."
         textView.autocompleteActive = { [weak self] in self?.suggestions.match != nil }
         textView.handleKey = { [weak self] in self?.handle($0) }
+        // A hardware keyboard's Tab moves on to emoji, Shift-Tab back to attach.
+        textView.tabbed = { [weak self] forward in
+            guard let self else { return }
+            let target: UIButton = forward ? emoji : attach
+            textView.resignFirstResponder()
+            UIFocusSystem.focusSystem(for: self)?.requestFocusUpdate(to: target.isEnabled && !target.isHidden ? target : self)
+        }
         textView.formatSelection = { [weak self] in self?.format($0) }
         let touchDown = TouchDownObserver(target: nil, action: nil)
         touchDown.cancelsTouchesInView = false

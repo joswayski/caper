@@ -523,10 +523,13 @@ private enum AppKitWorkspaceDialogItem {
         // composer when the opener can't take focus. A click that closed the
         // card into a field keeps that field, and a dialog the card opened
         // (Block's confirmation starts on Cancel) keeps its button.
+        // Only a keyboard close (Escape) returns focus to a button opener; a
+        // click shouldn't leave a focus ring on the button the pointer used.
+        let byKeyboard = NSApp.currentEvent?.type == .keyDown
         DispatchQueue.main.async { [weak self, weak anchor] in
             guard let self, self.popover == nil, let anchor, let window = anchor.window,
                   (window.firstResponder as? NSTextView)?.isEditable != true, !(window.firstResponder is AppKitKitButton) else { return }
-            if anchor.acceptsFirstResponder, !anchor.isHiddenOrHasHiddenAncestor { window.makeFirstResponder(anchor) }
+            if byKeyboard, anchor.acceptsFirstResponder, !anchor.isHiddenOrHasHiddenAncestor { window.makeFirstResponder(anchor) }
             else { self.focusComposer?() }
         }
     }

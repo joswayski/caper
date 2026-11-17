@@ -520,7 +520,16 @@ public final class ComposerTextView: UITextView {
                 }
             }
         }
-        guard markedTextRange == nil, autocompleteActive?() == true else { return (super.keyCommands ?? []) + formatting }
+        guard markedTextRange == nil, autocompleteActive?() == true else {
+            // As web's textarea: without suggestions, Tab and Shift-Tab leave
+            // for the next or previous control instead of typing a tab.
+            let tabs = [UIKeyModifierFlags(), .shift].map { modifiers in
+                let command = UIKeyCommand(input: "\t", modifierFlags: modifiers, action: #selector(tabOut(_:)))
+                command.wantsPriorityOverSystemBehavior = true
+                return command
+            }
+            return (super.keyCommands ?? []) + formatting + (markedTextRange == nil ? tabs : [])
+        }
         return [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\r", "\t", UIKeyCommand.inputEscape].map {
             let command = UIKeyCommand(input: $0, modifierFlags: [], action: #selector(autocompleteKey(_:)))
             command.wantsPriorityOverSystemBehavior = true
@@ -528,6 +537,13 @@ public final class ComposerTextView: UITextView {
         } + formatting
     }
     @objc private func autocompleteKey(_ command: UIKeyCommand) { if let input = command.input { handleKey?(input) } }
+    /// Where Tab (true) or Shift-Tab (false) goes; by default the keyboard
+    /// focus system takes over from wherever the text view was.
+    public var tabbed: ((Bool) -> Void)?
+    @objc private func tabOut(_ command: UIKeyCommand) {
+        let forward = !command.modifierFlags.contains(.shift)
+        if let tabbed { tabbed(forward) } else { resignFirstResponder() }
+    }
 }
 
 extension MessageFormattingAction {
@@ -896,6 +912,11 @@ public final class ComposerTextView: NSTextView {
         if pasteAttachments?() != true { super.paste(sender) }
     }
     public override func keyDown(with event: NSEvent) { if handleKey?(event) != true { super.keyDown(with: event) } }
+    /// As web's textarea: Tab not taken by an open suggestion list moves
+    /// focus to the next control, and Shift-Tab to the previous one; no
+    /// client sends a literal tab.
+    public override func insertTab(_ sender: Any?) { KeyboardTabOrder.step(in: window, forward: true, from: self) }
+    public override func insertBacktab(_ sender: Any?) { KeyboardTabOrder.step(in: window, forward: false, from: self) }
     public override func becomeFirstResponder() -> Bool { let result = super.becomeFirstResponder(); if result { focusChanged?(true) }; return result }
     public override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; return result }
 }

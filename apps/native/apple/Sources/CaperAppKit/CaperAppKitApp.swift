@@ -48,7 +48,7 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             ? AppKitSettingsPresenter(model: model, loginItem: .shared, updater: updater, title: "Caper Settings")
             : AppKitSettingsPresenter(model: model, updater: updater)
         self.settings = settings
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: fixture ? 1440 : 1180, height: fixture ? 900 : 760),
+        let window = CaperWindow(contentRect: NSRect(x: 0, y: 0, width: fixture ? 1440 : 1180, height: fixture ? 900 : 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = shipping ? "Caper" : "Caper — AppKit development (not feature complete)"
         window.identifier = NSUserInterfaceItemIdentifier(shipping ? "caper-main" : "caper-appkit-development")
@@ -126,6 +126,28 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         edit.submenu = editMenu; menu.addItem(edit)
         NSApp.mainMenu = menu
     }
+}
+
+/// Tab order for the main window: see KeyboardTabOrder.
+@MainActor final class CaperWindow: NSWindow {
+    override func selectNextKeyView(_ sender: Any?) { KeyboardTabOrder.step(in: self, forward: true) }
+    override func selectPreviousKeyView(_ sender: Any?) { KeyboardTabOrder.step(in: self, forward: false) }
+    override func selectKeyView(following view: NSView) { KeyboardTabOrder.step(in: self, forward: true, from: view) }
+    override func selectKeyView(preceding view: NSView) { KeyboardTabOrder.step(in: self, forward: false, from: view) }
+    /// Text fields (dialog fields, member search) move on in the same order.
+    private lazy var tabbingFieldEditor: TabbingFieldEditor = {
+        let editor = TabbingFieldEditor(); editor.isFieldEditor = true; return editor
+    }()
+    override func fieldEditor(_ createFlag: Bool, for object: Any?) -> NSText? {
+        guard let field = object as? NSTextField, !(field is NSSecureTextField) else { return super.fieldEditor(createFlag, for: object) }
+        return tabbingFieldEditor
+    }
+}
+
+/// The field's delegate still sees Tab first (a suggestion list may take it).
+private final class TabbingFieldEditor: NSTextView {
+    override func insertTab(_ sender: Any?) { KeyboardTabOrder.step(in: window, forward: true, from: delegate as? NSView) }
+    override func insertBacktab(_ sender: Any?) { KeyboardTabOrder.step(in: window, forward: false, from: delegate as? NSView) }
 }
 
 @MainActor final class AppKitRootController: NSViewController {

@@ -105,9 +105,52 @@ import SwiftUI
     func stop() { active = false; run = nil }
 }
 
+/// Tab and Shift-Tab as web's document order: rows top to bottom and
+/// side-by-side panes left to right (rail, sidebar, conversation, members).
+/// An open in-window dialog, which is accessibility-modal, keeps Tab inside.
+@MainActor public enum KeyboardTabOrder {
+    public static func step(in window: NSWindow?, forward: Bool, from origin: NSView? = nil) {
+        guard let window else { return }
+        let current = origin ?? window.firstResponder as? NSView
+        var scope = window.contentView
+        var ancestor = current
+        while let view = ancestor { if view.isAccessibilityModal() { scope = view; break }; ancestor = view.superview }
+        guard let scope else { return }
+        let stops = stops(in: scope)
+        guard !stops.isEmpty else { return }
+        let index = current.flatMap { current in stops.firstIndex { current === $0 || current.isDescendant(of: $0) } }
+        let next = index.map { (forward ? $0 + 1 : $0 - 1 + stops.count) % stops.count } ?? (forward ? 0 : stops.count - 1)
+        if window.makeFirstResponder(stops[next]) { stops[next].scrollToVisible(stops[next].bounds) }
+    }
+
+    private static func stops(in view: NSView) -> [NSView] {
+        let frames = Dictionary(uniqueKeysWithValues: view.subviews.map { (ObjectIdentifier($0), $0.convert($0.bounds, to: nil)) })
+        let children = view.subviews.filter { !$0.isHidden && $0.alphaValue > 0 && !$0.frame.isEmpty }.sorted { a, b in
+            let a = frames[ObjectIdentifier(a)]!, b = frames[ObjectIdentifier(b)]!
+            // Window coordinates grow upwards: a wholly higher view comes first,
+            // and views beside each other go left to right.
+            if a.minY >= b.maxY - 1 { return true }
+            if b.minY >= a.maxY - 1 { return false }
+            return a.minX < b.minX
+        }
+        return children.flatMap { child -> [NSView] in
+            // A field editor belongs to its text field, which is the stop.
+            if (child as? NSTextView)?.isFieldEditor == true { return [] }
+            let own = child.canBecomeKeyView ? [child] : []
+            return own + (child is NSTextView || child is NSControl ? [] : stops(in: child))
+        }
+    }
+
+    /// Buttons are Tab stops whatever Full Keyboard Access says, as on web;
+    /// a click still leaves focus where it was.
+    public static var keyboardFocusAllowed: Bool {
+        NSApp.currentEvent.map { ![.leftMouseDown, .rightMouseDown, .otherMouseDown].contains($0.type) } ?? true
+    }
+}
+
 /// Caper's button: secondary (raised, bordered) or primary (eggshell). The
 /// terracotta focus ring shows only on the control that has keyboard focus,
-/// which AppKit gives buttons only during keyboard navigation.
+/// which Tab gives it and a click does not.
 @MainActor final class AppKitKitButton: NSButton {
     enum Kind { case primary, secondary, plain, destructive }
     private let handler: () -> Void
@@ -121,8 +164,15 @@ import SwiftUI
     /// Keys for a button that takes keyboard focus whatever the system's
     /// keyboard-navigation setting, such as a confirmation's Cancel.
     var keyPressed: ((NSEvent) -> Bool)?
-    override var acceptsFirstResponder: Bool { keyPressed != nil || super.acceptsFirstResponder }
-    override func keyDown(with event: NSEvent) { if keyPressed?(event) != true { super.keyDown(with: event) } }
+    override var acceptsFirstResponder: Bool {
+        keyPressed != nil || super.acceptsFirstResponder || (isEnabled && KeyboardTabOrder.keyboardFocusAllowed)
+    }
+    override var canBecomeKeyView: Bool { acceptsFirstResponder && !isHiddenOrHasHiddenAncestor && window != nil }
+    override func keyDown(with event: NSEvent) {
+        if keyPressed?(event) == true { return }
+        if event.keyCode == 48 { KeyboardTabOrder.step(in: window, forward: !event.modifierFlags.contains(.shift), from: self); return }
+        super.keyDown(with: event)
+    }
 
     init(_ title: String, kind: Kind = .secondary, action: @escaping () -> Void) {
         handler = action; self.kind = kind
@@ -265,6 +315,12 @@ import SwiftUI
         }
     }
     override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
+    override var acceptsFirstResponder: Bool { isEnabled && KeyboardTabOrder.keyboardFocusAllowed }
+    override var canBecomeKeyView: Bool { acceptsFirstResponder && !isHiddenOrHasHiddenAncestor && window != nil }
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 48 else { super.keyDown(with: event); return }
+        KeyboardTabOrder.step(in: window, forward: !event.modifierFlags.contains(.shift), from: self)
+    }
     override func becomeFirstResponder() -> Bool { needsDisplay = true; return super.becomeFirstResponder() }
     override func resignFirstResponder() -> Bool { needsDisplay = true; return super.resignFirstResponder() }
 }

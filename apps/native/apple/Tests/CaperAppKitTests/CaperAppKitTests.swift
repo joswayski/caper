@@ -3568,6 +3568,16 @@ import XCTest
         composer.typeKey(.tab, modifierFlags: [])
         XCTAssertEqual(composer.value as? String, "🚀")
         XCTAssertTrue(rocket.waitForNonExistence(timeout: 5))
+        // Without suggestions Tab leaves the composer for the next control, as
+        // web's textarea, and Shift-Tab comes back; neither types a tab.
+        let focused = NSPredicate(format: "hasKeyboardFocus == true")
+        composer.typeKey(.tab, modifierFlags: [])
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: focused, object: app.buttons["composer-gif"])], timeout: 5),
+                       .completed, "Tab moves on to the GIF button")
+        app.typeKey(.tab, modifierFlags: .shift)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: focused, object: composer)], timeout: 5),
+                       .completed, "Shift-Tab returns to the composer")
+        XCTAssertEqual(composer.value as? String, "🚀")
         composer.typeKey("a", modifierFlags: .command); composer.typeText("@ma")
         XCTAssertTrue(app.buttons["mention-suggestion-maya"].waitForExistence(timeout: 5))
         app.buttons["profile-author-chan00000001m02"].click()

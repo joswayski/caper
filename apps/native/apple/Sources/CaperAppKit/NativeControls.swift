@@ -102,6 +102,15 @@ final class NativeButton: NSButton {
         return NSAccessibility.screenRect(fromView: self, rect: bounds)
     }
 
+    /// A Tab stop, as web's buttons, whatever the Full Keyboard Access
+    /// setting; a click still leaves focus where it was (the composer).
+    override var acceptsFirstResponder: Bool { isEnabled && KeyboardTabOrder.keyboardFocusAllowed }
+    override var canBecomeKeyView: Bool { acceptsFirstResponder && !isHiddenOrHasHiddenAncestor && window != nil }
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 48 else { super.keyDown(with: event); return }
+        KeyboardTabOrder.step(in: window, forward: !event.modifierFlags.contains(.shift), from: self)
+    }
+
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted { needsLayout = true; focusChanged?(true) }

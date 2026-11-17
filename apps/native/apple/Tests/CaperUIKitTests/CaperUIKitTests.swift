@@ -990,6 +990,18 @@ final class CaperUIKitTests: XCTestCase {
         let value = composer.value as? String ?? ""
         XCTAssertTrue(value.hasPrefix("TEST FIXTURE autocomplete @maya party ") && !value.contains(":tad"), value)
 
+        // A hardware keyboard's Tab picks an open suggestion, as on web.
+        composer.typeText(" :tad")
+        XCTAssertTrue(emoji.waitForExistence(timeout: 10), (composer.value as? String ?? "").debugDescription)
+        app.typeKey(XCUIKeyboardKey.tab.rawValue, modifierFlags: [])
+        XCTAssertTrue(emoji.waitForNonExistence(timeout: 5), "Tab picks the highlighted suggestion")
+        let picked = composer.value as? String ?? ""
+        XCTAssertFalse(picked.contains(":tad") || picked.contains("\t"), picked.debugDescription)
+        // Without suggestions Tab and Shift-Tab leave the composer; neither types a tab.
+        app.typeKey(XCUIKeyboardKey.tab.rawValue, modifierFlags: [])
+        app.typeKey(XCUIKeyboardKey.tab.rawValue, modifierFlags: .shift)
+        XCTAssertEqual(composer.value as? String, picked, "Tab never types a tab character")
+
         app.buttons["send-message"].tap()
         let sent = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "autocomplete @maya party")).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: 10))

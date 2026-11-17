@@ -821,6 +821,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         if Self.composes(event), typeToCompose?(event) == true { return }
         super.keyDown(with: event)
     }
+    /// Read-only text otherwise drops focus on Tab; move on as the composer does.
+    override func insertTab(_ sender: Any?) { KeyboardTabOrder.step(in: window, forward: true, from: self) }
+    override func insertBacktab(_ sender: Any?) { KeyboardTabOrder.step(in: window, forward: false, from: self) }
 
     static func composes(_ event: NSEvent) -> Bool {
         guard event.modifierFlags.intersection([.command, .control, .function]).isEmpty,

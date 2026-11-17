@@ -193,6 +193,8 @@ final class IconButton: UIButton {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var isEnabled: Bool { didSet { alpha = isEnabled ? 1 : 0.45 } }
+    /// Hardware-keyboard Tab stops, as web's buttons, whatever Full Keyboard Access says.
+    override var canBecomeFocused: Bool { isEnabled && !isHidden }
     /// Smaller buttons still take touches across 44 × 44pt around their centre.
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.insetBy(dx: min(0, (bounds.width - 44) / 2), dy: min(0, (bounds.height - 44) / 2)).contains(point)
