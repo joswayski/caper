@@ -1602,8 +1602,10 @@ impl App {
                         widgets.icon = Some(self.build_icon_row(&body, &space));
                     }
                 }
-                body.append(&label("Space name", &["field", "plain"]));
+                let name_label = label("Space name", &["field", "plain"]);
+                body.append(&name_label);
                 let name = gtk::Entry::new();
+                name_label.set_mnemonic_widget(Some(&name));
                 name.set_placeholder_text(Some("Gaming nights"));
                 name.set_max_length(80);
                 if manage {
@@ -1884,9 +1886,11 @@ impl App {
         let grid = gtk::Grid::new();
         grid.set_column_spacing(12);
         grid.set_row_spacing(6);
-        grid.attach(&label("Expire after", &["muted", "small"]), 0, 0, 2, 1);
-        grid.attach(&label("Max uses", &["muted", "small"]), 2, 0, 1, 1);
-        grid.attach(&label("Opens in", &["muted", "small"]), 3, 0, 1, 1);
+        let headings =
+            ["Expire after", "Max uses", "Opens in"].map(|text| label(text, &["muted", "small"]));
+        grid.attach(&headings[0], 0, 0, 2, 1);
+        grid.attach(&headings[1], 2, 0, 1, 1);
+        grid.attach(&headings[2], 3, 0, 1, 1);
         let amount = number_entry(invites::DEFAULT_EXPIRY.0, "");
         let units: Vec<&str> = invites::EXPIRY_UNITS
             .iter()
@@ -1904,6 +1908,10 @@ impl App {
         let names: Vec<&str> = choices.iter().map(|(_, name)| name.as_str()).collect();
         let channel = gtk::DropDown::from_strings(&names);
         channel.set_hexpand(true);
+        // Screen readers name each field by its heading.
+        headings[0].set_mnemonic_widget(Some(&amount));
+        headings[1].set_mnemonic_widget(Some(&uses));
+        headings[2].set_mnemonic_widget(Some(&channel));
         grid.attach(&amount, 0, 1, 1, 1);
         grid.attach(&unit, 1, 1, 1, 1);
         grid.attach(&uses, 2, 1, 1, 1);

@@ -146,7 +146,8 @@ impl App {
         root.append(&gallery_box);
 
         root.append(&label("Username", &["field"]));
-        let username = gtk::Entry::builder().max_length(32).build();
+        let username: gtk::Entry = crate::app::named("GtkEntry", "Username");
+        username.set_max_length(32);
         username.set_text(account.username.as_deref().unwrap_or_default());
         root.append(&username);
         let hint = label(
@@ -156,7 +157,8 @@ impl App {
         hint.set_wrap(true);
         root.append(&hint);
         root.append(&label("Display name", &["field"]));
-        let name = gtk::Entry::builder().max_length(64).build();
+        let name: gtk::Entry = crate::app::named("GtkEntry", "Display name");
+        name.set_max_length(64);
         name.set_text(account.display_name.as_deref().unwrap_or_default());
         root.append(&name);
         let name_hint = label("", &["muted", "small"]);

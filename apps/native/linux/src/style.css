@@ -451,6 +451,31 @@ listview.messages > row:hover {
   background: alpha(@caper_terracotta, 0.08);
 }
 
+/* Pins, as web: your pins terracotta, other people's a faded gold, with no
+   edge. Pins' own list washes its cards instead. */
+.message.pin-wash > .body,
+.message.pin-wash-own > .body {
+  margin: 0 -18px -17px;
+  padding: 0 18px 17px;
+  background: alpha(#e4c76a, 0.06);
+}
+
+.message.pin-wash-own > .body {
+  background: alpha(@caper_terracotta, 0.12);
+}
+
+.message.flush.pin-wash > .body,
+.message.flush.pin-wash-own > .body {
+  margin-top: -10px;
+  padding-top: 10px;
+}
+
+.message.grouped.flush.pin-wash > .body,
+.message.grouped.flush.pin-wash-own > .body {
+  margin-top: -2px;
+  padding-top: 2px;
+}
+
 .message.replied > .body {
   background: alpha(@caper_terracotta, 0.12);
 }
@@ -1360,9 +1385,13 @@ popover.pins > contents {
 }
 
 .pin-card {
-  background: alpha(@caper_terracotta, 0.12);
+  background: alpha(#e4c76a, 0.06);
   border-radius: 8px;
   padding: 8px 8px 4px;
+}
+
+.pin-card.own {
+  background: alpha(@caper_terracotta, 0.12);
 }
 
 .pins-empty {

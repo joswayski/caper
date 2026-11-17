@@ -74,6 +74,8 @@ pub struct Row {
     pub edited: bool,
     /// "Pinned by …".
     pub pinned_by: Option<String>,
+    /// You pinned it: a terracotta wash rather than other pins' gold, as web.
+    pub pinned_own: bool,
     /// The quoted message, drawn as desktop's card.
     pub reply: Option<Quote>,
     /// The quoted message and its thread, which a click jumps to.
@@ -298,6 +300,7 @@ impl Row {
             pending: false,
             edited: false,
             pinned_by: None,
+            pinned_own: false,
             reply: None,
             reply_target: None,
             reply_expanded: false,
@@ -642,6 +645,10 @@ pub fn build<'a>(
                 .pin
                 .as_ref()
                 .map(|pin| format!("Pinned by {}", pin.author.name)),
+            pinned_own: message
+                .pin
+                .as_ref()
+                .is_some_and(|pin| viewer.me == Some(pin.author.id.as_str())),
             reply_target: message
                 .reply_to
                 .as_ref()
@@ -811,6 +818,7 @@ pub fn build<'a>(
             pending: true,
             edited: false,
             pinned_by: None,
+            pinned_own: false,
             reply: None,
             reply_target: None,
             reply_expanded: false,
@@ -1459,6 +1467,12 @@ type Make = fn(String, gtk::Widget) -> Action;
 
 /// Whether a right click on `widget` belongs to it: a link under the
 /// pointer (GTK shows the hand there) or its own secondary click.
+/// Shift+F10 or the Menu key: the keyboard's right click.
+pub fn is_menu_key(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> bool {
+    key == gtk::gdk::Key::Menu
+        || (key == gtk::gdk::Key::F10 && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK))
+}
+
 fn owns_menu(widget: &gtk::Widget) -> bool {
     if widget.is::<gtk::Label>()
         && widget.cursor().and_then(|cursor| cursor.name()).as_deref() == Some("pointer")
@@ -1544,6 +1558,60 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
         });
     });
     widgets.root.add_controller(secondary);
+    // The keyboard's right click, as web's context menu event: Shift+F10 or
+    // the Menu key anywhere in the row opens the same menu, except on a
+    // widget with its own (an image tile). The list calls "row-keys.menu"
+    // when the row itself has focus (`ui::List`).
+    let (weak, menu_handler) = (Rc::downgrade(widgets), handler.clone());
+    let open_menu = move || {
+        let Some(widgets) = weak.upgrade() else {
+            return false;
+        };
+        let Some(id) = widgets
+            .row
+            .borrow()
+            .as_ref()
+            .filter(|row| row.offers.act)
+            .map(|row| row.id.clone())
+        else {
+            return false;
+        };
+        let root = widgets.root.upcast_ref::<gtk::Widget>();
+        let focus = root.root().and_then(|window| window.focus());
+        if std::iter::successors(focus, gtk::Widget::parent)
+            .take_while(|widget| widget != root)
+            .any(|widget| owns_menu(&widget))
+        {
+            return false;
+        }
+        let selected = widgets.body.selected();
+        menu_handler(Action::Menu {
+            id,
+            anchor: root.clone(),
+            at: None,
+            selected: selected.filter(|text| !text.is_empty()),
+        });
+        true
+    };
+    let open_menu = Rc::new(open_menu);
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let open = open_menu.clone();
+    keys.connect_key_pressed(move |_, key, _, modifiers| {
+        if is_menu_key(key, modifiers) && open() {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    widgets.root.add_controller(keys);
+    let menu = gtk::gio::SimpleAction::new("menu", None);
+    menu.connect_activate(move |_, _| {
+        open_menu();
+    });
+    let group = gtk::gio::SimpleActionGroup::new();
+    group.add_action(&menu);
+    widgets.root.insert_action_group("row-keys", Some(&group));
     let actions: [(&gtk::Button, Make); 6] = [
         (&widgets.edited, |id, _| Action::History(id)),
         (&widgets.edited_inline, |id, _| Action::History(id)),
@@ -1722,6 +1790,10 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     if row.blocked_run.is_none() {
         if row.focused {
             classes.push("focused");
+        } else if row.pinned_own {
+            classes.push("pin-wash-own");
+        } else if row.pinned_by.is_some() {
+            classes.push("pin-wash");
         } else if row.replied {
             classes.push("replied");
         } else if row.mentioned {
@@ -1949,6 +2021,7 @@ mod tests {
             pending: false,
             edited: false,
             pinned_by: None,
+            pinned_own: false,
             reply: None,
             reply_target: None,
             reply_expanded: false,

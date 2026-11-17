@@ -188,6 +188,8 @@ struct Thread {
     has_more: bool,
     /// A reply to bring into view: older pages load until it is there.
     focus: Option<String>,
+    /// The message the reply box quotes, and its author.
+    reply: Option<(String, String)>,
 }
 
 struct Typer {
@@ -1086,6 +1088,11 @@ impl App {
         let app = self.clone();
         ui.compose_reload
             .connect_clicked(move |_| app.reload_edit());
+        let app = self.clone();
+        ui.thread_reply_cancel.connect_clicked(move |_| {
+            app.cancel_thread_reply();
+            app.ui.thread_composer.view.grab_focus();
+        });
 
         for thread in [false, true] {
             let composer = if thread {
@@ -1122,6 +1129,9 @@ impl App {
                 }
                 if key == gdk::Key::Escape && !thread && app.state.borrow().compose.is_some() {
                     app.cancel_compose();
+                    return glib::Propagation::Stop;
+                }
+                if key == gdk::Key::Escape && thread && app.cancel_thread_reply() {
                     return glib::Propagation::Stop;
                 }
                 // As on web, Escape in the reply box closes the thread.
@@ -1203,20 +1213,16 @@ impl App {
             if others {
                 return glib::Propagation::Proceed;
             }
-            let zoom = app.zoom.get();
-            let next = match key {
+            if let Some(next) = zoom_key(app.zoom.get(), key, modifiers) {
+                app.set_zoom(next);
+                return glib::Propagation::Stop;
+            }
+            match key {
                 gdk::Key::comma if control => {
                     let app = app.clone();
                     glib::idle_add_local_once(move || app.open_settings());
-                    return glib::Propagation::Stop;
+                    glib::Propagation::Stop
                 }
-                gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add if control => {
-                    crate::zoom::zoom_in(zoom)
-                }
-                gdk::Key::minus | gdk::Key::underscore | gdk::Key::KP_Subtract if control => {
-                    crate::zoom::zoom_out(zoom)
-                }
-                gdk::Key::_0 | gdk::Key::KP_0 if control => 1.0,
                 gdk::Key::End if !control => {
                     let typing =
                         gtk::prelude::GtkWindowExt::focus(&app.ui.window).is_some_and(|widget| {
@@ -1231,14 +1237,42 @@ impl App {
                     }
                     app.follow.set(true);
                     app.pin_tail();
-                    return glib::Propagation::Stop;
+                    glib::Propagation::Stop
                 }
-                _ => return glib::Propagation::Proceed,
-            };
-            app.set_zoom(next);
-            glib::Propagation::Stop
+                _ => glib::Propagation::Proceed,
+            }
         });
         self.ui.window.add_controller(keys);
+        // Zoom also works from Settings and every other dialog window, as
+        // on the desktop: each gets the same keys when it opens.
+        let weak = Rc::downgrade(self);
+        gtk::Window::toplevels().connect_items_changed(move |list, position, _, added| {
+            for index in position..position + added {
+                let Some(window) = list
+                    .item(index)
+                    .and_downcast::<gtk::Window>()
+                    .filter(|window| window.transient_for().is_some())
+                else {
+                    continue;
+                };
+                let keys = gtk::EventControllerKey::new();
+                keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+                let weak = weak.clone();
+                keys.connect_key_pressed(move |_, key, _, modifiers| {
+                    let Some(app) = weak.upgrade() else {
+                        return glib::Propagation::Proceed;
+                    };
+                    match zoom_key(app.zoom.get(), key, modifiers) {
+                        Some(next) => {
+                            app.set_zoom(next);
+                            glib::Propagation::Stop
+                        }
+                        None => glib::Propagation::Proceed,
+                    }
+                });
+                window.add_controller(keys);
+            }
+        });
     }
 
     fn set_zoom(self: &Rc<Self>, factor: f64) {
@@ -1988,7 +2022,26 @@ impl App {
         popover.add_css_class("pins");
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.set_size_request(560, -1);
-        root.append(&label("Pins", &["dialog-title"]));
+        // As web: the title with "Close pins", which takes the first focus.
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let title = label("Pins", &["dialog-title"]);
+        title.set_hexpand(true);
+        header.append(&title);
+        let close: gtk::Button = named("GtkButton", "Close pins");
+        close.set_child(Some(&self.images.icon_image(Icon::Close, "#b9bcbe", 18)));
+        close.add_css_class("flat");
+        close.set_valign(gtk::Align::Center);
+        let (weak, app) = (popover.downgrade(), Rc::downgrade(self));
+        close.connect_clicked(move |_| {
+            if let Some(popover) = weak.upgrade() {
+                popover.popdown();
+            }
+            if let Some(app) = app.upgrade() {
+                app.focus_composer();
+            }
+        });
+        header.append(&close);
+        root.append(&header);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -2014,6 +2067,7 @@ impl App {
         });
         popup(&popover, anchor);
         self.render_pins();
+        close.grab_focus();
     }
 
     fn render_pins(self: &Rc<Self>) {
@@ -2062,7 +2116,8 @@ impl App {
                 })
                 .collect::<Vec<Row>>()
         };
-        if rows == view.rows {
+        // A new list is empty but still needs its empty state.
+        if rows == view.rows && view.list.first_child().is_some() {
             return;
         }
         while let Some(child) = view.list.first_child() {
@@ -2088,7 +2143,13 @@ impl App {
         for row in &rows {
             let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
             card.add_css_class("pin-card");
+            if row.pinned_own {
+                card.add_css_class("own");
+            }
             let standalone = rows::Standalone::new(&self.images, row, &handler);
+            // The card carries the wash.
+            standalone.root().remove_css_class("pin-wash");
+            standalone.root().remove_css_class("pin-wash-own");
             card.append(standalone.root());
             let go = gtk::Button::with_label("Go to message");
             go.add_css_class("flat");
@@ -2100,6 +2161,36 @@ impl App {
                 }
             });
             card.append(&go);
+            // As web: a plain click on the card goes there too; buttons, links,
+            // profiles, quotes and text selection keep theirs.
+            let click = gtk::GestureClick::new();
+            // Ahead of the selectable body label, which takes its clicks.
+            click.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let (weak, id) = (Rc::downgrade(self), row.id.clone());
+            click.connect_released(move |gesture, presses, x, y| {
+                let Some(card) = gesture.widget() else {
+                    return;
+                };
+                let target = card.pick(x, y, gtk::PickFlags::DEFAULT);
+                let own = std::iter::successors(target, gtk::Widget::parent)
+                    .take_while(|widget| widget != &card)
+                    .any(|widget| {
+                        widget.is::<gtk::Button>()
+                            || widget.cursor().and_then(|cursor| cursor.name()).as_deref()
+                                == Some("pointer")
+                            || widget
+                                .downcast_ref::<gtk::Label>()
+                                .is_some_and(|label| label.current_uri().is_some())
+                    });
+                if presses == 1
+                    && !own
+                    && !selects_text(&card)
+                    && let Some(app) = weak.upgrade()
+                {
+                    app.go_to_message(id.clone());
+                }
+            });
+            card.add_controller(click);
             view.list.append(&card);
             view.cards.push(standalone);
         }
@@ -2138,6 +2229,14 @@ impl App {
                     "list.scroll-to-item",
                     Some(&u32::try_from(position).unwrap_or_default().to_variant()),
                 );
+                // A target already in view at the end doesn't scroll, so
+                // nothing else would resume following new messages.
+                let app = self.clone();
+                glib::idle_add_local_once(move || {
+                    let adjustment = app.ui.list.scroller.vadjustment();
+                    let bottom = adjustment.upper() - adjustment.page_size();
+                    app.follow.set(adjustment.value() >= bottom - 48.0);
+                });
             }
             None if more => self.load_older(),
             None => {
@@ -2938,9 +3037,17 @@ impl App {
             if thread && thread_root.is_none() {
                 return;
             }
-            let reply_to_id = match (&state.compose, thread) {
-                (Some(Compose::Reply { id, .. }), false) => Some(id.clone()),
-                _ => None,
+            let reply_to_id = if thread {
+                state
+                    .thread
+                    .as_mut()
+                    .and_then(|thread| thread.reply.take())
+                    .map(|(id, _)| id)
+            } else {
+                match &state.compose {
+                    Some(Compose::Reply { id, .. }) => Some(id.clone()),
+                    _ => None,
+                }
             };
             let client_id = uuid::Uuid::new_v4().to_string();
             let (sent, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.files)
@@ -3029,6 +3136,21 @@ impl App {
             self.ui.composer.view.buffer().set_text("");
         }
         self.render();
+    }
+
+    /// Drops the thread reply box's quote; false when it had none.
+    fn cancel_thread_reply(self: &Rc<Self>) -> bool {
+        let had = self
+            .state
+            .borrow_mut()
+            .thread
+            .as_mut()
+            .and_then(|thread| thread.reply.take())
+            .is_some();
+        if had {
+            self.render();
+        }
+        had
     }
 
     /// Desktop's "Discard draft and load latest": fetches the message as it
@@ -3186,6 +3308,7 @@ impl App {
                 loading: true,
                 has_more: false,
                 focus,
+                reply: None,
             });
             self.worker.send(Command::LoadThread {
                 generation: state.generation,
@@ -3204,7 +3327,7 @@ impl App {
         self.ui.thread_composer.view.grab_focus();
     }
 
-    fn row_action(self: &Rc<Self>, action: Action, _thread: bool) {
+    fn row_action(self: &Rc<Self>, action: Action, thread: bool) {
         match action {
             Action::React { id, emoji, active } => self.react(id, emoji, active),
             Action::Pick { id, anchor } => self.reaction_picker(id, &anchor),
@@ -3228,6 +3351,20 @@ impl App {
             }
             Action::DismissReaction(id) => {
                 self.state.borrow_mut().reactions.dismiss(&id);
+                self.render();
+            }
+            Action::Reply(id) if thread => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    let author = state
+                        .message(&id)
+                        .map(|message| message.author.name.clone());
+                    let (Some(author), Some(open)) = (author, state.thread.as_mut()) else {
+                        return;
+                    };
+                    open.reply = Some((id, author));
+                }
+                self.ui.thread_composer.view.grab_focus();
                 self.render();
             }
             Action::Reply(id) => {
@@ -5395,6 +5532,20 @@ impl App {
             send.set_sensitive(can_send && joined);
         }
         ui.thread_composer.placeholder.set_label("Reply to thread…");
+        match state
+            .thread
+            .as_ref()
+            .and_then(|thread| thread.reply.as_ref())
+        {
+            Some((_, author)) => {
+                ui.thread_reply_label.set_markup(&format!(
+                    "Replying to <b>{}</b>",
+                    glib::markup_escape_text(author)
+                ));
+                ui.thread_reply_bar.set_visible(true);
+            }
+            None => ui.thread_reply_bar.set_visible(false),
+        }
         let send_error = state.send_error.as_deref().unwrap_or_default();
         let in_thread = state
             .pending
@@ -6163,6 +6314,23 @@ fn badge(count: u64, mention: bool) -> gtk::Label {
     badge
 }
 
+/// The zoom Ctrl+= / Ctrl+− / Ctrl+0 (main or keypad) asks for, from `zoom`.
+fn zoom_key(zoom: f64, key: gdk::Key, modifiers: gdk::ModifierType) -> Option<f64> {
+    if !modifiers.contains(gdk::ModifierType::CONTROL_MASK)
+        || modifiers.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK)
+    {
+        return None;
+    }
+    match key {
+        gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add => Some(crate::zoom::zoom_in(zoom)),
+        gdk::Key::minus | gdk::Key::underscore | gdk::Key::KP_Subtract => {
+            Some(crate::zoom::zoom_out(zoom))
+        }
+        gdk::Key::_0 | gdk::Key::KP_0 => Some(1.0),
+        _ => None,
+    }
+}
+
 /// Shows `popover` from `anchor`, and detaches it once it closes.
 /// Escape closes a dialog window, as desktop's modals, unless the window
 /// can't be closed (a required first-run step).
@@ -6180,6 +6348,24 @@ pub fn close_on_escape(window: &gtk::Window) {
         glib::Propagation::Proceed
     });
     window.add_controller(keys);
+}
+
+/// Whether a label inside `root` has text selected.
+fn selects_text(root: &gtk::Widget) -> bool {
+    let mut stack = vec![root.clone()];
+    while let Some(widget) = stack.pop() {
+        if widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.selection_bounds().is_some())
+        {
+            return true;
+        }
+        stack.extend(std::iter::successors(
+            widget.first_child(),
+            gtk::Widget::next_sibling,
+        ));
+    }
+    false
 }
 
 pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {

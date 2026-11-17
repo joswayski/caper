@@ -330,7 +330,12 @@ impl Composer {
         attach.add_css_class("flat");
         attach.add_css_class("composer-tool");
         line.append(&attach);
-        let view: gtk::TextView = crate::app::named("GtkTextView", "Message");
+        // As web, which names each by its placeholder: two fields both
+        // called "Message" would be ambiguous to a screen reader.
+        let view: gtk::TextView = crate::app::named(
+            "GtkTextView",
+            if thread { "Reply to thread" } else { "Message" },
+        );
         view.set_wrap_mode(gtk::WrapMode::WordChar);
         view.set_accepts_tab(false);
         view.set_hexpand(true);
@@ -484,6 +489,25 @@ impl List {
         view.set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
         view.set_factory(Some(&rows::factory(images.clone(), handler, spare)));
         view.add_css_class("messages");
+        // A focused row's Shift+F10 or Menu key opens its menu, as a right
+        // click does (`rows::connect`).
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(|keys, key, _, modifiers| {
+            let row = keys
+                .widget()
+                .and_then(|view| view.root())
+                .and_then(|window| window.focus())
+                .filter(|focus| focus.parent() == keys.widget())
+                .and_then(|item| item.first_child());
+            match row {
+                Some(row) if rows::is_menu_key(key, modifiers) => {
+                    let _ = row.activate_action("row-keys.menu", None);
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        view.add_controller(keys);
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -628,6 +652,11 @@ pub struct Ui {
     pub thread_list: List,
     pub thread_composer: Composer,
     pub thread_error: gtk::Label,
+    /// The thread's own "Replying to" bar: a reply inside a thread quotes
+    /// one of its messages, so it never borrows the channel composer's.
+    pub thread_reply_bar: gtk::Box,
+    pub thread_reply_label: gtk::Label,
+    pub thread_reply_cancel: gtk::Button,
 }
 
 impl Ui {
@@ -1262,6 +1291,18 @@ impl Ui {
         let thread_error = label("", &["error", "composer-error"]);
         thread_error.set_wrap(true);
         thread_panel.append(&thread_error);
+        let thread_reply_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        thread_reply_bar.add_css_class("compose-bar");
+        let thread_reply_label = label("", &["muted"]);
+        thread_reply_label.set_hexpand(true);
+        thread_reply_label.set_ellipsize(pango::EllipsizeMode::End);
+        let thread_reply_cancel: gtk::Button = crate::app::named("GtkButton", "Cancel reply");
+        thread_reply_cancel.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 14)));
+        thread_reply_cancel.add_css_class("flat");
+        thread_reply_bar.append(&thread_reply_label);
+        thread_reply_bar.append(&thread_reply_cancel);
+        thread_reply_bar.set_visible(false);
+        thread_panel.append(&thread_reply_bar);
         let thread_composer = Composer::new(images, true);
         thread_panel.append(&thread_composer.outer);
         thread_panel.set_visible(false);
@@ -1430,6 +1471,9 @@ impl Ui {
             thread_list,
             thread_composer,
             thread_error,
+            thread_reply_bar,
+            thread_reply_label,
+            thread_reply_cancel,
         }
     }
 }
