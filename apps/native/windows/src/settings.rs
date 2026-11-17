@@ -1005,9 +1005,16 @@ impl Settings {
         };
         if self.focus == Some(item.part) && !(item.part == SPart::CopyVersion && self.pointer_focus)
         {
+            // Text-only parts start at their first glyph, so the ring's
+            // corners would cut into it without extra room at the sides.
+            let pad = if matches!(item.part, SPart::CopyVersion | SPart::Delete) {
+                6.0
+            } else {
+                2.0
+            };
             stroke_round(
                 dc,
-                rect(x - 2.0, y - 2.0, x + w + 2.0, y + h + 2.0),
+                rect(x - pad, y - 2.0, x + w + pad, y + h + 2.0),
                 RADIUS,
                 &g.brushes.terracotta,
             );
