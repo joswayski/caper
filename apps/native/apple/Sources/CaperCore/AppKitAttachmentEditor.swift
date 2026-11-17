@@ -3,13 +3,6 @@ import AppKit
 import AVKit
 import SwiftUI
 
-struct NativeAttachmentEditorBridge: NSViewControllerRepresentable {
-    let request: AttachmentEditRequest
-    let close: () -> Void
-    func makeNSViewController(context: Context) -> AppKitAttachmentEditor { AppKitAttachmentEditor(request: request, close: close) }
-    func updateNSViewController(_ controller: AppKitAttachmentEditor, context: Context) {}
-}
-
 @MainActor final class AppKitAttachmentEditor: NSViewController {
     private let state: NativeAttachmentEditing
     private let observation = AppKitObservation()

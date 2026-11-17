@@ -1325,39 +1325,31 @@ extension EnvironmentValues {
 /// what it covers is disabled like the workspace's dialogs. Only the
 /// frontmost presentation can present, so sheets and covers that show
 /// attachments add their own host.
+#if os(iOS)
 struct MediaViewerHost: ViewModifier {
     @State private var request: MediaViewerRequest?
 
     @ViewBuilder func body(content: Content) -> some View {
-        #if os(iOS)
         content
             .environment(\.mediaViewer, MediaViewerAction { request = $0 })
             .fullScreenCover(item: $request) { shown in
                 MediaViewer(request: shown) { request = nil }.presentationBackground(.black).preferredColorScheme(.dark)
             }
-        #else
-        ZStack {
-            content
-                .environment(\.mediaViewer, MediaViewerAction { request = $0 })
-                .disabled(request != nil)
-                .accessibilityHidden(request != nil)
-            if let shown = request {
-                MediaViewer(request: shown) { request = nil }.id(shown.id)
-            }
-        }
-        #endif
     }
 }
+#endif
 
 /// Discord-style viewer for one message's images and videos. Pages swipe on
 /// iPhone and iPad; Previous, Next and the arrow keys step on the Mac, on
 /// iPad and with VoiceOver. Close, Escape, a click outside the media on the
 /// Mac, or a swipe down on phones closes it.
+#if os(iOS)
 struct MediaViewer: View {
     let request: MediaViewerRequest
     let close: () -> Void
     var body: some View { NativeMediaViewerBridge(request: request, close: close) }
 }
+#endif
 
 /// Round viewer controls, with a compact labelled variant for spoiler hiding.
 private struct MediaViewerButton: ButtonStyle {
@@ -1390,6 +1382,7 @@ private struct MediaViewerButton: ButtonStyle {
 // MARK: Composer
 
 /// Compact, wrapping draft previews shared by channel and thread composers.
+#if os(iOS)
 struct AttachmentDraftsView: View {
     @Bindable var chat: ChatModel
     var inThread = false
@@ -1472,6 +1465,7 @@ struct AttachmentDraftsView: View {
         }
     }
 }
+#endif
 
 private struct AttachmentDraftChip: View {
     let draft: AttachmentDraft
@@ -1494,16 +1488,12 @@ private struct AttachmentDraftChip: View {
 
 /// Compact squares wrap at the composer's edge on macOS; iOS caps at four
 /// columns. A single attachment never stretches to fill the available width.
+#if os(iOS)
 struct StagedFileLayout: Layout {
     private func metrics(width: CGFloat?) -> (columns: Int, side: CGFloat) {
         let width = max(0, width ?? 440)
-        #if os(macOS)
-        let columns = max(1, Int((width + 8) / 112))
-        return (columns, min(104, width))
-        #else
         let columns = min(4, max(1, Int(min(width, 440) + 8) / 98))
         return (columns, min(104, max(0, (width - CGFloat(columns - 1) * 8) / CGFloat(columns))))
-        #endif
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -1523,6 +1513,7 @@ struct StagedFileLayout: Layout {
         }
     }
 }
+#endif
 
 /// A staged square. Tapping it previews it; Remove (×) sits in the top-right
 /// corner and Edit (pencil) in the bottom-left, diagonal so their targets never

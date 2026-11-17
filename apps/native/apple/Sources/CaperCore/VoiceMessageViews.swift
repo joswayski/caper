@@ -662,6 +662,7 @@ private struct VoiceRecordingLifetime: ViewModifier {
 /// Send; on iPhone and iPad the field beside the microphone) is covered by
 /// the recording bar. On the Mac it is also disabled, so typing and Return
 /// can't reach the message field.
+#if os(iOS)
 struct VoiceComposerCover: ViewModifier {
     let target: VoiceTarget
     var height: CGFloat = 42
@@ -683,10 +684,6 @@ struct VoiceComposerCover: ViewModifier {
         content
             .opacity(recording ? 0 : 1)
             .allowsHitTesting(!recording)
-            #if os(macOS)
-            // Gives up keyboard focus, so Return reaches the bar's Stop rather than the message field.
-            .disabled(recording)
-            #endif
             // iPhone keeps the keyboard up while a finger holds the microphone, so
             // the composer doesn't move under it; it closes once recording goes hands-free.
             .accessibilityHidden(recording)
@@ -701,6 +698,7 @@ struct VoiceComposerCover: ViewModifier {
             }
     }
 }
+#endif
 
 /// The recording bar: `[trash]  ● 0:07  live bars  [Voice note] [Done]` on
 /// the Mac while dictating, `[Stop]` for a voice message (Return stops,
@@ -708,6 +706,7 @@ struct VoiceComposerCover: ViewModifier {
 /// and, while dictating, "Voice note", with the microphone beside it turned
 /// into Done (or Stop) once the finger lifts; while held, Discard steps out
 /// (releasing stops).
+#if os(iOS)
 struct VoiceRecordingBar: View {
     let target: VoiceTarget
     var height: CGFloat = 42
@@ -715,7 +714,6 @@ struct VoiceRecordingBar: View {
     private var recorder: VoiceMessageRecorder { .shared }
 
     var body: some View {
-        #if os(iOS)
         HStack(spacing: 10) {
             discard.opacity(recorder.holding ? 0 : 1).disabled(recorder.holding)
             VoiceRecordingTimer(elapsedMs: recorder.elapsedMs)
@@ -728,49 +726,8 @@ struct VoiceRecordingBar: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(recorder.dictating ? "Dictating" : "Recording voice message")
         .accessibilityIdentifier("\(target.identifier)-recording")
-        #else
-        Group {
-            if compact {
-                // AppKit's split panes may be narrower than a single recording
-                // toolbar. Keep every action visible rather than clipping it.
-                VStack(spacing: 4) {
-                    HStack(spacing: 10) { discard.keyboardShortcut(.cancelAction); stop }
-                    HStack(spacing: 6) { VoiceRecordingTimer(elapsedMs: recorder.elapsedMs); VoiceLiveBars() }
-                        .frame(height: 28)
-                    if recorder.dictating { asVoiceNote }
-                }.padding(.horizontal, 4)
-            } else {
-                HStack(spacing: 10) {
-                    discard.keyboardShortcut(.cancelAction)
-                    VoiceRecordingTimer(elapsedMs: recorder.elapsedMs)
-                    VoiceLiveBars()
-                    if recorder.dictating { asVoiceNote }
-                    stop
-                }
-            }
-        }
-        .padding(.leading, 4)
-        .frame(maxWidth: .infinity, minHeight: compact ? 126 : height, maxHeight: compact ? 126 : height)
-        .background(CaperTheme.composer)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(recorder.dictating ? "Dictating" : "Recording voice message")
-        .accessibilityIdentifier("\(target.identifier)-recording")
-        #endif
     }
 
-    #if os(macOS)
-    private var stop: some View {
-        VoiceStopButton(height: height, width: 42, square: 32, done: recorder.dictating) {
-            let target = target
-            Task { await VoiceTarget.finish(target) }
-        }
-        .keyboardShortcut(.defaultAction)
-        .help("\(recorder.dictating ? VoiceMessage.doneLabel : VoiceMessage.stopLabel) (Return)")
-        .accessibilityIdentifier("\(target.identifier)-stop")
-    }
-    #endif
 
     /// Dictating: stop now and keep the recording as a voice message.
     private var asVoiceNote: some View {
@@ -808,6 +765,7 @@ struct VoiceRecordingBar: View {
     }
 
 }
+#endif
 
 /// The recording dot (steady: Stop carries the pulse) and m:ss.
 struct VoiceRecordingTimer: View {

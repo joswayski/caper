@@ -7,6 +7,7 @@ import WebKit
 /// A message's link preview cards, drawn from their blocks. Cards present
 /// when the row is first built show in place; a card that arrives while the
 /// row is on screen (`message.embeds`) gets the short entrance.
+#if os(iOS)
 struct MessageEmbedsView: View {
     let embeds: [ChatEmbed]
     /// Read once, when this row's view is first built.
@@ -32,6 +33,7 @@ struct MessageEmbedsView: View {
         }
     }
 }
+#endif
 
 /// The draft's first link as a compact card inside the channel or thread
 /// composer's field, below the text (like Slack; web ComposerEmbedPreview), with × to
@@ -113,6 +115,7 @@ private struct EmbedRemoveButton: View {
     }
 }
 
+#if os(iOS)
 private struct EmbedCardView: View {
     let embed: ChatEmbed
 
@@ -140,6 +143,7 @@ private struct EmbedCardView: View {
         .accessibilityLabel(Text(verbatim: "\(embed.site.name): \(heading)"))
     }
 }
+#endif
 
 /// Opens an embed's http(s) link in the system browser, like message links;
 /// anything else draws the label without an action.
@@ -180,6 +184,7 @@ private struct EmbedSiteLine: View {
     }
 }
 
+#if os(iOS)
 private struct EmbedBlockView: View {
     let block: EmbedBlock
     let heading: String
@@ -199,6 +204,7 @@ private struct EmbedBlockView: View {
         }
     }
 }
+#endif
 
 private struct EmbedAuthorRow: View {
     let author: EmbedAuthor
@@ -526,6 +532,7 @@ private struct EmbedAnimationView: View {
 
 /// A provider's player: its poster with Play. Play loads Caper's player page
 /// (`play`) in place, only from Caper's embed host; otherwise it opens the link.
+#if os(iOS)
 private struct EmbedPlayerView: View {
     let player: EmbedPlayer
     let title: String
@@ -562,6 +569,7 @@ private struct EmbedPlayerView: View {
         }
     }
 }
+#endif
 
 /// The eggshell primary play control (web .chat-embed-play).
 private struct EmbedPlayButton: View {
@@ -643,21 +651,6 @@ private struct EmbedPlayerWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
-        context.coordinator.openURL = context.environment.openURL
-    }
-}
-#else
-private struct EmbedPlayerWebView: NSViewRepresentable {
-    let url: URL
-
-    func makeCoordinator() -> EmbedPlayerNavigation { EmbedPlayerNavigation() }
-
-    func makeNSView(context: Context) -> WKWebView {
-        context.coordinator.openURL = context.environment.openURL
-        return EmbedPlayerNavigation.makeWebView(url: url, coordinator: context.coordinator)
-    }
-
-    func updateNSView(_ view: WKWebView, context: Context) {
         context.coordinator.openURL = context.environment.openURL
     }
 }

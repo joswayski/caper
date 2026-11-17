@@ -218,17 +218,14 @@ final class KlipyPickerModel {
 /// GIFs | Stickers, a "Search KLIPY" field, and KLIPY's results in its own
 /// order (ads included on iPhone). Choosing one hands it to `select` with
 /// the search it came from.
+#if os(iOS)
 struct KlipyPicker: View {
     let select: (ChatGif, String) -> Void
     var embeddedKind: ChatGif.Kind? = nil
     private let close: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var model: KlipyPickerModel
-    #if os(macOS)
-    private let columns = 3
-    #else
     private let columns = 2
-    #endif
 
     init(configuration: KlipyConfiguration, embeddedKind: ChatGif.Kind? = nil, close: (() -> Void)? = nil,
          select: @escaping (ChatGif, String) -> Void) {
@@ -239,21 +236,6 @@ struct KlipyPicker: View {
     }
 
     var body: some View {
-        #if os(macOS)
-        VStack(spacing: 0) {
-            HStack {
-                Text("GIFs").font(CaperTheme.font(14, weight: .bold))
-                Spacer()
-                Button("Cancel") { if let close { close() } else { dismiss() } }
-                    .keyboardShortcut(.cancelAction)
-            }.padding(.horizontal, 12).padding(.top, 12)
-            content
-        }
-        .frame(width: 400, height: 480)
-        .accessibilityElement(children: .contain)
-        .contentShape(.accessibility, Rectangle())
-        .accessibilityIdentifier("gif-picker")
-        #else
         if let embeddedKind {
             content
                 .onAppear { model.kind = embeddedKind }
@@ -273,7 +255,6 @@ struct KlipyPicker: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("gif-picker")
         }
-        #endif
     }
 
     private var content: some View {
@@ -291,10 +272,8 @@ struct KlipyPicker: View {
             TextField("Search KLIPY", text: $model.query)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
-                #if os(iOS)
                 .textInputAutocapitalization(.never)
                 .submitLabel(.search)
-                #endif
                 .accessibilityIdentifier("gif-picker-search")
                 .padding(12)
             results
@@ -356,16 +335,11 @@ struct KlipyPicker: View {
                 }
             }
         case let .ad(_, ad):
-            #if os(iOS)
             KlipyAdRow(ad: ad)
-            #else
-            // macOS never requests ads; ignore any that arrive.
-            let _ = ad
-            EmptyView()
-            #endif
         }
     }
 }
+#endif
 
 private struct KlipyTileButton: View {
     let result: KlipyResult
@@ -399,6 +373,7 @@ private struct KlipyTileButton: View {
 
 /// The GIF control beside a composer's emoji button: a popover on macOS and a
 /// sheet on iPhone. Choosing a GIF sends it at once; the draft stays.
+#if os(iOS)
 struct ComposerGifButton: View {
     let configuration: KlipyConfiguration
     var enabled = true
@@ -422,13 +397,9 @@ struct ComposerGifButton: View {
         .help("Send a GIF")
         .accessibilityLabel("Send a GIF")
         .accessibilityIdentifier(accessibilityID)
-        #if os(macOS)
-        .popover(isPresented: $showing) { picker.onDisappear(perform: finish) }
-        #else
         .sheet(isPresented: $showing, onDismiss: finish) {
             picker.presentationDetents([.medium, .large]).presentationBackground(CaperTheme.surface)
         }
-        #endif
         .onChange(of: showing) { _, value in presenting?(value) }
     }
 
@@ -442,6 +413,7 @@ struct ComposerGifButton: View {
 
     private func finish() { controller?.restoreFocus() }
 }
+#endif
 
 /// Best effort, after a successful send: tells KLIPY which GIF was shared.
 @MainActor
