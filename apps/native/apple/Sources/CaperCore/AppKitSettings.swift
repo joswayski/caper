@@ -97,7 +97,6 @@ import ServiceManagement
     private let effects = CaperEffects.shared
     private let voiceMessages = VoiceMessageSettings.shared
     private let observation = AppKitObservation()
-    private var timer: Timer?
 
     private lazy var launch = AppKitKitSwitchRow(title: "Launch at login", detail: "Open Caper when you sign in to your computer.",
                                                  identifier: "launch-at-login") { [weak self] on in self?.loginItem.setEnabled(on) }
@@ -108,8 +107,6 @@ import ServiceManagement
                                                      identifier: "voice-messages-send-on-stop") { [weak self] on in self?.voiceMessages.sendOnStop = on }
     private let version = NSStackView()
     private let status = AppKitKit.label("", size: 12, color: AppKitKit.muted)
-    private let lastChecked = AppKitKit.label("", size: 12, color: AppKitKit.muted)
-    private let updateDetail = AppKitKit.label("", size: 12, color: AppKitKit.muted)
     private lazy var check = AppKitKitButton("Check for updates") { [weak self] in self?.controls.check?() }
     private lazy var notes = AppKitKitButton("What’s new") { [weak self] in self?.whatsNew.open() }
 
@@ -133,13 +130,17 @@ import ServiceManagement
         func section(_ title: String, _ rows: [NSView]) -> NSStackView {
             AppKitKit.stack([AppKitKit.label(title, size: 12, weight: .bold, color: AppKitKit.muted)] + rows, spacing: 14)
         }
-        let updates = section("Updates", [version, AppKitKit.stack([status, lastChecked], spacing: 6), check, updateDetail])
+        // Check for updates and What's new share the version's left edge. The
+        // status line below shows only a check's result and is hidden while
+        // empty, so an idle section ends at the buttons with no blank row.
+        let buttons = NSStackView(views: [check, notes]); buttons.orientation = .horizontal; buttons.spacing = 8
+        let updates = section("Updates", [version, buttons, status])
         let content = AppKitKit.stack([
             AppKitKit.label("Settings", size: 20, weight: .bold),
             section("Startup", [launch, startupNotes]), AppKitKit.divider(),
             section("Sounds", [sounds]), AppKitKit.divider(),
             section("Voice messages", [sendOnStop]), AppKitKit.divider(),
-            updates, notes,
+            updates,
         ], spacing: 20)
         for case let child as NSStackView in content.arrangedSubviews { AppKitKit.fillWidth(child, of: content) }
         for view in content.arrangedSubviews where !(view is NSStackView) && !(view is NSButton) && !(view is NSTextField) {
@@ -168,15 +169,6 @@ import ServiceManagement
     override func viewWillAppear() {
         super.viewWillAppear()
         refreshLoginItem()
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.renderLastChecked() }
-        }
-    }
-
-    override func viewDidDisappear() {
-        super.viewDidDisappear()
-        timer?.invalidate(); timer = nil
     }
 
     func refreshLoginItem() { loginItem.refresh() }
@@ -211,19 +203,9 @@ import ServiceManagement
 
         let c = controls
         status.stringValue = c.isChecking ? "Checking for updates…" : c.review != nil ? "An update is available."
-            : c.lastSuccessfulCheck != nil ? "Caper is up to date." : "Not checked yet."
+            : c.lastSuccessfulCheck != nil ? "Caper is up to date." : ""
+        status.isHidden = status.stringValue.isEmpty
         check.isEnabled = c.check != nil && !c.isChecking
-        updateDetail.stringValue = c.check == nil ? "Update checks are available in packaged release builds." : "Checks automatically every minute."
-        renderLastChecked()
-    }
-
-    private func renderLastChecked() {
-        guard let date = controls.lastSuccessfulCheck else { lastChecked.stringValue = "Last checked: Never"; return }
-        let now = Date()
-        if now.timeIntervalSince(date) < 10 { lastChecked.stringValue = "Last checked: a few seconds ago"; return }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        lastChecked.stringValue = "Last checked: \(formatter.localizedString(for: date, relativeTo: now))"
     }
 }
 

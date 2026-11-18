@@ -160,8 +160,12 @@ import XCTest
         let updates = settings.buttons["check-for-updates"]
         let notes = settings.buttons["open-whats-new"]
         XCTAssertTrue(updates.exists); XCTAssertFalse(updates.isEnabled)
-        XCTAssertTrue(settings.staticTexts["Update checks are available in packaged release builds."].exists)
         XCTAssertTrue(notes.exists); XCTAssertTrue(notes.isEnabled); XCTAssertTrue(notes.isHittable)
+        // Side by side on the version's left edge, with no filler notes.
+        XCTAssertEqual(updates.frame.minY, notes.frame.minY, accuracy: 1)
+        XCTAssertLessThan(updates.frame.maxX, notes.frame.minX)
+        XCTAssertFalse(settings.staticTexts["Update checks are available in packaged release builds."].exists)
+        XCTAssertFalse(settings.staticTexts["Last checked: Never"].exists)
         updates.hover(); notes.hover()
         capture("\(captureName) development updates and release notes", window: settings)
         return settings
