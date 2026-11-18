@@ -419,9 +419,10 @@ impl App {
         let whats_new = gtk::Button::with_label("What’s new");
         buttons.append(&whats_new);
         root.append(&buttons);
-        // A check's result; always shown, so a fast check never moves what
-        // follows.
+        // A check's result or error, hidden while there is none; it only
+        // moves what follows after you ask for a check.
         let status = label("", &[]);
+        status.set_visible(false);
         status.set_xalign(0.0);
         status.set_ellipsize(gtk::pango::EllipsizeMode::End);
         root.append(&status);
@@ -470,6 +471,7 @@ impl App {
                 Status::Checking => ("Checking for updates…".into(), false),
                 Status::Idle => (String::new(), false),
             };
+            row.status.set_visible(!message.is_empty());
             row.status.set_label(&message);
             row.status.set_tooltip_text(Some(&message));
             if error {

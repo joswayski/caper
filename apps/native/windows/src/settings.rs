@@ -682,8 +682,7 @@ impl Builder<'_> {
             });
             b.y += h + 12.0;
         }
-        // Check for updates and What's new side by side, then a check's
-        // result, kept mounted so a fast check never moves what follows.
+        // Check for updates and What's new side by side.
         let mut x = 0.0;
         for (part, label) in [
             (SPart::CheckUpdates, "Check for updates"),
@@ -700,8 +699,11 @@ impl Builder<'_> {
             x += w + 8.0;
         }
         b.y += BUTTON_H + 8.0;
+        // A check's result or error; nothing while idle, so no blank row.
         let (message, error) = snap.updates.message();
-        b.text(&message, Style::Status(error))?;
+        if !message.is_empty() {
+            b.text(&message, Style::Status(error))?;
+        }
         if snap.account {
             b.separator();
             b.text("Notifications", Style::Section)?;

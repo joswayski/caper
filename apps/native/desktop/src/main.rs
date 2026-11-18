@@ -24033,7 +24033,7 @@ impl CaperApp {
     }
 
     fn update_check_status(&self, ui: &mut egui::Ui) {
-        // Settings keeps its status row mounted, so a fast check cannot move controls.
+        // A check's result or error; nothing while idle, so no blank row.
         let (message, color) = match self.updates.status() {
             updates::Status::UpToDate => ("No newer published release is available.".into(), MUTED),
             updates::Status::Available => ("An update is available to review.".into(), MUTED),
@@ -24047,7 +24047,7 @@ impl CaperApp {
                 (format!("Could not check for updates: {error}"), ERROR)
             }
             updates::Status::Checking => ("Checking for updates…".into(), MUTED),
-            updates::Status::Idle => (String::new(), MUTED),
+            updates::Status::Idle => return,
         };
         ui.add(egui::Label::new(RichText::new(&message).color(color)).truncate())
             .on_hover_text(message);
