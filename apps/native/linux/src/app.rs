@@ -5741,9 +5741,15 @@ impl App {
                             && me.as_deref() != Some(message.author.id.as_str())
                             && !blocked.contains(&message.author.id)
                     })
-                && let Some(row) = main.iter_mut().find(|row| row.id == first.id)
+                && let Some(index) = main.iter().position(|row| row.id == first.id)
             {
-                row.unread = true;
+                // As web: the first unread message starts its own group, so
+                // it keeps its avatar and name under the divider.
+                main[index].unread = true;
+                main[index].grouped = false;
+                if let Some(above) = index.checked_sub(1) {
+                    main[above].continued = false;
+                }
             }
             if !state.has_more
                 && let Some(first) = main.first_mut()
