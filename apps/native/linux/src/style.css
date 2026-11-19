@@ -913,7 +913,7 @@ list.member-list > row {
 }
 
 .members-header {
-  min-height: 44px;
+  min-height: 53px;
   padding: 0 8px 0 16px;
   border-bottom: 1px solid @caper_border;
 }
