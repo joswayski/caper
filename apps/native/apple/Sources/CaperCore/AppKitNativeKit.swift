@@ -431,10 +431,6 @@ import SwiftUI
     public override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height) }
 
     public override func becomeFirstResponder() -> Bool {
-        // A dialog focuses its field as it appears, before its first layout.
-        // The editor would be seated in the field's empty bounds and keep that
-        // corner as the field grows, so give the field its size first.
-        window?.layoutIfNeeded()
         let became = super.becomeFirstResponder()
         syncFocus()
         return became
@@ -461,6 +457,24 @@ private final class AppKitKitFieldCell: NSTextFieldCell {
         let line = ceil(Self.metrics.defaultLineHeight(for: font ?? .systemFont(ofSize: NSFont.systemFontSize)))
         if area.height > line { area.origin.y += floor((area.height - line) / 2); area.size.height = line }
         return area
+    }
+    // NSTextField starts editing with the field's whole bounds, and the cell
+    // seats its field editor in exactly that rect: the text and caret would sit
+    // in the top-left corner. Resizes re-seat the editor through drawingRect,
+    // so starting it there keeps the edited line where the unedited one draws.
+    // Bounds smaller than the inset (a field focused before it has a size) keep
+    // the plain rect: a negative width seats the editor at a NaN origin.
+    private func editorFrame(_ rect: NSRect) -> NSRect {
+        let area = drawingRect(forBounds: rect)
+        return area.width > 0 && area.height > 0 ? area : rect
+    }
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: editorFrame(rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?,
+                         start selStart: Int, length selLength: Int) {
+        super.select(withFrame: editorFrame(rect), in: controlView, editor: textObj, delegate: delegate,
+                     start: selStart, length: selLength)
     }
 }
 
