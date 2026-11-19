@@ -804,7 +804,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     /// Like the tracking area, it waits while another window (a picker) is key.
     func refreshHover() {
         guard let window, window.isKeyWindow else { return }
-        let inside = visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        // A row's visibleRect can be the whole visible history (views need
+        // not clip to their bounds), so keep to the row itself.
+        let inside = bounds.intersection(visibleRect).contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
         guard inside != hovered else { return }
         hovered = inside; updateControlsVisibility()
     }
