@@ -887,10 +887,13 @@ private final class NativeActivityEntry: NativeView {
 }
 
 /// A channel or DM keeps its own options separate from opening the conversation.
-private final class NavigationRow: NativeView {
+final class NavigationRow: NativeView {
     let open: NativeButton
     let options = NativeButton.icon("Options", symbol: "ellipsis") {}
     let detail = NativeStyle.label("", size: 10)
+    /// Room left of the options for a control its container draws over the
+    /// row, such as a quiet channel's headphones.
+    var trailingReserve: CGFloat = 0 { didSet { if trailingReserve != oldValue { needsLayout = true } } }
     private let bell = NSImageView()
     var openMenu: (() -> Void)?
 
@@ -926,11 +929,12 @@ private final class NavigationRow: NativeView {
     override func layout() {
         super.layout()
         let detailWidth = detail.stringValue.isEmpty ? 0 : detail.cell?.cellSize.width ?? 0
-        let trailing = bounds.width - 36 - detailWidth
+        let trailing = bounds.width - 34 - trailingReserve - detailWidth
         open.frame = NSRect(x: 6, y: 0, width: trailing - (bell.isHidden ? 0 : 20), height: bounds.height)
         bell.frame = NSRect(x: trailing - 14, y: (bounds.height - 14) / 2, width: 14, height: 14)
         detail.frame = NSRect(x: trailing, y: (bounds.height - 16) / 2, width: detailWidth, height: 16)
-        options.frame = NSRect(x: bounds.width - 30, y: 0, width: 28, height: bounds.height)
+        // Under the section heading's own options, so they line up down the list.
+        options.frame = NSRect(x: bounds.width - 28, y: 0, width: 28, height: bounds.height)
     }
 }
 

@@ -146,7 +146,11 @@ import CaperCore
 
     override func layout() {
         super.layout()
-        heading.frame = NSRect(x: live ? 3 : 0, y: live ? 3 : 0, width: max(0, bounds.width - (live ? 6 : 32)), height: 32)
+        // A quiet channel's row spans the card, as web's: its highlight runs
+        // under the headphones, which sit left of the row's options.
+        let row = heading as? NavigationRow
+        row?.trailingReserve = live ? 0 : 28
+        heading.frame = NSRect(x: live ? 3 : 0, y: live ? 3 : 0, width: max(0, bounds.width - (live ? 6 : row == nil ? 32 : 0)), height: 32)
         body.frame = NSRect(x: 12, y: 36, width: max(0, bounds.width - 24), height: max(0, bounds.height - 48))
         let width = body.bounds.width
         clock.frame = NSRect(x: max(0, width - 58), y: 0, width: 58, height: 18)
@@ -156,7 +160,7 @@ import CaperCore
         deafen.frame = NSRect(x: 38, y: body.bounds.height - 32, width: 32, height: 32)
         leave.frame = NSRect(x: max(76, width - 72), y: body.bounds.height - 32, width: 72, height: 32)
         join.frame = live ? NSRect(x: bounds.width - 84, y: bounds.height - 44, width: 72, height: 32)
-            : NSRect(x: bounds.width - 30, y: 0, width: 28, height: 32)
+            : NSRect(x: bounds.width - (row == nil ? 30 : 56), y: 0, width: 28, height: 32)
         let count = faceRows(width: bounds.width)
         if count != previousRows { previousRows = count; changed?() }
     }
