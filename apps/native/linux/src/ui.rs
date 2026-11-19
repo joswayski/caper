@@ -567,6 +567,7 @@ pub struct Ui {
     pub requests: gtk::ListBox,
     /// "Notifications" or "Notifications · N": opens the inbox.
     pub inbox: gtk::Button,
+    pub inbox_label: gtk::Label,
     pub directs: gtk::ListBox,
     pub account_avatar: AvatarView,
     pub account_name: gtk::Label,
@@ -896,6 +897,19 @@ impl Ui {
         space_row.append(&space_header);
         space_row.append(&browse_close);
         sidebar.append(&space_row);
+        // The notifications inbox, with its unread count: a bell row under
+        // the space's name, as web and Win32.
+        // Unnamed, so screen readers read the label and its count.
+        let inbox = gtk::Button::new();
+        inbox.add_css_class("flat");
+        inbox.add_css_class("inbox-row-button");
+        let inbox_line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        inbox_line.append(&images.icon_image(Icon::Bell, "#b9bcbe", 18));
+        let inbox_label = label("Notifications", &[]);
+        inbox_label.set_xalign(0.0);
+        inbox_line.append(&inbox_label);
+        inbox.set_child(Some(&inbox_line));
+        sidebar.append(&inbox);
         let lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let channel_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let channels_toggle: gtk::Button = crate::app::named("GtkButton", "Toggle channels");
@@ -945,10 +959,6 @@ impl Ui {
         new_direct.set_valign(gtk::Align::End);
         direct_header.append(&new_direct);
         direct_lists.append(&direct_header);
-        // The notifications inbox, with its unread count.
-        let inbox = gtk::Button::with_label("Notifications");
-        inbox.add_css_class("inbox-button");
-        direct_lists.append(&inbox);
         // The Caper team's inbox, for team members only (`app::feedback`).
         let feedback: gtk::ListBox = crate::app::named("GtkListBox", "Feedback");
         feedback.add_css_class("channels");
@@ -1407,6 +1417,7 @@ impl Ui {
             channels,
             requests,
             inbox,
+            inbox_label,
             directs,
             account_avatar,
             account_name,

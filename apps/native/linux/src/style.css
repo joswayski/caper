@@ -523,8 +523,15 @@ listview.messages > row:hover {
   font-size: 10px;
 }
 
+/* GTK's theme makes `.body` 110%, which compounded on the message box and
+   its labels; message text is web's 13.76px. */
 .body {
   font-weight: 400;
+  font-size: inherit;
+}
+
+label.body {
+  font-size: 13.76px;
 }
 
 /* Avatars: Caper mascots are already round; pictures and initials are
@@ -2176,6 +2183,21 @@ button.inbox-button {
 }
 
 button.inbox-button:hover {
+  background: @caper_surface_hover;
+}
+
+/* The sidebar's Notifications row, under the space's name, as web's. */
+button.inbox-row-button {
+  min-height: 34px;
+  margin: 2px 10px 4px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: @caper_text;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+button.inbox-row-button:hover {
   background: @caper_surface_hover;
 }
 

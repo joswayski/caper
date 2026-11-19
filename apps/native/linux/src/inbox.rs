@@ -396,10 +396,11 @@ impl App {
             .ok()
             .map(|state| state.inbox_label());
         if let Some(label) = label {
-            for button in [&self.ui.inbox, &self.ui.first_inbox] {
-                if button.label().as_deref() != Some(label.as_str()) {
-                    button.set_label(&label);
-                }
+            if self.ui.inbox_label.label() != label {
+                self.ui.inbox_label.set_label(&label);
+            }
+            if self.ui.first_inbox.label().as_deref() != Some(label.as_str()) {
+                self.ui.first_inbox.set_label(&label);
             }
         }
         let Ok(mut open) = self.inbox_window.try_borrow_mut() else {
