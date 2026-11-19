@@ -109,6 +109,8 @@ import WebKit
         let heading = NSStackView(views: [AppKitKit.label("GIFs", size: 14, weight: .bold), NSView(), cancel])
         tabs = NSSegmentedControl(labels: ["GIFs", "Stickers"], trackingMode: .selectOne, target: self, action: #selector(changeKind))
         tabs.selectedSegment = 0; tabs.setAccessibilityIdentifier("gif-picker-kind")
+        // Web's selected tab is a raised neutral chip; the system accent is blue.
+        tabs.selectedSegmentBezelColor = AppKitKit.raised; tabs.font = AppKitKit.font(13, weight: .bold)
         search.placeholderString = "Search KLIPY"; search.setAccessibilityLabel("Search KLIPY")
         search.setAccessibilityIdentifier("gif-picker-search"); search.delegate = self
         let column = NSTableColumn(identifier: .init("results")); table.addTableColumn(column)

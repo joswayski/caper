@@ -18,8 +18,18 @@ import Observation
             unavailableReason: "Composer is closed", identifier: inThread ? "thread-voice" : "composer-voice",
             send: { AttachmentStaging.remove($0.fileURL) }, stage: { AttachmentStaging.remove($0.fileURL) }, isCurrent: { false })
     }
-    @ObservationIgnored private lazy var microphone = AppKitVoiceControls(session: session, kind: .microphone)
-    @ObservationIgnored private lazy var recordingBar = AppKitVoiceControls(session: session, kind: .bar)
+    @ObservationIgnored private lazy var microphone = framed(.microphone)
+    @ObservationIgnored private lazy var recordingBar = framed(.bar)
+
+    /// The workspace places these by frame, and that frame is empty until its
+    /// first layout and whenever the conversation is covered. Their contents may
+    /// then be clipped; they must not fight the frame.
+    private func framed(_ kind: AppKitVoiceControls.Kind) -> AppKitVoiceControls {
+        let controls = AppKitVoiceControls(session: session, kind: kind)
+        controls.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        controls.setClippingResistancePriority(.defaultLow, for: .vertical)
+        return controls
+    }
 
     public init(chat: ChatModel, inThread: Bool, editor: NSTextView) {
         self.chat = chat; self.inThread = inThread; self.editor = editor
