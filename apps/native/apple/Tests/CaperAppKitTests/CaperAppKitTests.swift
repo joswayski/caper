@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor final class CaperAppKitTests: XCTestCase {
     private func launch(signedIn: Bool = true, fixture: String? = nil, preservePanelWidths: Bool = false,
-                        clearingDefaults: [String] = []) -> XCUIApplication {
+                        clearingDefaults: [String] = [], arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         if !clearingDefaults.isEmpty { app.launchEnvironment["CAPER_TEST_CLEAR_DEFAULTS"] = clearingDefaults.joined(separator: ",") }
@@ -17,6 +17,7 @@ import XCTest
         // Normal flows start at the shipping defaults. Persistence flows omit
         // these argument-domain overrides on their second real app launch.
         if !preservePanelWidths { app.launchArguments += ["-caper.membersWidth", "220", "-caper.channelSidebarWidth", "280", "-caper.threadPanelWidth", "340"] }
+        app.launchArguments += arguments
         app.launch()
         return app
     }
@@ -2403,8 +2404,13 @@ import XCTest
         XCTAssertLessThanOrEqual(microphone.frame.maxX, app.buttons["send-message"].frame.minX)
         capture("composer accessories", app: app)
         func replaceDraft(_ text: String) {
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
-            composer.click(); composer.typeKey("a", modifierFlags: .command); composer.typeKey("v", modifierFlags: .command)
+            // A VM's clipboard-sharing agent can hand ⌘V the previous contents;
+            // paste once more rather than fail on the harness's pasteboard.
+            for _ in 0..<2 {
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+                composer.click(); composer.typeKey("a", modifierFlags: .command); composer.typeKey("v", modifierFlags: .command)
+                if composer.value as? String == text { break }
+            }
             XCTAssertEqual(composer.value as? String, text)
         }
         let original = "🚀 replace tail"
@@ -3582,7 +3588,9 @@ import XCTest
     func testAutocompleteEmojiAndDirectMessageScope() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
-        let app = launch()
+        // Keyboard navigation on (as on the CI VMs) makes scroll views Tab
+        // stops too; Tab must still leave the composer. Argument domain only.
+        let app = launch(arguments: ["-AppleKeyboardUIMode", "3"])
         defer { app.terminate() }
         let composer = app.textViews["message-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))

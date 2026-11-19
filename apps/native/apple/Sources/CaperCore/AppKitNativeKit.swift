@@ -118,7 +118,10 @@ import SwiftUI
         guard let scope else { return }
         let stops = stops(in: scope)
         guard !stops.isEmpty else { return }
-        let index = current.flatMap { current in stops.firstIndex { current === $0 || current.isDescendant(of: $0) } }
+        // Stops list containers before their contents, so the last match is the
+        // innermost: with Keyboard navigation on, the composer's scroll view is
+        // a stop too, and matching it would "move" Tab back into the composer.
+        let index = current.flatMap { current in stops.lastIndex { current === $0 || current.isDescendant(of: $0) } }
         let next = index.map { (forward ? $0 + 1 : $0 - 1 + stops.count) % stops.count } ?? (forward ? 0 : stops.count - 1)
         if window.makeFirstResponder(stops[next]) { stops[next].scrollToVisible(stops[next].bounds) }
     }
