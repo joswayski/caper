@@ -20,7 +20,13 @@ cp "$REPO"/apps/web/public/audio/effects/*.wav "$OUT/assets/effects/"
 
 AAR="$OUT/onnxruntime-android-1.23.2.aar"
 if [[ ! -f "$AAR" ]]; then
-  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar' -o "$AAR.tmp"
+  # Maven Central has answered GitHub's runners with 404. Microsoft's 1.23.2
+  # NuGet package (the desktop builds' source) carries the identical AAR.
+  if ! curl -fLsS --retry 3 --retry-delay 5 --retry-all-errors 'https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar' -o "$AAR.tmp"; then
+    curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg' -o "$OUT/onnxruntime.nupkg"
+    unzip -p "$OUT/onnxruntime.nupkg" runtimes/android/native/onnxruntime.aar >"$AAR.tmp"
+    rm "$OUT/onnxruntime.nupkg"
+  fi
   mv "$AAR.tmp" "$AAR"
 fi
 echo "82048d1f462218adae4ba76477089ab0ba76093d84f733540066db1a8ba6b827  $AAR" | sha256sum -c -
