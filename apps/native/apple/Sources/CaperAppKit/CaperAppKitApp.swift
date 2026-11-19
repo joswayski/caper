@@ -15,11 +15,25 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
     private var pendingLinks: [URL] = []
 
     static func main() {
+        useOverlayScrollBars()
         let application = NSApplication.shared
         let delegate = CaperAppKitApp()
         application.delegate = delegate
         application.setActivationPolicy(.regular)
         withExtendedLifetime(delegate) { application.run() }
+    }
+
+    /// With a mouse connected macOS gives every list, the message history
+    /// and the composer a 15-point scroll bar track, which takes width from
+    /// their content as it comes and goes. Caper's panes use scroll bars
+    /// that appear over the content while scrolling, as web's thin ones do,
+    /// unless System Settings says to show scroll bars always. The app's own
+    /// value for the system key takes precedence over the system-wide one.
+    private static func useOverlayScrollBars() {
+        let key = "AppleShowScrollBars"
+        let system = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?[key] as? String
+        if system == "Always" { UserDefaults.standard.removeObject(forKey: key) }
+        else { UserDefaults.standard.set("WhenScrolling", forKey: key) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
