@@ -1555,6 +1555,12 @@ fn draw_content(
                 &g.brushes.muted,
             );
         }
+        // Drawn last so its sockets sit over the panel and the avatar.
+        if row.quote.is_some() && row.header.is_some() {
+            let qy = y + row.lead + 4.0;
+            let source = (BODY_X + QUOTE_PAD_X, qy + QUOTE_PAD_Y + QUOTE_HEADING / 2.0);
+            reply_string(g, dc, source, (PAD_X, hy + 16.0));
+        }
         if let Some(l) = &row.context {
             crate::text::draw(dc, l, BODY_X, top + row.context_y, &g.brushes.muted);
         }
@@ -1980,5 +1986,48 @@ impl crate::App {
         }
         self.events |= crate::EV_ROWS;
         self.need = true;
+    }
+}
+
+/// egui's reply string (`reply_connector`), at rest: a muted curve from
+/// beside the reply's avatar (`target`) up to its quote's heading
+/// (`source`), with a metal socket at each end.
+fn reply_string(g: &Gfx, dc: &ID2D1DeviceContext, source: (f32, f32), target: (f32, f32)) {
+    let point = |(x, y): (f32, f32)| windows_numerics::Vector2 { X: x, Y: y };
+    let start = (target.0 - 12.0, target.1);
+    let end = (source.0 - 12.0, source.1);
+    let span = start.1 - end.1;
+    unsafe {
+        let Ok(factory) = g.d2d.GetFactory() else {
+            return;
+        };
+        let Ok(path) = factory.CreatePathGeometry() else {
+            return;
+        };
+        let Ok(sink) = path.Open() else { return };
+        sink.BeginFigure(point(start), Common::D2D1_FIGURE_BEGIN_HOLLOW);
+        sink.AddBezier(&Common::D2D1_BEZIER_SEGMENT {
+            point1: point((start.0 + 8.0, start.1 - span * 0.3)),
+            point2: point((end.0 - 30.0, end.1 + span * 0.3)),
+            point3: point(end),
+        });
+        sink.EndFigure(Common::D2D1_FIGURE_END_OPEN);
+        if sink.Close().is_err() {
+            return;
+        }
+        if let Ok(brush) =
+            dc.CreateSolidColorBrush(&gfx::color(crate::theme::TEXT_MUTED, 0.75), None)
+        {
+            dc.DrawGeometry(&path, &brush, 1.1, None);
+        }
+    }
+    for (x, y) in [source, target] {
+        crate::icons::draw(
+            dc,
+            crate::icons::Icon::ReplySocket,
+            rect(x - 14.0, y - 8.0, x + 2.0, y + 8.0),
+            0xffffff,
+            1.0,
+        );
     }
 }
