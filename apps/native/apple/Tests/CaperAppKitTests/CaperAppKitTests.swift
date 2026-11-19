@@ -2116,16 +2116,22 @@ import XCTest
             XCTAssertFalse(item(title).exists, "Unimplemented actions must not appear as placeholders")
         }
         capture("own message options wide", app: app)
+        // The menu action writes the pasteboard after the click returns.
+        func copied(_ expected: String, _ message: String = "") {
+            let written = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in NSPasteboard.general.string(forType: .string) == expected }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [written], timeout: 5), .completed,
+                "\(message) — pasteboard: \(NSPasteboard.general.string(forType: .string) ?? "nil")")
+        }
         NSPasteboard.general.clearContents(); item("Copy text").click()
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), original, "Copy text preserves asymmetric Unicode and line breaks")
+        copied(original, "Copy text preserves asymmetric Unicode and line breaks")
         options(); NSPasteboard.general.clearContents(); item("Copy message ID").click()
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), id)
+        copied(id)
         body.rightClick()
         XCTAssertTrue(item("Copy link").waitForExistence(timeout: 5))
         // Check the real Open target's availability, but never launch an external browser.
         XCTAssertTrue(item("Open link").isEnabled)
         NSPasteboard.general.clearContents(); item("Copy link").click()
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), link, "Copy link must exclude surrounding non-ASCII text")
+        copied(link, "Copy link must exclude surrounding non-ASCII text")
 
         options(); item("Edit message").click()
         let editor = app.textViews["message-edit-text"]
