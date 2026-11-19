@@ -2576,6 +2576,9 @@ import XCTest
         let deafened = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Deafened"), object: app.buttons["deafen-toggle"])
         XCTAssertEqual(XCTWaiter.wait(for: [deafened], timeout: 5), .completed)
         let remote = app.buttons["voice-face-fixture-remote"]
+        // In a short window, revealing #planning above scrolled the call's faces
+        // out of the channel list; XCTest still calls a face clipped there hittable.
+        revealSidebar(remote, in: app.scrollViews["sidebar-channels-scroll"])
         remote.rightClick()
         XCTAssertTrue(app.staticTexts["voice-list-title"].waitForExistence(timeout: 5))
         let volume = app.sliders["TEST FIXTURE Maya volume"]
