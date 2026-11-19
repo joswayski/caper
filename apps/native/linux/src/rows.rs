@@ -982,6 +982,8 @@ fn profile_link(handler: &Handler) -> impl Fn(&gtk::Label, &str) -> glib::Propag
 /// One recycled row's widgets and the row it shows.
 struct Widgets {
     root: gtk::Box,
+    /// Draws the string from a reply's avatar up to its quote.
+    connector: gtk::DrawingArea,
     day: gtk::Label,
     /// The day's centered label between two rules.
     day_row: gtk::Box,
@@ -1372,6 +1374,13 @@ fn build_widgets() -> Widgets {
     // focus wash covers, edge to edge as desktop.
     let message = gtk::Box::new(gtk::Orientation::Vertical, 0);
     message.add_css_class("body");
+    // The quote and the message under one layer that draws the reply's
+    // connector between them, as egui, web and Android do.
+    let connector = gtk::DrawingArea::new();
+    connector.set_can_target(false);
+    let layered = gtk::Overlay::new();
+    layered.set_child(Some(&message));
+    layered.add_overlay(&connector);
     message.append(&reply);
     let quote_more = gtk::Button::with_label("Show more");
     quote_more.add_css_class("flat");
@@ -1381,7 +1390,21 @@ fn build_widgets() -> Widgets {
     reply.append(&quote_more);
     message.append(&thread_context);
     message.append(&overlay);
-    root.append(&message);
+    {
+        let (area, quote, heading, quote_avatar, avatar) = (
+            connector.downgrade(),
+            reply.clone(),
+            quote_heading.clone(),
+            quote_avatar.root.clone().upcast::<gtk::Widget>(),
+            avatar.root.clone().upcast::<gtk::Widget>(),
+        );
+        connector.set_draw_func(move |_, cr, _, _| {
+            if let Some(area) = area.upgrade() {
+                draw_connector(&area, cr, &quote, &heading, &quote_avatar, &avatar);
+            }
+        });
+    }
+    root.append(&layered);
     let footer = gtk::Label::builder()
         .xalign(0.0)
         .wrap(true)
@@ -1401,6 +1424,7 @@ fn build_widgets() -> Widgets {
         unread,
         beginning,
         reply,
+        connector,
         footer,
         quote_heading,
         quote_avatar,
@@ -1743,6 +1767,7 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
 /// so; a blocked author's quote says only "Blocked message". Show more
 /// appears once the text runs past three lines.
 fn fill_quote(widgets: &Widgets, images: &Rc<Images>, row: &Row) {
+    widgets.connector.queue_draw();
     let Some(quote) = &row.reply else {
         widgets.reply.set_visible(false);
         return;
@@ -2089,6 +2114,97 @@ fn dress(toolbar: &Toolbar, row: &Row) {
     }
     toolbar.thread.set_visible(row.offers.thread);
     toolbar.more.set_visible(row.offers.act);
+}
+
+/// egui's reply string (`reply_connector`), at rest: a muted curve from
+/// beside the reply's avatar up to the quote's heading, a metal socket at
+/// each end. Not for a blocked author's quote, which shows no avatar.
+fn draw_connector(
+    area: &gtk::DrawingArea,
+    cr: &gtk::cairo::Context,
+    quote: &gtk::Box,
+    heading: &gtk::Box,
+    quote_avatar: &gtk::Widget,
+    avatar: &gtk::Widget,
+) {
+    if !quote.is_visible() || !quote_avatar.is_visible() || !avatar.is_visible() {
+        return;
+    }
+    let (Some(source), Some(target)) = (heading.compute_bounds(area), avatar.compute_bounds(area))
+    else {
+        return;
+    };
+    let source = (
+        f64::from(source.x()),
+        f64::from(source.y() + source.height() / 2.0),
+    );
+    let target = (f64::from(target.x()), f64::from(target.y()) + 16.0);
+    let start = (target.0 - 12.0, target.1);
+    let end = (source.0 - 12.0, source.1);
+    let span = start.1 - end.1;
+    cr.move_to(start.0, start.1);
+    cr.curve_to(
+        start.0 + 8.0,
+        start.1 - span * 0.3,
+        end.0 - 30.0,
+        end.1 + span * 0.3,
+        end.0,
+        end.1,
+    );
+    // Muted text (#B9BCBE) at 75%.
+    cr.set_source_rgba(185.0 / 255.0, 188.0 / 255.0, 190.0 / 255.0, 0.75);
+    cr.set_line_width(1.1);
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    let _ = cr.stroke();
+    if let Some(socket) = socket() {
+        for (x, y) in [source, target] {
+            let _ = cr.save();
+            cr.translate(x - 14.0, y - 6.0);
+            cr.scale(0.5, 0.5);
+            let _ = cr.set_source_surface(&socket, 0.0, 0.0);
+            let _ = cr.paint();
+            let _ = cr.restore();
+        }
+    }
+}
+
+/// `shared/reply-socket.svg` at 2x, once per thread.
+fn socket() -> Option<gtk::cairo::ImageSurface> {
+    thread_local! {
+        static SOCKET: Option<gtk::cairo::ImageSurface> = render_socket();
+    }
+    SOCKET.with(Clone::clone)
+}
+
+fn render_socket() -> Option<gtk::cairo::ImageSurface> {
+    let svg = include_bytes!("../../../../shared/reply-socket.svg");
+    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
+    let (width, height) = (32, 24);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(2.0, 2.0),
+        &mut pixmap.as_mut(),
+    );
+    let mut surface =
+        gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, width as i32, height as i32)
+            .ok()?;
+    let stride = surface.stride() as usize;
+    {
+        let mut data = surface.data().ok()?;
+        // Premultiplied RGBA to cairo's native-endian premultiplied ARGB.
+        for (y, row) in pixmap.data().chunks(width as usize * 4).enumerate() {
+            for (x, px) in row.chunks(4).enumerate() {
+                let pixel = u32::from(px[3]) << 24
+                    | u32::from(px[0]) << 16
+                    | u32::from(px[1]) << 8
+                    | u32::from(px[2]);
+                let at = y * stride + x * 4;
+                data[at..at + 4].copy_from_slice(&pixel.to_ne_bytes());
+            }
+        }
+    }
+    Some(surface)
 }
 
 #[cfg(test)]

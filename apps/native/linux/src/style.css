@@ -468,58 +468,70 @@ listview.messages > row {
    nothing sits above: what hover and the washes cover. A day rule, "New
    messages" or "Beginning of conversation" above it is not part of either,
    as web and Win32. */
-.message > .body {
+.message > overlay {
   margin: 0 -18px -17px;
+}
+
+.message > overlay > .body {
   padding: 0 18px 17px;
 }
 
-.message.flush > .body {
+.message.flush > overlay {
   margin-top: -10px;
+}
+
+.message.flush > overlay > .body {
   padding-top: 10px;
 }
 
-.message.grouped.flush > .body {
+.message.grouped.flush > overlay {
   margin-top: -6px;
+}
+
+.message.grouped.flush > overlay > .body {
   padding-top: 6px;
 }
 
-.message.continued > .body {
+.message.continued > overlay {
   margin-bottom: -2px;
+}
+
+.message.continued > overlay > .body {
   padding-bottom: 2px;
 }
 
 /* Over any wash, not instead of it. */
-listview.messages > row:hover .message > .body {
+listview.messages > row:hover .message > overlay > .body {
   background-image: linear-gradient(@caper_surface_hover, @caper_surface_hover);
 }
 
 /* Washes, as desktop: 8% for a mention of you, 12% for a reply to you, 14%
    for the message opened from elsewhere, each with a 2px edge. */
-.message.mentioned > .body,
-.message.replied > .body,
-.message.focused > .body {
+.message.mentioned > overlay > .body,
+.message.replied > overlay > .body,
+.message.focused > overlay > .body {
   box-shadow: inset 2px 0 @caper_terracotta;
 }
 
-.message.mentioned > .body {
+.message.mentioned > overlay > .body {
   background-color: alpha(@caper_terracotta, 0.08);
 }
 
 /* Pins, as web: your pins terracotta, other people's a faded gold, with no
    edge. Pins' own list washes its cards instead. */
-.message.pin-wash > .body {
+.message.pin-wash > overlay > .body {
   background-color: alpha(#e4c76a, 0.06);
 }
 
-.message.pin-wash-own > .body {
+.message.pin-wash-own > overlay > .body {
   background-color: alpha(@caper_terracotta, 0.12);
 }
 
-.message.replied > .body {
+.message.replied > overlay > .body {
   background-color: alpha(@caper_terracotta, 0.12);
 }
 
-.message.focused > .body {
+.message.focused > overlay > .body {
   background-color: alpha(@caper_terracotta, 0.14);
 }
 
