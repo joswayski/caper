@@ -31,16 +31,33 @@ window.caper {
   font-weight: 500;
 }
 
+/* GTK's theme resets popovers to the system font (`font: initial`), and a
+   tooltip is its own window: menus, pickers, cards and tips take Caper's
+   type too. */
+window.caper popover.background,
+tooltip {
+  font-family: Satoshi, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+}
+
 window.caper label selection,
 window.caper text selection {
   background-color: alpha(@caper_terracotta, 0.55);
   color: @caper_text;
 }
 
-window.caper button:focus-visible,
-window.caper row:focus-visible {
+window.caper button:focus-visible {
   outline: 2px solid @caper_terracotta;
   outline-offset: 1px;
+}
+
+/* A row's ring sits inside it: rows run edge to edge in their scrollers,
+   which clipped a ring drawn outside. `:focus` keeps it to the focused row
+   itself; GTK marks a row `:focus-visible` while a control inside has focus. */
+window.caper row:focus:focus-visible {
+  outline: 2px solid @caper_terracotta;
+  outline-offset: -2px;
 }
 
 window.caper label link {
@@ -339,8 +356,10 @@ paned.caper-split.vertical > separator {
   border: none;
 }
 
-/* The focused line (F8): GTK marks the paned, not its separator. */
-paned.caper-split:focus-visible > separator {
+/* The focused line (F8): GTK marks the paned, not its separator. `:focus`
+   too, because GTK also marks every ancestor of the focused control
+   `:focus-visible`, which lit these lines whenever a key moved focus. */
+paned.caper-split:focus:focus-visible > separator {
   background: @caper_terracotta;
   outline: none;
 }

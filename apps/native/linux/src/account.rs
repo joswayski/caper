@@ -265,6 +265,7 @@ impl App {
             });
             crate::ui::hands(&popover);
             crate::ui::arrive(&popover);
+            crate::ui::quiet_tooltip(&popover, button);
             popover.popup();
         });
         let weak = Rc::downgrade(self);

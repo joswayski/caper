@@ -6386,6 +6386,7 @@ pub fn popup_at(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget, at: Opti
     let popover = popover.as_ref();
     crate::ui::hands(popover);
     crate::ui::arrive(popover);
+    crate::ui::quiet_tooltip(popover, anchor);
     popover.set_has_arrow(false);
     // Parented to the chat page, pointing at the anchor: list rows
     // are recycled and rebuilt, and a popover whose parent goes away keeps

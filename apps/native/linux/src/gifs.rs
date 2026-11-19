@@ -322,6 +322,7 @@ impl App {
         });
         crate::ui::hands(&popover);
         crate::ui::arrive(&popover);
+        crate::ui::quiet_tooltip(&popover, anchor);
         popover.popup();
         search.grab_focus();
         self.load_gifs(1);

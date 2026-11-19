@@ -3,6 +3,7 @@
 use crate::images::{AvatarView, Icon, Images};
 use crate::rows;
 use gtk::{gio, glib, pango, prelude::*};
+use std::cell::Cell;
 use std::rc::Rc;
 
 pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
@@ -52,6 +53,26 @@ pub fn arrive(widget: &impl IsA<gtk::Widget>) {
     widget.add_css_class("arrives");
     widget.connect_map(|widget| widget.add_css_class("arriving"));
     widget.connect_unmap(|widget| widget.remove_css_class("arriving"));
+}
+
+/// Keeps `anchor`'s tooltip away while `popover` is open. The pointer rests
+/// on the button that opened it, so the tip would otherwise draw over the
+/// menu or picker a moment later.
+pub fn quiet_tooltip(popover: &impl IsA<gtk::Popover>, anchor: &impl IsA<gtk::Widget>) {
+    let anchor = anchor.as_ref();
+    if !anchor.has_tooltip() {
+        return;
+    }
+    anchor.set_has_tooltip(false);
+    let anchor = anchor.clone();
+    let restore: Rc<Cell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let handler = restore.clone();
+    restore.set(Some(popover.as_ref().connect_closed(move |popover| {
+        anchor.set_has_tooltip(true);
+        if let Some(handler) = handler.take() {
+            popover.disconnect(handler);
+        }
+    })));
 }
 
 /// As desktop, a hand over anything clickable inside `native` (a window or
