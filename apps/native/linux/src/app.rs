@@ -6137,8 +6137,10 @@ impl App {
             }
             // As egui and web: "Channel options for general", shown while the
             // row is hovered, selected or focused (`.row-options`).
-            let options: gtk::Button =
-                named("GtkButton", &format!("Channel options for {}", channel.name));
+            let options: gtk::Button = named(
+                "GtkButton",
+                &format!("Channel options for {}", channel.name),
+            );
             options.set_child(Some(&self.images.icon_image(Icon::More, "#b9bcbe", 16)));
             // No tooltip: the sidebar is rebuilt while the menu is open, and
             // the new button's tip would draw over it.

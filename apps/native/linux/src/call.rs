@@ -239,16 +239,29 @@ impl App {
     /// A quiet channel row's one-click voice shortcut, as the egui desktop
     /// and web: headphones that join (or switch to) its call. None where
     /// you're already in or joining it.
-    pub(super) fn row_join(self: &Rc<Self>, state: &State, id: &str, name: &str) -> Option<gtk::Button> {
+    pub(super) fn row_join(
+        self: &Rc<Self>,
+        state: &State,
+        id: &str,
+        name: &str,
+    ) -> Option<gtk::Button> {
         let Action::Join { switching, enabled } = self.action(state, id) else {
             return None;
         };
         let title = format!(
             "{} #{name}",
-            if switching { "Switch voice to" } else { "Join voice in" }
+            if switching {
+                "Switch voice to"
+            } else {
+                "Join voice in"
+            }
         );
         let button: gtk::Button = crate::app::named("GtkButton", &title);
-        button.set_child(Some(&self.images.icon_image(Icon::Headphones, "#b9bcbe", 16)));
+        button.set_child(Some(&self.images.icon_image(
+            Icon::Headphones,
+            "#b9bcbe",
+            16,
+        )));
         let tip = state.join_unavailable(id).filter(|_| !enabled);
         button.set_tooltip_text(Some(tip.unwrap_or(title.as_str())));
         button.set_sensitive(enabled);
