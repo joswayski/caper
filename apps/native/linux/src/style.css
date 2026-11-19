@@ -429,10 +429,6 @@ listview.messages > row {
   padding: 0;
 }
 
-listview.messages > row:hover {
-  background: @caper_surface_hover;
-}
-
 .message {
   padding: 10px 18px 17px;
 }
@@ -447,76 +443,63 @@ listview.messages > row:hover {
   padding-bottom: 2px;
 }
 
-/* Washes, as desktop: 8% for a mention of you, 12% for a reply to you, 14%
-   for the message opened from elsewhere, each with a 2px edge. They span the
-   row edge to edge, and its top padding when nothing sits above. */
-.message.mentioned > .body,
-.message.replied > .body,
-.message.focused > .body {
+/* The message itself spans the row edge to edge, and its top padding when
+   nothing sits above: what hover and the washes cover. A day rule, "New
+   messages" or "Beginning of conversation" above it is not part of either,
+   as web and Win32. */
+.message > .body {
   margin: 0 -18px -17px;
   padding: 0 18px 17px;
-  box-shadow: inset 2px 0 @caper_terracotta;
 }
 
-.message.flush.mentioned > .body,
-.message.flush.replied > .body,
-.message.flush.focused > .body {
+.message.flush > .body {
   margin-top: -10px;
   padding-top: 10px;
 }
 
-.message.grouped.flush.mentioned > .body,
-.message.grouped.flush.replied > .body,
-.message.grouped.flush.focused > .body {
+.message.grouped.flush > .body {
   margin-top: -6px;
   padding-top: 6px;
 }
 
-.message.mentioned > .body {
-  background: alpha(@caper_terracotta, 0.08);
-}
-
-/* Pins, as web: your pins terracotta, other people's a faded gold, with no
-   edge. Pins' own list washes its cards instead. */
-.message.pin-wash > .body,
-.message.pin-wash-own > .body {
-  margin: 0 -18px -17px;
-  padding: 0 18px 17px;
-  background: alpha(#e4c76a, 0.06);
-}
-
-.message.pin-wash-own > .body {
-  background: alpha(@caper_terracotta, 0.12);
-}
-
-.message.flush.pin-wash > .body,
-.message.flush.pin-wash-own > .body {
-  margin-top: -10px;
-  padding-top: 10px;
-}
-
-.message.grouped.flush.pin-wash > .body,
-.message.grouped.flush.pin-wash-own > .body {
-  margin-top: -6px;
-  padding-top: 6px;
-}
-
-/* A continued row's wash reaches only into its 2px bottom padding. */
-.message.continued.mentioned > .body,
-.message.continued.replied > .body,
-.message.continued.focused > .body,
-.message.continued.pin-wash > .body,
-.message.continued.pin-wash-own > .body {
+.message.continued > .body {
   margin-bottom: -2px;
   padding-bottom: 2px;
 }
 
+/* Over any wash, not instead of it. */
+listview.messages > row:hover .message > .body {
+  background-image: linear-gradient(@caper_surface_hover, @caper_surface_hover);
+}
+
+/* Washes, as desktop: 8% for a mention of you, 12% for a reply to you, 14%
+   for the message opened from elsewhere, each with a 2px edge. */
+.message.mentioned > .body,
+.message.replied > .body,
+.message.focused > .body {
+  box-shadow: inset 2px 0 @caper_terracotta;
+}
+
+.message.mentioned > .body {
+  background-color: alpha(@caper_terracotta, 0.08);
+}
+
+/* Pins, as web: your pins terracotta, other people's a faded gold, with no
+   edge. Pins' own list washes its cards instead. */
+.message.pin-wash > .body {
+  background-color: alpha(#e4c76a, 0.06);
+}
+
+.message.pin-wash-own > .body {
+  background-color: alpha(@caper_terracotta, 0.12);
+}
+
 .message.replied > .body {
-  background: alpha(@caper_terracotta, 0.12);
+  background-color: alpha(@caper_terracotta, 0.12);
 }
 
 .message.focused > .body {
-  background: alpha(@caper_terracotta, 0.14);
+  background-color: alpha(@caper_terracotta, 0.14);
 }
 
 .notice {
