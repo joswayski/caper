@@ -699,11 +699,16 @@ import XCTest
         let first = app.buttons["forward-destination-\(firstChannel)"]
         let second = app.buttons["forward-destination-\(secondChannel)"]
         func replace(_ field: XCUIElement, with text: String) {
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
-            field.click(); field.typeKey("a", modifierFlags: .command)
-            // Pasting an empty string is a no-op in an AppKit field editor.
-            if text.isEmpty { field.typeKey(.delete, modifierFlags: []) }
-            else { field.typeKey("v", modifierFlags: .command) }
+            // A VM's clipboard-sharing agent can hand ⌘V the previous contents;
+            // paste once more rather than fail on the harness's pasteboard.
+            for _ in 0..<2 {
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+                field.click(); field.typeKey("a", modifierFlags: .command)
+                // Pasting an empty string is a no-op in an AppKit field editor.
+                if text.isEmpty { field.typeKey(.delete, modifierFlags: []) }
+                else { field.typeKey("v", modifierFlags: .command) }
+                if field.value as? String == text { break }
+            }
             XCTAssertEqual(field.value as? String, text)
         }
         func openForward(options: Bool) {
@@ -1439,7 +1444,10 @@ import XCTest
         // click-to-open behavior; these captures are for Mac hover-wash review.
         for identifier in ["profile-author-chan00000001m02", "profile-avatar-chan00000001m02", "profile-member-member000001"] {
             let person = app.buttons[identifier]
-            XCTAssertTrue(person.waitForExistence(timeout: 5)); person.hover()
+            // Start from the composer each time: the straight path from the
+            // avatar to the members list crosses the 👍 chip, whose tooltip
+            // is not what this checks.
+            XCTAssertTrue(person.waitForExistence(timeout: 5)); composer.hover(); person.hover()
             try await Task.sleep(for: .milliseconds(500))
             XCTAssertFalse(profileClose.exists); XCTAssertFalse(tooltip.exists)
             capture("native person hover wash \(identifier) wide", app: app)
