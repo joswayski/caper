@@ -202,34 +202,53 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             let wanted = followEnd ? geometry.contentHeight - viewport : (anchor.flatMap { geometry.offset(for: $0) } ?? contentView.bounds.minY) + textShift
             return min(max(0, wanted), max(0, geometry.contentHeight - viewport))
         }
-        // Measuring changes the estimated visible interval. Converge by measuring
-        // only newly exposed rows, never the rest of the history at startup.
-        var needed = geometry.visibleRange(offset: offset(), height: viewport, overscan: 100)
-        // A recreated cell still needs its text/container and leaf geometry,
-        // even when the virtual timeline remembers its previous outer height.
-        while needed.contains(where: { !geometry.isMeasured($0) || rows[ids[$0]] == nil }) {
-            for index in needed where !geometry.isMeasured(index) || rows[ids[index]] == nil {
-                let row = cell(at: index)
-                geometry.measure(index, height: row.measuredHeight(width: contentSize.width))
+        // Measures and places the visible rows at one width, and returns them.
+        func place() -> Range<Int> {
+            let width = contentSize.width
+            // Measuring changes the estimated visible interval. Converge by measuring
+            // only newly exposed rows, never the rest of the history at startup.
+            var needed = geometry.visibleRange(offset: offset(), height: viewport, overscan: 100)
+            // A recreated cell still needs its text/container and leaf geometry,
+            // even when the virtual timeline remembers its previous outer height.
+            while needed.contains(where: { !geometry.isMeasured($0) || rows[ids[$0]] == nil }) {
+                for index in needed where !geometry.isMeasured(index) || rows[ids[index]] == nil {
+                    let row = cell(at: index)
+                    geometry.measure(index, height: row.measuredHeight(width: width))
+                }
+                needed = geometry.visibleRange(offset: offset(), height: viewport, overscan: 100)
             }
-            needed = geometry.visibleRange(offset: offset(), height: viewport, overscan: 100)
+            let retained = Set(needed.map { ids[$0] })
+            for id in Array(rows.keys) where !retained.contains(id) {
+                guard let row = rows.removeValue(forKey: id) else { continue }
+                if row.body.selectedRange().length > 0 { selection[id] = (row.body.string, row.body.selectedRange()) }
+                row.removeFromSuperview()
+            }
+            document.setFrameSize(NSSize(width: width, height: max(viewport, geometry.contentHeight)))
+            // A conversation shorter than the pane rests on the composer, as
+            // on web, instead of hanging under the header.
+            let lead = max(0, viewport - geometry.contentHeight)
+            for index in needed {
+                let row = cell(at: index)
+                row.frame = NSRect(x: 0, y: lead + geometry.origin(of: index), width: width, height: geometry.height(at: index))
+                // NSTextView resizing can scroll its selection into view. Finish
+                // that layout before restoring the reader's anchor, not after it.
+                row.layoutSubtreeIfNeeded()
+            }
+            contentView.scroll(to: NSPoint(x: 0, y: offset()))
+            reflectScrolledClipView(contentView)
+            return needed
         }
-        let retained = Set(needed.map { ids[$0] })
-        for id in Array(rows.keys) where !retained.contains(id) {
-            guard let row = rows.removeValue(forKey: id) else { continue }
-            if row.body.selectedRange().length > 0 { selection[id] = (row.body.string, row.body.selectedRange()) }
-            row.removeFromSuperview()
+        var needed = place()
+        // A scroll bar that takes room (a mouse, or "Show scroll bars: Always")
+        // narrows the rows when it appears and widens them when it hides, and
+        // placing rows can cause either. Rows measured at the earlier width
+        // would keep its wrapping and heights, so place them again.
+        var passes = 0
+        while geometry.width != max(1, contentSize.width), passes < 3 {
+            geometry.replace(ids: ids, width: contentSize.width)
+            needed = place()
+            passes += 1
         }
-        document.setFrameSize(NSSize(width: contentSize.width, height: max(viewport, geometry.contentHeight)))
-        for index in needed {
-            let row = cell(at: index)
-            row.frame = NSRect(x: 0, y: geometry.origin(of: index), width: contentSize.width, height: geometry.height(at: index))
-            // NSTextView resizing can scroll its selection into view. Finish
-            // that layout before restoring the reader's anchor, not after it.
-            row.layoutSubtreeIfNeeded()
-        }
-        contentView.scroll(to: NSPoint(x: 0, y: offset()))
-        reflectScrolledClipView(contentView)
         rows.values.forEach { $0.refreshHover() }
         // These are real, selectable NSTextViews/buttons, not label-only mirrors.
         document.setAccessibilityChildren(needed.compactMap { rows[ids[$0]] })
@@ -757,7 +776,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         // Start the name 2 points early so it lines up with the message.
         author.frame = NSRect(x: 66, y: messageTop + 10, width: authorWidth, height: 20)
         timestamp.frame = NSRect(x: compact ? textInset : author.frame.maxX + 7, y: messageTop + (compact ? 50 : 13), width: timeWidth, height: 17)
-        authorAction.frame = author.frame
+        // The hover wash and focus ring get room around the name, which
+        // otherwise touches their left edge.
+        authorAction.frame = author.frame.insetBy(dx: -4, dy: -1)
         avatarAction.frame = avatar.frame
         let controlsWidth = min(controls.preferredWidth, max(30, bounds.width - 30))
         controls.frame = NSRect(x: max(0, bounds.width - controlsWidth - 15), y: messageTop + (grouped ? -3 : 3),
