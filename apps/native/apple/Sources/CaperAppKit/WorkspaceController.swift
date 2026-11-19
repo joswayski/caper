@@ -278,8 +278,7 @@ import CaperCore
         }
         composer.updateDragTypeRegistration()
         // One line sits centred in the field's 40-point inner row.
-        let lineHeight = composer.layoutManager?.defaultLineHeight(for: NativeStyle.font(14)) ?? 19
-        composer.textContainerInset = NSSize(width: 0, height: max(4, floor((40 - lineHeight) / 2)))
+        composer.textContainerInset = NSSize(width: 0, height: max(4, floor((40 - draftLineHeight) / 2)))
         composer.isHorizontallyResizable = false
         composer.isVerticallyResizable = true
         composer.autoresizingMask = [.width]
@@ -1011,11 +1010,23 @@ import CaperCore
         draftChanged()
     }
     /// The draft's height at the editor's current width, insets included.
+    /// One line of the draft as the editor lays it out, which can be a point
+    /// taller than the font's nominal line height. The empty editor is sized
+    /// with it, so the field (and the history resting on it) does not move
+    /// when the first character arrives.
+    private lazy var draftLineHeight: CGFloat = {
+        let font = NativeStyle.font(14)
+        let storage = NSTextStorage(string: "M", attributes: [.font: font])
+        let manager = DraftLinkLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 1000, height: CGFloat.greatestFiniteMagnitude))
+        manager.addTextContainer(container); storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        return max(manager.defaultLineHeight(for: font), manager.usedRect(for: container).height)
+    }()
     private func editorContentHeight() -> CGFloat {
         guard let manager = composer.layoutManager, let container = composer.textContainer else { return 40 }
         manager.ensureLayout(for: container)
-        let line = manager.defaultLineHeight(for: NativeStyle.font(14))
-        return ceil(max(line, manager.usedRect(for: container).height)) + composer.textContainerInset.height * 2
+        return ceil(max(draftLineHeight, manager.usedRect(for: container).height)) + composer.textContainerInset.height * 2
     }
     /// The field grows with its draft; keystrokes that keep its height lay nothing out.
     private func relayoutIfDraftResized() {
