@@ -18,6 +18,10 @@ use std::rc::Rc;
 const MENTION: &str = "background=\"#b64d32\" bgalpha=\"24%\" foreground=\"#f3f4f5\" \
      weight=\"500\" underline=\"none\"";
 
+/// URL pills, as web's `.chat-link`: the link colour (#69CFFF) at 10% under
+/// the link, which is not underlined.
+const URL_PILL: &str = "background=\"#69cfff\" bgalpha=\"10%\" underline=\"none\"";
+
 /// The link scheme of a person's mention pill: `caper-person:<account id>`.
 pub const PERSON: &str = "caper-person:";
 
@@ -270,6 +274,10 @@ fn markup(pieces: &[Piece], revealed: &BTreeSet<usize>) -> String {
             if let Some(href) = &piece.link {
                 out.push_str(&format!("<a href=\"{}\">", glib::markup_escape_text(href)));
                 close.push("</a>");
+                if piece.pill.is_none() {
+                    out.push_str(&format!("<span {URL_PILL}>"));
+                    close.push("</span>");
+                }
             }
             if let Some(person) = &piece.pill {
                 if let Some(id) = person {
@@ -443,7 +451,9 @@ mod tests {
     fn links_keep_their_underscores_and_escape_hrefs() {
         assert_eq!(
             message("see https://caper.chat/a_b_c?x=1&y=2.", &[]),
-            "see <a href=\"https://caper.chat/a_b_c?x=1&amp;y=2\">https://caper.chat/a_b_c?x=1&amp;y=2</a>."
+            format!(
+                "see <a href=\"https://caper.chat/a_b_c?x=1&amp;y=2\"><span {URL_PILL}>https://caper.chat/a_b_c?x=1&amp;y=2</span></a>."
+            )
         );
     }
 
@@ -469,7 +479,7 @@ mod tests {
         assert!(markup.starts_with(&format!(
             "<a href=\"{PERSON}id\"><span {MENTION}>@maya</span></a> <a href=\""
         )));
-        assert!(markup.ends_with(">www.caper.chat</a>"));
+        assert!(markup.ends_with(&format!("<span {URL_PILL}>www.caper.chat</span></a>")));
     }
 
     /// A contiguous spoiler is one link, with no links or pills inside it
@@ -498,7 +508,9 @@ mod tests {
         assert!(revealed.contains(&format!(
             "<span {REVEALED}><a href=\"{PERSON}id\"><span {MENTION}>@maya</span></a></span>"
         )));
-        assert!(revealed.contains(">www.caper.chat</a></span>"));
+        assert!(revealed.contains(&format!(
+            "<span {URL_PILL}>www.caper.chat</span></a></span>"
+        )));
         assert!(revealed.ends_with(&format!(" d {}e</span></a>", hidden(1))));
         assert_eq!(body.plain(), format!("a {SPOILER_NAME} d {SPOILER_NAME}"));
     }
