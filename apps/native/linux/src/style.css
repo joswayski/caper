@@ -1242,21 +1242,36 @@ button.transcript-toggle:hover label {
   text-decoration: underline;
 }
 
+/* As web and egui: a plain bordered card; the title is text, not a link
+   colour, until hovered. */
 .embed {
   background: @caper_surface;
   border: 1px solid @caper_border;
-  border-left: 3px solid @caper_border;
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 10px 12px 12px 12px;
+}
+
+.embed-site {
+  font-size: 11.5px;
 }
 
 .embed-title {
+  font-size: 14.4px;
   font-weight: 700;
 }
 
+window.caper .embed-title link {
+  color: @caper_text;
+  text-decoration-line: none;
+}
+
+window.caper .embed-title link:hover {
+  color: @caper_text;
+  text-decoration-line: underline;
+}
+
 .embed-text {
-  color: @caper_text_muted;
-  font-size: 13px;
+  font-size: 13.6px;
 }
 
 window.caper.viewer {

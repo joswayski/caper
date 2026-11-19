@@ -550,10 +550,15 @@ fn card(images: &Images, embed: &Embed, handler: &Handler) -> gtk::Box {
     let heading = caper_client::embeds::heading(embed).to_owned();
     let text = gtk::Box::new(gtk::Orientation::Vertical, 6);
     text.set_hexpand(true);
-    text.append(&wrapped(
-        &glib::markup_escape_text(&embed.site.name),
-        &["muted", "small"],
-    ));
+    // As web and egui: the site, then its domain when that says more.
+    let mut site = glib::markup_escape_text(&embed.site.name).to_string();
+    if !embed.site.domain.is_empty() && embed.site.domain != embed.site.name {
+        site.push_str(&format!(
+            "  <span alpha=\"75%\">{}</span>",
+            glib::markup_escape_text(&embed.site.domain)
+        ));
+    }
+    text.append(&wrapped(&site, &["muted", "embed-site"]));
     let mut thumbnail = None;
     let mut media = Vec::new();
     let mut footer = None;
