@@ -1021,6 +1021,11 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             if (detail != null) NotificationSaveError(state.notificationErrors[spaceKey(detail.space.id)]) { viewModel.dismissNotificationError(spaceKey(detail.space.id)) }
             HorizontalDivider(color = Border)
         }
+        // As web: Notifications sits under the space name, above Channels.
+        if (state.account != null) {
+            Spacer(Modifier.height(6.dp))
+            ActivityInboxEntry(viewModel) { closeNavigation?.invoke() }
+        }
         BoxWithConstraints(Modifier.weight(1f)) {
             // On a short window, reserve no more than a third for either list;
             // otherwise each starts with a useful 96dp of visible rows.
@@ -1181,7 +1186,6 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 ) { HorizontalDivider(Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Border) }
                 Column(Modifier.weight(1f - clampedShare).verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(6.dp))
-                ActivityInboxEntry(viewModel) { closeNavigation?.invoke() }
                 // Feedback team only: the `@feedback` inbox, beside the DMs.
                 if (state.account.feedbackTeam) {
                     val feedbackSelected = state.feedbackShown || state.visit != null
@@ -2560,7 +2564,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (!inThread && latestMessage != null && !collapsesFor(latestMessage, blocked, selfId)) announcement = messageAnnouncement(latestMessage)
     }
     if (announcement.isNotEmpty()) Box(Modifier.size(0.dp).semantics { liveRegion = LiveRegionMode.Polite; contentDescription = announcement })
-    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
+    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp),
+        // As web: a short conversation rests on the composer rather than the header.
+        verticalArrangement = Arrangement.Bottom) {
         if (!inThread) item(contentType = "history") {
             HistoryRow {
                 when {
