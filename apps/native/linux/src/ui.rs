@@ -580,6 +580,8 @@ pub struct Ui {
     pub space_name: gtk::Label,
     pub space_header: gtk::Button,
     pub new_channel: gtk::Button,
+    /// Owners: egui's "Channel options" (…): Create channel, Collapse channels.
+    pub channel_options: gtk::Button,
     /// "Toggle channels": collapsed, only channels with live voice show.
     pub channels_toggle: gtk::Button,
     pub channels_count: gtk::Label,
@@ -962,6 +964,13 @@ impl Ui {
         new_channel.add_css_class("section-action");
         new_channel.set_valign(gtk::Align::End);
         channel_header.append(&new_channel);
+        let channel_options: gtk::Button = crate::app::named("GtkButton", "Channel options");
+        channel_options.set_child(Some(&images.icon_image(Icon::More, "#b9bcbe", 16)));
+        channel_options.set_tooltip_text(Some("Channel options"));
+        channel_options.add_css_class("flat");
+        channel_options.add_css_class("section-action");
+        channel_options.set_valign(gtk::Align::End);
+        channel_header.append(&channel_options);
         lists.append(&channel_header);
         let channels: gtk::ListBox = crate::app::named("GtkListBox", "Channels");
         channels.add_css_class("channels");
@@ -1437,6 +1446,7 @@ impl Ui {
             space_name,
             space_header,
             new_channel,
+            channel_options,
             channels_toggle,
             channels_count,
             channel_invites,

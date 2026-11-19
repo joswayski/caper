@@ -465,6 +465,12 @@ impl App {
                 app.open_create_channel();
             }
         });
+        let weak = Rc::downgrade(self);
+        self.ui.channel_options.connect_clicked(move |button| {
+            if let Some(app) = weak.upgrade() {
+                app.channel_options_menu(button.upcast_ref());
+            }
+        });
         // Web reconciles membership when the window regains focus.
         let weak = Rc::downgrade(self);
         self.ui.window.connect_is_active_notify(move |window| {
@@ -604,6 +610,57 @@ impl App {
             Self::admin_reset(&mut state, Dialog::CreateSpace);
         }
         self.render_admin();
+    }
+
+    /// egui's owner "Channel options": Create channel (when allowed) and
+    /// Collapse or Expand channels, each with its icon so labels line up.
+    fn channel_options_menu(self: &Rc<Self>, anchor: &gtk::Widget) {
+        let (can_create, collapsed) = {
+            let state = self.state.borrow();
+            (state.can_create_channel(), state.channels_collapsed)
+        };
+        let popover = gtk::Popover::new();
+        popover.add_css_class("menu");
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let toggle = if collapsed {
+            "Expand channels"
+        } else {
+            "Collapse channels"
+        };
+        let icon = if collapsed {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        };
+        for (index, (text, icon)) in [("Create channel", Icon::Plus), (toggle, icon)]
+            .into_iter()
+            .enumerate()
+        {
+            let button: gtk::Button = crate::app::named("GtkButton", text);
+            button.add_css_class("flat");
+            button.add_css_class("menu-item");
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            line.append(&self.images.icon_image(icon, "#b9bcbe", 16));
+            line.append(&label(text, &[]));
+            button.set_child(Some(&line));
+            button.set_sensitive(index != 0 || can_create);
+            let (weak, menu) = (Rc::downgrade(self), popover.downgrade());
+            button.connect_clicked(move |_| {
+                if let Some(menu) = menu.upgrade() {
+                    menu.popdown();
+                }
+                if let Some(app) = weak.upgrade() {
+                    if index == 0 {
+                        app.open_create_channel();
+                    } else {
+                        app.ui.channels_toggle.emit_clicked();
+                    }
+                }
+            });
+            list.append(&button);
+        }
+        popover.set_child(Some(&list));
+        popup(&popover, anchor);
     }
 
     pub(super) fn open_create_channel(self: &Rc<Self>) {
@@ -3245,6 +3302,7 @@ impl App {
         ui.new_channel.set_sensitive(state.can_create_channel());
         ui.new_channel
             .set_tooltip_text(Some(&state.create_channel_tooltip()));
+        ui.channel_options.set_visible(owner);
         clear(&ui.channel_invites);
         let invitations = state
             .detail
