@@ -437,8 +437,14 @@ listview.messages > row:hover {
   padding: 10px 18px 17px;
 }
 
+/* Web's 2px, plus the 4px its text keeps above it. */
 .message.grouped {
-  padding-top: 2px;
+  padding-top: 6px;
+}
+
+/* As web: a message the next one groups under keeps 2px below it. */
+.message.continued {
+  padding-bottom: 2px;
 }
 
 /* Washes, as desktop: 8% for a mention of you, 12% for a reply to you, 14%
@@ -462,8 +468,8 @@ listview.messages > row:hover {
 .message.grouped.flush.mentioned > .body,
 .message.grouped.flush.replied > .body,
 .message.grouped.flush.focused > .body {
-  margin-top: -2px;
-  padding-top: 2px;
+  margin-top: -6px;
+  padding-top: 6px;
 }
 
 .message.mentioned > .body {
@@ -491,8 +497,18 @@ listview.messages > row:hover {
 
 .message.grouped.flush.pin-wash > .body,
 .message.grouped.flush.pin-wash-own > .body {
-  margin-top: -2px;
-  padding-top: 2px;
+  margin-top: -6px;
+  padding-top: 6px;
+}
+
+/* A continued row's wash reaches only into its 2px bottom padding. */
+.message.continued.mentioned > .body,
+.message.continued.replied > .body,
+.message.continued.focused > .body,
+.message.continued.pin-wash > .body,
+.message.continued.pin-wash-own > .body {
+  margin-bottom: -2px;
+  padding-bottom: 2px;
 }
 
 .message.replied > .body {

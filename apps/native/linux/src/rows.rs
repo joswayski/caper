@@ -61,6 +61,8 @@ pub struct Row {
     pub day: Option<String>,
     /// Drawn under the previous row by the same author (no avatar or name).
     pub grouped: bool,
+    /// The next row is `grouped` under this one: as web, the two sit 4px apart.
+    pub continued: bool,
     pub author: String,
     /// Who wrote it, for their profile card.
     pub person: Author,
@@ -313,6 +315,7 @@ impl Row {
             id: format!("blocked:{key}"),
             day: None,
             grouped: false,
+            continued: false,
             author: String::new(),
             person: author.clone(),
             avatar: author_avatar(author),
@@ -655,6 +658,7 @@ pub fn build<'a>(
             id: String::new(),
             day: None,
             grouped: false,
+            continued: false,
             author: message.author.name.clone(),
             person: message.author.clone(),
             picture_ready: viewer.images.picture_ready(&avatar),
@@ -831,6 +835,7 @@ pub fn build<'a>(
             id: String::new(),
             day: None,
             grouped: false,
+            continued: false,
             author: draft.author.name.clone(),
             person: draft.author.clone(),
             picture_ready: viewer.images.picture_ready(&avatar),
@@ -871,6 +876,9 @@ pub fn build<'a>(
             row,
             separate,
         );
+    }
+    for index in 1..rows.len() {
+        rows[index - 1].continued = rows[index].grouped;
     }
     rows
 }
@@ -1802,6 +1810,9 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     if row.grouped {
         classes.push("grouped");
     }
+    if row.continued {
+        classes.push("continued");
+    }
     if row.pending {
         classes.push("pending");
     }
@@ -2046,6 +2057,7 @@ mod tests {
             id: id.into(),
             day: None,
             grouped: false,
+            continued: false,
             author: "Maya".into(),
             person: Author {
                 id: "maya".into(),
