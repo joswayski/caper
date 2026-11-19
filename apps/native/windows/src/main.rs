@@ -3662,6 +3662,9 @@ impl App {
                     dc.FillRectangle(&rect(0.0, y + lead, lw, y + h), &g.brushes.hover);
                 }
                 list::draw_row(g, dc, c, rows, i, y, rs, media.as_mut())?;
+                if hover == Some(i) || focused == Some(i) {
+                    list::draw_grouped_time(g, dc, c, rows, i, y)?;
+                }
                 // The keyboard-focused control's terracotta ring.
                 if let Some((_, action)) = kb.filter(|(k, _)| *k == i)
                     && let Some((_, r)) = rows

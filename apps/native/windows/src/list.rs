@@ -1392,6 +1392,36 @@ pub fn content_top(grouped: bool) -> f32 {
     if grouped { 2.0 } else { 14.0 }
 }
 
+/// A grouped row's time ("9:42") in the avatar's column, drawn while the
+/// row is hovered or focused, as web and the egui desktop.
+pub fn draw_grouped_time(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    c: &Conversation,
+    rows: &Rows,
+    i: usize,
+    y: f32,
+) -> Result<()> {
+    let m = &c.messages[i];
+    let Some(row) = rows.row(i).filter(|_| m.grouped) else {
+        return Ok(());
+    };
+    let short = m.time.split_whitespace().next().unwrap_or_default();
+    if short.is_empty() {
+        return Ok(());
+    }
+    let l = g.layout(&gfx::wide(short), &g.formats.time, AVATAR)?;
+    let size = gfx::metrics(&l);
+    // Centred on the text's first line.
+    let line = gfx::range_rects(&row.text, 0, 1)
+        .first()
+        .map_or(20.0, |r| r.height);
+    let x = PAD_X + AVATAR - size.widthIncludingTrailingWhitespace;
+    let ty = y + content_top(true) + row.text_y + (line - size.height) / 2.0;
+    crate::text::draw(dc, &l, x, ty, &g.brushes.muted);
+    Ok(())
+}
+
 /// Draws row `i` with its top at `y` (DIPs, list coordinates); `sel` is the
 /// selected UTF-16 range of its text.
 pub fn draw_row(
