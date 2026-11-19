@@ -125,7 +125,7 @@ impl App {
         widget.add_controller(click);
     }
 
-    fn scope_menu(self: &Rc<Self>, scope: &Scope, anchor: &gtk::Widget) {
+    pub(super) fn scope_menu(self: &Rc<Self>, scope: &Scope, anchor: &gtk::Widget) {
         let menu = {
             let state = self.state.borrow();
             let menu = gio::Menu::new();

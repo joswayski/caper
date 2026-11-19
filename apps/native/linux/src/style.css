@@ -392,6 +392,27 @@ list.channels > row:selected {
   color: @caper_text;
 }
 
+/* A channel row's headphones and options, as egui and web. Options show
+   while the row is hovered, selected or focused; their space stays. */
+list.channels > row button.row-action {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: -4px 0;
+  border-radius: 6px;
+}
+
+list.channels > row button.row-options {
+  opacity: 0;
+}
+
+list.channels > row:hover button.row-options,
+list.channels > row:selected button.row-options,
+list.channels > row:focus-within button.row-options,
+list.channels > row button.row-options:focus-visible {
+  opacity: 1;
+}
+
 /* Conversation */
 .conversation {
   background: @caper_surface_conversation;

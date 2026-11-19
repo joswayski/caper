@@ -6127,6 +6127,34 @@ impl App {
                 live.set_tooltip_text(Some(&format!("{people} in voice")));
                 line.append(&live);
             }
+            // A live room's card offers Join; quiet rows keep egui's
+            // headphones shortcut.
+            if roster.is_none()
+                && channel.joined
+                && let Some(join) = self.row_join(&state, &channel.id, &channel.name)
+            {
+                line.append(&join);
+            }
+            // As egui and web: "Channel options for general", shown while the
+            // row is hovered, selected or focused (`.row-options`).
+            let options: gtk::Button =
+                named("GtkButton", &format!("Channel options for {}", channel.name));
+            options.set_child(Some(&self.images.icon_image(Icon::More, "#b9bcbe", 16)));
+            // No tooltip: the sidebar is rebuilt while the menu is open, and
+            // the new button's tip would draw over it.
+            options.add_css_class("flat");
+            options.add_css_class("row-action");
+            options.add_css_class("row-options");
+            options.set_valign(gtk::Align::Center);
+            {
+                let (weak, scope) = (Rc::downgrade(self), scope.clone());
+                options.connect_clicked(move |button| {
+                    if let Some(app) = weak.upgrade() {
+                        app.scope_menu(&scope, button.upcast_ref());
+                    }
+                });
+            }
+            line.append(&options);
             self.scope_menu_on(&line, scope);
             let row: gtk::ListBoxRow = named("GtkListBoxRow", &spoken.join(", "));
             match roster {

@@ -236,6 +236,35 @@ impl App {
         }
     }
 
+    /// A quiet channel row's one-click voice shortcut, as the egui desktop
+    /// and web: headphones that join (or switch to) its call. None where
+    /// you're already in or joining it.
+    pub(super) fn row_join(self: &Rc<Self>, state: &State, id: &str, name: &str) -> Option<gtk::Button> {
+        let Action::Join { switching, enabled } = self.action(state, id) else {
+            return None;
+        };
+        let title = format!(
+            "{} #{name}",
+            if switching { "Switch voice to" } else { "Join voice in" }
+        );
+        let button: gtk::Button = crate::app::named("GtkButton", &title);
+        button.set_child(Some(&self.images.icon_image(Icon::Headphones, "#b9bcbe", 16)));
+        let tip = state.join_unavailable(id).filter(|_| !enabled);
+        button.set_tooltip_text(Some(tip.unwrap_or(title.as_str())));
+        button.set_sensitive(enabled);
+        button.add_css_class("flat");
+        button.add_css_class("row-action");
+        button.add_css_class("row-join");
+        button.set_valign(gtk::Align::Center);
+        let (weak, channel) = (Rc::downgrade(self), id.to_owned());
+        button.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.join_voice(&channel);
+            }
+        });
+        Some(button)
+    }
+
     /// Join `channel`'s call. Space channels recheck membership first.
     pub(super) fn join_voice(self: &Rc<Self>, channel: &str) {
         {
