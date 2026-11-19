@@ -42,6 +42,9 @@ import CaperCore
         hint.font = NativeStyle.font(13); hint.textColor = NativeStyle.muted; hint.alignment = .center
         scroll.documentView = document; scroll.drawsBackground = false
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
+            name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         [titleLabel, closeButton, scroll, error, empty, hint].forEach { view.addSubview($0) }
     }
     override func viewDidAppear() {
@@ -56,6 +59,7 @@ import CaperCore
         }
     }
     override func viewDidDisappear() { super.viewDidDisappear(); active = false }
+    @objc private func scrolled() { ordered.forEach { $0.row.refreshHover() } }
     override func cancelOperation(_ sender: Any?) { close() }
 
     private func render() {

@@ -98,6 +98,10 @@ import CaperCore
     private var announcedTyping = ""
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
+    /// Web's message field: one bordered box holding attach, the editor, and
+    /// the GIF, emoji, microphone and send tools.
+    private let composerField = NativeView(NativeStyle.composer)
+    private var laidOutEditorHeight: CGFloat = 0
     private let attachmentScroll = NSScrollView()
     private var attachmentTray: AppKitAttachmentSurface?
     private var replyDraft: AppKitAttachmentSurface?
@@ -183,7 +187,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, lip, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, lip, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         browse.setAccessibilityIdentifier("open-navigation")
         pinsButton.setAccessibilityIdentifier("channel-pins")
         pinsButton.isHidden = inThread
@@ -273,7 +277,9 @@ import CaperCore
             self.view.window?.makeFirstResponder(self.composer)
         }
         composer.updateDragTypeRegistration()
-        composer.textContainerInset = NSSize(width: 12, height: 12)
+        // One line sits centred in the field's 40-point inner row.
+        let lineHeight = composer.layoutManager?.defaultLineHeight(for: NativeStyle.font(14)) ?? 19
+        composer.textContainerInset = NSSize(width: 0, height: max(4, floor((40 - lineHeight) / 2)))
         composer.isHorizontallyResizable = false
         composer.isVerticallyResizable = true
         composer.autoresizingMask = [.width]
@@ -288,6 +294,7 @@ import CaperCore
             return self.model.chat.pasteAttachments(inThread: self.inThread)
         }
         composer.focusChanged = { [weak self] focused in
+            self?.composerField.layer?.borderColor = (focused ? NativeStyle.accent : NativeStyle.border).cgColor
             if focused { self?.refreshSuggestions() } else { self?.suggestions.update(nil) }
         }
         composer.setAccessibilityHelp("Return sends. Shift-Return adds a new line. Use arrows and Return or Tab to choose a suggestion; Escape dismisses.")
@@ -295,9 +302,9 @@ import CaperCore
         composerScroll.documentView = composer
         composerScroll.hasVerticalScroller = true
         composerScroll.autohidesScrollers = true
-        composerScroll.drawsBackground = true
-        composerScroll.backgroundColor = NativeStyle.composer
-        composerScroll.wantsLayer = true; composerScroll.layer?.cornerRadius = 8
+        composerScroll.drawsBackground = false
+        composerField.layer?.cornerRadius = 8; composerField.layer?.borderWidth = 1
+        composerField.layer?.borderColor = NativeStyle.border.cgColor
         send.setAccessibilityIdentifier(inThread ? "thread-send" : "send-message")
         send.image = NSImage(systemSymbolName: "paperplane.fill", accessibilityDescription: nil)
         send.imagePosition = .imageOnly
@@ -599,9 +606,52 @@ import CaperCore
         membersToggle.toolTip = visible ? "Hide members" : "Show members"
         membersToggle.contentTintColor = visible ? NativeStyle.accent : NativeStyle.muted
         let base = height - (broadcast.isHidden ? 0 : 28)
-        let compact = center < 500
         let stackedActions = center < 250
-        let composerTop = base - (stackedActions ? 192 : compact ? 150 : 102)
+        // Web's field: 16 above the panel's bottom, 42 tall for one line, the
+        // tools inside its bottom edge. A very narrow split wraps them into two
+        // rows under the editor instead.
+        let fieldBottom = base - (counter.isHidden ? 16 : 28)
+        let fieldX: CGFloat = 20, fieldWidth = max(0, center - 40), fieldRight = fieldX + fieldWidth
+        let toolRows: CGFloat = stackedActions ? 74 : 0
+        var editorX = fieldX + 44, editorRight = fieldRight - 1
+        if stackedActions {
+            attach.frame.origin.x = fieldX + 4
+            gif.frame.origin.x = fieldX + 42
+            emoji.frame.origin.x = gif.isHidden ? fieldX + 42 : fieldX + 76
+            send.frame.origin.x = fieldRight - 37
+            voiceComposer.button.frame.origin.x = send.frame.minX - 38
+            editorX = fieldX + 1
+        } else {
+            attach.frame.origin.x = fieldX + 4
+            send.frame.origin.x = fieldRight - 37
+            voiceComposer.button.frame.origin.x = send.frame.minX - 38
+            emoji.frame.origin.x = voiceComposer.button.frame.minX - 34
+            gif.frame.origin.x = emoji.frame.minX - 34
+            editorRight = (gif.isHidden ? emoji.frame.minX : gif.frame.minX) - 4
+        }
+        composerScroll.frame = NSRect(x: editorX, y: composerScroll.frame.minY, width: max(0, editorRight - editorX), height: max(1, composerScroll.frame.height))
+        composer.frame.size.width = composerScroll.contentSize.width
+        laidOutEditorHeight = editorContentHeight()
+        let editorHeight = min(laidOutEditorHeight, max(40, min(318, height * 0.4) - toolRows))
+        let fieldHeight = max(42, editorHeight + 2 + toolRows)
+        composerField.frame = NSRect(x: fieldX, y: fieldBottom - fieldHeight, width: fieldWidth, height: fieldHeight)
+        composerScroll.frame = NSRect(x: editorX, y: composerField.frame.minY + 1, width: max(0, editorRight - editorX), height: fieldHeight - 2 - toolRows)
+        composer.frame.size.width = composerScroll.contentSize.width
+        composer.minSize = NSSize(width: 0, height: composerScroll.contentSize.height)
+        // Bottom-aligned, so a growing draft leaves them on its last line.
+        let toolY = fieldBottom - 37
+        send.frame.origin.y = toolY; send.frame.size = NSSize(width: 32, height: 32)
+        voiceComposer.button.frame.origin.y = toolY; voiceComposer.button.frame.size = NSSize(width: 36, height: 32)
+        if stackedActions {
+            for tool in [gif, emoji] { tool.frame.origin.y = toolY - 36; tool.frame.size = NSSize(width: 32, height: 32) }
+            attach.frame.origin.y = toolY - 36; attach.frame.size = NSSize(width: 36, height: 32)
+        } else {
+            for tool in [gif, emoji] { tool.frame.origin.y = toolY; tool.frame.size = NSSize(width: 32, height: 32) }
+            attach.frame.origin.y = fieldBottom - 41; attach.frame.size = NSSize(width: 40, height: 40)
+        }
+        let recordingHeight: CGFloat = center - 40 < 300 ? 126 : 42
+        voiceComposer.bar.frame = NSRect(x: fieldX, y: fieldBottom - recordingHeight, width: fieldWidth, height: recordingHeight)
+        let composerTop = composerField.isHidden && !voiceComposer.bar.isHidden ? voiceComposer.bar.frame.minY : composerField.frame.minY
         let attachmentHeight = attachmentTray?.height(for: max(1, center - 40)) ?? 0
         let trayHeight = min(attachmentHeight, max(80, height * 0.3))
         let quoteHeight = replyDraft?.height(for: max(1, center - 40)) ?? 0
@@ -626,21 +676,6 @@ import CaperCore
         latest.frame = NSRect(x: center - 20 - min(110, historyWidth), y: 52, width: min(110, historyWidth), height: 28)
         status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: statusHeight)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
-        attach.frame = NSRect(x: 16, y: base - (stackedActions ? 114 : 72), width: 38, height: 42)
-        send.frame = NSRect(x: center - 56, y: base - 70, width: 36, height: 38)
-        voiceComposer.button.frame = NSRect(x: send.frame.minX - 42, y: base - 72, width: 36, height: 42)
-        let recordingHeight: CGFloat = center - 40 < 300 ? 126 : 42
-        voiceComposer.bar.frame = NSRect(x: 20, y: base - 30 - recordingHeight, width: max(0, center - 40), height: recordingHeight)
-        emoji.frame = NSRect(x: voiceComposer.button.frame.minX - 40, y: base - 72, width: 32, height: 42)
-        gif.frame = NSRect(x: emoji.frame.minX - 40, y: base - 72, width: 32, height: 42)
-        if stackedActions {
-            gif.frame = NSRect(x: 58, y: base - 114, width: 32, height: 42)
-            emoji.frame = NSRect(x: gif.isHidden ? 58 : 98, y: base - 114, width: 32, height: 42)
-        }
-        let editorRight = (gif.isHidden ? emoji.frame.minX : gif.frame.minX) - 12
-        composerScroll.frame = NSRect(x: compact ? 20 : 58, y: composerTop, width: compact ? center - 40 : editorRight - 58, height: 70)
-        composer.frame.size.width = composerScroll.contentSize.width
-        composer.minSize = NSSize(width: 0, height: 70)
         counter.frame = NSRect(x: 20, y: base - 24, width: center - 40, height: 16)
         // A checkbox toggles only on its box and title, so its frame (and the
         // accessibility frame pointer clients aim at) must not run past them.
@@ -672,6 +707,7 @@ import CaperCore
             composer.string = draft
             composer.setSelectedRange(NSRange(location: composer.string.utf16.count, length: 0))
             composer.needsDisplay = true
+            relayoutIfDraftResized()
         }
         composer.placeholder = inThread ? "Reply to thread…"
             : model.visit?.direct == true ? "Message \(chat.channelName)"
@@ -695,6 +731,7 @@ import CaperCore
         send.layer?.backgroundColor = (send.isEnabled ? NSColor(CaperTheme.action) : NativeStyle.composer).cgColor
         send.contentTintColor = send.isEnabled ? NativeStyle.blackout : NativeStyle.muted
         composerScroll.isHidden = hidden || recording
+        if composerField.isHidden != composerScroll.isHidden { composerField.isHidden = composerScroll.isHidden; view.needsLayout = true }
         voiceComposer.button.isHidden = hidden
         voiceComposer.bar.isHidden = !recording
         send.isHidden = composerScroll.isHidden
@@ -709,7 +746,9 @@ import CaperCore
         gif.isEnabled = composer.isEditable && chat.canSendGif(inThread: inThread)
         picker.closeIfUnavailable(composer: composer)
         let count = draft.unicodeScalars.count
-        counter.isHidden = composerScroll.isHidden || count < 3000
+        // The counter sits under the field, which moves up to make room.
+        let hideCounter = composerScroll.isHidden || count < 3000
+        if counter.isHidden != hideCounter { counter.isHidden = hideCounter; view.needsLayout = true }
         counter.stringValue = "\(count.formatted()) / 4,000"
         counter.textColor = AppKitComposerCounter.color(count)
         join.isHidden = inThread || !model.previewingChannel
@@ -970,8 +1009,20 @@ import CaperCore
         guard !formattingDraft else { return }
         draftChanged()
     }
+    /// The draft's height at the editor's current width, insets included.
+    private func editorContentHeight() -> CGFloat {
+        guard let manager = composer.layoutManager, let container = composer.textContainer else { return 40 }
+        manager.ensureLayout(for: container)
+        let line = manager.defaultLineHeight(for: NativeStyle.font(14))
+        return ceil(max(line, manager.usedRect(for: container).height)) + composer.textContainerInset.height * 2
+    }
+    /// The field grows with its draft; keystrokes that keep its height lay nothing out.
+    private func relayoutIfDraftResized() {
+        if editorContentHeight() != laidOutEditorHeight { view.needsLayout = true }
+    }
     private func draftChanged() {
         composer.needsDisplay = true
+        relayoutIfDraftResized()
         if inThread { model.chat.threadDraft = composer.string }
         else { model.chat.draft = composer.string; model.chat.draftChanged(composer.string) }
         suggestionsDismissed = false
@@ -1009,8 +1060,8 @@ import CaperCore
         layoutSuggestions()
     }
     private func layoutSuggestions() {
-        let width = suggestions.match?.isMention == true ? composerScroll.frame.width : min(260, composerScroll.frame.width)
-        suggestions.frame = NSRect(x: composerScroll.frame.minX, y: composerScroll.frame.minY - suggestions.height - 8,
+        let width = suggestions.match?.isMention == true ? composerField.frame.width : min(260, composerField.frame.width)
+        suggestions.frame = NSRect(x: composerField.frame.minX, y: composerField.frame.minY - suggestions.height - 8,
             width: width, height: suggestions.height)
     }
     private func formatDraft(_ style: MessageStyle) {

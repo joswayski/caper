@@ -103,6 +103,9 @@ import CaperCore
             }], at: self.options)
     }
     private lazy var channelHeading = NativeSidebarHeading(title: heading, actions: [create, options], disclosure: true)
+    /// Web's voice panel: the account row floats in its own bordered card,
+    /// 42 points tall and 16 above the bottom like the message field beside it.
+    private let accountPanel = NativeView(NSColor(CaperTheme.raised))
     private let accountAvatar = NativeAvatar()
     private let accountPresence = CALayer()
     private let accountName = NativeStyle.label("", size: 13)
@@ -137,14 +140,16 @@ import CaperCore
         super.init()
         [railScroll, sidebar].forEach { addSubview($0) }
         railScroll.documentView = rail; railScroll.drawsBackground = false
-        [space, close, channels, sectionsDivider, directs, updateButton, accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
+        [space, close, channels, sectionsDivider, directs, updateButton, accountPanel, accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
+        accountPanel.layer?.cornerRadius = 8; accountPanel.layer?.borderWidth = 1
+        accountPanel.layer?.borderColor = NativeStyle.border.cgColor
         updateButton.isHidden = true
         updateButton.setAccessibilityIdentifier("desktop-update-action")
         updateButton.toolTip = "Review the update before restarting Caper."
         updateButton.focusChanged = { [weak self] focused in self?.updateShine.focusChanged(focused) }
         sidebar.layer?.addSublayer(accountPresence)
         accountPresence.cornerRadius = 5; accountPresence.borderWidth = 2
-        accountPresence.borderColor = NativeStyle.sidebar.cgColor
+        accountPresence.borderColor = NSColor(CaperTheme.raised).cgColor
         accountName.setAccessibilityElement(false)
         newMessage.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
         newMessage.imagePosition = .imageLeft; newMessage.alignment = .left
@@ -211,9 +216,9 @@ import CaperCore
         close.isHidden = !narrow
         close.frame = NSRect(x: width - 44, y: 8, width: 28, height: 34)
         space.frame = NSRect(x: 16, y: 8, width: width - (narrow ? 64 : 32), height: 34)
-        // The update button sits between the lists and the account row.
-        let reserved: CGFloat = updateButton.isHidden ? 0 : 52
-        let footer = max(50, bounds.height - 62 - reserved)
+        // The update button sits between the lists and the account panel.
+        let panelTop = bounds.height - 16 - 42
+        let footer = max(50, panelTop - (updateButton.isHidden ? 8 : 52))
         let available = max(0, footer - 50 - 12)
         sectionsDivider.update(available: available, share: draggedChannelsShare ?? preferredChannelsShare)
         // Whole points: a fractional split makes NSScrollView snap its clip view
@@ -223,21 +228,23 @@ import CaperCore
         sectionsDivider.frame = NSRect(x: 0, y: channels.frame.maxY, width: width, height: 12)
         directs.frame = NSRect(x: 0, y: sectionsDivider.frame.maxY, width: width, height: max(0, available - channelHeight))
         channels.layoutRows(); directs.layoutRows()
-        updateButton.frame = NSRect(x: 8, y: footer + 8, width: width - 16, height: 36)
+        updateButton.frame = NSRect(x: 12, y: footer + 8, width: width - 24, height: 36)
         updateShine.layout()
-        let row = footer + reserved
-        account.frame = NSRect(x: 16, y: row + 8, width: width - 156, height: 36)
-        accountAvatar.frame = NSRect(x: 16, y: row + 11, width: 30, height: 30)
+        accountPanel.frame = NSRect(x: 12, y: footer + (updateButton.isHidden ? 8 : 52), width: width - 24, height: 42)
+        // Controls sit 4 points inside the panel's 1-point border, as web's call-account.
+        let row = accountPanel.frame.minY + 5, right = accountPanel.frame.maxX - 5
+        settings.frame = NSRect(x: right - 28, y: row, width: 28, height: 32)
+        outputOptions.frame = NSRect(x: settings.frame.minX - 18, y: row, width: 16, height: 32)
+        deafen.frame = NSRect(x: outputOptions.frame.minX - 28, y: row, width: 28, height: 32)
+        inputOptions.frame = NSRect(x: deafen.frame.minX - 18, y: row, width: 16, height: 32)
+        mute.frame = NSRect(x: inputOptions.frame.minX - 28, y: row, width: 28, height: 32)
+        account.frame = NSRect(x: accountPanel.frame.minX + 5, y: row, width: max(0, mute.frame.minX - 4 - accountPanel.frame.minX - 5), height: 32)
+        accountAvatar.frame = NSRect(x: account.frame.minX + 4, y: row + 1, width: 30, height: 30)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         accountPresence.frame = NSRect(x: accountAvatar.frame.maxX - 8, y: accountAvatar.frame.maxY - 8, width: 10, height: 10)
         CATransaction.commit()
-        accountName.frame = NSRect(x: 53, y: row + 17, width: max(0, width - 197), height: 20)
+        accountName.frame = NSRect(x: accountAvatar.frame.maxX + 6, y: row + 6, width: max(0, account.frame.maxX - accountAvatar.frame.maxX - 10), height: 20)
         accountName.isHidden = account.frame.width < 76
-        mute.frame = NSRect(x: width - 138, y: row + 10, width: 28, height: 32)
-        inputOptions.frame = NSRect(x: width - 110, y: row + 10, width: 16, height: 32)
-        deafen.frame = NSRect(x: width - 92, y: row + 10, width: 28, height: 32)
-        outputOptions.frame = NSRect(x: width - 64, y: row + 10, width: 16, height: 32)
-        settings.frame = NSRect(x: width - 46, y: row + 10, width: 28, height: 32)
     }
 
     private func render() {

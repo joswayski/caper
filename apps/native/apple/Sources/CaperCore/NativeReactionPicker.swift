@@ -109,7 +109,9 @@ import AppKit
     override func loadView() { view = button }
     func configure(_ entry: EmojiCatalogEntry, select: @escaping (String) -> Void) {
         _ = view
-        button.title = entry.name; button.imagePosition = .imageOnly
+        // No title: AppKitKitButton redraws it over the emoji on hover, as on
+        // the category tabs. The name stays the label and tooltip (web's title).
+        button.imagePosition = .imageOnly
         button.setAccessibilityIdentifier("emoji-\(entry.id)")
         button.image = EmojiArtwork.image(for: entry).map { NSImage(cgImage: $0, size: NSSize(width: 30, height: 30)) }
         button.setAccessibilityLabel(entry.name); button.toolTip = entry.name

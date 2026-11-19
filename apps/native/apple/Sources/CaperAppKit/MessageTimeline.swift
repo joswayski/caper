@@ -220,6 +220,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         }
         contentView.scroll(to: NSPoint(x: 0, y: offset()))
         reflectScrolledClipView(contentView)
+        rows.values.forEach { $0.refreshHover() }
         // These are real, selectable NSTextViews/buttons, not label-only mirrors.
         document.setAccessibilityChildren(needed.compactMap { rows[ids[$0]] })
         let visible = Set(needed.filter {
@@ -751,8 +752,17 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         let tracking = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
         self.tracking = tracking; addTrackingArea(tracking)
     }
-    override func mouseEntered(with event: NSEvent) { hovered = true; updateControlsVisibility() }
-    override func mouseExited(with event: NSEvent) { hovered = false; updateControlsVisibility() }
+    override func mouseEntered(with event: NSEvent) { refreshHover() }
+    override func mouseExited(with event: NSEvent) { refreshHover() }
+    /// AppKit sends no mouseExited when scrolling moves a row out from under a
+    /// still pointer, so its scroll view re-reads the pointer after each move.
+    /// Like the tracking area, it waits while another window (a picker) is key.
+    func refreshHover() {
+        guard let window, window.isKeyWindow else { return }
+        let inside = visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        guard inside != hovered else { return }
+        hovered = inside; updateControlsVisibility()
+    }
     private func updateControlsVisibility() { controls.alphaValue = hovered || controls.hasFocus ? 1 : 0 }
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let message else { return nil }; return messageMenu?(message, self)
