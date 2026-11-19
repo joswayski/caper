@@ -4,6 +4,7 @@
 //! menus on right-click, and muted ones show a bell-slash. A child of `app`.
 
 use super::{App, State, popup};
+use crate::images::Icon;
 use caper_client::model::NotificationLevel;
 use caper_client::notifications::{self, Change, Scope};
 use caper_client::os_notifications::{Alert, Route};
@@ -111,6 +112,26 @@ impl App {
         self.ui.window.insert_action_group("notify", Some(&group));
     }
 
+    /// A sidebar row's options (…) button, named `name`, opening the same
+    /// menu as a right-click. Shown while the row is hovered, selected or
+    /// focused (`.row-options`). No tooltip: the sidebar is rebuilt while
+    /// the menu is open, and the new button's tip would draw over it.
+    pub(super) fn options_button(self: &Rc<Self>, name: &str, scope: &Scope) -> gtk::Button {
+        let button: gtk::Button = crate::app::named("GtkButton", name);
+        button.set_child(Some(&self.images.icon_image(Icon::More, "#b9bcbe", 16)));
+        button.add_css_class("flat");
+        button.add_css_class("row-action");
+        button.add_css_class("row-options");
+        button.set_valign(gtk::Align::Center);
+        let (weak, scope) = (Rc::downgrade(self), scope.clone());
+        button.connect_clicked(move |button| {
+            if let Some(app) = weak.upgrade() {
+                app.scope_menu(&scope, button.upcast_ref());
+            }
+        });
+        button
+    }
+
     /// Right-click opens `scope`'s Notifications and Mute menu.
     pub(super) fn scope_menu_on(self: &Rc<Self>, widget: &impl IsA<gtk::Widget>, scope: Scope) {
         let click = gtk::GestureClick::new();
@@ -125,7 +146,7 @@ impl App {
         widget.add_controller(click);
     }
 
-    pub(super) fn scope_menu(self: &Rc<Self>, scope: &Scope, anchor: &gtk::Widget) {
+    fn scope_menu(self: &Rc<Self>, scope: &Scope, anchor: &gtk::Widget) {
         let menu = {
             let state = self.state.borrow();
             let menu = gio::Menu::new();
