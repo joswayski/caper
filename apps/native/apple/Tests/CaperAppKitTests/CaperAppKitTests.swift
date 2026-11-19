@@ -3286,7 +3286,8 @@ import XCTest
             resize(app, width: width)
             XCTAssertTrue(entry.waitForExistence(timeout: 5)); XCTAssertEqual(entry.label, "Notifications")
             XCTAssertEqual(app.buttons.matching(identifier: "activity-inbox").count, 1)
-            composer.click()
+            // The click lands on the field's one centred line; the suffix below appends.
+            composer.click(); composer.typeKey(.downArrow, modifierFlags: .command)
             entry.hover(); app.buttons["selected-space-name"].hover(); entry.click()
             XCTAssertTrue(dialog.waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons["activity-open-inbox0000002"].waitForExistence(timeout: 10))
@@ -4040,7 +4041,9 @@ import XCTest
         XCTAssertEqual(list.frame.width, 307, accuracy: 3)
         let savedWidth = list.frame.width
         XCTAssertEqual(composer.value as? String, "TEST FIXTURE — resize keeps this draft")
-        composer.click(); composer.typeText(" and still edits")
+        // A click on the field's middle lands on its one centred line, so put
+        // the caret after the draft before appending, as a person would.
+        composer.click(); composer.typeKey(.downArrow, modifierFlags: .command); composer.typeText(" and still edits")
         XCTAssertEqual(composer.value as? String, "TEST FIXTURE — resize keeps this draft and still edits")
         app.buttons["Close member list"].click()
         app.terminate()

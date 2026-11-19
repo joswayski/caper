@@ -784,8 +784,13 @@ public final class ComposerTextView: NSTextView {
     public override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if string.isEmpty, !placeholder.isEmpty {
-            (placeholder as NSString).draw(at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height),
-                withAttributes: [.font: font ?? NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor(CaperTheme.muted)])
+            // One line, ending in an ellipsis when a narrow field can't fit it.
+            let font = font ?? NSFont.systemFont(ofSize: 14)
+            let style = NSMutableParagraphStyle(); style.lineBreakMode = .byTruncatingTail
+            let line = NSRect(x: textContainerInset.width + 5, y: textContainerInset.height,
+                width: max(0, bounds.width - textContainerInset.width * 2 - 10), height: ceil(font.ascender - font.descender + font.leading))
+            (placeholder as NSString).draw(with: line, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                attributes: [.font: font, .foregroundColor: NSColor(CaperTheme.muted), .paragraphStyle: style])
         }
     }
     private func moveVisible(backward: Bool, extending: Bool) {

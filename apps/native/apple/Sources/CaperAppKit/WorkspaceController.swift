@@ -620,7 +620,8 @@ import CaperCore
             emoji.frame.origin.x = gif.isHidden ? fieldX + 42 : fieldX + 76
             send.frame.origin.x = fieldRight - 37
             voiceComposer.button.frame.origin.x = send.frame.minX - 38
-            editorX = fieldX + 1
+            // The draft starts in line with the attach glyph below it.
+            editorX = fieldX + 10; editorRight = fieldRight - 6
         } else {
             attach.frame.origin.x = fieldX + 4
             send.frame.origin.x = fieldRight - 37
