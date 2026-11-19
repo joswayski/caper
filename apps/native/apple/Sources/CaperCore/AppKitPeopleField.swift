@@ -7,7 +7,7 @@ import AppKit
 /// closes the list (without closing the dialog). The list stays closed for a
 /// picked username until the text changes.
 @MainActor final class AppKitPeopleField: NSView, NSTextFieldDelegate {
-    let field = NSTextField()
+    let field = AppKitKitField()
     private let list = NSStackView()
     private let listScroll = NSScrollView()
     private var listHeight: NSLayoutConstraint!
@@ -30,8 +30,6 @@ import AppKit
         translatesAutoresizingMaskIntoConstraints = false
         field.translatesAutoresizingMaskIntoConstraints = false
         field.placeholderString = placeholder
-        field.font = AppKitKit.font(14)
-        field.bezelStyle = .roundedBezel
         field.isAutomaticTextCompletionEnabled = false
         field.delegate = self
         field.setAccessibilityIdentifier(identifier)
@@ -56,7 +54,7 @@ import AppKit
         let listTop = listScroll.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 6)
         NSLayoutConstraint.activate([
             field.leadingAnchor.constraint(equalTo: leadingAnchor), field.trailingAnchor.constraint(equalTo: trailingAnchor),
-            field.topAnchor.constraint(equalTo: topAnchor), field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
+            field.topAnchor.constraint(equalTo: topAnchor),
             listScroll.leadingAnchor.constraint(equalTo: leadingAnchor), listScroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             listTop, listHeight, listScroll.bottomAnchor.constraint(equalTo: bottomAnchor),
             document.leadingAnchor.constraint(equalTo: listScroll.contentView.leadingAnchor),

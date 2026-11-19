@@ -60,7 +60,7 @@ import AppKit
 @MainActor final class AppKitProfileEditor: AppKitSettingsDialog, NSTextFieldDelegate {
     let state: NativeProfileEditing
     private let choose: () -> Void
-    private let username = NSTextField(), displayName = NSTextField()
+    private let username = AppKitKitField(), displayName = AppKitKitField()
     private let hint = AppKitKit.label("", size: 12, color: AppKitKit.muted)
     private let error = AppKitKit.label("", size: 12, color: AppKitKit.error)
     private let unsaved = AppKitKit.label("Unsaved changes", size: 12, color: AppKitKit.muted)
@@ -87,8 +87,7 @@ import AppKit
         let controls = AppKitKit.stack([picture, regenerate], spacing: 8)
         let pictures = NSStackView(views: [art, controls]); pictures.spacing = 16
         for (field, title) in [(username, "Username"), (displayName, "Display name")] {
-            field.font = AppKitKit.font(14); field.delegate = self; field.setAccessibilityLabel(title)
-            field.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
+            field.delegate = self; field.setAccessibilityLabel(title)
         }
         username.nextKeyView = displayName
         save = AppKitKitButton("Save profile", kind: .primary) { [state] in state.save() }

@@ -5,7 +5,7 @@ import AppKit
     private let state: NativeInviteLinks
     private let observation = AppKitObservation()
     private let primary = AppKitKit.stack([], spacing: 8), custom = AppKitKit.stack([], spacing: 10), links = AppKitKit.stack([], spacing: 8)
-    private let expiry = NSTextField(), uses = NSTextField(), unit = NSPopUpButton(), channel = NSPopUpButton()
+    private let expiry = AppKitKitField(), uses = AppKitKitField(), unit = NSPopUpButton(), channel = NSPopUpButton()
     private let expiryError = AppKitKit.label("", size: 12, color: AppKitKit.error), usesError = AppKitKit.label("", size: 12, color: AppKitKit.error), error = AppKitKit.label("", size: 12, color: AppKitKit.error)
     private var create: AppKitKitButton!
     private var started = false
@@ -21,8 +21,8 @@ import AppKit
         let toggle = AppKitKitButton("Custom links") { [state] in state.expanded.toggle() }; toggle.setAccessibilityIdentifier("space-custom-links"); add(toggle)
         add(custom)
         for (field, value, placeholder, label, id) in [(expiry, state.expiryNumber, "30", "Expire after", "invite-link-expiry-number"), (uses, state.maxUses, "No limit", "Max uses", "invite-link-max-uses")] {
-            field.stringValue = value; field.placeholderString = placeholder; field.font = AppKitKit.font(13); field.delegate = self
-            field.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true; field.setAccessibilityLabel(label); field.setAccessibilityIdentifier(id)
+            field.stringValue = value; field.placeholderString = placeholder; field.delegate = self
+            field.setAccessibilityLabel(label); field.setAccessibilityIdentifier(id)
         }
         unit.addItems(withTitles: InviteExpiryUnit.allCases.map(\.label)); unit.selectItem(at: InviteExpiryUnit.allCases.firstIndex(of: state.expiryUnit) ?? 0)
         unit.target = self; unit.action = #selector(unitChanged); unit.setAccessibilityIdentifier("invite-link-expiry-unit"); unit.setAccessibilityLabel("Expiry unit")

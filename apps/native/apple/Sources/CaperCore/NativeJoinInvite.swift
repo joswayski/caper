@@ -45,7 +45,7 @@ import AppKit
 
 @MainActor final class AppKitJoinInvite: AppKitSettingsDialog, NSTextFieldDelegate {
     private let state: NativeJoinInvite
-    private let field = NSTextField(string: "")
+    private let field = AppKitKitField()
     private let failure = AppKitKit.label("", size: 12, color: AppKitKit.error)
     private let preview = AppKitKit.stack([], spacing: 6)
     private var previewID: String?
@@ -56,8 +56,6 @@ import AppKit
         state = NativeJoinInvite(model: model, opened: opened, close: close)
         super.init(title: "Join with invite link", detail: "Paste it below to join!", closeLabel: "Close invite link", identifier: "join-invite", close: close)
         field.placeholderString = "caper.chat/invite/AbCdE12345"; field.stringValue = state.link; field.delegate = self
-        field.font = AppKitKit.font(13); field.textColor = AppKitKit.text
-        field.heightAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
         field.setAccessibilityLabel("Invite link"); field.setAccessibilityIdentifier("invite-link-field")
         failure.setAccessibilityIdentifier("invite-link-error"); preview.setAccessibilityIdentifier("invite-preview")
         submit = AppKitKitButton("Continue", kind: .primary) { [state] in state.submit() }; submit.keyEquivalent = "\r"

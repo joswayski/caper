@@ -87,7 +87,7 @@ import WebKit
     private let model: KlipyPickerModel
     private let close: () -> Void
     private let select: (ChatGif, String) -> Void
-    private let search = NSTextField()
+    private let search = AppKitKitField(height: 36)
     private let table = NSTableView()
     private let scroll = NSScrollView()
     private let status = AppKitKit.label("")

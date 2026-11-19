@@ -402,6 +402,68 @@ import SwiftUI
     @objc private func toggled() { changed(toggle.isOn) }
 }
 
+/// Caper's single-line text field, as web's inputs: composer fill, a 1-point
+/// border and 8-point corners, and a terracotta border while it is edited,
+/// in place of the system bezel and blue focus ring.
+@MainActor public final class AppKitKitField: NSTextField {
+    private let height: CGFloat
+
+    /// `height`: 42 in dialogs, as on web; pickers use a shorter search field.
+    /// `fill` replaces the composer fill, e.g. surface on the sign-in page.
+    public init(height: CGFloat = 42, size: CGFloat = 14, fill: NSColor? = nil) {
+        self.height = height
+        super.init(frame: .zero)
+        isBezeled = false; isBordered = false; drawsBackground = false
+        focusRingType = .none
+        font = AppKitKit.font(size, weight: .medium); textColor = AppKitKit.text
+        usesSingleLineMode = true; cell?.wraps = false; cell?.isScrollable = true
+        wantsLayer = true
+        layer?.cornerRadius = 8; layer?.borderWidth = 1
+        layer?.backgroundColor = (fill ?? AppKitKit.composer).cgColor
+        layer?.borderColor = AppKitKit.border.cgColor
+    }
+    public required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    public override class var cellClass: AnyClass? {
+        get { AppKitKitFieldCell.self }
+        set {}
+    }
+    public override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height) }
+
+    public override func becomeFirstResponder() -> Bool {
+        // A dialog focuses its field as it appears, before its first layout.
+        // The editor would be seated in the field's empty bounds and keep that
+        // corner as the field grows, so give the field its size first.
+        window?.layoutIfNeeded()
+        let became = super.becomeFirstResponder()
+        syncFocus()
+        return became
+    }
+    public override func textDidEndEditing(_ notification: Notification) {
+        super.textDidEndEditing(notification)
+        syncFocus()
+    }
+    /// Read once the field editor has settled: Return ends editing and starts it again.
+    private func syncFocus() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.layer?.borderColor = (self.currentEditor() != nil ? AppKitKit.terracotta : AppKitKit.border).cgColor
+        }
+    }
+}
+
+/// Centres the field's one line vertically and insets it 11 points, as web's inputs.
+private final class AppKitKitFieldCell: NSTextFieldCell {
+    private static let metrics = NSLayoutManager()
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        // The cell already draws its text 2 points in.
+        var area = super.drawingRect(forBounds: rect.insetBy(dx: 9, dy: 0))
+        let line = ceil(Self.metrics.defaultLineHeight(for: font ?? .systemFont(ofSize: NSFont.systemFontSize)))
+        if area.height > line { area.origin.y += floor((area.height - line) / 2); area.size.height = line }
+        return area
+    }
+}
+
 /// A flipped document view, so scroll content starts at the top.
 final class AppKitKitFlippedView: NSView {
     override var isFlipped: Bool { true }

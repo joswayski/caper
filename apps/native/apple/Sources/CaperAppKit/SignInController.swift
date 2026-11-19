@@ -5,10 +5,12 @@ import CaperCore
     private let model: AppModel
     private let observation = NativeObservation()
     private let heading = NativeStyle.label("Welcome to Caper", size: 30, bold: true)
-    private let email = NSTextField()
-    private let code = NSTextField()
-    private let username = NSTextField()
-    private let name = NSTextField()
+    private let email = SignInController.field()
+    private let code = SignInController.field()
+    private let username = SignInController.field()
+    private let name = SignInController.field()
+    /// Web's sign-in input: surface fill on the blackout page, 16-point text.
+    private static func field() -> AppKitKitField { AppKitKitField(height: 48, size: 16, fill: NSColor(CaperTheme.surface)) }
     private let error = NativeStyle.label("")
     private lazy var submit = NativeButton("Continue", primary: true) { [weak self] in self?.submitForm() }
     private lazy var resend: NativeButton = NativeButton("Resend code") { [weak self] in
@@ -32,7 +34,6 @@ import CaperCore
                                      (username, "Username"), (name, "Display name")] {
             field.placeholderString = placeholder
             field.setAccessibilityLabel(placeholder)
-            field.font = NativeStyle.font(16)
             field.delegate = self
             field.target = self; field.action = #selector(enterPressed)
             view.addSubview(field)
@@ -53,13 +54,13 @@ import CaperCore
         let x = (view.bounds.width - width) / 2
         let fields = [email, code, username, name].filter { !$0.isHidden }
         let controls = [resend, changeEmail].filter { !$0.isHidden }
-        let height = 64 + CGFloat(fields.count) * 48 + 52 + CGFloat(controls.count) * 42 + 80
+        let height = 64 + CGFloat(fields.count) * 60 + 52 + CGFloat(controls.count) * 42 + 80
         var y = max(40, (view.bounds.height - height) / 2)
         heading.frame = NSRect(x: x, y: y, width: min(400, view.bounds.width - x - 24), height: 44)
         y += 64
         for field in fields {
-            field.frame = NSRect(x: x, y: y, width: width, height: 36)
-            y += 48
+            field.frame = NSRect(x: x, y: y, width: width, height: 48)
+            y += 60
         }
         submit.frame = NSRect(x: x, y: y, width: width, height: 40)
         y += 52

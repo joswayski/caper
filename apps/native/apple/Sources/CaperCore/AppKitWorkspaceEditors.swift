@@ -3,7 +3,7 @@ import AppKit
 
 @MainActor final class AppKitSpaceEditor: AppKitSettingsDialog, NSTextFieldDelegate {
     private let state: NativeSpaceEditing
-    private let name = NSTextField()
+    private let name = AppKitKitField()
     private let people = AppKitPeopleField(placeholder: "Exact username", identifier: "space-invite-username", listIdentifier: "space-invite-suggestions", normalize: WorkspaceValidation.normalizeUsername)
     private let membership = AppKitKit.stack([], spacing: 12)
     private let results = AppKitKit.label("", size: 12), failure = AppKitKit.label("", size: 12, color: AppKitKit.error)
@@ -19,8 +19,8 @@ import AppKit
         super.init(title: state.title, detail: inviteOnly ? model.detail?.space.name ?? "" : managing ? "Only the owner can change this space and its membership." : "",
             closeLabel: "Close", identifier: "space-editor", close: close)
         subviews.compactMap { $0 as? NSScrollView }.first?.setAccessibilityIdentifier("space-settings-scroll")
-        name.stringValue = state.name; name.placeholderString = "Gaming nights"; name.font = AppKitKit.font(14); name.delegate = self
-        name.setAccessibilityLabel("Space name"); name.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
+        name.stringValue = state.name; name.placeholderString = "Gaming nights"; name.delegate = self
+        name.setAccessibilityLabel("Space name")
         save = AppKitKitButton(managing ? "Save name" : "Create space", kind: managing ? .secondary : .primary) { [state] in state.save() }
         invite = AppKitKitButton("Invite") { [state] in state.invite() }
         people.changed = { [state] in state.username = $0 }; people.submit = { [state] in state.invite() }
@@ -100,7 +100,7 @@ import AppKit
 
 @MainActor final class AppKitChannelEditor: AppKitSettingsDialog, NSTextFieldDelegate {
     private let state: NativeChannelEditing
-    private let name = NSTextField(), failure = AppKitKit.label("", size: 12, color: AppKitKit.error)
+    private let name = AppKitKitField(), failure = AppKitKit.label("", size: 12, color: AppKitKit.error)
     private let membership = AppKitKit.stack([], spacing: 12), members = AppKitKit.stack([], spacing: 8), invitations = AppKitKit.stack([], spacing: 8)
     private let people = AppKitPeopleField(placeholder: "Exact username", identifier: "channel-invite-username", listIdentifier: "channel-member-suggestions", normalize: WorkspaceValidation.normalizeUsername)
     private let memberStatus = AppKitKit.label("", size: 12), memberFailure = AppKitKit.label("", size: 12, color: AppKitKit.error)
@@ -116,8 +116,8 @@ import AppKit
         state = NativeChannelEditing(model: model, channel: channel, close: close)
         super.init(title: channel == nil ? "Create a channel" : "Channel settings", detail: "", closeLabel: "Close", identifier: "channel-editor", close: close)
         subviews.compactMap { $0 as? NSScrollView }.first?.setAccessibilityIdentifier("channel-settings-scroll")
-        name.stringValue = state.name; name.placeholderString = "project-updates"; name.font = AppKitKit.font(14); name.delegate = self
-        name.setAccessibilityLabel("Channel name"); name.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
+        name.stringValue = state.name; name.placeholderString = "project-updates"; name.delegate = self
+        name.setAccessibilityLabel("Channel name")
         privacy = AppKitKitSwitchRow(title: "Private channel", detail: nil, identifier: "channel-private") { [state] in state.privateChannel = $0; CaperEffects.shared.toggle($0) }
         invite = AppKitKitButton("Invite") { [state] in state.invite() }; people.changed = { [state] in state.username = $0 }; people.submit = { [state] in state.invite() }
         retry = AppKitKitButton("Retry loading members") { [state] in Task { await state.loadMembers() } }

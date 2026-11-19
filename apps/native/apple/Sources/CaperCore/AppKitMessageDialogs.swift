@@ -59,7 +59,7 @@ import SwiftUI
 
 @MainActor final class AppKitForwardPicker: AppKitSettingsDialog, NSTextFieldDelegate {
     private let state: NativeForwardPicker
-    private let search = NSTextField()
+    private let search = AppKitKitField(height: 36)
     private let destinations = AppKitKit.stack([], spacing: 4)
     private var rows: [String: AppKitKitButton] = [:]
     private var visible: [String] = []
@@ -76,8 +76,6 @@ import SwiftUI
         super.init(title: "Forward message", detail: "Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.",
             closeLabel: "Close", identifier: "forward-picker", close: close)
         search.placeholderString = "Find a space, channel or DM"; search.delegate = self
-        search.font = AppKitKit.font(14); search.textColor = AppKitKit.text
-        search.bezelStyle = .roundedBezel; search.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
         search.setAccessibilityLabel("Find a space, channel or DM")
         composer = NativeDialogComposer(text: Binding(get: { state.note }, set: { state.note = $0 }),
             placeholder: "Add a note (optional)", identifier: "forward-note", height: 64)

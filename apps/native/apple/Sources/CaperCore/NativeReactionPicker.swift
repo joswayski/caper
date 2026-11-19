@@ -25,7 +25,7 @@ import AppKit
     private let pickerTitle: String
     private let close: () -> Void
     private let select: (String) -> Void
-    private let search = NSTextField()
+    private let search = AppKitKitField(height: 36)
     private let heading = AppKitKit.label("", size: 12)
     private let empty = AppKitKit.label("No emoji found. Try another search.")
     private let grid = NSCollectionView()
