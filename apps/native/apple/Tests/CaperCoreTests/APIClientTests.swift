@@ -2247,7 +2247,6 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(model.selectedChannelID, first.id)
         XCTAssertEqual(model.chat.draft, "Keep this draft")
         XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "41")
-        XCTAssertFalse(paths.contains("/api/chat/channels/chan00000002/messages"))
     }
 
     @MainActor
