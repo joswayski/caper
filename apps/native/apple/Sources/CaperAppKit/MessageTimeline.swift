@@ -27,6 +27,12 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     private var focusedID: String?
     private var pendingFocus: String?
     var inThread = false
+    /// The first unread message of this visit: it wears the "New messages"
+    /// line and starts a new author group, as on every other client. Set it
+    /// before `update`.
+    var newMessagesID: String?
+    /// The divider the rows were last laid out with.
+    private var shownNewMessagesID: String?
     var canLoadOlder = false
     var loadOlder: (() -> Void)?
     var visibleMessagesChanged: ((Set<String>) -> Void)?
@@ -82,6 +88,16 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
                 || continues(at: oldIndex, in: entries) != continues(at: index, in: next) || self.reactionErrors[id] != reactionErrors[id]
                 || self.pinErrors[id] != pinErrors[id] || self.pendingPins.contains(id) != pendingPins.contains(id)
                 || self.canInteract != canInteract { invalid.insert(id) }
+        }
+        if shownNewMessagesID != newMessagesID {
+            // The divider's row gains or loses its line and header, and the row
+            // above it its hairline of padding.
+            for (id, list) in [(shownNewMessagesID, entries), (newMessagesID, next)] {
+                guard let id, let index = list.firstIndex(where: { key($0) == id }) else { continue }
+                invalid.insert(id)
+                if index > 0 { invalid.insert(key(list[index - 1])) }
+            }
+            shownNewMessagesID = newMessagesID
         }
         if self.pending != pending, let pending { invalid.insert("pending-\(pending.id)") }
         self.pending = pending
@@ -139,7 +155,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     /// hairline of padding below (web's `chat-message-continued`).
     private func continues(at index: Int, in list: [TimelineEntry]) -> Bool {
         guard index + 1 < list.count, case .message(let message) = list[index], case .message(let next) = list[index + 1],
-              !BlockedMessages.isHidden(next, blocked: blocked, viewerID: viewerID) else { return false }
+              next.id != newMessagesID, !BlockedMessages.isHidden(next, blocked: blocked, viewerID: viewerID) else { return false }
         // The root is not a predecessor of its first reply.
         return NativePresentation.grouped(next, after: inThread && message.threadRootId == nil ? nil : message, inThread: inThread)
     }
@@ -298,8 +314,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             let revealedBlocked = BlockedMessages.isHidden(message, blocked: blocked, viewerID: viewerID)
             // The root is not a predecessor of its first reply.
             let prior = inThread && predecessor?.threadRootId == nil ? nil : predecessor
-            row.configure(message, grouped: NativePresentation.grouped(message, after: prior, inThread: inThread),
-                continued: continues(at: index, in: entries), day: revealedBlocked ? nil : day,
+            let newMessages = message.id == newMessagesID && !revealedBlocked
+            row.configure(message, grouped: !newMessages && NativePresentation.grouped(message, after: prior, inThread: inThread),
+                continued: continues(at: index, in: entries), day: revealedBlocked ? nil : day, newMessages: newMessages,
                 viewerID: viewerID, revealedBlocked: revealedBlocked, canInteract: canInteract, inThread: inThread,
                 reactionError: reactionErrors[message.id], pinError: pinErrors[message.id], pinPending: pendingPins.contains(message.id), react: react)
         case .blocked(let run):
@@ -393,6 +410,11 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     private let day = NativeStyle.label("", size: 10, bold: true)
     private let dayLeading = CALayer()
     private let dayTrailing = CALayer()
+    /// "New messages": a terracotta line above the first unread message,
+    /// under its date divider when it has one.
+    private let unread = NativeStyle.label("New messages", size: 11)
+    private let unreadLeading = CALayer()
+    private let unreadTrailing = CALayer()
     private let mentionTint = CALayer()
     private let mentionBar = CALayer()
     private let blockedBar = CALayer()
@@ -410,11 +432,14 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     private var continued = false
     private var viewerID: String?
     private var dayHeight: CGFloat { day.isHidden ? 0 : ceil(day.cell?.cellSize.height ?? 14) + 16 }
+    private var unreadHeight: CGFloat { unread.isHidden ? 0 : ceil(unread.cell?.cellSize.height ?? 15) + 16 }
+    /// The dividers above the message: its day, then the unread line.
+    private var dividerHeight: CGFloat { dayHeight + unreadHeight }
     var textTop: CGFloat {
         guard pending == nil else { return 0 }
         // A grouped row sits right under its author's previous one, as on
         // web; its hover actions float over the row's top edge.
-        return dayHeight + pinHeight + quoteHeight + (grouped ? 2 : compact ? 70 : 32)
+        return dividerHeight + pinHeight + quoteHeight + (grouped ? 2 : compact ? 70 : 32)
     }
     /// Space under the row: a hairline when the next row continues the run.
     private var bottomPadding: CGFloat { continued ? 2 : 12 }
@@ -428,6 +453,13 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         day.alignment = .center
         dayLeading.backgroundColor = NativeStyle.border.cgColor
         dayTrailing.backgroundColor = NativeStyle.border.cgColor
+        unread.font = NSFont(name: "Satoshi-Medium", size: 11) ?? NativeStyle.font(11)
+        unread.textColor = NativeStyle.accent
+        unread.isHidden = true
+        unread.alignment = .center
+        unread.setAccessibilityIdentifier("channel-new-messages")
+        unreadLeading.backgroundColor = NativeStyle.accent.cgColor
+        unreadTrailing.backgroundColor = NativeStyle.accent.cgColor
         mentionTint.backgroundColor = NativeStyle.accent.withAlphaComponent(0.08).cgColor
         mentionBar.backgroundColor = NativeStyle.accent.cgColor
         blockedBar.backgroundColor = NativeStyle.border.cgColor
@@ -437,7 +469,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         blockedToggle.layer?.backgroundColor = NSColor.clear.cgColor
         blockedToggle.setAccessibilityIdentifier("blocked-run-toggle")
         blockedToggle.isHidden = true
-        [blockedBar, mentionTint, mentionBar, dayLeading, dayTrailing].forEach { layer?.addSublayer($0) }
+        [blockedBar, mentionTint, mentionBar, dayLeading, dayTrailing, unreadLeading, unreadTrailing].forEach { layer?.addSublayer($0) }
         body.isEditable = false; body.isSelectable = true
         body.isRichText = true; body.drawsBackground = false
         body.textContainerInset = .zero
@@ -473,7 +505,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         thread.isHidden = true; thread.alignment = .left
         thread.font = NativeStyle.font(11, bold: true); thread.contentTintColor = NativeStyle.accent
         thread.layer?.backgroundColor = NSColor.clear.cgColor
-        [body, author, timestamp, avatar, day, authorAction, avatarAction, blockedToggle, edited, controls,
+        [body, author, timestamp, avatar, day, unread, authorAction, avatarAction, blockedToggle, edited, controls,
             reactionFailure, retryReaction, dismissReaction, pinnedBy, pinFailure, retryPin, dismissPin, thread].forEach { addSubview($0) }
         controls.action = { [weak self] action, anchor in
             guard let self, let message = self.message else { return }
@@ -502,7 +534,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         // Pending commands have a separate identity from server messages;
         // this cell is never reused as a confirmed or blocked row.
         subviews.forEach { $0.isHidden = true }
-        [mentionTint, mentionBar, blockedBar, dayLeading, dayTrailing].forEach { $0.isHidden = true }
+        [mentionTint, mentionBar, blockedBar, dayLeading, dayTrailing, unreadLeading, unreadTrailing].forEach { $0.isHidden = true }
         attachments?.removeFromSuperview()
         attachments = make?(pending)
         if let attachments {
@@ -512,8 +544,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         setAccessibilityIdentifier("pending-row-\(pending.id)")
     }
 
-    func configure(_ message: ChatMessage, grouped: Bool, continued: Bool = false, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, inPins: Bool = false, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
-        guard self.message != message || self.grouped != grouped || self.continued != continued || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
+    func configure(_ message: ChatMessage, grouped: Bool, continued: Bool = false, day: String?, newMessages: Bool = false, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, inPins: Bool = false, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
+        guard self.message != message || self.grouped != grouped || self.continued != continued || self.day.stringValue != (day ?? "") || unread.isHidden == newMessages || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
         let range = body.selectedRange()
         // Another message, or edited text, hides its spoilers again.
         if self.message?.id != message.id || self.message?.content.text != message.content.text { revealedSpoilers = [] }
@@ -572,6 +604,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         self.day.stringValue = day ?? ""
         self.day.isHidden = day == nil
         self.day.setAccessibilityIdentifier("date-\(message.id)")
+        unread.isHidden = !newMessages
         let mentionsViewer = !message.isDeleted && NativePresentation.mentionsViewer(message, viewerID: viewerID)
         setAccessibilityHelp(mentionsViewer ? "Mentions you" : nil)
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -688,6 +721,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         blockedRun = run; message = nil; grouped = true; continued = false
         self.day.stringValue = day ?? ""; self.day.isHidden = day == nil
         self.day.setAccessibilityIdentifier("date-\(run.id)")
+        unread.isHidden = true
         setAccessibilityIdentifier(run.id)
         setAccessibilityHelp(nil)
         body.isHidden = true; body.string = ""
@@ -728,7 +762,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         let controlsWidth = min(controls.preferredWidth, max(30, width - 30))
         // A wrapped hover bar must not steal the next grouped row's hit area.
         return controlsWidth < controls.preferredWidth
-            ? max(height, dayHeight + pinHeight + quoteHeight + controls.height(for: controlsWidth) + 11) : height
+            ? max(height, dividerHeight + pinHeight + quoteHeight + controls.height(for: controlsWidth) + 11) : height
     }
 
     private var reactionFrames: [NSRect] {
@@ -746,13 +780,19 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     override func layout() {
         super.layout()
         if pending != nil { attachments?.frame = bounds; return }
-        let inset = dayHeight
+        let dayInset = dayHeight, inset = dividerHeight
         let dayWidth = min(ceil(day.cell?.cellSize.width ?? 0), max(0, bounds.width - 36))
-        day.frame = NSRect(x: (bounds.width - dayWidth) / 2, y: 8, width: dayWidth, height: max(0, inset - 16))
+        day.frame = NSRect(x: (bounds.width - dayWidth) / 2, y: 8, width: dayWidth, height: max(0, dayInset - 16))
+        let unreadWidth = min(ceil(unread.cell?.cellSize.width ?? 0), max(0, bounds.width - 32))
+        unread.frame = NSRect(x: (bounds.width - unreadWidth) / 2, y: dayInset + 8, width: unreadWidth, height: max(0, inset - dayInset - 16))
         CATransaction.begin(); CATransaction.setDisableActions(true)
         dayLeading.isHidden = day.isHidden; dayTrailing.isHidden = day.isHidden
-        dayLeading.frame = NSRect(x: 18, y: floor(inset / 2), width: max(0, day.frame.minX - 28), height: 1)
-        dayTrailing.frame = NSRect(x: day.frame.maxX + 10, y: floor(inset / 2), width: max(0, bounds.width - day.frame.maxX - 28), height: 1)
+        dayLeading.frame = NSRect(x: 18, y: floor(dayInset / 2), width: max(0, day.frame.minX - 28), height: 1)
+        dayTrailing.frame = NSRect(x: day.frame.maxX + 10, y: floor(dayInset / 2), width: max(0, bounds.width - day.frame.maxX - 28), height: 1)
+        unreadLeading.isHidden = unread.isHidden; unreadTrailing.isHidden = unread.isHidden
+        let unreadLine = dayInset + floor((inset - dayInset) / 2)
+        unreadLeading.frame = NSRect(x: 16, y: unreadLine, width: max(0, unread.frame.minX - 24), height: 1)
+        unreadTrailing.frame = NSRect(x: unread.frame.maxX + 8, y: unreadLine, width: max(0, bounds.width - unread.frame.maxX - 24), height: 1)
         // Date dividers remain neutral even when the following message mentions you.
         mentionTint.frame = NSRect(x: 0, y: inset, width: bounds.width, height: max(0, bounds.height - inset))
         mentionBar.frame = NSRect(x: 0, y: inset, width: 3, height: max(0, bounds.height - inset))

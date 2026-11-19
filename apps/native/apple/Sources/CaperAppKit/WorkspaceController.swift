@@ -377,6 +377,7 @@ import CaperCore
             let visible = (root.flatMap { id in projected.first { $0.id == id }.map { [$0] } } ?? [])
                 + projected.filter { ids.contains($0.id) }
             let identity = [self.dialogs.conversationContext, root ?? "channel"].joined(separator: ":")
+            self.timeline.newMessagesID = self.inThread ? nil : self.model.channelNewMessagesDividerID()
             self.timeline.update(visible, conversationID: identity,
                 viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs,
                 pending: chat.pendingMessage.flatMap { $0.threadRootId == root ? $0 : nil },

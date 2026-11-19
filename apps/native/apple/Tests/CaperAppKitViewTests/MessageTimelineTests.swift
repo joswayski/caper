@@ -674,6 +674,52 @@ import XCTest
         XCTAssertEqual(returned.accessibilitySelectedText(), "👩🏽‍💻", "Recycling preserves selection of unchanged text")
     }
 
+    func testNewMessagesLineSitsAboveTheFirstUnreadMessageAndStartsAnAuthorGroup() throws {
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 600))
+        // One author throughout, so only the line can break the group; the last message opens a new day.
+        let history = (0..<3).map { message($0, author: "maya") } + [message(3, author: "maya", at: "2026-11-06T09:00:00Z")]
+        func update(_ unread: Int?) {
+            timeline.newMessagesID = unread.map { history[$0].id }
+            timeline.update(history, conversationID: "channel")
+            timeline.layoutSubtreeIfNeeded()
+        }
+        func row(_ index: Int) throws -> NSView {
+            try XCTUnwrap(bodies(in: timeline).first { $0.string == history[index].content.text }?.superview)
+        }
+        func label(_ index: Int, where matches: (NSTextField) -> Bool) throws -> NSTextField {
+            try XCTUnwrap(try row(index).subviews.compactMap { $0 as? NSTextField }.first(where: matches))
+        }
+        func line(_ index: Int) throws -> NSTextField { try label(index) { $0.accessibilityIdentifier() == "channel-new-messages" } }
+        func author(_ index: Int) throws -> NSTextField { try label(index) { $0.stringValue == "maya" } }
+        update(nil)
+        let groupedHeight = try row(2).frame.height, continuedHeight = try row(1).frame.height
+        for index in history.indices { XCTAssertTrue(try line(index).isHidden, "Nothing is unread yet") }
+        XCTAssertTrue(try author(2).isHidden, "Consecutive messages from the same author are grouped")
+
+        update(2)
+        XCTAssertEqual(try line(2).stringValue, "New messages")
+        for index in history.indices { XCTAssertEqual(try line(index).isHidden, index != 2, "Only the first unread message wears the line") }
+        XCTAssertTrue(try row(2).bounds.contains(try line(2).frame))
+        XCTAssertFalse(try author(2).isHidden, "The first unread message starts a new author group")
+        XCTAssertGreaterThanOrEqual(try author(2).frame.minY, try line(2).frame.maxY, "The line sits above the message's header")
+        XCTAssertGreaterThan(try row(2).frame.height, groupedHeight)
+        XCTAssertGreaterThan(try row(1).frame.height, continuedHeight, "The row above the line no longer runs into the next one")
+        XCTAssertGreaterThanOrEqual(try row(2).frame.minY, try row(1).frame.maxY)
+
+        update(3)
+        XCTAssertTrue(try line(2).isHidden)
+        XCTAssertTrue(try author(2).isHidden, "Moving the line regroups the message it left")
+        XCTAssertEqual(try row(2).frame.height, groupedHeight, accuracy: 0.5)
+        let day = try label(3) { $0.accessibilityIdentifier() == "date-message-3" }
+        XCTAssertFalse(day.isHidden)
+        XCTAssertGreaterThanOrEqual(try line(3).frame.minY, day.frame.maxY, "The line follows the date divider")
+        XCTAssertGreaterThanOrEqual(try author(3).frame.minY, try line(3).frame.maxY)
+
+        update(nil)
+        for index in history.indices { XCTAssertTrue(try line(index).isHidden) }
+        XCTAssertEqual(try row(1).frame.height, continuedHeight, accuracy: 0.5)
+    }
+
     func testDeletingAPredecessorAndEditingTextRemeasuresTheVisibleRow() throws {
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         let first = message(0, author: "alex")
