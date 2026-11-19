@@ -252,13 +252,15 @@ class MainActivity : ComponentActivity() {
     override fun onUserInteraction() { super.onUserInteraction(); viewModel.reportActivity() }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openFromIntent(intent) }
     // Type to compose, as on Win32: a hardware key no field took (nothing has focus, as after a
-    // click on the history) types into the composer.
-    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        if (super.dispatchKeyEvent(event)) return true
-        if (event.action != android.view.KeyEvent.ACTION_DOWN || event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
-        val character = event.unicodeChar
-        if (character == 0 || Character.isISOControl(character)) return false
-        return viewModel.typeToCompose(String(Character.toChars(character)))
+    // click on the history) types into the composer. Activity only calls onKeyDown for keys no
+    // view consumed (overriding dispatchKeyEvent trips lint's RestrictedApi check).
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (!event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed) {
+            val character = event.unicodeChar
+            if (character != 0 && !Character.isISOControl(character) &&
+                viewModel.typeToCompose(String(Character.toChars(character)))) return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     /** A notification tap, or an invite link from the manifest's VIEW filters. */
