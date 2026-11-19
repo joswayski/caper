@@ -324,8 +324,9 @@ def capture(name: str, expected: str, seconds: int = 20) -> ET.Element:
     return root
 
 
-def reveal(text: str, *, anchor: str) -> ET.Element:
-    """Scroll the scrollable container around `anchor` (a tall dialog) until `text` is on screen."""
+def reveal(text: str, *, anchor: str, up: bool = False) -> ET.Element:
+    """Scroll the scrollable container around `anchor` (a tall dialog) until `text` is on screen;
+    `up` scrolls back toward the top."""
     root = hierarchy()
     marker = find(root, text=anchor)
     assert marker is not None, f"Missing {anchor!r}"
@@ -335,7 +336,8 @@ def reveal(text: str, *, anchor: str) -> ET.Element:
     for _ in range(4):
         if find(root, text=text) is not None:
             return root
-        adb("shell", "input", "swipe", x, str(top + (bottom - top) * 3 // 4), x, str(top + (bottom - top) // 4), "400")
+        low, high = str(top + (bottom - top) * 3 // 4), str(top + (bottom - top) // 4)
+        adb("shell", "input", "swipe", x, high if up else low, x, low if up else high, "400")
         root = hierarchy()
     raise AssertionError(f"{text!r} never scrolled into view")
 
@@ -584,13 +586,16 @@ def main() -> None:
     # Inspect prejoin audio controls without starting capture or playback.
     tap(description="User Settings")
     settings = capture("caper-android-audio-settings", "Audio test")
-    for label in ("Caper sound effects", "Audio test", "Log out"):
+    for label in ("Caper sound effects", "Audio test"):
         assert find(settings, text=label) is not None, f"Missing audio settings entry: {label}"
     effects = toggle(settings, "Caper sound effects")
     assert effects is not None and effects.get("clickable") == "true", "The sound effects switch is named"
     voice_started = find(settings, description="When voice starts in a space")
     assert voice_started is not None and voice_started.get("class") == "android.widget.CheckBox", "Checkbox is named"
     assert find(settings, text="Connection details") is None, "Connection details are only offered while connected"
+    # Log out ends the menu, below the fold on a phone since Settings shows the version.
+    reveal("Log out", anchor="Caper sound effects")
+    reveal("Audio test", anchor="Log out", up=True)
     tap(text="Audio test")
     audio = capture("caper-android-audio-prejoin", "Only you can hear these tests.")
     for label in ("Test microphone volume", "Voice processing", "Test speaker volume"):
