@@ -18,7 +18,15 @@ import CaperCore
     private let railScroll = NSScrollView()
     private var railButtons: [String: NativeButton] = [:]
     private var railOrder: [NativeButton] = []
-    private lazy var createSpace = NativeButton.icon("Create space", symbol: "plus") { [weak self] in self?.show?(.createSpace) }
+    /// Rail tiles sit 10 points apart, as on web: 40-point faces on a 50-point pitch.
+    private static let railPitch: CGFloat = 50
+    private lazy var createSpace = NativeRailFace.button("Create space", face: .symbol("plus", NSColor(CaperTheme.terracottaBright))) { [weak self] in
+        self?.show?(.createSpace)
+    }
+    // Joining by link never counts against owned spaces, as on Windows, Linux and Android.
+    private lazy var joinInvite = NativeRailFace.button("Join with invite link", face: .symbol("link", NativeStyle.muted)) { [weak self] in
+        self?.show?(.joinInvite(nil))
+    }
     private let sidebar = NativeView(NativeStyle.sidebar)
     private let channels = NativeSidebarList("Channels", identifier: "sidebar-channels-scroll")
     private let directs = NativeSidebarList("Direct messages", identifier: "sidebar-direct-scroll")
@@ -172,6 +180,7 @@ import CaperCore
         account.setAccessibilityIdentifier("account-profile")
         account.alignment = .left
         createSpace.setAccessibilityIdentifier("create-space")
+        joinInvite.setAccessibilityIdentifier("rail-join-invite")
         mute.setAccessibilityIdentifier("microphone-toggle")
         deafen.setAccessibilityIdentifier("deafen-toggle")
         inputOptions.setAccessibilityIdentifier("microphone-options")
@@ -190,8 +199,13 @@ import CaperCore
     override func layout() {
         super.layout()
         railScroll.frame = NSRect(x: 0, y: 0, width: Self.railWidth, height: bounds.height)
-        rail.frame.size = NSSize(width: Self.railWidth, height: max(bounds.height, CGFloat(railOrder.count) * 54 + 20))
-        for (index, child) in railOrder.enumerated() { child.frame = NSRect(x: (Self.railWidth - 40) / 2, y: 14 + CGFloat(index) * 54, width: 40, height: 40) }
+        // Each button spans the rail so its unread dot and badges stay inside it;
+        // the 40-point face starts 14 points down, as web's rail padding.
+        rail.frame.size = NSSize(width: Self.railWidth, height: max(bounds.height, CGFloat(railOrder.count) * Self.railPitch + 18))
+        for (index, child) in railOrder.enumerated() {
+            child.frame = NSRect(x: 0, y: 14 - NativeRailFace.inset + CGFloat(index) * Self.railPitch,
+                                 width: Self.railWidth, height: NativeRailFace.height)
+        }
         sidebar.frame = NSRect(x: Self.railWidth, y: 0, width: bounds.width - Self.railWidth, height: bounds.height)
         let width = sidebar.bounds.width
         close.isHidden = !narrow
@@ -232,31 +246,49 @@ import CaperCore
         // button cancels AppKit mouse tracking and keyboard focus.
         var next: [String: NativeButton] = [:]
         railOrder = []
+        // The clicked tile lights at once while its space opens, as web's busy tile.
+        let current = model.openingSpaceID ?? model.selectedSpaceID
+        let voiceConnected = model.account != nil && model.voice.phase == .connected ? model.voice.context?.spaceID : nil
         for item in model.spaces {
             let key = "space-\(item.id)"
-            let button = railButtons[key] ?? NativeButton("") { [weak self, id = item.id] in
+            let button = railButtons[key] ?? NativeRailFace.button(item.name, face: .space, hover: { [weak self, id = item.id] hovering in
+                // Hovering starts loading the space, as web's rail does, so a click has less to wait for.
+                guard hovering, let self, let space = self.model.spaces.first(where: { $0.id == id }) else { return }
+                self.model.prefetch(space: space)
+            }) { [weak self, id = item.id] in
                 guard let self, let space = self.model.spaces.first(where: { $0.id == id }) else { return }
                 Task { await self.model.select(space: space) }
             }
-            button.title = String(item.name.prefix(2)).uppercased()
-            button.setAccessibilityLabel(item.name); button.toolTip = item.name
-            button.layer?.borderWidth = item.id == model.selectedSpaceID ? 2 : 0
-            button.layer?.borderColor = NativeStyle.accent.cgColor
+            let name = item.demo == true ? "Caper" : item.name
+            let muted = item.demo != true && model.notificationsMuted(.space(item.id))
+            let unread = model.unreadSpaces.first { $0.id == item.id }
+            // The dot means anything new; the count is only mentions and replies to you.
+            let mentions = unread?.channels.reduce(0) { $0 + ($1.mentionCount ?? 0) } ?? 0
+            let connected = voiceConnected == item.id
+            let voiceActive = model.account != nil && (connected || model.voiceActivitySpaceIDs.contains(item.id))
+            NativeRailFace.of(button)?.update(name: name, picture: item.iconPicture, selected: item.id == current,
+                unread: unread != nil, mentions: mentions, muted: muted, voice: connected ? .connected : voiceActive ? .active : nil)
+            button.setAccessibilityIdentifier(key)
+            button.setAccessibilityLabel(name); button.toolTip = name
+            button.setAccessibilityValue([model.openingSpaceID == item.id ? "Opening" : item.id == current ? "Selected" : "",
+                unread != nil ? "Unread messages" : "", mentions > 0 ? "\(mentions) \(mentions == 1 ? "mention" : "mentions")" : "",
+                muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""]
+                .filter { !$0.isEmpty }.joined(separator: ", "))
             next[key] = button; railOrder.append(button)
         }
         for invitation in model.invitations {
             let key = "invitation-\(invitation.id)"
-            let button = railButtons[key] ?? NativeButton("") { [weak self, id = invitation.id] in
+            let button = railButtons[key] ?? NativeRailFace.button("Invitation to \(invitation.name)", face: .invitation) { [weak self, id = invitation.id] in
                 guard let self, let invitation = self.model.invitations.first(where: { $0.id == id }) else { return }
                 self.show?(.invitation(invitation))
             }
-            button.title = String(invitation.name.prefix(2)).uppercased()
-            button.setAccessibilityLabel("Invitation to \(invitation.name)")
-            button.toolTip = "Invitation to \(invitation.name)"
+            NativeRailFace.of(button)?.update(name: invitation.name, picture: invitation.iconPicture)
+            button.setAccessibilityIdentifier(key)
             next[key] = button; railOrder.append(button)
         }
         railButtons = next
-        railOrder.append(createSpace) // Also joins by invite link: enabled even at the space limit.
+        railOrder.append(createSpace) // Enabled even at the space limit: its dialog also joins by invite link.
+        railOrder.append(joinInvite)
         for child in rail.subviews where !railOrder.contains(where: { $0 === child }) { child.removeFromSuperview() }
         for child in railOrder where child.superview == nil { rail.addSubview(child) }
         space.title = model.detail?.space.name ?? "Browse"
@@ -1006,5 +1038,182 @@ private final class NativeFeedbackRow: NativeView {
     override func mouseExited(with event: NSEvent) { hovered = false; updateHover() }
     private func updateHover() {
         layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : hovered ? NSColor.white.withAlphaComponent(0.06) : .clear).cgColor
+    }
+}
+
+/// A rail tile, as on web: the space's icon over its initial, a terracotta
+/// ring and halo while selected, a quiet outline on hover, the unread dot in
+/// the rail margin, and the mention, muted and voice badges. The NativeButton
+/// around it spans the rail, so the dot and badges stay inside its bounds.
+@MainActor final class NativeRailFace: NativeView {
+    enum Face { case space, invitation, symbol(String, NSColor) }
+    enum Voice { case active, connected }
+    static let side: CGFloat = 40
+    /// Room above and below the face for its corner badges.
+    static let inset: CGFloat = 5
+    static var height: CGFloat { side + 2 * inset }
+    private let face: Face
+    private let tile = NativeView(NSColor(CaperTheme.surface))
+    private let initial = NativeStyle.label("", size: 15, bold: true)
+    private let icon = NativeAvatar(corner: 12)
+    private let symbol = NSImageView()
+    private let dash = CAShapeLayer()
+    private let dot = CALayer()
+    private let mentionBadge = NativeView(NativeStyle.accent)
+    private let mentionText = NativeStyle.label("", size: 11, bold: true)
+    private let mutedBadge = NSImageView()
+    private let voiceBadge = NSImageView()
+    private var selected: Bool?
+    var hovered = false { didSet { refreshRing() } }
+    var focused = false { didSet { refreshRing() } }
+
+    init(_ face: Face) {
+        self.face = face
+        super.init()
+        addSubview(tile)
+        [initial, icon, symbol].forEach { tile.addSubview($0) }
+        [mutedBadge, voiceBadge, mentionBadge].forEach { addSubview($0) }
+        mentionBadge.addSubview(mentionText)
+        layer?.addSublayer(dot)
+        tile.layer?.addSublayer(dash)
+        tile.layer?.cornerRadius = 12
+        tile.layer?.shadowColor = NativeStyle.accent.cgColor
+        tile.layer?.shadowOffset = .zero; tile.layer?.shadowRadius = 6; tile.layer?.shadowOpacity = 0
+        // The icon covers the initial once it loads; until then the initial shows through.
+        icon.layer?.backgroundColor = NSColor.clear.cgColor
+        initial.alignment = .center; initial.textColor = NativeStyle.muted
+        symbol.imageScaling = .scaleNone
+        dash.fillColor = nil; dash.lineWidth = 1; dash.lineDashPattern = [4, 4]; dash.isHidden = true
+        dot.backgroundColor = NativeStyle.text.cgColor; dot.cornerRadius = 3; dot.isHidden = true
+        mentionBadge.layer?.cornerRadius = 9; mentionBadge.isHidden = true
+        mentionBadge.layer?.borderWidth = 2; mentionBadge.layer?.borderColor = NativeStyle.blackout.cgColor
+        mentionText.alignment = .center
+        for (badge, name) in [(mutedBadge, "bell.slash.fill"), (voiceBadge, "speaker.wave.2.fill")] {
+            badge.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .bold))
+            badge.contentTintColor = NativeStyle.text; badge.imageScaling = .scaleNone
+            badge.wantsLayer = true; badge.layer?.backgroundColor = NativeStyle.blackout.cgColor
+            badge.isHidden = true
+        }
+        switch face {
+        case .space: break
+        case .invitation:
+            initial.textColor = NSColor(CaperTheme.terracottaBright)
+            dash.strokeColor = NSColor(CaperTheme.terracottaBright).cgColor; dash.isHidden = false
+        case .symbol(let name, let color):
+            symbol.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
+            symbol.contentTintColor = color
+            dash.strokeColor = NativeStyle.border.cgColor; dash.isHidden = false
+        }
+        // The button around the face is the accessible, clickable element.
+        [self, tile, initial, icon, symbol, mutedBadge, voiceBadge, mentionBadge, mentionText].forEach { $0.setAccessibilityElement(false) }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    static func button(_ label: String, face: Face, hover: ((Bool) -> Void)? = nil, action: @escaping () -> Void) -> NativeButton {
+        let button = NativeButton("", action: action)
+        let view = NativeRailFace(face)
+        view.autoresizingMask = [.width, .height]
+        button.addSubview(view)
+        button.layer?.backgroundColor = NSColor.clear.cgColor
+        button.focusRingType = .none
+        button.setAccessibilityLabel(label); button.toolTip = label
+        button.hoverChanged = { [weak view] hovering in view?.hovered = hovering; hover?(hovering) }
+        button.focusChanged = { [weak view] focused in view?.focused = focused }
+        return button
+    }
+    static func of(_ button: NSButton) -> NativeRailFace? { button.subviews.lazy.compactMap { $0 as? NativeRailFace }.first }
+
+    func update(name: String, picture: CaperPicture?, selected: Bool = false, unread: Bool = false,
+                mentions: Int = 0, muted: Bool = false, voice: Voice? = nil) {
+        initial.stringValue = String(name.prefix(1)).uppercased()
+        icon.isHidden = picture == nil
+        // No initial of its own: the tile's larger initial shows until the icon loads.
+        icon.update(name: "", avatarId: nil, picture: picture)
+        // A muted space's initial or icon steps back; its badges don't.
+        initial.alphaValue = muted ? 0.5 : 1; icon.alphaValue = muted ? 0.5 : 1
+        if case .space = face { initial.textColor = selected ? NativeStyle.text : NativeStyle.muted }
+        mutedBadge.isHidden = !muted
+        voiceBadge.isHidden = voice == nil
+        voiceBadge.layer?.backgroundColor = (voice == .connected ? NSColor(CaperTheme.voiceSessionGreen) : NativeStyle.blackout).cgColor
+        mentionBadge.isHidden = mentions == 0
+        mentionText.stringValue = mentions > 99 ? "99+" : "\(mentions)"
+        let motion = window != nil && !CaperAccessibility.reduceMotion
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        if unread, dot.isHidden, motion {
+            // New messages arrive: the dot fades in beside the tile.
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.2
+            fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            dot.add(fade, forKey: "arrive")
+        }
+        dot.isHidden = !unread
+        CATransaction.commit()
+        let wasSelected = self.selected
+        self.selected = selected
+        refreshRing()
+        // Selection blooms in and settles; deselection is instant.
+        if selected, wasSelected == false, motion { bloom() }
+        needsLayout = true
+    }
+
+    private func refreshRing() {
+        guard let layer = tile.layer else { return }
+        let selected = self.selected == true
+        let isSpace: Bool
+        if case .space = face { isSpace = true } else { isSpace = false }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        if focused {
+            layer.borderWidth = 2; layer.borderColor = NSColor(CaperTheme.terracottaBright).cgColor
+        } else if selected {
+            layer.borderWidth = 1; layer.borderColor = NativeStyle.accent.withAlphaComponent(0.9).cgColor
+        } else if hovered && isSpace {
+            layer.borderWidth = 1; layer.borderColor = NativeStyle.border.cgColor
+        } else {
+            layer.borderWidth = 0
+        }
+        layer.shadowOpacity = selected ? 0.36 : 0
+        // Create, join and invitation tiles lift on hover, as web's rail controls.
+        layer.backgroundColor = NSColor(hovered && !isSpace ? CaperTheme.raised : CaperTheme.surface).cgColor
+        if case .symbol = face { dash.strokeColor = (hovered ? NativeStyle.muted : NativeStyle.border).cgColor }
+        CATransaction.commit()
+    }
+
+    /// A terracotta bloom that settles to the selected halo, as web's.
+    private func bloom() {
+        guard let layer = tile.layer else { return }
+        let times = [0, 0.45, 1].map { NSNumber(value: $0) }
+        let opacity = CAKeyframeAnimation(keyPath: "shadowOpacity")
+        opacity.values = [0, 0.52, 0.36]; opacity.keyTimes = times
+        let radius = CAKeyframeAnimation(keyPath: "shadowRadius")
+        radius.values = [0, 9, 6]; radius.keyTimes = times
+        let group = CAAnimationGroup()
+        group.animations = [opacity, radius]
+        group.duration = 0.7
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(group, forKey: "bloom")
+    }
+
+    override func layout() {
+        super.layout()
+        let side = Self.side, x = ((bounds.width - side) / 2).rounded(), y = Self.inset
+        tile.frame = NSRect(x: x, y: y, width: side, height: side)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        tile.layer?.shadowPath = CGPath(roundedRect: tile.bounds, cornerWidth: 12, cornerHeight: 12, transform: nil)
+        dash.frame = tile.bounds
+        dash.path = CGPath(roundedRect: tile.bounds.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 11.5, cornerHeight: 11.5, transform: nil)
+        dot.frame = NSRect(x: 3, y: y + side / 2 - 3, width: 6, height: 6)
+        mutedBadge.layer?.cornerRadius = 8; voiceBadge.layer?.cornerRadius = 9
+        CATransaction.commit()
+        initial.frame = NSRect(x: 0, y: (side - 20) / 2, width: side, height: 20)
+        icon.frame = tile.bounds
+        symbol.frame = tile.bounds
+        mutedBadge.frame = NSRect(x: x - 4, y: y - 4, width: 16, height: 16)
+        voiceBadge.frame = NSRect(x: x + side - 15, y: y - 3, width: 18, height: 18)
+        let width = max(18, mentionText.intrinsicContentSize.width + 8)
+        mentionBadge.frame = NSRect(x: x + side - width + 3, y: y + side - 15, width: width, height: 18)
+        mentionText.frame = NSRect(x: 0, y: 2, width: width, height: 14)
     }
 }

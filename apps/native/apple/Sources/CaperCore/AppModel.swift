@@ -1973,6 +1973,13 @@ public final class AppModel {
                 openingSpaceID = nil; openingChannelID = nil
             }
         }
+        // A hover is not authorization for a later click: membership is always
+        // rechecked, but beside the history request rather than before it.
+        let client = api
+        let profileMark = profileUpdates.mark
+        let detailRequest = Task { try await client.space(space.id) }
+        var historyGuess: (channelID: String, task: Task<ChatHistory, Error>)?
+        defer { detailRequest.cancel(); historyGuess?.task.cancel() }
         do {
             let key = navigationKey(spaceID: space.id, channelID: channelID)
             let prepared: PreparedNavigation?
@@ -1984,10 +1991,14 @@ public final class AppModel {
                 removePrefetch(key)
                 prepared = nil
             }
+            // The channel this space will most likely open; its history is used
+            // only if the rechecked space opens that channel.
+            if contextHistory == nil, let guess = channelID ?? prepared?.channelID ?? lastChannelBySpace[space.id],
+               prepared?.channelID != guess, visitedNavigation(spaceID: space.id, channelID: guess)?.history == nil {
+                historyGuess = (guess, Task { try await client.history(channelID: guess) })
+            }
             let detail: SpaceDetail
-            // A hover is not authorization for a later click. Recheck membership
-            // even when speculative history has already completed.
-            detail = try await self.fetchingProfiles({ try await self.api.space(space.id) }, people: { $0.profiles })
+            detail = try await self.fetchingProfiles(since: profileMark, { try await detailRequest.value }, people: { $0.profiles })
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             guard detail.space.id == space.id else { throw APIError(status: 502, message: "The service returned another space.") }
             spaceVerified = true
@@ -2009,6 +2020,7 @@ public final class AppModel {
                 if let contextHistory { history = contextHistory }
                 else if let retained = visitedNavigation(spaceID: space.id, channelID: channel.id)?.history { history = retained }
                 else if prepared?.channelID == channel.id { history = prepared?.history }
+                else if let historyGuess, historyGuess.channelID == channel.id { history = try await historyGuess.task.value }
                 else { history = try await api.history(channelID: channel.id) }
                 guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
                 guard history?.space?.id == space.id, history?.channel?.id == channel.id else {
