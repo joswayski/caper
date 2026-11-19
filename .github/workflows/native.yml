@@ -606,6 +606,7 @@ jobs:
           path: |
             apps/native/android/dist/ui/
             apps/native/android/app/build/reports/tests/
+            apps/native/android/app/build/reports/lint-results-debug.*
             apps/native/android/app/build/test-results/
             apps/native/android/app/build/reports/androidTests/
             apps/native/android/app/build/outputs/androidTest-results/
