@@ -174,6 +174,15 @@ pub fn glide(context: &Context, id: Id, value: f32, duration: f32) -> f32 {
     context.animate_value_with_time(id, value, duration)
 }
 
+/// 0 to 1 toward `on` over `--motion-base` with CSS `ease-in-out`, as web's
+/// link colour transitions; at once without motion.
+pub fn toward(context: &Context, id: Id, on: bool) -> f32 {
+    if !enabled(context) {
+        return if on { 1.0 } else { 0.0 };
+    }
+    context.animate_bool_with_time_and_easing(id, on, BASE, egui::emath::easing::cubic_in_out)
+}
+
 /// Moves by what remains of `offset` at `progress`.
 pub fn rise(progress: f32, offset: Vec2) -> TSTransform {
     TSTransform::from_translation(offset * (1.0 - progress))

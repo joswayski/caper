@@ -535,6 +535,9 @@ pub struct Dialog {
     pub request: u64,
     pub hover: Option<Part>,
     pub pressed: Option<Part>,
+    /// The update review's version link: how far its hover has come (0 to
+    /// 1, before easing), toward which end, and when it last stepped.
+    pub release_glow: std::cell::Cell<(f32, bool, std::time::Instant)>,
     /// Client DIP origin of the field's text, before it scrolls.
     pub field_origin: (f32, f32),
     /// The history's versions, while `kind` is History.
@@ -637,6 +640,7 @@ impl Dialog {
             request: 0,
             hover: None,
             pressed: None,
+            release_glow: std::cell::Cell::new((0.0, false, std::time::Instant::now())),
             field_origin: (0.0, 0.0),
             history: None,
             scroll: 0.0,
@@ -1100,7 +1104,10 @@ impl Dialog {
             parts.push((Part::Note, (0.0, y, inner, height(&note))));
             if self.update_commit().is_some() {
                 let l = layout(g, &self.update_version(), note_format, 1e6)?;
-                parts.push((Part::Release, (0.0, y, width(&l), height(&l))));
+                parts.push((
+                    Part::Release,
+                    (0.0, y, width(&l) + crate::updates::RELEASE_ICON, height(&l)),
+                ));
             }
             y += height(&note);
         }
@@ -1294,17 +1301,22 @@ impl Dialog {
                             Kind::Delete => &g.formats.note,
                             _ => &g.formats.dialog_note,
                         };
-                        let l = layout(g, &self.note(), format, pw)?;
-                        // The review's version is a link, as on the other clients.
-                        if self.kind == Kind::Update && self.update_commit().is_some() {
-                            let range = DWRITE_TEXT_RANGE {
-                                startPosition: 0,
-                                length: gfx::wide(&self.update_version()).len() as u32,
-                            };
-                            l.SetUnderline(true, range)?;
-                            l.SetDrawingEffect(&g.brushes.text, range)?;
-                        }
-                        crate::text::draw(dc, &l, x, y, &g.brushes.muted);
+                        let note = self.note();
+                        // The review's version is a link (`Part::Release`, drawn
+                        // on its own); the rest of the line follows it.
+                        let lead = match self.kind {
+                            Kind::Update if self.update_commit().is_some() => {
+                                let link = layout(g, &self.update_version(), format, 1e6)?;
+                                Some((
+                                    self.update_version().len(),
+                                    width(&link) + crate::updates::RELEASE_ICON,
+                                ))
+                            }
+                            _ => None,
+                        };
+                        let (skip, dx) = lead.unwrap_or((0, 0.0));
+                        let l = layout(g, &note[skip..], format, pw - dx)?;
+                        crate::text::draw(dc, &l, x + dx, y, &g.brushes.muted);
                     }
                     Part::Suggest(k) => {
                         if *k == 0 {
@@ -1388,6 +1400,7 @@ impl Dialog {
                         };
                         self.button(g, dc, *part, self.primary_label(), (x, y, pw, ph), tone)?;
                     }
+                    Part::Release => self.draw_release(g, dc, (x, y, pw, ph))?,
                     _ => {}
                 }
             }
@@ -2695,6 +2708,14 @@ impl App {
                     .map(|l| crate::files::Ctx::new(&mut l.media, &mut tex));
                 self.dialog_card_p
                     .draw(s, |dc| d.draw(g, dc, w, h, media.as_mut()))?;
+                // Each frame of the version link's hover fade.
+                unsafe {
+                    if d.release_moving() {
+                        SetTimer(Some(self.hwnd), crate::updates::TIMER_RELEASE, 16, None);
+                    } else {
+                        let _ = KillTimer(Some(self.hwnd), crate::updates::TIMER_RELEASE);
+                    }
+                }
                 if media.is_some_and(|m| m.media.busy()) {
                     unsafe {
                         SetTimer(Some(self.hwnd), crate::TIMER_LIVE, 100, None);

@@ -511,6 +511,7 @@ final class AppKitKitFlippedView: NSView {
 }
 
 /// A version label that opens its commit, muted at rest and underlined on hover.
+/// A plain link: no fill, its ↗ coloured with the text.
 @MainActor final class AppKitKitLink: NSButton {
     private let url: URL
     private var tracking: NSTrackingArea?
@@ -548,8 +549,21 @@ final class AppKitKitFlippedView: NSView {
         let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
         addTrackingArea(area); tracking = area
     }
-    override func mouseEntered(with event: NSEvent) { hovered = true; style() }
-    override func mouseExited(with event: NSEvent) { hovered = false; style() }
+    override func mouseEntered(with event: NSEvent) { hovered = true; fade() }
+    override func mouseExited(with event: NSEvent) { hovered = false; fade() }
+    /// A plain link's 200 ms ease-in-out cross-fade to the new colour and
+    /// underline; at once with Reduce motion.
+    private func fade() {
+        if !CaperAccessibility.reduceMotion {
+            wantsLayer = true
+            let transition = CATransition()
+            transition.type = .fade
+            transition.duration = CaperMotion.base
+            transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer?.add(transition, forKey: "hover")
+        }
+        style()
+    }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
 #endif

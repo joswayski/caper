@@ -10,6 +10,7 @@ use crate::theme::*;
 use crate::{App, EV_SCREEN, text};
 use caper_client::state::Phase;
 use caper_client::updates::{Available, DOWNLOAD_URL, Status, Updates};
+use std::time::Instant;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
@@ -24,6 +25,10 @@ const SHINE_EVERY: f32 = 8.0;
 const SHINE_SWEEP: f32 = 0.26 * 6.0;
 /// The prismatic edge, left to right (UpdateButtonShine's colours).
 const SHINE_COLORS: [u32; 5] = [0xA780F2, 0x68AFEC, 0x63D2C1, 0xD7CD82, 0xE58BB7];
+/// Repaints the review's version link while its hover fades.
+pub const TIMER_RELEASE: usize = 48;
+/// The version link's ↗: a 4-DIP gap and a 12-DIP icon after its text.
+pub const RELEASE_ICON: f32 = 16.0;
 
 /// egui's dock: a 36-DIP secondary button with 8 DIPs under it.
 pub const DOCK_H: f32 = 36.0;
@@ -181,6 +186,85 @@ impl Dialog {
         self.update
             .as_ref()
             .map_or_else(String::new, |u| format!("Version {}", u.version))
+    }
+
+    /// The version link's hover, eased: 0 at rest, 1 hovered or pressed. It
+    /// moves over `--motion-base` with CSS `ease-in-out`, at once under
+    /// reduced motion.
+    fn release_mix(&self) -> f32 {
+        let on = matches!(self.hover, Some(Part::Release)) || self.pressed == Some(Part::Release);
+        let (mut p, was, last) = self.release_glow.get();
+        let now = Instant::now();
+        let target = if on { 1.0 } else { 0.0 };
+        p = if !crate::files::motion() {
+            target
+        } else if on != was {
+            // A new direction starts from here, not from the last frame drawn.
+            p
+        } else {
+            let step = now.duration_since(last).as_secs_f32() / crate::motion::BASE as f32;
+            if on {
+                (p + step).min(1.0)
+            } else {
+                (p - step).max(0.0)
+            }
+        };
+        self.release_glow.set((p, on, now));
+        // Sixteen steps keep the icon cache's tinted copies few.
+        let eased = if p < 0.5 {
+            4.0 * p * p * p
+        } else {
+            1.0 - (2.0 - 2.0 * p).powi(3) / 2.0
+        };
+        (eased * 16.0).round() / 16.0
+    }
+
+    /// Whether the version link's hover is still on its way.
+    pub(crate) fn release_moving(&self) -> bool {
+        let (p, on, _) = self.release_glow.get();
+        self.kind == Kind::Update && p != if on { 1.0 } else { 0.0 }
+    }
+
+    /// "Version 2026.11.19.3 ↗", a plain link: muted at rest, brightening
+    /// and underlined on hover, as web's release links without their fill.
+    pub(crate) fn draw_release(&self, g: &Gfx, dc: &ID2D1DeviceContext, r: Rect) -> Result<()> {
+        let (x, y, w, h) = r;
+        let mix = self.release_mix();
+        let lerp = |a: u32, b: u32, shift: u32| {
+            let (a, b) = ((a >> shift) & 0xff, (b >> shift) & 0xff);
+            ((a as f32 + (b as f32 - a as f32) * mix).round() as u32) << shift
+        };
+        let c = lerp(TEXT_MUTED, ACTION_HOVER, 16)
+            | lerp(TEXT_MUTED, ACTION_HOVER, 8)
+            | lerp(TEXT_MUTED, ACTION_HOVER, 0);
+        let alpha = 0.72 + 0.28 * mix;
+        let l = g.layout(
+            &crate::gfx::wide(&self.update_version()),
+            &g.formats.dialog_note,
+            1e6,
+        )?;
+        unsafe {
+            let brush = dc.CreateSolidColorBrush(&crate::gfx::color(c, alpha), None)?;
+            text::draw(dc, &l, x, y, &brush);
+            let tw = w - RELEASE_ICON;
+            if mix > 0.0 {
+                let line = dc.CreateSolidColorBrush(&crate::gfx::color(c, 0.7 * mix), None)?;
+                dc.FillRectangle(&rect(x, y + h - 1.0, x + tw, y + h), &line);
+            }
+            crate::icons::draw(
+                dc,
+                crate::icons::Icon::ExternalLink,
+                rect(
+                    x + tw + 4.0,
+                    y + (h - 12.0) / 2.0,
+                    x + tw + 16.0,
+                    y + (h + 12.0) / 2.0,
+                ),
+                c,
+                alpha,
+            );
+        }
+        Ok(())
     }
 
     /// The update's commit on GitHub, when the updater named it.

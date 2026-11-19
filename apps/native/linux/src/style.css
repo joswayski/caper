@@ -2375,7 +2375,6 @@ button.update-dock {
   font-size: 14px;
 }
 
-button.release-link,
 button.inline-link {
   min-height: 0;
   padding: 0;
@@ -2383,9 +2382,38 @@ button.inline-link {
   font-size: 12px;
 }
 
-button.release-link label,
 button.inline-link label {
   text-decoration: underline;
+}
+
+/* A version that opens its commit: a plain link, muted with its ↗ at rest,
+   brightening and underlined on hover over 200 ms (none without
+   animations), with no fill. */
+button.release-link,
+button.release-link:hover,
+button.release-link:active {
+  min-height: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+button.release-link label {
+  color: alpha(@caper_text_muted, 0.72);
+  text-decoration: none;
+  transition: color 200ms ease-in-out;
+}
+
+button.release-link:hover label,
+button.release-link:active label,
+button.release-link:focus-visible label {
+  color: @caper_action_hover;
+  text-decoration: underline;
+}
+
+button.release-link label.release-link-icon {
+  text-decoration: none;
 }
 
 button.inline-link {

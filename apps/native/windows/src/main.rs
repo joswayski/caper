@@ -2410,6 +2410,10 @@ impl App {
                 viewer::TIMER_VIEWER => self.viewer_tick(),
                 TIMER_MUTE => self.mutes_changed(),
                 updates::TIMER_SHINE => self.shine_tick(),
+                updates::TIMER_RELEASE => {
+                    self.dirty.overlay = true;
+                    self.need = true;
+                }
                 tips::TIMER_TIP => self.tip_tick(),
                 web_player::TIMER_WEB_PLAYER => self.need = true,
                 // Levels, speaking release and the call's running time.

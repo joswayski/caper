@@ -57,6 +57,20 @@ pub(super) struct UpdateWindow {
 
 fn link(text: &str, url: &str, classes: &[&str]) -> gtk::LinkButton {
     let button = gtk::LinkButton::with_label(url, text);
+    // An external link's ↗ after its text, coloured with it.
+    if classes.contains(&"release-link") {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        row.append(&gtk::Label::new(Some(text)));
+        row.append(
+            &gtk::Label::builder()
+                .label("↗")
+                .css_classes(["release-link-icon"])
+                .accessible_role(gtk::AccessibleRole::Presentation)
+                .build(),
+        );
+        button.set_child(Some(&row));
+        crate::app::rename(button.upcast_ref(), text);
+    }
     for class in classes {
         button.add_css_class(class);
     }

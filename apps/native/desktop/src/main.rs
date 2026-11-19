@@ -31949,24 +31949,15 @@ fn external_link(
         egui::vec2(text_size.x + 16.0, text_size.y.max(12.0)),
         egui::Sense::click(),
     );
-    let pressed = response.is_pointer_button_down_on();
-    let color = if pressed {
-        TERRACOTTA_BRIGHT
-    } else if response.hovered() {
-        ACTION_HOVER
-    } else if response.has_focus() {
-        TEXT
-    } else {
-        color
-    };
+    // A plain link: no fill, its colour and underline easing in over 200 ms.
+    let hover = motion::toward(
+        ui.ctx(),
+        response.id.with("hover"),
+        response.hovered() || response.is_pointer_button_down_on(),
+    );
+    let rest = if response.has_focus() { TEXT } else { color };
+    let color = rest.lerp_to_gamma(ACTION_HOVER, hover);
     if ui.is_rect_visible(rect) {
-        if response.hovered() || pressed {
-            ui.painter().rect_filled(
-                rect.expand(2.0),
-                2.0,
-                TERRACOTTA.gamma_multiply(if pressed { 0.24 } else { 0.12 }),
-            );
-        }
         ui.painter()
             .galley_with_override_text_color(rect.min, galley, color);
         paint_icon(
@@ -31978,11 +31969,12 @@ fn external_link(
             NavIcon::ExternalLink,
             color,
         );
-        if response.hovered() || response.has_focus() || pressed {
+        let underline = if response.has_focus() { 1.0 } else { hover };
+        if underline > 0.0 {
             ui.painter().hline(
                 rect.left()..=rect.left() + text_size.x,
                 rect.bottom() - 0.5,
-                Stroke::new(2.0_f32, color.gamma_multiply(0.7)),
+                Stroke::new(1.0_f32, color.gamma_multiply(0.7 * underline)),
             );
         }
         if response.has_focus() {
