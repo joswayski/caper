@@ -694,6 +694,21 @@ listview.messages > row:hover .tools,
   opacity: 1;
 }
 
+/* A grouped row's time, in the avatar's column while the row is hovered or
+   holds focus, as web (0.6rem, muted, tabular). */
+.grouped-time {
+  margin-top: 4px;
+  color: @caper_text_muted;
+  font-size: 9.6px;
+  font-feature-settings: "tnum";
+  opacity: 0;
+}
+
+listview.messages > row:hover .grouped-time,
+listview.messages > row:focus-within .grouped-time {
+  opacity: 1;
+}
+
 button.tool {
   min-width: 24px;
   min-height: 24px;

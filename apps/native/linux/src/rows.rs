@@ -999,6 +999,9 @@ struct Widgets {
     quote_text: gtk::Label,
     quote_more: gtk::Button,
     avatar: AvatarView,
+    /// A grouped row's time in the avatar's column ("9:42"), shown on
+    /// hover as web and the egui desktop.
+    gutter_time: gtk::Label,
     header: gtk::Box,
     author: gtk::Label,
     time: gtk::Label,
@@ -1258,6 +1261,15 @@ fn build_widgets() -> Widgets {
     // GTK 4.8 measures a horizontal box's wrapping text by searching its
     // width for each height, which made every new page of rows stall.
     let avatar = AvatarView::new(34, false);
+    // Screen readers already hear the time in the row's name.
+    let gutter_time = gtk::Label::builder()
+        .xalign(1.0)
+        .width_request(34)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Start)
+        .css_classes(["grouped-time"])
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_hexpand(true);
     content.set_margin_start(44);
@@ -1339,6 +1351,7 @@ fn build_widgets() -> Widgets {
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&content));
     overlay.add_overlay(&avatar.root);
+    overlay.add_overlay(&gutter_time);
     overlay.add_overlay(&slot);
     let blocked = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     blocked.add_css_class("blocked-run");
@@ -1396,6 +1409,7 @@ fn build_widgets() -> Widgets {
         quote_text,
         quote_more,
         avatar,
+        gutter_time,
         header,
         author,
         time,
@@ -1869,6 +1883,12 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
         .set_label(row.footer.as_deref().unwrap_or_default());
     widgets.header.set_visible(!row.grouped);
     widgets.avatar.root.set_visible(!row.grouped);
+    widgets.gutter_time.set_visible(row.grouped);
+    if row.grouped {
+        // "9:42 AM" → "9:42", as web's compact time.
+        let short = row.time.split(' ').next().unwrap_or_default();
+        widgets.gutter_time.set_label(short);
+    }
     if !row.grouped {
         widgets.avatar.set(images, &row.avatar);
     }
