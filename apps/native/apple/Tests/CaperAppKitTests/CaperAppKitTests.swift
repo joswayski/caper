@@ -1294,15 +1294,12 @@ import XCTest
         let show = app.menuItems["Show who reacted"]
         XCTAssertTrue(show.waitForExistence(timeout: 5)); show.click()
         let sheet = app.descendants(matching: .any)["reactors-sheet"]
-        let retry = app.buttons["reactors-retry"]
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5)); XCTAssertTrue(retry.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Couldn’t load reactions"].exists)
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
         XCTAssertFalse(composer.exists, "Only the modal's controls belong in accessibility while it is open")
-        capture("who reacted load failure wide", app: app)
-        // Hover now shares this request/cache; it must not consume a one-shot
-        // failure before the details sheet reaches its own error state.
+        // Space members are named from the loaded space, even while the
+        // reactors request keeps failing.
+        XCTAssertFalse(app.buttons["reactors-retry"].exists)
         try await Self.control(["clearFailures": true])
-        retry.click()
         let maya = sheet.descendants(matching: .any)["reactor-row-member000001"]
         let alex = sheet.descendants(matching: .any)["reactor-row-member000002"]
         let own = sheet.descendants(matching: .any)["reactor-row-owner0000001"]
@@ -1376,12 +1373,13 @@ import XCTest
         }
         XCTAssertTrue(thumb.waitForExistence(timeout: 5)); thumb.hover()
         try await Task.sleep(for: .milliseconds(500)) // Dwell beyond the shared 400ms delay with the real pointer.
-        XCTAssertTrue(tooltip.waitForExistence(timeout: 5)); summary("2 people reacted with ")
+        // Space members are named from the loaded space while the names request fails.
+        XCTAssertTrue(tooltip.waitForExistence(timeout: 5)); summary("You and Maya reacted with ")
         XCTAssertTrue(composer.exists); XCTAssertFalse(profileClose.exists)
         app.typeText(" — still focused")
         let retainedDraft = draft + " — still focused"
         XCTAssertEqual(composer.value as? String, retainedDraft, "The bubble must not become a key window or steal the native first responder")
-        capture("reaction hover count fallback and composer focus wide", app: app)
+        capture("reaction hover known names and composer focus wide", app: app)
         quick.hover()
         XCTAssertTrue(tooltip.waitForNonExistence(timeout: 5))
         try await Task.sleep(for: .milliseconds(500))

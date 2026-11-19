@@ -551,6 +551,9 @@ private enum AppKitWorkspaceDialogItem {
         if !entered { if self.anchor === anchor { close() }; return }
         close()
         self.anchor = anchor
+        // Ask for names now, so anyone this client can't name yet is
+        // usually named by the time the bubble opens.
+        _ = model.chat.requestReactors(messageID: message.id)
         let context = model.chat.editingContext
         task = Task { [weak self, weak anchor, weak container] in
             do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
@@ -605,7 +608,7 @@ private final class AppKitPointerPassthroughView: NSView {
     private let messageID: String
     private let emoji: String
     private let close: () -> Void
-    private let text = AppKitKit.label("", size: 12, weight: .medium)
+    private let text = AppKitKit.label("", size: 12, weight: .bold)
     private let observation = AppKitObservation()
     private var requested: String?
     private var resign: NSObjectProtocol?
@@ -623,17 +626,19 @@ private final class AppKitPointerPassthroughView: NSView {
         setAccessibilityIdentifier("reaction-tooltip")
         let art: NSView
         if let entry = EmojiArtwork.entry(for: emoji), let image = EmojiArtwork.image(for: entry) {
-            let view = NSImageView(image: NSImage(cgImage: image, size: NSSize(width: 38, height: 38)))
-            view.imageScaling = .scaleProportionallyUpOrDown
+            // The artwork is 64 pixels: 32 points is its sharpest size on
+            // a Retina display. Larger, it is scaled up and looks blurry.
+            let view = NSImageView(image: NSImage(cgImage: image, size: NSSize(width: 32, height: 32)))
+            view.imageScaling = .scaleProportionallyDown
             view.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([view.widthAnchor.constraint(equalToConstant: 38), view.heightAnchor.constraint(equalToConstant: 38)])
+            NSLayoutConstraint.activate([view.widthAnchor.constraint(equalToConstant: 32), view.heightAnchor.constraint(equalToConstant: 32)])
             art = view
         } else {
-            let glyph = NSTextField(labelWithString: emoji); glyph.font = .systemFont(ofSize: 32)
+            let glyph = NSTextField(labelWithString: emoji); glyph.font = .systemFont(ofSize: 26)
             art = glyph
         }
         let row = NSStackView(views: [art, text]); row.orientation = .horizontal; row.spacing = 10; row.alignment = .centerY
-        row.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        row.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 12)
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
@@ -671,7 +676,7 @@ private final class AppKitPointerPassthroughView: NSView {
 
     /// The bubble hugs its text up to `maxWidth`.
     func size(maxWidth: CGFloat) -> NSSize {
-        text.preferredMaxLayoutWidth = max(1, maxWidth - 68)
+        text.preferredMaxLayoutWidth = max(1, maxWidth - 64)
         let fitting = fittingSize
         return NSSize(width: min(maxWidth, ceil(fitting.width)), height: ceil(fitting.height))
     }

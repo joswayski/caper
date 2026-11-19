@@ -243,7 +243,8 @@ private enum NativeEmbedSource {
         wantsLayer = true; layer?.backgroundColor = AppKitKit.surface.cgColor; layer?.borderColor = AppKitKit.border.cgColor; layer?.borderWidth = 1; layer?.cornerRadius = 8
         edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
         let body = AppKitKit.stack([], spacing: 6); addArrangedSubview(body)
-        let site = link(embed.site.name == embed.site.domain ? embed.site.name : "\(embed.site.name)  \(embed.site.domain)", url: embed.url, size: 11)
+        let site = link(embed.site.name == embed.site.domain ? embed.site.name : "\(embed.site.name)  \(embed.site.domain)", url: embed.url, size: 11,
+                        color: AppKitKit.muted)
         body.addArrangedSubview(site); AppKitKit.fillWidth(site, of: body)
         for block in embed.blocks {
             let row: NSView?
@@ -271,9 +272,12 @@ private enum NativeEmbedSource {
         setAccessibilityElement(false); setAccessibilityLabel("\(embed.site.name): \(embed.heading)")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    private func link(_ text: String, url: String?, size: CGFloat, bold: Bool = false) -> NSView {
-        let view = AppKitMessageBody(), value = NSMutableAttributedString(string: text, attributes: [.font: AppKitKit.font(size, weight: bold ? .bold : .regular), .foregroundColor: AppKitKit.text])
+    /// Web's card links keep their text's colour, with no underline.
+    private func link(_ text: String, url: String?, size: CGFloat, bold: Bool = false, color: NSColor? = nil) -> NSView {
+        let tint = color ?? AppKitKit.text
+        let view = AppKitMessageBody(), value = NSMutableAttributedString(string: text, attributes: [.font: AppKitKit.font(size, weight: bold ? .bold : .regular), .foregroundColor: tint])
         if let url = LinkEmbeds.openableURL(url) { value.addAttribute(.link, value: url, range: NSRange(location: 0, length: value.length)) }
+        view.linkTextAttributes = [.foregroundColor: tint, .cursor: NSCursor.pointingHand]
         view.update(value); return view
     }
     private func gallery(_ items: [EmbedImage]) -> NSView {

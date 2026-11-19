@@ -1996,7 +1996,9 @@ message and refetch when `reactionSeq` changes.
 
 Every client uses the same wording: "You, Alex, Maya and 2 others reacted with
 :thumbs-up:" (you first, up to three names, then a count; the dash-separated
-catalog name, or the glyph when none exists). Until names load, a count is shown.
+catalog name, or the glyph when none exists). Until names load, a count is shown;
+Apple clients first name reactors they already know (space members, authors in the
+loaded history, you) and show the count only when someone is unknown.
 Pointer platforms (web, macOS, Rust desktop) show a tooltip with a large emoji on
 hover or keyboard focus. Touch platforms open a Reactions sheet on press-and-hold:
 one tab per emoji with its count, then each person's avatar, name and @username.

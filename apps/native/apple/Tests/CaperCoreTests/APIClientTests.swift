@@ -561,7 +561,9 @@ final class APIClientTests: XCTestCase {
         let other = ReactorPerson(id: "other", username: "other", displayName: "Other O", avatarId: 3)
         let third = ReactorPerson(id: "third", username: "third", displayName: "Third T", avatarId: 4)
 
-        XCTAssertEqual(chat.reactorsState(for: chat.messages[0], emoji: "👍", viewerID: "self"), .loading)
+        XCTAssertEqual(chat.reactorsState(for: chat.messages[0], emoji: "👍", viewerID: "self"),
+                       .loaded([ReactorPerson(id: "other", displayName: "Other")]),
+                       "a reactor who wrote in the loaded history is named before the list loads")
         _ = await chat.requestReactors(messageID: messageID)?.value
         XCTAssertEqual(chat.reactorsState(for: chat.messages[0], emoji: "👍", viewerID: "self"), .loaded([other]))
         XCTAssertNil(chat.requestReactors(messageID: messageID), "an unchanged reaction sequence reuses the list")

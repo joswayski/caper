@@ -23,6 +23,8 @@ import AppKit
         isEditable = false; isSelectable = true; drawsBackground = false
         textContainerInset = .zero; isHorizontallyResizable = false; isVerticallyResizable = true
         translatesAutoresizingMaskIntoConstraints = false
+        // As in the timeline: Caper's link colour without AppKit's blue underline.
+        linkTextAttributes = [.foregroundColor: NSColor(CaperTheme.link), .cursor: NSCursor.pointingHand]
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [] }

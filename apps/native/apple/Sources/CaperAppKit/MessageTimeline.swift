@@ -78,7 +78,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             let predecessor = index > 0 ? next[index - 1] : nil
             // Deleting or inserting a predecessor can change grouping even
             // when this message itself has not changed.
-            if entries[oldIndex] != entry || oldPredecessor != predecessor || self.reactionErrors[id] != reactionErrors[id]
+            if entries[oldIndex] != entry || oldPredecessor != predecessor
+                || continues(at: oldIndex, in: entries) != continues(at: index, in: next) || self.reactionErrors[id] != reactionErrors[id]
                 || self.pinErrors[id] != pinErrors[id] || self.pendingPins.contains(id) != pendingPins.contains(id)
                 || self.canInteract != canInteract { invalid.insert(id) }
         }
@@ -132,6 +133,15 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         pendingFocus = nil
         followEnd = true
         realize(anchor: nil)
+    }
+
+    /// The row after `index` groups under it, so this row keeps only a
+    /// hairline of padding below (web's `chat-message-continued`).
+    private func continues(at index: Int, in list: [TimelineEntry]) -> Bool {
+        guard index + 1 < list.count, case .message(let message) = list[index], case .message(let next) = list[index + 1],
+              !BlockedMessages.isHidden(next, blocked: blocked, viewerID: viewerID) else { return false }
+        // The root is not a predecessor of its first reply.
+        return NativePresentation.grouped(next, after: inThread && message.threadRootId == nil ? nil : message, inThread: inThread)
     }
 
     /// A revealed run keeps its header alongside its messages; their native
@@ -269,7 +279,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             let revealedBlocked = BlockedMessages.isHidden(message, blocked: blocked, viewerID: viewerID)
             // The root is not a predecessor of its first reply.
             let prior = inThread && predecessor?.threadRootId == nil ? nil : predecessor
-            row.configure(message, grouped: NativePresentation.grouped(message, after: prior, inThread: inThread), day: revealedBlocked ? nil : day,
+            row.configure(message, grouped: NativePresentation.grouped(message, after: prior, inThread: inThread),
+                continued: continues(at: index, in: entries), day: revealedBlocked ? nil : day,
                 viewerID: viewerID, revealedBlocked: revealedBlocked, canInteract: canInteract, inThread: inThread,
                 reactionError: reactionErrors[message.id], pinError: pinErrors[message.id], pinPending: pendingPins.contains(message.id), react: react)
         case .blocked(let run):
@@ -376,15 +387,18 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     private var revealedSpoilers = Set<Int>()
     private var pending: PendingMessage?
     private var grouped = false
+    /// The next row groups under this one.
+    private var continued = false
     private var viewerID: String?
     private var dayHeight: CGFloat { day.isHidden ? 0 : ceil(day.cell?.cellSize.height ?? 14) + 16 }
     var textTop: CGFloat {
         guard pending == nil else { return 0 }
-        // An attachment-only grouped row still needs room above its gallery
-        // for hover actions, as in the shipping Mac timeline.
-        let groupedTop: CGFloat = attachments != nil && body.string.isEmpty ? 36 : (edited.isHidden ? 4 : 24)
-        return dayHeight + pinHeight + quoteHeight + (grouped ? groupedTop : compact ? 70 : 32)
+        // A grouped row sits right under its author's previous one, as on
+        // web; its hover actions float over the row's top edge.
+        return dayHeight + pinHeight + quoteHeight + (grouped ? 2 : compact ? 70 : 32)
     }
+    /// Space under the row: a hairline when the next row continues the run.
+    private var bottomPadding: CGFloat { continued ? 2 : 12 }
 
     init() {
         super.init()
@@ -414,7 +428,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         body.isHorizontallyResizable = false
         body.isVerticallyResizable = false
         body.layoutManager?.usesFontLeading = false
-        body.linkTextAttributes = [.foregroundColor: NSColor(CaperTheme.link)]
+        body.linkTextAttributes = [.foregroundColor: NSColor(CaperTheme.link), .cursor: NSCursor.pointingHand]
         timestamp.textColor = NativeStyle.muted
         avatar.wantsLayer = true; avatar.layer?.cornerRadius = 10; avatar.layer?.masksToBounds = true
         avatar.setAccessibilityElement(false)
@@ -479,8 +493,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         setAccessibilityIdentifier("pending-row-\(pending.id)")
     }
 
-    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, inPins: Bool = false, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
-        guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
+    func configure(_ message: ChatMessage, grouped: Bool, continued: Bool = false, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, inPins: Bool = false, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
+        guard self.message != message || self.grouped != grouped || self.continued != continued || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
         let range = body.selectedRange()
         // Another message, or edited text, hides its spoilers again.
         if self.message?.id != message.id || self.message?.content.text != message.content.text { revealedSpoilers = [] }
@@ -501,7 +515,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
                 addSubview(attachments, positioned: .below, relativeTo: controls)
             }
         }
-        self.message = message; self.grouped = grouped; self.viewerID = viewerID
+        self.message = message; self.grouped = grouped; self.continued = continued; self.viewerID = viewerID
         self.canInteract = canInteract
         self.pinPending = pinPending
         blockedRun = nil; self.revealedBlocked = revealedBlocked
@@ -515,7 +529,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         thread.title = message.threadRootId != nil ? "View thread" : "\(count) \(count == 1 ? "reply" : "replies")"
         thread.setAccessibilityLabel(thread.title)
         thread.setAccessibilityIdentifier("thread-summary-\(message.id)")
-        edited.isHidden = message.isDeleted || message.forward != nil || (message.revision ?? 1) <= 1
+        edited.isHidden = !Self.showsEdited(message)
         edited.setAccessibilityLabel("Message history")
         edited.setAccessibilityIdentifier("message-history-\(message.id)")
         reactionFailure.stringValue = reactionError ?? ""
@@ -572,8 +586,20 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             let id = "reaction-\(message.id)-\(reaction.emoji)"
             let button = previousReactions.first { $0.accessibilityIdentifier() == id }
                 ?? NativeButton("") { react?(message.id, reaction.emoji) }
-            button.title = "\(reaction.emoji) \(reaction.authorIds.count)"
-            button.setAccessibilityLabel(button.title)
+            let selected = viewerID.map { reaction.authorIds.contains($0) } ?? false
+            // Web's chip: the same Twemoji artwork as the hover bubble and
+            // picker, then a bold count; terracotta when it includes you.
+            let count = "\(reaction.authorIds.count)"
+            if let art = NativePresentation.emojiImage(reaction.emoji) {
+                button.image = NSImage(cgImage: art, size: NSSize(width: 18, height: 18))
+                button.imagePosition = .imageLeading
+                button.imageHugsTitle = true
+            }
+            button.attributedTitle = NSAttributedString(string: button.image == nil ? "\(reaction.emoji) \(count)" : " \(count)", attributes: [
+                .font: NativeStyle.font(12, bold: true),
+                .foregroundColor: selected ? NSColor(CaperTheme.terracottaBright) : NativeStyle.muted,
+            ])
+            button.setAccessibilityLabel("\(reaction.emoji) \(count)")
             button.isEnabled = canInteract
             button.setAccessibilityIdentifier(id)
             button.hoverChanged = { [weak self, weak button] entered in
@@ -586,14 +612,19 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             }
             button.menu = NavigationMenus.menu([NavigationMenuItem("Show who reacted", action: showPeople)])
             button.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Show who reacted") { showPeople(); return true }])
-            let selected = viewerID.map { reaction.authorIds.contains($0) } ?? false
             button.state = selected ? .on : .off
-            button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : NativeStyle.composer).cgColor
+            button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : NSColor(CaperTheme.surface)).cgColor
+            button.layer?.borderWidth = 1
+            button.layer?.borderColor = (selected ? NativeStyle.accent : NativeStyle.border).cgColor
             return button
         }
         for button in previousReactions where !reactions.contains(where: { $0 === button }) { button.removeFromSuperview() }
         for button in reactions where button.superview == nil { addSubview(button) }
         needsLayout = true
+    }
+
+    private static func showsEdited(_ message: ChatMessage) -> Bool {
+        !message.isDeleted && message.forward == nil && (message.revision ?? 1) > 1 && !message.content.text.isEmpty
     }
 
     /// The message's text: spoilers the reader has not revealed stay hidden.
@@ -635,7 +666,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     func configure(_ run: BlockedRun, day: String?, toggle: @escaping () -> Void) {
         toggleBlocked = toggle
         guard blockedRun != run || self.day.stringValue != (day ?? "") else { return }
-        blockedRun = run; message = nil; grouped = true
+        blockedRun = run; message = nil; grouped = true; continued = false
         self.day.stringValue = day ?? ""; self.day.isHidden = day == nil
         self.day.setAccessibilityIdentifier("date-\(run.id)")
         setAccessibilityIdentifier(run.id)
@@ -672,8 +703,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         let nativeHeight = body.layoutManager?.usedRect(for: body.textContainer!).height ?? 0
         attachmentHeight = attachments?.height(for: textWidth) ?? 0
         quoteHeight = quote?.height(for: max(40, width - 40)) ?? 0
-        let textHeight = body.string.isEmpty && attachments != nil ? 0 : max(20, max(coreTextHeight, ceil(nativeHeight)))
-        let height = textTop + textHeight + attachmentHeight + reactionHeight + failureHeight + threadHeight + 12
+        let textHeight = body.string.isEmpty && attachments != nil ? 0
+            : max(20, max(coreTextHeight, ceil(nativeHeight))) + (editedFrame(width: textWidth)?.ownLine == true ? 18 : 0)
+        let height = textTop + textHeight + attachmentHeight + reactionHeight + failureHeight + threadHeight + bottomPadding
         let controlsWidth = min(controls.preferredWidth, max(30, width - 30))
         // A wrapped hover bar must not steal the next grouped row's hit area.
         return controlsWidth < controls.preferredWidth
@@ -716,34 +748,47 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         pinnedBy.frame = NSRect(x: textInset, y: inset, width: textWidth, height: pinHeight)
         quote?.frame = NSRect(x: 20, y: inset + pinHeight, width: max(40, bounds.width - 40), height: quoteHeight)
         let messageTop = inset + pinHeight + quoteHeight
-        avatar.frame = NSRect(x: 20, y: messageTop + 12, width: 36, height: 36)
+        avatar.frame = NSRect(x: 20, y: messageTop + 10, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.
-        let editedWidth: CGFloat = edited.isHidden ? 0 : 48
-        let timeWidth = min(ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width), compact ? max(0, textWidth - editedWidth - 5) : .greatestFiniteMagnitude)
-        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - (compact ? 0 : timeWidth + editedWidth + 7)))
-        author.frame = NSRect(x: 68, y: messageTop + 10, width: authorWidth, height: 20)
+        let timeWidth = min(ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width), compact ? textWidth : .greatestFiniteMagnitude)
+        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - (compact ? 0 : timeWidth + 7)))
+        // A label's cell draws its text 2 points in; the body has no inset.
+        // Start the name 2 points early so it lines up with the message.
+        author.frame = NSRect(x: 66, y: messageTop + 10, width: authorWidth, height: 20)
         timestamp.frame = NSRect(x: compact ? textInset : author.frame.maxX + 7, y: messageTop + (compact ? 50 : 13), width: timeWidth, height: 17)
         authorAction.frame = author.frame
         avatarAction.frame = avatar.frame
-        edited.frame = NSRect(x: grouped ? textInset : timestamp.frame.maxX + 5, y: messageTop + (grouped ? 2 : compact ? 48 : 10), width: editedWidth, height: 20)
         let controlsWidth = min(controls.preferredWidth, max(30, bounds.width - 30))
-        controls.frame = NSRect(x: max(0, bounds.width - controlsWidth - 15), y: messageTop + 3,
+        controls.frame = NSRect(x: max(0, bounds.width - controlsWidth - 15), y: messageTop + (grouped ? -3 : 3),
             width: controlsWidth, height: controls.height(for: controlsWidth))
         let footer = attachmentHeight + reactionHeight + failureHeight + threadHeight
         let top = textTop
-        body.frame = NSRect(x: textInset, y: top, width: textWidth, height: max(0, bounds.height - top - footer - 12))
+        body.frame = NSRect(x: textInset, y: top, width: textWidth, height: max(0, bounds.height - top - footer - bottomPadding))
+        edited.frame = editedFrame(width: textWidth).map { $0.frame.offsetBy(dx: body.frame.minX, dy: body.frame.minY) } ?? .zero
         attachments?.frame = NSRect(x: textInset, y: body.frame.maxY, width: textWidth, height: attachmentHeight)
         for (reaction, frame) in zip(reactions, reactionFrames) {
-            reaction.frame = frame.offsetBy(dx: textInset, dy: bounds.height - failureHeight - threadHeight - reactionHeight - 8)
+            reaction.frame = frame.offsetBy(dx: textInset, dy: bounds.height - failureHeight - threadHeight - reactionHeight - bottomPadding + 4)
         }
-        thread.frame = NSRect(x: textInset, y: bounds.height - threadHeight - 8, width: textWidth, height: 28)
-        reactionFailure.frame = NSRect(x: textInset, y: bounds.height - failureHeight - threadHeight - 8, width: textWidth, height: 30)
+        thread.frame = NSRect(x: textInset, y: bounds.height - threadHeight - bottomPadding + 4, width: textWidth, height: 28)
+        reactionFailure.frame = NSRect(x: textInset, y: bounds.height - failureHeight - threadHeight - bottomPadding + 4, width: textWidth, height: 30)
         retryReaction.frame = NSRect(x: textInset, y: reactionFailure.frame.maxY + 4, width: 58, height: 24)
         dismissReaction.frame = NSRect(x: stackedRecovery ? textInset : textInset + 64, y: retryReaction.frame.minY + (stackedRecovery ? 28 : 0), width: 68, height: 24)
         pinFailure.frame = NSRect(x: textInset, y: reactionFailure.frame.minY + reactionFailureHeight, width: textWidth, height: 30)
         retryPin.frame = NSRect(x: textInset, y: pinFailure.frame.maxY + 4, width: 58, height: 24)
         dismissPin.frame = NSRect(x: stackedRecovery ? textInset : textInset + 64, y: retryPin.frame.minY + (stackedRecovery ? 28 : 0), width: 68, height: 24)
+    }
+
+    /// The (edited) button follows the last word as on web, in body
+    /// coordinates, or starts its own line when the last line is full.
+    private func editedFrame(width: CGFloat) -> (frame: NSRect, ownLine: Bool)? {
+        guard !edited.isHidden, let layoutManager = body.layoutManager, layoutManager.numberOfGlyphs > 0 else { return nil }
+        let size = NSSize(width: ceil(edited.cell?.cellSize.width ?? 44), height: 16)
+        let last = layoutManager.extraLineFragmentTextContainer != nil ? layoutManager.extraLineFragmentUsedRect
+            : layoutManager.lineFragmentUsedRect(forGlyphAt: layoutManager.numberOfGlyphs - 1, effectiveRange: nil)
+        // Lowered 4 points so the 10-point label sits on the 14-point text's baseline.
+        if last.maxX + 2 + size.width <= width { return (NSRect(origin: NSPoint(x: last.maxX + 2, y: last.minY + 4), size: size), false) }
+        return (NSRect(origin: NSPoint(x: -2, y: last.maxY), size: size), true)
     }
 
     override func updateTrackingAreas() {

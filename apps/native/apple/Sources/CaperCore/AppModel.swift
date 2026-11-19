@@ -4375,12 +4375,40 @@ public final class ChatModel {
                 })
             }
         }
+        // The snapshot already says who reacted. Name them from the people
+        // this client knows (space members, message authors, you) at once,
+        // instead of a count until the list loads.
+        if let reaction = message.reactions?.first(where: { $0.emoji == emoji }),
+           let people = knownReactors(reaction.authorIds, viewerID: viewerID) { return .loaded(people) }
         if reactorRequests[message.id] != nil { return .loading }
         if reactorFailures.contains(message.id) { return .failed }
         // Loaded at this revision yet someone is still unnamed: offer Retry
         // instead of waiting. A stale list is about to be refetched.
         if let cached, Self.reactorListIsCurrent(cached, for: message) { return .failed }
         return .loading
+    }
+
+    /// `ids` as people this client already has profiles for, in order, or
+    /// nil when anyone is unknown (they left, or have not posted here).
+    private func knownReactors(_ ids: [String], viewerID: String?) -> [ReactorPerson]? {
+        let profiles = profileDirectory(), own = profileAuthor
+        var authors: [String: ChatAuthor]?
+        var people: [ReactorPerson] = []
+        for id in ids {
+            if let person = profiles[id] {
+                people.append(ReactorPerson(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId,
+                                            avatarAsset: person.avatarAsset, avatarUrl: person.avatarUrl))
+                continue
+            }
+            if authors == nil {
+                authors = [:]
+                for message in messageSnapshots where authors?[message.author.id] == nil { authors?[message.author.id] = message.author }
+            }
+            guard let author = id == viewerID && own?.id == id ? own : authors?[id] else { return nil }
+            people.append(ReactorPerson(id: id, displayName: author.name, avatarId: author.avatarId,
+                                        avatarAsset: author.avatarAsset, avatarUrl: author.avatarUrl))
+        }
+        return people
     }
 
     private static func reactorListIsCurrent(_ cached: (seq: String, list: ReactorList), for message: ChatMessage) -> Bool {

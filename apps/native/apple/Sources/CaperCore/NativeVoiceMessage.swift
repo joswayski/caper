@@ -65,7 +65,12 @@ import AppKit
     }
     private func render() {
         let player = VoiceMessagePlayer.shared, elapsed = player.elapsed(for: file)
-        play.image = NSImage(systemSymbolName: player.isPlaying(file) ? "pause.fill" : "play.fill", accessibilityDescription: nil)
+        // A template symbol: tint it blackout on the eggshell fill, or it draws
+        // in the light text colour and disappears into the button.
+        play.image = NSImage(systemSymbolName: player.isPlaying(file) ? "pause.fill" : "play.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .bold))
+        play.imagePosition = .imageOnly
+        play.contentTintColor = AppKitKit.onAction
         play.setAccessibilityLabel(player.isPlaying(file) ? "Pause voice message" : "Play voice message")
         time.stringValue = VoiceDuration.playerLabel(durationMs: file.durationMs, elapsedMs: elapsed)
         time.setAccessibilityLabel(elapsed == nil ? "Duration \(time.stringValue)" : "\(time.stringValue) remaining")
