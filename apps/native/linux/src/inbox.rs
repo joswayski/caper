@@ -80,10 +80,13 @@ impl State {
             })
     }
 
-    pub(super) fn inbox_label(&self) -> String {
+    /// The unread count as the web's entry shows it: blank at zero, then
+    /// up to "99+".
+    pub(super) fn inbox_count(&self) -> String {
         match self.inbox.unread_count {
-            0 => "Notifications".into(),
-            count => format!("Notifications · {count}"),
+            0 => String::new(),
+            count @ 1..=99 => count.to_string(),
+            _ => "99+".into(),
         }
     }
 }
@@ -394,11 +397,16 @@ impl App {
             .state
             .try_borrow()
             .ok()
-            .map(|state| state.inbox_label());
-        if let Some(label) = label {
-            if self.ui.inbox_label.label() != label {
-                self.ui.inbox_label.set_label(&label);
+            .map(|state| state.inbox_count());
+        if let Some(count) = label {
+            if self.ui.inbox_count.label() != count {
+                self.ui.inbox_count.set_label(&count);
+                self.ui.inbox_count.set_visible(!count.is_empty());
             }
+            let label = match count.as_str() {
+                "" => "Notifications".to_string(),
+                count => format!("Notifications · {count}"),
+            };
             if self.ui.first_inbox.label().as_deref() != Some(label.as_str()) {
                 self.ui.first_inbox.set_label(&label);
             }

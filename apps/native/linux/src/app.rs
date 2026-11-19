@@ -5306,6 +5306,8 @@ impl App {
         self.render_reactors();
         self.render_history();
         self.render_recording();
+        // The sidebar's unread count follows each unread poll, not only an open inbox.
+        self.render_inbox();
         let ui = &self.ui;
         let mut state = self.state.borrow_mut();
         let first_space = state.page() == Page::Chat && state.needs_first_space();

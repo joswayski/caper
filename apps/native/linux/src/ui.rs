@@ -586,9 +586,10 @@ pub struct Ui {
     pub channels: gtk::ListBox,
     /// "Message requests" (its first row toggles) and the incoming requests.
     pub requests: gtk::ListBox,
-    /// "Notifications" or "Notifications · N": opens the inbox.
+    /// A bell, "Notifications" and, as on the web, a terracotta unread
+    /// count at the far end: opens the inbox.
     pub inbox: gtk::Button,
-    pub inbox_label: gtk::Label,
+    pub inbox_count: gtk::Label,
     pub directs: gtk::ListBox,
     pub account_avatar: AvatarView,
     pub account_name: gtk::Label,
@@ -927,8 +928,11 @@ impl Ui {
         let inbox_line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         inbox_line.append(&images.icon_image(Icon::Bell, "#b9bcbe", 18));
         let inbox_label = label("Notifications", &[]);
-        inbox_label.set_xalign(0.0);
+        inbox_label.set_hexpand(true);
         inbox_line.append(&inbox_label);
+        let inbox_count = label("", &["inbox-count"]);
+        inbox_count.set_visible(false);
+        inbox_line.append(&inbox_count);
         inbox.set_child(Some(&inbox_line));
         sidebar.append(&inbox);
         let lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1438,7 +1442,7 @@ impl Ui {
             channels,
             requests,
             inbox,
-            inbox_label,
+            inbox_count,
             directs,
             account_avatar,
             account_name,

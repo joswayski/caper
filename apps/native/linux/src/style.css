@@ -2220,6 +2220,11 @@ button.inbox-row-button:hover {
   background: @caper_surface_hover;
 }
 
+button.inbox-row-button .inbox-count {
+  color: @caper_terracotta_bright;
+  font-feature-settings: "tnum";
+}
+
 .inbox-row {
   padding: 6px 0;
 }
