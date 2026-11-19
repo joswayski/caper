@@ -623,23 +623,39 @@ label.body {
 
 /* Reactions: counted chips, terracotta when yours. */
 .reactions {
-  margin-top: 4px;
+  margin-top: 5px;
 }
 
+/* As web's chips: 30px, a bold muted count, and your own in terracotta. */
 button.reaction {
-  min-height: 24px;
+  min-height: 28px;
   padding: 0 8px;
   border-radius: 8px;
   border: 1px solid @caper_border;
   background: @caper_surface;
   box-shadow: none;
-  color: @caper_text;
+  color: @caper_text_muted;
   font-size: 12px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+button.reaction:hover {
+  border-color: @caper_text_muted;
 }
 
 button.reaction.mine {
   border-color: @caper_terracotta;
-  background: alpha(@caper_terracotta, 0.22);
+  background: alpha(@caper_terracotta, 0.16);
+  color: #f2ae9c;
+}
+
+button.reaction.mine:hover {
+  border-color: @caper_terracotta_bright;
+}
+
+button.reaction.reaction-add {
+  padding: 0 6px;
 }
 
 .reaction-error {

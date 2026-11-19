@@ -1297,7 +1297,7 @@ fn build_widgets() -> Widgets {
     let body = crate::markup::View::default();
     let notice = label("notice");
     notice.set_label(caper_client::mentions::FEEDBACK_NOTICE);
-    let reactions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let reactions = gtk::Box::new(gtk::Orientation::Horizontal, 5);
     reactions.add_css_class("reactions");
     let reaction_error = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     reaction_error.add_css_class("reaction-error");
@@ -1976,7 +1976,14 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
                 if chip.mine { ", including you" } else { "" }
             ),
         );
-        crate::app::show_text(&button, &format!("{} {}", chip.emoji, chip.count));
+        // Web's 18px emoji beside a 12px count.
+        let text = gtk::Label::new(None);
+        text.set_markup(&format!(
+            "<span font_size=\"13.5pt\">{}</span> {}",
+            glib::markup_escape_text(&chip.emoji),
+            chip.count
+        ));
+        button.set_child(Some(&text));
         button.add_css_class("reaction");
         if chip.mine {
             button.add_css_class("mine");
@@ -2015,6 +2022,22 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
             })
         });
         widgets.reactions.append(&button);
+    }
+    // As web and the other clients: "Add reaction" ends the chips.
+    if !same_chips && row.offers.act && !row.reactions.is_empty() {
+        let add: gtk::Button = crate::app::named("GtkButton", "Add reaction");
+        add.set_child(Some(&images.icon_image(Icon::SmilePlus, "#b9bcbe", 18)));
+        add.set_tooltip_text(Some("Add reaction"));
+        add.add_css_class("reaction");
+        add.add_css_class("reaction-add");
+        let (handler, id) = (handler.clone(), row.id.clone());
+        add.connect_clicked(move |add| {
+            handler(Action::Pick {
+                id: id.clone(),
+                anchor: add.clone().upcast(),
+            })
+        });
+        widgets.reactions.append(&add);
     }
     widgets.reactions.set_visible(!row.reactions.is_empty());
     widgets
