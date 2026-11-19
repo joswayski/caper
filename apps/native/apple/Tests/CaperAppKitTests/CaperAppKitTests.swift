@@ -3397,6 +3397,25 @@ import XCTest
         capture("conversation, wide", app: app)
     }
 
+    /// With read state, the first unread message wears the terracotta
+    /// "New messages" line inside its own row, above its author.
+    func testNewMessagesLineSitsAboveTheFirstUnreadMessage() async throws {
+        try await Self.resetFixture()
+        try await Self.control(["channelReads": ["chan00000001": "1"]])
+        let app = launch()
+        defer { app.terminate() }
+        let read = app.textViews["message-chan00000001m01"]
+        let unread = app.textViews["message-chan00000001m02"]
+        XCTAssertTrue(unread.waitForExistence(timeout: 15))
+        let line = app.staticTexts["channel-new-messages"]
+        XCTAssertTrue(line.waitForExistence(timeout: 10))
+        XCTAssertEqual(shownText(line), "New messages")
+        XCTAssertGreaterThan(line.frame.minY, read.frame.maxY, "The line sits below the last read message")
+        XCTAssertLessThan(line.frame.maxY, unread.frame.minY, "The line sits above the first unread message")
+        XCTAssertEqual(app.staticTexts.matching(identifier: "channel-new-messages").count, 1)
+        capture("new messages line", app: app)
+    }
+
     func testDraftFormattingCopyRepairUndoMenusAndSend() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
