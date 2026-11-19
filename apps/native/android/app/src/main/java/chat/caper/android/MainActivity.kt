@@ -2194,15 +2194,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val view = androidx.compose.ui.platform.LocalView.current
     val keyboard = LocalSoftwareKeyboardController.current
     val requester = remember(scope) { androidx.compose.ui.focus.FocusRequester() }
-    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-    val hardwareKeyboard = configuration.keyboard == android.content.res.Configuration.KEYBOARD_QWERTY &&
-        configuration.hardKeyboardHidden == android.content.res.Configuration.HARDKEYBOARDHIDDEN_NO
+    // Whether you're moving through the app with keys rather than touch. A connected keyboard alone
+    // isn't enough: emulators and phones with one paired still report it while you tap.
+    val inputModes = androidx.compose.ui.platform.LocalInputModeManager.current
     val latestDraft by rememberUpdatedState(draft)
     LaunchedEffect(focusRequest, focusEnabled) {
         val request = focusRequest ?: return@LaunchedEffect
         if (!focusEnabled) return@LaunchedEffect
         // A return of focus is for keyboard users; on touch it would raise the keyboard unasked.
-        if (request.keyboardOnly && request.typed.isEmpty() && !hardwareKeyboard) { consumeFocus(request.id); return@LaunchedEffect }
+        if (request.keyboardOnly && request.typed.isEmpty() && inputModes.inputMode != androidx.compose.ui.input.InputMode.Keyboard) { consumeFocus(request.id); return@LaunchedEffect }
         // Modal sheets own the window until disposed. Wait for the destination's
         // window and mounted/enabled field, not an arbitrary animation delay.
         do { withFrameNanos { } } while (!view.hasWindowFocus())
