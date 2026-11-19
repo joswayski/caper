@@ -4954,19 +4954,6 @@ impl App {
         let Some(card) = card else {
             return;
         };
-        let weak = Rc::downgrade(self);
-        let handler: rows::Handler = Rc::new(move |action| {
-            if let Some(app) = weak.upgrade() {
-                app.row_action(action, thread);
-            }
-        });
-        let content = crate::content::Content {
-            embeds: vec![card],
-            ..Default::default()
-        };
-        if let Some(view) = crate::content::view(&self.images, &content, &handler) {
-            preview.append(&view);
-        }
         let remove: gtk::Button = named("GtkButton", "Remove link preview");
         remove.set_child(Some(&self.images.icon_image(Icon::Close, "#b9bcbe", 14)));
         remove.set_tooltip_text(Some("Remove link preview"));
@@ -4980,7 +4967,7 @@ impl App {
                 glib::idle_add_local_once(move || app.render_link_preview(thread));
             }
         });
-        preview.append(&remove);
+        preview.append(&crate::content::composer_card(&self.images, &card, &remove));
     }
 
     /// The desktop's empty conversation and empty channel stages.

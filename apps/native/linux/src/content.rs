@@ -541,6 +541,80 @@ fn wrapped(markup: &str, classes: &[&str]) -> gtk::Label {
     label
 }
 
+/// The composer's compact card for the draft's first link, as web's
+/// `DraftEmbed` and egui's `composer_card`: a thumbnail, the site, the title
+/// and the first line of text. Never a player; `remove` sits inside it.
+pub fn composer_card(images: &Images, embed: &Embed, remove: &gtk::Button) -> gtk::Box {
+    let card = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    card.add_css_class("draft-embed");
+    let thumbnail = embed
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            EmbedBlock::Images {
+                items,
+                thumbnail: true,
+            } => items.first().map(|item| item.url.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            embed.blocks.iter().find_map(|block| match block {
+                EmbedBlock::Images { items, .. } => items.first().map(|item| item.url.clone()),
+                EmbedBlock::Player { poster, .. } | EmbedBlock::Video { poster, .. } => {
+                    poster.clone()
+                }
+                EmbedBlock::Author { icon, .. } => icon.clone(),
+                _ => None,
+            })
+        });
+    if let Some(url) = thumbnail {
+        let shown = picture((56, 56));
+        shown.add_css_class("draft-embed-thumbnail");
+        shown.set_overflow(gtk::Overflow::Hidden);
+        shown.set_valign(gtk::Align::Center);
+        images
+            .media
+            .bind(&shown, &caper_client::embeds::key(&url), &url);
+        card.append(&shown);
+    }
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    text.set_hexpand(true);
+    text.set_valign(gtk::Align::Center);
+    let mut site = format!("<b>{}</b>", glib::markup_escape_text(&embed.site.name));
+    if !embed.site.domain.is_empty() && embed.site.domain != embed.site.name {
+        site.push_str(&format!(
+            "  {}",
+            glib::markup_escape_text(&embed.site.domain)
+        ));
+    }
+    let line = |markup: &str, classes: &[&str]| {
+        let line = label("", classes);
+        line.set_markup(markup);
+        line.set_xalign(0.0);
+        line.set_ellipsize(pango::EllipsizeMode::End);
+        line.set_max_width_chars(60);
+        line
+    };
+    text.append(&line(&site, &["muted", "embed-site"]));
+    text.append(&line(
+        &glib::markup_escape_text(caper_client::embeds::heading(embed)),
+        &["draft-embed-title"],
+    ));
+    if let Some(body) = embed.blocks.iter().find_map(|block| match block {
+        EmbedBlock::Text { text } => Some(text.split_whitespace().collect::<Vec<_>>().join(" ")),
+        _ => None,
+    }) {
+        text.append(&line(
+            &glib::markup_escape_text(&body),
+            &["muted", "draft-embed-text"],
+        ));
+    }
+    card.append(&text);
+    remove.set_valign(gtk::Align::Start);
+    card.append(remove);
+    card
+}
+
 /// A link preview card: site, author, title, text, media and footer.
 fn card(images: &Images, embed: &Embed, handler: &Handler) -> gtk::Box {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 6);

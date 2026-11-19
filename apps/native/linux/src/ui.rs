@@ -330,11 +330,11 @@ impl Composer {
             .sync_create()
             .build();
         root.append(&chip_scroller);
+        // As web and egui: the draft's link card sits under its text.
         let preview = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         preview.add_css_class("composer-preview");
         preview.set_halign(gtk::Align::Start);
         preview.set_visible(false);
-        root.append(&preview);
         let dictation = DictationRow::new();
         root.append(&dictation.root);
         let sends = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -344,6 +344,7 @@ impl Composer {
         root.append(&line);
         let recording = RecordingBar::new(images);
         root.append(&recording.root);
+        root.append(&preview);
         let attach: gtk::Button = crate::app::named("GtkButton", "Attach files");
         attach.set_child(Some(&images.icon_image(Icon::Plus, "#b9bcbe", 18)));
         attach.set_tooltip_text(Some("Attach files"));

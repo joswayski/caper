@@ -2129,9 +2129,29 @@ checkbutton.broadcast {
   background: radial-gradient(circle, @caper_green 62%, @caper_blackout 64%);
 }
 
-/* The draft's link preview, above the composer's text. */
+/* The draft's link preview, under the composer's text (web DraftEmbed). */
 .composer-preview {
-  padding: 4px 4px 0 4px;
+  padding: 2px 4px 4px 4px;
+}
+
+.draft-embed {
+  background: @caper_surface_raised;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.draft-embed-thumbnail {
+  border-radius: 6px;
+}
+
+.draft-embed-title {
+  font-size: 13.6px;
+  font-weight: 500;
+}
+
+.draft-embed-text {
+  font-size: 12.5px;
 }
 
 /* "Message requests": its chevron turns like the Channels one. */
