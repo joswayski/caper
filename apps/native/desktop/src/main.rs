@@ -10586,7 +10586,7 @@ impl CaperApp {
                     });
                 });
                 ui.label(bold("A fresh Caper is ready").size(20.0));
-                // "Version 0.1.82 · October 18, 2026" sits right under the title;
+                // "Version 2026.11.19.3 · October 18, 2026" sits right under the title;
                 // the version opens its commit.
                 ui.add_space(-ui.spacing().item_spacing.y + 2.0);
                 let date = update
@@ -23956,7 +23956,7 @@ impl CaperApp {
         }
     }
 
-    /// Settings' "Version 0.1.654": a click, Enter or Space copies one line
+    /// Settings' "Version 2026.11.19.3": a click, Enter or Space copies one line
     /// for bug reports, and it reads "Copied" for two seconds in a polite
     /// live region. A development build's is plain text.
     fn version_control(&mut self, ui: &mut egui::Ui) {
@@ -44114,10 +44114,17 @@ mod tests {
             assert!(node_bounds(&output, "Development build, copy").is_none());
 
             // A release's copies one line for bug reports, then reads Copied.
-            app.installed = updates::InstalledVersion::of(Some(654), whats_new::REVISION, "Linux");
+            app.installed = updates::InstalledVersion::of(
+                Some((2026111903, "2026.11.19.3".into())),
+                whats_new::REVISION,
+                "Linux",
+            );
             let output = frame(&mut app, vec![]);
-            assert_eq!(text_color(&output, "Version 0.1.654"), TEXT);
-            let line = format!("Caper 0.1.654 for Linux ({})", &whats_new::REVISION[..7]);
+            assert_eq!(text_color(&output, "Version 2026.11.19.3"), TEXT);
+            let line = format!(
+                "Caper 2026.11.19.3 for Linux ({})",
+                &whats_new::REVISION[..7]
+            );
             let (target, node) = output
                 .platform_output
                 .accesskit_update
@@ -44125,7 +44132,7 @@ mod tests {
                 .unwrap()
                 .nodes
                 .iter()
-                .find(|(_, node)| node.label() == Some("Version 0.1.654, copy"))
+                .find(|(_, node)| node.label() == Some("Version 2026.11.19.3, copy"))
                 .unwrap()
                 .clone();
             assert_eq!(node.live(), Some(egui::accesskit::Live::Polite));
@@ -44133,7 +44140,7 @@ mod tests {
                 node.description()
                     .is_some_and(|text| text.starts_with("Click to copy the version"))
             );
-            let pos = node_center(&output, "Version 0.1.654, copy");
+            let pos = node_center(&output, "Version 2026.11.19.3, copy");
             let mut copies = Vec::new();
             for pressed in [true, false] {
                 let output = frame(
@@ -44156,7 +44163,7 @@ mod tests {
             assert!(node_bounds(&output, "Copied").is_some());
             app.version_copied = Some(std::time::Instant::now() - crate::VERSION_COPIED_FOR);
             let output = frame(&mut app, vec![]);
-            assert!(texts(&output).contains(&"Version 0.1.654"));
+            assert!(texts(&output).contains(&"Version 2026.11.19.3"));
 
             // Enter on the focused control copies too.
             frame(

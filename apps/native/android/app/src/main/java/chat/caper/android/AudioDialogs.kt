@@ -174,7 +174,7 @@ internal fun audioRouteIcon(type: Int, input: Boolean = false): Int = when (type
 
 /**
  * The installed version, as caper_client::updates::InstalledVersion on desktop: a tap copies one
- * line for bug reports ("Caper 0.1.654 for Android (5c00469)") and the label reads "Copied" for 2 s
+ * line for bug reports ("Caper 2026.11.19.3 for Android (5c00469)") and the label reads "Copied" for 2 s
  * in a polite live region. A development build's is plain text.
  */
 @Composable private fun InstalledVersionControl() {

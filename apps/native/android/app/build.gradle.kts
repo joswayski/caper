@@ -28,9 +28,11 @@ val sourceRevision = providers.environmentVariable("CAPER_RELEASE_SHA").orElse(
     require(Regex("^[0-9a-f]{40}$").matches(it)) { "CAPER_RELEASE_SHA must be a full lowercase source SHA." }
     it
 }
-// Native release run number (release.yml). Google Play and APK updates need a
-// versionCode higher than the installed one; local builds stay at 1.
+// Native release build (release.yml), e.g. 2026111903 for version 2026.11.19.3.
+// Google Play and APK updates need a versionCode higher than the installed one;
+// local builds stay at 1.
 val buildNumber = providers.environmentVariable("CAPER_BUILD_NUMBER").map { it.toInt() }.orElse(1)
+val releaseVersion = providers.environmentVariable("CAPER_VERSION").orElse("0.0.0-dev")
 
 if (fixtureMode.get().toBoolean()) {
     val fixtureOrigin = URI(apiBaseUrl.get())
@@ -71,7 +73,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = buildNumber.get()
-        versionName = if (buildNumber.get() > 1) "0.1.${buildNumber.get()}" else "0.1.0-dev"
+        versionName = releaseVersion.get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The Play bundle carries native symbols so Android vitals can show
         // readable stack traces for crashes in WebRTC or the audio pipeline.

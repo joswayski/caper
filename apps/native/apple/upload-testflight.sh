@@ -7,15 +7,17 @@
 # entitlements without issuing an Apple Development certificate on every run.
 #
 # Environment: APPLE_TEAM_ID, NOTARY_KEY_PATH (.p8), NOTARY_KEY_ID,
-# NOTARY_ISSUER, BUILD_NUMBER (unique and increasing per upload; its run
-# number before the dot is the release, so the app shows "0.1.<run>").
+# NOTARY_ISSUER, BUILD_NUMBER (unique and increasing per upload: the release
+# build, a dot and the run attempt, e.g. 2026111903.1), CAPER_APP_VERSION
+# (2026.11.1903, CFBundleShortVersionString) and CAPER_VERSION (2026.11.19.3,
+# shown in the app).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 IOS_BUNDLE_ID="${CAPER_IOS_BUNDLE_ID:-chat.caper.ios}"
 # The UIKit client keeps the SwiftUI app's Caper.app identity, extension and entitlements.
 IOS_SCHEME=CaperIOSUIKit
-: "${APPLE_TEAM_ID:?}" "${NOTARY_KEY_PATH:?}" "${NOTARY_KEY_ID:?}" "${NOTARY_ISSUER:?}" "${BUILD_NUMBER:?}"
+: "${APPLE_TEAM_ID:?}" "${NOTARY_KEY_PATH:?}" "${NOTARY_KEY_ID:?}" "${NOTARY_ISSUER:?}" "${BUILD_NUMBER:?}" "${CAPER_VERSION:?}" "${CAPER_APP_VERSION:?}"
 
 auth=(
   -allowProvisioningUpdates
@@ -69,11 +71,11 @@ xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$IOS_SCHEME" -configur
   -destination 'generic/platform=iOS' -archivePath "$work/Caper.xcarchive" \
   -derivedDataPath "$ROOT/DerivedData-TestFlight" \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
-  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" MARKETING_VERSION="0.1.${BUILD_NUMBER%%.*}" CAPER_SOURCE_REVISION="$source_revision" \
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" MARKETING_VERSION="$CAPER_APP_VERSION" CAPER_VERSION="$CAPER_VERSION" CAPER_SOURCE_REVISION="$source_revision" \
   CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES archive
 
 # Validate the built bundles before export can upload them (ITMS-90473).
-python3 - "$work/Caper.xcarchive" "$source_revision" <<'PY'
+python3 - "$work/Caper.xcarchive" "$source_revision" "$CAPER_VERSION" <<'PY'
 from pathlib import Path
 import plistlib
 import sys
@@ -83,6 +85,8 @@ with (bundle / "Info.plist").open("rb") as source:
     app = plistlib.load(source)
 if app.get("CaperSourceRevision") != sys.argv[2]:
     sys.exit("CaperSourceRevision does not match the release source SHA.")
+if app.get("CaperVersion") != sys.argv[3]:
+    sys.exit("CaperVersion does not match the release version.")
 with (bundle / "PlugIns/CaperNotificationService.appex/Info.plist").open("rb") as source:
     extension = plistlib.load(source)
 for key in ("CFBundleVersion", "CFBundleShortVersionString"):

@@ -4612,9 +4612,10 @@ presentation waits for the signed-in workspace and defers during calls or other
 modals; missing publications retry at most once a minute.
 
 History groups releases by UTC publication date ("October 18, 2026"). Native
-releases link their `0.1.<build>` version (optional `version` metadata in schema-1
-snapshots); web and legacy entries link a short commit. The header shows the Caper
-face, title and installed version (`Version 0.1.<build>` or `Web build <commit>`).
+releases link their version, `2026.11.19.3` or `0.1.<build>` before CalVer
+(optional `version` metadata in schema-1 snapshots; see `apps/native/README.md`,
+Versions); web and legacy entries link a short commit. The header shows the Caper
+face, title and installed version (`Version 2026.11.19.3` or `Web build <commit>`).
 
 Mac/Windows/Linux offer **Check for updates** in the account menu and Settings.
 Automatic checks show a persistent **Update available** button in its own row

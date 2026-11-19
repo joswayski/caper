@@ -84,7 +84,8 @@ if (Get-Command nasm -ErrorAction SilentlyContinue) { $ReleaseFeatures = @("--fe
 cargo build --manifest-path (Join-Path $Native "Cargo.toml") --package caper-windows --target $Target --locked --release @ReleaseFeatures
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # The self-updater ships beside Caper.exe. Release builds set CAPER_BUILD_NUMBER
-# and CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
+# (2026111903, compared), CAPER_VERSION (2026.11.19.3, shown) and
+# CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
 cargo build --manifest-path (Join-Path $Root "apps\native\updater\Cargo.toml") --target $Target --locked --release
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

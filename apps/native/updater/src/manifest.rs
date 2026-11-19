@@ -22,7 +22,7 @@ pub struct Manifest {
     pub schema: u32,
     /// Monotonic release number; a client updates only to a larger one.
     pub build: u64,
-    /// Human-readable version shown in the update prompt, e.g. `0.1.42`.
+    /// Human-readable version shown in the update prompt, e.g. `2026.11.19.3`.
     pub version: String,
     pub commit: String,
     #[serde(default)]

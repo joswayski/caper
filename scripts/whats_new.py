@@ -43,6 +43,8 @@ PROVIDER_TIMEOUT_SECONDS = 300
 PROVIDER_RETRY_STATUSES = frozenset((408, 429, 500, 502, 503, 504, 529))
 PROVIDER_RETRY_DELAYS = (10, 30)
 SHA = re.compile(r"[0-9a-f]{40}")
+# Native release versions: CalVer (2026.11.19.3), or 0.1.<run> before it.
+NATIVE_VERSION = re.compile(r"\d+(?:\.\d+){2,3}")
 SECRET_PATH = re.compile(
     r"(?:^|/)(?:\.env[^/]*|secrets?|credentials?|private[-_]keys?)(?:[./_-]|$)"
     r"|\.(?:pem|key|p12|pfx|jks|keystore|mobileprovision)$",
@@ -197,7 +199,7 @@ def validate_snapshot(data, platform, revision=None):
         keys(release, ("sequence", "revision", "publishedAt", "highlights"), ("version",))
         if "version" in release:
             version = release["version"]
-            if not isinstance(version, str) or len(version) > 64 or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+            if not isinstance(version, str) or len(version) > 64 or not NATIVE_VERSION.fullmatch(version):
                 raise GenerationError("invalid release version")
         if not positive(release["sequence"]) or release["sequence"] <= sequence or not revision_id(release["revision"]):
             raise GenerationError("invalid release sequence or revision")
@@ -747,7 +749,7 @@ def generate(
     if not revision_id(revision) or audience not in ("web", "native"):
         raise GenerationError("revision must be 40 lowercase hex characters; audience must be web or native")
     if native_version is not None and (
-        audience != "native" or len(native_version) > 64 or not re.fullmatch(r"\d+\.\d+\.\d+", native_version)
+        audience != "native" or len(native_version) > 64 or not NATIVE_VERSION.fullmatch(native_version)
     ):
         raise GenerationError("native version must be a full numeric app version for a native release")
     if git(repo, "rev-parse", f"{revision}^{{commit}}") != revision:

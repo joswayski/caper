@@ -157,7 +157,7 @@ impl Dialog {
         "A fresh Caper is ready"
     }
 
-    /// "Version 0.1.82 · 1.5 MB · October 18, 2026": the size sits beside
+    /// "Version 2026.11.19.3 · 1.5 MB · October 18, 2026": the size sits beside
     /// the version it downloads.
     pub(crate) fn update_note(&self) -> String {
         let Some(u) = &self.update else {
@@ -176,7 +176,7 @@ impl Dialog {
             .join(" \u{b7} ")
     }
 
-    /// "Version 0.1.82", the note's lead, which opens its commit.
+    /// "Version 2026.11.19.3", the note's lead, which opens its commit.
     pub(crate) fn update_version(&self) -> String {
         self.update
             .as_ref()

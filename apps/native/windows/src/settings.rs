@@ -88,7 +88,7 @@ pub enum SPart {
     WhatsNew,
     RetryHighlights,
     InstalledRevision,
-    /// "Version 0.1.654": copies one line for bug reports.
+    /// "Version 2026.11.19.3": copies one line for bug reports.
     CopyVersion,
     ReleaseRevision(usize),
     Done,

@@ -64,7 +64,7 @@ fn link(text: &str, url: &str, classes: &[&str]) -> gtk::LinkButton {
     button
 }
 
-/// Settings' "Version 0.1.654": a click, Enter or Space copies one line for
+/// Settings' "Version 2026.11.19.3": a click, Enter or Space copies one line for
 /// bug reports and reads "Copied" for 2 s, renamed so Orca announces it
 /// (GTK 4.8 has no announcement API). A development build's is plain text.
 fn version_control() -> gtk::Widget {
@@ -109,7 +109,7 @@ fn version_control() -> gtk::Widget {
     button.upcast()
 }
 
-/// "Version 0.1.82" (or the short commit) linking the release's commit.
+/// "Version 2026.11.19.3" (or the short commit) linking the release's commit.
 fn release_label(release: &Release) -> String {
     release.version.as_ref().map_or_else(
         || release.revision[..7].to_owned(),

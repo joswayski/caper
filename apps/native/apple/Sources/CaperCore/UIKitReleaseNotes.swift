@@ -175,8 +175,8 @@ import Observation
     }
 }
 
-/// "Version 0.1.654", as on every client: a tap (or Return or Space with a
-/// keyboard) copies "Caper 0.1.654 for iOS (5c00469)" and the label reads
+/// "Version 2026.11.19.3", as on every client: a tap (or Return or Space with a
+/// keyboard) copies "Caper 2026.11.19.3 for iOS (5c00469)" and the label reads
 /// "Copied" for two seconds, announced to VoiceOver. Development builds show
 /// "Development build" and can't be pressed.
 @MainActor final class UIKitVersionControl: UIButton {

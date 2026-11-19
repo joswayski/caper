@@ -63,7 +63,7 @@ import AppKit
         card.translatesAutoresizingMaskIntoConstraints = false
         addSubview(card)
 
-        // The face, the title, then "Version 0.1.82 · October 18, 2026"; the version opens its commit.
+        // The face, the title, then "Version 2026.11.19.3 · October 18, 2026"; the version opens its commit.
         let version = NSStackView(); version.orientation = .horizontal; version.spacing = 0
         if let url = update.commitURL {
             version.addArrangedSubview(AppKitKitLink("Version \(update.version)", url: url))

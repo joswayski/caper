@@ -638,11 +638,14 @@ class HighlightsTests(unittest.TestCase):
         self.assertEqual(self.github.events, [])
         later = self.commit("Another native update", {"shared/design.css": "next controls\n"})
         self.response = {"highlights": [highlight([later], PLATFORMS[1:])]}
-        for value in self.generate(later, "native", native_version="0.1.114").values():
-            self.assertEqual([release.get("version") for release in value["releases"]], [None, "0.1.112", "0.1.114"])
+        # The first CalVer release follows the 0.1.<run> ones in the same feed.
+        for value in self.generate(later, "native", native_version="2026.11.19.3").values():
+            self.assertEqual(
+                [release.get("version") for release in value["releases"]], [None, "0.1.112", "2026.11.19.3"]
+            )
         with self.assertRaises(notes.GenerationError):
-            self.generate(later, "web", native_version="0.1.114")
-        for version in ["", "Release 2", "0.1.114\n", "0.1." + "1" * 64]:
+            self.generate(later, "web", native_version="2026.11.19.3")
+        for version in ["", "Release 2", "2026.11.19.3\n", "2026.11.19.3.1", "0.1." + "1" * 64]:
             with self.assertRaises(notes.GenerationError):
                 self.generate(later, "native", native_version=version)
 

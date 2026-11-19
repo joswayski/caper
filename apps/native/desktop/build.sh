@@ -74,9 +74,11 @@ if ldd "$CARGO_TARGET_DIR/release/caper-linux" | grep -E 'lib(gtk-3|webkit2gtk|j
   exit 1
 fi
 # The self-updater ships beside the app. Release builds set CAPER_BUILD_NUMBER
-# and CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
+# (2026111903, compared), CAPER_VERSION (2026.11.19.3, shown) and
+# CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
 cargo build --manifest-path "$root/apps/native/updater/Cargo.toml" --locked --release
-version="0.1.${CAPER_BUILD_NUMBER:-0}"
+# dpkg orders 2026.11.19.3 above the 0.1.<run> packages before it.
+version="${CAPER_VERSION:-0.0.0}"
 
 package_dir="$native/target/package"
 rm -rf "$native/dist" "$package_dir"

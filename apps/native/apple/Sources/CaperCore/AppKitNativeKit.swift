@@ -148,8 +148,8 @@ import SwiftUI
     }
 }
 
-/// "Version 0.1.654", as on every client: a click, Return or Space copies
-/// "Caper 0.1.654 for macOS (5c00469)" and the label reads "Copied" for two
+/// "Version 2026.11.19.3", as on every client: a click, Return or Space copies
+/// "Caper 2026.11.19.3 for macOS (5c00469)" and the label reads "Copied" for two
 /// seconds, announced to VoiceOver. A development build is plain text.
 @MainActor func appKitVersionControl(_ installed: InstalledVersion = .current) -> NSView {
     guard let copy = installed.copyText else { return AppKitKit.label(installed.label, size: 12, wraps: false) }

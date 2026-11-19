@@ -173,6 +173,21 @@ also be run by hand (a blank `git_sha` releases the newest `main` commit).
 Signing material is read from AWS Secrets Manager through GitHub OIDC; see
 `docs/release-signing.md` in joswayski/infrastructure.
 
+**Versions.** Each run is one release, named by its New York date and a daily
+revision: version `2026.11.19.3`, which every client shows and copies and Google
+Play names the release. Where a platform takes only three numbers, the app
+version packs the day and revision as `YEAR.MONTH.DAY×100+REVISION`
+(`2026.11.1903`, Apple's CFBundleShortVersionString; the apps read the shown
+version from their `CaperVersion` key). The build spreads it into one integer,
+`YYYYMMDDNN` (`2026111903`): Apple's CFBundleVersion, Android's versionCode and
+the self-updater's `build`. `scripts/native_release_version.py` numbers the run
+in its Resolve job: the revision is one more than the earlier release runs
+created that day whose first attempt started (runs cancelled while waiting
+never built anything). A re-run keeps its version; a run cancelled before it
+started cannot be re-run, so start a new one. At most 99 releases a day.
+Builds before CalVer were `0.1.<run number>` (build `<run number>`); every
+CalVer build is larger, and clients read both formats in update history.
+
 **Phone betas.** The homepage's phone buttons are the supported installs; their
 links live in `apps/web/src/downloads.ts` and stay hidden until set.
 
@@ -186,14 +201,14 @@ links live in `apps/web/src/downloads.ts` and stay hidden until set.
 - iPhone: the run archives `chat.caper.ios` and uploads it with
   `apps/native/apple/upload-testflight.sh`. Signing is cloud-managed through the
   App Store Connect API key; no certificate or profile is stored. Build numbers
-  are `<run number>.<attempt>`. `scripts/testflight-distribute.py` adds each
+  are `<build>.<attempt>` (`2026111903.1`), unique across re-runs. `scripts/testflight-distribute.py` adds each
   build to every tester group and submits it for Beta App Review when an
   external group needs it.
 - Store reviewers sign in with the API's review account (`AUTH_REVIEW_EMAIL`,
   `AUTH_REVIEW_CODE`; see `docs/media.md`).
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
-`caper-updater` (`apps/native/updater`) and use the run number as build number.
+`caper-updater` (`apps/native/updater`) and compare release builds (see Versions).
 About 20 seconds after launch and every minute they check
 `https://caper.chat/api/updates/native`; the API caches GitHub's
 `native-latest/latest.json` and its signature for 60 seconds per process, and

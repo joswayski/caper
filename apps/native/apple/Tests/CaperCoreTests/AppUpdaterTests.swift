@@ -57,15 +57,16 @@ final class AppUpdaterTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: folder) }
         let info: [String: String] = [
             "CFBundleIdentifier": "chat.caper.version-fixture",
-            "CFBundleShortVersionString": "0.2.7",
-            "CFBundleVersion": "42",
+            "CFBundleShortVersionString": "2026.11.1903",
+            "CFBundleVersion": "2026111903",
+            "CaperVersion": "2026.11.19.3",
             "CaperSourceRevision": String(repeating: "abcdef0123", count: 4),
         ]
         let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
         try data.write(to: contents.appendingPathComponent("Info.plist"))
         let bundle = try XCTUnwrap(Bundle(url: folder))
         let updater = AppUpdater(bundle: bundle, environment: ["CAPER_TEST_MODE": "parity"])
-        XCTAssertEqual(updater.installedVersion, "Installed: Caper 0.2.7 (build 42)")
+        XCTAssertEqual(updater.installedVersion, "Installed: Caper 2026.11.19.3 (build 2026111903)")
         XCTAssertEqual(updater.controls.installedVersion, updater.installedVersion)
         XCTAssertEqual(updater.controls.sourceRevision, info["CaperSourceRevision"])
         XCTAssertEqual(updater.controls.commitURL?.absoluteString,

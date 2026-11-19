@@ -661,7 +661,8 @@ struct Highlights {
 struct HighlightedRelease {
     sequence: u64,
     revision: String,
-    /// The native app version ("0.1.<build>"); absent on older entries.
+    /// The native app version ("2026.11.19.3", or "0.1.<build>" before
+    /// CalVer); absent on older entries.
     #[serde(default)]
     version: Option<String>,
     published_at: String,
@@ -669,13 +670,28 @@ struct HighlightedRelease {
 }
 
 impl HighlightedRelease {
-    /// The build number in this entry's version, when it has one.
+    /// The build number in this entry's version, when it has one: 121 for
+    /// "0.1.121", and YYYYMMDDNN (2026111903) for CalVer "2026.11.19.3".
     fn build(&self) -> Option<u64> {
-        let mut parts = self.version.as_deref()?.split('.');
-        let build = parts.nth(2)?;
-        (parts.next().is_none() && build.bytes().all(|byte| byte.is_ascii_digit()))
-            .then(|| build.parse().ok())
-            .flatten()
+        let parts: Vec<&str> = self.version.as_deref()?.split('.').collect();
+        if parts.iter().any(|part| {
+            part.is_empty() || part.len() > 10 || !part.bytes().all(|byte| byte.is_ascii_digit())
+        }) {
+            return None;
+        }
+        match parts[..] {
+            ["0", "1", build] => build.parse().ok(),
+            [year, month, day, revision]
+                if year.len() == 4 && month.len() == 2 && day.len() == 2 =>
+            {
+                let revision: u64 = revision.parse().ok()?;
+                (1..=99)
+                    .contains(&revision)
+                    .then(|| format!("{year}{month}{day}{revision:02}").parse().ok())
+                    .flatten()
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1404,6 +1420,22 @@ mod tests {
                 Some(4)
             )
         );
+        // An installed 0.1.<run> build still finds the CalVer releases after it.
+        assert_eq!(
+            titles(
+                vec![
+                    entry(2, &"0".repeat(40), Some("0.1.121"), "Older"),
+                    entry(3, &"b".repeat(40), Some("2026.11.19.3"), "Skipped"),
+                    entry(4, &target_revision, Some("2026.11.19.4"), "Newest"),
+                ],
+                121
+            ),
+            (
+                vec!["Newest".to_owned(), "Skipped".to_owned()],
+                false,
+                Some(4)
+            )
+        );
         // No build numbers to compare: only the update's own highlights.
         assert_eq!(
             titles(
@@ -1427,12 +1459,21 @@ mod tests {
             highlights: Vec::new(),
         };
         assert_eq!(release(Some("0.1.121")).build(), Some(121));
+        assert_eq!(release(Some("2026.11.19.3")).build(), Some(2026111903));
+        assert_eq!(release(Some("2026.11.19.12")).build(), Some(2026111912));
+        // The first CalVer build sorts above every 0.1.<run> build.
+        assert!(release(Some("2026.01.01.1")).build() > release(Some("0.1.9999")).build());
         for version in [
             None,
             Some("0.1"),
             Some("0.1.12a"),
             Some("0.1.2.3"),
             Some("0.1."),
+            Some("2026.11.1903"),
+            Some("2026.11.19.0"),
+            Some("2026.11.19.100"),
+            Some("2026.1.19.3"),
+            Some("2026.11.19.3.1"),
         ] {
             assert_eq!(release(version).build(), None, "{version:?}");
         }

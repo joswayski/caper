@@ -325,6 +325,14 @@ fn build_number() -> Option<u64> {
         .filter(|build| *build > 0)
 }
 
+/// The installed release's version, "2026.11.19.3" (release.yml sets
+/// `CAPER_VERSION` beside the build it compares, 2026111903).
+fn installed(build: u64) -> String {
+    option_env!("CAPER_VERSION")
+        .filter(|version| !version.is_empty())
+        .map_or_else(|| build.to_string(), str::to_owned)
+}
+
 /// A build's source on GitHub, or `None` for anything but a full commit SHA.
 pub fn commit_url(revision: &str) -> Option<String> {
     (revision.len() == 40
@@ -338,16 +346,16 @@ pub fn commit_url(revision: &str) -> Option<String> {
 pub fn version_label() -> String {
     build_number().map_or_else(
         || "Development build".into(),
-        |build| format!("Installed version 0.1.{build}"),
+        |build| format!("Installed version {}", installed(build)),
     )
 }
 
 /// The installed app, not the latest release returned by the update server:
-/// "Caper 0.1.654", or "Development build".
+/// "Caper 2026.11.19.3", or "Development build".
 pub fn installed_version() -> String {
     build_number().map_or_else(
         || "Development build".into(),
-        |build| format!("Caper 0.1.{build}"),
+        |build| format!("Caper {}", installed(build)),
     )
 }
 
@@ -356,13 +364,13 @@ pub fn installed_version() -> String {
 /// [`VERSION_COPIED`] briefly. Development builds have nothing to copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledVersion {
-    /// "Version 0.1.654", or "Development build".
+    /// "Version 2026.11.19.3", or "Development build".
     pub label: String,
-    /// One line for bug reports: "Caper 0.1.654 for Linux (5c00469)".
+    /// One line for bug reports: "Caper 2026.11.19.3 for Linux (5c00469)".
     pub copy_text: Option<String>,
     /// The tooltip and accessible description.
     pub details: Option<String>,
-    /// "Version 0.1.654, copy".
+    /// "Version 2026.11.19.3, copy".
     pub accessible_name: String,
 }
 
@@ -373,11 +381,16 @@ pub const PLATFORM_NAME: &str = if cfg!(windows) { "Windows" } else { "Linux" };
 
 impl InstalledVersion {
     pub fn current() -> Self {
-        Self::of(build_number(), crate::whats_new::REVISION, PLATFORM_NAME)
+        Self::of(
+            build_number().map(|build| (build, installed(build))),
+            crate::whats_new::REVISION,
+            PLATFORM_NAME,
+        )
     }
 
-    pub fn of(build: Option<u64>, revision: &str, platform: &str) -> Self {
-        let Some(build) = build else {
+    /// `release` is the installed build and its version.
+    pub fn of(release: Option<(u64, String)>, revision: &str, platform: &str) -> Self {
+        let Some((build, version)) = release else {
             return Self {
                 label: "Development build".into(),
                 copy_text: None,
@@ -387,12 +400,12 @@ impl InstalledVersion {
         };
         let short = &revision[..7.min(revision.len())];
         Self {
-            label: format!("Version 0.1.{build}"),
-            copy_text: Some(format!("Caper 0.1.{build} for {platform} ({short})")),
+            label: format!("Version {version}"),
+            copy_text: Some(format!("Caper {version} for {platform} ({short})")),
             details: Some(format!(
-                "Click to copy the version\nCaper 0.1.{build} for {platform}, build {build}, commit {revision}"
+                "Click to copy the version\nCaper {version} for {platform}, build {build}, commit {revision}"
             )),
-            accessible_name: format!("Version 0.1.{build}, copy"),
+            accessible_name: format!("Version {version}, copy"),
         }
     }
 }
@@ -502,16 +515,17 @@ mod tests {
     #[test]
     fn the_installed_version_reads_as_a_version_and_copies_one_report_line() {
         let sha = "5c004697a8d1b0c2e3f4a5b6c7d8e9f0a1b2c3d4";
-        let version = InstalledVersion::of(Some(654), sha, "Windows");
-        assert_eq!(version.label, "Version 0.1.654");
+        let version =
+            InstalledVersion::of(Some((2026111903, "2026.11.19.3".into())), sha, "Windows");
+        assert_eq!(version.label, "Version 2026.11.19.3");
         assert_eq!(
             version.copy_text.as_deref(),
-            Some("Caper 0.1.654 for Windows (5c00469)")
+            Some("Caper 2026.11.19.3 for Windows (5c00469)")
         );
-        assert_eq!(version.accessible_name, "Version 0.1.654, copy");
+        assert_eq!(version.accessible_name, "Version 2026.11.19.3, copy");
         let details = version.details.unwrap();
         assert!(details.starts_with("Click to copy the version\n"));
-        assert!(details.contains(sha) && details.contains("build 654"));
+        assert!(details.contains(sha) && details.contains("build 2026111903"));
 
         let development = InstalledVersion::of(None, sha, "Linux");
         assert_eq!(development.label, "Development build");

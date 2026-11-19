@@ -419,7 +419,7 @@ pub enum Part {
     RemoveMember(usize),
     /// The danger zone's Delete space or Delete channel.
     DeleteOpen,
-    /// The update review's "Version 0.1.82", which opens its commit.
+    /// The update review's "Version 2026.11.19.3", which opens its commit.
     Release,
     Profile(crate::profile::editor::Control),
     ReactorTab(usize),

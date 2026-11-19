@@ -9,7 +9,8 @@ name: Native release
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.tar.gz
 # and uploads the iPhone app to TestFlight. The Mac, Windows and Linux apps update
 # themselves from latest.json (signed with the caper_update key) using
-# apps/native/updater; each release's build number is this workflow's run number.
+# apps/native/updater. Each run is one release, versioned by its New York date
+# and daily revision (scripts/native_release_version.py; apps/native/README.md).
 # latest.json also lists patch updates from the last few builds (only what
 # changed, rebuilt and verified by the updater), made from full archives kept on
 # the native-update-bases draft release; clients fall back to the full archive.
@@ -39,6 +40,7 @@ on:
       - scripts/native_fonts.py
       - scripts/native_artifacts.py
       - scripts/native_changelog.py
+      - scripts/native_release_version.py
       - scripts/native_update_patches.py
       - scripts/native-update-retain.sh
       - scripts/play-upload.py
@@ -69,8 +71,6 @@ env:
   AWS_REGION: us-east-1
   RELEASE_SIGNER_ROLE: arn:aws:iam::395451633568:role/production-caper-release-signer
   RELEASE_TAG: native-latest
-  # Monotonic, compared by the self-updater. Re-runs rebuild the same number.
-  CAPER_BUILD_NUMBER: ${{ github.run_number }}
   # Resolve validates this exact source before any client is built.
   CAPER_RELEASE_SHA: ${{ inputs.git_sha || github.sha }}
 
@@ -81,10 +81,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      # Reading earlier runs numbers this release.
+      actions: read
       contents: read
       id-token: write
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      app_version: ${{ steps.version.outputs.app_version }}
+      build: ${{ steps.version.outputs.build }}
       update_public_key: ${{ steps.update_key.outputs.public_key }}
     steps:
       - uses: actions/checkout@v4
@@ -101,6 +106,13 @@ jobs:
           git merge-base --is-ancestor "$sha" "$GITHUB_SHA" || { echo "$sha is not on main." >&2; exit 1; }
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
           echo "Releasing $sha"
+      - id: version
+        name: Number the release
+        # e.g. 2026.11.19.3, app version 2026.11.1903, build 2026111903. A re-run
+        # keeps its version; builds always increase for stores and self-updaters.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/native_release_version.py
       # Release tooling belongs to this workflow revision, not the chosen app
       # revision: rebuilding an older commit must not require it to have uv.lock.
       - uses: actions/upload-artifact@v4
@@ -150,6 +162,9 @@ jobs:
     runs-on: [self-hosted, josemac-ui]
     env:
       CAPER_MACOS_ARCH: ${{ matrix.arch }}
+      CAPER_BUILD_NUMBER: ${{ needs.resolve.outputs.build }}
+      CAPER_VERSION: ${{ needs.resolve.outputs.version }}
+      CAPER_APP_VERSION: ${{ needs.resolve.outputs.app_version }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -265,6 +280,9 @@ jobs:
     runs-on: [self-hosted, josemac-ui]
     env:
       CAPER_MACOS_ARCH: ${{ matrix.arch }}
+      CAPER_BUILD_NUMBER: ${{ needs.resolve.outputs.build }}
+      CAPER_VERSION: ${{ needs.resolve.outputs.version }}
+      CAPER_APP_VERSION: ${{ needs.resolve.outputs.app_version }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -277,6 +295,12 @@ jobs:
     runs-on: [self-hosted, josemac-sim]
     # Includes waiting for Apple to process the build before handing it to testers.
     timeout-minutes: 110
+    env:
+      CAPER_VERSION: ${{ needs.resolve.outputs.version }}
+      CAPER_APP_VERSION: ${{ needs.resolve.outputs.app_version }}
+      # Unique and increasing across runs and re-runs, e.g. 2026111903.1 then
+      # 2026111903.2: TestFlight never takes the same build twice.
+      BUILD_NUMBER: ${{ needs.resolve.outputs.build }}.${{ github.run_attempt }}
     permissions:
       actions: read
       contents: read
@@ -324,9 +348,6 @@ jobs:
         with:
           platform: apple
       - name: Archive and upload to TestFlight
-        env:
-          # Unique and increasing across runs and re-runs, e.g. 12.1 then 12.2.
-          BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
         run: bash apps/native/apple/upload-testflight.sh
       - uses: actions/download-artifact@v4
         with:
@@ -344,7 +365,6 @@ jobs:
           private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
       - name: Give the build to every TestFlight tester group
         env:
-          BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
@@ -360,6 +380,9 @@ jobs:
     needs: resolve
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      CAPER_BUILD_NUMBER: ${{ needs.resolve.outputs.build }}
+      CAPER_VERSION: ${{ needs.resolve.outputs.version }}
     permissions:
       actions: read
       contents: read
@@ -521,7 +544,7 @@ jobs:
           PLAY_TRACK: internal,alpha
         run: |
           set -euo pipefail
-          export PLAY_RELEASE_NAME="0.1.${CAPER_BUILD_NUMBER}"
+          export PLAY_RELEASE_NAME="$CAPER_VERSION"
           export PLAY_RELEASE_NOTES="$(bash scripts/release-notes.sh "$RELEASE_SHA")"
           # Play has transient outages (HTTP 503 while assigning a track). A failed
           # attempt never commits its edit, so the next one uploads the same version
@@ -555,6 +578,9 @@ jobs:
             target: windows-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      CAPER_BUILD_NUMBER: ${{ needs.resolve.outputs.build }}
+      CAPER_VERSION: ${{ needs.resolve.outputs.version }}
     permissions:
       contents: read
     steps:
@@ -673,7 +699,7 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
           archive: ${{ runner.temp }}/target/${{ matrix.archive }}
-          build: ${{ github.run_number }}
+          build: ${{ needs.resolve.outputs.build }}
           output: ${{ runner.temp }}/patches
           github-token: ${{ github.token }}
       - uses: actions/upload-artifact@v4
@@ -693,7 +719,7 @@ jobs:
     with:
       audience: native
       git_sha: ${{ needs.resolve.outputs.sha }}
-      native_version: 0.1.${{ github.run_number }}
+      native_version: ${{ needs.resolve.outputs.version }}
       draft: true
     secrets: inherit
 
@@ -710,7 +736,7 @@ jobs:
     with:
       audience: native
       git_sha: ${{ needs.resolve.outputs.sha }}
-      native_version: 0.1.${{ github.run_number }}
+      native_version: ${{ needs.resolve.outputs.version }}
     secrets: inherit
 
   publish:
@@ -721,6 +747,9 @@ jobs:
     if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.macos.result == 'success' && needs.desktop.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      CAPER_BUILD_NUMBER: ${{ needs.resolve.outputs.build }}
+      CAPER_VERSION: ${{ needs.resolve.outputs.version }}
     permissions:
       actions: read
       contents: write
@@ -820,7 +849,7 @@ jobs:
           base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
           jq -n \
             --argjson build "$CAPER_BUILD_NUMBER" \
-            --arg version "0.1.$CAPER_BUILD_NUMBER" \
+            --arg version "$CAPER_VERSION" \
             --arg commit "$RELEASE_SHA" \
             '{schema: 1, build: $build, version: $version, commit: $commit, platforms: {}}' >latest.json
           # Each full archive, plus any patches the patches job made to it.
@@ -893,6 +922,8 @@ jobs:
     needs: [resolve, macos-intel, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      CAPER_BUILD_NUMBER: ${{ needs.resolve.outputs.build }}
     permissions:
       contents: write
       id-token: write
@@ -909,7 +940,7 @@ jobs:
         with:
           platform: macos-x64
           archive: release/Caper-macOS-Intel.zip
-          build: ${{ github.run_number }}
+          build: ${{ needs.resolve.outputs.build }}
           output: release
           github-token: ${{ github.token }}
       - uses: aws-actions/configure-aws-credentials@v6.2.3

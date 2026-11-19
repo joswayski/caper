@@ -68,7 +68,12 @@ if os.environ.get("FAIL_STAGE") == stage:
     sys.exit(23)
 if stage == "archive":
     bundle = Path(args[args.index("-archivePath") + 1]) / "Products/Applications/Caper.app"
-    app = {"CFBundleVersion": os.environ["BUILD_NUMBER"], "CFBundleShortVersionString": "0.1.0"}
+    settings = dict(arg.split("=", 1) for arg in args if "=" in arg and not arg.startswith("-"))
+    app = {
+        "CFBundleVersion": settings["CURRENT_PROJECT_VERSION"],
+        "CFBundleShortVersionString": settings["MARKETING_VERSION"],
+        "CaperVersion": os.environ.get("TEST_APP_VERSION", settings["CAPER_VERSION"]),
+    }
     app["CaperSourceRevision"] = os.environ.get("TEST_APP_REVISION", os.environ["TEST_SOURCE_REVISION"])
     extension = {
         "CFBundleVersion": os.environ.get("TEST_EXTENSION_BUILD", app["CFBundleVersion"]),
@@ -98,7 +103,9 @@ if stage == "archive":
             "NOTARY_KEY_ID": "fixture-key-id",
             "NOTARY_ISSUER": "fixture-issuer",
             "CAPER_IOS_BUNDLE_ID": "chat.fixture.custom",
-            "BUILD_NUMBER": "37.2",
+            "BUILD_NUMBER": "2026111903.2",
+            "CAPER_APP_VERSION": "2026.11.1903",
+            "CAPER_VERSION": "2026.11.19.3",
         }
 
     def upload(self, fail_stage="", **overrides):
@@ -127,7 +134,9 @@ if stage == "archive":
         self.assertIn("AD_HOC_CODE_SIGNING_ALLOWED=YES", args)
         self.assertIn("DEVELOPMENT_TEAM=FIXTURETEAM", args)
         self.assertIn("CAPER_IOS_BUNDLE_ID=chat.fixture.custom", args)
-        self.assertIn("CURRENT_PROJECT_VERSION=37.2", args)
+        self.assertIn("CURRENT_PROJECT_VERSION=2026111903.2", args)
+        self.assertIn("MARKETING_VERSION=2026.11.1903", args)
+        self.assertIn("CAPER_VERSION=2026.11.19.3", args)
         self.assertIn(f"CAPER_SOURCE_REVISION={self.revision}", args)
         self.assertNotIn("CODE_SIGNING_ALLOWED=NO", args)
         self.assertNotIn("CODE_SIGN_ENTITLEMENTS=", args)
@@ -156,7 +165,7 @@ if stage == "archive":
                 "uploadSymbols": True,
             },
         )
-        self.assertIn("Uploaded chat.fixture.custom build 37.2", result.stdout)
+        self.assertIn("Uploaded chat.fixture.custom build 2026111903.2", result.stdout)
         # This export's pipeline folder goes; another app's and an earlier run's stay.
         ours, other, empty = map(Path, export["leftover"])
         self.assertFalse(ours.exists())
@@ -175,6 +184,7 @@ if stage == "archive":
             ({"TEST_EXTENSION_VERSION": "1.0"}, "CFBundleShortVersionString"),
             ({"TEST_EXTENSION_BUILD": "1", "TEST_EXTENSION_VERSION": "1.0"}, "CFBundleVersion"),
             ({"TEST_APP_REVISION": "b" * 40}, "CaperSourceRevision"),
+            ({"TEST_APP_VERSION": "2026.11.1903"}, "CaperVersion"),
         ):
             with self.subTest(overrides=overrides):
                 self.log.unlink(missing_ok=True)

@@ -45,7 +45,7 @@ import Observation
             && FileManager.default.isExecutableFile(atPath: updater.path)
         self.updater = enabled ? updater : nil
         self.build = build
-        version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        version = bundle.caperVersion
         sourceRevision = revision.flatMap { WhatsNewSnapshot.validRevision($0) ? $0 : nil }
         if environment["CAPER_TEST_MODE"] == "parity", environment["CAPER_UI_FIXTURE"] == "update",
            let rawURL = environment["CAPER_API_BASE_URL"], let url = URL(string: rawURL),

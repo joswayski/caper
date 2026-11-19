@@ -38,13 +38,15 @@ case "$MODE" in
     versions=()
     if [[ -n "${CAPER_BUILD_NUMBER:-}" ]]; then
       [[ "$CAPER_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "CAPER_BUILD_NUMBER must be a positive integer." >&2; exit 2; }
-      versions=(CURRENT_PROJECT_VERSION="$CAPER_BUILD_NUMBER" MARKETING_VERSION="0.1.$CAPER_BUILD_NUMBER")
+      : "${CAPER_VERSION:?release builds need CAPER_VERSION}" "${CAPER_APP_VERSION:?release builds need CAPER_APP_VERSION}"
+      versions=(CURRENT_PROJECT_VERSION="$CAPER_BUILD_NUMBER" MARKETING_VERSION="$CAPER_APP_VERSION" CAPER_VERSION="$CAPER_VERSION")
     fi
     xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$MAC_SCHEME" -configuration Release \
       -destination "platform=macOS,arch=$mac_arch" -derivedDataPath "$ROOT/DerivedData" \
       CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_SOURCE_REVISION="$source_revision" ARCHS="$mac_arch" ONLY_ACTIVE_ARCH=YES ${versions[@]+"${versions[@]}"} build
     cp -R "$ROOT/DerivedData/Build/Products/Release/Caper.app" "$ROOT/dist/Caper.app"
     test "$(plutil -extract CaperSourceRevision raw -o - "$ROOT/dist/Caper.app/Contents/Info.plist")" = "$source_revision"
+    [[ -z "${CAPER_BUILD_NUMBER:-}" ]] || test "$(plutil -extract CaperVersion raw -o - "$ROOT/dist/Caper.app/Contents/Info.plist")" = "$CAPER_VERSION"
     test -x "$ROOT/dist/Caper.app/Contents/MacOS/Caper"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/CaperRTCBridge.framework/CaperRTCBridge"

@@ -197,7 +197,7 @@ func releaseDayLabel(_ day: String) -> String {
 
     private func close() { notes.dismiss(display) }
     private var installedVersion: String {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+        Bundle.main.caperVersion
             .map { "Installed version \($0)" } ?? "Development build"
     }
     var body: some View {

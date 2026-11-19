@@ -19,9 +19,12 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     # Every bundle, including embedded frameworks, needs both versions for App
-    # Store validation; release.yml overrides both per release (CAPER_BUILD_NUMBER).
+    # Store validation; release.yml overrides both per release: the app version
+    # (2026.11.1903) and build (2026111903). CAPER_VERSION is the version every
+    # client shows (2026.11.19.3), which CFBundleShortVersionString cannot hold.
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    CAPER_VERSION: ""
     ENABLE_USER_SCRIPT_SANDBOXING: YES
   configs:
     Debug:
@@ -258,6 +261,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CaperSourceRevision: $(CAPER_SOURCE_REVISION)
+        CaperVersion: $(CAPER_VERSION)
         NSPrincipalClass: NSApplication
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel or record a voice message.
         ATSApplicationFontsPath: .
@@ -303,6 +307,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CaperSourceRevision: $(CAPER_SOURCE_REVISION)
+        CaperVersion: $(CAPER_VERSION)
         NSCameraUsageDescription: Caper uses your camera when you take a photo or video to attach to a message.
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel, record a voice message or record a video to attach.

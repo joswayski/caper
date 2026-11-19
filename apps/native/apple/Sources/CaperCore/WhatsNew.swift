@@ -93,8 +93,18 @@ public final class WhatsNewHistory {
     }
 }
 
+extension Bundle {
+    /// The version people see, "2026.11.19.3". CFBundleShortVersionString only
+    /// holds three numbers (2026.11.1903), so releases also stamp CaperVersion;
+    /// builds without it show CFBundleShortVersionString.
+    public var caperVersion: String? {
+        (object(forInfoDictionaryKey: "CaperVersion") as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    }
+}
+
 /// The installed version, as every client shows and copies it: "Version
-/// 0.1.654" on screen, "Caper 0.1.654 for macOS (5c00469)" when copied.
+/// 2026.11.19.3" on screen, "Caper 2026.11.19.3 for macOS (5c00469)" when copied.
 /// Builds without a release revision are development builds.
 public struct InstalledVersion: Equatable, Sendable {
     public let version: String?
@@ -112,7 +122,7 @@ public struct InstalledVersion: Equatable, Sendable {
         #else
         let platform = "macOS"
         #endif
-        return InstalledVersion(version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+        return InstalledVersion(version: Bundle.main.caperVersion,
                                 revision: Bundle.main.object(forInfoDictionaryKey: "CaperSourceRevision") as? String,
                                 platform: platform)
     }

@@ -12,11 +12,11 @@ final class WhatsNewTests: XCTestCase {
 
     func testInstalledVersionShowsTheVersionAndCopiesTheShortCommit() {
         let sha = "5c004697" + String(repeating: "a", count: 32)
-        let release = InstalledVersion(version: "0.1.654", revision: sha, platform: "macOS")
-        XCTAssertEqual(release.label, "Version 0.1.654")
-        XCTAssertEqual(release.accessibilityLabel, "Version 0.1.654, copy")
-        XCTAssertEqual(release.copyText, "Caper 0.1.654 for macOS (5c00469)")
-        XCTAssertEqual(InstalledVersion(version: "0.1.654", revision: sha, platform: "iOS").copyText, "Caper 0.1.654 for iOS (5c00469)")
+        let release = InstalledVersion(version: "2026.11.19.3", revision: sha, platform: "macOS")
+        XCTAssertEqual(release.label, "Version 2026.11.19.3")
+        XCTAssertEqual(release.accessibilityLabel, "Version 2026.11.19.3, copy")
+        XCTAssertEqual(release.copyText, "Caper 2026.11.19.3 for macOS (5c00469)")
+        XCTAssertEqual(InstalledVersion(version: "2026.11.19.3", revision: sha, platform: "iOS").copyText, "Caper 2026.11.19.3 for iOS (5c00469)")
         // Local builds carry the default version and no source revision.
         let development = InstalledVersion(version: "0.1.0", revision: "", platform: "macOS")
         XCTAssertNil(development.copyText)
