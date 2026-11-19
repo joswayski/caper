@@ -56,8 +56,11 @@ import XCTest
         }
         wrapper.content = ChatContent(version: 1, type: "text", text: "")
         update()
-        XCTAssertEqual(body.frame.height, 0, accuracy: 0.5, "Captionless forwards reserve action space, not a blank note row")
-        XCTAssertGreaterThanOrEqual(try surface().frame.minY, 36)
+        XCTAssertEqual(body.frame.height, 0, accuracy: 0.5, "A captionless forward has no blank note row")
+        // A grouped row starts right under its author's previous one; the hover
+        // actions float over its top edge instead of reserving room above the card.
+        XCTAssertGreaterThanOrEqual(try surface().frame.minY, body.frame.maxY)
+        XCTAssertLessThan(try surface().frame.minY, 20)
         wrapper.forward = MessageForward(message: nil, seq: "0")
         update()
         XCTAssertGreaterThan(try surface().frame.height, 30, "An unavailable source keeps its explanatory card")
@@ -261,12 +264,13 @@ import XCTest
         XCTAssertEqual(quick.state, .on)
         XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
         let chip = try button("reaction-message-1-👍")
-        XCTAssertEqual(chip.title, "👍 2")
+        // The chip draws the emoji as artwork beside its count; the label names both.
+        XCTAssertEqual(chip.accessibilityLabel(), "👍 2")
         XCTAssertTrue(window.makeFirstResponder(chip))
         value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer", "self", "other"])]
         update()
         XCTAssertTrue(window.firstResponder === chip, "Incoming counts must not replace a focused reaction chip")
-        XCTAssertEqual(chip.title, "👍 3")
+        XCTAssertEqual(chip.accessibilityLabel(), "👍 3")
         let height = row.frame.height
         update(failed: true)
         let retry = try button("reaction-retry-message-1")
@@ -687,7 +691,12 @@ import XCTest
         let history = try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }
             .first { $0.accessibilityIdentifier() == "message-history-message-2" })
         XCTAssertFalse(history.isHidden)
-        XCTAssertGreaterThanOrEqual(body.frame.minY, history.frame.maxY, "A grouped edited marker must not cover the message text")
+        // The marker follows the last word, or takes its own line under a full one.
+        let bodyLayout = try XCTUnwrap(body.layoutManager), bodyContainer = try XCTUnwrap(body.textContainer)
+        bodyLayout.ensureLayout(for: bodyContainer)
+        let text = bodyLayout.usedRect(for: bodyContainer).offsetBy(dx: body.frame.minX, dy: body.frame.minY)
+        XCTAssertTrue(history.frame.minX >= text.maxX || history.frame.minY >= text.maxY, "An edited marker must not cover the message text")
+        XCTAssertTrue(row.bounds.contains(history.frame))
         timeline.update([first, last], conversationID: "channel")
         timeline.layoutSubtreeIfNeeded()
         XCTAssertFalse(author.isHidden, "Deleting the preceding message reveals the author again")
