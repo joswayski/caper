@@ -7,7 +7,8 @@
 # entitlements without issuing an Apple Development certificate on every run.
 #
 # Environment: APPLE_TEAM_ID, NOTARY_KEY_PATH (.p8), NOTARY_KEY_ID,
-# NOTARY_ISSUER, BUILD_NUMBER (unique and increasing per upload).
+# NOTARY_ISSUER, BUILD_NUMBER (unique and increasing per upload; its run
+# number before the dot is the release, so the app shows "0.1.<run>").
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -68,7 +69,7 @@ xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$IOS_SCHEME" -configur
   -destination 'generic/platform=iOS' -archivePath "$work/Caper.xcarchive" \
   -derivedDataPath "$ROOT/DerivedData-TestFlight" \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
-  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" CAPER_SOURCE_REVISION="$source_revision" \
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" MARKETING_VERSION="0.1.${BUILD_NUMBER%%.*}" CAPER_SOURCE_REVISION="$source_revision" \
   CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES archive
 
 # Validate the built bundles before export can upload them (ITMS-90473).

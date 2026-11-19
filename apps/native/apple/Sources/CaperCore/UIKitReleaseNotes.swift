@@ -145,10 +145,30 @@ import Observation
         }
         body.addArrangedSubview(Self.button(display.automatic ? "Got it" : "Done", primary: true, action: close))
     }
+    /// A quiet commit link like every other client's: flush with the text,
+    /// muted at rest with an external-link icon, brightening while pressed.
     private func link(_ title: String, revision: String) -> UIButton {
-        let button = Self.button(title) {
-            if let url = URL(string: "https://github.com/joswayski/caper/commit/\(revision)") { UIApplication.shared.open(url) }
+        var config = UIButton.Configuration.plain()
+        config.title = title
+        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attributes = incoming
+            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Satoshi-Regular", size: 12) ?? .systemFont(ofSize: 12))
+            return attributes
         }
+        if let icon = UIImage(named: "caper-external-link") {
+            config.image = UIGraphicsImageRenderer(size: CGSize(width: 12, height: 12)).image { _ in
+                icon.draw(in: CGRect(x: 0, y: 0, width: 12, height: 12))
+            }.withRenderingMode(.alwaysTemplate)
+            config.imagePlacement = .trailing; config.imagePadding = 4
+        }
+        let button = UIButton(configuration: config, primaryAction: UIAction { _ in
+            if let url = URL(string: "https://github.com/joswayski/caper/commit/\(revision)") { UIApplication.shared.open(url) }
+        })
+        button.configurationUpdateHandler = { button in
+            button.configuration?.baseForegroundColor = button.isHighlighted ? UIColor(CaperTheme.text) : UIColor(CaperTheme.muted).withAlphaComponent(0.72)
+        }
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         button.accessibilityHint = "View this version on GitHub"
         button.contentHorizontalAlignment = .leading
         return button
