@@ -45,21 +45,33 @@ final class FeedbackTests: XCTestCase {
     func testApplicationBadgeUsesAuthoritativeCountAndClearsOnSessionInvalidation() async throws {
         var payload = #"{"spaces":[],"badgeCount":137}"#
         var status = 200
+        var inboxCount = 137
+        var inboxLoads = 0
         FeedbackMockURLProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/api/spaces/unread")
-            return (status, Data(payload.utf8))
+            switch request.url?.path {
+            case "/api/spaces/unread": return (status, Data(payload.utf8))
+            // A changed count loads the closed inbox ahead; it agrees with the badge.
+            case "/api/notifications/inbox":
+                inboxLoads += 1
+                return (200, Data(#"{"items":[],"nextCursor":null,"unreadCount":\#(inboxCount)}"#.utf8))
+            default: throw URLError(.badURL)
+            }
         }
         let model = AppModel(api: client())
         model.account = Account(id: selfID, username: "team", displayName: "Team")
         await model.refreshUnreadSpaces()
         XCTAssertEqual(model.desiredBadgeCount, 137)
+        XCTAssertEqual(inboxLoads, 1, "a new count loads the inbox ahead")
         payload = #"{"spaces":[]}"#
         await model.refreshUnreadSpaces()
         XCTAssertEqual(model.desiredBadgeCount, 137, "older servers must not invent a zero badge")
+        XCTAssertEqual(inboxLoads, 1, "an unchanged count does not reload the inbox")
+        inboxCount = 0
         payload = #"{"spaces":[],"badgeCount":0}"#
         await model.refreshUnreadSpaces()
         XCTAssertEqual(model.desiredBadgeCount, 0)
         payload = #"{"spaces":[],"badgeCount":5}"#
+        inboxCount = 5
         await model.refreshUnreadSpaces()
         status = 401
         await model.refreshUnreadSpaces()
