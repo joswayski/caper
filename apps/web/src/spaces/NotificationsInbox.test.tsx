@@ -449,3 +449,63 @@ test("filter changes keep rows in place and reads apply before the server answer
     vi.restoreAllMocks();
   }
 });
+
+test("an inbox loaded ahead opens on its rows and refreshes them only once they are old", async () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  let now = 1_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const row: InboxItem = {
+    id: "m:1",
+    kind: "mention",
+    actorId: "actor0000001",
+    actorName: "Maya",
+    avatarId: null,
+    body: "Loaded before you looked",
+    createdAt: "2026-11-04T12:00:00Z",
+    unread: true,
+    spaceId: "space0000001",
+    spaceName: "Studio",
+    channelId: "channel00001",
+    channelName: "ideas",
+    conversationId: null,
+    messageId: "message00000001",
+    threadRootId: null,
+    emoji: null,
+  };
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async () => Response.json({ items: [row], nextCursor: null, unreadCount: 1 }));
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const render = (loadedAt: number) =>
+    act(async () =>
+      root.render(
+        <NotificationsInbox
+          key={loadedAt}
+          accountId="self00000001"
+          preloaded={{ items: [row], nextCursor: null, unreadCount: 1, loadedAt }}
+          onClose={() => {}}
+          onCount={() => {}}
+          onOpen={() => {}}
+        />,
+      ),
+    );
+  try {
+    await render(now);
+    expect(container.textContent).toContain("Loaded before you looked");
+    expect(container.textContent).not.toContain("Loading notifications");
+    expect(fetch).not.toHaveBeenCalled();
+
+    now = 20_000;
+    await render(1_000);
+    expect(container.textContent).toContain("Loaded before you looked");
+    expect(container.textContent).not.toContain("Loading notifications");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  }
+});

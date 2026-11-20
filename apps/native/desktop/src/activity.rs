@@ -112,6 +112,20 @@ impl crate::CaperApp {
         self.load_activity_page(more, false);
     }
 
+    /// Shows the inbox on the rows already loaded ahead, refreshing them.
+    pub(crate) fn open_activity(&mut self) {
+        self.activity.shown = true;
+        let ready = self.activity.ready();
+        self.load_activity_page(false, ready);
+    }
+
+    /// An unread snapshot's count; a closed inbox loads ahead when it changes.
+    pub(crate) fn activity_count(&mut self, count: u64) {
+        if self.activity.count_changed(count) {
+            self.load_activity_page(false, true);
+        }
+    }
+
     fn load_activity_page(&mut self, more: bool, poll: bool) {
         let Some(token) = self.token.clone() else {
             return;

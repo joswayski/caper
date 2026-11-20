@@ -217,7 +217,8 @@ struct ActivityInboxView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("activity-inbox-dialog")
             .task {
-                await model.loadActivity(reset: true)
+                // Rows loaded ahead show at once and refresh in place.
+                await model.loadActivity(reset: true, poll: model.activityLoading || !model.activityItems.isEmpty)
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(15)) } catch { return }
                     if !model.activityLoading { await model.loadActivity(reset: true, poll: true) }

@@ -1585,8 +1585,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { api.unreadSpaces(token) }.onSuccess {
                 if (account == accountGeneration && revision == unreadRevision) {
                     mutable.value = mutable.value.copy(unreadSpaces = it.spaces, feedbackWaiting = it.feedbackWaiting)
+                    val previousUnread = activityMutable.value.unreadCount
                     it.badgeCount?.let { count -> activityMutable.value = activityMutable.value.copy(unreadCount = count) }
-                    if (activityShown) loadActivity(poll = true)
+                    // A closed inbox loads ahead whenever its count changes, so opening it
+                    // shows these notifications at once instead of a loading state.
+                    if (activityShown || activityMutable.value.unreadCount != previousUnread) loadActivity(poll = true)
                     CaperNotifications.reconcileReadChannels(getApplication(), it.spaces.flatMap { space -> space.channels.map { channel -> channel.id } }.toSet(), snapshotStartedAt)
                     if (!mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { id -> markConversationRead(id, durableReplayCursor) }
                 }

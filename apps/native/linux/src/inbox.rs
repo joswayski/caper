@@ -114,7 +114,7 @@ impl App {
 
     /// Asks for the first page (`more`: the next), or a refresh that keeps
     /// the shown rows (`poll`).
-    fn load_inbox(&self, state: &mut State, more: bool, poll: bool) {
+    pub(super) fn load_inbox(&self, state: &mut State, more: bool, poll: bool) {
         let Some(token) = state.token.clone() else {
             return;
         };
@@ -173,7 +173,9 @@ impl App {
                 return;
             }
             state.inbox.shown = true;
-            self.load_inbox(&mut state, false, false);
+            // Rows loaded ahead show at once and refresh in place.
+            let ready = state.inbox.ready();
+            self.load_inbox(&mut state, false, ready);
         }
         if self.inbox_window.borrow().is_some() {
             self.render_inbox();

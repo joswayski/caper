@@ -59,7 +59,9 @@ import kotlinx.coroutines.delay
         onDispose { viewModel.setActivityVisible(false) }
     }
     LaunchedEffect(Unit) {
-        viewModel.loadActivity()
+        // Rows loaded ahead (or a load on its way) show at once and refresh in place.
+        val loaded = viewModel.activityInbox.value
+        viewModel.loadActivity(poll = loaded.loading || loaded.items.isNotEmpty())
         while (true) { delay(15_000); if (!viewModel.activityInbox.value.loading) viewModel.loadActivity(poll = true) }
     }
     Dialog({ if (picking.isEmpty() && reacting == null) shown = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {

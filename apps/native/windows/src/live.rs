@@ -3396,7 +3396,9 @@ impl Live {
     /// loads.
     pub fn open_activity(&mut self) {
         self.activity.shown = true;
-        self.load_activity(false, false);
+        // Rows loaded ahead show at once and refresh in place.
+        let ready = self.activity.ready();
+        self.load_activity(false, ready);
     }
 
     pub fn close_activity(&mut self) {
@@ -5312,8 +5314,12 @@ impl Live {
                 {
                     self.feedback_waiting = unread.feedback_waiting;
                     self.unread_spaces = unread.spaces;
-                    if let Some(count) = unread.badge_count {
-                        self.activity.unread_count = count;
+                    // A closed inbox loads ahead when its count changes, so
+                    // it opens on these notifications.
+                    if let Some(count) = unread.badge_count
+                        && self.activity.count_changed(count)
+                    {
+                        self.load_activity(false, true);
                     }
                     out.extend([Update::Badges, Update::Inbox]);
                 }

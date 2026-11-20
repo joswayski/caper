@@ -4,7 +4,9 @@ import SwiftUI
 /// editors. AppModel retains pagination, optimistic reads and independent drafts.
 @MainActor private func pollActivity(_ model: AppModel) -> Task<Void, Never> {
     Task {
-        await model.loadActivity(reset: true)
+        // Rows loaded ahead (or a load already on its way) show at once and
+        // refresh in place, rather than dimming behind a reload.
+        await model.loadActivity(reset: true, poll: model.activityLoading || !model.activityItems.isEmpty)
         while !Task.isCancelled {
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
             if !model.activityLoading { await model.loadActivity(reset: true, poll: true) }
@@ -279,17 +281,65 @@ import AppKit
 import UIKit
 import Observation
 
+/// The inbox's own small controls: filter chips, quiet row actions.
+@MainActor private enum UIKitInboxStyle {
+    nonisolated static func font(_ name: String, _ size: CGFloat) -> UIFont {
+        UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: name, size: size) ?? .systemFont(ofSize: size))
+    }
+    /// A 44-point target drawing a 32-point chip: selected is terracotta, the rest neutral.
+    static func chip(_ title: String, action: @escaping () -> Void) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        config.title = title; config.cornerStyle = .fixed
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
+        config.background.cornerRadius = 8; config.background.strokeWidth = 1
+        config.background.backgroundInsets = NSDirectionalEdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attributes = incoming; attributes.font = font("Satoshi-Medium", 13); return attributes
+        }
+        let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.configurationUpdateHandler = { button in
+            var config = button.configuration
+            config?.background.backgroundColor = button.isSelected ? UIColor(CaperTheme.terracotta).withAlphaComponent(0.14) : .clear
+            config?.background.strokeColor = UIColor(button.isSelected ? CaperTheme.terracotta : CaperTheme.border)
+            config?.baseForegroundColor = UIColor(button.isSelected ? CaperTheme.terracottaBright : CaperTheme.muted)
+            button.configuration = config
+        }
+        return button
+    }
+    /// An icon and a short word, muted, with a full touch target.
+    static func action(_ title: String, symbol: String, action: @escaping () -> Void) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        config.title = title; config.imagePadding = 5
+        config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+        config.baseForegroundColor = UIColor(CaperTheme.muted)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attributes = incoming; attributes.font = font("Satoshi-Medium", 12); return attributes
+        }
+        let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return button
+    }
+}
+
 @MainActor final class UIKitActivityInbox: UIViewController, UIAdaptivePresentationControllerDelegate {
     private let model: AppModel
     private let filters = UIStackView()
     private var filterButtons: [ActivityFilter: UIButton] = [:]
+    private let count = UIKitMessageDialog.label("", size: 12, bold: true)
+    private let countBadge = UIView()
     private let unread = UISwitch()
-    private let unreadLabel = UIKitMessageDialog.label("")
-    private let error = UIKitMessageDialog.label("", error: true)
+    private let unreadLabel = UIKitMessageDialog.label("Unread only", size: 13)
+    private let error = UIKitMessageDialog.label("", size: 13, error: true)
     private var retry: UIButton!
+    private var failures: UIStackView!
     private let rows = UIStackView()
     private var cards: [String: UIKitActivityRow] = [:]
-    private let status = UIKitMessageDialog.label("")
+    private let empty = UIStackView()
+    private let emptyTitle = UIKitMessageDialog.label("", size: 15, bold: true)
+    private let emptyDetail = UIKitMessageDialog.label("", size: 13)
     private var more: UIButton!
     private var polling: Task<Void, Never>?
     private var active = false
@@ -302,61 +352,101 @@ import Observation
         super.viewDidLoad()
         view.backgroundColor = UIColor(CaperTheme.surface); overrideUserInterfaceStyle = .dark
         view.accessibilityIdentifier = "activity-inbox-dialog"
-        let done = UIKitMessageDialog.button("Done") { [weak self] in self?.finish() }
+
+        // Title, its unread count, and Done.
+        let title = UIKitMessageDialog.label("Notifications", size: 22, bold: true)
+        title.numberOfLines = 1; title.adjustsFontSizeToFitWidth = true; title.minimumScaleFactor = 0.8
+        count.textColor = UIColor(CaperTheme.text); count.textAlignment = .center; count.numberOfLines = 1
+        countBadge.backgroundColor = UIColor(CaperTheme.terracotta); countBadge.layer.cornerRadius = 10
+        count.translatesAutoresizingMaskIntoConstraints = false; countBadge.addSubview(count)
+        NSLayoutConstraint.activate([
+            count.leadingAnchor.constraint(equalTo: countBadge.leadingAnchor, constant: 7),
+            count.trailingAnchor.constraint(equalTo: countBadge.trailingAnchor, constant: -7),
+            count.topAnchor.constraint(equalTo: countBadge.topAnchor, constant: 2),
+            count.bottomAnchor.constraint(equalTo: countBadge.bottomAnchor, constant: -2),
+            countBadge.widthAnchor.constraint(greaterThanOrEqualTo: countBadge.heightAnchor),
+        ])
+        countBadge.isAccessibilityElement = true
+        let heading = UIStackView(arrangedSubviews: [title, countBadge]); heading.spacing = 10; heading.alignment = .center
+        var doneConfig = UIButton.Configuration.plain()
+        doneConfig.title = "Done"; doneConfig.baseForegroundColor = UIColor(CaperTheme.text)
+        doneConfig.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 0)
+        doneConfig.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attributes = incoming; attributes.font = UIKitInboxStyle.font("Satoshi-Bold", 15); return attributes
+        }
+        let done = UIButton(configuration: doneConfig, primaryAction: UIAction { [weak self] _ in self?.finish() })
+        done.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         done.accessibilityIdentifier = "activity-done"
-        let title = UIKitMessageDialog.label("Notifications", size: 20, bold: true)
-        let header = UIKitMessageDialog.header(title, done)
-        filters.spacing = 6
+        done.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let header = UIStackView(arrangedSubviews: [heading, UIView(), done]); header.alignment = .center
+
+        // Filters scroll sideways; Unread only sits on its own quiet line.
+        filters.spacing = 8
         for filter in ActivityFilter.allCases {
-            let button = UIKitMessageDialog.button(filter.label) { [model] in
+            let button = UIKitInboxStyle.chip(filter.label) { [model] in
+                guard model.activityFilter != filter else { return }
                 model.activityFilter = filter
                 Task { await model.loadActivity(reset: true) }
             }
             button.accessibilityIdentifier = "activity-filter-\(filter.rawValue)"
-            button.configurationUpdateHandler = { button in
-                var config = button.configuration
-                config?.baseBackgroundColor = UIColor(button.isSelected ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.raised)
-                config?.baseForegroundColor = UIColor(button.isSelected ? CaperTheme.terracottaBright : CaperTheme.muted)
-                config?.background.strokeColor = UIColor(button.isSelected ? CaperTheme.terracotta : CaperTheme.border)
-                config?.background.strokeWidth = 1
-                button.configuration = config
-            }
             filters.addArrangedSubview(button); filterButtons[filter] = button
         }
-        let filterScroll = UIScrollView(); filterScroll.showsHorizontalScrollIndicator = false
+        let filterScroll = UIScrollView(); filterScroll.showsHorizontalScrollIndicator = false; filterScroll.alwaysBounceHorizontal = true
         filters.translatesAutoresizingMaskIntoConstraints = false; filterScroll.addSubview(filters)
         NSLayoutConstraint.activate([
-            // Grows with the filter buttons at large text sizes.
+            // Grows with the chips at large text sizes.
             filterScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
-            filters.leadingAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.leadingAnchor),
-            filters.trailingAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.trailingAnchor),
+            filters.leadingAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.leadingAnchor, constant: 16),
+            filters.trailingAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.trailingAnchor, constant: -16),
             filters.topAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.topAnchor),
             filters.bottomAnchor.constraint(equalTo: filterScroll.contentLayoutGuide.bottomAnchor),
             filters.heightAnchor.constraint(equalTo: filterScroll.frameLayoutGuide.heightAnchor),
         ])
+        unreadLabel.textColor = UIColor(CaperTheme.muted)
         unread.onTintColor = UIColor(CaperTheme.terracotta)
         unread.accessibilityLabel = "Unread only"; unread.accessibilityIdentifier = "activity-unread-only"
         unread.addTarget(self, action: #selector(toggleUnread), for: .valueChanged)
-        let toggle = UIStackView(arrangedSubviews: [unread, unreadLabel, UIView()]); toggle.spacing = 8; toggle.alignment = .center
-        retry = UIKitMessageDialog.button("Retry") { [model] in
+        let toggle = UIStackView(arrangedSubviews: [unreadLabel, UIView(), unread]); toggle.spacing = 8; toggle.alignment = .center
+        unreadLabel.isAccessibilityElement = false
+        retry = UIKitInboxStyle.action("Retry", symbol: "arrow.clockwise") { [model] in
             model.activityError = nil
             Task { await model.loadActivity(reset: true, poll: true) }
         }
-        let failures = UIStackView(arrangedSubviews: [error, retry]); failures.spacing = 12
-        let controls = UIStackView(arrangedSubviews: [header, filterScroll, toggle, failures]); controls.axis = .vertical; controls.spacing = 12
-        more = UIKitMessageDialog.button("Load more") { [model] in Task { await model.loadActivity(reset: false) } }
-        rows.axis = .vertical; rows.spacing = 12
-        let content = UIStackView(arrangedSubviews: [status, rows, more]); content.axis = .vertical; content.spacing = 12
-        let scroll = UIScrollView(); scroll.keyboardDismissMode = .interactive
-        for child in [controls, scroll] as [UIView] { child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child) }
+        failures = UIStackView(arrangedSubviews: [error, retry]); failures.spacing = 12; failures.alignment = .center
+        let controls = UIStackView(arrangedSubviews: [header, toggle, failures]); controls.axis = .vertical; controls.spacing = 4
+        controls.setCustomSpacing(8, after: header)
+        let divider = UIView(); divider.backgroundColor = UIColor(CaperTheme.border)
+
+        // Empty: a calm note in place of the list.
+        let bell = UIImageView(image: UIImage(systemName: "bell", withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .regular)))
+        bell.tintColor = UIColor(CaperTheme.muted); bell.contentMode = .scaleAspectFit
+        emptyTitle.textAlignment = .center; emptyDetail.textAlignment = .center; emptyDetail.textColor = UIColor(CaperTheme.muted)
+        [bell, emptyTitle, emptyDetail].forEach(empty.addArrangedSubview)
+        empty.axis = .vertical; empty.alignment = .center; empty.spacing = 8; empty.setCustomSpacing(14, after: bell)
+        empty.isLayoutMarginsRelativeArrangement = true
+        empty.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 56, leading: 24, bottom: 24, trailing: 24)
+
+        more = UIKitInboxStyle.action("Load more", symbol: "chevron.down") { [model] in Task { await model.loadActivity(reset: false) } }
+        rows.axis = .vertical; rows.spacing = 0
+        let content = UIStackView(arrangedSubviews: [empty, rows, more]); content.axis = .vertical; content.spacing = 8; content.alignment = .fill
+        let scroll = UIScrollView(); scroll.keyboardDismissMode = .interactive; scroll.alwaysBounceVertical = true
+        for child in [controls, filterScroll, divider, scroll] as [UIView] { child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child) }
         content.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(content)
+        let safe = view.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            controls.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
-            controls.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
-            controls.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            scroll.topAnchor.constraint(equalTo: controls.bottomAnchor, constant: 12),
-            scroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            controls.topAnchor.constraint(equalTo: safe.topAnchor, constant: 12),
+            controls.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
+            controls.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
+            filterScroll.topAnchor.constraint(equalTo: controls.bottomAnchor, constant: 4),
+            filterScroll.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+            filterScroll.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
+            divider.topAnchor.constraint(equalTo: filterScroll.bottomAnchor, constant: 8),
+            divider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            divider.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
+            scroll.topAnchor.constraint(equalTo: divider.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
             content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 16),
             content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -16),
@@ -365,10 +455,15 @@ import Observation
             content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32),
         ])
     }
+    // Rendered before the sheet slides up, so it arrives showing its rows
+    // and never its unconfigured controls.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        if polling == nil { active = true; model.activityShown = true; polling = pollActivity(model); observe() }
+    }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         presentationController?.delegate = self
-        if polling == nil { active = true; model.activityShown = true; polling = pollActivity(model); observe() }
     }
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
@@ -392,13 +487,18 @@ import Observation
             button.isSelected = selected
             button.accessibilityTraits = selected ? [.button, .selected] : .button
         }
-        unread.isOn = model.activityUnreadOnly; unreadLabel.text = "Unread only (\(model.activityUnread))"
-        error.text = model.activityError; error.isHidden = model.activityError == nil
-        retry.isHidden = model.activityError == nil; retry.isEnabled = !model.activityLoading
+        count.text = model.activityUnread > 99 ? "99+" : "\(model.activityUnread)"
+        countBadge.isHidden = model.activityUnread == 0
+        countBadge.accessibilityLabel = "\(model.activityUnread) unread"
+        unread.isOn = model.activityUnreadOnly
+        error.text = model.activityError; failures.isHidden = model.activityError == nil
+        retry.isEnabled = !model.activityLoading
         let items = model.activityVisibleItems
-        status.text = items.isEmpty ? model.activityLoading ? "Loading notifications…"
-            : model.activityError == nil ? "No notifications match these filters." : "" : ""
-        status.isHidden = status.text?.isEmpty != false
+        // A first load with nothing to show yet stays blank instead of spinning;
+        // rows loaded ahead are already here.
+        empty.isHidden = !items.isEmpty || model.activityLoading || model.activityError != nil
+        emptyTitle.text = model.activityUnreadOnly && model.activityFilter == .all ? "You’re all caught up" : "Nothing here"
+        emptyDetail.text = "No notifications match these filters."
         let ids = Set(items.map(\.id))
         for id in cards.keys.filter({ !ids.contains($0) }) {
             guard let card = cards.removeValue(forKey: id) else { continue }
@@ -413,7 +513,7 @@ import Observation
                 cards[item.id] = card; rows.insertArrangedSubview(card, at: index)
             }
             if rows.arrangedSubviews[index] !== card { rows.removeArrangedSubview(card); rows.insertArrangedSubview(card, at: index) }
-            card.update(item)
+            card.update(item, last: index == items.count - 1)
         }
         rows.alpha = model.activityStale ? 0.5 : 1; rows.isUserInteractionEnabled = !model.activityStale
         more.isHidden = model.activityCursor == nil; more.isEnabled = !model.activityLoading
@@ -427,6 +527,7 @@ import Observation
     }
 }
 
+/// One notification: who, what, where and when, then its quiet actions.
 @MainActor private final class UIKitActivityRow: UIStackView {
     private let model: AppModel
     private var item: ActivityItem
@@ -435,77 +536,83 @@ import Observation
     private var read: UIButton!
     private var reply: UIButton!
     private var reactButton: UIButton!
-    private let time = UIKitMessageDialog.label("", size: 11)
+    private var actions: UIStackView!
     private let replyBody = UIStackView()
     private var replyHost: UIKitQuickComposer?
+    private let line = UIView()
+    /// Avatar width plus its gap: actions and replies line up with the text.
+    static let indent: CGFloat = 48
 
     init(model: AppModel, item: ActivityItem, parent: UIViewController, close: @escaping () -> Void,
          react: @escaping (ActivityItem) -> Void) {
         self.model = model; self.item = item; self.parent = parent
         super.init(frame: .zero)
-        axis = .vertical; spacing = 6; accessibilityIdentifier = "activity-row-\(item.id)"
+        axis = .vertical; spacing = 0; accessibilityIdentifier = "activity-row-\(item.id)"
         open = UIKitActivityOpenButton { [weak self] in
             guard let self, !self.model.activityStale else { return }
             Task { if await model.openActivity(self.item) { close() } }
         }
         open.accessibilityIdentifier = "activity-open-\(item.id)"
-        read = UIKitMessageDialog.button("✓") { [weak self] in
+        read = UIKitInboxStyle.action("Mark read", symbol: "checkmark") { [weak self] in
             guard let self, !self.model.activityStale else { return }
             Task { _ = await model.readActivity(self.item) }
         }
         read.accessibilityIdentifier = "activity-read-\(item.id)"
-        reply = UIKitMessageDialog.button("Reply") { [weak self] in
+        reply = UIKitInboxStyle.action("Reply", symbol: "arrowshape.turn.up.left") { [weak self] in
             guard let self, !self.model.activityStale else { return }
             model.activityExpanded[self.item.id] = model.activityExpanded[self.item.id] == nil ? self.item : nil
         }
         reply.accessibilityIdentifier = "activity-reply-\(item.id)"
-        reactButton = UIKitMessageDialog.button("React") { [weak self] in
+        reactButton = UIKitInboxStyle.action("React", symbol: "face.smiling") { [weak self] in
             guard let self, !self.model.activityStale else { return }; react(self.item)
         }
         reactButton.accessibilityIdentifier = "activity-react-\(item.id)"
-        // At accessibility text sizes the row stacks, as the dialog headers do,
-        // so Reply and React keep whole words instead of breaking per character.
-        let buttons = UIStackView(arrangedSubviews: [reply, reactButton]); buttons.spacing = 8
-        let meta = UIStackView(arrangedSubviews: [time, read]); meta.spacing = 8; meta.alignment = .center
-        let actions = UIStackView(arrangedSubviews: [buttons, UIView(), meta]); actions.spacing = 8
-        for button in [reply!, reactButton!] { button.setContentCompressionResistancePriority(.required, for: .horizontal) }
+        actions = UIStackView(arrangedSubviews: [reply, reactButton, UIView(), read]); actions.spacing = 20; actions.alignment = .center
+        // At accessibility text sizes the actions stack so each keeps whole words.
         func fit(_ actions: UIStackView) {
             let stacked = actions.traitCollection.preferredContentSizeCategory.isAccessibilityCategory
             actions.axis = stacked ? .vertical : .horizontal; actions.alignment = stacked ? .leading : .center
-            buttons.axis = stacked ? .vertical : .horizontal; buttons.alignment = stacked ? .leading : .fill
+            actions.spacing = stacked ? 0 : 20
         }
         fit(actions)
         actions.registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (actions: UIStackView, _) in fit(actions) }
-        replyBody.axis = .vertical; replyBody.spacing = 8
-        let line = UIView(); line.backgroundColor = UIColor(CaperTheme.border); line.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        let parts: [UIView] = [open, actions, replyBody, line]
-        parts.forEach { addArrangedSubview($0) }
+        for stack in [actions!, replyBody] {
+            stack.isLayoutMarginsRelativeArrangement = true
+            stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: Self.indent, bottom: 0, trailing: 0)
+        }
+        replyBody.axis = .vertical; replyBody.spacing = 8; replyBody.directionalLayoutMargins.bottom = 12
+        line.backgroundColor = UIColor(CaperTheme.border)
+        line.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale).isActive = true
+        [open, actions, replyBody, line].forEach { addArrangedSubview($0) }
     }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(_ item: ActivityItem) {
+    func update(_ item: ActivityItem, last: Bool) {
         self.item = item
         open.update(item)
         open.isEnabled = !model.activityStale && model.activityOpening != item.id
         read.isHidden = !item.unread; read.isEnabled = !model.activityStale
         read.accessibilityLabel = "Mark notification from \(item.actorName) read"
-        time.text = FeedbackInbox.relativeTime(item.createdAt)
         let canReply = model.canReplyToActivity(item)
         reply.isHidden = !canReply; reactButton.isHidden = !canReply
         reply.isEnabled = !model.activityStale; reactButton.isEnabled = !model.activityStale
+        actions.isHidden = !canReply && !item.unread
         let expanded = model.activityExpanded[item.id] != nil
         reply.configuration?.title = expanded ? "Close reply" : "Reply"
+        reply.configuration?.baseForegroundColor = UIColor(expanded ? CaperTheme.terracottaBright : CaperTheme.muted)
         if expanded {
             if replyHost == nil, let parent {
                 let person = MentionCardPerson(id: item.actorId, username: item.actorName, displayName: nil, avatarId: item.avatarId, isSelf: false)
                 let host = UIKitQuickComposer(state: NativeQuickDraft(model: model, person: person, activity: item, close: {}))
                 host.view.backgroundColor = .clear; parent.addChild(host)
-                replyBody.addArrangedSubview(UIKitMessageDialog.label(item.replyLabel))
+                let label = UIKitMessageDialog.label(item.replyLabel); label.textColor = UIColor(CaperTheme.muted)
+                replyBody.addArrangedSubview(label)
                 replyBody.addArrangedSubview(host.view); host.didMove(toParent: parent); replyHost = host
             }
             replyHost?.state.enabled = !model.activityStale
         } else { removeReply() }
         replyBody.isHidden = !expanded
+        line.isHidden = last
     }
     func removeReply() {
         guard let host = replyHost else { return }
@@ -515,21 +622,33 @@ import Observation
 }
 
 @MainActor private final class UIKitActivityOpenButton: UIButton {
-    private let actor = UIKitMessageDialog.label("", size: 13, bold: true)
+    private let avatar = UIKitAvatar(side: 36)
+    private let dot = UIView()
+    private let actor = UIKitMessageDialog.label("", size: 14, bold: true)
+    private let time = UIKitMessageDialog.label("", size: 12)
     private let summary = UIKitMessageDialog.label("", size: 13)
-    private let preview = UIKitMessageDialog.label("", size: 13)
-    private let location = UIKitMessageDialog.label("", size: 13)
+    private let preview = UIKitMessageDialog.label("", size: 14)
+    private let location = UIKitMessageDialog.label("", size: 12)
 
     init(action: @escaping () -> Void) {
         super.init(frame: .zero)
+        actor.numberOfLines = 1; actor.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        time.numberOfLines = 1; time.textColor = UIColor(CaperTheme.muted)
+        time.setContentCompressionResistancePriority(.required, for: .horizontal)
+        time.setContentHuggingPriority(.required, for: .horizontal)
         summary.textColor = UIColor(CaperTheme.muted); location.textColor = UIColor(CaperTheme.muted)
-        preview.numberOfLines = 3
-        let content = UIStackView(arrangedSubviews: [actor, summary, preview, location])
-        content.axis = .vertical; content.spacing = 5; content.isUserInteractionEnabled = false
-        content.translatesAutoresizingMaskIntoConstraints = false; addSubview(content)
+        preview.numberOfLines = 3; location.numberOfLines = 1
+        dot.backgroundColor = UIColor(CaperTheme.terracottaBright); dot.layer.cornerRadius = 4
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([dot.widthAnchor.constraint(equalToConstant: 8), dot.heightAnchor.constraint(equalToConstant: 8)])
+        let heading = UIStackView(arrangedSubviews: [actor, time, dot]); heading.spacing = 8; heading.alignment = .center
+        let text = UIStackView(arrangedSubviews: [heading, summary, preview, location]); text.axis = .vertical; text.spacing = 3
+        text.setCustomSpacing(6, after: preview)
+        let row = UIStackView(arrangedSubviews: [avatar, text]); row.spacing = UIKitActivityRow.indent - 36; row.alignment = .top
+        row.isUserInteractionEnabled = false; row.translatesAutoresizingMaskIntoConstraints = false; addSubview(row)
         NSLayoutConstraint.activate([
-            content.topAnchor.constraint(equalTo: topAnchor, constant: 4), content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
-            content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 14), row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor), row.trailingAnchor.constraint(equalTo: trailingAnchor),
             heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
         isAccessibilityElement = true
@@ -540,10 +659,17 @@ import Observation
     override var isHighlighted: Bool { didSet { alpha = isHighlighted ? 0.7 : isEnabled ? 1 : 0.5 } }
     override var isEnabled: Bool { didSet { alpha = isEnabled ? 1 : 0.5 } }
     func update(_ item: ActivityItem) {
-        actor.text = "\(item.unread ? "● " : "")\(item.actorName)"
+        avatar.show(name: item.actorName, avatarID: item.avatarId)
+        actor.text = item.actorName
+        actor.textColor = UIColor(item.unread ? CaperTheme.text : CaperTheme.muted)
+        dot.isHidden = !item.unread
+        time.text = FeedbackInbox.relativeTime(item.createdAt)
         summary.text = item.description; summary.isHidden = item.description == nil
-        preview.text = item.body; location.text = item.location; location.isHidden = item.location.isEmpty
-        accessibilityLabel = [actor.text, item.description, item.body, item.location].compactMap { $0 }.joined(separator: "\n")
+        preview.text = item.body; preview.isHidden = item.body.isEmpty
+        preview.textColor = UIColor(item.unread ? CaperTheme.text : CaperTheme.muted)
+        location.text = item.location; location.isHidden = item.location.isEmpty
+        accessibilityLabel = [item.unread ? "Unread" : nil, item.actorName, item.description, item.body, item.location, time.text]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 }
 #endif

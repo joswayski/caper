@@ -241,6 +241,19 @@ impl Inbox {
         items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         items
     }
+    /// Whether rows are loaded or on their way: opening the inbox then
+    /// refreshes them in place instead of reloading behind them.
+    pub fn ready(&self) -> bool {
+        self.loading || !self.items.is_empty()
+    }
+    /// An unread snapshot's count. Returns whether the closed inbox should
+    /// load ahead (as a refresh), so opening it shows these notifications at
+    /// once rather than a loading state.
+    pub fn count_changed(&mut self, count: u64) -> bool {
+        let changed = count != self.unread_count;
+        self.unread_count = count;
+        changed && !self.shown
+    }
     pub fn due(&self) -> bool {
         self.shown
             && !self.loading
@@ -629,6 +642,27 @@ mod tests {
         inbox.mark_read(&thread);
         inbox.filter = Filter::All;
         assert!(inbox.switched());
+    }
+
+    #[test]
+    fn a_closed_inbox_loads_ahead_when_its_count_changes() {
+        let mut inbox = Inbox::default();
+        assert!(!inbox.ready());
+        assert!(
+            !inbox.count_changed(0),
+            "an unchanged count asks for nothing"
+        );
+        assert!(inbox.count_changed(2));
+        assert_eq!(inbox.unread_count, 2);
+        assert!(!inbox.count_changed(2));
+        inbox.finish(0, false, page(&["a", "b"], 2));
+        assert!(inbox.ready(), "loaded rows open in place");
+        inbox.shown = true;
+        assert!(
+            !inbox.count_changed(3),
+            "an open inbox refreshes on its own schedule"
+        );
+        assert_eq!(inbox.unread_count, 3);
     }
 
     #[test]

@@ -4216,8 +4216,12 @@ impl App {
                     })
                     .collect();
                 state.reads = reads;
-                if let Some(count) = unread.badge_count {
-                    state.inbox.unread_count = count;
+                // A closed inbox loads ahead when its count changes, so it
+                // opens on these notifications.
+                if let Some(count) = unread.badge_count
+                    && state.inbox.count_changed(count)
+                {
+                    self.load_inbox(state, false, true);
                 }
                 state.feedback_waiting = unread.feedback_waiting;
                 state.layout += 1;

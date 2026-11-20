@@ -69,8 +69,8 @@ import SidebarSections from "./SidebarSections";
 import MemberPresence from "./MemberPresence";
 import SpacesLoading from "./SpacesLoading";
 import FeedbackInbox from "./FeedbackInbox";
-import NotificationsInbox from "./NotificationsInbox";
-import type { InboxItem } from "./client";
+import NotificationsInbox, { type PreloadedInbox } from "./NotificationsInbox";
+import { listInbox, type InboxItem } from "./client";
 import { InviteLinkManager, JoinInviteLinkForm } from "./InviteLinks";
 import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
 import { DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
@@ -1798,6 +1798,7 @@ export default function Spaces({
   const [feedbackWaiting, setFeedbackWaiting] = useState(0);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [badgeCount, setBadgeCount] = useState(0);
+  const [inboxAhead, setInboxAhead] = useState<PreloadedInbox & { accountId: string }>();
   const inboxFocus = useRef<FocusTarget | undefined>(undefined);
   const unreadRevision = useRef(0);
   const channelReads = useRef(new Map<string, string>());
@@ -1828,6 +1829,24 @@ export default function Spaces({
       /* Keep the last known indicators during an outage. */
     }
   }, [account?.id]);
+  // A closed inbox loads ahead whenever its count changes, so opening it shows
+  // these notifications at once instead of a loading state.
+  useEffect(() => {
+    const accountId = account?.id;
+    if (!accountId || inboxOpen) return;
+    // Nothing unread, or not known yet: the inbox loads when it opens.
+    if (badgeCount === 0) return setInboxAhead(undefined);
+    let current = true;
+    listInbox("all", true).then(
+      (page) => {
+        if (current) setInboxAhead({ ...page, loadedAt: Date.now(), accountId });
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [account?.id, badgeCount, inboxOpen]);
   useEffect(() => {
     unreadRevision.current++;
     channelReads.current.clear();
@@ -3183,6 +3202,7 @@ export default function Spaces({
     <NotificationsInbox
       key={account.id}
       accountId={account.id}
+      preloaded={inboxAhead?.accountId === account.id ? inboxAhead : undefined}
       onClose={() => setInboxOpen(false)}
       onOpen={openInboxItem}
       onCount={setBadgeCount}

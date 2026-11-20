@@ -4517,7 +4517,7 @@ impl CaperApp {
                         self.unread_spaces = unread.spaces;
                         self.feedback_waiting = unread.feedback_waiting;
                         if let Some(count) = unread.badge_count {
-                            self.activity.unread_count = count;
+                            self.activity_count(count);
                         }
                     }
                     self.mark_selected_channel_read();
@@ -10976,8 +10976,7 @@ impl CaperApp {
                             self.wordmark(ui);
                             ui.add_space(58.0);
                             if ui.button("Notifications").clicked() {
-                                self.activity.shown = true;
-                                self.load_activity(false);
+                                self.open_activity();
                             }
                             ui.label(black("Name your space").size(40.0));
                             ui.add_space(20.0);
@@ -13000,8 +12999,7 @@ impl CaperApp {
                 .add_sized([ui.available_width(), 32.0], egui::Button::new(label))
                 .clicked()
             {
-                self.activity.shown = true;
-                self.load_activity(false);
+                self.open_activity();
             }
             // The Caper team's inbox sits with the DMs, for team members only.
             if self.feedback_team() {

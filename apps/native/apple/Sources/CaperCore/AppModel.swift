@@ -1740,8 +1740,11 @@ public final class AppModel {
         guard generation == attempt, unreadRevision == revision, account?.id == accountID, phase != .signedOut else { return }
         unreadSpaces = snapshot.spaces
         feedbackWaiting = snapshot.feedbackWaiting
+        let previousUnread = activityUnread
         if let count = snapshot.badgeCount { updateApplicationBadge(count); activityUnread = count }
-        if activityShown { await loadActivity(reset: true, poll: true) }
+        // A closed inbox loads ahead whenever its count changes, so opening it
+        // shows these notifications at once instead of a loading state.
+        if activityShown || activityUnread != previousUnread { await loadActivity(reset: true, poll: true) }
         markSelectedChannelRead()
     }
 

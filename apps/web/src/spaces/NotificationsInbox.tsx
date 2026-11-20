@@ -18,6 +18,8 @@ const filters: [InboxFilter, string][] = [
 ];
 
 type InboxPage = Awaited<ReturnType<typeof listInbox>>;
+/** The default view's first page (All, Unread only), loaded before the inbox opens. */
+export type PreloadedInbox = InboxPage & { loadedAt: number };
 const freshness = 15_000;
 
 function description(item: InboxItem) {
@@ -40,8 +42,10 @@ export default function NotificationsInbox({
   onClose,
   onOpen,
   onCount,
+  preloaded,
 }: {
   accountId: string;
+  preloaded?: PreloadedInbox;
   onClose: () => void;
   onOpen: (item: InboxItem) => void | Promise<void>;
   onCount: (count: number) => void;
@@ -51,7 +55,8 @@ export default function NotificationsInbox({
   const [items, setItems] = useState<InboxItem[]>([]);
   const [cursor, setCursor] = useState<string | null>();
   const [count, setCount] = useState<number>();
-  const [loading, setLoading] = useState(true);
+  // A page loaded ahead shows at once (refreshing once it is old) instead of a loading state.
+  const [loading, setLoading] = useState(!preloaded);
   // After a filter change the previous rows stay in place, dimmed and inert, until
   // the new ones arrive: emptying the list first collapsed it and reset the scroll.
   const [stale, setStale] = useState(false);
@@ -71,7 +76,7 @@ export default function NotificationsInbox({
   const countRef = useRef<number>(undefined);
   const opening = useRef(false);
   // This component is keyed by account and discarded when the inbox closes.
-  const cache = useRef(new Map<string, InboxPage & { loadedAt: number }>());
+  const cache = useRef(new Map<string, PreloadedInbox>(preloaded ? [["all:true", preloaded]] : []));
   const pending = useRef(new Map<string, Promise<InboxPage>>());
   const key = `${filter}:${unread}`;
   const firstPage = useCallback((type: InboxFilter, unreadOnly: boolean, remember = true) => {
