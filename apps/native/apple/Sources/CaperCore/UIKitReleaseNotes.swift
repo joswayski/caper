@@ -120,22 +120,37 @@ import Observation
         if display.releases == nil, let next = notes.presentation, next.id == display.id { display = next }
         body.arrangedSubviews.forEach { body.removeArrangedSubview($0); $0.removeFromSuperview() }
         let face = UIImageView(image: UIImage(named: "caper-face", in: caperResourceBundle, compatibleWith: nil))
-        face.contentMode = .scaleAspectFit; face.heightAnchor.constraint(equalToConstant: 36).isActive = true; face.isAccessibilityElement = false
-        body.addArrangedSubview(face)
-        body.addArrangedSubview(version)
+        face.contentMode = .scaleAspectFit; face.isAccessibilityElement = false
+        // The face sits on the leading edge, as on the other clients, not
+        // centred across the sheet; the version follows right under it.
+        let faceRow = UIView(); face.translatesAutoresizingMaskIntoConstraints = false; faceRow.addSubview(face)
+        NSLayoutConstraint.activate([
+            face.widthAnchor.constraint(equalToConstant: 36), face.heightAnchor.constraint(equalToConstant: 36),
+            face.leadingAnchor.constraint(equalTo: faceRow.leadingAnchor), face.topAnchor.constraint(equalTo: faceRow.topAnchor),
+            face.bottomAnchor.constraint(equalTo: faceRow.bottomAnchor),
+        ])
+        body.addArrangedSubview(faceRow); body.setCustomSpacing(6, after: faceRow)
+        body.addArrangedSubview(version); body.setCustomSpacing(20, after: version)
         if let releases = display.releases {
             if releases.isEmpty { body.addArrangedSubview(Self.label("No release highlights for this version yet.")) }
             let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
             for date in days.keys.sorted(by: >) {
-                body.addArrangedSubview(Self.label(releaseDayLabel(date), bold: true))
+                let day = Self.label(releaseDayLabel(date), bold: true)
+                body.addArrangedSubview(day); body.setCustomSpacing(8, after: day)
                 for release in days[date] ?? [] {
-                    body.addArrangedSubview(link(release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)), revision: release.revision))
+                    // Web's spacing: the link 6 above its highlights, each title
+                    // 4 above its text, 12 between highlights, 20 around the rule.
+                    let source = link(release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)), revision: release.revision)
+                    body.addArrangedSubview(source); body.setCustomSpacing(6, after: source)
                     for highlight in release.highlights {
                         let title = Self.label(highlight.title, size: 16, bold: true); title.accessibilityTraits.insert(.header)
-                        body.addArrangedSubview(title); body.addArrangedSubview(Self.label(highlight.body, size: 14))
+                        let text = Self.label(highlight.body, size: 14)
+                        body.addArrangedSubview(title); body.setCustomSpacing(4, after: title)
+                        body.addArrangedSubview(text); body.setCustomSpacing(12, after: text)
                     }
+                    if let last = body.arrangedSubviews.last { body.setCustomSpacing(20, after: last) }
                     let rule = UIView(); rule.backgroundColor = UIColor(CaperTheme.border); rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
-                    body.addArrangedSubview(rule)
+                    body.addArrangedSubview(rule); body.setCustomSpacing(20, after: rule)
                 }
             }
         } else if notes.loading { body.addArrangedSubview(Self.label("Loading release highlights…")) }
@@ -150,7 +165,7 @@ import Observation
     private func link(_ title: String, revision: String) -> UIButton {
         var config = UIButton.Configuration.plain()
         config.title = title
-        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attributes = incoming
             attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Satoshi-Regular", size: 12) ?? .systemFont(ofSize: 12))
@@ -162,13 +177,12 @@ import Observation
             }.withRenderingMode(.alwaysTemplate)
             config.imagePlacement = .trailing; config.imagePadding = 4
         }
-        let button = UIButton(configuration: config, primaryAction: UIAction { _ in
+        let button = UIKitTallTapButton(configuration: config, primaryAction: UIAction { _ in
             if let url = URL(string: "https://github.com/joswayski/caper/commit/\(revision)") { UIApplication.shared.open(url) }
         })
         button.configurationUpdateHandler = { button in
             button.configuration?.baseForegroundColor = button.isHighlighted ? UIColor(CaperTheme.text) : UIColor(CaperTheme.muted).withAlphaComponent(0.72)
         }
-        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         button.accessibilityHint = "View this version on GitHub"
         button.contentHorizontalAlignment = .leading
         return button
@@ -187,7 +201,7 @@ import Observation
         self.installed = installed
         super.init(frame: .zero)
         var config = UIButton.Configuration.plain()
-        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0)
         config.baseForegroundColor = UIColor(CaperTheme.text)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attributes = incoming
@@ -197,7 +211,6 @@ import Observation
         config.title = installed.label
         configuration = config
         contentHorizontalAlignment = .leading
-        heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         accessibilityIdentifier = "copy-version"
         accessibilityLabel = installed.accessibilityLabel
         if installed.copyText == nil {
@@ -208,6 +221,10 @@ import Observation
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    /// Drawn as tall as its text, tapped like a 44 pt control.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.insetBy(dx: 0, dy: min(0, (bounds.height - 44) / 2)).contains(point)
+    }
 
     private func copyVersion() {
         guard let copy = installed.copyText else { return }
@@ -221,6 +238,13 @@ import Observation
             guard let self, self.generation == current else { return }
             self.configuration?.title = self.installed.label
         }
+    }
+}
+/// A link drawn as tall as its text that still takes taps across 44 pt, so
+/// stacked links keep their text's spacing without shrinking the target.
+@MainActor final class UIKitTallTapButton: UIButton {
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.insetBy(dx: 0, dy: min(0, (bounds.height - 44) / 2)).contains(point)
     }
 }
 #endif
