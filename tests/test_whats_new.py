@@ -44,6 +44,14 @@ def highlight(
     return {"title": title, "body": body, "platforms": list(platforms), "commits": list(commits)}
 
 
+def gemini(parts, finish="STOP"):
+    return {"candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": finish}]}
+
+
+def prompt_of(body):
+    return body["contents"][0]["parts"][0]["text"]
+
+
 class FakeGitHub:
     """Disposable remote storage. No GH_TOKEN or network is used by this boundary."""
 
@@ -101,15 +109,15 @@ class HighlightsTests(unittest.TestCase):
         self.environment = patch.dict(
             os.environ,
             {
-                "ANTHROPIC_API_KEY": "fake-api-key",
-                "ANTHROPIC_MODEL": "",
-                "ANTHROPIC_EFFORT": "",
-                "ANTHROPIC_WORKSPACE_ID": "",
+                "GEMINI_API_KEY": "fake-api-key",
+                "GEMINI_MODEL": "",
+                "GEMINI_THINKING_LEVEL": "",
             },
         )
         self.environment.start()
         self.addCleanup(self.environment.stop)
         self.requests = []
+        self.urls = []
         self.response = {"highlights": []}
         self.message = None
         self.provider_error = None
@@ -152,27 +160,25 @@ class HighlightsTests(unittest.TestCase):
     def provider(self, request, timeout):
         body = json.loads(request.data)
         self.requests.append(body)
-        self.assertEqual(request.full_url, "https://api.anthropic.com/v1/messages")
-        self.assertEqual(request.get_header("X-api-key"), "fake-api-key")
-        self.assertEqual(request.get_header("Anthropic-beta"), "server-side-fallback-2026-07-01")
-        self.assertEqual(request.get_header("Anthropic-workspace-id"), os.environ["ANTHROPIC_WORKSPACE_ID"] or None)
+        self.urls.append(request.full_url)
+        self.assertRegex(
+            request.full_url, r"^https://generativelanguage\.googleapis\.com/v1beta/models/[a-z0-9.-]+:generateContent$"
+        )
+        self.assertEqual(request.get_header("X-goog-api-key"), "fake-api-key")
         self.assertEqual(timeout, 300)
-        self.assertEqual(body["max_tokens"], 16000)
-        self.assertEqual(body["fallbacks"], "default")
-        self.assertNotIn("thinking", body)
-        self.assertEqual(body["output_config"]["format"]["type"], "json_schema")
-        schema = json.dumps(body["output_config"]["format"]["schema"])
+        self.assertEqual(body["systemInstruction"], {"parts": [{"text": notes.SYSTEM}]})
+        config = body["generationConfig"]
+        self.assertEqual(config["maxOutputTokens"], 32768)
+        self.assertEqual(config["responseMimeType"], "application/json")
+        self.assertNotIn("thinkingBudget", config["thinkingConfig"])
+        schema = json.dumps(config["responseJsonSchema"])
         for unsupported in ("minLength", "maxLength", "maxItems"):
             self.assertNotIn(f'"{unsupported}"', schema)
         self.assertLessEqual(len(request.data.decode()), notes.MAX_INPUT_CHARS)
         self.assertNotIn("tools", body)
         if self.provider_error:
             raise self.provider_error
-        message = self.message or {
-            "type": "message",
-            "stop_reason": "end_turn",
-            "content": [{"type": "text", "text": json.dumps(self.response)}],
-        }
+        message = self.message or gemini([{"text": json.dumps(self.response)}])
         return io.BytesIO(message if isinstance(message, bytes) else encoded(message))
 
     def generate(self, revision=None, audience="web", publish=True, native_version=None):
@@ -219,12 +225,12 @@ class HighlightsTests(unittest.TestCase):
         future = self.commit("Unshipped feature", {"apps/web/src/future.ts": "future();\n"})
         self.response = {"highlights": [highlight([first, api, newest])]}
         result = self.generate(newest)["web"]
-        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        evidence = json.loads(prompt_of(self.requests[0]))
         self.assertEqual(evidence["platformRanges"], {"web": [first, api, newest]})
         self.assertEqual([item["commit"] for item in evidence["commits"]], [first, api, newest])
         self.assertIn("Keep the selected channel visible.", evidence["commits"][0]["body"])
         self.assertIn("+narrow();", evidence["commits"][-1]["diff"])
-        self.assertNotIn(future, self.requests[0]["messages"][0]["content"])
+        self.assertNotIn(future, prompt_of(self.requests[0]))
         self.assertEqual(len(self.requests), 1)
         self.assertEqual([entry["revision"] for entry in result["releases"]], [self.base, newest])
         self.assertEqual(result["sequence"], 2)
@@ -242,9 +248,9 @@ class HighlightsTests(unittest.TestCase):
         merge = self.git("rev-parse", "HEAD")
         self.response = {"highlights": [highlight([merge])]}
         self.generate(merge)
-        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        evidence = json.loads(prompt_of(self.requests[0]))
         self.assertEqual(evidence["platformRanges"]["web"], [merge])
-        self.assertNotIn(implementation, self.requests[0]["messages"][0]["content"])
+        self.assertNotIn(implementation, prompt_of(self.requests[0]))
         self.assertIn("+Hidden implementation", evidence["commits"][0]["diff"])
 
     def test_maintenance_tests_secret_dependencies_and_server_only_are_quiet(self):
@@ -300,7 +306,7 @@ class HighlightsTests(unittest.TestCase):
         self.response = {"highlights": [highlight([shipped], ["macos"])]}
         result = self.generate(shipped, "native")
         self.assertEqual(len(result["macos"]["releases"][-1]["highlights"]), 1)
-        evidence = self.requests[-1]["messages"][0]["content"]
+        evidence = prompt_of(self.requests[-1])
         self.assertIn("SHIPPED-APPKIT", evidence)
         self.assertNotIn("RETIRED-SWIFTUI", evidence)
 
@@ -322,7 +328,7 @@ class HighlightsTests(unittest.TestCase):
         }
         result = self.generate(newest, "native")
         self.assertEqual(len(self.requests), 1)
-        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        evidence = json.loads(prompt_of(self.requests[0]))
         self.assertEqual(evidence["platformRanges"]["android"], [shared, ios, newest])
         self.assertEqual(evidence["platformRanges"]["ios"], [first, shared, ios, newest])
         self.assertEqual(result["android"]["sequence"], 3)
@@ -413,21 +419,16 @@ class HighlightsTests(unittest.TestCase):
         self.seed()
         newest = self.commit("Improve channel controls")
         responses = [
-            {"type": "message", "stop_reason": "refusal", "content": []},
-            {"type": "message", "stop_reason": "max_tokens", "content": []},
-            {"type": "error", "error": {"message": "secret error body"}},
-            {"type": "message", "stop_reason": "end_turn", "content": [{"type": "refusal"}]},
-            {"type": "message", "stop_reason": "end_turn", "content": [{"type": "thinking", "thinking": ""}]},
-            {
-                "type": "message",
-                "stop_reason": "end_turn",
-                "content": [{"type": "text", "text": '{"highlights":[]}'}, {"type": "text", "text": "extra"}],
-            },
-            {
-                "type": "message",
-                "stop_reason": "end_turn",
-                "content": [{"type": "text", "text": '{"highlights":[],"highlights":[]}'}],
-            },
+            gemini([], "SAFETY"),
+            gemini([{"text": '{"highlights":'}], "MAX_TOKENS"),
+            gemini([{"text": '{"highlights":[]}'}], "CONTINUATION"),
+            {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}},
+            {"error": {"message": "secret error body"}},
+            {"candidates": [gemini([{"text": '{"highlights":[]}'}])["candidates"][0]] * 2},
+            gemini([{"text": "secret summary", "thought": True}]),
+            gemini([{"inlineData": {"mimeType": "text/plain", "data": ""}}]),
+            gemini([{"text": '{"highlights":[]}'}, {"text": "extra"}]),
+            gemini([{"text": '{"highlights":[],"highlights":[]}'}]),
             b"invalid secret response",
             b"x" * (128 * 1024 + 1),
         ]
@@ -447,12 +448,12 @@ class HighlightsTests(unittest.TestCase):
             "https://example.test", 500, "secret error body", {}, io.BytesIO(b"secret")
         )
         with patch.object(notes, "wait_before_retry") as sleep:
-            self.assert_cli_failure(newest, "Claude request failed (HTTP 500 unknown_error)")
+            self.assert_cli_failure(newest, "Gemini request failed (HTTP 500 UNKNOWN)")
         self.assertEqual([call.args for call in sleep.call_args_list], [(10,), (30,)])
         self.assertEqual(len(self.requests), 3)
         self.requests.clear()
         self.provider_error = TimeoutError("secret timeout body")
-        self.assert_cli_failure(newest, "Claude request failed")
+        self.assert_cli_failure(newest, "Gemini request failed")
         self.assertEqual(len(self.requests), 1)
 
     def test_transient_provider_errors_retry_before_publishing(self):
@@ -485,15 +486,13 @@ class HighlightsTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 3)
         self.assertEqual(feeds["web"]["releases"][-1]["highlights"][0]["title"], "Clearer channel controls")
 
-    def test_workspace_id_is_sent_when_configured(self):
+    def test_model_must_be_a_model_id_before_any_provider_call(self):
         self.seed()
         newest = self.commit("Improve channel controls")
-        with patch.dict(os.environ, {"ANTHROPIC_WORKSPACE_ID": "wrkspc_01Example"}):
-            self.generate(newest)
-        self.assertEqual(len(self.requests), 1)
-        self.github.events.clear()
-        with patch.dict(os.environ, {"ANTHROPIC_WORKSPACE_ID": "bad id\n"}):
-            self.assert_cli_failure(self.commit("Improve channel menus"), "ANTHROPIC_WORKSPACE_ID")
+        for model in ("../files/x", "gemini-4-neon:streamGenerateContent?alt=sse#", "Gemini 4 Neon"):
+            with self.subTest(model=model), patch.dict(os.environ, {"GEMINI_MODEL": model}):
+                self.assert_cli_failure(newest, "GEMINI_MODEL")
+        self.assertEqual(self.requests, [])
 
     def test_drafted_answer_is_reused_only_for_identical_evidence(self):
         self.seed()
@@ -526,7 +525,7 @@ class HighlightsTests(unittest.TestCase):
         later = self.commit("Improve channel menus")
         self.response = {"highlights": []}
         drafted = answer.read_bytes()
-        prompt = self.requests[0]["messages"][0]["content"]
+        prompt = prompt_of(self.requests[0])
         self.assertIsNotNone(notes.saved_answer(answer, newest, prompt))
         with patch.object(notes, "SYSTEM", notes.SYSTEM + "Changed rules."):
             self.assertIsNone(notes.saved_answer(answer, newest, prompt))
@@ -539,13 +538,13 @@ class HighlightsTests(unittest.TestCase):
     def test_permanent_provider_errors_do_not_retry(self):
         self.seed()
         newest = self.commit("Improve channel controls")
-        body = {"type": "error", "error": {"type": "invalid_request_error", "message": "max_tokens:\n too\x00 large"}}
+        body = {"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": "thinking_level:\n too\x00 low"}}
         self.provider_error = urllib.error.HTTPError(
             "https://example.test", 400, "secret error body", {}, io.BytesIO(encoded(body))
         )
         with patch.object(notes, "wait_before_retry") as sleep:
             self.assert_cli_failure(
-                newest, "Claude request failed (HTTP 400 invalid_request_error: max_tokens: too large)"
+                newest, "Gemini request failed (HTTP 400 INVALID_ARGUMENT: thinking_level: too low)"
             )
         sleep.assert_not_called()
         self.assertEqual(len(self.requests), 1)
@@ -577,40 +576,40 @@ class HighlightsTests(unittest.TestCase):
             self.assertEqual(self.generate(silent)["web"]["releases"][-1]["highlights"], [])
             self.github.events.clear()
             newest = self.commit("Improve channel controls")
-            self.assert_cli_failure(newest, "ANTHROPIC_API_KEY")
+            self.assert_cli_failure(newest, "GEMINI_API_KEY")
         self.assertEqual(self.requests, [])
 
-    def test_defaults_to_opus_high_effort_and_variables_override(self):
+    def test_defaults_to_neon_medium_thinking_and_variables_override(self):
         self.seed()
         newest = self.commit("Improve channel controls")
         self.generate(newest)
-        self.assertEqual(self.requests[0]["model"], "claude-opus-5-5")
-        self.assertEqual(self.requests[0]["output_config"]["effort"], "high")
+        self.assertTrue(self.urls[0].endswith("/models/gemini-4-neon:generateContent"))
+        self.assertEqual(self.requests[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "MEDIUM"})
         later = self.commit("Improve channel search")
-        with patch.dict(os.environ, {"ANTHROPIC_MODEL": "claude-sonnet-5-5", "ANTHROPIC_EFFORT": "xhigh"}):
+        with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-4-hydrogen", "GEMINI_THINKING_LEVEL": "xhigh"}):
             self.generate(later)
-        self.assertEqual(self.requests[1]["model"], "claude-sonnet-5-5")
-        self.assertEqual(self.requests[1]["output_config"]["effort"], "xhigh")
+        self.assertTrue(self.urls[1].endswith("/models/gemini-4-hydrogen:generateContent"))
+        self.assertEqual(self.requests[1]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "XHIGH"})
 
-    def test_invalid_effort_fails_before_any_provider_call(self):
+    def test_invalid_thinking_level_fails_before_any_provider_call(self):
         self.seed()
         newest = self.commit("Improve channel controls")
-        with patch.dict(os.environ, {"ANTHROPIC_EFFORT": "extreme"}):
-            self.assert_cli_failure(newest, "ANTHROPIC_EFFORT")
+        for level in ("minimal", "MEDIUM", "max"):
+            with self.subTest(level=level), patch.dict(os.environ, {"GEMINI_THINKING_LEVEL": level}):
+                self.assert_cli_failure(newest, "GEMINI_THINKING_LEVEL")
         self.assertEqual(self.requests, [])
 
-    def test_thinking_and_fallback_blocks_surround_the_single_answer(self):
+    def test_thought_parts_are_not_part_of_the_answer(self):
         self.seed()
         newest = self.commit("Improve channel controls")
-        self.message = {
-            "type": "message",
-            "stop_reason": "end_turn",
-            "content": [
-                {"type": "thinking", "thinking": "", "signature": "opaque"},
-                {"type": "fallback", "from": {"model": "claude-opus-5-5"}, "to": {"model": "claude-opus-5"}},
-                {"type": "text", "text": json.dumps({"highlights": [highlight([newest])]})},
-            ],
-        }
+        answer = json.dumps({"highlights": [highlight([newest])]})
+        self.message = gemini(
+            [
+                {"text": "Considering the channel menu commit.", "thought": True},
+                {"text": answer[:20], "thoughtSignature": "opaque"},
+                {"text": answer[20:]},
+            ]
+        )
         result = self.generate(newest)["web"]
         self.assertEqual(
             result["releases"][-1]["highlights"],
@@ -709,7 +708,7 @@ class HighlightsTests(unittest.TestCase):
         result = self.generate(newest)["web"]
         self.assertEqual(result["sequence"], 3)
         self.assertEqual([entry["revision"] for entry in result["releases"]], [self.base, interrupted, newest])
-        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        evidence = json.loads(prompt_of(self.requests[0]))
         self.assertEqual(evidence["platformRanges"], {"web": [newest]})
 
     def test_native_partial_upload_retry_uses_one_request_for_only_missing_assets(self):
@@ -730,7 +729,7 @@ class HighlightsTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.github.feeds["android"][f"{newest}.json"], android)
         self.assertTrue(all(value["sequence"] == 2 for value in result.values()))
-        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        evidence = json.loads(prompt_of(self.requests[0]))
         self.assertEqual(set(evidence["platformRanges"]), {"macos", "windows", "linux"})
 
     def test_over_budget_diffs_are_shortened_so_long_gaps_still_publish(self):
@@ -741,7 +740,7 @@ class HighlightsTests(unittest.TestCase):
         self.response = {"highlights": [highlight([chat, newest])]}
         result = self.generate(newest)["web"]
         self.assertEqual(len(self.requests), 1)
-        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        evidence = json.loads(prompt_of(self.requests[0]))
         commits = {item["subject"]: item for item in evidence["commits"]}
         self.assertEqual(set(commits), {"Improve channel controls", "Persist voice state", "Improve voice controls"})
         # Server-only context loses its diff first; client diffs share the rest evenly.
@@ -756,7 +755,7 @@ class HighlightsTests(unittest.TestCase):
         self.seed()
         newest = self.commit("Improve channel controls", {"apps/web/src/chat.ts": "small();\n"})
         self.generate(newest)
-        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        evidence = json.loads(prompt_of(self.requests[0]))
         self.assertNotIn("diffTruncated", evidence["commits"][0])
         self.assertIn("+small();", evidence["commits"][0]["diff"])
 
@@ -868,7 +867,7 @@ else:
             "GITHUB_REPOSITORY": "joswayski/caper",
             "FAKE_GITHUB": str(self.repo / "fake-github"),
         }
-        environment.pop("ANTHROPIC_API_KEY", None)
+        environment.pop("GEMINI_API_KEY", None)
         args = [
             sys.executable,
             spec.origin,

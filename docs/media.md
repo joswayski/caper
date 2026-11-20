@@ -4641,8 +4641,8 @@ manifest (`--answer` reuses the draft only if its evidence hash is unchanged). A
 generation failure never holds back a release.
 
 `scripts/whats_new.py` reads the previous per-platform revision, first-parent
-commit messages, relevant runtime diffs and recent highlights, and makes one Claude
-Messages API request selecting at most five highlights. Output must cite commits in
+commit messages, relevant runtime diffs and recent highlights, and makes one Gemini
+API `generateContent` request selecting at most five highlights. Output must cite commits in
 range, have client/shared runtime evidence and pass schema/text/claim checks; an
 empty list is valid. Only repository evidence is sent, never user data. One request
 sends at most 400,000 characters; over that, server-only diffs drop and client diffs
@@ -4681,17 +4681,18 @@ flight.
 
 ### Configuration and repair
 
-- `ANTHROPIC_API_KEY` is a Caper Actions secret
-  (`gh secret set ANTHROPIC_API_KEY --repo joswayski/caper`). Removing it stops
-  generation without affecting deploys.
+- `GEMINI_API_KEY` is a Caper Actions secret
+  (`gh secret set GEMINI_API_KEY --repo joswayski/caper`): a Gemini API key from
+  Google AI Studio whose project uses the paid tier (Neon has no free tier).
+  Captures and dbm use the same key. Removing it stops generation without
+  affecting deploys.
 - Ship's dispatch identity is stored in infrastructure with
   `./scripts/store-ship-dispatch-secrets.sh --profile production` (from the
   infrastructure checkout).
-- The generator defaults to `claude-opus-5-5` at `high` effort with
-  `fallbacks: "default"`. Optional Actions variables `CAPER_RELEASE_NOTES_MODEL`
-  and `CAPER_RELEASE_NOTES_EFFORT` (`low`–`max`) override them. A key not scoped
-  to one workspace needs the `ANTHROPIC_WORKSPACE_ID` variable (otherwise HTTP 400
-  `invalid_request_error`).
+- The generator defaults to `gemini-4-neon` at the `medium` thinking level.
+  Optional Actions variables `CAPER_RELEASE_NOTES_MODEL` (a Gemini model ID) and
+  `CAPER_RELEASE_NOTES_THINKING_LEVEL` (`low`, `medium`, `high` or `xhigh`)
+  override them.
 
 Repair a failed generation only for a revision that actually shipped:
 

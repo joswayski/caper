@@ -39,7 +39,7 @@ on:
         type: boolean
         default: false
     secrets:
-      ANTHROPIC_API_KEY:
+      GEMINI_API_KEY:
         required: false
 
 permissions:
@@ -74,7 +74,7 @@ jobs:
           git merge-base --is-ancestor "$RELEASE_SHA" HEAD
       - name: Read the drafted answer
         if: ${{ !inputs.draft }}
-        # Missing for repairs and when drafting failed; publishing then asks Claude.
+        # Missing for repairs and when drafting failed; publishing then asks Gemini.
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
@@ -87,12 +87,10 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Required when the key is not scoped to a single workspace.
-          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          # Empty variables fall back to the generator defaults (Opus 5.5, high effort).
-          ANTHROPIC_MODEL: ${{ vars.CAPER_RELEASE_NOTES_MODEL }}
-          ANTHROPIC_EFFORT: ${{ vars.CAPER_RELEASE_NOTES_EFFORT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Empty variables fall back to the generator defaults (Gemini 4 Neon, medium thinking).
+          GEMINI_MODEL: ${{ vars.CAPER_RELEASE_NOTES_MODEL }}
+          GEMINI_THINKING_LEVEL: ${{ vars.CAPER_RELEASE_NOTES_THINKING_LEVEL }}
           RELEASE_SHA: ${{ inputs.git_sha }}
           AUDIENCE: ${{ inputs.audience }}
           NATIVE_VERSION: ${{ inputs.native_version }}
@@ -129,8 +127,8 @@ jobs:
             if [[ "$OUTCOME" == success ]]; then
               echo 'Release highlights drafted; publishing reuses them if the evidence is unchanged.' >> "$GITHUB_STEP_SUMMARY"
             else
-              echo '::warning::Release highlights could not be drafted. Publishing will ask Claude again.'
-              echo 'Release highlights draft failed. Publishing will ask Claude again; check the generator step.' >> "$GITHUB_STEP_SUMMARY"
+              echo '::warning::Release highlights could not be drafted. Publishing will ask Gemini again.'
+              echo 'Release highlights draft failed. Publishing will ask Gemini again; check the generator step.' >> "$GITHUB_STEP_SUMMARY"
             fi
           elif [[ "$OUTCOME" == success ]]; then
             echo 'Release highlights published or reused. First publication establishes a quiet baseline.' >> "$GITHUB_STEP_SUMMARY"

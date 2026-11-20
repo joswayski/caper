@@ -32,10 +32,9 @@ PLATFORMS = ("web", "android", "ios", "macos", "windows", "linux")
 MAX_SNAPSHOT_BYTES = 64 * 1024
 MAX_INPUT_CHARS = 400_000
 MAX_RESPONSE_BYTES = 128 * 1024
-DEFAULT_MODEL = "claude-opus-5-5"
-DEFAULT_EFFORT = "high"
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
-NON_ANSWER_BLOCKS = ("thinking", "redacted_thinking", "fallback")
+DEFAULT_MODEL = "gemini-4-neon"
+DEFAULT_THINKING_LEVEL = "medium"
+THINKING_LEVELS = ("low", "medium", "high", "xhigh")
 PROVIDER_TIMEOUT_SECONDS = 300
 # Overload, rate-limit and gateway errors usually clear within seconds. Retry
 # them so one blip does not leave a shipped build without notes; timeouts are
@@ -372,7 +371,7 @@ def evidence(repo, revision, previous, platforms):
 
 def request_size(prompt):
     # The prompt is sent JSON-escaped inside the request; leave room for the
-    # model, effort and fallback fields that ask_claude adds.
+    # generation settings that ask_gemini adds.
     shape = {"system": SYSTEM, "messages": [{"content": prompt}], "schema": OUTPUT_SCHEMA}
     return len(encode(shape).decode("utf-8")) + 512
 
@@ -426,46 +425,36 @@ def wait_before_retry(delay):
     time.sleep(delay)
 
 
-def ask_claude(prompt):
-    key = os.environ.get("ANTHROPIC_API_KEY")
+def ask_gemini(prompt):
+    key = os.environ.get("GEMINI_API_KEY")
     if not key:
-        raise GenerationError("ANTHROPIC_API_KEY is required for product changes")
-    effort = os.environ.get("ANTHROPIC_EFFORT") or DEFAULT_EFFORT
-    if effort not in EFFORTS:
-        raise GenerationError(f"ANTHROPIC_EFFORT must be one of {', '.join(EFFORTS)}")
-    # Adaptive thinking shares max_tokens with the answer; "default" fallbacks
-    # retry a classifier decline on Anthropic's recommended model.
+        raise GenerationError("GEMINI_API_KEY is required for product changes")
+    model = os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", model):
+        raise GenerationError("GEMINI_MODEL must be a Gemini model ID")
+    level = os.environ.get("GEMINI_THINKING_LEVEL") or DEFAULT_THINKING_LEVEL
+    if level not in THINKING_LEVELS:
+        raise GenerationError(f"GEMINI_THINKING_LEVEL must be one of {', '.join(THINKING_LEVELS)}")
+    # Thinking shares maxOutputTokens with the answer; 32,768 is the most one
+    # non-streaming request may produce before Gemini asks to continue.
     body = {
-        "model": os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL,
-        "max_tokens": 16000,
-        "system": SYSTEM,
-        "messages": [{"role": "user", "content": prompt}],
-        "output_config": {
-            "effort": effort,
-            "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA},
+        "systemInstruction": {"parts": [{"text": SYSTEM}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": 32768,
+            "responseMimeType": "application/json",
+            "responseJsonSchema": OUTPUT_SCHEMA,
+            "thinkingConfig": {"thinkingLevel": level.upper()},
         },
-        "fallbacks": "default",
     }
-    headers = {
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "server-side-fallback-2026-07-01",
-        "Content-Type": "application/json",
-    }
-    # Keys that are not scoped to one workspace must name the workspace to bill.
-    workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID")
-    if workspace:
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", workspace):
-            raise GenerationError("ANTHROPIC_WORKSPACE_ID must be a workspace ID")
-        headers["anthropic-workspace-id"] = workspace
     payload = encode(body)
     if len(payload.decode("utf-8")) > MAX_INPUT_CHARS:
-        raise GenerationError(f"Claude request exceeds {MAX_INPUT_CHARS} input characters")
+        raise GenerationError(f"Gemini request exceeds {MAX_INPUT_CHARS} input characters")
     request = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         data=payload,
         method="POST",
-        headers=headers,
+        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
     )
     for delay in (*PROVIDER_RETRY_DELAYS, None):
         try:
@@ -478,41 +467,45 @@ def ask_claude(prompt):
             status = error.code
             try:
                 detail = json.loads(error.read(4096))["error"]
-                kind, reason = detail["type"], detail.get("message", "")
+                kind, reason = detail["status"], detail.get("message", "")
             except (OSError, http.client.HTTPException, ValueError, TypeError, KeyError, AttributeError):
                 kind, reason = None, ""
             finally:
                 error.close()
-            if not isinstance(kind, str) or not re.fullmatch(r"[a-z_]{1,64}", kind):
-                kind = "unknown_error"
+            if not isinstance(kind, str) or not re.fullmatch(r"[A-Z_]{1,64}", kind):
+                kind = "UNKNOWN"
             reason = " ".join("".join(c if c.isprintable() else " " for c in str(reason)).split())[:300]
             if delay is None or status not in PROVIDER_RETRY_STATUSES:
                 raise GenerationError(
-                    f"Claude request failed (HTTP {status} {kind}{': ' + reason if reason else ''}); "
+                    f"Gemini request failed (HTTP {status} {kind}{': ' + reason if reason else ''}); "
                     "no snapshots published"
                 ) from None
         except (urllib.error.URLError, ConnectionError) as error:
             if delay is None or isinstance(getattr(error, "reason", None), TimeoutError):
-                raise GenerationError("Claude request failed; no snapshots published") from None
+                raise GenerationError("Gemini request failed; no snapshots published") from None
         except (TimeoutError, OSError, http.client.HTTPException, ValueError):
-            raise GenerationError("Claude request failed; no snapshots published") from None
+            raise GenerationError("Gemini request failed; no snapshots published") from None
         wait_before_retry(delay)
     if len(raw) > MAX_RESPONSE_BYTES:
-        raise GenerationError("Claude response exceeds the size limit")
-    message = parse_json(raw)
-    if not isinstance(message, dict) or message.get("type") != "message" or message.get("stop_reason") != "end_turn":
-        raise GenerationError("Claude refused, errored, or did not finish the response")
-    blocks = message.get("content")
-    if not isinstance(blocks, list) or not all(isinstance(block, dict) for block in blocks):
-        raise GenerationError("Claude returned unexpected content")
-    # Thinking and fallback-switch blocks carry no notes; exactly one text block must.
-    texts = [block for block in blocks if block.get("type") not in NON_ANSWER_BLOCKS]
-    if len(texts) != 1 or texts[0].get("type") != "text":
-        raise GenerationError("Claude returned unexpected content")
-    value = texts[0].get("text")
-    if not isinstance(value, str):
-        raise GenerationError("Claude returned no structured text")
-    return parse_json(value)
+        raise GenerationError("Gemini response exceeds the size limit")
+    response = parse_json(raw)
+    candidates = response.get("candidates") if isinstance(response, dict) else None
+    if (
+        not isinstance(candidates, list)
+        or len(candidates) != 1
+        or not isinstance(candidates[0], dict)
+        or candidates[0].get("finishReason") != "STOP"
+    ):
+        raise GenerationError("Gemini refused, errored, or did not finish the response")
+    content = candidates[0].get("content")
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list) or not all(isinstance(part, dict) for part in parts):
+        raise GenerationError("Gemini returned unexpected content")
+    # Thought summaries carry no notes; the answer is the remaining text.
+    texts = [part.get("text") for part in parts if not part.get("thought")]
+    if not texts or not all(isinstance(text, str) for text in texts):
+        raise GenerationError("Gemini returned no structured text")
+    return parse_json("".join(texts))
 
 
 def evidence_hash(prompt):
@@ -743,7 +736,7 @@ def generate(
 ):
     """Prepare every snapshot before any remote mutation; return requested snapshots.
 
-    `save_answer` keeps Claude's answer so a later run can reuse it through
+    `save_answer` keeps Gemini's answer so a later run can reuse it through
     `answer`, but only for byte-identical evidence; anything else asks again.
     """
     if not revision_id(revision) or audience not in ("web", "native"):
@@ -765,7 +758,7 @@ def generate(
         if any(commit["platforms"] for commit in commits.values()):
             result = saved_answer(answer, revision, prompt) if answer else None
             if result is None:
-                result = ask_claude(prompt)
+                result = ask_gemini(prompt)
             highlights = validate_highlights(result, ranges, commits, missing)
             if save_answer:
                 Path(save_answer).parent.mkdir(parents=True, exist_ok=True)
@@ -822,7 +815,7 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--native-version", help="Actual native app version, supplied by the release workflow")
-    parser.add_argument("--save-answer", type=Path, help="Keep Claude's answer here for a later --answer")
+    parser.add_argument("--save-answer", type=Path, help="Keep Gemini's answer here for a later --answer")
     parser.add_argument("--answer", type=Path, help="Reuse a saved answer when the evidence is unchanged")
     args = parser.parse_args(argv)
     try:
