@@ -214,8 +214,17 @@ def main() -> None:
                 }
             },
         )
+        codes = {error.get("code") for error in body.get("errors", [])} if isinstance(body, dict) else set()
         if status == 409:
             print("Beta app review: already submitted or not required for this build")
+        elif status == 422 and "ENTITY_UNPROCESSABLE.SUBMISSION_LIMIT_REACHED" in codes:
+            # Apple caps beta review submissions per period. The build is already
+            # in every group (internal testers have it); a later release's build
+            # reaches external testers once the cap resets.
+            print(
+                f"::warning::Apple's beta app review submission limit is reached; build {build_number} "
+                "stays with internal testers, and a later build will reach external testers."
+            )
         elif status >= 300:
             sys.exit(f"Submitting for beta app review failed with HTTP {status}: {json.dumps(body)[:2000]}")
         else:

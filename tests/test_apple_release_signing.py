@@ -249,8 +249,17 @@ class TestFlightDistributionTests(unittest.TestCase):
         # publishing dependencies are needed for this local HTTP contract test.
         with patch.dict(sys.modules, {"jwt": SimpleNamespace()}):
             main = runpy.run_path(str(script))["main"]
-        for error, failures, succeeds in ((404, 2, True), (404, 100, False), (403, 1, False)):
-            with self.subTest(error=error, failures=failures):
+        limit = (422, "ENTITY_UNPROCESSABLE.SUBMISSION_LIMIT_REACHED")
+        cases = (
+            (404, 2, True, (201, None)),
+            (404, 100, False, (201, None)),
+            (403, 1, False, (201, None)),
+            # Apple's review quota leaves the build with its groups; other review errors still fail.
+            (404, 0, True, limit),
+            (404, 0, False, (422, "ENTITY_ERROR.ATTRIBUTE.INVALID")),
+        )
+        for error, failures, succeeds, (review_status, review_code) in cases:
+            with self.subTest(error=error, failures=failures, review=review_code):
                 state = {"remaining": failures, "added": False, "reviewed": False}
                 clock = [0]
 
@@ -291,7 +300,7 @@ class TestFlightDistributionTests(unittest.TestCase):
                                 self.respond(204, {})
                         elif self.path == "/betaAppReviewSubmissions" and state["added"]:
                             state["reviewed"] = True
-                            self.respond(201, {})
+                            self.respond(review_status, {"errors": [{"code": review_code}]} if review_code else {})
                         else:
                             self.respond(400, {})
 
@@ -314,13 +323,13 @@ class TestFlightDistributionTests(unittest.TestCase):
                         if succeeds:
                             main()
                         else:
-                            with self.assertRaisesRegex(SystemExit, f"HTTP {error}"):
+                            with self.assertRaisesRegex(SystemExit, f"HTTP {error if failures else review_status}"):
                                 main()
-                    self.assertEqual(state["added"], succeeds)
-                    self.assertEqual(state["reviewed"], succeeds)
+                    self.assertEqual(state["added"], succeeds or not failures)
+                    self.assertEqual(state["reviewed"], succeeds or not failures)
                     if error == 403:
                         self.assertEqual(clock[0], 0, "authorization failures must fail immediately")
-                    elif not succeeds:
+                    elif not succeeds and failures:
                         self.assertEqual(clock[0], 600, "persistent 404 must stop after ten minutes")
                 finally:
                     server.shutdown()
