@@ -57,24 +57,36 @@ pub(super) struct UpdateWindow {
 
 fn link(text: &str, url: &str, classes: &[&str]) -> gtk::LinkButton {
     let button = gtk::LinkButton::with_label(url, text);
-    // An external link's ↗ after its text, coloured with it.
-    if classes.contains(&"release-link") {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        row.append(&gtk::Label::new(Some(text)));
-        row.append(
-            &gtk::Label::builder()
-                .label("↗")
-                .css_classes(["release-link-icon"])
-                .accessible_role(gtk::AccessibleRole::Presentation)
-                .build(),
-        );
-        button.set_child(Some(&row));
-        crate::app::rename(button.upcast_ref(), text);
-    }
     for class in classes {
         button.add_css_class(class);
     }
     button.set_halign(gtk::Align::Start);
+    button
+}
+
+/// A version that opens its commit: its text, then the shared
+/// external-link icon, with one underline under both on hover. The icon
+/// cross-fades from muted to bright with the text (style.css).
+fn release_link(images: &crate::images::Images, text: &str, url: &str) -> gtk::LinkButton {
+    let button = link(text, url, &["release-link"]);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    row.append(&gtk::Label::new(Some(text)));
+    let icon = gtk::Overlay::new();
+    icon.set_valign(gtk::Align::Center);
+    let rest = images.icon_image(Icon::ExternalLink, "#b9bcbe", 12);
+    rest.add_css_class("release-link-rest");
+    icon.set_child(Some(&rest));
+    let hover = images.icon_image(Icon::ExternalLink, "#fbf9f4", 12);
+    hover.add_css_class("release-link-hover");
+    icon.add_overlay(&hover);
+    row.append(&icon);
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    column.append(&row);
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    line.add_css_class("release-link-line");
+    column.append(&line);
+    button.set_child(Some(&column));
+    crate::app::rename(button.upcast_ref(), text);
     button
 }
 
@@ -265,7 +277,7 @@ impl App {
         heading.append(&title);
         let version = updates::version_label();
         match updates::commit_url(REVISION) {
-            Some(url) => heading.append(&link(&version, &url, &["release-link"])),
+            Some(url) => heading.append(&release_link(&self.images, &version, &url)),
             None => {
                 let text = label(&version, &["muted", "small"]);
                 text.set_xalign(0.0);
@@ -402,10 +414,10 @@ impl App {
                 open.body.append(&date);
                 previous_day = day;
             }
-            let version = link(
+            let version = release_link(
+                &self.images,
                 &release_label(&release),
                 &updates::commit_url(&release.revision).unwrap_or_default(),
-                &["release-link"],
             );
             version.set_margin_top(12);
             open.body.append(&version);
@@ -590,7 +602,7 @@ impl App {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let version = format!("Version {}", update.version);
         match update.revision.as_deref().and_then(updates::commit_url) {
-            Some(url) => line.append(&link(&version, &url, &["release-link"])),
+            Some(url) => line.append(&release_link(&self.images, &version, &url)),
             None => line.append(&label(&version, &["muted", "small"])),
         }
         // The size sits beside the version it downloads.

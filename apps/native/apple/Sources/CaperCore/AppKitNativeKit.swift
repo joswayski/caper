@@ -511,7 +511,8 @@ final class AppKitKitFlippedView: NSView {
 }
 
 /// A version label that opens its commit, muted at rest and underlined on hover.
-/// A plain link: no fill, its ↗ coloured with the text.
+/// A plain link: no fill, the shared external-link icon after its text in the
+/// text's colour, and one underline under both.
 @MainActor final class AppKitKitLink: NSButton {
     private let url: URL
     private var tracking: NSTrackingArea?
@@ -525,6 +526,7 @@ final class AppKitKitFlippedView: NSView {
         super.init(frame: .zero)
         self.title = title
         isBordered = false; bezelStyle = .regularSquare
+        imagePosition = .imageTrailing; imageHugsTitle = true
         target = self; action = #selector(open)
         toolTip = help
         if let help { setAccessibilityHelp(help) }
@@ -534,13 +536,38 @@ final class AppKitKitFlippedView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private var tint: NSColor { color ?? (hovered ? AppKitKit.actionHover : AppKitKit.muted.withAlphaComponent(0.72)) }
+
     private func style() {
-        var attributes: [NSAttributedString.Key: Any] = [
-            .font: AppKitKit.font(size),
-            .foregroundColor: color ?? (hovered ? AppKitKit.actionHover : AppKitKit.muted.withAlphaComponent(0.72)),
-        ]
-        if hovered { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
-        attributedTitle = NSAttributedString(string: title + " ↗", attributes: attributes)
+        let tint = tint
+        attributedTitle = NSAttributedString(string: title + " ", attributes: [.font: AppKitKit.font(size), .foregroundColor: tint])
+        image = Self.icon(tint)
+        needsDisplay = true
+    }
+
+    /// The shared external-link icon (12 pt) in `tint`, its alpha included.
+    private static func icon(_ tint: NSColor) -> NSImage? {
+        guard let source = NSImage(named: "caper-external-link") ?? caperResourceBundle.image(forResource: "caper-external-link") else { return nil }
+        let rect = NSRect(x: 0, y: 0, width: 12, height: 12)
+        let solid = NSImage(size: rect.size, flipped: false) { r in
+            source.draw(in: r)
+            tint.withAlphaComponent(1).set()
+            r.fill(using: .sourceAtop)
+            return true
+        }
+        return NSImage(size: rect.size, flipped: false) { r in
+            solid.draw(in: r, from: .zero, operation: .sourceOver, fraction: tint.alphaComponent)
+            return true
+        }
+    }
+
+    /// One 1 pt underline under the text and its icon while hovered.
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard hovered else { return }
+        tint.withAlphaComponent(tint.alphaComponent * 0.7).setFill()
+        let y = isFlipped ? bounds.maxY - 1 : bounds.minY
+        NSRect(x: bounds.minX, y: y, width: bounds.width, height: 1).fill()
     }
     @objc private func open() { NSWorkspace.shared.open(url) }
     override func updateTrackingAreas() {

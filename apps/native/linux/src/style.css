@@ -2386,9 +2386,10 @@ button.inline-link label {
   text-decoration: underline;
 }
 
-/* A version that opens its commit: a plain link, muted with its ↗ at rest,
-   brightening and underlined on hover over 200 ms (none without
-   animations), with no fill. */
+/* A version that opens its commit: a plain link, muted at rest with the
+   shared external-link icon, brightening on hover over 200 ms ease-in-out
+   (none without animations), with one underline under the text and icon
+   and no fill. */
 button.release-link,
 button.release-link:hover,
 button.release-link:active {
@@ -2401,19 +2402,37 @@ button.release-link:active {
 
 button.release-link label {
   color: alpha(@caper_text_muted, 0.72);
-  text-decoration: none;
   transition: color 200ms ease-in-out;
+}
+
+button.release-link .release-link-rest {
+  opacity: 0.72;
+}
+
+button.release-link .release-link-hover,
+button.release-link .release-link-line {
+  opacity: 0;
+  transition: opacity 200ms ease-in-out;
+}
+
+button.release-link .release-link-line {
+  min-height: 1px;
+  background: alpha(@caper_action_hover, 0.7);
 }
 
 button.release-link:hover label,
 button.release-link:active label,
 button.release-link:focus-visible label {
   color: @caper_action_hover;
-  text-decoration: underline;
 }
 
-button.release-link label.release-link-icon {
-  text-decoration: none;
+button.release-link:hover .release-link-hover,
+button.release-link:active .release-link-hover,
+button.release-link:focus-visible .release-link-hover,
+button.release-link:hover .release-link-line,
+button.release-link:active .release-link-line,
+button.release-link:focus-visible .release-link-line {
+  opacity: 1;
 }
 
 button.inline-link {

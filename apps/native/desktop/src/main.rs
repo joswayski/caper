@@ -31971,8 +31971,9 @@ fn external_link(
         );
         let underline = if response.has_focus() { 1.0 } else { hover };
         if underline > 0.0 {
+            // One underline under the text and its icon, as on every client.
             ui.painter().hline(
-                rect.left()..=rect.left() + text_size.x,
+                rect.left()..=rect.right(),
                 rect.bottom() - 0.5,
                 Stroke::new(1.0_f32, color.gamma_multiply(0.7 * underline)),
             );

@@ -249,7 +249,8 @@ impl Dialog {
             let tw = w - RELEASE_ICON;
             if mix > 0.0 {
                 let line = dc.CreateSolidColorBrush(&crate::gfx::color(c, 0.7 * mix), None)?;
-                dc.FillRectangle(&rect(x, y + h - 1.0, x + tw, y + h), &line);
+                // One underline under the text and its icon, as on every client.
+                dc.FillRectangle(&rect(x, y + h - 1.0, x + w, y + h), &line);
             }
             crate::icons::draw(
                 dc,
