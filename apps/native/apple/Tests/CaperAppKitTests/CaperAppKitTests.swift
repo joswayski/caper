@@ -1434,7 +1434,8 @@ import XCTest
         XCTAssertEqual(Set(try XCTUnwrap(thumbs["authors"] as? [[String: Any]]).compactMap { $0["id"] as? String }),
             ["member000001", "owner0000001"])
         app.buttons["Done"].click(); XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
-        thumb.hover(); XCTAssertTrue(tooltip.waitForExistence(timeout: 5)); thumb.click()
+        // From Done the pointer crosses m01's pinned-by line, which can open Maya's card over the chip.
+        clearHoverProfile(over: thumb, app: app); XCTAssertTrue(tooltip.waitForExistence(timeout: 5)); thumb.click()
         let toggled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "👍 1"), object: thumb)
         XCTAssertEqual(XCTWaiter.wait(for: [toggled], timeout: 10), .completed, "The bubble must not intercept an ordinary chip click")
         composer.hover(); XCTAssertTrue(tooltip.waitForNonExistence(timeout: 5))
