@@ -3066,8 +3066,13 @@ import XCTest
         XCTAssertTrue(space.waitForExistence(timeout: 15))
         capture("navigation", app: app)
         app.buttons["create-channel"].hover(); app.buttons["channel-options"].hover(); space.hover(); space.click()
-        app.menuItems["Space settings"].click()
+        let settingsItem = app.menuItems["Space settings"]
         let name = app.textFields["Space name"]
+        // XCTest can drop a click on a menu item that just opened (the menu stays
+        // open, item highlighted); click again only while the menu is still up.
+        for _ in 0..<2 where !name.exists && settingsItem.waitForExistence(timeout: 2) {
+            settingsItem.click(); _ = name.waitForExistence(timeout: 3)
+        }
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["channel-chan00000001"].exists, "The modal hides background controls from accessibility")
         name.click(); name.typeKey("a", modifierFlags: .command); name.typeText("Native studio")
