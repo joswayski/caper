@@ -2604,14 +2604,35 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         Unit
     }
+        // The list's content reads these instead of [state]: a new state (typing, presence, the composer) would otherwise
+    // rebuild the list's item content and recompose every visible row.
+    val olderError = state.olderError
+    val hasMoreMessages = state.hasMoreMessages
+    val loadingOlder = state.loadingOlder
+    val newerError = state.newerError
+    val loadingNewer = state.loadingNewer
+    val threadRootId = state.thread?.rootId
+    val focusedId = state.focusedMessageId
+    val ownId = state.account?.id ?: state.chatAuthorId
+    val unreadThreads = state.unreadThreads
+    val rowPendingStatus by rememberUpdatedState(pendingStatus)
+    val emptyNotes = empty && state.selectedDirect?.let { it.peer.id == state.account?.id } == true
+    val emptyDetail = if (!empty || emptyNotes || state.visit != null) null else state.selectedChannel?.name.orEmpty().let { name ->
+        when {
+            state.selectedChannel?.direct != true -> "Start the conversation in #$name."
+            // The Caper DM: each top-level message becomes a report the team answers in its thread.
+            state.selectedDirect?.peer?.team == true -> CAPER_DM_EMPTY_NOTE
+            else -> "Only you and $name can read this conversation."
+        }
+    }
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { Box(modifier.fillMaxWidth()) { LazyColumn(Modifier.fillMaxSize().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp),
         // As web: a short conversation rests on the composer rather than the header.
         verticalArrangement = Arrangement.Bottom) {
         if (!inThread) item(contentType = "history") {
             HistoryRow {
                 when {
-                    state.olderError != null -> { Text("Couldn’t load older messages.", color = TextMuted, fontSize = 11.sp); HistoryButton("Retry", onClick = viewModel::loadOlder) }
-                    state.hasMoreMessages -> HistoryButton(if (state.loadingOlder) "Loading…" else "Load older messages", !state.loadingOlder, viewModel::loadOlder)
+                    olderError != null -> { Text("Couldn’t load older messages.", color = TextMuted, fontSize = 11.sp); HistoryButton("Retry", onClick = viewModel::loadOlder) }
+                    hasMoreMessages -> HistoryButton(if (loadingOlder) "Loading…" else "Load older messages", !loadingOlder, viewModel::loadOlder)
                     else -> Text("Beginning of conversation", color = TextMuted, fontSize = 11.sp)
                 }
             }
@@ -2645,11 +2666,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 } else Column(Modifier.arrival(arrivals, message.clientMessageId).then(
                     // Selections and your pins are terracotta; other people's pins are faded gold.
-                    if (!inThread && state.thread?.rootId == message.id) Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else Terracotta.copy(alpha = 0.12f)).drawBehind {
+                    if (!inThread && threadRootId == message.id) Modifier.background(if (focusedId == message.id) TerracottaWash else Terracotta.copy(alpha = 0.12f)).drawBehind {
                         val edge = 3.dp.toPx()
                         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
-                    } else Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (message.pin != null) {
-                        if (message.pin.author.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash
+                    } else Modifier.background(if (focusedId == message.id) TerracottaWash else if (message.pin != null) {
+                        if (message.pin.author.id == ownId) Terracotta.copy(alpha = 0.12f) else PinGoldWash
                     } else Color.Transparent))) {
                     ReactionMessageRow(
                         message, rowState, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
@@ -2665,11 +2686,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         retryPin = viewModel::retryPin,
                         dismissPinError = viewModel::dismissPinError,
                         onAttachmentFailed = viewModel::reportAttachmentFailure,
-                        grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
+                        grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, focusedId),
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                         val summary = message.thread?.takeIf { message.threadRootId == null }
-                        val threadUnread = state.unreadThreads.containsKey(message.id)
+                        val threadUnread = unreadThreads.containsKey(message.id)
                         // Web's name for the summary; the faces, dot and styled count are not read one by one.
                         TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, modifier = Modifier.fillMaxWidth().semantics {
                             if (summary != null) contentDescription = "View thread with ${summary.replyCount} ${if (summary.replyCount == 1) "reply" else "replies"}${if (threadUnread) ", unread" else ""}"
@@ -2704,7 +2725,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 // Your unsent message joins your run like a sent one.
                 val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
-                    pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = state.focusedMessageId)
+                    pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = focusedId)
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
                     pending.replyTo?.let { reference ->
                         // Like a sent reply's quote, it opens the original (or says it's unavailable).
@@ -2714,31 +2735,25 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped,
                         admin = pending.author?.admin == true, avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif, embeds = pending.embeds)
-                    Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
+                    Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { rowPendingStatus() } }
                 }
             }
         } }
         if (empty) item(contentType = "empty") { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             // Inset like messages, so longer notes wrap clear of the edges on phones.
             Column(Modifier.padding(horizontal = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                if (state.selectedDirect?.let { it.peer.id == state.account?.id } == true) {
+                if (emptyNotes) {
                     Text("You can message yourself here to keep notes, reminders, and ideas.", color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 } else {
                     Text("No messages yet.", color = TextMuted)
-                    val name = state.selectedChannel?.name.orEmpty()
-                    if (state.visit == null) Text(when {
-                        state.selectedChannel?.direct != true -> "Start the conversation in #$name."
-                        // The Caper DM: each top-level message becomes a report the team answers in its thread.
-                        state.selectedDirect?.peer?.team == true -> CAPER_DM_EMPTY_NOTE
-                        else -> "Only you and $name can read this conversation."
-                    }, color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    if (emptyDetail != null) Text(emptyDetail, color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 }
             }
         } }
         if (newer) item(contentType = "history") {
             HistoryRow {
-                state.newerError?.let { Text(it, color = TextMuted, fontSize = 11.sp) }
-                HistoryButton(if (state.loadingNewer) "Loading…" else if (state.newerError != null) "Retry newer messages" else "Load newer messages", !state.loadingNewer, viewModel::loadNewer)
+                newerError?.let { Text(it, color = TextMuted, fontSize = 11.sp) }
+                HistoryButton(if (loadingNewer) "Loading…" else if (newerError != null) "Retry newer messages" else "Load newer messages", !loadingNewer, viewModel::loadNewer)
                 HistoryButton("Back to latest", onClick = viewModel::retryMessages)
             }
         }
