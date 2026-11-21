@@ -3895,12 +3895,23 @@ impl App {
     /// Drains the worker's events, then updates what they changed.
     fn receive(self: &Rc<Self>) {
         let mut typing = false;
+        // Only typing and presence arrived: no row, page or panel changed.
+        let mut ambient = None;
         let mut forwards = Vec::new();
         let mut deferred = Vec::new();
         {
             let mut state = self.state.borrow_mut();
             while let Ok(event) = self.worker.events.try_recv() {
                 typing |= matches!(event, Event::Gateway(GatewayEvent::Typing { .. }));
+                ambient = Some(
+                    ambient.unwrap_or(true)
+                        && matches!(
+                            event,
+                            Event::Gateway(
+                                GatewayEvent::Typing { .. } | GatewayEvent::Presence { .. }
+                            )
+                        ),
+                );
                 match event {
                     Event::Forward {
                         generation,
@@ -3931,6 +3942,16 @@ impl App {
                 }
             }
             self.sync_thread_unread(&mut state);
+        }
+        // Who is typing and who is online have their own lines; rebuilding
+        // every message row for them is wasted work.
+        if ambient == Some(true) {
+            if typing {
+                self.tick();
+            }
+            self.render_typing();
+            self.render_members();
+            return;
         }
         for (generation, request, result) in forwards {
             self.forward_result(generation, request, result);
