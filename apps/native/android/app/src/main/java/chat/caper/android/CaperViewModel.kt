@@ -1346,7 +1346,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val since = profileEventCount
             runCatching { api.directConversations(token) }.onSuccess { result ->
                 if (request == accountGeneration) {
-                    mutable.value = mutable.value.copy(directConversations = result.conversations)
+                    // An unchanged poll keeps the same list, so rows reading it (every message's profile lookups) skip.
+                    if (result.conversations != mutable.value.directConversations) mutable.value = mutable.value.copy(directConversations = result.conversations)
                     result.conversations.filter { it.readSeq == it.lastSeq }.forEach {
                         CaperNotifications.reconcileReadDirect(getApplication(), it.id, snapshotStartedAt)
                     }
@@ -1573,7 +1574,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Pushes refresh unread state between polls; a burst coalesces into one request about a second after the first. */
     private fun scheduleUnreadRefresh() {
         if (accountToken == null || unreadRefreshScheduled?.isActive == true) return
-        unreadRefreshScheduled = viewModelScope.launch { delay(1_000); refreshUnreadSpaces() }
+        // A push for a new DM updates the badge here; the DM list's unread dot refreshes with it.
+        unreadRefreshScheduled = viewModelScope.launch { delay(1_000); refreshUnreadSpaces(); refreshDirectConversations() }
     }
 
     private fun refreshUnreadSpaces() {
