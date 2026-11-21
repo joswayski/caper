@@ -1283,6 +1283,10 @@ fn build_widgets() -> Widgets {
             .build()
     };
     let author = label("author");
+    // A long name gives way to the time, which stays beside it in a narrow
+    // pane instead of being pushed past the edge (the row keeps the full
+    // name for screen readers).
+    author.set_ellipsize(gtk::pango::EllipsizeMode::End);
     let time = label("time");
     let marker = || {
         let button: gtk::Button = crate::app::named("GtkButton", "Message history");

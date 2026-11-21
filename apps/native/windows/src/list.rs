@@ -731,6 +731,18 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         let author = &c.members[m.author];
         let name = g.layout(&gfx::wide(&author.name), &g.formats.name, 10_000.0)?;
         emoji::apply(&name, &author.name, 15.0, 1.0)?;
+        // A long name trims to an ellipsis so the time stays beside it
+        // (`place` sets the room it has).
+        unsafe {
+            name.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            name.SetTrimming(
+                &DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    ..Default::default()
+                },
+                &g.dwrite.CreateEllipsisTrimmingSign(&g.formats.name)?,
+            )?;
+        }
         let time = g.layout(&gfx::wide(&m.time), &g.formats.time, 10_000.0)?;
         let initials = g.layout(&gfx::wide(&author.initials), &g.formats.initials, AVATAR)?;
         emoji::apply(&initials, &author.initials, 13.0, 1.0)?;
@@ -894,6 +906,16 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
 
 /// Vertical layout of a row from its wrapped text height.
 fn place(row: &mut Row, m: &crate::model::Message) {
+    if let Some(h) = &mut row.header {
+        let time_w = gfx::metrics(&h.time).widthIncludingTrailingWhitespace;
+        let room = (row.width - time_w - 8.0).max(24.0);
+        unsafe {
+            let _ = h.name.SetMaxWidth(room);
+        }
+        h.name_w = gfx::metrics(&h.name)
+            .widthIncludingTrailingWhitespace
+            .min(room);
+    }
     let mut text_h = gfx::metrics(&row.text).height;
     if let Some((_, w, x, y)) = &mut row.edited {
         // After the text's last character, as egui places it; on its own
