@@ -37,7 +37,7 @@ import { gifOf } from "./klipy.ts";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { Arrivals } from "./arrivals.ts";
 import { useTimelineMotion } from "./useTimelineMotion.ts";
-import { dateDivider } from "./dates.ts";
+import { dateDivider, dayFormatter } from "./dates.ts";
 import { channelNewMessagesId, groupsWithPrevious } from "./grouping.ts";
 import { replyReference, ReplyContext, ReplyDraft } from "./Replies.tsx";
 import MessageRow, {
@@ -63,6 +63,7 @@ import {
 import { MessageAttachments, type DraftAttachment, type DraftEditing, type LocalPreview } from "./Attachments.tsx";
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
+import { SendPendingContext } from "./SendPendingContext.ts";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import type { ChatEmbed } from "./embeds.ts";
@@ -603,6 +604,11 @@ export default function Chat({
   const listRef = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement>(null);
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
+  // Stable: the list detaches and re-attaches its scroll listener whenever this callback changes.
+  const attachScroller = useCallback((element: HTMLElement | Window | null) => {
+    scrollerRef.current = element instanceof HTMLElement ? element : null;
+    setScroller(scrollerRef.current);
+  }, []);
   const arrivals = useRef<Arrivals>(null);
   arrivals.current ??= new Arrivals();
   // Virtuoso shifts the list by the prepended rows' estimated heights, but the
@@ -1553,6 +1559,7 @@ export default function Chat({
       }),
     [locale, timeZone],
   );
+  const dividerFormatter = useMemo(dayFormatter, [locale, timeZone]);
   const pinTimeFormatter = useMemo(
     () =>
       new Intl.DateTimeFormat(undefined, {
@@ -1615,53 +1622,57 @@ export default function Chat({
   ) => {
     const pending = !("content" in message);
     const run = pending ? undefined : (inThread ? threadRuns : channelRuns).get(message.clientMessageId);
-    const files = "content" in message ? attachmentsOf(message).length : (message.attachments?.length ?? 0);
+    const attachments = "content" in message ? attachmentsOf(message) : message.attachments;
+    const files = attachments?.length ?? 0;
+    // The percentages change on every tick; only a row still processing a file shows them.
+    const processing = !!attachments?.some((attachment) => attachment.status === "processing");
     // A pending thread reply shows its status beside the thread composer.
     const channelPending = pending && !inThread;
     // A thread dates its own rows: the root, then each reply against the row above it.
     const above = !inThread
       ? messages[index - 1]
       : (previousInThread ?? ("id" in message && message.id === state.thread?.rootId ? undefined : shownThreadRoot));
+    // Every row is built here, so this reaches the channel, its preview and the thread.
     return (
-      <MessageRow
-        key={message.clientMessageId}
-        message={message}
-        inThread={inThread}
-        divider={hydrated ? dateDivider(message.createdAt, above?.createdAt) : undefined}
-        runFirst={run?.first}
-        runCount={run?.count}
-        runShown={!!run && revealedRuns.has(run.first)}
-        grouped={joinsPrevious(inThread ? previousInThread : messages[index - 1], message, inThread)}
-        // The row above a follow-up gives up its bottom padding so the run reads as one block.
-        continued={joinsPrevious(message, inThread ? nextInThread : messages[index + 1], inThread)}
-        newMessages={!inThread && !pending && message.id === newMessagesId}
-        arriving={!!arrivals.current?.has(message.clientMessageId)}
-        jumpTarget={!pending && jumpMessage === message.id}
-        threadActive={!inThread && !pending && state.thread?.rootId === message.id}
-        threadUnread={!pending && !!state.unreadThreads?.[message.id]}
-        actionMode={!pending && actionTarget?.messageId === message.id ? actionTarget.mode : undefined}
-        reactionSave={pending ? undefined : reactionSaves[message.id]}
-        replyHidden={
-          !!message.replyTo && blockedIds.has(message.replyTo.author.id) && message.replyTo.author.id !== viewerId
-        }
-        hydrated={hydrated}
-        name={name}
-        viewerId={viewerId}
-        ownId={state.author?.id}
-        readOnly={readOnly}
-        replyDisabled={!!state.pendingSend}
-        channelId={state.channelId}
-        timeFormatter={timeFormatter}
-        mentionNames={mentionNames}
-        attachmentProgress={files ? state.attachmentProgress : undefined}
-        freshUrls={files ? freshUrls : undefined}
-        localPreviews={files ? localPreviews : undefined}
-        sendError={channelPending ? state.sendError : undefined}
-        sendUploadFailed={channelPending ? state.sendUploadFailed : undefined}
-        sendRejected={channelPending ? state.sendRejected : undefined}
-        editBlocked={channelPending && state.sendRejected ? hasDraft : undefined}
-        actions={rowActions}
-      />
+      <SendPendingContext key={message.clientMessageId} value={!!state.pendingSend}>
+        <MessageRow
+          message={message}
+          inThread={inThread}
+          divider={hydrated ? dateDivider(message.createdAt, above?.createdAt, dividerFormatter) : undefined}
+          runFirst={run?.first}
+          runCount={run?.count}
+          runShown={!!run && revealedRuns.has(run.first)}
+          grouped={joinsPrevious(inThread ? previousInThread : messages[index - 1], message, inThread)}
+          // The row above a follow-up gives up its bottom padding so the run reads as one block.
+          continued={joinsPrevious(message, inThread ? nextInThread : messages[index + 1], inThread)}
+          newMessages={!inThread && !pending && message.id === newMessagesId}
+          arriving={!!arrivals.current?.has(message.clientMessageId)}
+          jumpTarget={!pending && jumpMessage === message.id}
+          threadActive={!inThread && !pending && state.thread?.rootId === message.id}
+          threadUnread={!pending && !!state.unreadThreads?.[message.id]}
+          actionMode={!pending && actionTarget?.messageId === message.id ? actionTarget.mode : undefined}
+          reactionSave={pending ? undefined : reactionSaves[message.id]}
+          replyHidden={
+            !!message.replyTo && blockedIds.has(message.replyTo.author.id) && message.replyTo.author.id !== viewerId
+          }
+          hydrated={hydrated}
+          name={name}
+          viewerId={viewerId}
+          ownId={state.author?.id}
+          readOnly={readOnly}
+          channelId={state.channelId}
+          timeFormatter={timeFormatter}
+          mentionNames={mentionNames}
+          attachmentProgress={processing ? state.attachmentProgress : undefined}
+          freshUrls={files ? freshUrls : undefined}
+          localPreviews={files ? localPreviews : undefined}
+          sendError={channelPending ? state.sendError : undefined}
+          sendUploadFailed={channelPending ? state.sendUploadFailed : undefined}
+          sendRejected={channelPending ? state.sendRejected : undefined}
+          editBlocked={channelPending && state.sendRejected ? hasDraft : undefined}
+          actions={rowActions}
+        />
+      </SendPendingContext>
     );
   };
 
@@ -2092,10 +2103,7 @@ export default function Chat({
               <Virtuoso
                 key={listWindow}
                 ref={listRef}
-                scrollerRef={(element) => {
-                  scrollerRef.current = element instanceof HTMLElement ? element : null;
-                  setScroller(scrollerRef.current);
-                }}
+                scrollerRef={attachScroller}
                 data={messages}
                 firstItemIndex={firstItemIndex}
                 alignToBottom

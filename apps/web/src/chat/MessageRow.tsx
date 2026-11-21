@@ -1,4 +1,4 @@
-import { memo, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useContext, type PointerEvent as ReactPointerEvent } from "react";
 import { Ban, MoreHorizontal, Pin, SmilePlus } from "lucide-react";
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
@@ -17,6 +17,7 @@ import {
   type ChatReplyReference,
 } from "./types.ts";
 import type { PendingChatMessage } from "./client.ts";
+import { SendPendingContext } from "./SendPendingContext.ts";
 import { MessageAttachments, type LocalPreview } from "./Attachments.tsx";
 import { MessageEmbeds } from "./Embeds.tsx";
 import { embedsOf } from "./embeds.ts";
@@ -279,8 +280,6 @@ export interface MessageRowProps {
   /** The chat author, when the viewer has one. */
   ownId?: string;
   readOnly: boolean;
-  /** A send is pending; replies wait for it. */
-  replyDisabled: boolean;
   channelId?: string;
   timeFormatter: Intl.DateTimeFormat;
   /** Profile-card display names by account, most specific first. */
@@ -320,7 +319,6 @@ function MessageRowView({
   viewerId,
   ownId,
   readOnly,
-  replyDisabled,
   channelId,
   timeFormatter,
   mentionNames,
@@ -576,16 +574,7 @@ function MessageRowView({
                     </button>
                   )}
                   {!readOnly && canAct && !deleted && (
-                    <button
-                      type="button"
-                      className="chat-reply-message"
-                      aria-label={`Reply to ${message.author.name}`}
-                      title="Reply"
-                      disabled={replyDisabled}
-                      onClick={() => actions.reply(message, inThread)}
-                    >
-                      <Reply size={14} aria-hidden="true" />
-                    </button>
+                    <ReplyButton message={message} inThread={inThread} actions={actions} />
                   )}
                   {!deleted && (
                     <>
@@ -703,6 +692,21 @@ function MessageRowView({
         </article>
       </div>
     </div>
+  );
+}
+
+function ReplyButton({ message, inThread, actions }: { message: ChatMessage; inThread: boolean; actions: RowActions }) {
+  return (
+    <button
+      type="button"
+      className="chat-reply-message"
+      aria-label={`Reply to ${message.author.name}`}
+      title="Reply"
+      disabled={useContext(SendPendingContext)}
+      onClick={() => actions.reply(message, inThread)}
+    >
+      <Reply size={14} aria-hidden="true" />
+    </button>
   );
 }
 

@@ -201,6 +201,38 @@ test("voice, presence, typing and composer updates leave unchanged message rows 
   const row = container.querySelector(`.chat-message[data-message-key="${arriving.clientMessageId}"]`);
   expect(row?.classList.contains("chat-message-arrive")).toBe(true);
   expect(counts()).toEqual(afterEdit);
+
+  // The viewer's own send, pending and then confirmed, re-renders no other row.
+  const sent = [...edited, arriving];
+  await act(async () =>
+    client.emit({
+      pendingSend: { clientMessageId: "client-pending", text: "a pending send", createdAt: arriving.createdAt },
+    }),
+  );
+  expect(container.textContent).toContain("a pending send");
+  await act(async () => client.emit({ pendingSend: undefined }));
+  expect(counts()).toEqual(afterEdit);
+
+  // Someone's video processing ticks re-render only the row that shows the percentage.
+  const file = { kind: "file", contentType: "application/pdf", size: 1 } as const;
+  const withFiles = sent.map((entry, index) =>
+    index === 2
+      ? { ...entry, content: { ...entry.content, attachments: [{ ...file, id: "ready", name: "ready.pdf" }] } }
+      : index === 6
+        ? {
+            ...entry,
+            content: {
+              ...entry.content,
+              attachments: [{ ...file, id: "processing", name: "clip.mov", kind: "video", status: "processing" }],
+            },
+          }
+        : entry,
+  ) as ChatMessage[];
+  await act(async () => client.emit({ messages: withFiles }));
+  const beforeTicks = counts();
+  await act(async () => client.emit({ attachmentProgress: { processing: 10 } }));
+  await act(async () => client.emit({ attachmentProgress: { processing: 11 } }));
+  expect(counts()).toEqual(beforeTicks.map((count, index) => (index === 6 ? count + 2 : count)));
 });
 
 test.each([false, true])("Reply focuses within the click, including a repeated target (menu: %s)", async (menu) => {
