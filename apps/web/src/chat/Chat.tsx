@@ -64,6 +64,7 @@ import { MessageAttachments, type DraftAttachment, type DraftEditing, type Local
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import { SendPendingContext } from "./SendPendingContext.ts";
+import { loadReactionPicker } from "./LazyReactionPicker.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import type { ChatEmbed } from "./embeds.ts";
@@ -654,7 +655,7 @@ export default function Chat({
     // Warm the code/data after chat settles, without mounting the picker or
     // fetching the image catalog. Opening still handles a failed import.
     const timer = setTimeout(() => {
-      void import("./ReactionPicker.tsx").catch(() => {});
+      void loadReactionPicker().catch(() => {});
     }, 1_000);
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);

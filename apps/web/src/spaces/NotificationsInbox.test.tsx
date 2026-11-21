@@ -7,6 +7,7 @@ import type { InboxItem } from "./client";
 import { rememberSavedAccount } from "../account/client";
 import { UNREAD_CHANGED } from "../account/app-badge";
 import type { ComposerInput } from "../chat/MentionTextarea";
+import { loadReactionPicker } from "../chat/LazyReactionPicker";
 
 test("tabs reuse empty results, share hover/focus requests, and refresh stale views without loading screens", async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -343,6 +344,8 @@ test("inline drafts survive collapse and live reads; replies keep their destinat
     await click(button("Reply"));
     expect(composer().value).toBe("A separate inbox draft");
     await click(container.querySelector<HTMLButtonElement>('[aria-label="Insert emoji"]')!);
+    // The picker's catalog loads on first use.
+    await act(async () => void (await loadReactionPicker()));
     const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     await act(async () => container.querySelector('[aria-label="Search emoji"]')!.dispatchEvent(escape));
     expect(escape.defaultPrevented).toBe(true); // The native dialog must not also cancel.

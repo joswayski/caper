@@ -17,7 +17,7 @@ import { Ban, Copy, Forward, Hash, History, Pencil, Pin, PinOff, SmilePlus, Tras
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
-import ReactionPicker from "./ReactionPicker.tsx";
+import ReactionPicker, { loadReactionPicker } from "./LazyReactionPicker.tsx";
 
 export interface MessageActionTarget {
   messageId: string;
@@ -31,6 +31,7 @@ export interface MessageActionTarget {
 export const quickReactions = ["👍", "❤️", "😂"];
 
 export function preloadReactionPicker() {
+  void loadReactionPicker().catch(() => {});
   void preloadEmojiImages();
 }
 

@@ -16,7 +16,7 @@ import {
 } from "@floating-ui/react";
 import { Smile, X } from "lucide-react";
 import { preloadReactionPicker } from "./MessageActions.tsx";
-import ReactionPicker from "./ReactionPicker.tsx";
+import ReactionPicker from "./LazyReactionPicker.tsx";
 import GifButton, { GifPicker, useKlipy } from "./GifButton.tsx";
 import type { ChatGif } from "./klipy.ts";
 
