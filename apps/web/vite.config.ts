@@ -150,8 +150,21 @@ export default defineConfig(async () => {
           "/audio/rnnoise-v1/**": {
             headers: { "cache-control": "public, max-age=31536000, immutable" },
           },
+          "/audio/dpdfnet2-v1/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
           "/audio/dpdfnet8-v2/**": {
             headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          // Unversioned names: a week, so a replaced file still reaches people.
+          "/audio/effects/**": {
+            headers: { "cache-control": "public, max-age=604800" },
+          },
+          "/fonts/**": {
+            headers: { "cache-control": "public, max-age=604800" },
+          },
+          "/icons/**": {
+            headers: { "cache-control": "public, max-age=604800" },
           },
           "/audio/resampler-v1/**": {
             headers: { "cache-control": "public, max-age=31536000, immutable" },
