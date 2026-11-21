@@ -32,6 +32,7 @@ mod forward;
 mod gifs;
 mod invite_people;
 mod invites;
+mod jump;
 mod manage;
 mod overlay;
 mod playback;
@@ -107,7 +108,7 @@ const ORIGIN: f64 = 4_000_000.0;
 const VS_H: u32 = 1 << 23;
 pub(crate) const EV_TEXT: u8 = 1;
 pub(crate) const EV_FOCUS: u8 = 2;
-const EV_ROWS: u8 = 4;
+pub(crate) const EV_ROWS: u8 = 4;
 /// The sign-in screen appeared, changed step or went away.
 pub(crate) const EV_SCREEN: u8 = 8;
 /// Who is typing changed.
@@ -473,6 +474,17 @@ pub struct App {
     typing_p: Panel,
     /// The composer's lip: a shade over the bottom of the history.
     lip_p: Panel,
+    /// Jump to latest (`jump`): its state, panel, what the panel last drew,
+    /// whether the pointer is on it or it has the keyboard, and its glide
+    /// (from where, since when).
+    pub jump: caper_client::jump::Jump,
+    jump_p: Panel,
+    jump_drawn: Option<jump::Drawn>,
+    jump_hover: bool,
+    pub jump_kb: bool,
+    jump_glide: Option<(f64, Instant)>,
+    thread_jump_p: Panel,
+    thread_jump_drawn: Option<jump::Drawn>,
     tool_hover: Option<usize>,
     bar_drawn: Option<actions::BarKey>,
     /// The history's head needs drawing; the pointer is on its button;
@@ -559,6 +571,8 @@ impl App {
             let note_p = Panel::new(&g)?;
             let typing_p = Panel::new(&g)?;
             let lip_p = Panel::new(&g)?;
+            let jump_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
+            let thread_jump_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
             let thread_p = Panel::new(&g)?.entering(&g, motion::Kind::Thread);
             let thread_box_p = Panel::new(&g)?.entering(&g, motion::Kind::Thread);
             let drop_p = Panel::new(&g)?;
@@ -593,6 +607,7 @@ impl App {
             navigation_layer.AddVisual(&sidebar.visual, true, &rail.visual)?;
             thread_layer.AddVisual(&thread_p.visual, false, None)?;
             thread_layer.AddVisual(&thread_box_p.visual, true, &thread_p.visual)?;
+            thread_layer.AddVisual(&thread_jump_p.visual, true, &thread_p.visual)?;
             let mut prev: Option<IDCompositionVisual> = None;
             for v in [
                 &header.visual,
@@ -606,6 +621,9 @@ impl App {
                 conversation_layer.AddVisual(v, true, prev.as_ref())?;
                 prev = Some(v.cast()?);
             }
+            // Over the history, unclipped so its focus ring shows, below
+            // the composer and everything else.
+            conversation_layer.AddVisual(&jump_p.visual, true, &history_clip)?;
             let mut prev: IDCompositionVisual = background.cast()?;
             for v in [
                 &navigation_layer,
@@ -768,6 +786,14 @@ impl App {
                 note_p,
                 typing_p,
                 lip_p,
+                jump: Default::default(),
+                jump_p,
+                jump_drawn: None,
+                jump_hover: false,
+                jump_kb: false,
+                jump_glide: None,
+                thread_jump_p,
+                thread_jump_drawn: None,
                 tool_hover: None,
                 bar_drawn: None,
                 redraw_head: false,
@@ -827,6 +853,7 @@ impl App {
         }
         self.scroll_top = 0.0;
         self.at_end = true;
+        self.reset_jump();
         self.drawn = None;
         self.dirty = Dirty::all();
         self.events |= EV_ROWS;
@@ -1071,6 +1098,15 @@ impl App {
                     new.reaction_error = error;
                     new.date = date;
                     self.c.messages.push(new);
+                    // Others' messages are counted while Jump to latest shows.
+                    if me.as_deref() != Some(m.author.id.as_str())
+                        && self
+                            .live
+                            .as_ref()
+                            .is_some_and(|l| !l.has_newer() && !l.is_blocked(&m.author.id))
+                    {
+                        self.jump_arrived();
+                    }
                     self.rows.arrivals.received(&m.id, watching, Instant::now());
                     self.arm_arrivals();
                     self.rows.append(&self.g, &self.c)?;
@@ -1448,6 +1484,7 @@ impl App {
             focused && self.c.has_conversation() && self.dm_bar().is_none() && self.rec().is_none();
         // One text field has focus: the reply box in the thread gives it up.
         if focused {
+            self.jump_kb = false;
             self.narrow.focus = None;
             self.clear_pane_focus();
             self.set_thread_focus(false);
@@ -2136,8 +2173,8 @@ impl App {
 
     fn history_hover(&self) -> Option<usize> {
         let (x, y) = self.pointer?;
-        // Settings covers the history.
-        if !self.in_history(x, y) || self.settings.is_some() {
+        // Settings covers the history, and Jump to latest floats over it.
+        if !self.in_history(x, y) || self.settings.is_some() || self.jump_at(x, y) {
             return None;
         }
         // The toolbar reaches above its row: it keeps that row hovered.
@@ -2427,6 +2464,7 @@ impl App {
                 drop_overlay::TIMER_DROP => self.need = true,
                 autoscroll::TIMER_AUTOSCROLL => self.autoscroll_tick(),
                 motion::TIMER_ARRIVAL => self.arrivals_tick(),
+                jump::TIMER_JUMP => self.jump_tick(),
                 video::TIMER_VIDEO => self.inline_video_tick(),
                 thread::TIMER_MEDIA => self.thread_media_tick(),
                 pins::TIMER_PINS => self.pins_tick(),
@@ -2480,6 +2518,7 @@ impl App {
                 self.track_reply_hover();
                 self.track_head_hover();
                 self.track_foot_hover();
+                self.track_jump_hover();
                 self.track_card();
                 if self.playback.scrub.is_some() {
                     self.voice_message_scrub(x, false);
@@ -2500,6 +2539,7 @@ impl App {
                 self.tracking = false;
                 self.pointer = None;
                 self.update_hover();
+                self.track_jump_hover();
                 self.track_tool_hover();
                 self.track_reply_hover();
                 self.track_card();
@@ -2509,7 +2549,12 @@ impl App {
                 unsafe {
                     SetCapture(self.hwnd);
                 }
-                if self.on_gear(x, y) {
+                if !self.jump_at(x, y) {
+                    self.set_jump_kb(false);
+                }
+                if self.jump_at(x, y) {
+                    self.jump_activate();
+                } else if self.on_gear(x, y) {
                     self.toggle_account_menu();
                 } else if let Some(k) = self.inbox_at(x, y) {
                     self.pick_inbox(k);
@@ -2723,6 +2768,7 @@ impl App {
                             || self.on_update_dock(x, y)
                             || self.thread_link_at(x, y).is_some()
                             || self.foot_at(x, y).is_some()
+                            || self.jump_at(x, y)
                             || self.quote_link_at(x, y).is_some()
                             || self.forward_at(x, y).is_some()
                             || self.edited_at(x, y).is_some()
@@ -3052,6 +3098,7 @@ impl App {
         self.redraw.extend(old.map(|(i, _)| i));
         self.kb = to.map(|(i, a)| (self.c.messages[i].id.clone(), a));
         if let Some((i, action)) = to {
+            self.jump_kb = false;
             self.set_composer_focus(false);
             self.set_thread_focus(false);
             self.clear_side_focus();
@@ -3126,10 +3173,26 @@ impl App {
     /// Shift+Tab from the composer reaches the last one on screen, Tab past
     /// the newest returns to the composer.
     fn history_key(&mut self, vk: VIRTUAL_KEY, shift: bool) -> bool {
+        // Jump to latest sits between the history's controls and the
+        // composer in the Tab order.
+        if self.jump_kb && self.jump_rect().is_some() {
+            match vk {
+                VK_TAB if shift => {
+                    if let Some(next) = self.next_control(None, true) {
+                        self.set_kb(Some(next));
+                    }
+                }
+                VK_TAB | VK_ESCAPE => self.set_composer_focus(true),
+                VK_RETURN | VK_SPACE => self.jump_activate(),
+                _ => return false,
+            }
+            return true;
+        }
         if let Some((i, action)) = self.kb_control() {
             match vk {
                 VK_TAB => match self.next_control(Some((i, action)), shift) {
                     Some(next) => self.set_kb(Some(next)),
+                    None if !shift && self.jump_rect().is_some() => self.set_jump_kb(true),
                     None if !shift => self.set_composer_focus(true),
                     None => {}
                 },
@@ -3144,6 +3207,10 @@ impl App {
             return false;
         }
         let back = self.composer.focused || shift;
+        if self.composer.focused && shift && self.jump_rect().is_some() {
+            self.set_jump_kb(true);
+            return true;
+        }
         match self.next_control(None, back) {
             Some(next) => {
                 self.set_kb(Some(next));
@@ -3166,6 +3233,7 @@ impl App {
     }
 
     pub fn scroll_by(&mut self, dy: f64) {
+        self.stop_glide();
         self.scroll_top += dy;
         self.at_end = false;
         self.need = true;
@@ -3743,6 +3811,7 @@ impl App {
         self.scroll_top = self.scroll_top.clamp(min, max);
         self.at_end = self.scroll_top >= max - 0.5;
         self.older_armed |= self.at_end;
+        self.sync_jump(max - self.scroll_top, vh);
         // Reaching the start loads the previous page, as on web; a failed
         // page waits for Retry instead of looping.
         if self.older_armed
@@ -4576,6 +4645,7 @@ impl App {
         self.draw_pins()?;
         self.draw_settings()?;
         self.draw_dm_menu()?;
+        self.sync_thread_jump();
         self.draw_thread()?;
         self.track_card();
         self.draw_card()?;
@@ -4587,6 +4657,7 @@ impl App {
         self.draw_panels()?;
         self.draw_drop()?;
         self.draw_autoscroll()?;
+        self.draw_jump()?;
         unsafe { self.g.dcomp.Commit()? };
         self.place_web_player();
         let showing =

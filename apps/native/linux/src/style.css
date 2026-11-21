@@ -2864,3 +2864,31 @@ window.viewer.arriving > :not(decoration) {
 .chips > .arriving {
   animation: caper-chip-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* "Jump to latest": floats over the list's bottom right corner while away
+   from the newest message; its border turns terracotta once new messages
+   wait. It rises in and leaves at once. */
+button.jump-latest {
+  min-height: 36px;
+  min-width: 36px;
+  padding: 0 10px;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  background: @caper_surface;
+  color: @caper_text;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px alpha(black, 0.32);
+}
+
+button.jump-latest:hover {
+  background: @caper_surface_raised;
+}
+
+button.jump-latest.unread {
+  border-color: @caper_terracotta;
+}
+
+button.jump-latest.arriving {
+  animation: caper-rise-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}

@@ -57,6 +57,8 @@ mod history;
 mod inbox;
 #[path = "inbox_files.rs"]
 mod inbox_files;
+#[path = "jump.rs"]
+mod jump;
 #[path = "members.rs"]
 mod members;
 #[path = "narrow.rs"]
@@ -572,6 +574,8 @@ pub struct App {
     zoom_shown: Cell<u64>,
     /// `pin_tail` is moving the list: its scrolling is not the reader's.
     settling: Cell<bool>,
+    /// The same for the thread while Jump to latest glides it (`jump`).
+    gliding: Cell<bool>,
     /// A render is due once arriving rows land (`rows::mark_arrivals`).
     landing: Cell<bool>,
     rendered_layout: Cell<u64>,
@@ -769,6 +773,7 @@ pub fn start(
         zoom: Cell::new(zoom),
         zoom_shown: Cell::new(0),
         settling: Cell::new(false),
+        gliding: Cell::new(false),
         landing: Cell::new(false),
         rendered_layout: Cell::new(u64::MAX),
         rendered_files: Cell::new(u64::MAX),
@@ -1173,8 +1178,12 @@ impl App {
             .scroller
             .vadjustment()
             .connect_value_changed(move |adjustment| {
+                if app.gliding.get() {
+                    return;
+                }
                 let bottom = adjustment.upper() - adjustment.page_size();
                 app.thread_follow.set(adjustment.value() >= bottom - 48.0);
+                app.sync_jump(true, None);
                 if adjustment.upper() > adjustment.page_size()
                     && adjustment.value() < adjustment.page_size()
                 {
@@ -1183,7 +1192,32 @@ impl App {
                 }
             });
 
+        let app = self.clone();
+        ui.thread_list
+            .scroller
+            .vadjustment()
+            .connect_changed(move |_| {
+                if !app.gliding.get() {
+                    app.sync_jump(true, None);
+                }
+            });
+        for thread in [false, true] {
+            let app = self.clone();
+            let list = if thread { &ui.thread_list } else { &ui.list };
+            list.jump
+                .button
+                .connect_clicked(move |_| app.jump_to_latest(thread));
+        }
+
         let adjustment = ui.list.scroller.vadjustment();
+        let app = self.clone();
+        // Taller or shorter (rows arriving or measured, a resize): Jump to
+        // latest's distance changed without a scroll.
+        adjustment.connect_changed(move |_| {
+            if !app.settling.get() {
+                app.sync_jump(false, None);
+            }
+        });
         let app = self.clone();
         adjustment.connect_value_changed(move |adjustment| {
             if app.settling.get() {
@@ -1191,6 +1225,7 @@ impl App {
             }
             let bottom = adjustment.upper() - adjustment.page_size();
             app.follow.set(adjustment.value() >= bottom - 48.0);
+            app.sync_jump(false, None);
             app.active();
             // Near the top: load earlier history, after this signal.
             if adjustment.upper() > adjustment.page_size()
@@ -3299,6 +3334,7 @@ impl App {
     /// view and highlighted.
     fn open_thread_at(self: &Rc<Self>, root: String, focus: Option<String>) {
         self.thread_follow.set(focus.is_none());
+        self.reset_jump(true);
         {
             let mut state = self.state.borrow_mut();
             state.focused = focus.clone();
@@ -4705,6 +4741,7 @@ impl App {
                             }
                         }
                         self.follow.set(true);
+                        self.reset_jump(false);
                         self.connect_gateway(state, history.channel.id);
                         self.worker.showing(state.channel.as_deref());
                         let snapshot = state.unread_snapshot.take();
@@ -5165,10 +5202,24 @@ impl App {
                 if message.thread_root_id.is_some() {
                     state.thread_unread_dirty = true;
                 }
+                let lands = (
+                    message.is_channel_message(),
+                    message.thread_root_id.is_some()
+                        && message.thread_root_id.as_deref()
+                            == state.thread.as_ref().map(|thread| thread.root.as_str()),
+                );
                 let applied = state.timeline.apply(*message);
                 if matches!(applied, Ok(Apply::Applied)) {
                     if remote {
                         self.play(caper_client::effects::Effect::Message);
+                        // Counted by Jump to latest while it shows; a
+                        // detached window never shows it.
+                        if lands.0 && !state.has_newer {
+                            self.jump_arrived(false);
+                        }
+                        if lands.1 {
+                            self.jump_arrived(true);
+                        }
                     }
                     if self.follow.get() {
                         self.mark_read(state);
@@ -5641,6 +5692,7 @@ impl App {
                 && adjustment.value() >= adjustment.upper() - adjustment.page_size() - 1.0;
             if count == 0 || settled || frames > 60 {
                 app.settling.set(false);
+                app.sync_jump(false, None);
                 return glib::ControlFlow::Break;
             }
             // Moving the adjustment alone leaves the list anchored where it was.

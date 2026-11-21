@@ -106,6 +106,8 @@ pub enum Part {
     RemovePreview,
     Upload(crate::uploads::Part),
     Send,
+    /// Jump to latest over the history's bottom right (`jump`).
+    Jump,
 }
 
 /// Where the history's pieces sit, from the top of its content.
@@ -132,6 +134,9 @@ pub struct Pane {
     /// Distance scrolled from the top of the history's content.
     pub scroll: f32,
     pub at_end: bool,
+    /// Jump to latest (`jump`), and its glide (from where, since when).
+    pub jump: caper_client::jump::Jump,
+    pub jump_glide: Option<(f32, std::time::Instant)>,
     width: f32,
     pub composer: Composer,
     has_files: bool,
@@ -196,6 +201,8 @@ impl Pane {
             error: false,
             scroll: 0.0,
             at_end: true,
+            jump: Default::default(),
+            jump_glide: None,
             width,
             composer: Composer::formatted(),
             has_files: false,
@@ -321,7 +328,7 @@ impl Pane {
         }
     }
 
-    fn content_h(&self) -> f32 {
+    pub(crate) fn content_h(&self) -> f32 {
         self.sections().height
     }
 
@@ -916,6 +923,7 @@ impl App {
     pub fn scroll_thread_by(&mut self, delta: f32) {
         let vh = self.thread_vh();
         let Some(t) = &mut self.thread else { return };
+        t.jump_glide = None;
         let max = (t.content_h() - vh).max(0.0);
         t.scroll = (t.scroll + delta).clamp(0.0, max);
         t.at_end = t.scroll >= max - 0.5;
@@ -953,6 +961,7 @@ impl App {
                 let (x, y, w, h) = close_local(t.width, self.is_narrow());
                 Some((x0 + x, y, w, h))
             }
+            Part::Jump => self.thread_jump_rect(),
             Part::Row(i) => {
                 let y = t.row_y(i)?;
                 clip((x0, y + off, t.width, t.rows.height(i)))
@@ -1099,6 +1108,9 @@ impl App {
             out.push(Part::Older);
         }
         push_rows(&mut out, after);
+        if self.thread_jump_rect().is_some() {
+            out.push(Part::Jump);
+        }
         if t.reply.is_some() {
             out.extend([Part::Reply, Part::CancelReply]);
         }
@@ -1129,6 +1141,10 @@ impl App {
     }
 
     pub fn thread_hit(&self, x: f32, y: f32) -> Option<Part> {
+        // It floats over the rows and their toolbars.
+        if self.thread_jump_rect().is_some_and(|r| contains(r, x, y)) {
+            return Some(Part::Jump);
+        }
         let parts = self.thread_parts();
         if y >= HEADER_H
             && y < HEADER_H + self.thread_vh()
@@ -1258,6 +1274,7 @@ impl App {
                 format!("Replying to {}: {}", r.target.author.name, r.target.text)
             }),
             Part::CancelReply => "Cancel reply".into(),
+            Part::Jump => t.jump.name(),
             Part::Field => "Reply to thread".into(),
             Part::Upload(p) => {
                 use crate::uploads::Part as U;
@@ -1415,8 +1432,33 @@ impl App {
         }
         let vh = self.thread_vh();
         let watching = self.watching_arrivals() && self.thread_shown();
+        let known: Option<Vec<String>> = self
+            .thread
+            .as_ref()
+            .filter(|p| !opened && !p.loading)
+            .map(|p| p.c.messages.iter().map(|m| m.id.clone()).collect());
         if let Some(p) = &mut self.thread {
             p.set(&self.g, view, state, vh, watching)?;
+        }
+        // Others' replies landing after the newest one shown before are
+        // counted while Jump to latest shows.
+        if let (Some(known), Some(p), Some(live)) = (known, &self.thread, &self.live) {
+            let tail =
+                p.c.messages
+                    .iter()
+                    .rposition(|m| known.contains(&m.id))
+                    .map_or(0, |k| k + 1);
+            let others = p.c.messages[tail..]
+                .iter()
+                .filter(|m| {
+                    p.ids.members.get(m.author).is_some_and(|id| {
+                        live.me.as_deref() != Some(id.as_str()) && !live.is_blocked(id)
+                    })
+                })
+                .count();
+            for _ in 0..others {
+                self.thread_jump_arrived();
+            }
         }
         self.arm_arrivals();
         if let Some(id) = self.live.as_mut().and_then(|l| l.take_thread_focus())
@@ -1924,6 +1966,7 @@ impl App {
             }
             Part::RemovePreview => self.remove_thread_preview(),
             Part::Send => self.send_thread_reply(),
+            Part::Jump => self.thread_jump_activate(),
             Part::Spoiler(i, k) => self.reveal_thread_spoiler(i, k),
             Part::Forward(i, p) => self.forward_activate(true, i, p),
             Part::Row(_) | Part::Reply => {}

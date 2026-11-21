@@ -501,6 +501,70 @@ pub struct List {
     pub store: gio::ListStore,
     pub view: gtk::ListView,
     pub scroller: gtk::ScrolledWindow,
+    pub jump: JumpButton,
+}
+
+/// "Jump to latest" (`caper_client::jump`): floats over its list's bottom
+/// right corner, in the list's overlay, taking no layout space.
+pub struct JumpButton {
+    pub button: gtk::Button,
+    count: gtk::Label,
+    shown: Cell<caper_client::jump::Jump>,
+}
+
+impl JumpButton {
+    fn new(images: &Images) -> Self {
+        let button = gtk::Button::new();
+        button.add_css_class("jump-latest");
+        button.set_halign(gtk::Align::End);
+        button.set_valign(gtk::Align::End);
+        button.set_margin_end(16);
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        content.set_halign(gtk::Align::Center);
+        content.append(&images.icon_image(Icon::ArrowDown, "#f3f4f5", 16));
+        let count = gtk::Label::new(None);
+        count.set_visible(false);
+        content.append(&count);
+        button.set_child(Some(&content));
+        button.set_tooltip_text(Some("Jump to latest"));
+        button.set_visible(false);
+        arrive(&button);
+        let jump = Self {
+            button,
+            count,
+            shown: Cell::default(),
+        };
+        jump.label(caper_client::jump::Jump::default());
+        jump
+    }
+
+    pub fn state(&self) -> caper_client::jump::Jump {
+        self.shown.get()
+    }
+
+    /// Shows `jump`; only what changed is touched.
+    pub fn show(&self, jump: caper_client::jump::Jump) {
+        let before = self.shown.replace(jump);
+        if before == jump {
+            return;
+        }
+        if before.count != jump.count {
+            self.label(jump);
+        }
+        self.button.set_visible(jump.shown);
+    }
+
+    fn label(&self, jump: caper_client::jump::Jump) {
+        let text = jump.text();
+        self.count.set_visible(text.is_some());
+        self.count.set_label(text.as_deref().unwrap_or_default());
+        if jump.unread() {
+            self.button.add_css_class("unread");
+        } else {
+            self.button.remove_css_class("unread");
+        }
+        crate::app::rename(self.button.upcast_ref(), &jump.name());
+    }
 }
 
 impl List {
@@ -539,6 +603,7 @@ impl List {
             store,
             view,
             scroller,
+            jump: JumpButton::new(images),
         }
     }
 }
@@ -1195,6 +1260,8 @@ impl Ui {
         crate::autoscroll::attach(&list.scroller, &list_overlay);
         list_overlay.add_overlay(&empty);
         list_overlay.add_overlay(&composer_lip());
+        // The typing band under the list keeps it 16px above the composer.
+        list_overlay.add_overlay(&list.jump.button);
         conversation.append(&list_overlay);
         let newer_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         newer_bar.add_css_class("newer-bar");
@@ -1346,6 +1413,8 @@ impl Ui {
         thread_overlay.set_child(Some(&thread_list.scroller));
         crate::autoscroll::attach(&thread_list.scroller, &thread_overlay);
         thread_overlay.add_overlay(&composer_lip());
+        thread_list.jump.button.set_margin_bottom(16);
+        thread_overlay.add_overlay(&thread_list.jump.button);
         thread_panel.append(&thread_overlay);
         let thread_error = label("", &["error", "composer-error"]);
         thread_error.set_wrap(true);

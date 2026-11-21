@@ -28,6 +28,7 @@ pub mod gateway;
 pub mod grouping;
 pub mod host;
 pub mod invites;
+pub mod jump;
 pub mod klipy;
 /// Link segments in message text, shared by every client (`shared/messages`).
 #[path = "../../../../shared/messages/links.rs"]

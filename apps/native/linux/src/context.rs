@@ -157,6 +157,7 @@ impl App {
     pub(super) fn render_context_bar(&self, state: &State) {
         let ui = &self.ui;
         ui.newer_bar.set_visible(state.has_newer);
+        self.sync_jump(false, Some(!state.has_newer));
         ui.load_newer.set_sensitive(!state.context_loading);
         ui.load_newer.set_label(if state.context_loading {
             "Loading…"
