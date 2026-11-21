@@ -7,8 +7,14 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 step_started=$SECONDS
+step_name=
 step() {
-  printf '[setup] %s (%ss)\n' "$1" "$((SECONDS - step_started))"
+  # Report each step's duration against that step, not the one starting next.
+  if [[ -n "$step_name" ]]; then
+    printf '[setup] %s took %ss\n' "$step_name" "$((SECONDS - step_started))"
+  fi
+  printf '[setup] %s\n' "$1"
+  step_name=$1
   step_started=$SECONDS
 }
 
@@ -214,7 +220,7 @@ uv sync --locked
 step "fetching Rust dependencies"
 cargo fetch --locked
 
-step "complete"
+step "complete in ${SECONDS}s"
 printf '[setup] Node %s, npm %s, Rust %s, Valkey %s\n' \
   "$(node --version)" \
   "$(npm --version)" \
