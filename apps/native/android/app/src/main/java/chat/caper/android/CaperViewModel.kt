@@ -3238,14 +3238,32 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         )
         gateway = connection
         gatewayStatus = viewModelScope.launch {
-            connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status,
-                presenceLive = mutable.value.presenceLive && status == GatewayStatus.LIVE,
-                presenceLoading = mutable.value.presenceLoading && status != GatewayStatus.ERROR) }
+            var wasLive = false
+            connection.status.collect { status ->
+                if (generation != request) return@collect
+                mutable.value = mutable.value.copy(gateway = status,
+                    presenceLive = mutable.value.presenceLive && status == GatewayStatus.LIVE,
+                    presenceLoading = mutable.value.presenceLoading && status != GatewayStatus.ERROR)
+                if (status == GatewayStatus.LIVE && !wasLive) retryUnconfirmedSend()
+                wasLive = status == GatewayStatus.LIVE
+            }
         }
         connection.start()
         if (participating) watchVisiblePresence()
         val detail = mutable.value.selectedSpace
         if (participating && (detail != null || mutable.value.visit != null)) connection.watchMedia(mediaChannels(detail), detail?.space?.demo == true)
+    }
+
+    /**
+     * The connection is back: a send that failed with an unknown outcome (a network drop) or a failed upload goes
+     * again, with the same client message ID, so the server keeps at most one copy. Rejected sends wait for Edit.
+     */
+    private fun retryUnconfirmedSend() {
+        val pending = mutable.value.pendingMessage?.takeIf { it.error != null && !it.rejected } ?: return
+        val channel = mutable.value.selectedChannel ?: return
+        val author = chatAuthor ?: return
+        if (pendingSends.retrying(channel.id, author) == null || uploadSend?.isActive == true) return
+        send(pending.text, threadRootId = pending.threadRootId, broadcast = pending.broadcast)
     }
 
     private fun watchVisiblePresence(force: Boolean = false) {
