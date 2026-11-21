@@ -544,33 +544,26 @@ impl App {
         let Some(id) = send.file.attachment.as_ref().map(|file| file.id.clone()) else {
             return;
         };
-        let client_id = uuid::Uuid::new_v4().to_string();
-        let thread_root_id = send.file.thread_root_id.clone();
+        let outgoing = caper_client::worker::Outgoing {
+            thread_root_id: send.file.thread_root_id.clone(),
+            reply_to_id: send.reply,
+            attachment_ids: vec![id],
+            ..caper_client::worker::Outgoing::new(channel, String::new())
+        };
+        self.worker
+            .send(outgoing.command(state.generation, state.token.clone(), chat_token));
         state.pending = Some(super::Pending {
-            client_id: client_id.clone(),
+            client_id: outgoing.client_id.clone(),
+            thread: outgoing.thread_root_id.clone(),
+            outgoing,
+            unconfirmed: false,
             text: String::new(),
             created_at: chrono::Local::now().to_rfc3339(),
-            thread: thread_root_id.clone(),
             files: vec![send.file],
             gif: None,
             share: None,
         });
         state.files_revision += 1;
-        self.worker.send(Command::Send {
-            generation: state.generation,
-            token: state.token.clone(),
-            chat_token,
-            channel,
-            client_id,
-            text: String::new(),
-            thread_root_id,
-            broadcast: false,
-            reply_to_id: send.reply,
-            attachment_ids: vec![id],
-            spoiler_attachment_ids: Vec::new(),
-            gif: None,
-            suppress_embeds: false,
-        });
     }
 
     /// Drops voice messages sending outside `channel`, the conversation

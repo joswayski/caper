@@ -13,6 +13,7 @@ use caper_client::reactions::{
 };
 use caper_client::state::{CallContext, Phase};
 use caper_client::voice::{Voice, VoiceOperation};
+use caper_client::worker as core_worker;
 use caper_client::worker::{
     AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker,
 };
@@ -88,6 +89,9 @@ impl Host for WinHost {
         self.request(|r| r.title = Some(title));
     }
 }
+
+/// Ends the header's error for a send waiting to go again.
+pub const RESEND_NOTE: &str = "Your message will be sent again when the connection returns.";
 
 pub enum Update {
     /// No stored session (or restoring it failed, with the reason): sign in.
@@ -215,6 +219,8 @@ pub enum Update {
     /// The gateway's state while not live ("Connecting…"); None once live.
     Connection(Option<String>),
     Failed(String),
+    /// A send was confirmed: a waiting resend's note can go.
+    SendConfirmed,
 }
 
 fn invite_answer(answer: crate::invite_people::Answer) -> Update {
@@ -430,6 +436,10 @@ pub struct Live {
     pub klipy: Option<caper_client::klipy::Config>,
     klipy_checked: Option<std::time::Instant>,
     shares: HashMap<String, caper_client::klipy::Share>,
+    /// Message sends not yet confirmed, by client id, and whether the last
+    /// attempt failed with an unknown outcome (a network drop or 5xx): those
+    /// go again unchanged, same client message ID, when the gateway is live.
+    outgoing: std::cell::RefCell<HashMap<String, (core_worker::Outgoing, bool)>>,
     /// Your DMs as the server last listed them, your account (for your own
     /// DM), and the open DM while one is open instead of a channel.
     pub directs: Vec<core::DirectConversation>,
@@ -748,6 +758,7 @@ impl Live {
             klipy: None,
             klipy_checked: None,
             shares: HashMap::new(),
+            outgoing: Default::default(),
             directs: Vec::new(),
             account_id: None,
             account_name: String::new(),
@@ -2066,23 +2077,16 @@ impl Live {
         let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
             return;
         };
-        let client_id = uuid::Uuid::new_v4().to_string();
-        self.shares.insert(client_id.clone(), share);
-        self.worker.send(Command::Send {
-            generation: self.generation,
-            token: self.token.clone(),
-            chat_token: chat_token.clone(),
-            channel: channel.clone(),
-            client_id,
-            text: String::new(),
+        let outgoing = core_worker::Outgoing {
             broadcast: thread.as_ref().is_some_and(|(_, b)| *b),
             thread_root_id: thread.map(|(root, _)| root),
             reply_to_id: reply_to,
-            attachment_ids: Vec::new(),
-            spoiler_attachment_ids: Vec::new(),
             gif: Some(gif),
-            suppress_embeds: false,
-        });
+            ..core_worker::Outgoing::new(channel.clone(), String::new())
+        };
+        self.shares.insert(outgoing.client_id.clone(), share);
+        let chat_token = chat_token.clone();
+        self.dispatch(outgoing, chat_token);
     }
 
     /// Why Attach files is unavailable, as the egui client words it.
@@ -2491,13 +2495,7 @@ impl Live {
         } else {
             self.preview.removed(&text)
         };
-        self.worker.send(Command::Send {
-            generation: self.generation,
-            token: self.token.clone(),
-            chat_token: chat_token.clone(),
-            channel: channel.clone(),
-            client_id: uuid::Uuid::new_v4().to_string(),
-            text,
+        let outgoing = core_worker::Outgoing {
             broadcast: thread.as_ref().is_some_and(|(_, broadcast)| *broadcast),
             thread_root_id: thread.map(|(root, _)| root),
             reply_to_id: reply_to,
@@ -2507,9 +2505,11 @@ impl Live {
                 .map(|f| f.id.clone())
                 .collect(),
             attachment_ids: files.into_iter().map(|f| f.id).collect(),
-            gif: None,
             suppress_embeds,
-        });
+            ..core_worker::Outgoing::new(channel.clone(), text)
+        };
+        let chat_token = chat_token.clone();
+        self.dispatch(outgoing, chat_token);
         // The message owns the files now: nothing is cancelled.
         self.drafts.retain(|d| !keys.contains(&d.upload.key));
         Sent::Sent
@@ -2582,7 +2582,6 @@ impl Live {
         let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
             return;
         };
-        let client_id = uuid::Uuid::new_v4().to_string();
         // A removed card sends without previews: the channel composer's,
         // or the reply box's for a thread reply.
         let suppress_embeds = if thread.is_some() {
@@ -2590,21 +2589,40 @@ impl Live {
         } else {
             self.preview.removed(&text)
         };
-        self.worker.send(Command::Send {
-            generation: self.generation,
-            token: self.token.clone(),
-            chat_token: chat_token.clone(),
-            channel: channel.clone(),
-            client_id,
-            text,
+        let outgoing = core_worker::Outgoing {
             broadcast: thread.as_ref().is_some_and(|(_, b)| *b),
             thread_root_id: thread.map(|(root, _)| root),
             reply_to_id: reply_to,
-            attachment_ids: Vec::new(),
-            spoiler_attachment_ids: Vec::new(),
-            gif: None,
             suppress_embeds,
-        });
+            ..core_worker::Outgoing::new(channel.clone(), text)
+        };
+        self.dispatch(outgoing, chat_token.clone());
+    }
+
+    /// Sends `outgoing`, keeping it until the server confirms it.
+    fn dispatch(&self, outgoing: core_worker::Outgoing, chat_token: String) {
+        self.worker
+            .send(outgoing.command(self.generation, self.token.clone(), chat_token));
+        self.outgoing
+            .borrow_mut()
+            .insert(outgoing.client_id.clone(), (outgoing, false));
+    }
+
+    /// Back online: each send whose outcome was unknown goes again unchanged.
+    fn resend_unconfirmed(&self) {
+        let Some(chat_token) = &self.chat_token else {
+            return;
+        };
+        for (outgoing, unconfirmed) in self.outgoing.borrow_mut().values_mut() {
+            if *unconfirmed && self.channel.as_deref() == Some(outgoing.channel.as_str()) {
+                *unconfirmed = false;
+                self.worker.send(outgoing.command(
+                    self.generation,
+                    self.token.clone(),
+                    chat_token.clone(),
+                ));
+            }
+        }
     }
 
     /// The open channel's gateway position.
@@ -5208,8 +5226,22 @@ impl Live {
                     }
                     out.push(Update::Drafts);
                 }
+                let unknown = result.as_ref().is_err_and(|f| !f.rejected());
+                {
+                    let mut outgoing = self.outgoing.borrow_mut();
+                    match outgoing.get_mut(&client_id) {
+                        Some((_, unconfirmed)) if unknown => *unconfirmed = true,
+                        _ => {
+                            outgoing.remove(&client_id);
+                        }
+                    }
+                }
                 match result {
+                    Err(f) if unknown && self.outgoing.borrow().contains_key(&client_id) => {
+                        out.push(Update::Failed(format!("{} {RESEND_NOTE}", f.message)));
+                    }
                     Ok(m) => {
+                        out.push(Update::SendConfirmed);
                         // Best effort, once KLIPY's GIF is really sent.
                         if let Some(share) = self.shares.remove(&client_id) {
                             share.send();
@@ -5596,6 +5628,8 @@ impl Live {
                 if !online {
                     self.typing.clear();
                     out.push(Update::Typing);
+                } else {
+                    self.resend_unconfirmed();
                 }
                 out.push(Update::Connection(
                     (!online && !detail.is_empty()).then_some(detail),

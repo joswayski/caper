@@ -1004,6 +1004,69 @@ pub struct SendFailure {
     pub code: Option<String>,
 }
 
+impl SendFailure {
+    /// The server refused the send. Anything else (a network drop, a
+    /// timeout, a 5xx) has an unknown outcome: the message may be stored,
+    /// so it goes again only as the same `Outgoing`.
+    pub fn rejected(&self) -> bool {
+        matches!(self.status, Some(400 | 401 | 403 | 404 | 409 | 422))
+    }
+}
+
+/// A message send as it went out, kept until confirmed so that a send with
+/// an unknown outcome can go again unchanged: the same client message ID and
+/// content, which the server keeps at most one copy of.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outgoing {
+    pub channel: String,
+    pub client_id: String,
+    pub text: String,
+    pub thread_root_id: Option<String>,
+    pub broadcast: bool,
+    pub reply_to_id: Option<String>,
+    pub attachment_ids: Vec<String>,
+    pub spoiler_attachment_ids: Vec<String>,
+    pub gif: Option<crate::klipy::Gif>,
+    pub suppress_embeds: bool,
+}
+
+impl Outgoing {
+    /// A new message with a fresh client message ID.
+    pub fn new(channel: String, text: String) -> Self {
+        Self {
+            channel,
+            client_id: uuid::Uuid::new_v4().to_string(),
+            text,
+            thread_root_id: None,
+            broadcast: false,
+            reply_to_id: None,
+            attachment_ids: Vec::new(),
+            spoiler_attachment_ids: Vec::new(),
+            gif: None,
+            suppress_embeds: false,
+        }
+    }
+
+    /// The worker's command for this send (first or again).
+    pub fn command(&self, generation: u64, token: Option<String>, chat_token: String) -> Command {
+        Command::Send {
+            generation,
+            token,
+            chat_token,
+            channel: self.channel.clone(),
+            client_id: self.client_id.clone(),
+            text: self.text.clone(),
+            thread_root_id: self.thread_root_id.clone(),
+            broadcast: self.broadcast,
+            reply_to_id: self.reply_to_id.clone(),
+            attachment_ids: self.attachment_ids.clone(),
+            spoiler_attachment_ids: self.spoiler_attachment_ids.clone(),
+            gif: self.gif.clone(),
+            suppress_embeds: self.suppress_embeds,
+        }
+    }
+}
+
 /// A DM refusal (blocked, or a request not yet accepted) is an ordinary
 /// failure, not lost access to the conversation.
 pub fn dm_refusal(code: Option<&str>) -> bool {
@@ -3806,5 +3869,47 @@ mod login_copy_tests {
         }
         assert!(not_found("This channel is no longer available.").access_denied);
         assert!(super::LoadError::from(error(StatusCode::FORBIDDEN, None)).access_denied);
+    }
+}
+
+#[cfg(test)]
+mod outgoing_tests {
+    use super::*;
+
+    #[test]
+    fn a_retry_repeats_the_send_and_only_refusals_are_final() {
+        let outgoing = Outgoing {
+            reply_to_id: Some("m1".into()),
+            ..Outgoing::new("c1".into(), "hi".into())
+        };
+        let ids = |command: Command| match command {
+            Command::Send {
+                client_id,
+                reply_to_id,
+                ..
+            } => (client_id, reply_to_id),
+            _ => unreachable!(),
+        };
+        let first = ids(outgoing.command(1, None, "chat".into()));
+        let again = ids(outgoing.command(2, None, "chat".into()));
+        assert_eq!(first, again);
+        assert_eq!(first.0, outgoing.client_id);
+        assert_ne!(
+            Outgoing::new("c1".into(), "hi".into()).client_id,
+            outgoing.client_id
+        );
+        let failure = |status| SendFailure {
+            status,
+            message: String::new(),
+            code: None,
+        };
+        assert!(failure(Some(403)).rejected());
+        assert!(failure(Some(422)).rejected());
+        assert!(
+            !failure(None).rejected(),
+            "a network drop has an unknown outcome"
+        );
+        assert!(!failure(Some(503)).rejected());
+        assert!(!failure(Some(429)).rejected());
     }
 }

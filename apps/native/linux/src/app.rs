@@ -164,6 +164,11 @@ enum Page {
 }
 
 struct Pending {
+    /// The send as it went out, resent unchanged when the connection
+    /// returns after a failure with an unknown outcome.
+    outgoing: caper_client::worker::Outgoing,
+    /// Its last attempt failed without a refusal: it waits for the gateway.
+    unconfirmed: bool,
     client_id: String,
     text: String,
     created_at: String,
@@ -1709,7 +1714,17 @@ impl App {
         state.loading_older = false;
         state.session = None;
         state.session_error = None;
-        state.pending = None;
+        // Leaving with an unconfirmed send gives it back as that
+        // conversation's draft, as a refused one would be.
+        if let Some(pending) = state.pending.take().filter(|pending| pending.unconfirmed) {
+            state.files.extend(pending.files);
+            if pending.thread.is_none() && !pending.text.is_empty() {
+                state
+                    .drafts
+                    .entry(pending.outgoing.channel.clone())
+                    .or_insert(pending.text);
+            }
+        }
         state.compose = None;
         state.thread = None;
         state.focused = None;
@@ -3067,6 +3082,18 @@ impl App {
                 self.render();
                 return;
             }
+            // Enter retries an unconfirmed send now, unchanged; the
+            // composer keeps what was typed since.
+            let (generation, token) = (state.generation, state.token.clone());
+            if let Some(pending) = state.pending.as_mut().filter(|pending| pending.unconfirmed) {
+                pending.unconfirmed = false;
+                self.worker
+                    .send(pending.outgoing.command(generation, token, chat_token));
+                state.send_error = None;
+                drop(state);
+                self.render();
+                return;
+            }
             if state.pending.is_some() {
                 state.send_error = Some("Wait for your last message to send first.".into());
                 drop(state);
@@ -3091,7 +3118,6 @@ impl App {
                     _ => None,
                 }
             };
-            let client_id = uuid::Uuid::new_v4().to_string();
             let (sent, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.files)
                 .into_iter()
                 .partition(|file| file.channel == channel && file.thread_root_id == thread_root);
@@ -3106,11 +3132,24 @@ impl App {
                 .filter(|file| file.spoiler)
                 .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
                 .collect();
+            let outgoing = caper_client::worker::Outgoing {
+                thread_root_id: thread_root.clone(),
+                broadcast,
+                reply_to_id,
+                attachment_ids,
+                spoiler_attachment_ids,
+                suppress_embeds: self.link_preview_of(thread).0.borrow().removed(text),
+                ..caper_client::worker::Outgoing::new(channel, text.to_owned())
+            };
+            self.worker
+                .send(outgoing.command(state.generation, state.token.clone(), chat_token));
             state.pending = Some(Pending {
-                client_id: client_id.clone(),
+                client_id: outgoing.client_id.clone(),
+                outgoing,
+                unconfirmed: false,
                 text: text.to_owned(),
                 created_at: chrono::Local::now().to_rfc3339(),
-                thread: thread_root.clone(),
+                thread: thread_root,
                 files: sent,
                 gif: None,
                 share: None,
@@ -3120,21 +3159,6 @@ impl App {
             }
             state.send_error = None;
             self.set_typing(&mut state, false);
-            self.worker.send(Command::Send {
-                generation: state.generation,
-                token: state.token.clone(),
-                chat_token,
-                channel,
-                client_id,
-                text: text.to_owned(),
-                thread_root_id: thread_root,
-                broadcast,
-                reply_to_id,
-                attachment_ids,
-                spoiler_attachment_ids,
-                gif: None,
-                suppress_embeds: self.link_preview_of(thread).0.borrow().removed(text),
-            });
         }
         if !thread {
             self.follow.set(true);
@@ -4436,6 +4460,19 @@ impl App {
                         // A reply can answer a report.
                         self.sent_in_visit(state);
                     }
+                    // A network drop or server error may have stored it:
+                    // it stays pending and goes again unchanged (same
+                    // client message ID) once the gateway is live.
+                    Err(failure) if !failure.rejected() && pending.is_some() => {
+                        state.send_error = Some(format!(
+                            "{} It will be sent again when the connection returns, or press Enter to retry now.",
+                            failure.message
+                        ));
+                        state.pending = pending.map(|pending| Pending {
+                            unconfirmed: true,
+                            ..pending
+                        });
+                    }
                     Err(failure) => {
                         state.send_error = Some(failure.message);
                         if let Some(pending) = pending {
@@ -5170,6 +5207,21 @@ impl App {
                 state.status = if online { "Live".into() } else { detail };
                 if !online {
                     state.typers.clear();
+                }
+                // Back online: an unconfirmed send goes again unchanged.
+                if online
+                    && let Some(chat_token) =
+                        state.session.as_ref().map(|session| session.token.clone())
+                    && let Some(pending) =
+                        state.pending.as_mut().filter(|pending| pending.unconfirmed)
+                {
+                    pending.unconfirmed = false;
+                    self.worker.send(pending.outgoing.command(
+                        state.generation,
+                        state.token.clone(),
+                        chat_token,
+                    ));
+                    state.send_error = None;
                 }
                 Ok(Apply::Applied)
             }

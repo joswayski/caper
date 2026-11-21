@@ -1167,6 +1167,17 @@ impl App {
                     self.dirty.header = true;
                     self.need = true;
                 }
+                live::Update::SendConfirmed => {
+                    if self
+                        .status
+                        .as_ref()
+                        .is_some_and(|(s, error)| *error && s.ends_with(live::RESEND_NOTE))
+                    {
+                        self.status = None;
+                        self.dirty.header = true;
+                        self.need = true;
+                    }
+                }
                 live::Update::Failed(e) => {
                     if let Some(s) = self.signin.as_mut().filter(|s| s.restoring) {
                         // Signed in, but nothing to open: say why instead of spinning.

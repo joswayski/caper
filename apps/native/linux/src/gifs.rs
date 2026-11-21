@@ -506,12 +506,22 @@ impl App {
                 _ => None,
             };
             let broadcast = thread && self.ui.thread_composer.broadcast.is_active();
-            let client_id = uuid::Uuid::new_v4().to_string();
+            let outgoing = caper_client::worker::Outgoing {
+                thread_root_id: root.clone(),
+                broadcast,
+                reply_to_id,
+                gif: Some(gif.clone()),
+                ..caper_client::worker::Outgoing::new(channel, String::new())
+            };
+            self.worker
+                .send(outgoing.command(state.generation, state.token.clone(), chat_token));
             state.pending = Some(Pending {
-                client_id: client_id.clone(),
+                client_id: outgoing.client_id.clone(),
+                outgoing,
+                unconfirmed: false,
                 text: String::new(),
                 created_at: chrono::Local::now().to_rfc3339(),
-                thread: root.clone(),
+                thread: root,
                 files: Vec::new(),
                 share: Some(Share {
                     config,
@@ -525,21 +535,6 @@ impl App {
                 state.compose = None;
             }
             state.send_error = None;
-            self.worker.send(Command::Send {
-                generation: state.generation,
-                token: state.token.clone(),
-                chat_token,
-                channel,
-                client_id,
-                text: String::new(),
-                thread_root_id: root,
-                broadcast,
-                reply_to_id,
-                attachment_ids: Vec::new(),
-                spoiler_attachment_ids: Vec::new(),
-                gif: Some(gif),
-                suppress_embeds: false,
-            });
             if thread {
                 self.ui.thread_composer.broadcast.set_active(false);
             } else {
