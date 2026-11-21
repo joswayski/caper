@@ -515,6 +515,9 @@ final class AppKitKitFlippedView: NSView {
 /// text's colour, and one underline under both.
 @MainActor final class AppKitKitLink: NSButton {
     private let url: URL
+    /// The label as given; `title` reads back the styled title, so restyling
+    /// from it would append another space and icon on every hover.
+    private let label: String
     private var tracking: NSTrackingArea?
     private let size: CGFloat
     private let color: NSColor?
@@ -522,7 +525,7 @@ final class AppKitKitFlippedView: NSView {
 
     /// `color` replaces the muted rest colour, e.g. red for Delete account.
     init(_ title: String, url: URL, size: CGFloat = 13, color: NSColor? = nil, help: String? = "View this version on GitHub") {
-        self.url = url; self.size = size; self.color = color
+        self.url = url; self.label = title; self.size = size; self.color = color
         super.init(frame: .zero)
         self.title = title
         isBordered = false; bezelStyle = .regularSquare
@@ -540,7 +543,7 @@ final class AppKitKitFlippedView: NSView {
 
     private func style() {
         let tint = tint
-        attributedTitle = NSAttributedString(string: title + " ", attributes: [.font: AppKitKit.font(size), .foregroundColor: tint])
+        attributedTitle = NSAttributedString(string: label + " ", attributes: [.font: AppKitKit.font(size), .foregroundColor: tint])
         image = Self.icon(tint)
         needsDisplay = true
     }
