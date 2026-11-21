@@ -336,23 +336,13 @@ import XCTest
 
         // Enter Browse through the real space menu, without reaching into the
         // sidebar's private browsing flag or NavigationRow implementation.
-        var openedMenu: NSMenu?
-        let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { notification in
-            MainActor.assumeIsolated {
-                guard let menu = notification.object as? NSMenu else { return }
-                openedMenu = menu
-                RunLoop.main.perform(inModes: [.eventTracking, .default]) {
-                    MainActor.assumeIsolated { menu.cancelTracking() }
-                }
-            }
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
         try XCTUnwrap(button("selected-space-name")).performClick(nil)
-        let menu = try XCTUnwrap(openedMenu)
-        let browse = menu.indexOfItem(withTitle: "Browse channels")
-        XCTAssertGreaterThanOrEqual(browse, 0)
-        guard browse >= 0 else { return }
-        menu.performActionForItem(at: browse)
+        let menu = try XCTUnwrap(CaperMenu.current, "The space name opens a Caper menu")
+        XCTAssertTrue(menu.titles.contains("Browse channels"))
+        XCTAssertGreaterThan(menu.frame.width, 150, "The menu is sized to its rows, not its panel's empty starting frame")
+        XCTAssertGreaterThan(menu.frame.height, 32)
+        XCTAssertTrue(menu.perform("Browse channels"))
+        XCTAssertNil(CaperMenu.current, "Choosing an item closes the menu")
         sidebar.layoutSubtreeIfNeeded()
         XCTAssertFalse(try XCTUnwrap(descendants(sidebar).compactMap { $0 as? NSSearchField }.first).isHidden)
         try assertRows(planningPrivate: true, browsing: true)

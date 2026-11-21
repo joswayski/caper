@@ -1,25 +1,26 @@
 import AppKit
 import CaperCore
 
-/// NSMenu owns its action items until it closes. No parallel notification state:
-/// labels, inheritance, persistence and pending guards come from CaperCore.
+/// Menus are built as NSMenu and drawn by CaperMenu, which keeps these items
+/// until it closes. No parallel notification state: labels, inheritance,
+/// persistence and pending guards come from CaperCore.
 final class NavigationMenuItem: NSMenuItem, NSMenuItemValidation {
     private let perform: () -> Void
     private let available: Bool
-    init(_ title: String, enabled: Bool = true, selected: Bool = false, action: @escaping () -> Void) {
+    init(_ title: String, enabled: Bool = true, selected: Bool = false, role: CaperMenuRole? = nil, action: @escaping () -> Void) {
         perform = action
         available = enabled
         super.init(title: title, action: #selector(invoke), keyEquivalent: "")
         target = self
         isEnabled = enabled
         state = selected ? .on : .off
+        caperRole = role
         // The visible title alone can leave the custom action's AX label empty.
         setAccessibilityLabel(title)
     }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func invoke() { perform() }
-    // NSTextView's own menu enables items automatically. Keep permissions
-    // when these action items are appended to that native context menu.
+    // Keep permissions if an item ever reaches an auto-enabling NSMenu.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { available }
 }
 
@@ -52,7 +53,7 @@ final class NavigationMenuItem: NSMenuItem, NSMenuItemValidation {
     static func channel(_ model: AppModel, channel: Channel) -> [NSMenuItem] {
         let scope = NotificationScope.channel(spaceID: channel.spaceId, channelID: channel.id)
         var items = [level(model, scope)]
-        if model.notificationsMutedWithSpace(scope) { items.append(NavigationMenuItem(NotificationLabels.mutedWithSpace, enabled: false) {}) }
+        if model.notificationsMutedWithSpace(scope) { items.append(NavigationMenuItem(NotificationLabels.mutedWithSpace, enabled: false, role: .note) {}) }
         return items + mute(model, scope)
     }
 
@@ -82,7 +83,7 @@ final class NavigationMenuItem: NSMenuItem, NSMenuItemValidation {
 
     private static func mute(_ model: AppModel, _ scope: NotificationScope) -> [NSMenuItem] {
         if let mute = model.notificationMute(scope) {
-            return [NavigationMenuItem(NotificationLabels.mutedStatus(mute), enabled: false) {},
+            return [NavigationMenuItem(NotificationLabels.mutedStatus(mute), enabled: false, role: .note) {},
                 NavigationMenuItem(NotificationLabels.muteTitle(for: scope, muted: true), enabled: !saving(model, scope)) {
                     Task { await model.setMute(nil, for: scope) }
                 }]

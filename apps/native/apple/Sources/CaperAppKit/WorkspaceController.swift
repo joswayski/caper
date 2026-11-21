@@ -828,7 +828,7 @@ import CaperCore
         let item = menu.addItem(withTitle: "Upload a file", action: #selector(pickFiles), keyEquivalent: "")
         item.target = self; item.isEnabled = count < AttachmentPolicy.maxAttachments
         menu.autoenablesItems = false
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: attach.bounds.maxY), in: attach)
+        CaperMenu.show(menu, below: attach)
     }
 
     @objc private func pickFiles() { media.pickFiles(inThread: inThread) }
@@ -973,12 +973,12 @@ import CaperCore
         }
         items.append(copyID)
         if dialogs.canDelete(current) {
-            items += [.separator(), NavigationMenuItem("Delete message", action: perform { [weak self] in
+            items += [.separator(), NavigationMenuItem("Delete message", role: .destructive, action: perform { [weak self] in
                 guard let self else { return }; self.dialogs.deleteMessage($0, in: self.presentationParent)
             })]
         }
         if dialogs.canBlock(current.author) {
-            items += [.separator(), NavigationMenuItem("Block \(current.author.name)…", action: perform { [weak self] in
+            items += [.separator(), NavigationMenuItem("Block \(current.author.name)…", role: .destructive, action: perform { [weak self] in
                 self?.confirmBlock(BlockTarget(author: $0.author))
             })]
         } else if dialogs.canUnblock(current.author) {

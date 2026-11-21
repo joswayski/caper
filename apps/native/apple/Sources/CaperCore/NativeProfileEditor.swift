@@ -136,8 +136,12 @@ import AppKit
         let menu = NSMenu()
         var actions: [(String, Selector)] = [("Choose a new picture…", #selector(pick)), ("Previous pictures", #selector(history))]
         if state.hasPicture { actions.insert(("Edit current picture", #selector(edit)), at: 0); actions.append(("Remove picture", #selector(remove))) }
-        for (title, selector) in actions { let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self; menu.addItem(item) }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: picture.bounds.maxY), in: picture)
+        for (title, selector) in actions {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self
+            if selector == #selector(remove) { item.caperRole = .destructive }
+            menu.addItem(item)
+        }
+        CaperMenu.show(menu, below: picture)
     }
     @objc private func pick() { choose() }
     @objc private func edit() { state.editCurrent() }

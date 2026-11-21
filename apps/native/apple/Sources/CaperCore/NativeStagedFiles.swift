@@ -258,8 +258,8 @@ import AppKit
         guard file.removable else { return }; let menu = NSMenu()
         if file.editable { let item = NSMenuItem(title: "Edit", action: #selector(editFile), keyEquivalent: ""); item.target = self; menu.addItem(item) }
         if file.toggleSpoiler != nil, file.voice == nil { let item = NSMenuItem(title: file.spoiler ? "Remove spoiler" : "Mark as spoiler", action: #selector(spoiler), keyEquivalent: ""); item.target = self; menu.addItem(item) }
-        let item = NSMenuItem(title: "Remove attachment", action: #selector(removeFile), keyEquivalent: ""); item.target = self; menu.addItem(item)
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.maxY), in: self)
+        let item = NSMenuItem(title: "Remove attachment", action: #selector(removeFile), keyEquivalent: ""); item.target = self; item.caperRole = .destructive; menu.addItem(item)
+        CaperMenu.show(menu, below: self)
     }
     @objc private func editFile() { if file.removable { file.preview() } }
     @objc private func spoiler() { if file.removable { file.toggleSpoiler?() } }

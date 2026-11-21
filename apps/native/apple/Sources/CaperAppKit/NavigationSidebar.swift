@@ -433,7 +433,7 @@ import CaperCore
                         }
                     }]
                 } else if conversation.peer.canBlock {
-                    items += [.separator(), NavigationMenuItem("Block @\(conversation.peer.username)…") { [weak self] in
+                    items += [.separator(), NavigationMenuItem("Block @\(conversation.peer.username)…", role: .destructive) { [weak self] in
                         self?.block?(BlockTarget(peer: conversation.peer))
                     }]
                 }
@@ -505,7 +505,7 @@ import CaperCore
             items += NavigationMenus.channel(self.model, channel: channel)
             if channel.joined {
                 items.append(.separator())
-                items.append(NavigationMenuItem("Leave channel") { [weak self] in self?.leaveChannel?(channel) })
+                items.append(NavigationMenuItem("Leave channel", role: .destructive) { [weak self] in self?.leaveChannel?(channel) })
             }
             self.popup(items, at: row.options)
         }
@@ -611,7 +611,7 @@ import CaperCore
             if model.isOwner {
                 items.append(NavigationMenuItem("Invite people…") { [weak self] in self?.show?(.invitePeople(spaceID: space.id, channelID: nil)) })
                 items.append(NavigationMenuItem("Space settings") { [weak self] in self?.show?(.manageSpace) })
-            } else { items.append(NavigationMenuItem("Leave space…") { [weak self] in self?.show?(.leaveSpace) }) }
+            } else { items.append(NavigationMenuItem("Leave space…", role: .destructive) { [weak self] in self?.show?(.leaveSpace) }) }
         }
         popup(items, at: space)
     }
@@ -633,7 +633,7 @@ import CaperCore
     }
 
     private func popup(_ items: [NSMenuItem], at view: NSView) {
-        NavigationMenus.menu(items).popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.maxY), in: view)
+        CaperMenu.show(NavigationMenus.menu(items), below: view)
     }
 
     func controlTextDidChange(_ notification: Notification) { render() }
@@ -1083,8 +1083,7 @@ private final class NativeFeedbackRow: NativeView {
     }
     override func rightMouseDown(with event: NSEvent) {
         let label = archiveButton.accessibilityLabel() ?? "Archive"
-        NavigationMenus.menu([NavigationMenuItem(label) { [weak self] in self?.archive?() }])
-            .popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+        CaperMenu.show([.action(label) { [weak self] in self?.archive?() }], at: convert(event.locationInWindow, from: nil), in: self)
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

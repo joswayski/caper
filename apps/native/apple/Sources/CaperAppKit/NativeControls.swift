@@ -154,6 +154,12 @@ final class NativeButton: NSButton {
         super.viewDidMoveToWindow()
         if window == nil { hovered = false; hoverChanged?(false) }
     }
+    /// A right-click shows the button's `menu` as a Caper menu, not NSMenu's,
+    /// and stops there rather than reaching the row or message behind it.
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu else { super.rightMouseDown(with: event); return }
+        CaperMenu.show(menu, at: convert(event.locationInWindow, from: nil), in: self)
+    }
     /// Every enabled button shows the hand, as web's buttons do.
     override func resetCursorRects() {
         super.resetCursorRects()

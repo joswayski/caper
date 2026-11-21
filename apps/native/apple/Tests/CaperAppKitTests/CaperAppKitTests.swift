@@ -209,9 +209,9 @@ import XCTest
             XCTAssertEqual(account.label, "Account settings")
             account.hover(); app.buttons["account-profile"].hover(); account.click()
             // The menu bar keeps its Settings… item in the tree once opened.
-            let item = account.menuItems["Settings…"]
+            let item = app.menus["caper-menu"].menuItems["Settings…"]
             XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
-            item.hover(); account.menuItems["What’s new"].hover(); item.click()
+            item.hover(); app.menus["caper-menu"].menuItems["What’s new"].hover(); item.click()
             let settings = inspectSettings(app, captureName: "account Settings main \(Int(width))")
             app.typeKey(",", modifierFlags: .command)
             XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
@@ -287,9 +287,9 @@ import XCTest
             resize(app, width: width)
             let account = app.buttons["account-settings-menu"]
             account.hover(); app.buttons["account-profile"].hover(); account.click()
-            let item = account.menuItems["What’s new"]
+            let item = app.menus["caper-menu"].menuItems["What’s new"]
             XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
-            item.hover(); account.menuItems["Settings…"].hover(); item.click()
+            item.hover(); app.menus["caper-menu"].menuItems["Settings…"].hover(); item.click()
             XCTAssertTrue(close.waitForExistence(timeout: 5))
             XCTAssertTrue(main.buttons["Close What’s new"].exists)
             XCTAssertTrue(app.staticTexts[unavailable].waitForExistence(timeout: 5))
@@ -302,7 +302,7 @@ import XCTest
             XCTAssertTrue(close.waitForNonExistence(timeout: 5))
             XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, draft)
 
-            account.click(); account.menuItems["Settings…"].click()
+            account.click(); app.menus["caper-menu"].menuItems["Settings…"].click()
             let settings = app.windows["caper-appkit-settings"]
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
@@ -3122,7 +3122,8 @@ import XCTest
         let design = app.buttons["channel-chan00000002"]
         XCTAssertTrue(design.waitForExistence(timeout: 15))
         app.buttons["channel-options-chan00000002"].click()
-        app.menuItems["Mute channel"].hover()
+        // Submenus expand in place under their row, as on web.
+        app.menuItems["Mute channel"].click()
         let preset = app.menuItems["Until I turn it back on"]
         XCTAssertTrue(preset.waitForExistence(timeout: 5)); preset.click()
         let muted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Muted"), object: design)

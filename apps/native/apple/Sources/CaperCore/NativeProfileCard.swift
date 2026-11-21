@@ -157,9 +157,9 @@ import AppKit
         }
         if state.canBlock {
             let item = NSMenuItem(title: state.blocked ? "Unblock" : "Block", action: #selector(block), keyEquivalent: "")
-            item.target = self; item.setAccessibilityIdentifier("mention-card-block"); menu.addItem(item)
+            item.target = self; item.setAccessibilityIdentifier("mention-card-block"); item.caperRole = state.blocked ? nil : .destructive; menu.addItem(item)
         }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: more.bounds.maxY), in: more)
+        CaperMenu.show(menu, below: more)
     }
     @objc private func chooseSpace() { if !state.busy { state.choosingSpace.toggle() } }
     @objc private func block() {

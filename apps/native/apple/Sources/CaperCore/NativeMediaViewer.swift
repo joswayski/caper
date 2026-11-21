@@ -114,7 +114,7 @@ import Observation
             let copy = NSMenuItem(title: "Copy image", action: #selector(copyImage), keyEquivalent: ""); copy.target = self; menu.addItem(copy)
         }
         let link = NSMenuItem(title: "Copy media link", action: #selector(copyLink), keyEquivalent: ""); link.target = self; menu.addItem(link)
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: more.bounds.maxY), in: more)
+        CaperMenu.show(menu, below: more)
     }
     @objc private func copyImage() { state.copyImage() }
     @objc private func copyLink() {

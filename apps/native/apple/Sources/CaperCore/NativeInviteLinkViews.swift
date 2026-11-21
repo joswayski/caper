@@ -86,18 +86,22 @@ import AppKit
         copy.isEnabled = !main || !state.busy
         let actions = NSStackView(views: [copy]); actions.spacing = 8
         if main {
+            weak var optionsButton: AppKitKitButton?
             let options = AppKitKitButton("…") { [weak self] in
-                guard let self else { return }
+                guard let self, let optionsButton else { return }
                 let menu = NSMenu()
                 for (title, identifier, action) in [
                     ("Regenerate link", "default-invite-link-regenerate", { [weak self] in self?.confirm(link, regenerate: true) }),
                     ("Custom links", "", { [state] in state.expanded = true }),
                     ("Deactivate link", "default-invite-link-deactivate", { [weak self] in self?.confirm(link, regenerate: false) })
                 ] as [(String, String, () -> Void)] {
-                    let item = AppKitMenuAction(title, action: action); item.setAccessibilityIdentifier(identifier); menu.addItem(item)
+                    let item = AppKitMenuAction(title, action: action); item.setAccessibilityIdentifier(identifier)
+                    if identifier == "default-invite-link-deactivate" { item.caperRole = .destructive }
+                    menu.addItem(item)
                 }
-                menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+                CaperMenu.show(menu, below: optionsButton)
             }
+            optionsButton = options
             options.setAccessibilityLabel("More invite options"); options.setAccessibilityIdentifier("default-invite-link-options"); options.isEnabled = !state.busy; actions.addArrangedSubview(options)
             // The menu button matches Copy link's height beside it.
             options.heightAnchor.constraint(equalTo: copy.heightAnchor).isActive = true

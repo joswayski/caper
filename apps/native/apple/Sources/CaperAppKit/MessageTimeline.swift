@@ -872,8 +872,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         hovered = inside; updateControlsVisibility()
     }
     private func updateControlsVisibility() { controls.alphaValue = hovered || controls.hasFocus ? 1 : 0 }
-    override func menu(for event: NSEvent) -> NSMenu? {
-        guard let message else { return nil }; return messageMenu?(message, self)
+    override func rightMouseDown(with event: NSEvent) {
+        guard let message, let menu = messageMenu?(message, self) else { super.rightMouseDown(with: event); return }
+        CaperMenu.show(menu, at: convert(event.locationInWindow, from: nil), in: self)
     }
 }
 
@@ -891,13 +892,19 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     // conversation receive files even when a drag also offers plain text.
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [] }
 
-    override func menu(for event: NSEvent) -> NSMenu? {
-        guard let actions = messageMenu?() else { return super.menu(for: event) }
-        // Keep native Copy/selection/link commands ahead of the message menu.
-        guard let native = super.menu(for: event) else { return actions }
-        native.addItem(.separator())
-        for item in actions.items { actions.removeItem(item); native.addItem(item) }
-        return native
+    override func rightMouseDown(with event: NSEvent) {
+        guard let actions = messageMenu?() else { super.rightMouseDown(with: event); return }
+        // Copy for a selection comes first, then the message menu (its own
+        // Copy text, links and actions), all in one Caper menu.
+        var items: [CaperMenuItem] = []
+        let selected = selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
+            .map { (string as NSString).substring(with: $0) }.joined(separator: "\n")
+        if !selected.isEmpty {
+            items += [.action("Copy") {
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selected, forType: .string)
+            }, .separator]
+        }
+        CaperMenu.show(items + CaperMenuItem.items(from: actions), at: convert(event.locationInWindow, from: nil), in: self)
     }
 
     func configureMentions(_ mentions: [MessageMention]) {
@@ -1076,7 +1083,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
     func showMenu() {
         guard let menu = messageMenu?(more) else { return }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: more.bounds.maxY), in: more)
+        CaperMenu.show(menu, below: more)
     }
     override func layout() {
         super.layout()

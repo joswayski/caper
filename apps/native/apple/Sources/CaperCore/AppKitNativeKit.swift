@@ -207,6 +207,12 @@ import SwiftUI
         keyPressed != nil || super.acceptsFirstResponder || (isEnabled && KeyboardTabOrder.keyboardFocusAllowed)
     }
     override var canBecomeKeyView: Bool { acceptsFirstResponder && !isHiddenOrHasHiddenAncestor && window != nil }
+    /// A right-click shows the button's `menu` as a Caper menu, not NSMenu's,
+    /// and stops there rather than reaching the row or message behind it.
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu else { super.rightMouseDown(with: event); return }
+        CaperMenu.show(menu, at: convert(event.locationInWindow, from: nil), in: self)
+    }
     override func keyDown(with event: NSEvent) {
         if keyPressed?(event) == true { return }
         if event.keyCode == 48 { KeyboardTabOrder.step(in: window, forward: !event.modifierFlags.contains(.shift), from: self); return }
