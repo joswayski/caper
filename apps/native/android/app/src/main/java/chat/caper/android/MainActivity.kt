@@ -103,6 +103,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -1554,6 +1556,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val density = LocalDensity.current.density
     val resizeFocus = remember { FocusRequester() }
     var resizeFocused by remember { mutableStateOf(false) }
+    var resizeDragging by remember { mutableStateOf(false) }
+    // Lit while dragging or keyboard-focused; the focus a tap or drag leaves behind stays unlit.
+    val keyboardMode = LocalInputModeManager.current.inputMode == InputMode.Keyboard
     BoxWithConstraints(modifier) {
         val maximum = minOf(600f, maxWidth.value - minOf(300f, maxWidth.value / 2))
         val minimum = minOf(300f, maximum)
@@ -1570,7 +1575,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 Box(Modifier.align(Alignment.CenterStart).width(12.dp).fillMaxHeight()
                     .pointerHoverIcon(PointerIcon(android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW)))
-                    .drawBehind { if (resizeFocused) drawRect(Terracotta, size = Size(2.dp.toPx(), size.height)) }
+                    .drawBehind { if (resizeDragging || (resizeFocused && keyboardMode)) drawRect(CaperGreen.copy(alpha = 0.6f), size = Size(2.dp.toPx(), size.height)) }
                     .focusRequester(resizeFocus).onFocusChanged { resizeFocused = it.isFocused }
                     .onPreviewKeyEvent { event ->
                         if (event.type != KeyEventType.KeyDown) false else {
@@ -1594,7 +1599,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                     .draggable(rememberDraggableState { delta ->
                         preferredWidth = (preferredWidth.coerceIn(minimum, maximum) - delta / density).coerceIn(minimum, maximum).coerceAtLeast(300f)
-                    }, Orientation.Horizontal, onDragStarted = { resizeFocus.requestFocus() }, onDragStopped = { saveWidth() })
+                    }, Orientation.Horizontal, onDragStarted = { resizeDragging = true; resizeFocus.requestFocus() }, onDragStopped = { resizeDragging = false; saveWidth() })
                     .pointerInput(maximum) {
                         detectTapGestures(onTap = { resizeFocus.requestFocus() }, onDoubleTap = { resize(340f); resizeFocus.requestFocus() })
                     })

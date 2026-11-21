@@ -112,6 +112,7 @@ export default function ThreadPanel({
   const minimumWidth = Math.min(MIN_WIDTH, maximumWidth);
   const width = Math.max(minimumWidth, Math.min(maximumWidth, preferredWidth));
   const drag = useRef<{ x: number; width: number; scale: number; last?: number } | undefined>(undefined);
+  const [dragging, setDragging] = useState(false);
   const rootId = state.thread?.rootId;
   const open = !!rootId;
   useLayoutEffect(() => {
@@ -182,6 +183,7 @@ export default function ThreadPanel({
   const endDrag = () => {
     if (drag.current?.last !== undefined) saveWidth(drag.current.last);
     drag.current = undefined;
+    setDragging(false);
   };
   const pending = rootId && state.pendingSend?.threadRootId === rootId ? state.pendingSend : undefined;
   const windowStart = state.thread?.windowStart;
@@ -566,6 +568,7 @@ export default function ThreadPanel({
       {dropping && canAttach && <DropOverlay channelName="thread" direct attached={attachments.drafts.length} />}
       <div
         className="chat-thread-resize"
+        data-dragging={dragging || undefined}
         role="separator"
         aria-label="Thread width"
         aria-controls="chat-thread-panel"
@@ -579,7 +582,6 @@ export default function ThreadPanel({
         onPointerDown={(event) => {
           if (event.button !== 0 || !event.isPrimary) return;
           event.preventDefault();
-          event.currentTarget.focus();
           const element = panel.current!;
           drag.current = {
             x: event.clientX,
@@ -587,6 +589,7 @@ export default function ThreadPanel({
             scale: element.getBoundingClientRect().width / element.offsetWidth,
           };
           event.currentTarget.setPointerCapture(event.pointerId);
+          setDragging(true);
         }}
         onPointerMove={(event) => {
           if (drag.current)

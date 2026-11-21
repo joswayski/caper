@@ -44,6 +44,8 @@ enum NativeStyle {
     static var muted: NSColor { NSColor(CaperTheme.muted) }
     static var border: NSColor { NSColor(CaperTheme.border) }
     static var accent: NSColor { NSColor(CaperTheme.terracotta) }
+    /// A muted caper green line on a resize handle while it is dragged or keyboard-focused.
+    static var resizeHighlight: NSColor { NSColor(CaperTheme.green).withAlphaComponent(0.6) }
     static func font(_ size: CGFloat, bold: Bool = false) -> NSFont {
         NSFont(name: bold ? "Satoshi-Bold" : "Satoshi-Regular", size: size) ?? .systemFont(ofSize: size)
     }
@@ -191,13 +193,16 @@ final class NativeButton: NSButton {
         update(width: defaultWidth, maximum: 440)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    /// Lit while dragging or keyboard-focused; a click's focus alone stays unlit, so releasing clears it.
+    private var dragging = false { didSet { needsDisplay = true } }
+    private var keyboardFocus = false { didSet { needsDisplay = true } }
     override var acceptsFirstResponder: Bool { true }
-    override func becomeFirstResponder() -> Bool { needsDisplay = true; return true }
-    override func resignFirstResponder() -> Bool { needsDisplay = true; return true }
+    override func becomeFirstResponder() -> Bool { keyboardFocus = NSApp.currentEvent?.type != .leftMouseDown; return true }
+    override func resignFirstResponder() -> Bool { keyboardFocus = false; return true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
     override func draw(_ dirtyRect: NSRect) {
-        guard window?.firstResponder === self else { return }
-        NativeStyle.accent.setFill()
+        guard dragging || keyboardFocus else { return }
+        NativeStyle.resizeHighlight.setFill()
         NSRect(x: floor(bounds.midX) - 1, y: 0, width: 2, height: bounds.height).fill()
     }
 
@@ -222,6 +227,8 @@ final class NativeButton: NSButton {
         if event.clickCount == 2 { resize(defaultWidth); return }
         let start = event.locationInWindow.x, initialWidth = width
         var dragged = false
+        keyboardFocus = false; dragging = true
+        defer { dragging = false }
         while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
             if next.type == .leftMouseUp {
                 if dragged { resize(width) }
@@ -263,14 +270,17 @@ final class NativeButton: NSButton {
         setAccessibilityHelp("Drag to resize the lists. Up and Down adjust by 10 pixels; Home and End select the bounds. Double-click resets.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    /// Lit while dragging or keyboard-focused, like NativePanelResizeHandle.
+    private var dragging = false { didSet { needsDisplay = true } }
+    private var keyboardFocus = false { didSet { needsDisplay = true } }
     override var acceptsFirstResponder: Bool { true }
-    override func becomeFirstResponder() -> Bool { needsDisplay = true; return true }
-    override func resignFirstResponder() -> Bool { needsDisplay = true; return true }
+    override func becomeFirstResponder() -> Bool { keyboardFocus = NSApp.currentEvent?.type != .leftMouseDown; return true }
+    override func resignFirstResponder() -> Bool { keyboardFocus = false; return true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeUpDown) }
     override func draw(_ dirtyRect: NSRect) {
-        let focused = window?.firstResponder === self
-        (focused ? NativeStyle.accent : NativeStyle.border).setFill()
-        NSRect(x: 0, y: floor(bounds.midY), width: bounds.width, height: focused ? 2 : 1).fill()
+        let lit = dragging || keyboardFocus
+        (lit ? NativeStyle.resizeHighlight : NativeStyle.border).setFill()
+        NSRect(x: 0, y: floor(bounds.midY), width: bounds.width, height: lit ? 2 : 1).fill()
     }
     func update(available: CGFloat, share: Double) {
         self.available = max(0, available)
@@ -293,6 +303,8 @@ final class NativeButton: NSButton {
         if event.clickCount == 2 { resize(0.5); return }
         let start = event.locationInWindow.y, initial = share
         var dragged = false
+        keyboardFocus = false; dragging = true
+        defer { dragging = false }
         while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
             if next.type == .leftMouseUp {
                 if dragged { resize(share) }
