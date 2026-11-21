@@ -28,6 +28,7 @@ const DEFAULT_WIDTH = 340;
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 600;
 const WIDTH_KEY = "caper:thread-panel-width";
+const NARROW_WIDTH = 440;
 /** Phones and tablets: opening a thread to read it must not raise the keyboard (Reply focuses on purpose). */
 const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 
@@ -480,6 +481,8 @@ export default function ThreadPanel({
       className="chat-thread-panel"
       id="chat-thread-panel"
       style={{ flexBasis: width }}
+      // Below this, a name and its time cannot share a line with the full hover actions.
+      data-narrow={width < NARROW_WIDTH || undefined}
       aria-labelledby="chat-thread-heading"
       role={mobile ? "dialog" : undefined}
       aria-modal={mobile || undefined}

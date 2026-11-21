@@ -857,6 +857,15 @@ button.chat-reply-source {
 .chat-message:where(.chat-thread-panel *) > :where(:not(.chat-forward-card)) > header {
   padding-right: calc(82px + var(--quick-reaction-width, 0px));
 }
+/* A narrow thread has no room for quick reactions beside a name and its time
+   (the time wrapped under the name). They stay under Add reaction and the
+   actions menu, as on touch layouts. */
+.chat-thread-panel[data-narrow] .chat-message:has(> div > .chat-message-tools > .chat-quick-reaction) {
+  --quick-reaction-width: 0px;
+}
+.chat-thread-panel[data-narrow] .chat-message-tools > .chat-quick-reaction {
+  display: none;
+}
 .chat-message-tools {
   position: absolute;
   right: 11px;
