@@ -43,7 +43,7 @@ The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipp
 
 `prepare.sh` also builds `.build/CaperMobile.xcframework` (module `CaperMobile`, imported implementation-only by CaperCore), the shared Rust logic in [`../mobile`](../mobile/README.md), as a static library for the same five slices. It needs rustup; `mobile/build-apple.sh` adds the pinned toolchain's Apple targets.
 
-The DPDFNet-8 HR model, ONNX Runtime (macOS 1.23.2; iOS uses the official static 1.23.0 XCFramework with arm64 device and arm64/x86_64 simulator slices) and the RNNoise fallback are bundled offline with their licenses; `prepare.sh` verifies source hashes.
+The DPDFNet-8 HR model, ONNX Runtime 1.23.2 (from Microsoft's NuGet package: a universal macOS dylib, and on iOS its static XCFramework with arm64 device and arm64/x86_64 simulator slices) and the RNNoise fallback are bundled offline with their licenses; `prepare.sh` verifies source hashes.
 
 ## Build
 

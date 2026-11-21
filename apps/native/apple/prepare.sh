@@ -52,26 +52,30 @@ test -f "$ORT_DIR/ThirdPartyNotices.txt"
 test "$(shasum -a 256 "$REPO/apps/web/public/audio/dpdfnet8-v2/dpdfnet8_48khz_hr.onnx" | cut -d ' ' -f 1)" = \
   7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631
 
-# Official onnxruntime-c CocoaPods archive. 1.23.0 is the latest 1.23 iOS
-# artifact (macOS retains 1.23.2); its static XCFramework has arm64 device and
-# arm64/x86_64 simulator slices. Headers are from this same pinned archive.
-IOS_ORT="$ROOT/.build/onnxruntime-c-ios-1.23.0"
-IOS_ORT_ARCHIVE="$ROOT/.build/onnxruntime-c-ios-1.23.0.zip"
-IOS_ORT_SHA=756a78e0168f29840bc614b43aeb03e63673f44022e0221d21698a2c8ed747ef
+# iOS uses the static XCFramework (arm64 device, arm64/x86_64 simulator) from
+# the same pinned 1.23.2 NuGet package as macOS; Microsoft's former
+# download.onnxruntime.ai pod archive host no longer serves it. Headers come
+# from the framework itself, so they always match its binaries.
+IOS_ORT="$ROOT/.build/onnxruntime-ios-1.23.2"
 if [[ ! -f "$IOS_ORT/onnxruntime.xcframework/Info.plist" ]]; then
+  mkdir -p "$ROOT/.build"
+  if ! echo "$ORT_SHA  $ORT_ARCHIVE" | shasum -a 256 -c - >/dev/null 2>&1; then
+    curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg' -o "$ORT_ARCHIVE"
+    echo "$ORT_SHA  $ORT_ARCHIVE" | shasum -a 256 -c -
+  fi
+  rm -rf "$IOS_ORT" "$IOS_ORT.unpack"
+  unzip -q "$ORT_ARCHIVE" 'runtimes/ios/native/onnxruntime.xcframework.zip' -d "$IOS_ORT.unpack"
+  echo "60cd467b88cbe61142dd3f9f6c1e5f4e1d88e3c48a943335aea7587324d48bb6  $IOS_ORT.unpack/runtimes/ios/native/onnxruntime.xcframework.zip" | shasum -a 256 -c -
   mkdir -p "$IOS_ORT"
-  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.23.0.zip -o "$IOS_ORT_ARCHIVE"
-  echo "$IOS_ORT_SHA  $IOS_ORT_ARCHIVE" | shasum -a 256 -c -
-  unzip -q "$IOS_ORT_ARCHIVE" -d "$IOS_ORT"
+  unzip -q "$IOS_ORT.unpack/runtimes/ios/native/onnxruntime.xcframework.zip" -d "$IOS_ORT"
+  cp -R "$IOS_ORT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/Headers" "$IOS_ORT/Headers"
+  rm -rf "$IOS_ORT.unpack"
 fi
 test -f "$IOS_ORT/Headers/onnxruntime_cxx_api.h"
-test -f "$IOS_ORT/LICENSE"
 test -f "$IOS_ORT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime"
 test -f "$IOS_ORT/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime"
-IOS_ORT_NOTICES="$IOS_ORT/ThirdPartyNotices.txt"
-# 1.23.0's notices are byte-identical to the 1.23.2 copy vendored for web.
-cp "$ORT_NOTICES/ORT-ThirdPartyNotices.txt" "$IOS_ORT_NOTICES"
-echo "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc  $IOS_ORT_NOTICES" | shasum -a 256 -c -
+cp "$ORT_NOTICES/ORT-LICENSE" "$IOS_ORT/LICENSE"
+cp "$ORT_NOTICES/ORT-ThirdPartyNotices.txt" "$IOS_ORT/ThirdPartyNotices.txt"
 
 # The native RNNoise fallback is built from exact upstream C sources and its
 # matching model. Neither engine downloads code or weights when the app runs.

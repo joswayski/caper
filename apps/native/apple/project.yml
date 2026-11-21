@@ -210,9 +210,9 @@ targets:
         buildPhase: resources
       - path: ../../web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0
         buildPhase: resources
-      - path: .build/onnxruntime-c-ios-1.23.0/LICENSE
+      - path: .build/onnxruntime-ios-1.23.2/LICENSE
         buildPhase: resources
-      - path: .build/onnxruntime-c-ios-1.23.0/ThirdPartyNotices.txt
+      - path: .build/onnxruntime-ios-1.23.2/ThirdPartyNotices.txt
         buildPhase: resources
       - path: .build/rnnoise/COPYING
         buildPhase: resources
@@ -221,7 +221,7 @@ targets:
         product: WebRTC
         link: true
         embed: false
-      - framework: .build/onnxruntime-c-ios-1.23.0/onnxruntime.xcframework
+      - framework: .build/onnxruntime-ios-1.23.2/onnxruntime.xcframework
         link: true
         embed: false
     settings:
@@ -230,7 +230,7 @@ targets:
         PRODUCT_MODULE_NAME: CaperRTCBridgeIOS
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: YES
-        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge $(SRCROOT)/.build/onnxruntime-c-ios-1.23.0/Headers $(SRCROOT)/.build/rnnoise/include $(SRCROOT)/.build/rnnoise/src"
+        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge $(SRCROOT)/.build/onnxruntime-ios-1.23.2/Headers $(SRCROOT)/.build/rnnoise/include $(SRCROOT)/.build/rnnoise/src"
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) RNNOISE_BUILD=1 DISABLE_DEBUG_FLOAT=1"
         CLANG_CXX_LANGUAGE_STANDARD: c++17
   # The AppKit client under the shipping identity: same bundle ID, Info.plist
