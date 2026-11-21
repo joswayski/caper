@@ -2572,7 +2572,39 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (!inThread && latestMessage != null && !collapsesFor(latestMessage, blocked, selfId)) announcement = messageAnnouncement(latestMessage)
     }
     if (announcement.isNotEmpty()) Box(Modifier.size(0.dp).semantics { liveRegion = LiveRegionMode.Polite; contentDescription = announcement })
-    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp),
+    // Jump to latest: shown away from the newest row of a list that reaches the live end (a detached window keeps
+    // its Load newer and Back to latest buttons instead), counting other people's arrivals meanwhile.
+    val jump = remember(listState, if (inThread) state.thread?.rootId else state.selectedChannel?.id) { JumpToLatest() }
+    val atLiveEnd by rememberUpdatedState(if (inThread) state.thread?.let { !it.loading && !it.hasNewer } == true else !state.hasNewerMessages && !state.loadingNewer)
+    val jumpThreshold = with(LocalDensity.current) { 80.dp.roundToPx() }
+    LaunchedEffect(jump, jumpThreshold) {
+        snapshotFlow { listState.layoutInfo.let { jumpToLatestShown(jump.shown, atLiveEnd, it.distanceFromEnd(), it.viewportSize.height, jumpThreshold) } }
+            .collect { away -> if (!away) jump.hide() else if (!jump.jumping) jump.shown = true }
+    }
+    LaunchedEffect(jump, messages) {
+        val before = jump.known
+        jump.known = messages.mapTo(HashSet()) { it.id }
+        if (before != null && jump.shown) jump.unseen += liveArrivals(before, messages, selfId, blocked)
+    }
+    val jumpScope = rememberCoroutineScope()
+    val stillJump = reducedMotion()
+    val jumpToLatest = {
+        jump.hide()
+        jump.jumping = true
+        jumpScope.launch {
+            try {
+                val info = listState.layoutInfo
+                val last = info.totalItemsCount - 1
+                // Animated within a few screens; farther (or with animations off) it goes at once.
+                if (last >= 0) {
+                    if (!stillJump && info.distanceFromEnd() <= info.viewportSize.height * 3) listState.animateScrollToItem(last)
+                    listState.scrollToItem(last, PAST_END)
+                }
+            } finally { jump.jumping = false }
+        }
+        Unit
+    }
+    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { Box(modifier.fillMaxWidth()) { LazyColumn(Modifier.fillMaxSize().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp),
         // As web: a short conversation rests on the composer rather than the header.
         verticalArrangement = Arrangement.Bottom) {
         if (!inThread) item(contentType = "history") {
@@ -2710,6 +2742,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 HistoryButton("Back to latest", onClick = viewModel::retryMessages)
             }
         }
+    }
+        // Over the list's bottom end corner, so it takes no space and stays clear of the composer below.
+        JumpToLatestOverlay(jump, jumpToLatest, Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp))
     } }
     actionTarget?.let { target ->
         val presented = state.displayedMessages.firstOrNull { it.id == target.id } ?: target
