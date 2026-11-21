@@ -549,9 +549,18 @@ final class AppKitKitFlippedView: NSView {
 
     private func style() {
         let tint = tint
-        attributedTitle = NSAttributedString(string: label + " ", attributes: [.font: AppKitKit.font(size), .foregroundColor: tint])
+        attributedTitle = NSAttributedString(string: label, attributes: [.font: AppKitKit.font(size), .foregroundColor: tint])
         image = Self.icon(tint)
         needsDisplay = true
+    }
+
+    /// The text starts 2 pt in, where an NSTextField label's text starts, so it
+    /// lines up with the labels around it; NSButtonCell pads its title further.
+    private static let inset: CGFloat = 2
+    private static let iconGap: CGFloat = 4
+    override var intrinsicContentSize: NSSize {
+        let text = attributedTitle.size()
+        return NSSize(width: Self.inset + ceil(text.width) + Self.iconGap + 12 + Self.inset, height: ceil(max(text.height, 12)))
     }
 
     /// The shared external-link icon (12 pt) in `tint`, its alpha included.
@@ -572,11 +581,14 @@ final class AppKitKitFlippedView: NSView {
 
     /// One 1 pt underline under the text and its icon while hovered.
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
+        let text = attributedTitle.size()
+        attributedTitle.draw(at: NSPoint(x: bounds.minX + Self.inset, y: bounds.midY - text.height / 2))
+        image?.draw(in: NSRect(x: bounds.minX + Self.inset + ceil(text.width) + Self.iconGap, y: bounds.midY - 6, width: 12, height: 12),
+                    from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         guard hovered else { return }
         tint.withAlphaComponent(tint.alphaComponent * 0.7).setFill()
         let y = isFlipped ? bounds.maxY - 1 : bounds.minY
-        NSRect(x: bounds.minX, y: y, width: bounds.width, height: 1).fill()
+        NSRect(x: bounds.minX + Self.inset, y: y, width: bounds.width - 2 * Self.inset, height: 1).fill()
     }
     @objc private func open() { NSWorkspace.shared.open(url) }
     override func updateTrackingAreas() {
