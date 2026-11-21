@@ -177,6 +177,7 @@ import WebKit
         picture.failed = { [weak self] failed in self?.title = failed ? "GIF unavailable" : "" }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
     override func layout() { super.layout(); CATransaction.begin(); CATransaction.setDisableActions(true); picture.layer.frame = bounds.insetBy(dx: 2, dy: 2); CATransaction.commit() }
     @objc private func chosen() { pick() }
 }

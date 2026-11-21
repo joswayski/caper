@@ -276,6 +276,7 @@ import CaperCore
         badge.layer?.cornerRadius = 8; badge.setAccessibilityElement(false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
     @objc private func opened() { open() }
     func update(_ person: CallPerson) {
         title = ""; avatar.isHidden = false; rounded = person.picture != nil

@@ -18,6 +18,7 @@ import AppKit
         setAccessibilityIdentifier("message-gif"); translatesAutoresizingMaskIntoConstraints = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
     func update(_ gif: ChatGif) { guard self.gif != gif else { return }; self.gif = gif; load(); invalidateIntrinsicContentSize() }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil { load() } else { image.stop() } }
     private func load() { image.set(sources: gif.animatedSources, still: gif.still.flatMap(URL.init(string:)), maximum: 600, limit: 24 * 1024 * 1024) }

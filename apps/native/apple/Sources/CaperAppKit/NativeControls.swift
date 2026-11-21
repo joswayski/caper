@@ -94,7 +94,9 @@ final class NativeButton: NSButton {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func pressed() { actionHandler() }
-    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.45; needsLayout = true } }
+    override var isEnabled: Bool {
+        didSet { alphaValue = isEnabled ? 1 : 0.45; needsLayout = true; window?.invalidateCursorRects(for: self) }
+    }
     /// The fill is the bounds. NSButton otherwise reports its bezel's alignment
     /// rect, which makes a 24-point icon 31 points tall and over its neighbours.
     override func accessibilityFrame() -> NSRect {
@@ -149,9 +151,10 @@ final class NativeButton: NSButton {
         super.viewDidMoveToWindow()
         if window == nil { hovered = false; hoverChanged?(false) }
     }
+    /// Every enabled button shows the hand, as web's buttons do.
     override func resetCursorRects() {
         super.resetCursorRects()
-        if profileFeedback && isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
+        if isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
     }
 
     static func icon(_ label: String, symbol: String, action: @escaping () -> Void) -> NativeButton {
