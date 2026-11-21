@@ -1100,6 +1100,77 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testSendLostToANetworkDropRetriesOnReconnectWithTheSameClientMessageID() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var sentIDs: [String] = []
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages" where request.httpMethod == "GET":
+                return (200, Data("""
+                {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}
+                """.utf8))
+            case "/api/chat/channels/\(channel)/messages":
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: Any])
+                let id = try XCTUnwrap(body["clientMessageId"] as? String)
+                sentIDs.append(id)
+                if sentIDs.count == 1 { throw URLError(.networkConnectionLost) }
+                return (200, Data("""
+                {"id":"m1","channelId":"\(channel)","seq":"1","clientMessageId":"\(id)","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"hello"},"createdAt":"2026-01-01T00:00:00Z"}
+                """.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "Me")
+        chat.receiveGatewayState(.connected, error: nil)
+        chat.draft = "hello"
+        await chat.send()
+        XCTAssertNotNil(chat.pendingMessage)
+        XCTAssertEqual(sentIDs.count, 1)
+        // Staying connected does not resend; coming back after a drop does.
+        chat.receiveGatewayState(.connected, error: nil)
+        chat.receiveGatewayState(.reconnecting, error: nil)
+        chat.receiveGatewayState(.connected, error: nil)
+        for _ in 0..<200 where chat.pendingMessage != nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertNil(chat.error)
+        XCTAssertEqual(sentIDs.count, 2)
+        XCTAssertEqual(Set(sentIDs).count, 1, "the retry reuses the first attempt's clientMessageId")
+        XCTAssertEqual(chat.messages.map(\.content.text), ["hello"])
+        await chat.stop()
+    }
+
+    @MainActor
+    func testRefusedSendIsNotRetriedOnReconnect() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var sends = 0
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages" where request.httpMethod == "GET":
+                return (200, Data("""
+                {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}
+                """.utf8))
+            case "/api/chat/channels/\(channel)/messages":
+                sends += 1
+                return (422, Data(#"{"error":"too long"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "Me")
+        chat.draft = "hello"
+        await chat.send()
+        XCTAssertTrue(chat.sendRejected)
+        chat.receiveGatewayState(.reconnecting, error: nil)
+        chat.receiveGatewayState(.connected, error: nil)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(sends, 1)
+        await chat.stop()
+    }
+
+    @MainActor
     func testRejectedSendRemainsEditableOnlyWithEmptyNextDraft() async throws {
         let channel = "Aaaaaaaaaaaa"
         MockURLProtocol.handler = { request in

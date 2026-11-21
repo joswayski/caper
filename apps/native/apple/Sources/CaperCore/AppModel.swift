@@ -3670,12 +3670,21 @@ public final class ChatModel {
     func receiveGatewayState(_ state: GatewayState, error: String?) {
         // Actor callbacks queued before unsubscribe must not revive stopped chat.
         guard channelID != nil else { return }
+        let recovered = state == .connected && liveState != .connected
         liveState = state
         // Transport interruptions are represented by liveState and the view's
         // delayed connection indicator. `error` is reserved for durable
         // history, session, subscription and send failures. Gateway reports a
         // rejected subscription with connected state, not reconnecting.
         if state == .connected, let error { self.error = error }
+        // A send whose outcome was unknown (the connection dropped) goes again
+        // once the connection is back, as the same command and clientMessageId,
+        // so a send that did land is not duplicated. Refusals and failed
+        // uploads keep waiting for the reader.
+        if recovered, error == nil, let pending = delivery.pending, !sending, !delivery.rejected, !sendUploadFailed,
+           uploadSubmission == nil {
+            Task { await send(inThread: pending.threadRootId != nil, retryPending: true) }
+        }
     }
 
     func updateAuthor(account: Account) {
