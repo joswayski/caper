@@ -593,6 +593,41 @@ import XCTest
         XCTAssertEqual(bodies(in: timeline).map(\.string), [message(101).content.text])
     }
 
+    func testJumpToLatestShowsUpInALiveHistoryAndCountsOthersArrivals() throws {
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        var history = (0..<60).map { message($0) }
+        timeline.update(history, conversationID: "channel", viewerID: "me")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertFalse(timeline.jump.shows, "Hidden while following the live end")
+        // Live arrivals while following are not counted.
+        history.append(message(60))
+        timeline.update(history, conversationID: "channel", viewerID: "me")
+        timeline.layoutSubtreeIfNeeded()
+        timeline.contentView.scroll(to: NSPoint(x: 0, y: 0))
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertTrue(timeline.jump.shows)
+        XCTAssertEqual(timeline.jump.count, 0)
+        history += [message(61), message(62, author: "me"), message(63, author: "maya")]
+        timeline.update(history, conversationID: "channel", viewerID: "me")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(timeline.jump.count, 2, "Only other people's messages count")
+        // A detached history window keeps its own controls instead.
+        timeline.live = false
+        timeline.update(history, conversationID: "channel", viewerID: "me")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertFalse(timeline.jump.shows)
+        timeline.live = true
+        timeline.update(history, conversationID: "channel", viewerID: "me")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertTrue(timeline.jump.shows)
+        XCTAssertEqual(timeline.jump.count, 0, "Hiding clears the count")
+        // Reaching the bottom by scrolling hides it.
+        let end = (timeline.documentView?.frame.height ?? 0) - timeline.contentSize.height
+        timeline.contentView.scroll(to: NSPoint(x: 0, y: end))
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertFalse(timeline.jump.shows)
+    }
+
     func testEmojiKeepsLinePitchAndTimestampsFollowAuthorNames() throws {
         CaperFontLoader.register()
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))

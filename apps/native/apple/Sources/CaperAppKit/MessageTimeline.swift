@@ -34,6 +34,14 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     /// The divider the rows were last laid out with.
     private var shownNewMessagesID: String?
     var canLoadOlder = false
+    /// The loaded history reaches the live end (no newer page or jump window).
+    /// Set it before `update`.
+    var live = true
+    /// "Jump to latest": whether it shows, and other people's messages that
+    /// arrived at the live end while it did.
+    private(set) var jump = (shows: false, count: 0)
+    var jumpChanged: (() -> Void)?
+    private var jumpAnimation: Timer?
     var loadOlder: (() -> Void)?
     var visibleMessagesChanged: ((Set<String>) -> Void)?
     var react: ((String, String) -> Void)?
@@ -75,6 +83,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             if case let .blocked(run) = entry, run.revealed { return [entry] + run.messages.map(TimelineEntry.message) }
             return [entry]
         }
+        // Other people's messages that arrive at the live end while the reader
+        // is up in the history count on Jump to latest.
+        let arrived = changedConversation || followEnd || !live ? 0
+            : JumpToLatest.arrivals(messages, previousIDs: Set(self.messages.map(\.id)), viewerID: viewerID)
         let previous = Dictionary(uniqueKeysWithValues: entries.enumerated().map { (key($0.element), $0.offset) })
         var invalid = Set<String>()
         for (index, entry) in next.enumerated() {
@@ -110,8 +122,11 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         self.reactionErrors = reactionErrors
         self.pinErrors = pinErrors
         self.pendingPins = pendingPins
+        if arrived > 0 { jump.count += arrived }
         if changedConversation {
             dismissHover?()
+            stopJumpAnimation()
+            jump.count = 0
             geometry = NativeTimelineLayout()
             followEnd = true
             focusedID = nil
@@ -145,10 +160,56 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
 
     func showLatest() {
+        stopJumpAnimation()
         focusedID = nil
         pendingFocus = nil
         followEnd = true
         realize(anchor: nil)
+    }
+
+    /// Jump to latest: scrolls to the newest message (instantly with Reduce
+    /// Motion or from many screens away), then follows new ones again.
+    func jumpToLatest() {
+        let viewport = contentSize.height
+        let start = contentView.bounds.minY
+        guard JumpToLatest.animates(distanceFromEnd: geometry.contentHeight - contentView.bounds.maxY, viewport: viewport,
+                                    reduceMotion: CaperAccessibility.reduceMotion) else { showLatest(); return }
+        stopJumpAnimation()
+        focusedID = nil
+        pendingFocus = nil
+        jump.count = 0
+        let began = CACurrentMediaTime()
+        // Rows measure as they come into view, so the end is read again each frame.
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let t = min(1, (CACurrentMediaTime() - began) / 0.26)
+                let eased = 1 - pow(1 - t, 3)
+                let end = max(0, self.geometry.contentHeight - self.contentSize.height)
+                self.contentView.scroll(to: NSPoint(x: 0, y: start + (end - start) * eased))
+                self.reflectScrolledClipView(self.contentView)
+                if t >= 1 { self.showLatest() }
+            }
+        }
+        jumpAnimation = timer
+        RunLoop.main.add(timer, forMode: .common)
+        refreshJump()
+    }
+
+    private func stopJumpAnimation() {
+        jumpAnimation?.invalidate()
+        jumpAnimation = nil
+    }
+
+    /// Shows Jump to latest more than half a screen above the newest loaded
+    /// message of a live history; anywhere closer hides it and clears its count.
+    private func refreshJump() {
+        let shows = jumpAnimation == nil && !followEnd && JumpToLatest.shows(
+            distanceFromEnd: geometry.contentHeight - contentView.bounds.maxY, viewport: contentSize.height, live: live)
+        let next = (shows: shows, count: shows ? jump.count : 0)
+        guard next != jump else { return }
+        jump = next
+        jumpChanged?()
     }
 
     /// The row after `index` groups under it, so this row keeps only a
@@ -189,6 +250,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
 
     override func scrollWheel(with event: NSEvent) {
+        // The reader's own scrolling takes over from a jump in progress.
+        if jumpAnimation != nil, event.scrollingDeltaY != 0 { stopJumpAnimation() }
         super.scrollWheel(with: event)
         // A short page may not move the clip view at all. An upward gesture
         // must still reach history, without fetching every page on first paint.
@@ -273,6 +336,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             return bottom > contentView.bounds.minY && bottom <= contentView.bounds.maxY + 1
         }.map { ids[$0] })
         visibleMessagesChanged?(visible)
+        refreshJump()
     }
 
     private func cell(at index: Int) -> MessageCell {

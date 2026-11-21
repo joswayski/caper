@@ -40,6 +40,10 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     /// The preview note, a failed action, Retry session and the pending note.
     private lazy var notices = UIKitConversationNotices(model: model, inThread: true)
     var closed: (() -> Void)?
+    /// Jump to latest, while the reader is up in the replies of a live thread.
+    private lazy var jump = JumpToLatestButton(identifier: "thread-jump-to-latest") { [weak self] in self?.jumpToLatest() }
+    private var jumpCount = 0
+    private var shownReplyIDs: Set<String> = []
 
     init(model: AppModel) {
         self.model = model
@@ -230,6 +234,13 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             broadcast.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
         ComposerLipView.attach(to: collection, in: view)
+        // 16 points above the reply box (and its broadcast toggle and notices).
+        view.addSubview(jump)
+        NSLayoutConstraint.activate([
+            jump.trailingAnchor.constraint(equalTo: collection.trailingAnchor, constant: -16),
+            jump.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -16),
+            jump.leadingAnchor.constraint(greaterThanOrEqualTo: collection.leadingAnchor, constant: 16),
+        ])
         // As SwiftUI's ThreadBackSwipe: a swipe right from anywhere follows
         // the finger back to the channel.
         let swipeBack = DirectionalSwipe(direction: 1)
@@ -362,7 +373,11 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         days = nextDays
         runs = built.runs
         shownRoot = rootID
-        if switched { followingTail = true }
+        if switched { followingTail = true; jumpCount = 0 }
+        else if !followingTail, !chat.threadHasNewer {
+            jumpCount += JumpToLatest.arrivals(replies, previousIDs: shownReplyIDs, viewerID: viewer)
+        }
+        shownReplyIDs = Set(replies.map(\.id))
         if target != nil { followingTail = false }
         let follow = followingTail
         let targetItem = target.map { Item.row($0.clientMessageId) }
@@ -371,8 +386,10 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             if let targetItem, let path = self.dataSource.indexPath(for: targetItem) {
                 self.collection.layoutIfNeeded()
                 self.collection.scrollToItem(at: path, at: .centeredVertically, animated: false)
+                self.refreshJump()
                 return
             }
+            defer { self.refreshJump() }
             guard follow else { return }
             self.collection.layoutIfNeeded()
             let bottom = max(-self.collection.adjustedContentInset.top,
@@ -444,7 +461,37 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
 
     // MARK: Scrolling
 
+    private var tailOffset: CGFloat {
+        max(-collection.adjustedContentInset.top,
+            collection.contentSize.height + collection.adjustedContentInset.bottom - collection.bounds.height)
+    }
+
+    /// Shows more than half a screen above the newest loaded reply of a live
+    /// thread; closer hides it and clears its count.
+    private func refreshJump() {
+        let shows = !followingTail && JumpToLatest.shows(distanceFromEnd: tailOffset - collection.contentOffset.y,
+                                                         viewport: collection.bounds.height, live: !chat.threadHasNewer)
+        if !shows { jumpCount = 0 }
+        jump.update(shows: shows, count: jumpCount)
+    }
+
+    private func jumpToLatest() {
+        let animated = JumpToLatest.animates(distanceFromEnd: tailOffset - collection.contentOffset.y, viewport: collection.bounds.height,
+                                             reduceMotion: UIKitStyle.reduceMotion)
+        followingTail = true
+        collection.layoutIfNeeded()
+        collection.setContentOffset(CGPoint(x: 0, y: tailOffset), animated: animated)
+        refreshJump()
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        // Rows measured on the way down move the end; settle on it.
+        guard followingTail else { return }
+        collection.setContentOffset(CGPoint(x: 0, y: tailOffset), animated: false)
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        defer { refreshJump() }
         guard scrollView.isTracking || scrollView.isDecelerating else { return }
         let bottom = scrollView.contentSize.height + scrollView.adjustedContentInset.bottom - scrollView.bounds.height
         followingTail = scrollView.contentOffset.y >= bottom - 48

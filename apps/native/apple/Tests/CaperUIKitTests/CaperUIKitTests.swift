@@ -294,6 +294,32 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-history")
     }
 
+    func testJumpToLatestCountsNewMessagesAndReturns() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let jump = app.buttons["jump-to-latest"]
+        XCTAssertFalse(jump.exists, "Hidden at the live end")
+        let timeline = app.collectionViews["message-timeline"]
+        timeline.swipeDown(velocity: .slow)
+        timeline.swipeDown(velocity: .slow)
+        XCTAssertTrue(jump.waitForExistence(timeout: 10))
+        XCTAssertEqual(jump.label, "Jump to latest")
+        screenshot("uikit-jump-to-latest")
+        for text in ["first while away", "second while away", "third while away"] {
+            control(["incomingMessage": ["channelId": "chan00000001", "text": text]])
+        }
+        let counted = NSPredicate(format: "label == %@", "Jump to latest, 3 new messages")
+        expectation(for: counted, evaluatedWith: jump)
+        waitForExpectations(timeout: 10)
+        XCTAssertGreaterThanOrEqual(jump.frame.height, 44)
+        screenshot("uikit-jump-to-latest-count")
+        jump.tap()
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 10))
+        let newest = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "third while away")).firstMatch
+        XCTAssertTrue(newest.waitForExistence(timeout: 10))
+        XCTAssertTrue(newest.isHittable, "Back at the live end")
+    }
+
     func testBrowseChannelsAndSwitch() {
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))

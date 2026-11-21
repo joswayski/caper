@@ -21,7 +21,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     private let model: AppModel
     /// The last session's conversation, shown until the live one is ready.
-    var cached: StartupSnapshot? { didSet { if isViewLoaded { render() } } }
+    var cached: StartupSnapshot? { didSet { if isViewLoaded { renderHeader(); render() } } }
     var browse: (() -> Void)?
     /// Whether a swipe right may open Browse: not over Members or a sheet.
     var allowsBrowseSwipe: Bool { !members.isOpen && !presentations.presenting && presentedViewController == nil }
@@ -91,7 +91,14 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private var arriving: Set<String> = []
     private var contentSizeObservation: NSKeyValueObservation?
     private let timelineObserver = ModelObserver()
+    private let typingObserver = ModelObserver()
+    private let headerObserver = ModelObserver()
     private let composerObserver = ModelObserver()
+    /// Floats over the timeline's bottom trailing corner while the reader is up
+    /// in a live history; counts other people's new messages.
+    private lazy var jump = JumpToLatestButton(identifier: "jump-to-latest") { [weak self] in self?.jumpToLatest() }
+    /// The messages shown last, to count arrivals at the live end.
+    private var shownMessageIDs: Set<String> = []
 
     init(model: AppModel) {
         self.model = model
@@ -168,6 +175,15 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         view.addInteraction(fileDrop.interaction)
         lastFocusRevision = model.chat.focusRevision
         timelineObserver.start { [weak self] in self?.render() }
+        // The header (connection, voice and member counts) observes on its own,
+        // so presence and reconnect flicker never rebuild the timeline's rows.
+        headerObserver.start { [weak self] in self?.renderHeader() }
+        // Its own observation: a typing event never rebuilds the timeline's rows.
+        typingObserver.start { [weak self] in
+            guard let self else { return }
+            let names = self.isLive ? self.model.chat.typingNames : []
+            self.typing.show(names.isEmpty ? "" : Self.typingLabel(names))
+        }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in
             // Message text is sized from the reader's text size; re-render every row.
             self.remeasureRows()
@@ -534,6 +550,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             MainActor.assumeIsolated {
                 guard let self, change.oldValue?.height != change.newValue?.height else { return }
                 self.pinTailIfFollowing()
+                self.refreshJump()
             }
         }
         view.addSubview(collection)
@@ -576,6 +593,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     }
 
     private func buildComposer() {
+        defer { buildJump() }
         view.addSubview(composer)
         composer.model = model
         composer.changed = { [weak self] text in
@@ -606,6 +624,18 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             directBar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             directBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             directBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+        ])
+    }
+
+    /// 16 points above the composer and from the timeline's trailing edge,
+    /// and never over a notice row.
+    private func buildJump() {
+        view.addSubview(jump)
+        NSLayoutConstraint.activate([
+            jump.trailingAnchor.constraint(equalTo: collection.trailingAnchor, constant: -16),
+            jump.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -16).withPriority(.defaultHigh),
+            jump.bottomAnchor.constraint(lessThanOrEqualTo: notices.view.topAnchor),
+            jump.leadingAnchor.constraint(greaterThanOrEqualTo: collection.leadingAnchor, constant: 16),
         ])
     }
 
@@ -666,7 +696,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
     }
 
-    private func render() {
+    private func renderHeader() {
         let chat = model.chat
         presentThreadIfNeeded()
         layoutStatusColumn()
@@ -699,7 +729,13 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         titleMenu.accessibilityValue = subtitle.text
         titleMenu.isEnabled = live
         renderConnection(live ? chat.liveState : .connected)
+    }
 
+    private func render() {
+        let chat = model.chat
+        presentThreadIfNeeded()
+        let live = isLive
+        let channelID = live ? conversationID : cached?.channelID
         var messages: [ChatMessage]
         var pending: PendingMessage?
         if live {
@@ -723,8 +759,6 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             }
         }
         let viewer = model.account?.id ?? cached?.accountID
-        let typingText = live && !chat.typingNames.isEmpty ? Self.typingLabel(chat.typingNames) : ""
-        typing.show(typingText)
         var emptyTitle: String?, note: String?, titleColor = UIKitStyle.text
         if live, chat.loadFailed, let error = chat.error { note = error }
         else if live, let error = chat.error, messages.isEmpty { note = error }
@@ -787,6 +821,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         // Rows that are new at the live end while the reader watches it arrive with motion.
         let appended: Set<String> = !switched && live && self.live && atTail
             ? Set(items.compactMap(\.rowID).filter { rows[$0] == nil }) : []
+        // Others' messages arriving at the live end while the reader is up in it.
+        if !switched, live, self.live, !atTail, !model.chat.hasNewer {
+            jumpCount += JumpToLatest.arrivals(messages, previousIDs: shownMessageIDs, viewerID: viewerID)
+        } else if switched { jumpCount = 0 }
+        shownMessageIDs = Set(messages.map(\.id))
         let prepended = !switched && oldFirstRow != nil && items.first(where: \.isRow) != oldFirstRow
 
         var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
@@ -826,7 +865,33 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             } else if let anchor {
                 self.restore(anchor)
             }
+            self.refreshJump()
         }
+    }
+
+    // MARK: Jump to latest
+
+    private var jumpCount = 0
+
+    /// Shows more than half a screen above the newest loaded message of a live
+    /// history (not a Load newer/Back to latest window); closer hides it and clears its count.
+    private func refreshJump() {
+        let shows = live && !followingTail && !model.chat.hasNewer
+            && JumpToLatest.shows(distanceFromEnd: tailOffset - collection.contentOffset.y, viewport: collection.bounds.height, live: true)
+        if !shows { jumpCount = 0 }
+        jump.update(shows: shows, count: jumpCount)
+    }
+
+    private func jumpToLatest() {
+        let animated = JumpToLatest.animates(distanceFromEnd: tailOffset - collection.contentOffset.y, viewport: collection.bounds.height,
+                                             reduceMotion: UIKitStyle.reduceMotion)
+        scrollToTail(animated: animated)
+        refreshJump()
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        // Rows measured on the way down move the end; settle on it.
+        pinTailIfFollowing()
     }
 
     // MARK: Scrolling
@@ -951,6 +1016,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         let bottom = scrollView.contentSize.height + scrollView.adjustedContentInset.bottom - scrollView.bounds.height
+        defer { refreshJump() }
         // Only the reader's own scrolling changes following or pages history.
         guard scrollView.isTracking || scrollView.isDecelerating else { return }
         // After a jump the window ends before the live end: page newer history instead of following it.
