@@ -1040,6 +1040,24 @@ export default function Chat({
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [state.sendUploadFailed, state.pendingSend]);
+  // A send that failed while the connection was down goes out again when it
+  // returns. It is the same command with the same id, so it cannot post twice.
+  const wasOnline = useRef(state.online);
+  useEffect(() => {
+    const pending = state.pendingSend;
+    const retry = () => {
+      if (!pending || !state.sendError || state.sendRejected || state.sendUploadFailed) return;
+      void clientRef.current
+        ?.send(pending.text, { threadRootId: pending.threadRootId, broadcast: pending.broadcast })
+        .catch(() => {});
+    };
+    const returned = state.online && !wasOnline.current;
+    wasOnline.current = state.online;
+    if (returned) retry();
+    // The browser regaining its network can precede the live connection.
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+  }, [state.online, state.pendingSend, state.sendError, state.sendRejected, state.sendUploadFailed]);
 
   const addFiles = (files: File[], threadRootId?: string) => {
     const channel = state.channelId;

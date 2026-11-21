@@ -10,7 +10,7 @@ import type { ComposerInput } from "./MentionTextarea.tsx";
 // renders count the row's renders, keyed by the message's text.
 const fixture = vi.hoisted(() => ({
   renders: new Map<string, number>(),
-  clients: [] as { emit: (change: Partial<ChatViewState>) => void }[],
+  clients: [] as { emit: (change: Partial<ChatViewState>) => void; sent: unknown[][] }[],
 }));
 
 vi.mock("./LinkedText.tsx", () => ({
@@ -57,6 +57,11 @@ vi.mock("./client.ts", async (importOriginal) => {
     async prefetchThread() {}
     closeThread() {
       this.emit({ thread: undefined });
+    }
+    sent: unknown[][] = [];
+    async send(...command: unknown[]) {
+      this.sent.push(command);
+      return true;
     }
   }
   return { ...actual, ChatClient };
@@ -233,6 +238,26 @@ test("voice, presence, typing and composer updates leave unchanged message rows 
   await act(async () => client.emit({ attachmentProgress: { processing: 10 } }));
   await act(async () => client.emit({ attachmentProgress: { processing: 11 } }));
   expect(counts()).toEqual(beforeTicks.map((count, index) => (index === 6 ? count + 2 : count)));
+});
+
+test("a send that failed offline is retried once when the connection returns, unless the server rejected it", async () => {
+  await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
+  const client = fixture.clients.at(-1)!;
+  const pendingSend = {
+    clientMessageId: "client-pending",
+    text: "sent in a tunnel",
+    createdAt: history.messages[0].createdAt,
+  };
+  await act(async () => client.emit({ phase: "ready", online: true, author: history.messages[0].author }));
+  await act(async () => client.emit({ online: false, pendingSend, sendError: "Not confirmed yet." }));
+  expect(client.sent).toEqual([]);
+  await act(async () => client.emit({ online: true }));
+  expect(client.sent).toEqual([["sent in a tunnel", { threadRootId: undefined, broadcast: undefined }]]);
+  // Staying online does not send it again; a rejected message waits for the person.
+  await act(async () => client.emit({ typingAuthors: [] }));
+  await act(async () => client.emit({ online: false, sendRejected: true }));
+  await act(async () => client.emit({ online: true }));
+  expect(client.sent).toHaveLength(1);
 });
 
 test.each([false, true])("Reply focuses within the click, including a repeated target (menu: %s)", async (menu) => {
