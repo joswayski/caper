@@ -1552,13 +1552,6 @@ private struct ChannelSidebar: View {
                     .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
             }.padding(.horizontal, 16).frame(height: directRowHeight)
                 VStack(spacing: 2) {
-                    ActivityInboxEntry(model: model)
-                    if model.isFeedbackTeam {
-                        FeedbackRow(model: model, narrow: narrow, rowHeight: directRowHeight)
-                        if !narrow && model.showingFeedback {
-                            FeedbackInboxList(model: model, pushed: false)
-                        }
-                    }
                     if !model.messageRequests.isEmpty {
                         MessageRequestsRow(model: model, narrow: narrow, rowHeight: directRowHeight)
                         if !narrow && model.showingMessageRequests {
@@ -1635,8 +1628,8 @@ private struct ChannelSidebar: View {
             NotificationErrorRow(model: model)
 
             Group {
-                if narrow && model.showingFeedback && model.isFeedbackTeam {
-                    // Phones push the feedback inbox in place of the channel list.
+                if model.showingFeedback && model.isFeedbackTeam && model.account != nil {
+                    // The account panel's Feedback row pushes the inbox in place of the lists.
                     ScrollView { FeedbackInboxList(model: model, pushed: true) }
                 } else if narrow && model.showingMessageRequests && model.account != nil {
                     // Phones push the requests list in place of the channel list.
@@ -1665,7 +1658,7 @@ private struct ChannelSidebar: View {
                 }
             }
             }
-            .modifier(FeedbackPullToRefresh(enabled: narrow && model.showingFeedback && model.isFeedbackTeam) { await model.refreshFeedback() })
+            .modifier(FeedbackPullToRefresh(enabled: model.showingFeedback && model.isFeedbackTeam && model.account != nil) { await model.refreshFeedback() })
             .accessibilityIdentifier("channel-browser")
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
@@ -3378,6 +3371,22 @@ private struct AccountBar: View {
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
                     .accessibilityIdentifier("voice-error")
             }
+            // Notifications and the team's Feedback stack above the account
+            // row inside the same panel, separated from it by a hairline.
+            if model.account != nil {
+                VStack(spacing: 0) {
+                    AccountPanelRow(symbol: "bell", title: "Notifications", count: model.activityUnread, capsule: false,
+                                    selected: model.activityShown, value: model.activityUnread > 0 ? "\(model.activityUnread) unread" : "",
+                                    hint: "Opens your notifications", identifier: "activity-inbox") { model.activityShown = true }
+                    if model.isFeedbackTeam {
+                        AccountPanelRow(symbol: "lifepreserver", title: FeedbackInbox.title, count: model.feedbackWaiting, capsule: true,
+                                        selected: model.showingFeedback,
+                                        value: model.feedbackWaiting > 0 ? FeedbackInbox.waitingLabel(model.feedbackWaiting) : "",
+                                        hint: "Opens the feedback inbox", identifier: "feedback-inbox") { model.showingFeedback = true }
+                    }
+                }.padding(4).background(CaperTheme.raised)
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+            }
             HStack(spacing: 5) {
                 Button { sheet = model.account == nil ? .login : .profile } label: {
                     HStack(spacing: 7) {
@@ -3438,6 +3447,7 @@ private struct AccountBar: View {
                 .background(CaperTheme.raised)
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
+        .sheet(isPresented: $model.activityShown) { ActivityInboxView(model: model) }
         .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, CaperTheme.workspaceBottomInset)
         // Browse stays still beneath the sliding conversation. Its identity
         // must not crossfade or interpolate with the drawer's transaction.
@@ -7612,43 +7622,47 @@ private struct MessageRequestsRow: View {
     }
 }
 
-/// "Feedback" for the feedback team, at the top of the DM section, with the
-/// count of loaded reports still waiting for a team reply.
-private struct FeedbackRow: View {
-    @Bindable var model: AppModel
-    let narrow: Bool
-    let rowHeight: CGFloat
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+/// A row in the account panel, above the account row: Notifications with its
+/// unread count, or the team's Feedback with the reports waiting for a reply.
+#if os(iOS)
+private struct AccountPanelRow: View {
+    let symbol: String
+    let title: String
+    let count: Int
+    /// Feedback's waiting count is a terracotta capsule; Notifications' is terracotta text.
+    let capsule: Bool
+    let selected: Bool
+    let value: String
+    let hint: String
+    let identifier: String
+    let action: () -> Void
     var body: some View {
-        let waiting = model.feedbackWaiting
-        Button {
-            guard !SwipeTapGuard.swiping else { return }
-            // Phones push the inbox; sidebars expand it in place.
-            if narrow { model.showingFeedback = true } else { model.showingFeedback.toggle() }
-        } label: {
+        Button { if !SwipeTapGuard.swiping { action() } } label: {
             HStack(spacing: 9) {
-                CaperIcon(name: "chevron-down", size: 14)
-                    .rotationEffect(.degrees(!narrow && model.showingFeedback ? 0 : -90))
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.showingFeedback)
-                    .frame(width: 24)
-                Text(FeedbackInbox.title).lineLimit(1)
+                Image(systemName: symbol).frame(width: 24)
+                Text(title).lineLimit(1)
                 Spacer()
-                if waiting > 0 {
-                    Text("\(waiting)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
-                        .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
-                        .background(CaperTheme.terracotta, in: Capsule())
+                if count > 0 {
+                    if capsule {
+                        Text("\(count)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
+                            .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
+                            .background(CaperTheme.terracotta, in: Capsule())
+                    } else {
+                        Text("\(count)").foregroundStyle(CaperTheme.terracotta)
+                    }
                 }
-            }.font(CaperTheme.font(13, weight: .medium))
-                .foregroundStyle(model.visit != nil ? CaperTheme.text : CaperTheme.muted)
-                .padding(.horizontal, 9).frame(height: rowHeight)
+            }.font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.text)
+                .padding(.horizontal, 9).frame(minHeight: 36)
+                .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).modifier(ControlHover())
-            .accessibilityLabel(FeedbackInbox.title)
-            .accessibilityValue(waiting > 0 ? FeedbackInbox.waitingLabel(waiting) : "")
-            .accessibilityHint(narrow ? "Opens the feedback inbox" : model.showingFeedback ? "Collapses the inbox" : "Expands the inbox")
-            .accessibilityIdentifier("feedback-inbox")
+            .accessibilityLabel(title)
+            .accessibilityValue([selected ? "Selected" : "", value].filter { !$0.isEmpty }.joined(separator: ", "))
+            .accessibilityHint(hint)
+            .accessibilityIdentifier(identifier)
     }
 }
+#endif
 
 /// Pull to refresh for the pushed feedback inbox on phones.
 private struct FeedbackPullToRefresh: ViewModifier {

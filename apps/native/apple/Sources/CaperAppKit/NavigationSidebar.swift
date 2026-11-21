@@ -50,7 +50,11 @@ import CaperCore
     private var channelCards: [String: NativeVoiceCard] = [:]
     private var externalCards: [String: NativeVoiceCard] = [:]
     private lazy var voicePanels = NativeVoicePanels(model: model)
+    /// Notifications and the team's Feedback are account rows, stacked above
+    /// the account row inside its panel rather than under Direct messages.
     private lazy var activity = NativeActivityEntry { [weak self] in self?.showActivity?() }
+    private let panelDivider = NativeView(NativeStyle.border)
+    private static let panelRowHeight: CGFloat = 30
     private lazy var selfNotes = NativeDirectRow { [weak self] in
         guard let self else { return }; Task { await self.model.openSelfDirectMessage() }
     }
@@ -69,8 +73,10 @@ import CaperCore
     private lazy var requests = NativeButton("") { [weak self] in
         guard let self else { return }; self.model.showingMessageRequests.toggle()
     }
-    // The feedback team's inbox, as web's sidebar section: open a report to
-    // visit its conversation without joining, archive or restore its thread.
+    // The feedback team's inbox: open a report to visit its conversation
+    // without joining, archive or restore its thread. The entry is an account
+    // panel row; its list opens upward from the panel in its own scrollport.
+    private let feedbackList = NativeSidebarList("Feedback", identifier: "sidebar-feedback-scroll")
     private lazy var feedback = NativeFeedbackEntry { [weak self] in
         guard let self else { return }
         self.model.showingFeedback.toggle()
@@ -105,6 +111,7 @@ import CaperCore
     private lazy var channelHeading = NativeSidebarHeading(title: heading, actions: [create, options], disclosure: true)
     /// Web's voice panel: the account row floats in its own bordered card,
     /// 42 points tall and 16 above the bottom like the message field beside it.
+    /// Notifications and Feedback rows grow the card upward, above a hairline.
     private let accountPanel = NativeView(NSColor(CaperTheme.raised))
     private let accountAvatar = NativeAvatar()
     private let accountPresence = CALayer()
@@ -140,9 +147,12 @@ import CaperCore
         super.init()
         [railScroll, sidebar].forEach { addSubview($0) }
         railScroll.documentView = rail; railScroll.drawsBackground = false
-        [space, close, channels, sectionsDivider, directs, updateButton, accountPanel, accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
+        [space, close, channels, sectionsDivider, directs, feedbackList, updateButton, accountPanel, panelDivider, activity, feedback,
+         accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
         accountPanel.layer?.cornerRadius = 8; accountPanel.layer?.borderWidth = 1
         accountPanel.layer?.borderColor = NativeStyle.border.cgColor
+        feedbackList.isHidden = true; feedback.isHidden = true
+        panelDivider.setAccessibilityElement(false)
         updateButton.isHidden = true
         updateButton.setAccessibilityIdentifier("desktop-update-action")
         updateButton.toolTip = "Review the update before restarting Caper."
@@ -216,9 +226,23 @@ import CaperCore
         close.isHidden = !narrow
         close.frame = NSRect(x: width - 44, y: 8, width: 28, height: 34)
         space.frame = NSRect(x: 16, y: 8, width: width - (narrow ? 64 : 32), height: 34)
-        // The update button sits between the lists and the account panel.
-        let panelTop = bounds.height - 16 - 42
-        let footer = max(50, panelTop - (updateButton.isHidden ? 8 : 52))
+        // Bottom up: the account panel (grown upward by its Notifications and
+        // Feedback rows), the update button, then an open feedback list.
+        let panelRows: [NSView] = [activity, feedback].filter { !$0.isHidden }
+        let panelHeight = 42 + (panelRows.isEmpty ? 0 : CGFloat(panelRows.count) * Self.panelRowHeight + 8)
+        let panelTop = bounds.height - 16 - panelHeight
+        var stackTop = panelTop - 8
+        if !updateButton.isHidden {
+            updateButton.frame = NSRect(x: 12, y: stackTop - 36, width: width - 24, height: 36)
+            stackTop -= 44
+        }
+        if !feedbackList.isHidden {
+            let feedbackHeight = min(feedbackList.contentHeight(width: width), max(0, (stackTop - 50) * 0.45)).rounded()
+            feedbackList.frame = NSRect(x: 0, y: stackTop - feedbackHeight, width: width, height: feedbackHeight)
+            feedbackList.layoutRows()
+            stackTop -= feedbackHeight
+        }
+        let footer = max(50, stackTop)
         let available = max(0, footer - 50 - 12)
         sectionsDivider.update(available: available, share: draggedChannelsShare ?? preferredChannelsShare)
         // Whole points: a fractional split makes NSScrollView snap its clip view
@@ -228,11 +252,19 @@ import CaperCore
         sectionsDivider.frame = NSRect(x: 0, y: channels.frame.maxY, width: width, height: 12)
         directs.frame = NSRect(x: 0, y: sectionsDivider.frame.maxY, width: width, height: max(0, available - channelHeight))
         channels.layoutRows(); directs.layoutRows()
-        updateButton.frame = NSRect(x: 12, y: footer + 8, width: width - 24, height: 36)
         updateShine.layout()
-        accountPanel.frame = NSRect(x: 12, y: footer + (updateButton.isHidden ? 8 : 52), width: width - 24, height: 42)
+        accountPanel.frame = NSRect(x: 12, y: panelTop, width: width - 24, height: panelHeight)
+        // Account rows stack from the panel's top, 4 points inside its border,
+        // with a hairline between them and the account row.
+        for (index, child) in panelRows.enumerated() {
+            child.frame = NSRect(x: accountPanel.frame.minX + 5, y: panelTop + 4 + CGFloat(index) * Self.panelRowHeight,
+                                 width: max(0, accountPanel.frame.width - 10), height: Self.panelRowHeight)
+        }
+        panelDivider.isHidden = panelRows.isEmpty
+        panelDivider.frame = NSRect(x: accountPanel.frame.minX + 1, y: accountPanel.frame.maxY - 42 - 1,
+                                    width: max(0, accountPanel.frame.width - 2), height: 1)
         // Controls sit 4 points inside the panel's 1-point border, as web's call-account.
-        let row = accountPanel.frame.minY + 5, right = accountPanel.frame.maxX - 5
+        let row = accountPanel.frame.maxY - 42 + 5, right = accountPanel.frame.maxX - 5
         settings.frame = NSRect(x: right - 28, y: row, width: 28, height: 32)
         outputOptions.frame = NSRect(x: settings.frame.minX - 18, y: row, width: 16, height: 32)
         deafen.frame = NSRect(x: outputOptions.frame.minX - 28, y: row, width: 28, height: 32)
@@ -339,7 +371,7 @@ import CaperCore
         }
         directs.append(directHeading, height: 28)
         activity.update(unread: AppKitWorkspacePresenter.activityUnread(model))
-        directs.append(activity, height: 28)
+        if activity.isHidden != (model.account == nil) { activity.isHidden = model.account == nil }
         renderFeedback()
         var nextRequests: [String: NativeButton] = [:]
         if !model.messageRequests.isEmpty {
@@ -518,14 +550,18 @@ import CaperCore
         externalCards = next
     }
 
-    /// Team only, after Notifications as on web and iPhone.
+    /// Team only: an account panel row under Notifications; its open list
+    /// sits directly above the panel in its own scrollport.
     private func renderFeedback() {
         var next: [String: NativeFeedbackRow] = [:]
-        defer { feedbackRows = next }
-        guard model.isFeedbackTeam else { return }
-        let archived = model.showingArchivedFeedback, expanded = model.showingFeedback
+        feedbackList.beginUpdates()
+        defer { feedbackRows = next; feedbackList.endUpdates() }
+        let team = model.isFeedbackTeam && model.account != nil
+        let archived = model.showingArchivedFeedback, expanded = team && model.showingFeedback
+        if feedback.isHidden == team { feedback.isHidden = !team }
+        if feedbackList.isHidden == expanded { feedbackList.isHidden = !expanded }
+        guard team else { return }
         feedback.update(title: archived ? FeedbackInbox.archivedTitle : FeedbackInbox.title, waiting: model.feedbackWaiting, expanded: expanded)
-        directs.append(feedback, height: 28)
         guard expanded else { return }
         let now = Date()
         for report in model.feedbackReports {
@@ -534,26 +570,26 @@ import CaperCore
             row.archive = { [weak self] in guard let self else { return }; Task { await self.model.setFeedbackArchived(report, archived: !archived) } }
             row.update(report, archived: archived, now: now,
                        selected: model.visit?.channelID == report.channel.id && model.visit?.reportID == report.messageId)
-            next[report.id] = row; directs.append(row, height: 44)
+            next[report.id] = row; feedbackList.append(row, height: 44)
         }
         if model.feedbackReports.isEmpty, model.feedbackError == nil {
             feedbackNote.stringValue = model.feedbackLoaded ? (archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty)
                 : model.feedbackLoading ? "Loading…" : ""
-            if !feedbackNote.stringValue.isEmpty { directs.append(feedbackNote, height: 24) }
+            if !feedbackNote.stringValue.isEmpty { feedbackList.append(feedbackNote, height: 24) }
         }
         if model.feedbackCursor != nil {
             feedbackMore.title = model.feedbackLoading ? "Loading…" : "Show more"
             feedbackMore.setAccessibilityLabel(model.feedbackLoading ? "Loading older feedback" : "Show older feedback")
             feedbackMore.isEnabled = !model.feedbackLoading
-            directs.append(feedbackMore, height: 28)
+            feedbackList.append(feedbackMore, height: 28)
         }
         feedbackArchived.title = archived ? FeedbackInbox.backToFeedback : FeedbackInbox.showArchived
         feedbackArchived.image = NSImage(systemSymbolName: archived ? "tray" : "archivebox", accessibilityDescription: nil)
         feedbackArchived.setAccessibilityLabel(feedbackArchived.title)
-        directs.append(feedbackArchived, height: 28)
+        feedbackList.append(feedbackArchived, height: 28)
         if let error = model.feedbackError {
             feedbackFailure.update(error, pending: model.feedbackLoading)
-            directs.append(feedbackFailure)
+            feedbackList.append(feedbackFailure)
             // Spoken once when it appears, as web's role="alert", without moving focus.
             if announcedFeedbackError != error {
                 NSAccessibility.post(element: feedbackFailure, notification: .announcementRequested, userInfo: [
@@ -625,6 +661,14 @@ private final class NativeSidebarList: NSScrollView {
         needsLayout = true
     }
     override func layout() { super.layout(); layoutRows() }
+    /// The document height `layoutRows` produces for a list `width` points wide.
+    func contentHeight(width: CGFloat) -> CGFloat {
+        let rowWidth = max(0, width - 32)
+        return items.reduce(CGFloat(6)) { y, item in
+            y + ((item.0 as? NativeVoiceCard)?.height(width: rowWidth)
+                ?? (item.0 as? NativeDirectFailure)?.height(width: rowWidth) ?? item.1) + 3
+        } + 8
+    }
     func layoutRows() {
         let origin = contentView.bounds.origin
         let width = max(0, contentSize.width - 32)
@@ -963,6 +1007,9 @@ private final class NativeFeedbackEntry: NativeView {
         count.stringValue = waiting > 0 ? String(waiting) : ""
         open.setAccessibilityValue([waiting > 0 ? FeedbackInbox.waitingLabel(waiting) : "", expanded ? "Expanded" : "Collapsed"]
             .filter { !$0.isEmpty }.joined(separator: ", "))
+        // Selected while its list is open, as the panel's other selected states.
+        layer?.cornerRadius = 8
+        layer?.backgroundColor = (expanded ? NativeStyle.accent.withAlphaComponent(0.16) : .clear).cgColor
         needsLayout = true
     }
     override func layout() {

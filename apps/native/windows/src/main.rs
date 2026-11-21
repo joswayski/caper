@@ -285,11 +285,13 @@ impl Panel {
 /// A text selection across message rows: (row, UTF-16 position) anchor and focus.
 pub type Sel = ((usize, u32), (usize, u32));
 
-/// The sidebar row that has the keyboard: the channel or DM picked last.
+/// The sidebar row that has the keyboard: the channel or DM picked last,
+/// or the account panel's Notifications or Feedback row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Channel(usize),
     Direct(usize),
+    Inbox(usize),
 }
 
 pub struct App {
@@ -351,6 +353,8 @@ pub struct App {
     hover_member: Option<usize>,
     /// The sidebar's DM row under the pointer.
     hover_direct: Option<directs::Spot>,
+    /// The account panel's Notifications or Feedback row under the pointer.
+    hover_inbox: Option<usize>,
     /// The invitation tile, Join with invite link or channel
     /// invitation under the pointer.
     hover_invite: Option<invites::Spot>,
@@ -688,6 +692,7 @@ impl App {
                 space_options_hover: false,
                 hover_member: None,
                 hover_direct: None,
+                hover_inbox: None,
                 hover_invite: None,
                 bar_hover: None,
                 bar_pressed: None,
@@ -1002,6 +1007,8 @@ impl App {
                 live::Update::Badges => {
                     self.dirty.rail = true;
                     self.dirty.sidebar = true;
+                    // The narrow account panel's Feedback count.
+                    self.dirty.narrow = true;
                     self.events |= EV_ROWS;
                     self.need = true;
                 }
@@ -1780,8 +1787,7 @@ impl App {
         self.focus_side(Side::Channel(i));
     }
 
-    /// The same for a DM row. Notifications and Feedback open over the
-    /// conversation, which takes the keys until it closes.
+    /// The same for a DM row.
     pub fn pick_direct(&mut self, k: usize) {
         self.open_direct_row(k);
         self.focus_side(Side::Direct(k));
@@ -1849,25 +1855,35 @@ impl App {
         self.need = true;
     }
 
-    /// Up and Down move between rows of the focused list, Enter and Space
-    /// pick, Tab goes on to the splitters, and Shift+Tab or Escape go to
-    /// the composer.
+    /// Up and Down move between rows of the focused list (the account
+    /// panel's rows follow the DM list), Enter and Space pick, Tab goes on
+    /// to the splitters, and Shift+Tab or Escape go to the composer.
     fn side_key(&mut self, side: Side, vk: VIRTUAL_KEY, shift: bool) -> bool {
         let (k, n) = match side {
             Side::Channel(i) => (i, self.c.channels.len()),
             Side::Direct(k) => (k, self.direct_rows().len()),
+            Side::Inbox(k) => (k, self.inbox_rows().len()),
         };
         let to = |k: usize| match side {
             Side::Channel(_) => Side::Channel(k),
             Side::Direct(_) => Side::Direct(k),
+            Side::Inbox(_) => Side::Inbox(k),
         };
+        let directs = self.direct_rows().len();
         match vk {
             VK_UP if k > 0 => self.focus_side(to(k - 1)),
             VK_DOWN if k + 1 < n => self.focus_side(to(k + 1)),
+            VK_DOWN if matches!(side, Side::Direct(_)) && !self.inbox_rows().is_empty() => {
+                self.focus_side(Side::Inbox(0))
+            }
+            VK_UP if matches!(side, Side::Inbox(_)) && directs > 0 => {
+                self.focus_side(Side::Direct(directs - 1))
+            }
             VK_UP | VK_DOWN => {}
             VK_RETURN | VK_SPACE => match side {
                 Side::Channel(i) => self.pick_channel(i),
                 Side::Direct(k) => self.pick_direct(k),
+                Side::Inbox(k) => self.pick_inbox(k),
             },
             // Tab goes on to the splitters, then the conversation; Shift+Tab
             // wraps back to its end, the composer, as web's page order does.
@@ -2034,6 +2050,12 @@ impl App {
                 self.channel_scope(i).is_some() && inside(self.channel_options_rect(i), x, y)
             });
             space_options = self.space_scope().is_some() && inside(self.space_options_rect(), x, y);
+            // The account panel covers the sidebar rows under it.
+            if self.on_account_panel(x, y) {
+                channel = None;
+                direct = None;
+                channel_options = false;
+            }
         }
         if !self.navigation_shown() {
             space = None;
@@ -2049,7 +2071,7 @@ impl App {
         }
         let invite = self
             .pointer
-            .filter(|_| self.navigation_shown())
+            .filter(|&(x, y)| self.navigation_shown() && !self.on_account_panel(x, y))
             .and_then(|(x, y)| self.invite_at(x, y));
         if invite != self.hover_invite {
             self.hover_invite = invite;
@@ -2080,6 +2102,7 @@ impl App {
             self.dirty.sidebar = true;
             self.need = true;
         }
+        self.track_inbox_hover();
         let dock = self.pointer.is_some_and(|(x, y)| self.on_update_dock(x, y));
         if dock != self.update_dock_hover {
             self.update_dock_hover = dock;
@@ -2488,6 +2511,8 @@ impl App {
                 }
                 if self.on_gear(x, y) {
                     self.toggle_account_menu();
+                } else if let Some(k) = self.inbox_at(x, y) {
+                    self.pick_inbox(k);
                 } else if self.on_members_toggle(x, y) {
                     self.toggle_members();
                 } else if self.on_pins_button(x, y) {
@@ -2692,6 +2717,7 @@ impl App {
                             || self.tool_at(x, y).is_some()
                             || self.on_head_button(x, y)
                             || self.on_gear(x, y)
+                            || self.inbox_at(x, y).is_some()
                             || self.on_members_toggle(x, y)
                             || self.on_pins_button(x, y)
                             || self.on_update_dock(x, y)

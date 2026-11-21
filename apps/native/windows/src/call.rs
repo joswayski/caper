@@ -10,7 +10,6 @@ use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::live::{CallView, VoiceAction};
 use crate::overlay::Rect;
-use crate::settings::FOOT_H;
 use crate::theme::*;
 use crate::{App, EV_FOCUS, EV_ROWS, text};
 use caper_client::model::VoiceOccupant;
@@ -530,8 +529,14 @@ impl App {
         } else {
             0.0
         };
-        let available =
-            self.h - FOOT_H - self.update_dock_h() - HEADER_H - 24.0 - CARD_H - PAGE_H - audio;
+        let available = self.h
+            - self.account_h()
+            - self.update_dock_h()
+            - HEADER_H
+            - 24.0
+            - CARD_H
+            - PAGE_H
+            - audio;
         ((available / PERSON_H).floor().clamp(1.0, 4.0) as usize).min(self.call_people().len())
     }
 
@@ -596,7 +601,11 @@ impl App {
             Card::Call(_) => CARD_H + self.call_extra(),
             Card::Error(_) => ERROR_H,
         };
-        let foot = (if self.foot_shown() { FOOT_H } else { 0.0 }) + self.update_dock_h();
+        let foot = (if self.foot_shown() {
+            self.account_h()
+        } else {
+            0.0
+        }) + self.update_dock_h();
         Some((
             RAIL_W + 8.0,
             self.h - foot - 8.0 - h,

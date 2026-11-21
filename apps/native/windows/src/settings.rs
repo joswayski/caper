@@ -4,7 +4,9 @@
 //! account. Account choices save as soon as they change and revert with an
 //! inline error (the shared `Notifications` and the core's Account
 //! operations, kept in `Live`). Also the sidebar's account footer: your
-//! avatar and name, and its gear's menu (Settings…, Log out).
+//! avatar and name, and its gear's menu (Settings…, Log out), with
+//! "Notifications" (and "Feedback" for the feedback team) stacked above
+//! them in the same panel.
 //!
 //! The same card shows the notification inbox (egui's `activity_dialog`):
 //! the filters, Unread only with the count, each notification (opening it
@@ -55,11 +57,16 @@ pub const LEVELS: [NotificationLevel; 3] = [
 ];
 /// The sidebar's account footer: a card as tall as the one-line message
 /// field and 16 above the bottom like it, so their edges line up across the
-/// window, as web's and macOS's account panels. `FOOT_H` is the band it
-/// reserves, card and bottom margin.
+/// window, as web's and macOS's account panels. `FOOT_H` is the band the
+/// account row reserves, card and bottom margin; the panel's rows above it
+/// (`App::account_h`) grow the card upward.
 const FOOT_CARD_H: f32 = crate::composer::LINE + 2.0 * crate::composer::PAD;
 const FOOT_MARGIN: f32 = 16.0;
-pub const FOOT_H: f32 = FOOT_CARD_H + FOOT_MARGIN;
+const FOOT_H: f32 = FOOT_CARD_H + FOOT_MARGIN;
+/// The panel's Notifications and Feedback rows, and the inset around them
+/// above the line over the account row.
+const INBOX_ROW_H: f32 = 30.0;
+const INBOX_PAD: f32 = 4.0;
 const MENU_W: f32 = 232.0;
 const MENU_ITEM_H: f32 = 32.0;
 pub const MENU_ITEMS: [&str; 6] = [
@@ -1409,6 +1416,16 @@ impl Builder<'_> {
     }
 }
 
+/// The height `n` panel rows add above the account row: the rows, their
+/// inset and the line between them and the account row.
+fn inbox_band_h(n: usize) -> f32 {
+    if n == 0 {
+        0.0
+    } else {
+        n as f32 * INBOX_ROW_H + 2.0 * INBOX_PAD + 1.0
+    }
+}
+
 /// The gear's menu over the account footer.
 pub struct AccountMenu {
     pub hover: Option<usize>,
@@ -1502,6 +1519,8 @@ impl App {
             }
         }
         self.dirty.sidebar = true;
+        // The narrow account panel's Notifications row.
+        self.dirty.narrow = true;
         self.need = true;
     }
 
@@ -1886,6 +1905,82 @@ impl App {
         self.foot_shown() && contains(self.gear_rect(), x, y)
     }
 
+    /// The panel's rows above the account row, while the footer shows.
+    pub fn inbox_rows(&self) -> Vec<crate::directs::Row> {
+        if !self.foot_shown() {
+            return Vec::new();
+        }
+        self.live
+            .as_ref()
+            .map_or_else(Vec::new, crate::live::Live::inbox_rows)
+    }
+
+    /// The band the whole account panel reserves at the sidebar's bottom:
+    /// the account row's, and the rows stacked above it.
+    pub fn account_h(&self) -> f32 {
+        FOOT_H + inbox_band_h(self.inbox_rows().len())
+    }
+
+    /// The panel card's left edge and width (client DIPs).
+    fn foot_span(&self) -> (f32, f32) {
+        if self.is_narrow() {
+            (12.0, self.w - 24.0)
+        } else {
+            (RAIL_W + 12.0, self.sidebar_w() - 24.0)
+        }
+    }
+
+    /// Panel row `k` (client DIPs).
+    pub fn inbox_rect(&self, k: usize) -> Rect {
+        let n = self.inbox_rows().len();
+        let (x, w) = self.foot_span();
+        (
+            x + INBOX_PAD,
+            self.h - FOOT_H - inbox_band_h(n) + INBOX_PAD + k as f32 * INBOX_ROW_H,
+            w - 2.0 * INBOX_PAD,
+            INBOX_ROW_H,
+        )
+    }
+
+    pub fn inbox_at(&self, x: f32, y: f32) -> Option<usize> {
+        (0..self.inbox_rows().len()).find(|&k| contains(self.inbox_rect(k), x, y))
+    }
+
+    /// Whether (`x`, `y`) is on the account panel's band, which covers the
+    /// sidebar rows under it.
+    pub fn on_account_panel(&self, x: f32, y: f32) -> bool {
+        let (l, w) = self.foot_span();
+        let h = self.account_h();
+        self.foot_shown() && contains((l - 12.0, self.h - h, w + 24.0, h), x, y)
+    }
+
+    /// Opens panel row `k`: the notification inbox, or the feedback page.
+    pub fn open_inbox_row(&mut self, k: usize) {
+        match self.inbox_rows().get(k).map(|r| r.kind) {
+            Some(crate::directs::RowKind::Notifications) => self.open_inbox(),
+            Some(crate::directs::RowKind::Feedback) => self.open_support(Page::Feedback),
+            _ => {}
+        }
+    }
+
+    /// The same, keeping keyboard focus on the row as a DM row does. The
+    /// inbox and feedback open over the conversation and take the keys
+    /// until they close.
+    pub fn pick_inbox(&mut self, k: usize) {
+        self.open_inbox_row(k);
+        self.focus_side(crate::Side::Inbox(k));
+    }
+
+    pub fn track_inbox_hover(&mut self) {
+        let hover = self.pointer.and_then(|(x, y)| self.inbox_at(x, y));
+        if hover != self.hover_inbox {
+            self.hover_inbox = hover;
+            self.dirty.sidebar = true;
+            self.dirty.narrow = true;
+            self.need = true;
+        }
+    }
+
     /// The gear's menu (client DIPs), above the gear.
     pub fn account_menu_rect(&self) -> Rect {
         let h = self.account_items().len() as f32 * MENU_ITEM_H + 12.0;
@@ -2039,18 +2134,46 @@ impl App {
         if !self.is_narrow() {
             self.draw_update_dock(g, dc)?;
         }
+        // The account row's top; the panel's rows stack above it in the
+        // same card, over a line.
         let top = h - FOOT_H;
+        let rows = self.inbox_rows();
+        let card_top = top - inbox_band_h(rows.len());
         let width = if self.is_narrow() {
             self.w
         } else {
             self.sidebar_w()
         };
         unsafe {
-            dc.FillRectangle(&rect(0.0, top, width, h), &g.solid(SURFACE_SIDEBAR));
+            dc.FillRectangle(&rect(0.0, card_top, width, h), &g.solid(SURFACE_SIDEBAR));
         }
-        let card = rect(12.0, top, width - 12.0, top + FOOT_CARD_H);
+        let card = rect(12.0, card_top, width - 12.0, top + FOOT_CARD_H);
         fill_round(dc, card, RADIUS, &g.brushes.raised);
         stroke_round(dc, card, RADIUS, &g.brushes.border);
+        if !rows.is_empty() {
+            unsafe {
+                dc.FillRectangle(&rect(13.0, top - 1.0, width - 13.0, top), &g.brushes.border);
+            }
+        }
+        let dx = if self.is_narrow() { 0.0 } else { RAIL_W };
+        let ring = self
+            .side_focus
+            .filter(|_| self.side_ring && !self.is_narrow());
+        for (k, row) in rows.iter().enumerate() {
+            let (x, y, w, rh) = self.inbox_rect(k);
+            let r = rect(x - dx, y, x - dx + w, y + rh);
+            let lit = self.hover_inbox == Some(k);
+            if row.active {
+                fill_round(dc, r, RADIUS, &g.brushes.selected);
+            } else if lit {
+                fill_round(dc, r, RADIUS, &g.brushes.hover);
+            }
+            crate::directs::draw_inbox(g, dc, row, r, lit)?;
+            if ring == Some(crate::Side::Inbox(k)) {
+                let f = rect(r.left + 1.0, r.top + 1.0, r.right - 1.0, r.bottom - 1.0);
+                stroke_round(dc, f, RADIUS, &g.brushes.terracotta);
+            }
+        }
         let me = live.account_id.as_deref().unwrap_or_default();
         let p = crate::live::person(me, &live.account_name, live.account_avatar.clone());
         let (cx, cy) = (12.0 + 8.0 + 15.0, top + FOOT_CARD_H / 2.0);

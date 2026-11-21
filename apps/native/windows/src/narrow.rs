@@ -465,6 +465,8 @@ impl App {
                 WM_LBUTTONDOWN => {
                     if self.on_gear(at.0, at.1) {
                         self.toggle_account_menu();
+                    } else if let Some(k) = self.inbox_at(at.0, at.1) {
+                        self.open_inbox_row(k);
                     } else if self.on_update_dock(at.0, at.1) {
                         self.open_update_review();
                     } else if let Some(p) = self.voice_at(at.0, at.1) {

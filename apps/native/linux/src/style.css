@@ -858,12 +858,21 @@ popover.emoji-picker image.mine {
   margin-left: -12px;
 }
 
-/* As desktop: the account bar is a raised 42px card. */
-.dock {
+/* As desktop: the account panel is a raised card. Notifications and, for
+   the team, Feedback sit over the 42px account row, behind a thin line. */
+.account-panel {
   background: @caper_surface_raised;
   border: 1px solid @caper_border;
   border-radius: 6px;
   margin: 8px 12px 16px;
+}
+
+.account-panel-rows {
+  padding: 4px;
+}
+
+.dock {
+  border-top: 1px solid @caper_border;
   padding: 5px;
 }
 
@@ -2303,24 +2312,34 @@ button.inbox-button:hover {
   background: @caper_surface_hover;
 }
 
-/* The sidebar's Notifications row, under the space's name, as web's. */
+/* The account panel's Notifications and Feedback rows. */
 button.inbox-row-button {
-  min-height: 34px;
-  margin: 2px 10px 4px;
-  padding: 0 10px;
+  min-height: 30px;
+  margin: 0;
+  padding: 0 8px;
   border-radius: 8px;
-  color: @caper_text;
-  font-size: 14px;
+  color: @caper_text_muted;
+  font-size: 13px;
   font-weight: 500;
 }
 
 button.inbox-row-button:hover {
   background: @caper_surface_hover;
+  color: @caper_text;
 }
 
 button.inbox-row-button .inbox-count {
   color: @caper_terracotta_bright;
   font-feature-settings: "tnum";
+}
+
+/* 10px lines its icon up with the button's bell. */
+list.channels.panel-feedback > row {
+  min-height: 30px;
+  margin: 0;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .inbox-row {

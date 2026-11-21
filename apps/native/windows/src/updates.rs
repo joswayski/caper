@@ -5,7 +5,6 @@
 //! `caper-updater` and quits so it can swap the new build in and reopen.
 use crate::gfx::{Gfx, fill_round, rect, stroke_round};
 use crate::overlay::{Dialog, Kind, Part, Rect};
-use crate::settings::FOOT_H;
 use crate::theme::*;
 use crate::{App, EV_SCREEN, text};
 use caper_client::state::Phase;
@@ -369,7 +368,7 @@ impl App {
     pub fn update_dock_rect(&self) -> Option<Rect> {
         (self.update_dock.is_some() && self.foot_shown()).then_some((
             RAIL_W + 12.0,
-            self.h - FOOT_H - DOCK_GAP - DOCK_H,
+            self.h - self.account_h() - DOCK_GAP - DOCK_H,
             self.sidebar_w() - 24.0,
             DOCK_H,
         ))

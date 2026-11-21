@@ -1,12 +1,12 @@
 //! The notifications inbox, as on the egui desktop: "Notifications" (with
-//! the unread count) under Direct messages opens a window with filter tabs
-//! and "Unread only (N)", the rows newest first, Load more, and loading,
-//! empty and Retry states. A row names who and when, says what happened,
-//! and opens where it came from (an invitation shows the invitation);
-//! opening or its check marks it read. Rows you can answer have Reply (an
-//! inline composer with files, attachment editing and a GIF option) and React. It refreshes every 15
-//! seconds while open. Paging and reads are `caper_client::activity`.
-//! A child of `app`.
+//! the unread count) in the account panel, above the account row, opens a
+//! window with filter tabs and "Unread only (N)", the rows newest first,
+//! Load more, and loading, empty and Retry states. A row names who and
+//! when, says what happened, and opens where it came from (an invitation
+//! shows the invitation); opening or its check marks it read. Rows you can
+//! answer have Reply (an inline composer with files, attachment editing and
+//! a GIF option) and React. It refreshes every 15 seconds while open.
+//! Paging and reads are `caper_client::activity`. A child of `app`.
 
 use super::{App, State, clear};
 use crate::images::Icon;

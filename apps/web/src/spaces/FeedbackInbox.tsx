@@ -63,7 +63,8 @@ export default function FeedbackInbox({
   onMore: () => void;
   onRetry: () => void;
 }) {
-  const [open, setOpen] = useState(true);
+  // Collapsed by default: it sits in the account bar, which should stay small.
+  const [open, setOpen] = useState(false);
   const [shown, setShown] = useState(SHOWN);
   const threads = feedbackThreads(reports);
   const visible = threads.slice(0, shown);

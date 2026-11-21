@@ -1027,13 +1027,15 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-draft-formatting-sent")
     }
 
-    /// Notifications sits atop Direct messages and opens the activity inbox.
+    /// Notifications sits in the account bar, above the account row, and opens the activity inbox.
     func testActivityInbox() {
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
         app.buttons["back-to-browse"].tap()
-        let entry = app.cells["activity-inbox"]
+        let entry = app.buttons["activity-inbox"]
         XCTAssertTrue(entry.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.cells["activity-inbox"].exists, "Notifications is not a Direct messages row")
+        XCTAssertLessThanOrEqual(entry.frame.maxY, app.buttons["account-profile"].frame.minY, "Notifications stacks above the account row")
         XCTAssertEqual(entry.label, "Notifications")
         entry.tap()
         let mention = app.buttons["activity-open-inbox0000002"]
@@ -1045,7 +1047,7 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(entry.exists)
     }
 
-    /// The feedback team's inbox: Feedback under Notifications pushes the
+    /// The feedback team's inbox: Feedback in the account bar pushes the
     /// list; a report visits a space the owner is not in, at the report; Back
     /// returns to the inbox.
     func testFeedbackInboxVisitsAReport() {
@@ -1053,8 +1055,10 @@ final class CaperUIKitTests: XCTestCase {
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
         app.buttons["back-to-browse"].tap()
-        let inbox = app.cells["feedback-inbox"]
+        let inbox = app.buttons["feedback-inbox"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.cells["feedback-inbox"].exists, "Feedback is not a Direct messages row")
+        XCTAssertLessThanOrEqual(inbox.frame.maxY, app.buttons["account-profile"].frame.minY, "Feedback stacks above the account row")
         let waiting = NSPredicate(format: "value == %@", "1 feedback conversation waiting for a reply")
         XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: waiting, evaluatedWith: inbox)], timeout: 10), .completed,
                        "The row counts reports waiting for a reply")

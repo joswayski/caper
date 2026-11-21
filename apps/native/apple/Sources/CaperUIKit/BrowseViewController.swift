@@ -6,7 +6,7 @@ import UIKit
 final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private enum Item: Hashable {
         case notificationError, liveNow, channelsHeader, channel(String), search, browseResult(String), searchEmpty, channelInvitation(String), listError
-        case directHeading, activity, feedback, requests, selfDirect, direct(String), newMessage
+        case directHeading, requests, selfDirect, direct(String), newMessage
     }
 
     private let model: AppModel
@@ -62,6 +62,20 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private var nativeChannels: [String: NativeChannelView] = [:]
     private lazy var liveNow = NativeLiveNowView(model: model) { [weak self] controller in self?.present(controller, animated: false) }
     private lazy var notificationError = NativeNotificationError(model: model)
+    /// Notifications and the team's Feedback: rows above the account row,
+    /// inside the account bar, over a hairline.
+    private let accountRows = UIStackView()
+    private let accountRule = UIView()
+    private lazy var notificationsRow = AccountPanelRow(icon: UIKitStyle.icon("bell"), title: "Notifications",
+                                                        identifier: "activity-inbox", hint: "Opens your notifications") { [weak self] in
+        guard let self, self.live, self.presentedViewController == nil else { return }
+        self.present(UIKitActivity.inbox(model: self.model), animated: !UIKitStyle.reduceMotion)
+    }
+    private lazy var feedbackRow = AccountPanelRow(icon: UIImage(systemName: "lifepreserver"), title: FeedbackInbox.title,
+                                                   identifier: "feedback-inbox", hint: "Opens the feedback inbox") { [weak self] in
+        guard let self, self.live else { return }
+        self.model.showingFeedback = true
+    }
     private let accountAvatar = AvatarView(side: 30)
     private let accountName = UIKitStyle.label(size: 13, weight: .medium)
     private let presenceDot = UIView()
@@ -484,11 +498,18 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         row.addSubview(profile)
         row.addSubview(accountMenu)
         accountMenu.tintColor = UIKitStyle.muted
-        [voiceError, row].forEach(box.addArrangedSubview)
+        accountRows.axis = .vertical
+        accountRows.isLayoutMarginsRelativeArrangement = true
+        accountRows.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
+        [notificationsRow, feedbackRow].forEach(accountRows.addArrangedSubview)
+        accountRule.backgroundColor = UIKitStyle.border
+        accountRows.isHidden = true; accountRule.isHidden = true; feedbackRow.isHidden = true
+        [voiceError, accountRows, accountRule, row].forEach(box.addArrangedSubview)
         NSLayoutConstraint.activate([
             box.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 12),
             box.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
             // 52pt, taller when a large text size wraps the name's line.
+            accountRule.heightAnchor.constraint(equalToConstant: 1),
             row.heightAnchor.constraint(greaterThanOrEqualToConstant: 52),
             row.heightAnchor.constraint(equalToConstant: 52).withPriority(.defaultLow),
             identity.topAnchor.constraint(greaterThanOrEqualTo: profile.topAnchor),
@@ -593,6 +614,16 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         default: UIKitStyle.border
         }
         profile.accessibilityValue = presence.map { $0.rawValue.prefix(1).uppercased() + $0.rawValue.dropFirst() } ?? "Status unavailable"
+        // The account panel's rows, shown whenever signed in; Feedback for the team only.
+        let signedIn = live && account != nil
+        let activityUnread = UIKitActivity.unread(model)
+        notificationsRow.update(count: activityUnread > 0 ? activityUnread : nil, countStyle: .text, selected: false,
+                                value: activityUnread > 0 ? "\(activityUnread) unread" : "")
+        let waiting = model.feedbackWaiting
+        feedbackRow.update(count: waiting > 0 ? waiting : nil, countStyle: .capsule, selected: showingFeedback,
+                           value: waiting > 0 ? FeedbackInbox.waitingLabel(waiting) : "")
+        if feedbackRow.isHidden == (signedIn && model.isFeedbackTeam) { feedbackRow.isHidden = !(signedIn && model.isFeedbackTeam) }
+        if accountRows.isHidden == signedIn { accountRows.isHidden = !signedIn; accountRule.isHidden = !signedIn }
         let error = live ? model.voice.error : nil
         voiceErrorText.text = error
         voiceError.isHidden = error == nil
@@ -700,10 +731,8 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         let previous = directRows
         let others = model.visibleDirectMessages.filter { $0.peer.id != account.id }
         directRows = Dictionary(model.directMessages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        // SwiftUI's order: Notifications, Feedback (the team), requests.
-        var items: [Item] = [.directHeading, .activity]
-        _ = (UIKitActivity.unread(model), model.feedbackWaiting, model.visit?.channelID)
-        if model.isFeedbackTeam { items.append(.feedback) }
+        // The heading, then requests; Notifications and Feedback live in the account bar.
+        var items: [Item] = [.directHeading]
         if !model.messageRequests.isEmpty { items.append(.requests) }
         items.append(.selfDirect)
         items += others.map { .direct($0.id) }
@@ -747,21 +776,6 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
                       ? "This space has no channels yet." : "No channels match your search.", id: "browse-channels-empty")
         case .listError:
             cell.note(listError ?? "", id: "browse-error", color: UIKitStyle.error, size: 11)
-        case .activity:
-            let unread = UIKitActivity.unread(model)
-            cell.show(icon: "bell", text: "Notifications", highlighted: true, unread: unread > 0 ? unread : nil)
-            cell.accessibilityLabel = "Notifications"
-            cell.accessibilityValue = unread > 0 ? "\(unread) unread" : ""
-            cell.accessibilityHint = "Opens your notifications"
-            cell.accessibilityIdentifier = "activity-inbox"
-        case .feedback:
-            let waiting = model.feedbackWaiting
-            cell.show(icon: "chevron-right", text: FeedbackInbox.title, highlighted: model.visit != nil,
-                      unread: waiting > 0 ? waiting : nil)
-            cell.accessibilityLabel = FeedbackInbox.title
-            cell.accessibilityValue = waiting > 0 ? FeedbackInbox.waitingLabel(waiting) : ""
-            cell.accessibilityHint = "Opens the feedback inbox"
-            cell.accessibilityIdentifier = "feedback-inbox"
         case .requests:
             let count = model.messageRequests.count
             cell.show(icon: "chevron-right", text: "Message requests", count: "\(count)", countStyle: .neutral)
@@ -876,11 +890,6 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             break
         case let .channelInvitation(id):
             if let invitation = channelInvitations[id] { dialog(.channelInvitation(invitation)) }
-        case .activity:
-            guard presentedViewController == nil else { return }
-            present(UIKitActivity.inbox(model: model), animated: !UIKitStyle.reduceMotion)
-        case .feedback:
-            model.showingFeedback = true
         case .requests:
             model.showingMessageRequests = true
         case .selfDirect:
@@ -1150,6 +1159,98 @@ final class SectionDivider: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func accessibilityIncrement() { step?(true) }
     override func accessibilityDecrement() { step?(false) }
+}
+
+/// A row in the account bar above the account row: an icon, its title and a
+/// right-aligned terracotta count, with 8pt hover, pressed and selected washes.
+final class AccountPanelRow: UIControl {
+    enum CountStyle { case text, capsule }
+    private let icon = UIImageView()
+    private let title = UIKitStyle.label(size: 13, weight: .medium)
+    private let count = PaddedLabel()
+    private let action: () -> Void
+    private var hovered = false
+    private var selectedRow = false
+
+    init(icon image: UIImage?, title text: String, identifier: String, hint: String, action: @escaping () -> Void) {
+        self.action = action
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        layer.cornerRadius = 8
+        layer.cornerCurve = .continuous
+        icon.image = image?.resized(to: 16).withRenderingMode(.alwaysTemplate)
+        icon.tintColor = UIKitStyle.text
+        icon.contentMode = .center
+        title.text = text
+        title.lineBreakMode = .byTruncatingTail
+        count.font = UIKitStyle.font(13, .medium)
+        count.textAlignment = .right
+        count.setContentCompressionResistancePriority(.required, for: .horizontal)
+        count.layer.masksToBounds = true
+        count.isHidden = true
+        let stack = UIStackView(arrangedSubviews: [icon, title, count])
+        stack.spacing = 9
+        stack.alignment = .center
+        stack.isUserInteractionEnabled = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 36),
+            icon.widthAnchor.constraint(equalToConstant: 24),
+            count.heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 4),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        accessibilityLabel = text
+        accessibilityHint = hint
+        accessibilityIdentifier = identifier
+        addAction(UIAction { [weak self] _ in self?.action() }, for: .primaryActionTriggered)
+        addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(hover(_:))))
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(count value: Int?, countStyle: CountStyle, selected: Bool, value accessibility: String) {
+        selectedRow = selected
+        if let value {
+            count.text = String(value)
+            count.isHidden = false
+            switch countStyle {
+            case .text:
+                count.padding = 0
+                count.textColor = UIKitStyle.terracotta
+                count.backgroundColor = .clear
+                count.layer.cornerRadius = 0
+            case .capsule:
+                count.padding = 12
+                count.textAlignment = .center
+                count.font = UIKitStyle.font(10, .bold)
+                count.textColor = UIKitStyle.text
+                count.backgroundColor = UIKitStyle.terracotta
+                count.layer.cornerRadius = 9
+            }
+        } else { count.isHidden = true }
+        // The value says "Selected", as the list rows' do; a selected trait would repeat it.
+        accessibilityValue = [selected ? "Selected" : "", accessibility].filter { !$0.isEmpty }.joined(separator: ", ")
+        refresh()
+    }
+
+    override var isHighlighted: Bool { didSet { refresh() } }
+    @objc private func hover(_ recognizer: UIHoverGestureRecognizer) {
+        switch recognizer.state {
+        case .began, .changed: hovered = true
+        default: hovered = false
+        }
+        refresh()
+    }
+    private func refresh() {
+        backgroundColor = selectedRow ? UIKitStyle.terracotta.withAlphaComponent(0.16)
+            : isHighlighted || hovered ? UIColor.white.withAlphaComponent(0.06) : .clear
+    }
 }
 
 /// A label with horizontal padding, for counts in capsules.

@@ -680,7 +680,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                         { voicePermissionError = null }, joinVoice, leaveVoice, showAccountBar = false) { setNavigationOpen(false) }
                                 }
                                 // The full width, below the rail too.
-                                AccountBar(state, voice, viewModel, show, narrow = true)
+                                AccountBar(state, voice, viewModel, show, narrow = true) { setNavigationOpen(false) }
                             }
                             Box(Modifier.fillMaxSize().conversationLayer(drawer).background(Surface)
                                 .browseDrag(members, direction = -1f,
@@ -1023,11 +1023,6 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             if (detail != null) NotificationSaveError(state.notificationErrors[spaceKey(detail.space.id)]) { viewModel.dismissNotificationError(spaceKey(detail.space.id)) }
             HorizontalDivider(color = Border)
         }
-        // As web: Notifications sits under the space name, above Channels.
-        if (state.account != null) {
-            Spacer(Modifier.height(6.dp))
-            ActivityInboxEntry(viewModel) { closeNavigation?.invoke() }
-        }
         BoxWithConstraints(Modifier.weight(1f)) {
             // On a short window, reserve no more than a third for either list;
             // otherwise each starts with a useful 96dp of visible rows.
@@ -1188,27 +1183,6 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 ) { HorizontalDivider(Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Border) }
                 Column(Modifier.weight(1f - clampedShare).verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(6.dp))
-                // Feedback team only: the `@feedback` inbox, beside the DMs.
-                if (state.account.feedbackTeam) {
-                    val feedbackSelected = state.feedbackShown || state.visit != null
-                    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
-                        .background(if (feedbackSelected) TerracottaWash else Color.Transparent)
-                        .clickable(role = Role.Button) { viewModel.openFeedbackInbox(); closeNavigation?.invoke() }
-                        .semantics { if (feedbackSelected) selected = true }
-                        .padding(horizontal = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Icon(painterResource(R.drawable.lucide_inbox), null, Modifier.size(17.dp), tint = if (feedbackSelected) TerracottaBright else TextMuted)
-                        Spacer(Modifier.width(9.dp))
-                        Text("Feedback", Modifier.weight(1f), color = if (feedbackSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                        if (state.feedbackWaiting > 0) {
-                            Text(state.feedbackWaiting.toString(),
-                                Modifier.padding(start = 6.dp).background(Terracotta, CircleShape)
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    .clearAndSetSemantics { contentDescription = "${state.feedbackWaiting} feedback ${if (state.feedbackWaiting == 1) "conversation" else "conversations"} waiting for a reply" },
-                                color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Direct messages", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     IconButton({ show(Overlay.StartDirect) }) { Icon(painterResource(R.drawable.lucide_plus), "New direct message", tint = TextMuted) }
@@ -1291,7 +1265,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         }
         // Voice errors keep their panel above the account bar, with a dismiss button.
         (voicePermissionError ?: voice.error)?.let { error -> VoiceErrorBanner(error, dismissVoicePermissionError) }
-        if (showAccountBar) AccountBar(state, voice, viewModel, show)
+        if (showAccountBar) AccountBar(state, voice, viewModel, show, closeNavigation = closeNavigation)
     }
 }
 
@@ -1495,10 +1469,38 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     if (status == null) "Status unavailable"
     else status.replaceFirstChar { it.uppercase() } + if (live) "" else " (last known; reconnecting)"
 
-@Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, narrow: Boolean = false) {
+@Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, narrow: Boolean = false, closeNavigation: (() -> Unit)? = null) {
     val context = LocalContext.current
     // Match the one-line Material composer and its bottom inset, retaining touch targets.
     Surface(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+      Column {
+        // Signed in, the panel grows upward: Notifications and (feedback team only) Feedback sit above the account row.
+        if (state.account != null) {
+            Column(Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp)) {
+                ActivityInboxEntry(viewModel, Modifier) { closeNavigation?.invoke() }
+                if (state.account.feedbackTeam) {
+                    val feedbackSelected = state.feedbackShown || state.visit != null
+                    Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).clip(MaterialTheme.shapes.small)
+                        .background(if (feedbackSelected) TerracottaWash else Color.Transparent)
+                        .clickable(role = Role.Button) { viewModel.openFeedbackInbox(); closeNavigation?.invoke() }
+                        .semantics { if (feedbackSelected) selected = true }
+                        .padding(horizontal = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Icon(painterResource(R.drawable.lucide_inbox), null, Modifier.size(17.dp), tint = if (feedbackSelected) TerracottaBright else TextMuted)
+                        Spacer(Modifier.width(9.dp))
+                        Text("Feedback", Modifier.weight(1f), color = if (feedbackSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        if (state.feedbackWaiting > 0) {
+                            Text(state.feedbackWaiting.toString(),
+                                Modifier.padding(start = 6.dp).background(Terracotta, CircleShape)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .clearAndSetSemantics { contentDescription = "${state.feedbackWaiting} feedback ${if (state.feedbackWaiting == 1) "conversation" else "conversations"} waiting for a reply" },
+                                color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+            HorizontalDivider(Modifier.padding(top = 4.dp), color = Border)
+        }
         Row(Modifier.height(56.dp).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.small)
                 .clickable(role = Role.Button) { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
@@ -1528,6 +1530,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Icon(painterResource(R.drawable.lucide_settings), "User Settings", Modifier.size(18.dp), tint = TextMuted)
             }
         }
+      }
     }
 }
 

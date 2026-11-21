@@ -3544,16 +3544,7 @@ export default function Spaces({
           )}
         </header>
       )}
-      {inboxEntry}
-      <SidebarSections
-        resizable={!detail.space.demo}
-        directs={
-          <>
-            {feedbackNavigation}
-            {directNavigation}
-          </>
-        }
-      >
+      <SidebarSections resizable={!detail.space.demo} directs={directNavigation}>
         {notificationAlert(`space:${detail.space.id}`)}
         {/* Voice without a row below: your call in another space, or a visited room. */}
         {liveNow}
@@ -4002,6 +3993,14 @@ export default function Spaces({
         }}
         spaceRail={rail}
         channelNavigation={channelNavigation}
+        accountShortcuts={
+          (inboxEntry || feedbackNavigation) && (
+            <>
+              {inboxEntry}
+              {feedbackNavigation}
+            </>
+          )
+        }
         membersPanel={
           directView || visitView || !channel || channel.joined === false
             ? undefined

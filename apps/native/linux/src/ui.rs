@@ -589,8 +589,8 @@ pub struct Ui {
     pub channels: gtk::ListBox,
     /// "Message requests" (its first row toggles) and the incoming requests.
     pub requests: gtk::ListBox,
-    /// A bell, "Notifications" and, as on the web, a terracotta unread
-    /// count at the far end: opens the inbox.
+    /// The account panel's first row: a bell, "Notifications" and, as on
+    /// the web, a terracotta unread count at the far end: opens the inbox.
     pub inbox: gtk::Button,
     pub inbox_count: gtk::Label,
     pub directs: gtk::ListBox,
@@ -609,6 +609,7 @@ pub struct Ui {
     /// The header's Join voice, Switch here, Joining… or Leave voice.
     pub voice_join: gtk::Button,
     pub visit_back: gtk::Button,
+    /// Team accounts: "Feedback" in the account panel, under Notifications.
     pub feedback: gtk::ListBox,
     pub feedback_waiting: gtk::Label,
     pub feedback_page: gtk::Box,
@@ -922,22 +923,6 @@ impl Ui {
         space_row.append(&space_header);
         space_row.append(&browse_close);
         sidebar.append(&space_row);
-        // The notifications inbox, with its unread count: a bell row under
-        // the space's name, as web and Win32.
-        // Unnamed, so screen readers read the label and its count.
-        let inbox = gtk::Button::new();
-        inbox.add_css_class("flat");
-        inbox.add_css_class("inbox-row-button");
-        let inbox_line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        inbox_line.append(&images.icon_image(Icon::Bell, "#b9bcbe", 18));
-        let inbox_label = label("Notifications", &[]);
-        inbox_label.set_hexpand(true);
-        inbox_line.append(&inbox_label);
-        let inbox_count = label("", &["inbox-count"]);
-        inbox_count.set_visible(false);
-        inbox_line.append(&inbox_count);
-        inbox.set_child(Some(&inbox_line));
-        sidebar.append(&inbox);
         let lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let channel_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let channels_toggle: gtk::Button = crate::app::named("GtkButton", "Toggle channels");
@@ -994,20 +979,6 @@ impl Ui {
         new_direct.set_valign(gtk::Align::End);
         direct_header.append(&new_direct);
         direct_lists.append(&direct_header);
-        // The Caper team's inbox, for team members only (`app::feedback`).
-        let feedback: gtk::ListBox = crate::app::named("GtkListBox", "Feedback");
-        feedback.add_css_class("channels");
-        feedback.set_visible(false);
-        let feedback_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        feedback_line.append(&images.icon_image(Icon::Speech, "#b9bcbe", 16));
-        let feedback_name = label("Feedback", &[]);
-        feedback_name.set_hexpand(true);
-        feedback_line.append(&feedback_name);
-        let feedback_waiting = label("", &["count", "mention"]);
-        feedback_waiting.set_visible(false);
-        feedback_line.append(&feedback_waiting);
-        feedback.append(&feedback_line);
-        direct_lists.append(&feedback);
         let requests: gtk::ListBox = crate::app::named("GtkListBox", "Message requests");
         requests.add_css_class("channels");
         requests.set_visible(false);
@@ -1031,6 +1002,47 @@ impl Ui {
         sidebar_lists.set_shrink_end_child(false);
         sidebar_lists.set_vexpand(true);
         sidebar.append(&sidebar_lists);
+        // The account panel: Notifications and, for the team, Feedback
+        // stacked over the account row, on one raised surface.
+        let account_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        account_panel.add_css_class("account-panel");
+        let panel_rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        panel_rows.add_css_class("account-panel-rows");
+        // The notifications inbox, with its unread count.
+        // Unnamed, so screen readers read the label and its count.
+        let inbox = gtk::Button::new();
+        inbox.add_css_class("flat");
+        inbox.add_css_class("inbox-row-button");
+        let inbox_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        inbox_line.append(&images.icon_image(Icon::Bell, "#b9bcbe", 16));
+        let inbox_label = label("Notifications", &[]);
+        inbox_label.set_hexpand(true);
+        inbox_label.set_xalign(0.0);
+        inbox_line.append(&inbox_label);
+        let inbox_count = label("", &["inbox-count"]);
+        inbox_count.set_visible(false);
+        inbox_line.append(&inbox_count);
+        inbox.set_child(Some(&inbox_line));
+        panel_rows.append(&inbox);
+        // The Caper team's inbox, for team members only (`app::feedback`).
+        let feedback: gtk::ListBox = crate::app::named("GtkListBox", "Feedback");
+        feedback.add_css_class("channels");
+        feedback.add_css_class("panel-feedback");
+        feedback.set_visible(false);
+        let feedback_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        feedback_line.append(&images.icon_image(Icon::Speech, "#b9bcbe", 16));
+        let feedback_name = label("Feedback", &[]);
+        feedback_name.set_hexpand(true);
+        feedback_name.set_xalign(0.0);
+        feedback_line.append(&feedback_name);
+        let feedback_waiting = label("", &["count", "mention"]);
+        // A pill, not the row's full height.
+        feedback_waiting.set_valign(gtk::Align::Center);
+        feedback_waiting.set_visible(false);
+        feedback_line.append(&feedback_waiting);
+        feedback.append(&feedback_line);
+        panel_rows.append(&feedback);
+        account_panel.append(&panel_rows);
         let dock = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         dock.add_css_class("dock");
         let account_avatar = AvatarView::new(30, true);
@@ -1083,7 +1095,8 @@ impl Ui {
         update_dock.add_css_class("update-dock");
         update_dock.set_visible(false);
         sidebar.append(&crate::update_shine::shine(&update_dock));
-        sidebar.append(&dock);
+        account_panel.append(&dock);
+        sidebar.append(&account_panel);
 
         let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
         conversation.add_css_class("conversation");

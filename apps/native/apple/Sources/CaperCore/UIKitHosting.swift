@@ -285,7 +285,7 @@ private final class WeakController {
     public var presenting: Bool { actions != nil || reactors != nil || block != nil }
 }
 
-/// The account's notifications inbox ("Notifications" atop Direct messages):
+/// The account's notifications inbox ("Notifications" in the account panel):
 /// native controls, polling only while this sheet is open.
 @MainActor public enum UIKitActivity {
     public static func unread(_ model: AppModel) -> Int { model.activityUnread }

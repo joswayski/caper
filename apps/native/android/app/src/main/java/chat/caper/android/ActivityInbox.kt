@@ -15,6 +15,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
@@ -38,7 +39,7 @@ import kotlinx.coroutines.delay
 
 /** A modal inbox keeps the underlying chat draft and voice call mounted. */
 @OptIn(ExperimentalLayoutApi::class)
-@Composable internal fun ActivityInboxEntry(viewModel: CaperViewModel, onOpened: () -> Unit) {
+@Composable internal fun ActivityInboxEntry(viewModel: CaperViewModel, modifier: Modifier = Modifier.padding(horizontal = 16.dp), onOpened: () -> Unit) {
     val inbox by viewModel.activityInbox.collectAsState()
     val state by viewModel.state.collectAsState()
     val epoch = viewModel.accountEpoch
@@ -46,12 +47,14 @@ import kotlinx.coroutines.delay
     var shown by remember { mutableStateOf(false) }
     var reacting by remember(epoch) { mutableStateOf<ActivityItem?>(null) }
     var picking by remember(epoch) { mutableStateOf(emptySet<String>()) }
-    TextButton({ shown = true }, Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        Icon(painterResource(R.drawable.lucide_bell), null, Modifier.size(16.dp), tint = TextMuted)
-        Spacer(Modifier.width(8.dp))
-        Text("Notifications", Modifier.weight(1f), color = Text, fontSize = 13.sp)
+    Row(modifier.fillMaxWidth().heightIn(min = 40.dp).clip(MaterialTheme.shapes.small)
+        .clickable(role = Role.Button) { shown = true }.padding(horizontal = 9.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Icon(painterResource(R.drawable.lucide_bell), null, Modifier.size(17.dp), tint = TextMuted)
+        Spacer(Modifier.width(9.dp))
+        Text("Notifications", Modifier.weight(1f), color = Text, fontSize = 13.sp, maxLines = 1)
         if (inbox.unreadCount > 0) Text(if (inbox.unreadCount > 99) "99+" else "${inbox.unreadCount}",
-            Modifier.clearAndSetSemantics { contentDescription = "${inbox.unreadCount} unread notifications" }, color = TerracottaBright)
+            Modifier.clearAndSetSemantics { contentDescription = "${inbox.unreadCount} unread notifications" }, color = TerracottaBright, fontSize = 13.sp)
     }
     if (!shown) return
     DisposableEffect(viewModel) {

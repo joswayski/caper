@@ -458,6 +458,8 @@ interface CallProps {
   headerMenuItems?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
   spaceRail?: ReactNode | ((connectedSpaceId: string | undefined) => ReactNode);
+  /** Account-wide entries (Notifications, Feedback) atop the account bar, which grows upward. */
+  accountShortcuts?: ReactNode;
   /** Channels in the current space, whose voice shows on their rows. */
   voiceChannels?: Array<{ id: string; name: string; private?: boolean }>;
   /**
@@ -516,6 +518,7 @@ export default function Call({
   headerMenuItems,
   voiceChannels,
   spaceRail,
+  accountShortcuts,
   channelNavigation,
   onOpenChannel,
   membersPanel,
@@ -1990,6 +1993,7 @@ export default function Call({
         <ChannelSidebar>
           <div className="sidebar-channels">{navigation}</div>
           <div className="voice-panel">
+            {accountShortcuts && <div className="account-shortcuts">{accountShortcuts}</div>}
             {/* Your call itself lives on its card, in place of its channel row. */}
             {voiceError && !audioPanel && !inlineVoiceError && (
               <div className="voice-dock">

@@ -1,14 +1,14 @@
 //! The Caper team's feedback inbox and report visits, as on the egui
-//! desktop. Team accounts (`feedbackTeam`) get "Feedback" under the
-//! notifications, with the count of reports waiting for a reply. It opens
-//! the inbox in the conversation's place: each `@feedback` report with who,
-//! where and when, Waiting or Answered, and Archive (Restore in the archived
-//! view), then "Load older feedback" and "Show archived". A report opens its
-//! conversation at the report, without joining it: a visit, titled "#plans ·
-//! Studio" or "Alice & Bob", where the team replies as themselves. "Back to
-//! feedback" returns to the inbox, or Close to the conversation a
-//! notification interrupted. Paging is `caper_client::feedback`. A child of
-//! `app`.
+//! desktop. Team accounts (`feedbackTeam`) get "Feedback" in the account
+//! panel, under Notifications and above the account row, with the count of
+//! reports waiting for a reply. It opens the inbox in the conversation's
+//! place: each `@feedback` report with who, where and when, Waiting or
+//! Answered, and Archive (Restore in the archived view), then "Load older
+//! feedback" and "Show archived". A report opens its conversation at the
+//! report, without joining it: a visit, titled "#plans · Studio" or "Alice
+//! & Bob", where the team replies as themselves. "Back to feedback" returns
+//! to the inbox, or Close to the conversation a notification interrupted.
+//! Paging is `caper_client::feedback`. A child of `app`.
 
 use super::{App, State, clear};
 use crate::images::{Avatar, AvatarView, Icon};

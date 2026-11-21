@@ -3012,6 +3012,77 @@ html[data-resizing-sections] * {
   line-height: 1.45;
 }
 
+/* Account-wide entries atop the account bar: the bar grows upward to hold
+   Notifications and, for the feedback team, Feedback. */
+.account-shortcuts {
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.account-shortcuts .notifications-entry,
+.account-shortcuts .feedback-section .feedback-section-title {
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 9px 0 4px;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.account-shortcuts .notifications-entry svg {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 17px;
+}
+@media (hover: hover) {
+  .account-shortcuts .notifications-entry:hover,
+  .account-shortcuts .feedback-section .feedback-section-title:hover {
+    color: var(--text);
+    background: var(--surface-composer);
+  }
+}
+.account-shortcuts .notifications-entry:focus-visible {
+  outline: 2px solid var(--terracotta);
+}
+.account-shortcuts .feedback-section {
+  margin: 0;
+  padding: 0;
+}
+.spaces-room .account-shortcuts .feedback-section::before {
+  content: none;
+}
+.account-shortcuts .feedback-section .channel-section-heading {
+  margin: 0;
+  min-height: 32px;
+}
+/* A plain count like Notifications', rather than the sidebar's pill. */
+.account-shortcuts .feedback-waiting-count {
+  position: absolute;
+  right: 9px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  color: var(--terracotta-bright);
+  font-size: 0.8rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+/* Expanded, the list scrolls inside the bar instead of pushing the channels away. */
+.spaces-room .account-shortcuts .feedback-section > ul {
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+}
+@media (max-width: 760px), (hover: none), (pointer: coarse) {
+  .account-shortcuts .notifications-entry,
+  .account-shortcuts .feedback-section .feedback-section-title {
+    min-height: 44px;
+  }
+}
+
 /* The feedback team's inbox: one row per reported thread, newest first. */
 .channel-section-heading .feedback-section-title {
   justify-content: flex-start;

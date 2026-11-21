@@ -6334,13 +6334,19 @@ mod tests {
         assert!(support::snapshot(&live, Page::Diagnostics).is_none());
         assert!(
             !live
-                .direct_rows()
+                .inbox_rows()
                 .iter()
                 .any(|r| r.kind == crate::directs::RowKind::Feedback)
         );
         live.feedback_team = true;
         live.feedback_waiting = 9;
-        let rows = live.direct_rows();
+        // Feedback sits in the account panel, not under Direct messages.
+        assert!(
+            live.direct_rows()
+                .iter()
+                .all(|r| r.kind != crate::directs::RowKind::Feedback)
+        );
+        let rows = live.inbox_rows();
         let row = rows
             .iter()
             .find(|r| r.kind == crate::directs::RowKind::Feedback)

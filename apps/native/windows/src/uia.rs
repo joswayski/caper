@@ -68,6 +68,9 @@ pub enum Id {
     ChannelOptions(usize),
     DmMenu,
     DmItem(usize),
+    /// The account panel's Notifications and Feedback rows, above the
+    /// account row.
+    Inbox(usize),
     /// The account footer's gear, its menu and the menu's items.
     Gear,
     /// The header's Show/Hide member list button.
@@ -337,6 +340,7 @@ pub fn focused(a: &App) -> Option<Id> {
     let side = a.side_focus.map(|s| match s {
         crate::Side::Channel(i) => Id::Channel(i),
         crate::Side::Direct(k) => Id::Direct(k),
+        crate::Side::Inbox(k) => Id::Inbox(k),
     });
     side.filter(|&id| exists(a, id))
         .or_else(|| (a.c.has_conversation() && exists(a, Id::History)).then_some(Id::History))
@@ -444,6 +448,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             if a.update_dock_rect().is_some() {
                 out.push(Id::UpdateDock);
             }
+            out.extend((0..a.inbox_rows().len()).map(Id::Inbox));
             if a.foot_shown() {
                 out.push(Id::Gear);
             }
@@ -627,6 +632,7 @@ fn surface_shown(a: &App, id: Id) -> bool {
         Id::Rail
         | Id::Channels
         | Id::Directs
+        | Id::Inbox(_)
         | Id::Gear
         | Id::UpdateDock
         | Id::Voice(crate::call::VPart::Join(_)) => a.navigation_shown(),
@@ -696,6 +702,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Typing => a.typing_label().is_some(),
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
         Id::Gear => a.foot_shown(),
+        Id::Inbox(k) => k < a.inbox_rows().len(),
         Id::MembersToggle => a.members_toggle_rect().is_some() && a.dialog.is_none(),
         Id::PinsButton => a.pins_button_rect().is_some() && a.dialog.is_none(),
         Id::Pins(_) => false,
@@ -883,6 +890,10 @@ fn name(a: &App, id: Id) -> String {
             .map_or_else(String::new, |s| (*s).into()),
         Id::Direct(k) => a
             .direct_rows()
+            .get(k)
+            .map_or_else(String::new, crate::directs::Row::label),
+        Id::Inbox(k) => a
+            .inbox_rows()
             .get(k)
             .map_or_else(String::new, crate::directs::Row::label),
         Id::History if !c.has_conversation() => {
@@ -1207,7 +1218,9 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Settings(crate::settings::SPart::Delete) => UIA_HyperlinkControlTypeId,
         Id::Settings(p) if p.is_radio() => UIA_RadioButtonControlTypeId,
         Id::Settings(p) if p.is_toggle() => UIA_CheckBoxControlTypeId,
-        Id::Settings(_) | Id::Gear | Id::UpdateDock | Id::MembersToggle => UIA_ButtonControlTypeId,
+        Id::Settings(_) | Id::Gear | Id::Inbox(_) | Id::UpdateDock | Id::MembersToggle => {
+            UIA_ButtonControlTypeId
+        }
         Id::PinsButton | Id::Pins(PinPart::Close | PinPart::Go(_)) => UIA_ButtonControlTypeId,
         Id::Pins(PinPart::Card(_)) => UIA_ListItemControlTypeId,
         Id::Pins(PinPart::Empty) | Id::ReactionError(_) => UIA_TextControlTypeId,
@@ -1302,6 +1315,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::UpdateDock => (39, 1),
         Id::MembersToggle => (39, 2),
         Id::PinsButton => (39, 3),
+        Id::Inbox(k) => (39, 4 + k),
         // Groups 70–76 and 80–86 belong to forwarded cards (`ForwardPart`).
         Id::Pins(PinPart::Close) => (54, 0),
         Id::Pins(PinPart::Card(k)) => (54, 1 + 2 * k),
@@ -1504,6 +1518,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .and_then(|s| s.part_rect(p))
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Gear => a.gear_rect(),
+        Id::Inbox(k) => a.inbox_rect(k),
         Id::MembersToggle => a.members_toggle_rect().unwrap_or_default(),
         Id::PinsButton => a.pins_button_rect().unwrap_or_default(),
         Id::Pins(q) => a
@@ -1784,6 +1799,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Settings(_)
             | Id::Voice(_)
             | Id::Gear
+            | Id::Inbox(_)
             | Id::MembersToggle
             | Id::PinsButton
             | Id::Pins(_)
@@ -2047,6 +2063,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Direct(_)
                         | Id::NewDirect
                         | Id::Invite(_)
+                        | Id::Inbox(_)
                         | Id::Gear
                         | Id::MembersToggle
                         | Id::PinsButton
@@ -2244,6 +2261,10 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                     a.focus_side(crate::Side::Direct(k));
                     a.side_ring = true;
                 }
+                Id::Inbox(k) => {
+                    a.focus_side(crate::Side::Inbox(k));
+                    a.side_ring = true;
+                }
                 Id::Resize(p) => a.focus_pane(p),
                 Id::Narrow(p) => a.focus_narrow(p),
                 Id::Video(c) if a.video_enabled(c) => a.focus_video(c),
@@ -2398,6 +2419,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Narrow(p) => a.narrow_activate(p),
                 Id::Voice(p) => a.voice_activate(p),
                 Id::Gear => a.toggle_account_menu(),
+                Id::Inbox(k) => a.pick_inbox(k),
                 Id::MembersToggle => a.toggle_members(),
                 Id::PinsButton => a.open_pins(),
                 Id::MemberSearch(p) => a.member_search_activate(p),

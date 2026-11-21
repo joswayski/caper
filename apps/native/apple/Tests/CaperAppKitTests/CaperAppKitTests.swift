@@ -3772,7 +3772,9 @@ import XCTest
         let general = channels.buttons["channel-chan00000001"]
         let design = channels.buttons["channel-chan00000002"]
         let mute = channels.buttons["voice-call-mute"]
-        let activity = directs.buttons["activity-inbox"]
+        // Notifications is an account panel row, outside both sidebar sections.
+        let activity = app.buttons["activity-inbox"]
+        let notes = directs.buttons["dm-self"]
         let requests = directs.buttons["message-requests"]
         let newMessage = directs.buttons["new-message"]
         let search = channels.searchFields["browse-channels-search"]
@@ -3789,6 +3791,10 @@ import XCTest
         XCTAssertTrue(directs.buttons["dm-dm0000000004"].waitForExistence(timeout: 10))
         XCTAssertTrue(directs.buttons["dm-dm0000000001"].waitForExistence(timeout: 5))
         XCTAssertFalse(channels.buttons["activity-inbox"].exists)
+        XCTAssertFalse(directs.buttons["activity-inbox"].exists, "Notifications sits in the account panel, not under Direct messages")
+        XCTAssertTrue(activity.exists)
+        XCTAssertGreaterThanOrEqual(activity.frame.minY, directs.frame.maxY)
+        XCTAssertLessThanOrEqual(activity.frame.maxY, account.frame.minY, "Notifications stacks above the account row")
         XCTAssertFalse(directs.buttons["channels-toggle"].exists)
         composer.click(); composer.typeText(draft)
         revealSidebar(mute, in: channels); mute.click()
@@ -3849,12 +3855,12 @@ import XCTest
             divider.click(); divider.typeKey(.end, modifierFlags: [])
             assertGeometry(available - lower)
             channels.scroll(byDeltaX: 0, deltaY: 10000); directs.scroll(byDeltaX: 0, deltaY: 10000)
-            let generalY = general.frame.minY, activityFrame = activity.frame
+            let generalY = general.frame.minY, notesFrame = notes.frame, activityFrame = activity.frame
             XCTAssertFalse(channels.frame.contains(browseResult.frame), "The fixture must really overflow channels")
             channels.scroll(byDeltaX: 0, deltaY: -10000)
             XCTAssertTrue(browseResult.isHittable); XCTAssertTrue(channels.frame.contains(browseResult.frame))
             XCTAssertLessThan(general.frame.minY, generalY - 20)
-            XCTAssertEqual(activity.frame, activityFrame, "Scrolling channels must not scroll direct messages")
+            XCTAssertEqual(notes.frame, notesFrame, "Scrolling channels must not scroll direct messages")
             browseResult.hover(); channels.buttons["browse-options-\(lastID)"].hover(); browseResult.hover()
             assertGeometry(available - lower); assertState()
             capture("sidebar channels independently scrolled to Browse result \(Int(width))", app: app)
@@ -3862,7 +3868,8 @@ import XCTest
             XCTAssertFalse(directs.frame.contains(newMessage.frame), "The supported DM rows must really overflow the minimum pane")
             directs.scroll(byDeltaX: 0, deltaY: -10000)
             XCTAssertTrue(newMessage.isHittable); XCTAssertTrue(directs.frame.contains(newMessage.frame))
-            XCTAssertLessThan(activity.frame.minY, activityFrame.minY - 20)
+            XCTAssertLessThan(notes.frame.minY, notesFrame.minY - 20)
+            XCTAssertEqual(activity.frame, activityFrame, "The account panel's Notifications row never scrolls")
             XCTAssertEqual(browseResult.frame, resultFrame, "Scrolling direct messages must not scroll channels")
             // These are real pointer movements over a DM, its separate menu,
             // New message and the fixed account bar, not a fabricated hover.
@@ -4263,14 +4270,17 @@ import XCTest
         defer { app.terminate() }
         let composer = app.textViews["message-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15)); resize(app, width: 1280)
+        // An account panel row above the account row, not under Direct messages.
         let entry = app.buttons["feedback-inbox"]
-        revealSidebar(entry, in: app.scrollViews["sidebar-direct-scroll"])
+        XCTAssertTrue(entry.waitForExistence(timeout: 5)); XCTAssertTrue(entry.isHittable)
+        XCTAssertFalse(app.scrollViews["sidebar-direct-scroll"].buttons["feedback-inbox"].exists)
+        XCTAssertLessThanOrEqual(entry.frame.maxY, app.buttons["account-profile"].frame.minY)
         let waiting = NSPredicate(format: "value BEGINSWITH %@", "1 feedback conversation waiting for a reply")
         XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: waiting, evaluatedWith: entry)], timeout: 10), .completed,
                        "The entry counts reports waiting for a reply, in the singular for one")
         entry.click()
         let report = app.buttons["feedback-report-chan00000009m02"]
-        revealSidebar(report, in: app.scrollViews["sidebar-direct-scroll"])
+        revealSidebar(report, in: app.scrollViews["sidebar-feedback-scroll"])
         capture("feedback inbox", app: app)
         report.click()
         XCTAssertTrue(app.staticTexts["Visiting #plans · Maya's Workshop"].waitForExistence(timeout: 10), "The visit opens without joining")

@@ -11,8 +11,9 @@
 //! off, mute for a while or unmute), and a muted one shows a bell-slash.
 //! The same menu serves the space (the sidebar header's button: when voice
 //! starts, the level, mute) and each channel (its row's button: the level,
-//! mute). The section's first row opens the notification inbox, with its
-//! unread count.
+//! mute). The account panel's rows ("Notifications" with its unread count,
+//! and "Feedback" for the feedback team) share the row type here; the panel
+//! (`settings`) places and draws them.
 use crate::avatars::Face;
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::live::Live;
@@ -168,12 +169,14 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
 }
 
-/// What a row of the section is.
+/// What a row of the section, or of the account panel, is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
     Direct,
-    /// "Notifications", opening the inbox, with its unread count.
+    /// The account panel's "Notifications", opening the inbox, with its
+    /// unread count.
     Notifications,
+    /// The account panel's "Feedback", for the feedback team.
     Feedback,
     /// "Message requests", open or closed, with the requests' count.
     Requests {
@@ -282,32 +285,7 @@ impl Live {
                 error: None,
             }
         };
-        // egui's Notifications button, under the section's heading.
-        let unread = self.activity.unread_count;
-        let mut out = vec![Row {
-            kind: RowKind::Notifications,
-            id: None,
-            name: "Notifications".into(),
-            note: None,
-            own: false,
-            unread: false,
-            count: (unread > 0).then_some(unread),
-            color: 0,
-            initials: String::new(),
-            avatar: crate::avatars::Avatar::default(),
-            active: self.activity.shown,
-            muted: None,
-            error: None,
-        }];
-        if self.feedback_team {
-            out.push(Row {
-                kind: RowKind::Feedback,
-                name: "Feedback".into(),
-                count: (self.feedback_waiting > 0).then_some(self.feedback_waiting),
-                active: self.feedback_shown || self.feedback_visit.is_some(),
-                ..out[0].clone()
-            });
-        }
+        let mut out = Vec::new();
         let requests: Vec<_> = self
             .directs
             .iter()
@@ -371,6 +349,40 @@ impl Live {
         );
         out
     }
+
+    /// The account panel's rows, above your name: "Notifications" with
+    /// the unread count, then "Feedback" for the feedback team.
+    pub fn inbox_rows(&self) -> Vec<Row> {
+        if self.account_id.is_none() {
+            return Vec::new();
+        }
+        let unread = self.activity.unread_count;
+        let mut out = vec![Row {
+            kind: RowKind::Notifications,
+            id: None,
+            name: "Notifications".into(),
+            note: None,
+            own: false,
+            unread: false,
+            count: (unread > 0).then_some(unread),
+            color: 0,
+            initials: String::new(),
+            avatar: crate::avatars::Avatar::default(),
+            active: self.activity.shown,
+            muted: None,
+            error: None,
+        }];
+        if self.feedback_team {
+            out.push(Row {
+                kind: RowKind::Feedback,
+                name: "Feedback".into(),
+                count: (self.feedback_waiting > 0).then_some(self.feedback_waiting),
+                active: self.feedback_shown || self.feedback_visit.is_some(),
+                ..out[0].clone()
+            });
+        }
+        out
+    }
 }
 
 /// Draws the section in the sidebar (sidebar-local DIPs), its label at `top`.
@@ -416,10 +428,6 @@ pub fn draw(
         let (cx, cy) = (r.left + 17.5, y + ROW_H / 2.0);
         if let RowKind::Requests { open } = row.kind {
             draw_requests(g, dc, row, r, open, lit)?;
-            continue;
-        }
-        if matches!(row.kind, RowKind::Notifications | RowKind::Feedback) {
-            draw_inbox(g, dc, row, r, lit)?;
             continue;
         }
         crate::avatars::circle(g, dc, &row.avatar, (cx, cy, 10.0), row.color, &row.initials)?;
@@ -524,8 +532,15 @@ fn badge(g: &Gfx, dc: &ID2D1DeviceContext, n: u64, right: f32, cy: f32) -> Resul
     Ok(b.left)
 }
 
-/// "Notifications": a bell, the label, and the unread count.
-fn draw_inbox(g: &Gfx, dc: &ID2D1DeviceContext, row: &Row, r: D2D_RECT_F, lit: bool) -> Result<()> {
+/// An account panel row in `r`: a bell ("Notifications") or speech bubble
+/// ("Feedback"), the label, and the count.
+pub fn draw_inbox(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    row: &Row,
+    r: D2D_RECT_F,
+    lit: bool,
+) -> Result<()> {
     let cy = (r.top + r.bottom) / 2.0;
     let on = lit || row.active;
     crate::icons::draw(
@@ -1428,12 +1443,6 @@ impl App {
         let Some(row) = self.direct_rows().into_iter().nth(k) else {
             return;
         };
-        if row.kind == RowKind::Notifications {
-            return self.open_inbox();
-        }
-        if row.kind == RowKind::Feedback {
-            return self.open_support(crate::settings::Page::Feedback);
-        }
         if !matches!(row.kind, RowKind::Requests { .. }) {
             self.set_browsing(false);
         }

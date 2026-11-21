@@ -450,6 +450,7 @@ enum NavIcon {
     PhoneOff,
     HeadphoneOff,
     AudioLines,
+    Bell,
     BellOff,
     FileText,
     Play,
@@ -12990,38 +12991,6 @@ impl CaperApp {
                     }
                 });
             });
-            let label = if self.activity.unread_count > 0 {
-                format!("Notifications · {}", self.activity.unread_count)
-            } else {
-                "Notifications".into()
-            };
-            if ui
-                .add_sized([ui.available_width(), 32.0], egui::Button::new(label))
-                .clicked()
-            {
-                self.open_activity();
-            }
-            // The Caper team's inbox sits with the DMs, for team members only.
-            if self.feedback_team() {
-                let active = self.feedback_selected();
-                ui.horizontal(|ui| {
-                    let (response, _, _) = channel_button(
-                        ui,
-                        egui::vec2(ui.available_width(), 28.0),
-                        "Feedback",
-                        Some(NavIcon::Speech),
-                        active,
-                        RowExtras {
-                            feedback_waiting: self.feedback_waiting,
-                            ..Default::default()
-                        },
-                    );
-                    if response.clicked() {
-                        self.open_feedback();
-                    }
-                });
-                ui.add_space(2.0);
-            }
             self.request_navigation(ui);
             let self_direct = self
                 .directs
@@ -13143,7 +13112,6 @@ impl CaperApp {
                         None,
                         active,
                         RowExtras {
-                            feedback_waiting: 0,
                             unread_count: direct.unread_count.filter(|_| unread),
                             muted,
                             unread,
@@ -15267,15 +15235,95 @@ impl CaperApp {
         {
             self.updates.show_available();
         }
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 42.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 6.0, RAISED);
+        // Signed in, Notifications (and Feedback for the team) stack above
+        // the account row inside the same panel, divided from it by a line.
+        let rows = if self.account.is_none() {
+            0
+        } else if self.feedback_team() {
+            2
+        } else {
+            1
+        };
+        let extra = if rows == 0 {
+            0.0
+        } else {
+            rows as f32 * 30.0 + 8.0
+        };
+        let (panel, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), 42.0 + extra),
+            egui::Sense::hover(),
+        );
+        ui.painter().rect_filled(panel, 6.0, RAISED);
         ui.painter().rect_stroke(
-            rect,
+            panel,
             6.0,
             Stroke::new(1.0_f32, BORDER),
             egui::StrokeKind::Inside,
         );
+        let rect =
+            egui::Rect::from_min_max(egui::pos2(panel.left(), panel.bottom() - 42.0), panel.max);
+        if rows > 0 {
+            ui.painter().hline(
+                panel.x_range().shrink(1.0),
+                rect.top(),
+                Stroke::new(1.0_f32, BORDER),
+            );
+            let list = egui::Rect::from_min_max(
+                panel.min + egui::vec2(4.0, 4.0),
+                egui::pos2(panel.right() - 4.0, rect.top() - 4.0),
+            );
+            let unread = self.activity.unread_count;
+            let waiting = self.feedback_waiting;
+            let feedback_active = self.feedback_selected();
+            let (notifications, feedback) = ui
+                .scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(list)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let label = if unread > 0 {
+                            format!("Notifications, {unread} unread")
+                        } else {
+                            "Notifications".into()
+                        };
+                        let notifications = account_panel_row(
+                            ui,
+                            "Notifications",
+                            NavIcon::Bell,
+                            unread,
+                            false,
+                            &label,
+                        );
+                        let feedback = (rows == 2).then(|| {
+                            let label = if waiting > 0 {
+                                format!(
+                                    "Feedback, {}",
+                                    caper_client::feedback::waiting_label(waiting)
+                                )
+                            } else {
+                                "Feedback".into()
+                            };
+                            account_panel_row(
+                                ui,
+                                "Feedback",
+                                NavIcon::Speech,
+                                waiting,
+                                feedback_active,
+                                &label,
+                            )
+                        });
+                        (notifications, feedback)
+                    },
+                )
+                .inner;
+            if notifications.clicked() {
+                self.open_activity();
+            }
+            if feedback.is_some_and(|response| response.clicked()) {
+                self.open_feedback();
+            }
+        }
         let content = rect.shrink(5.0);
         let profile = egui::Rect::from_min_max(
             content.min,
@@ -27533,6 +27581,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::PhoneOff => egui::include_image!("../resources/icons/phone-off.svg"),
         NavIcon::HeadphoneOff => egui::include_image!("../resources/icons/headphone-off.svg"),
         NavIcon::AudioLines => egui::include_image!("../resources/icons/audio-lines.svg"),
+        NavIcon::Bell => egui::include_image!("../resources/icons/bell.svg"),
         NavIcon::BellOff => egui::include_image!("../resources/icons/bell-off.svg"),
         NavIcon::FileText => egui::include_image!("../resources/icons/file-text.svg"),
         NavIcon::Play => egui::include_image!("../resources/icons/play.svg"),
@@ -28017,8 +28066,6 @@ struct RowMenu<'a> {
 /// What a sidebar row shows besides its name and icon.
 #[derive(Default)]
 struct RowExtras<'a> {
-    /// Team reply backlog, independent of unread activity.
-    feedback_waiting: u64,
     /// Authoritative DM count, already gated by cursor and mute/block state.
     unread_count: Option<u64>,
     /// Muted rows are dimmed with a bell-slash; this is its tooltip, like
@@ -28073,12 +28120,7 @@ fn channel_button(
             egui::Role::Button,
             ui.is_enabled(),
             active,
-            if extras.feedback_waiting > 0 {
-                format!(
-                    "{name}, {}",
-                    caper_client::feedback::waiting_label(extras.feedback_waiting)
-                )
-            } else if let Some(count) = extras.unread_count {
+            if let Some(count) = extras.unread_count {
                 format!("{name}, {count} unread messages")
             } else if extras.unread {
                 format!("{name}, unread activity")
@@ -28135,25 +28177,6 @@ fn channel_button(
     // A live row ends with a small green waveform and how many are there.
     // It steps aside while the row's own shortcut and menu show.
     let mut live_left = rect.right();
-    if extras.feedback_waiting > 0 {
-        let text = extras.feedback_waiting.to_string();
-        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
-        let (galley, width) = tabular_galley(ui, &text, &font, TEXT);
-        let badge = egui::Rect::from_center_size(
-            egui::pos2(rect.right() - 8.0 - (width + 12.0) / 2.0, rect.center().y),
-            egui::vec2(width + 12.0, 18.0),
-        );
-        ui.painter().rect_filled(badge, 8.0, TERRACOTTA);
-        ui.painter().galley(
-            egui::pos2(
-                badge.center().x - width / 2.0,
-                badge.center().y - galley.size().y / 2.0,
-            ),
-            galley,
-            TEXT,
-        );
-        live_left = badge.left() - 9.0;
-    }
     if let Some(count) = extras.live {
         let text = count.to_string();
         let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
@@ -28393,6 +28416,85 @@ fn channel_button(
         settings.on_hover_text(menu.label);
     }
     (response, opened, voice)
+}
+
+/// A Notifications or Feedback row atop the account bar: icon, name and a
+/// terracotta count (capped at 99+) at the right, with the sidebar's row
+/// states on 8px corners.
+fn account_panel_row(
+    ui: &mut egui::Ui,
+    name: &str,
+    icon: NavIcon,
+    count: u64,
+    active: bool,
+    label: &str,
+) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), active, label)
+    });
+    let fill = if active {
+        Some(Color32::from_rgba_unmultiplied(182, 77, 50, 40))
+    } else if response.has_focus() {
+        Some(BORDER)
+    } else if response.hovered() {
+        Some(SURFACE_HOVER)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(rect, 8.0, fill);
+    }
+    let color = if active || response.hovered() || response.has_focus() {
+        TEXT
+    } else {
+        MUTED
+    };
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 15.0, rect.center().y),
+            egui::vec2(16.0, 16.0),
+        ),
+        icon,
+        if active { TERRACOTTA_BRIGHT } else { color },
+    );
+    let mut name_right = rect.right() - 8.0;
+    if count > 0 {
+        let text = if count > 99 {
+            "99+".to_owned()
+        } else {
+            count.to_string()
+        };
+        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Bold".into()));
+        let (galley, width) = tabular_galley(ui, &text, &font, TEXT);
+        let badge = egui::Rect::from_center_size(
+            egui::pos2(name_right - (width + 12.0) / 2.0, rect.center().y),
+            egui::vec2(width + 12.0, 18.0),
+        );
+        ui.painter().rect_filled(badge, 8.0, TERRACOTTA);
+        ui.painter().galley(
+            egui::pos2(
+                badge.center().x - width / 2.0,
+                badge.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            TEXT,
+        );
+        name_right = badge.left() - 8.0;
+    }
+    let font = egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into()));
+    let galley = truncated_galley(ui, name, font, color, name_right - rect.left() - 30.0);
+    ui.painter().galley(
+        egui::pos2(
+            rect.left() + 30.0,
+            rect.center().y - 1.0 - galley.size().y / 2.0,
+        ),
+        galley,
+        color,
+    );
+    response
 }
 
 /// Web's sidebar row states: the selection's terracotta wash, the neutral
@@ -42330,7 +42432,9 @@ mod tests {
         };
         let account = outline(71.0);
         let composer = outline(358.0);
-        assert_eq!(account.y_range(), composer.y_range());
+        // Level with the composer; the Notifications row grows it upward.
+        assert_eq!(account.bottom(), composer.bottom());
+        assert_eq!(account.height(), 42.0 + 38.0);
         assert_eq!(composer.bottom(), 884.0, "16px inset in the 900px window");
     }
 
@@ -45248,6 +45352,49 @@ mod tests {
             assert!(selected(&output, feedback_label));
             assert!(!selected(&output, "general"), "the report is a visit");
         }
+    }
+
+    #[test]
+    fn notifications_and_feedback_sit_in_the_account_panel_below_the_direct_messages() {
+        let (context, mut app) = fixture("parity-feedback");
+        app.feedback_open = false;
+        app.activity.unread_count = 137;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let bounds =
+            |label: &str| node_bounds(&output, label).unwrap_or_else(|| panic!("missing {label}"));
+        let account = app.account.clone().unwrap();
+        let notes = bounds(&format!("{} you", account.display_name.unwrap()));
+        let notifications = bounds("Notifications, 137 unread");
+        let feedback = bounds("Feedback, 12 feedback conversations waiting for a reply");
+        let profile = bounds(&format!("Edit profile for {}", app.identity_name()));
+        let heading = text_position(&output, "Direct messages");
+        assert!(
+            notes.top() > heading.y && notifications.top() > notes.bottom(),
+            "the DM list follows its heading directly; the inbox rows sit below it"
+        );
+        assert!(feedback.top() >= notifications.bottom());
+        assert!(profile.top() > feedback.bottom(), "above the account row");
+        assert!(
+            (notifications.left() - profile.left()).abs() < 4.0
+                && (feedback.right() - bounds("User Settings").right()).abs() < 4.0,
+            "inside the account panel"
+        );
+        assert!(texts(&output).contains(&"99+"), "the count caps at 99+");
+        click_at(&mut app, &context, feedback.center());
+        assert!(app.feedback_open);
+        click_at(&mut app, &context, notifications.center());
+        assert!(app.activity.shown);
+
+        // Accounts outside the team see Notifications alone.
+        let (context, mut app) = fixture("parity-channel");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Notifications").is_some());
+        assert!(
+            !texts(&output).contains(&"Feedback"),
+            "Feedback is for the team"
+        );
     }
 
     #[test]
