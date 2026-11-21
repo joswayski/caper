@@ -2106,6 +2106,11 @@ export default function Spaces({
         () => {
           void refreshUnread();
           void refreshFeedback();
+          // A new conversation or request shows in the sidebar now, not at its next poll.
+          void listDirectConversations().then(
+            (result) => setDirects(unlessSame(result.conversations)),
+            () => undefined,
+          );
         },
         (location) => openNotification.current(location),
       );
