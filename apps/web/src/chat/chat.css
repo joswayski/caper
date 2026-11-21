@@ -296,6 +296,52 @@
   pointer-events: none;
   transform: translate(-50%, 0);
 }
+/* The way back to the newest message, over the list's corner while the reader is away from it. */
+.chat-jump-latest {
+  position: absolute;
+  z-index: 3;
+  right: 16px;
+  bottom: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.chat-jump-latest[data-new] {
+  border-color: var(--terracotta);
+}
+.chat-jump-latest:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+@media (hover: hover) {
+  .chat-jump-latest:hover {
+    background: var(--surface-raised);
+  }
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-jump-latest {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+/* The thread's list is its panel's second grid row; the button sits over that row.
+   An absolutely positioned grid child needs both end lines: "auto" means the panel's edge. */
+.chat-thread-panel > .chat-jump-latest {
+  grid-area: 2 / 1 / 3 / 2;
+}
 .chat-action-status:empty {
   display: none;
 }

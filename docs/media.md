@@ -2082,6 +2082,13 @@ answered with "That message was deleted." on web, Android, Apple and the egui
 desktop, which hide deleted rows; Linux and Windows land on its "This message
 was deleted." row.
 
+On web, a channel, DM or thread scrolled more than half a screen above its
+newest loaded message shows a floating **Jump to latest** button over the list's
+bottom corner. It counts messages other people post meanwhile ("3 new
+messages", terracotta border), scrolls back to the newest message and resumes
+following. It is hidden while a history window is detached from the live end;
+Load newer and Back to latest cover that case.
+
 `PUT /api/chat/channels/{channel}/messages/{message}/pin` accepts
 `{active:boolean}` and `X-Caper-Chat-Token`; clients cannot supply a pin author.
 The response and outbox event are

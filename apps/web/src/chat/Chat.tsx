@@ -65,6 +65,7 @@ import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import { SendPendingContext } from "./SendPendingContext.ts";
 import { loadReactionPicker } from "./LazyReactionPicker.tsx";
+import JumpToLatest from "./JumpToLatest.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import type { ChatEmbed } from "./embeds.ts";
@@ -2195,6 +2196,18 @@ export default function Chat({
             <p className="chat-action-status" aria-hidden="true" key={actionStatus?.key}>
               {actionStatus?.text}
             </p>
+            {state.phase === "ready" && listReady && !state.hasNewer && (
+              <JumpToLatest
+                scroller={scroller}
+                messages={messages}
+                viewerId={viewerId}
+                blockedIds={blockedIds}
+                onJump={(smooth) => {
+                  followUpdatedRows.current = false;
+                  listRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: smooth ? "smooth" : "auto" });
+                }}
+              />
+            )}
           </div>
         </div>
         {state.hasNewer && (

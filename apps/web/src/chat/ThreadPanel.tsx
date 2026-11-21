@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
 import AttachmentPicker from "./AttachmentPicker.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
@@ -6,6 +6,7 @@ import type { ChatClient, ChatViewState, PendingChatMessage } from "./client.ts"
 import { DraftAttachments } from "./Attachments.tsx";
 import { UploadWaitNotice, useLinkPreview, type ComposerAttachments } from "./Composer.tsx";
 import DropOverlay from "./DropOverlay.tsx";
+import JumpToLatest from "./JumpToLatest.tsx";
 import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
@@ -100,6 +101,11 @@ export default function ThreadPanel({
     setDropping(false);
   };
   const scroll = useRef<HTMLDivElement>(null);
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
+  const attachScroll = useCallback((element: HTMLDivElement | null) => {
+    scroll.current = element;
+    setScroller(element);
+  }, []);
   const olderAnchor = useRef<{ height: number; top: number }>(undefined);
   const follow = useRef(true);
   const returnFocus = useRef<HTMLElement>(null);
@@ -641,7 +647,7 @@ export default function ThreadPanel({
       </header>
       <div
         className="chat-thread-messages"
-        ref={scroll}
+        ref={attachScroll}
         role="region"
         aria-label="Thread replies"
         aria-busy={state.thread.loading}
@@ -713,6 +719,18 @@ export default function ThreadPanel({
           {pending && !pendingInline && renderMessage(replies.length + 1, pending, true, replies.at(-1))}
         </div>
       </div>
+      {!state.thread.loading && !state.thread.hasNewer && (
+        <JumpToLatest
+          scroller={scroller}
+          messages={replies}
+          viewerId={state.author?.id}
+          blockedIds={blockedIds}
+          onJump={(smooth) => {
+            follow.current = true;
+            scroller?.scrollTo({ top: scroller.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+          }}
+        />
+      )}
       <div className="chat-composer chat-thread-composer">
         {readOnly ? (
           <p className="chat-thread-readonly">

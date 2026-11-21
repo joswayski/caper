@@ -99,6 +99,7 @@
 .chat-title-menu[open] > .chat-header-menu,
 .chat-profile-menu,
 .chat-action-status:not(:empty),
+.chat-jump-latest,
 .chat-typing-content {
   animation: caper-rise-in var(--motion-fast) var(--ease-out);
 }
@@ -189,6 +190,7 @@
   .chat-title-menu[open] > .chat-header-menu,
   .chat-profile-menu,
   .chat-action-status:not(:empty),
+  .chat-jump-latest,
   .chat-typing-content,
   .chat-thread-panel,
   .chat-message-arrive,
