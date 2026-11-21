@@ -30,6 +30,8 @@ val Terracotta = Color(0xFFB64D32)
 val Action = Color(0xFFF1EDE4)
 val OnAction = Color(0xFF0C0D0F)
 val CaperGreen = Color(0xFF637A43)
+// Caper green mixed into Border: replaces a panel divider while its resize handle is in use.
+val ResizeHighlight = Color(0xFF49563E)
 val VoiceSessionGreen = Color(0xFF4AA86B)
 val SurfaceSidebar = Color(0xFF151C1E)
 /** Web's --surface-hover (6% white) over the sidebar, opaque: a private channel's own members in the member list. */

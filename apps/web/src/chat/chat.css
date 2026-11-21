@@ -4688,11 +4688,11 @@ a.chat-draft-preview {
   touch-action: none;
   cursor: col-resize;
 }
-/* A muted caper green line only while dragging or keyboard-focused, so it
-   clears on release. */
+/* While dragging or keyboard-focused, a subtle olive covers the panel's 1px
+   border (the handle starts on it), so it clears on release. */
 .chat-thread-resize[data-dragging],
 .chat-thread-resize:focus-visible {
-  border-left: 2px solid color-mix(in srgb, var(--caper) 60%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--caper) 45%, var(--border));
 }
 .chat-thread-panel .chat-thread-resize:focus-visible {
   outline: none;

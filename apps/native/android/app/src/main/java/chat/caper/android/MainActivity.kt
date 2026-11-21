@@ -1578,7 +1578,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 Box(Modifier.align(Alignment.CenterStart).width(12.dp).fillMaxHeight()
                     .pointerHoverIcon(PointerIcon(android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW)))
-                    .drawBehind { if (resizeDragging || (resizeFocused && keyboardMode)) drawRect(CaperGreen.copy(alpha = 0.6f), size = Size(2.dp.toPx(), size.height)) }
+                    .drawBehind { if (resizeDragging || (resizeFocused && keyboardMode)) drawRect(ResizeHighlight, size = Size(1.dp.toPx(), size.height)) }
                     .focusRequester(resizeFocus).onFocusChanged { resizeFocused = it.isFocused }
                     .onPreviewKeyEvent { event ->
                         if (event.type != KeyEventType.KeyDown) false else {

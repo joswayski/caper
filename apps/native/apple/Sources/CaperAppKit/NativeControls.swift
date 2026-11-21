@@ -44,8 +44,9 @@ enum NativeStyle {
     static var muted: NSColor { NSColor(CaperTheme.muted) }
     static var border: NSColor { NSColor(CaperTheme.border) }
     static var accent: NSColor { NSColor(CaperTheme.terracotta) }
-    /// A muted caper green line on a resize handle while it is dragged or keyboard-focused.
-    static var resizeHighlight: NSColor { NSColor(CaperTheme.green).withAlphaComponent(0.6) }
+    /// A subtle olive (caper green mixed into the border) that replaces a panel's
+    /// divider while its resize handle is dragged or keyboard-focused.
+    static var resizeHighlight: NSColor { NSColor(srgbRed: 0x49 / 255, green: 0x56 / 255, blue: 0x3E / 255, alpha: 1) }
     static func font(_ size: CGFloat, bold: Bool = false) -> NSFont {
         NSFont(name: bold ? "Satoshi-Bold" : "Satoshi-Regular", size: size) ?? .systemFont(ofSize: size)
     }
@@ -202,8 +203,10 @@ final class NativeButton: NSButton {
     override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
     override func draw(_ dirtyRect: NSRect) {
         guard dragging || keyboardFocus else { return }
+        // Over the panel's 1-point divider: the left edge of a panel that widens
+        // leftward (thread, members), else the sidebar's right edge.
         NativeStyle.resizeHighlight.setFill()
-        NSRect(x: floor(bounds.midX) - 1, y: 0, width: 2, height: bounds.height).fill()
+        NSRect(x: widensToLeft ? 0 : bounds.width - 1, y: 0, width: 1, height: bounds.height).fill()
     }
 
     func update(width: CGFloat, maximum: CGFloat, minimum: CGFloat? = nil) {
@@ -278,9 +281,8 @@ final class NativeButton: NSButton {
     override func resignFirstResponder() -> Bool { keyboardFocus = false; return true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeUpDown) }
     override func draw(_ dirtyRect: NSRect) {
-        let lit = dragging || keyboardFocus
-        (lit ? NativeStyle.resizeHighlight : NativeStyle.border).setFill()
-        NSRect(x: 0, y: floor(bounds.midY), width: bounds.width, height: lit ? 2 : 1).fill()
+        (dragging || keyboardFocus ? NativeStyle.resizeHighlight : NativeStyle.border).setFill()
+        NSRect(x: 0, y: floor(bounds.midY), width: bounds.width, height: 1).fill()
     }
     func update(available: CGFloat, share: Double) {
         self.available = max(0, available)
