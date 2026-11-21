@@ -1783,6 +1783,10 @@ pub(crate) async fn link(
     ids: &[String],
     message_id: i64,
 ) -> Result<(), ApiError> {
+    // Most messages carry no files: skip a statement under the channel lock.
+    if ids.is_empty() {
+        return Ok(());
+    }
     // One statement, positions in request order (ORDINALITY counts from 1).
     sqlx::query(
         "UPDATE public.assets a SET message_id=$2, position=u.position-1
