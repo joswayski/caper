@@ -1700,6 +1700,9 @@ public final class AppModel {
             try? await Task.sleep(for: .seconds(1))
             self?.unreadRefreshScheduled = false
             guard self?.generation == attempt else { return }
+            // DM rows carry their own unread state: refresh them with the
+            // badge, so a new DM's row doesn't wait for the 15-second poll.
+            await self?.refreshDirectMessages()
             await self?.refreshUnreadSpaces()
         }
     }
