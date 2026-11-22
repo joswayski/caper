@@ -2,12 +2,15 @@
 //! shown one, and the recycled row widgets of a `GtkListView`.
 
 use crate::images::{AvatarView, Icon, Images};
+use caper_client::attachments::FreshUrl;
 use caper_client::grouping;
+use caper_client::model::ReactorGroup;
 use caper_client::model::{Author, Mention, Message};
 use chrono::{DateTime, Local};
 use gtk::{glib, pango, prelude::*};
+use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -510,6 +513,159 @@ fn body(message: &Message, markup: &mut Markup) -> crate::markup::Body {
     markup.text(message)
 }
 
+/// A message's built rows by id: a row is built again only when something
+/// it shows changed, so an event costs only the rows it touches.
+#[derive(Default)]
+pub struct Cache {
+    /// Who views, as the cached rows were built for.
+    viewer: Option<Viewed>,
+    rows: HashMap<String, Kept>,
+}
+
+/// You (account and chat author), whether you can write, and whom you blocked.
+type Viewed = (Option<String>, Option<String>, bool, BTreeSet<String>);
+/// A message's inputs, its row, and its local day.
+type Kept = (Key<'static>, Row, Option<String>);
+
+impl Cache {
+    /// The rows the last build kept, emptied to collect this build's; all of
+    /// them are dropped when the viewer changed.
+    fn take(
+        &mut self,
+        viewer: &Viewer<'_>,
+    ) -> HashMap<String, (Key<'static>, Row, Option<String>)> {
+        let same = self
+            .viewer
+            .as_ref()
+            .is_some_and(|(me, author, joined, blocked)| {
+                me.as_deref() == viewer.me
+                    && author.as_deref() == viewer.author
+                    && *joined == viewer.joined
+                    && blocked == viewer.blocked
+            });
+        if !same {
+            self.rows.clear();
+            self.viewer = Some((
+                viewer.me.map(str::to_owned),
+                viewer.author.map(str::to_owned),
+                viewer.joined,
+                viewer.blocked.clone(),
+            ));
+        }
+        std::mem::take(&mut self.rows)
+    }
+}
+
+/// Everything one message's row is built from besides the viewer: when it
+/// is unchanged, so is the row. Borrowed to compare, owned to keep.
+#[derive(PartialEq)]
+struct Key<'a> {
+    message: Cow<'a, Message>,
+    blocked: bool,
+    picture_ready: bool,
+    /// Your visible pending reactions (emoji, reacting) and the error.
+    pending: Vec<(Cow<'a, str>, bool)>,
+    error: Option<Cow<'a, str>>,
+    reactors: Option<Cow<'a, [ReactorGroup]>>,
+    thread_unread: bool,
+    expanded: bool,
+    /// Revealed spoilers of the message and of its forwarded original.
+    revealed: [Option<Cow<'a, HashSet<String>>>; 2],
+    /// Refreshed URLs of its files and its forwarded original's.
+    fresh: Vec<Option<Cow<'a, FreshUrl>>>,
+}
+
+impl<'a> Key<'a> {
+    fn new(
+        message: &'a Message,
+        blocked: bool,
+        viewer: &Viewer<'a>,
+        fresh: &'a BTreeMap<String, FreshUrl>,
+    ) -> Self {
+        let original = message
+            .forward
+            .as_ref()
+            .and_then(|forward| forward.message.as_ref());
+        let files = message.content.attachments.iter().chain(
+            original
+                .into_iter()
+                .flat_map(|original| &original.content.attachments),
+        );
+        let revealed = |scope: String| viewer.revealed.get(&scope).map(Cow::Borrowed);
+        let spoiler =
+            |message: &Message| message.content.attachments.iter().any(|file| file.spoiler);
+        Self {
+            message: Cow::Borrowed(message),
+            blocked,
+            picture_ready: viewer.images.picture_ready(&author_avatar(&message.author)),
+            pending: viewer
+                .reactions
+                .pending
+                .iter()
+                .filter(|((id, _), pending)| *id == message.id && pending.visible)
+                .map(|((_, emoji), pending)| (Cow::Borrowed(emoji.as_str()), pending.desired))
+                .collect(),
+            error: viewer.reactions.error(&message.id).map(Cow::Borrowed),
+            reactors: viewer
+                .reactors
+                .get(&message.id)
+                .map(|cache| Cow::Borrowed(cache.groups.as_slice())),
+            thread_unread: viewer.thread_unread.contains_key(&message.id),
+            expanded: viewer.expanded_quotes.contains(&message.id),
+            revealed: [
+                spoiler(message)
+                    .then(|| revealed(format!("{}:{}", viewer.surface, message.id)))
+                    .flatten(),
+                original
+                    .filter(|original| spoiler(original))
+                    .and_then(|_| revealed(format!("{}:forward:{}", viewer.surface, message.id))),
+            ],
+            fresh: files
+                .map(|file| fresh.get(&file.id).map(Cow::Borrowed))
+                .collect(),
+        }
+    }
+
+    fn into_owned(self) -> Key<'static> {
+        let owned =
+            |set: Option<Cow<'_, HashSet<String>>>| set.map(|set| Cow::Owned(set.into_owned()));
+        let [revealed, forward] = self.revealed;
+        Key {
+            message: Cow::Owned(self.message.into_owned()),
+            blocked: self.blocked,
+            picture_ready: self.picture_ready,
+            pending: self
+                .pending
+                .into_iter()
+                .map(|(emoji, desired)| (Cow::Owned(emoji.into_owned()), desired))
+                .collect(),
+            error: self.error.map(|error| Cow::Owned(error.into_owned())),
+            reactors: self.reactors.map(|groups| Cow::Owned(groups.into_owned())),
+            thread_unread: self.thread_unread,
+            expanded: self.expanded,
+            revealed: [owned(revealed), owned(forward)],
+            fresh: self
+                .fresh
+                .into_iter()
+                .map(|url| url.map(|url| Cow::Owned(url.into_owned())))
+                .collect(),
+        }
+    }
+}
+
+/// A time's row label ("3:04 PM") and its local day ("Monday, May 4, 2026").
+fn when(created_at: &str) -> (String, Option<String>) {
+    let local = DateTime::parse_from_rfc3339(created_at)
+        .ok()
+        .map(|date| date.with_timezone(&Local));
+    (
+        local
+            .map(|date| date.format("%-I:%M %p").to_string())
+            .unwrap_or_default(),
+        local.map(|date| date.format("%A, %B %-d, %Y").to_string()),
+    )
+}
+
 /// Your message while it sends: its client id, author, time and text.
 pub struct Draft<'a> {
     pub id: &'a str,
@@ -569,6 +725,7 @@ pub fn build<'a>(
     messages: impl Iterator<Item = &'a Message>,
     draft: Option<Draft<'a>>,
     markup: &mut Markup,
+    cache: &mut Cache,
     viewer: &Viewer<'_>,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
@@ -579,14 +736,11 @@ pub fn build<'a>(
                     author: &Author,
                     created_at: &str,
                     row: Row,
+                    this_day: Option<String>,
                     separate: bool| {
         if separate {
             previous = None;
         }
-        let local = DateTime::parse_from_rfc3339(created_at)
-            .ok()
-            .map(|date| date.with_timezone(&Local));
-        let this_day = local.map(|date| date.format("%A, %B %-d, %Y").to_string());
         let first_of_day = this_day.is_some() && this_day != day;
         if first_of_day {
             previous = None;
@@ -601,12 +755,11 @@ pub fn build<'a>(
             id: id.to_owned(),
             day: this_day.filter(|_| first_of_day),
             grouped,
-            time: local
-                .map(|date| date.format("%-I:%M %p").to_string())
-                .unwrap_or_default(),
             ..row
         });
     };
+    let fresh = viewer.images.media.fresh();
+    let mut old = cache.take(viewer);
     let messages: Vec<&Message> = messages.collect();
     // Each message, whether a shown blocked run holds it, and whether a
     // notice comes right before it (so it starts a new group).
@@ -644,193 +797,32 @@ pub fn build<'a>(
         };
         let message = messages[index];
         let separate = std::mem::take(&mut separate_next);
-        let avatar = author_avatar(&message.author);
-        let deleted = message.is_deleted();
-        let act = viewer.joined && !deleted;
-        let replies_to_me = viewer.me.is_some_and(|me| {
-            message.author.id != me
-                && message
-                    .reply_to
-                    .as_ref()
-                    .is_some_and(|reply| reply.author.id == me)
-        });
-        let row = Row {
-            id: String::new(),
-            day: None,
-            grouped: false,
-            continued: false,
-            author: message.author.name.clone(),
-            person: message.author.clone(),
-            picture_ready: viewer.images.picture_ready(&avatar),
-            avatar,
-            time: String::new(),
-            markup: body(message, markup),
-            pending: false,
-            edited: message.edited_at.is_some() && !deleted,
-            pinned_by: message
-                .pin
-                .as_ref()
-                .map(|pin| format!("Pinned by {}", pin.author.name)),
-            pinned_own: message
-                .pin
-                .as_ref()
-                .is_some_and(|pin| viewer.me == Some(pin.author.id.as_str())),
-            reply_target: message
-                .reply_to
-                .as_ref()
-                .filter(|reply| !viewer.blocked.contains(&reply.author.id))
-                .map(|reply| (reply.id.clone(), reply.thread_root_id.clone())),
-            reply_expanded: viewer.expanded_quotes.contains(&message.id),
-            footer: None,
-            reply: message.reply_to.as_ref().map(|reply| {
-                if viewer.blocked.contains(&reply.author.id) {
-                    return Quote {
-                        author: "Blocked message".to_owned(),
-                        avatar: None,
-                        text: None,
-                        deleted: reply.deleted,
-                    };
-                }
-                let text = reply.full_text.as_deref().unwrap_or(&reply.text);
-                let text = if !text.trim().is_empty() {
-                    text.to_owned()
-                } else if reply.has_attachments {
-                    caper_client::model::attachments_label(&reply.attachments).to_owned()
-                } else {
-                    "Message".to_owned()
+        let key = Key::new(message, blocked, viewer, &fresh);
+        let (key, row, this_day) = match old.remove(&message.id) {
+            Some(entry) if entry.0 == key => entry,
+            _ => {
+                let (time, this_day) = when(&message.created_at);
+                let row = Row {
+                    time,
+                    ..message_row(message, blocked, markup, viewer)
                 };
-                Quote {
-                    author: reply.author.name.clone(),
-                    avatar: Some(author_avatar(&reply.author)),
-                    text: (!reply.deleted).then_some(text),
-                    deleted: reply.deleted,
-                }
-            }),
-            reactions: if deleted {
-                Vec::new()
-            } else {
-                viewer
-                    .reactions
-                    .projected(&message.reactions, &message.id, viewer.reactor())
-                    .into_iter()
-                    .filter(|reaction| !reaction.author_ids.is_empty())
-                    .map(|reaction| Chip {
-                        mine: viewer
-                            .reactor()
-                            .is_some_and(|me| reaction.author_ids.iter().any(|id| id == me)),
-                        count: reaction.author_ids.len(),
-                        summary: caper_client::reactions::reactor_summary(
-                            viewer.reactors.get(&message.id),
-                            &reaction,
-                            viewer.reactor(),
-                        ),
-                        emoji: reaction.emoji,
-                    })
-                    .collect()
-            },
-            reaction_error: viewer.reactions.error(&message.id).map(str::to_owned),
-            replies: message
-                .thread
-                .as_ref()
-                // A broadcast reply's channel copy carries its root's summary.
-                .filter(|thread| {
-                    !viewer.in_thread && message.thread_root_id.is_none() && thread.reply_count > 0
-                })
-                .map(|thread| {
-                    let count = match thread.reply_count {
-                        1 => "1 reply".to_owned(),
-                        count => format!("{count} replies"),
-                    };
-                    // As desktop: "3 replies ● Unread View thread".
-                    let unread = if viewer.thread_unread.contains_key(&message.id) {
-                        "  <span foreground=\"#e4c76a\">● Unread</span>"
-                    } else {
-                        ""
-                    };
-                    format!(
-                        "<b>{count}</b>{unread}  <span foreground=\"#b9bcbe\">View thread</span>"
-                    )
-                }),
-            broadcast: !viewer.in_thread && message.broadcast && message.thread_root_id.is_some(),
-            // As desktop: a pinned row keeps its pin wash instead.
-            focused: false,
-            unread: false,
-            beginning: false,
-            mentioned: !deleted
-                && message.pin.is_none()
-                && !replies_to_me
-                && caper_client::mentions::mentions_me(
-                    &message.content.mentions,
-                    &message.author.id,
-                    viewer.me,
-                ),
-            replied: !deleted && message.pin.is_none() && replies_to_me,
-            team_notice: !deleted
-                && caper_client::mentions::notifies_team(&message.content.mentions),
-            content: if deleted {
-                crate::content::Content::default()
-            } else {
-                crate::content::Content {
-                    scope: Some(format!("{}:{}", viewer.surface, message.id)),
-                    attachments: message
-                        .content
-                        .attachments
-                        .iter()
-                        .map(|attachment| {
-                            (
-                                viewer.images.media.resolve(attachment),
-                                attachment.spoiler
-                                    && !viewer
-                                        .revealed
-                                        .get(&format!("{}:{}", viewer.surface, message.id))
-                                        .is_some_and(|ids| ids.contains(&attachment.id)),
-                            )
-                        })
-                        .collect(),
-                    embeds: if message.content.suppress_embeds {
-                        Vec::new()
-                    } else {
-                        message.content.embeds.clone()
-                    },
-                    gif: message.content.gif.clone(),
-                }
-            },
-            offers: Offers {
-                act,
-                mine: act && viewer.author == Some(message.author.id.as_str()),
-                pinned: message.pin.is_some(),
-                thread: act && !viewer.in_thread && message.thread_root_id.is_none(),
-            },
-            blocked_run: None,
-            blocked,
-            arriving: false,
-            forward: message
-                .forward
-                .as_ref()
-                .filter(|_| !deleted)
-                .map(|forward| {
-                    forward.message.as_ref().map(|original| {
-                        Original::new(
-                            original,
-                            viewer.images,
-                            viewer.revealed,
-                            format!("{}:forward:{}", viewer.surface, message.id),
-                            true,
-                        )
-                    })
-                }),
+                (key.into_owned(), row, this_day)
+            }
         };
         push(
             &mut rows,
             &message.id,
             &message.author,
             &message.created_at,
-            row,
+            row.clone(),
+            this_day.clone(),
             separate,
         );
+        cache.rows.insert(message.id.clone(), (key, row, this_day));
     }
     if let Some(draft) = draft {
         let avatar = author_avatar(draft.author);
+        let (time, this_day) = when(draft.created_at);
         let row = Row {
             id: String::new(),
             day: None,
@@ -840,7 +832,7 @@ pub fn build<'a>(
             person: draft.author.clone(),
             picture_ready: viewer.images.picture_ready(&avatar),
             avatar,
-            time: String::new(),
+            time,
             markup: crate::markup::Body::message(draft.text, &[]),
             pending: true,
             edited: false,
@@ -874,6 +866,7 @@ pub fn build<'a>(
             draft.author,
             draft.created_at,
             row,
+            this_day,
             separate,
         );
     }
@@ -881,6 +874,183 @@ pub fn build<'a>(
         rows[index - 1].continued = rows[index].grouped;
     }
     rows
+}
+
+/// A message's row, apart from where it sits in the list.
+fn message_row(message: &Message, blocked: bool, markup: &mut Markup, viewer: &Viewer<'_>) -> Row {
+    let avatar = author_avatar(&message.author);
+    let deleted = message.is_deleted();
+    let act = viewer.joined && !deleted;
+    let replies_to_me = viewer.me.is_some_and(|me| {
+        message.author.id != me
+            && message
+                .reply_to
+                .as_ref()
+                .is_some_and(|reply| reply.author.id == me)
+    });
+    Row {
+        id: String::new(),
+        day: None,
+        grouped: false,
+        continued: false,
+        author: message.author.name.clone(),
+        person: message.author.clone(),
+        picture_ready: viewer.images.picture_ready(&avatar),
+        avatar,
+        time: String::new(),
+        markup: body(message, markup),
+        pending: false,
+        edited: message.edited_at.is_some() && !deleted,
+        pinned_by: message
+            .pin
+            .as_ref()
+            .map(|pin| format!("Pinned by {}", pin.author.name)),
+        pinned_own: message
+            .pin
+            .as_ref()
+            .is_some_and(|pin| viewer.me == Some(pin.author.id.as_str())),
+        reply_target: message
+            .reply_to
+            .as_ref()
+            .filter(|reply| !viewer.blocked.contains(&reply.author.id))
+            .map(|reply| (reply.id.clone(), reply.thread_root_id.clone())),
+        reply_expanded: viewer.expanded_quotes.contains(&message.id),
+        footer: None,
+        reply: message.reply_to.as_ref().map(|reply| {
+            if viewer.blocked.contains(&reply.author.id) {
+                return Quote {
+                    author: "Blocked message".to_owned(),
+                    avatar: None,
+                    text: None,
+                    deleted: reply.deleted,
+                };
+            }
+            let text = reply.full_text.as_deref().unwrap_or(&reply.text);
+            let text = if !text.trim().is_empty() {
+                text.to_owned()
+            } else if reply.has_attachments {
+                caper_client::model::attachments_label(&reply.attachments).to_owned()
+            } else {
+                "Message".to_owned()
+            };
+            Quote {
+                author: reply.author.name.clone(),
+                avatar: Some(author_avatar(&reply.author)),
+                text: (!reply.deleted).then_some(text),
+                deleted: reply.deleted,
+            }
+        }),
+        reactions: if deleted {
+            Vec::new()
+        } else {
+            viewer
+                .reactions
+                .projected(&message.reactions, &message.id, viewer.reactor())
+                .into_iter()
+                .filter(|reaction| !reaction.author_ids.is_empty())
+                .map(|reaction| Chip {
+                    mine: viewer
+                        .reactor()
+                        .is_some_and(|me| reaction.author_ids.iter().any(|id| id == me)),
+                    count: reaction.author_ids.len(),
+                    summary: caper_client::reactions::reactor_summary(
+                        viewer.reactors.get(&message.id),
+                        &reaction,
+                        viewer.reactor(),
+                    ),
+                    emoji: reaction.emoji,
+                })
+                .collect()
+        },
+        reaction_error: viewer.reactions.error(&message.id).map(str::to_owned),
+        replies: message
+            .thread
+            .as_ref()
+            // A broadcast reply's channel copy carries its root's summary.
+            .filter(|thread| {
+                !viewer.in_thread && message.thread_root_id.is_none() && thread.reply_count > 0
+            })
+            .map(|thread| {
+                let count = match thread.reply_count {
+                    1 => "1 reply".to_owned(),
+                    count => format!("{count} replies"),
+                };
+                // As desktop: "3 replies ● Unread View thread".
+                let unread = if viewer.thread_unread.contains_key(&message.id) {
+                    "  <span foreground=\"#e4c76a\">● Unread</span>"
+                } else {
+                    ""
+                };
+                format!("<b>{count}</b>{unread}  <span foreground=\"#b9bcbe\">View thread</span>")
+            }),
+        broadcast: !viewer.in_thread && message.broadcast && message.thread_root_id.is_some(),
+        // As desktop: a pinned row keeps its pin wash instead.
+        focused: false,
+        unread: false,
+        beginning: false,
+        mentioned: !deleted
+            && message.pin.is_none()
+            && !replies_to_me
+            && caper_client::mentions::mentions_me(
+                &message.content.mentions,
+                &message.author.id,
+                viewer.me,
+            ),
+        replied: !deleted && message.pin.is_none() && replies_to_me,
+        team_notice: !deleted && caper_client::mentions::notifies_team(&message.content.mentions),
+        content: if deleted {
+            crate::content::Content::default()
+        } else {
+            crate::content::Content {
+                scope: Some(format!("{}:{}", viewer.surface, message.id)),
+                attachments: message
+                    .content
+                    .attachments
+                    .iter()
+                    .map(|attachment| {
+                        (
+                            viewer.images.media.resolve(attachment),
+                            attachment.spoiler
+                                && !viewer
+                                    .revealed
+                                    .get(&format!("{}:{}", viewer.surface, message.id))
+                                    .is_some_and(|ids| ids.contains(&attachment.id)),
+                        )
+                    })
+                    .collect(),
+                embeds: if message.content.suppress_embeds {
+                    Vec::new()
+                } else {
+                    message.content.embeds.clone()
+                },
+                gif: message.content.gif.clone(),
+            }
+        },
+        offers: Offers {
+            act,
+            mine: act && viewer.author == Some(message.author.id.as_str()),
+            pinned: message.pin.is_some(),
+            thread: act && !viewer.in_thread && message.thread_root_id.is_none(),
+        },
+        blocked_run: None,
+        blocked,
+        arriving: false,
+        forward: message
+            .forward
+            .as_ref()
+            .filter(|_| !deleted)
+            .map(|forward| {
+                forward.message.as_ref().map(|original| {
+                    Original::new(
+                        original,
+                        viewer.images,
+                        viewer.revealed,
+                        format!("{}:forward:{}", viewer.surface, message.id),
+                        true,
+                    )
+                })
+            }),
+    }
 }
 
 /// What a row's controls ask for.

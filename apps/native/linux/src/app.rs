@@ -266,6 +266,9 @@ struct State {
     /// When rows arrived at a live end, for their entrance.
     arrived: HashMap<String, Instant>,
     markup: rows::Markup,
+    /// The message lists' built rows, kept while they are unchanged.
+    row_cache: rows::Cache,
+    thread_row_cache: rows::Cache,
     /// Unread messages and mentions per space, then channel.
     unread: HashMap<String, HashMap<String, (u64, u64)>>,
     unread_revision: u64,
@@ -2164,7 +2167,13 @@ impl App {
             pinned
                 .iter()
                 .flat_map(|message| {
-                    rows::build(std::iter::once(message), None, &mut state.markup, &viewer)
+                    rows::build(
+                        std::iter::once(message),
+                        None,
+                        &mut state.markup,
+                        &mut rows::Cache::default(),
+                        &viewer,
+                    )
                 })
                 .map(|mut row| {
                     row.grouped = false;
@@ -5835,6 +5844,7 @@ impl App {
                 // A pending send shows at the live end only.
                 draft(None).filter(|_| !has_newer),
                 &mut state.markup,
+                &mut state.row_cache,
                 &viewer(false),
             );
             let mut main = main;
@@ -5908,6 +5918,7 @@ impl App {
                             })),
                         draft(Some(&thread.root)),
                         &mut state.markup,
+                        &mut state.thread_row_cache,
                         &viewer(true),
                     )
                 }

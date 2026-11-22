@@ -108,6 +108,11 @@ impl Media {
     }
 
     /// The attachment with the longest-lived URLs known.
+    /// The refreshed URLs, by attachment id.
+    pub fn fresh(&self) -> std::cell::Ref<'_, BTreeMap<String, FreshUrl>> {
+        self.fresh.borrow()
+    }
+
     pub fn resolve(&self, attachment: &Attachment) -> Attachment {
         caper_client::attachments::resolve(attachment, self.fresh.borrow().get(&attachment.id))
     }
