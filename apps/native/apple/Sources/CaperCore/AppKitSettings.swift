@@ -248,8 +248,21 @@ import ServiceManagement
             if isReady && !wasReady { CaperRuntime.showWhatsNewPreview(model) }
             wasReady = isReady
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
+        // tick() does nothing while another app is active, so neither does the timer.
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didBecomeActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didResignActiveNotification, object: nil)
+        activityChanged()
+    }
+
+    @objc private func activityChanged() {
+        if NSApp.isActive, timer == nil {
+            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tick() }
+            }
+        } else if !NSApp.isActive {
+            timer?.invalidate(); timer = nil
+            tick()
         }
     }
 

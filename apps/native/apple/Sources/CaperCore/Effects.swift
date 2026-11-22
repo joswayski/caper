@@ -26,6 +26,9 @@ import AVFoundation
     private var buffers: [Effect: AVAudioPCMBuffer] = [:]
     private var voices: [(player: AVAudioPlayerNode, speed: AVAudioUnitVarispeed)] = []
     private var nextVoice = 0
+    /// When the last scheduled sound finishes: `AVAudioPlayerNode.isPlaying`
+    /// stays true after its buffer ends, so it can't tell an idle engine.
+    private var soundsEndAt = 0.0
 
     static func decode(_ effect: Effect) -> AVAudioPCMBuffer? {
         guard let url = Bundle(for: CaperEffects.self).url(forResource: effect.rawValue, withExtension: "wav"),
@@ -34,9 +37,7 @@ import AVFoundation
               (try? file.read(into: buffer)) != nil else { return nil }
         return buffer
     }
-    #if os(iOS)
     private var idlePause: Task<Void, Never>?
-    #endif
 
     init(enabled: Bool, defaults: UserDefaults = .standard) {
         self.enabled = enabled
@@ -83,6 +84,9 @@ import AVFoundation
             }
         }
         if !engine.isRunning { do { try engine.start() } catch { return } }
+        // Armed before the late-sound check below, which can skip the sound
+        // (a first play that decodes and starts the engine) but not the pause.
+        defer { pauseWhenIdle() }
         guard ProcessInfo.processInfo.systemUptime - requested <= 0.120 else { return }
         let voice = voices[nextVoice]
         nextVoice = (nextVoice + 1) % voices.count
@@ -92,14 +96,20 @@ import AVFoundation
         voice.speed.rate = max(0.5, min(2, rate))
         voice.player.scheduleBuffer(buffer)
         voice.player.play()
-        #if os(iOS)
-        // Do not hold the phone's audio hardware between sounds.
+        soundsEndAt = max(soundsEndAt, ProcessInfo.processInfo.systemUptime
+                          + Double(buffer.frameLength) / buffer.format.sampleRate / Double(voice.speed.rate))
+    }
+
+    /// Do not hold the audio hardware between sounds: a running engine keeps
+    /// the output device's IO thread busy (about 1% of a core on a Mac).
+    private func pauseWhenIdle() {
         idlePause?.cancel()
         idlePause = Task { [weak self] in
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled, let self else { return }
-            if !self.voices.contains(where: { $0.player.isPlaying }) { self.engine.pause() }
+            guard ProcessInfo.processInfo.systemUptime >= self.soundsEndAt else { return self.pauseWhenIdle() }
+            for voice in self.voices { voice.player.stop() }
+            self.engine.pause()
         }
-        #endif
     }
 }
