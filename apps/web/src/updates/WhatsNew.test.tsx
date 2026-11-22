@@ -11,7 +11,7 @@ vi.mock("./whats-new", async (importOriginal) => ({
   loadReleaseHighlights: vi.fn(),
 }));
 
-test("history shows one source link before each release's highlights, including same-day releases", async () => {
+test("history lists every retained highlight newest first under its day, without a build per release", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.mocked(loadReleaseHighlights).mockResolvedValue({
     schema: 1,
@@ -44,20 +44,17 @@ test("history shows one source link before each release's highlights, including 
       root.render(<WhatsNew ready blocked={false} manualOpen onManualClose={() => {}} />);
     });
     expect(container.querySelectorAll("time")).toHaveLength(1);
-    const releases = [...container.querySelectorAll(".whats-new-entry")];
-    expect(releases).toHaveLength(2);
-    for (const [index, revision] of ["b", "a"].entries()) {
-      const release = releases[index];
-      const links = release.querySelectorAll("a");
-      expect(links).toHaveLength(1);
-      expect(links[0].href).toBe(`https://github.com/joswayski/caper/commit/${revision.repeat(40)}`);
-      expect(links[0].textContent).toBe(`Web build ${revision.repeat(7)}`);
-      const highlights = [...release.querySelectorAll("h3")];
-      expect(highlights.map((heading) => heading.textContent)).toEqual(
-        index === 0 ? ["First change", "Second change"] : ["Earlier update"],
-      );
-      expect(links[0].compareDocumentPosition(highlights[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    }
+    expect([...container.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual([
+      "First change",
+      "Second change",
+      "Earlier update",
+    ]);
+    // Only the header names a build: the one running now.
+    const links = [...container.querySelectorAll("a")];
+    expect(links).toHaveLength(1);
+    expect(links[0].closest("header")).not.toBeNull();
+    const buttons = [...container.querySelectorAll("footer button")].map((button) => button.textContent);
+    expect(buttons).toEqual(["Done"]);
   } finally {
     await act(async () => root.unmount());
     container.remove();

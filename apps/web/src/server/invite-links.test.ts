@@ -46,7 +46,6 @@ test("invite HTML contains the resolved content and session action without waiti
       expiresAt: "2026-01-01T00:00:00Z",
     },
     account: null,
-    expiry: "Expires in 1 minute",
   };
   const account = { id: "visitor", username: "visitor", displayName: "Visitor" };
   const states: Array<[InvitePageState, string]> = [
@@ -69,8 +68,9 @@ test("invite HTML contains the resolved content and session action without waiti
     if (state.status === "ready") {
       for (const text of ["Test space", "Test host", "#introductions", "7 members"])
         assert.ok(html.includes(text), text);
-      // The server's label survives hydration even if the clock has crossed a boundary.
-      assert.equal(html.includes("Expires in 1 minute"), !state.preview.alreadyMember);
+      // Invitees aren't shown link bookkeeping such as expiry.
+      assert.doesNotMatch(html, /expires|invited to join/i);
+      assert.equal(html.includes("You’re already a member"), !!state.preview.alreadyMember);
     }
   }
 });

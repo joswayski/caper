@@ -33,7 +33,6 @@ export default function WhatsNew({
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [automaticOpen, setAutomaticOpen] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
   const open = manualOpen || automaticOpen;
   const revision = __SOURCE_REVISION__;
   const save = useCallback((sequence: number) => {
@@ -117,10 +116,7 @@ export default function WhatsNew({
     return () => window.removeEventListener("storage", synchronize);
   }, [feed]);
   useEffect(() => {
-    if (manualOpen) {
-      setShowHistory(true);
-      void load(true);
-    }
+    if (manualOpen) void load(true);
   }, [manualOpen, load]);
   useEffect(() => {
     if (!ready || blocked || open || !feed || !unreadReleaseHighlights(feed, acknowledged.current).length) return;
@@ -129,10 +125,8 @@ export default function WhatsNew({
         !document.hidden &&
         unreadReleaseHighlights(feed, acknowledged.current).length &&
         !document.querySelector("dialog[open]")
-      ) {
-        setShowHistory(false);
+      )
         setAutomaticOpen(true);
-      }
     };
     present();
     const timer = window.setInterval(present, 1000);
@@ -162,8 +156,9 @@ export default function WhatsNew({
     setAutomaticOpen(false);
     onManualClose();
   };
+  // Like the apps: opening it from the menu shows the retained history, the automatic popup only what's unread.
   const releases = feed
-    ? showHistory
+    ? manualOpen
       ? feed.releases.filter((release) => release.highlights.length).reverse()
       : unreadReleaseHighlights(feed, acknowledged.current)
     : [];
@@ -223,40 +218,20 @@ export default function WhatsNew({
                 year: "numeric",
               })}
             </time>
-            {dayReleases.map((release) => (
-              <div className="whats-new-entry" key={release.sequence}>
-                <a
-                  className="whats-new-source"
-                  href={`https://github.com/joswayski/caper/commit/${release.revision}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="View this version on GitHub"
-                >
-                  Web build {release.revision.slice(0, 7)}
-                  <ExternalLink size={12} aria-hidden="true" />
-                </a>
-                {release.highlights.map((highlight, index) => (
-                  <article key={index}>
-                    <h3>{highlight.title}</h3>
-                    <p>{highlight.body}</p>
-                  </article>
-                ))}
-              </div>
-            ))}
+            {dayReleases.flatMap((release) =>
+              release.highlights.map((highlight, index) => (
+                <article key={`${release.sequence}-${index}`}>
+                  <h3>{highlight.title}</h3>
+                  <p>{highlight.body}</p>
+                </article>
+              )),
+            )}
           </section>
         ))}
-        {showHistory && !!feed && feed.releases[0].sequence > 1 && (
-          <p className="noise-status">Showing the retained release history for this version.</p>
-        )}
       </div>
       <footer className="whats-new-footer">
-        {!showHistory && (
-          <button type="button" className="whats-new-history" onClick={() => setShowHistory(true)}>
-            Previous updates
-          </button>
-        )}
         <button type="button" className="primary" data-initial-focus onClick={close}>
-          Got it
+          {manualOpen ? "Done" : "Got it"}
         </button>
       </footer>
     </dialog>

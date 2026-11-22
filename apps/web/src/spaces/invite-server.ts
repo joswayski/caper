@@ -2,12 +2,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest, setResponseHeader } from "@tanstack/react-start/server";
 import type { Account } from "../account/client";
 import { getInitialAccount } from "../account/server";
-import { inviteExpiry, type InvitePreview } from "./client";
+import type { InvitePreview } from "./client";
 
 export type InvitePageState =
   | { status: "invalid" }
   | { status: "unavailable" }
-  | { status: "ready"; preview: InvitePreview; account: Account | null; expiry: string };
+  | { status: "ready"; preview: InvitePreview; account: Account | null };
 
 export const getInitialInvite = createServerFn({ method: "GET" })
   .inputValidator((code: string) => code)
@@ -33,8 +33,7 @@ export const getInitialInvite = createServerFn({ method: "GET" })
       // An account lookup failure isn't a signed-out session.
       if (!response.ok || account === undefined) return { status: "unavailable" };
       const preview = (await response.json()) as InvitePreview;
-      // Serialize the relative label too: hydration may cross a minute/day boundary.
-      return { status: "ready", preview, account, expiry: inviteExpiry(preview.expiresAt) };
+      return { status: "ready", preview, account };
     } catch {
       return { status: "unavailable" };
     }

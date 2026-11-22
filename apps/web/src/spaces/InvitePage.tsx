@@ -56,18 +56,17 @@ export default function InvitePage({ code, state: loadedState }: { code: string;
         )}
         {state.status === "ready" && (
           <>
-            <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">
-              {state.preview.alreadyMember ? "YOU’RE ALREADY A MEMBER" : "YOU’RE INVITED TO JOIN"}
-            </p>
             {state.preview.space.iconUrl && (
               <span
-                className="relative mt-5 grid size-16 place-items-center overflow-hidden rounded-[30%] border border-border bg-surface-raised text-[1.4rem] font-bold text-content-muted"
+                className="relative mt-14 grid max-[480px]:mt-[42px] size-16 place-items-center overflow-hidden rounded-[30%] border border-border bg-surface-raised text-[1.4rem] font-bold text-content-muted"
                 aria-hidden="true"
               >
                 <SpaceIcon space={state.preview.space} />
               </span>
             )}
-            <h1 className="my-4 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.025em] wrap-anywhere">
+            <h1
+              className={`${state.preview.space.iconUrl ? "mt-4" : "mt-14 max-[480px]:mt-[42px]"} mb-4 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.025em] wrap-anywhere`}
+            >
               {state.preview.space.name}
             </h1>
             <div className="flex items-center gap-2 text-content-muted">
@@ -91,7 +90,7 @@ export default function InvitePage({ code, state: loadedState }: { code: string;
             </div>
             <p className="mt-3 text-[.85rem] text-content-muted">
               {state.preview.memberCount} {state.preview.memberCount === 1 ? "member" : "members"}
-              {!state.preview.alreadyMember && <> · {state.expiry}</>}
+              {state.preview.alreadyMember && <> · You’re already a member</>}
             </p>
             {error && (
               <p className="mt-6 rounded-control border border-terracotta px-3.5 py-3 leading-[1.5]" role="alert">

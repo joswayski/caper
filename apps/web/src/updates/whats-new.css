@@ -24,8 +24,7 @@
   font-size: 1.25rem;
 }
 /* Versions stay quiet at rest, with pointer, press, and keyboard feedback. */
-.whats-new-build,
-.whats-new-source {
+.whats-new-build {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -43,16 +42,10 @@
   margin-top: 2px;
   font-size: 0.8rem;
 }
-.whats-new-source {
-  margin-bottom: 6px;
-  font-size: 0.75rem;
-}
-.whats-new-build svg,
-.whats-new-source svg {
+.whats-new-build svg {
   flex: none;
 }
-.whats-new-build:focus-visible,
-.whats-new-source:focus-visible {
+.whats-new-build:focus-visible {
   opacity: 1;
   color: var(--text);
   text-decoration-line: underline;
@@ -60,8 +53,7 @@
   outline-offset: 2px;
 }
 @media (hover: hover) {
-  .whats-new-build:hover,
-  .whats-new-source:hover {
+  .whats-new-build:hover {
     opacity: 1;
     color: var(--action-hover);
     background: rgb(182 77 50 / 12%);
@@ -69,20 +61,12 @@
     text-decoration-thickness: 2px;
   }
 }
-.whats-new-build:active,
-.whats-new-source:active {
+.whats-new-build:active {
   opacity: 1;
   color: var(--terracotta-bright);
   background: rgb(182 77 50 / 24%);
   text-decoration-line: underline;
   text-decoration-thickness: 2px;
-}
-.whats-new-entry {
-  margin-top: 20px;
-}
-.whats-new-entry + .whats-new-entry {
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
 }
 .whats-new-release + .whats-new-release {
   margin-top: 28px;
@@ -97,7 +81,7 @@
 .whats-new-release article {
   margin-top: 20px;
 }
-.whats-new-source + article {
+.whats-new-release time + article {
   margin-top: 12px;
 }
 .whats-new-release h3 {
@@ -150,13 +134,4 @@
 .whats-new-footer .primary:active {
   border-color: var(--action-press);
   background: var(--action-press);
-}
-.whats-new-history {
-  margin-right: auto;
-  padding: 8px 0;
-  border: 0;
-  color: var(--text-muted);
-  background: transparent;
-  font-size: 0.8rem;
-  cursor: pointer;
 }
