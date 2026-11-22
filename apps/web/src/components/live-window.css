@@ -599,6 +599,11 @@
 .sim-voice-panel {
   margin-bottom: var(--workspace-bottom-inset);
 }
+/* A desktop canvas on every device: touch screens keep the 32px row the
+   account row beside it keeps, not the app's 44px touch target. */
+.sim-voice-panel .account-shortcuts .notifications-entry {
+  min-height: 32px;
+}
 .sim-avatar {
   width: 34px;
   height: 34px;

@@ -405,24 +405,12 @@
     transform: translateY(0);
   }
 }
-.hero-copy > .made-by {
-  margin: 20px 0 0;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  font-weight: 400;
-}
-.made-by a {
-  color: var(--link);
-  text-underline-offset: 4px;
-  transition: color var(--motion-fast) ease;
-}
 @media (hover: hover) {
-  .made-by a:hover,
   .latest-changes li a:hover {
     color: var(--link-hover);
   }
 }
-:is(.made-by, .latest-changes) a:focus-visible {
+.latest-changes a:focus-visible {
   outline: 2px solid var(--link);
   outline-offset: 4px;
   border-radius: 2px;
@@ -750,12 +738,9 @@
   /* The copy below the window sits above its stage (z-index 3), so the
      window's floor shadow falls behind the download buttons instead of
      dimming them. */
-  .hero-copy > :is(.app-downloads, .wip-alert, .contact, .made-by) {
+  .hero-copy > :is(.app-downloads, .wip-alert, .contact) {
     position: relative;
     z-index: 4;
-  }
-  .hero-copy > .made-by {
-    order: 10;
   }
   .hero-copy > .wip-alert {
     order: 7;
@@ -810,9 +795,6 @@
   .hero-copy > .hero-lede {
     margin-top: 18px;
     font-size: 1.08rem;
-  }
-  .hero-copy > .made-by {
-    margin-top: 22px;
   }
   /* Leave room for the tilted card's projected edge and upward idle motion. */
   .hero .live-stage {

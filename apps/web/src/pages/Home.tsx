@@ -31,7 +31,6 @@ import {
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
-const authorUrl = "https://josevalerio.com";
 const contactEmail = "jose@caper.chat";
 const feedbackInviteUrl = "https://caper.chat/invite/uz3HFpD8jV";
 const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
@@ -119,12 +118,6 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
             <h2 id="feedback-heading">Questions or feedback?</h2>
             <FeedbackList />
           </section>
-          <p className="made-by">
-            Made by{" "}
-            <a href={authorUrl} target="_blank" rel="noreferrer">
-              Jose Valerio
-            </a>
-          </p>
         </div>
 
         <LiveWindow joinTo={!account ? "/login" : account.username && account.displayName ? "/spaces" : "/profile"} />

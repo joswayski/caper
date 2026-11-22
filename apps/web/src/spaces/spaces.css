@@ -408,14 +408,16 @@ html[data-resizing-sections] * {
 .spaces-room .channel-navigation > header::after {
   bottom: 0;
 }
+/* The same gap above the account bar as below it, so it sits centred between
+   the channel list's divider and the sidebar's bottom edge. */
 .spaces-room .voice-panel {
   position: relative;
-  margin-top: 12px;
+  margin-top: var(--workspace-bottom-inset);
 }
 .spaces-room .voice-panel::before {
   position: absolute;
-  /* Match the composer's 12px top inset, including this panel's border. */
-  top: -13px;
+  /* The divider sits one gap above the panel, outside its border. */
+  top: calc(-1px - var(--workspace-bottom-inset));
   left: -13px;
   right: -13px;
   height: 1px;
