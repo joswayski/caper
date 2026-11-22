@@ -24,7 +24,15 @@ export function setApplicationBadge(count: number) {
 
 export const UNREAD_CHANGED = "caper:unread-changed";
 
+let changes = 0;
+
 /** Only acknowledged reads invalidate the authoritative unread snapshot. */
 export function unreadChanged() {
+  changes++;
   if (typeof window !== "undefined") window.dispatchEvent(new Event(UNREAD_CHANGED));
+}
+
+/** Counts `unreadChanged` calls, so a snapshot can tell whether it predates one. */
+export function unreadChanges() {
+  return changes;
 }

@@ -116,6 +116,7 @@ import {
   lookupDirectPerson,
   readDirectConversation,
   listUnreadSpaces,
+  startingUnreadSpaces,
   listSpaceVoiceActivity,
   readChannel,
   directStatus,
@@ -1805,31 +1806,34 @@ export default function Spaces({
   const channelReads = useRef(new Map<string, string>());
   const unreadAccount = useRef(account?.id);
   unreadAccount.current = account?.id;
-  const refreshUnread = useCallback(async () => {
-    const accountId = account?.id;
-    if (!accountId) return;
-    const revision = ++unreadRevision.current;
-    try {
-      const result = await listUnreadSpaces();
-      if (unreadAccount.current === accountId && unreadRevision.current === revision) {
-        setUnreadSpaces(result.spaces);
-        setFeedbackWaiting(result.feedbackWaiting ?? 0);
-        if (result.badgeCount !== undefined) {
-          setApplicationBadge(result.badgeCount);
-          setBadgeCount(result.badgeCount);
+  const refreshUnread = useCallback(
+    async (starting = false) => {
+      const accountId = account?.id;
+      if (!accountId) return;
+      const revision = ++unreadRevision.current;
+      try {
+        const result = await (starting ? startingUnreadSpaces() : listUnreadSpaces());
+        if (unreadAccount.current === accountId && unreadRevision.current === revision) {
+          setUnreadSpaces(result.spaces);
+          setFeedbackWaiting(result.feedbackWaiting ?? 0);
+          if (result.badgeCount !== undefined) {
+            setApplicationBadge(result.badgeCount);
+            setBadgeCount(result.badgeCount);
+          }
         }
+      } catch (error) {
+        if (
+          unreadAccount.current === accountId &&
+          unreadRevision.current === revision &&
+          error instanceof SpacesApiError &&
+          error.status === 401
+        )
+          setApplicationBadge(0);
+        /* Keep the last known indicators during an outage. */
       }
-    } catch (error) {
-      if (
-        unreadAccount.current === accountId &&
-        unreadRevision.current === revision &&
-        error instanceof SpacesApiError &&
-        error.status === 401
-      )
-        setApplicationBadge(0);
-      /* Keep the last known indicators during an outage. */
-    }
-  }, [account?.id]);
+    },
+    [account?.id],
+  );
   // A closed inbox loads ahead whenever its count changes, so opening it shows
   // these notifications at once instead of a loading state.
   useEffect(() => {
@@ -1873,7 +1877,7 @@ export default function Spaces({
       woke = performance.now();
       refresh();
     };
-    refresh();
+    void refreshUnread(true);
     const stopPoll = shellPoll(refresh);
     window.addEventListener("focus", wake);
     window.addEventListener(UNREAD_CHANGED, onRead);

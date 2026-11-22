@@ -1,6 +1,6 @@
 import type { PersonPicture, SpaceIcon } from "../account/pictures.ts";
 import { observeProfiles, profileRevision } from "../account/profiles.ts";
-import { unreadChanged } from "../account/app-badge";
+import { unreadChanged, unreadChanges } from "../account/app-badge";
 import { directMessageErrors } from "./direct-errors.ts";
 import { hasHiddenNameCharacters } from "../names.ts";
 
@@ -178,8 +178,29 @@ export interface UnreadSpace {
   channels: { id: string; lastSeq: string; readSeq?: string; unreadCount?: number; mentionCount?: number }[];
 }
 
+type UnreadSnapshot = Promise<{ spaces: UnreadSpace[]; feedbackWaiting?: number; badgeCount?: number }>;
+let latestUnread: { started: number; changes: number; result: UnreadSnapshot } | undefined;
+
 export function listUnreadSpaces() {
-  return request<{ spaces: UnreadSpace[]; feedbackWaiting?: number; badgeCount?: number }>("/api/spaces/unread");
+  const result: UnreadSnapshot = request("/api/spaces/unread");
+  const latest = { started: Date.now(), changes: unreadChanges(), result };
+  latestUnread = latest;
+  result.catch(() => {
+    if (latestUnread === latest) latestUnread = undefined;
+  });
+  return result;
+}
+
+/**
+ * For the page's first snapshot: the one a channel visit started moments ago,
+ * unless a read was acknowledged since. Otherwise a fresh read. Loading a page
+ * would otherwise run the same query twice within a few hundred milliseconds.
+ */
+export function startingUnreadSpaces() {
+  const latest = latestUnread;
+  return latest && latest.changes === unreadChanges() && Date.now() - latest.started < 5_000
+    ? latest.result
+    : listUnreadSpaces();
 }
 
 let unreadPrefetch: { channelId: string; expires: number; result: ReturnType<typeof listUnreadSpaces> } | undefined;
