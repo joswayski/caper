@@ -13,9 +13,8 @@
 
 use crate::Rgba;
 use crate::attachments::{
-    EXTERNAL_KEY, FULL_EDGE, FailureAction, FreshUrl, Refresher, decode_animation,
-    decode_animation_at, decode_image, decode_thumbnail, inline_source, needs_refresh,
-    on_fetch_failure, resolve,
+    EXTERNAL_KEY, FULL_EDGE, FailureAction, FreshUrl, Refresher, decode_animation_at, decode_image,
+    inline_source, needs_refresh, on_fetch_failure, resolve,
 };
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -36,6 +35,9 @@ const GIF_IDLE: Duration = Duration::from_secs(10);
 /// Retained GIF frame pixels across every tile (each GIF decodes to at most
 /// 32 MiB); the least recently drawn give way first.
 const GIF_BUDGET: usize = 128 * 1024 * 1024;
+
+/// An inline animation's frames together stay within this.
+const ANIMATION_BYTES: usize = 32 * 1024 * 1024;
 
 const BLUR_KEY: &str = "spoiler-cover:";
 const FULL_KEY: &str = "full:";
@@ -147,6 +149,8 @@ pub struct Media<T: Textures> {
     images: HashMap<String, Entry<T::Texture>>,
     /// Ids that already used their one refresh-and-retry after a 403/404.
     retried: BTreeSet<String>,
+    /// Keys shown from a locally decoded image, which has no URL to load again.
+    local: BTreeSet<String>,
     waiting: VecDeque<(String, String, bool)>,
     in_flight: usize,
     open_after_refresh: Option<(String, String)>,
@@ -156,9 +160,29 @@ pub struct Media<T: Textures> {
     wake: Arc<dyn Fn() + Send + Sync>,
     generation: u64,
     frame: u64,
+    /// The long side, in pixels, that inline stills and GIF frames decode
+    /// to: [`crate::attachments::THUMBNAIL_EDGE`] unless the client sets the
+    /// size it draws them at ([`Media::set_inline_edge`]).
+    edge: u32,
 }
 
 impl<T: Textures> Media<T> {
+    /// Inline images and animations decode at most `edge` pixels on their
+    /// long side, the largest the client draws them at its current scale.
+    /// When it grows (a higher-DPI monitor), images decoded smaller are
+    /// forgotten so they load again sharp; viewer originals are unaffected.
+    pub fn set_inline_edge(&mut self, edge: u32) {
+        let edge = edge.max(1);
+        if edge > self.edge {
+            self.images.retain(|key, entry| {
+                key.starts_with(FULL_KEY)
+                    || self.local.contains(key)
+                    || !matches!(entry, Entry::Ready { .. })
+            });
+        }
+        self.edge = edge;
+    }
+
     /// `api` is `None` in tests and fixtures, which never fetch. `wake` is
     /// called from fetch threads when a result is ready for [`Media::poll`].
     pub fn new(api: Option<crate::api::Api>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
@@ -168,6 +192,7 @@ impl<T: Textures> Media<T> {
             refresher: Refresher::default(),
             images: HashMap::new(),
             retried: BTreeSet::new(),
+            local: BTreeSet::new(),
             waiting: VecDeque::new(),
             in_flight: 0,
             open_after_refresh: None,
@@ -177,6 +202,7 @@ impl<T: Textures> Media<T> {
             wake,
             generation: 0,
             frame: 0,
+            edge: crate::attachments::THUMBNAIL_EDGE,
         }
     }
 
@@ -186,6 +212,7 @@ impl<T: Textures> Media<T> {
         self.refresher = Refresher::default();
         self.images.clear();
         self.retried.clear();
+        self.local.clear();
         self.waiting.clear();
         self.in_flight = 0;
         self.open_after_refresh = None;
@@ -280,6 +307,7 @@ impl<T: Textures> Media<T> {
                     animation: None,
                 },
             );
+            self.local.insert(cover_id.clone());
         }
         self.image_request(&cover_id, None, false)
     }
@@ -299,6 +327,7 @@ impl<T: Textures> Media<T> {
             return;
         }
         let texture = textures.create(id, &image);
+        self.local.insert(id.to_owned());
         self.images.insert(
             id.to_owned(),
             Entry::Ready {
@@ -367,6 +396,7 @@ impl<T: Textures> Media<T> {
     /// Forgets a cached image, such as a viewer original no longer shown.
     pub fn release(&mut self, key: &str) {
         self.images.remove(key);
+        self.local.remove(key);
     }
 
     /// Called only for a visible, ready GIF tile. A local first-frame preview
@@ -516,6 +546,7 @@ impl<T: Textures> Media<T> {
             let sender = self.sender.clone();
             let wake = self.wake.clone();
             let generation = self.generation;
+            let edge = self.edge;
             std::thread::spawn(move || {
                 // GIF and WebP keep every composited frame and its delay,
                 // never the uploaded poster; stills decode for display
@@ -529,9 +560,9 @@ impl<T: Textures> Media<T> {
                                 .map(|image| vec![(image, Duration::ZERO)])
                         }
                     } else if gif {
-                        decode_animation(&bytes)
+                        decode_animation_at(&bytes, edge, ANIMATION_BYTES)
                     } else {
-                        decode_thumbnail(&bytes).map(|image| {
+                        decode_image(&bytes, edge).map(|image| {
                             let image = if id.starts_with(BLUR_KEY) {
                                 blur(&image)
                             } else {
@@ -606,6 +637,7 @@ impl<T: Textures> Media<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attachments::{decode_animation, decode_thumbnail};
 
     /// Textures that keep their pixels and count creates and updates.
     #[derive(Default)]
@@ -684,6 +716,40 @@ mod tests {
 
     fn signed(expiry: i64) -> String {
         format!("https://cdn.caper.chat/original/asset1?exp={expiry}&sig=abc")
+    }
+
+    #[test]
+    fn a_larger_inline_edge_reloads_downloads_but_keeps_local_images() {
+        let mut textures = Counting::default();
+        let mut media = media();
+        media.set_inline_edge(400);
+        // An own upload's local preview has no URL to load again.
+        media.insert_local(&mut textures, "local", filled([4, 4], RED));
+        let url = signed(NOW);
+        assert_eq!(media.image("remote", Some(&url)), ImageState::Loading);
+        media.poll(&mut textures, Instant::now());
+        media
+            .sender
+            .send(Fetched {
+                generation: media.generation,
+                id: "remote".into(),
+                result: Ok(vec![(filled([4, 4], GREEN), Duration::ZERO)]),
+            })
+            .unwrap();
+        media.poll(&mut textures, Instant::now());
+        assert!(matches!(
+            media.image("remote", Some(&url)),
+            ImageState::Ready(_)
+        ));
+        // Shrinking keeps what is already decoded.
+        media.set_inline_edge(300);
+        assert!(media.texture("remote").is_some());
+        // Growing (a sharper monitor) loads downloads again at the new size.
+        media.set_inline_edge(800);
+        assert!(media.texture("remote").is_none());
+        assert_eq!(media.image("remote", Some(&url)), ImageState::Loading);
+        assert!(media.texture("local").is_some());
+        assert!(media.texture(&spoiler_key("local")).is_some());
     }
 
     #[test]

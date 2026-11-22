@@ -4682,6 +4682,13 @@ impl App {
             self.dirty.layout = false;
             self.apply_layout()?;
         }
+        if let Some(live) = &mut self.live {
+            // Inline images decode no larger than their largest frame (a
+            // link preview's 400 DIPs) at this DPI and zoom.
+            let dips = caper_client::embeds::MAX_WIDTH.max(caper_client::attachments::MAX_WIDTH);
+            live.media
+                .set_inline_edge((dips * self.scale).ceil() as u32);
+        }
         self.update_history()?;
         self.inline_video_follow();
         self.tint_drafts()?;
