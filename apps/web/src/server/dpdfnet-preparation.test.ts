@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext, vi } from "vitest";
-import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
+import { DpdfnetPreparation, SPARE_IDLE_MS } from "../media/dpdfnet-preparation.ts";
 
 class WorkerMock {
   static instances: WorkerMock[] = [];
@@ -107,9 +107,48 @@ for (const failure of ["message", "error", "timeout"] as const)
     const retry = preparation.prepare();
     workers[1].emit("ready");
     await retry;
+    const owned = preparation.take();
     vi.advanceTimersByTime(60_000);
-    assert.equal(workers[1].terminateCalls, 0, "ready workers must not time out");
+    assert.equal(workers[1].terminateCalls, 0, "a ready worker a capture took must not time out");
+    owned.stop();
   });
+
+test("an unused spare stops after its idle time, counted from readiness and from the last request", async (t) => {
+  const { preparation, workers } = setup(t);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  t.onTestFinished(() => void vi.useRealTimers());
+  const pending = preparation.prepare();
+  vi.advanceTimersByTime(SPARE_IDLE_MS + 1);
+  assert.equal(workers[0].terminateCalls, 0, "a download still in progress is not cut short");
+  workers[0].emit("ready");
+  await pending;
+  vi.advanceTimersByTime(SPARE_IDLE_MS - 1);
+  assert.equal(preparation.isReady(), true);
+  await preparation.prepare(); // Renewed interest keeps the same worker.
+  vi.advanceTimersByTime(SPARE_IDLE_MS - 1);
+  assert.equal(workers[0].terminateCalls, 0);
+  assert.equal(workers.length, 1);
+  vi.advanceTimersByTime(1);
+  assert.equal(workers[0].terminateCalls, 1);
+  assert.equal(preparation.hasSpare(), false);
+  const again = preparation.prepare();
+  assert.equal(workers.length, 2, "the next request starts a fresh worker");
+  workers[1].emit("ready");
+  await again;
+});
+
+test("a worker a capture took is never stopped by the idle timer", async (t) => {
+  const { preparation, workers } = setup(t);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  t.onTestFinished(() => void vi.useRealTimers());
+  const pending = preparation.prepare();
+  workers[0].emit("ready");
+  await pending;
+  const owned = preparation.take();
+  vi.advanceTimersByTime(SPARE_IDLE_MS * 3);
+  assert.equal(workers[0].terminateCalls, 0);
+  owned.stop();
+});
 
 test("an idle worker failure after readiness is also evicted", async (t) => {
   const { preparation, workers } = setup(t);

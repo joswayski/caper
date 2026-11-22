@@ -200,6 +200,7 @@ async function fixture() {
     { deviceId: "default", groupId: "fixture", kind: "audiooutput", label: "Mock speakers" },
   ];
   PublicCallClient.prototype.prepareMicrophone = () => {};
+  PublicCallClient.prototype.prefetchMicrophone = () => {};
   PublicCallClient.prototype.openMicrophone = async function () {
     f.client = this;
     return context.createMediaStreamDestination().stream.getAudioTracks()[0];

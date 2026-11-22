@@ -1018,9 +1018,10 @@ export default function Call({
   }, [voiceChannel?.id, voiceChannel?.spaceId, voiceChannels, spaceId, channel?.direct]);
 
   useEffect(() => {
-    // Download/compile only; never a permission prompt. Deferred for embedded
-    // rooms so homepage visitors who only look do not fetch noise models.
-    if (available === true && engaged) clientRef.current?.prepareMicrophone();
+    // Download only; the model initializes when someone reaches for Join
+    // (prepareJoin). Deferred for embedded rooms so homepage visitors who only
+    // look do not fetch noise models.
+    if (available === true && engaged) clientRef.current?.prefetchMicrophone();
   }, [available, engaged, mediaRoot]);
 
   useEffect(() => {
@@ -1226,6 +1227,12 @@ export default function Call({
     keepVoiceWarm(mediaRoot);
   }, [keepWarm, mediaRoot]);
   useEffect(() => () => stopVoiceWarm(), []);
+  /** The pointer or focus is on Join itself: also initialize the noise model.
+   * It holds about 110 MB, so it is not kept while nobody is joining. */
+  const prepareJoin = (channelId?: string) => {
+    if (available === true && engaged) clientRef.current?.prepareMicrophone();
+    prepareChannel(channelId);
+  };
   const prepareRef = useRef(prepareChannel);
   prepareRef.current = prepareChannel;
   // Start preparing as the pointer approaches a Join button, not only on hover.
@@ -1536,14 +1543,14 @@ export default function Call({
           aria-disabled={blocked}
           aria-busy={joiningHere || leavingHere}
           onPointerEnter={() => {
-            if (!activeHere) prepareChannel(channelId);
+            if (!activeHere) prepareJoin(channelId);
           }}
           onPointerDown={() => {
-            if (!activeHere) prepareChannel(channelId);
+            if (!activeHere) prepareJoin(channelId);
           }}
           onFocus={(event) => {
             focusedJoin.current = event.currentTarget;
-            if (!activeHere) prepareChannel(channelId);
+            if (!activeHere) prepareJoin(channelId);
           }}
           onClick={() => {
             if (!blocked) joinChannel(channelId);

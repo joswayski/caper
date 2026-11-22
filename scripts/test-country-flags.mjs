@@ -29,6 +29,7 @@ try {
     const {PublicCallClient} = await import('/src/media/client.ts');
     const {default: Call} = await import('/src/pages/Call.tsx');
     PublicCallClient.prototype.prepareMicrophone = () => {};
+    PublicCallClient.prototype.prefetchMicrophone = () => {};
     EventConnection.prototype.openPresence = async function () {
       this.snapshot({revision: 1, participants: [
         {id: 'account', name: 'Signed-in participant', muted: false, deafened: false},

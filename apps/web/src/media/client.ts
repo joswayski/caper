@@ -1,7 +1,7 @@
 import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression } from "./microphone.ts";
 import { appGateway, GatewayError } from "../gateway/client.ts";
 import { NoiseAssets } from "./noise-assets.ts";
-import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
+import { DpdfnetPreparation, prefetchDpdfnet } from "./dpdfnet-preparation.ts";
 import { provideCallAudio } from "./call-audio.ts";
 import { closeWarmVoice, takeWarmVoice } from "./warm.ts";
 import { EventConnection } from "./event-connection.ts";
@@ -262,8 +262,15 @@ export class PublicCallClient {
     this.emit();
   }
 
+  /** Downloads the noise model into the HTTP cache for a later join: nothing is compiled or kept. */
+  prefetchMicrophone() {
+    if (this.noiseSuppression === "dpdfnet8") prefetchDpdfnet();
+  }
+
+  /** Call when a capture is expected soon (the pointer or focus reaches Join). */
   prepareMicrophone() {
     // Download/compile only: no permission prompt, hardware capture or AudioContext.
+    // An unused DPDFNet spare stops by itself (SPARE_IDLE_MS).
     if (this.phase !== "idle") return; // Do not hold a spare model alongside an active capture.
     if (this.noiseSuppression === "dpdfnet8") {
       void this.dpdfnet.prepare().catch(() => undefined);

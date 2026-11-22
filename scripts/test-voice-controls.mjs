@@ -429,6 +429,7 @@ async function fixture() {
     { deviceId: "monitor", kind: "audiooutput", label: "HDMI monitor" },
   ];
   PublicCallClient.prototype.prepareMicrophone = () => {};
+  PublicCallClient.prototype.prefetchMicrophone = () => {};
   PublicCallClient.prototype.openMicrophone = async function (deviceId) {
     f.devices.push(deviceId);
     f.client = this;

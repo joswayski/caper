@@ -3182,13 +3182,21 @@ A 502 without that header may come from ingress or an older image.
 
 ## Join startup and preparation
 
-The enabled channel screen starts one DPDFNet-8 worker before Join: it downloads
-the model/runtime (about 27 MB), initializes ONNX inference and runs a synthetic
-warm-up, then starts its live state fresh. The homepage does not start this work.
-Preparation never requests microphone permission, captures audio, creates an
-AudioContext, provisions an SFU session or publishes a track. It is preparation
-for the next capture, not a pool of spare workers during a call; initialized
-workers are not persisted across page loads.
+The enabled channel screen downloads the DPDFNet-8 model and runtime (about
+27 MB) into the browser's HTTP cache (`<link rel="prefetch">`; where prefetch is
+unsupported, a fetch whose body is read and dropped). Nothing is compiled or kept
+in the page. The homepage does not start this work.
+
+One DPDFNet-8 worker starts when someone reaches for a capture: the pointer or
+keyboard focus on a Join button, or on the composer's microphone. It initializes
+ONNX inference from the cached files, runs a synthetic warm-up, then starts its
+live state fresh. An initialized worker holds about 110 MB, so one that no
+capture takes stops 30 seconds after the last such request (`SPARE_IDLE_MS`), as
+does the one prepared after leaving a call. Preparation never requests
+microphone permission, captures audio, creates an AudioContext, provisions an SFU
+session or publishes a track. It is preparation for the next capture, not a pool
+of spare workers during a call; initialized workers are not persisted across
+page loads.
 
 Join opens the microphone and initializes a dedicated worklet, taking exclusive
 ownership of the prepared worker. If that worker is still compiling, Join does not

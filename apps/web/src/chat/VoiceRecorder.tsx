@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AudioLines, Check, ChevronUp, LockKeyhole, Mic, Square, Trash2 } from "lucide-react";
+import { callAudio } from "../media/call-audio.ts";
 import type { ComposerInput } from "./MentionTextarea.tsx";
 import {
   HOLD_TAP_MS,
@@ -323,6 +324,12 @@ export function useVoiceRecorder({
   // The finger is off the screen and the recording carries on: close the
   // keyboard so typing can't reach the field hidden under the bar.
   const dismissKeyboard = () => (document.activeElement as HTMLElement | null)?.blur?.();
+  // Reaching for the microphone initializes the call's noise model, which is
+  // not kept while idle, so the recording starts with it. Never beside a
+  // recording: a second model would compete with the one processing it.
+  const prepareModel = () => {
+    if (!active && !blocked) callAudio().prepare();
+  };
   const micButton = voice ? (
     <button
       type="button"
@@ -332,6 +339,8 @@ export function useVoiceRecorder({
       title="Dictate"
       data-recording={active || undefined}
       disabled={blocked}
+      onPointerEnter={prepareModel}
+      onFocus={prepareModel}
       onPointerDown={(event) => {
         pressed.current = false;
         if (active || blocked || !event.isPrimary || event.button !== 0 || !touchLayout()) return;
