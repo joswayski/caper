@@ -14,13 +14,13 @@ use std::ops::Range;
 use std::rc::Rc;
 
 /// Mention pills, as desktop: one weight bolder, primary text on a 24%
-/// terracotta wash.
-const MENTION: &str = "background=\"#b64d32\" bgalpha=\"24%\" foreground=\"#f3f4f5\" \
+/// accent wash.
+const MENTION: &str = "background=\"#557a38\" bgalpha=\"24%\" foreground=\"#f4f3ef\" \
      weight=\"500\" underline=\"none\"";
 
-/// URL pills, as web's `.chat-link`: the link colour (#69CFFF) at 10% under
+/// URL pills, as web's `.chat-link`: the link colour (#7CC7FF) at 10% under
 /// the link, which is not underlined.
-const URL_PILL: &str = "background=\"#69cfff\" bgalpha=\"10%\" underline=\"none\"";
+const URL_PILL: &str = "background=\"#7cc7ff\" bgalpha=\"10%\" underline=\"none\"";
 
 /// The link scheme of a person's mention pill: `caper-person:<account id>`.
 pub const PERSON: &str = "caper-person:";
@@ -28,10 +28,10 @@ pub const PERSON: &str = "caper-person:";
 /// The link scheme of a hidden spoiler: `caper-spoiler:<index>`.
 const SPOILER_LINK: &str = "caper-spoiler:";
 
-/// A hidden spoiler, as web's: its text drawn invisibly on the border
-/// colour (#34383B).
+/// A hidden spoiler, as web's: its text drawn invisibly on the solid border
+/// colour (#29292F).
 const HIDDEN: &str =
-    "background=\"#34383b\" foreground=\"#34383b\" fgalpha=\"1\" underline=\"none\"";
+    "background=\"#29292f\" foreground=\"#29292f\" fgalpha=\"1\" underline=\"none\"";
 
 /// A revealed spoiler, as web's: a rgb(255 255 255 / 6%) wash.
 const REVEALED: &str = "background=\"#ffffff\" bgalpha=\"6%\"";

@@ -1,0 +1,71 @@
+{
+  "schema": "caper.theme.v1",
+  "id": "obsidian",
+  "name": "Obsidian",
+  "appearance": "dark",
+  "surfaces": {
+    "frame": "#0b0b0c",
+    "base": "#121214",
+    "sidebar": "#0f0f11",
+    "sidebarRaised": "#1c1c20",
+    "conversation": "#131316",
+    "raised": "#1b1b1f",
+    "composer": "#1d1d22",
+    "replyDraft": "#1a1a1e",
+    "hover": "rgb(255 255 255 / 6%)",
+    "hoverAlpha": 0.06
+  },
+  "borders": {
+    "default": "#29292f",
+    "translucent": "rgb(255 255 255 / 9%)",
+    "subtle": "rgb(255 255 255 / 6%)",
+    "rim": "rgb(255 255 255 / 8%)"
+  },
+  "text": {
+    "primary": "#f4f3ef",
+    "message": "#e6e5e0",
+    "muted": "#9a99a2",
+    "link": "#7cc7ff",
+    "linkHover": "#b2dfff"
+  },
+  "action": {
+    "primary": "#f4f3ef",
+    "primaryHover": "#ffffff",
+    "primaryPress": "#dfddd6",
+    "onPrimary": "#0b0b0c"
+  },
+  "accent": {
+    "primary": "#557a38",
+    "bright": "#87bc5c",
+    "softText": "#c3e4a4",
+    "surface": "#1c2816",
+    "border": "#486832"
+  },
+  "brand": {
+    "caper": "#6f9948",
+    "caperBright": "#8ec460",
+    "resizeHighlight": "#485d38"
+  },
+  "status": {
+    "voice": "#4ade80",
+    "pin": "#e4c76a",
+    "pinWash": "rgb(228 199 106 / 6%)",
+    "idle": "#d6a44e",
+    "errorText": "#ff9b82",
+    "danger": "#c83c4e",
+    "dangerHover": "#e04c5f",
+    "dangerWash": "rgb(200 60 78 / 16%)",
+    "onDanger": "#ffffff",
+    "voiceOff": "#ff7182",
+    "voiceOffIcon": "#ed5265",
+    "voiceOffWash": "rgb(224 76 95 / 18%)"
+  },
+  "radii": {
+    "canvas": 16,
+    "card": 13,
+    "composer": 15,
+    "control": 10,
+    "pill": 999,
+    "avatar": "30%"
+  }
+}

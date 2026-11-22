@@ -32,7 +32,7 @@ function macOrIpadPage(dmg: string, testFlight: string | null): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Download Caper</title>
 <script>location.replace(navigator.maxTouchPoints > 1 ? ${JSON.stringify(ipad)} : ${JSON.stringify(dmg)})</script>
-<body style="margin:0;min-height:100vh;display:grid;place-content:center;gap:12px;text-align:center;background:#0C0D0F;color:#F3F4F5;font:16px/1.5 system-ui,sans-serif">
+<body style="margin:0;min-height:100vh;display:grid;place-content:center;gap:12px;text-align:center;background:#0B0B0C;color:#F4F3EF;font:16px/1.5 system-ui,sans-serif">
 <p style="margin:0">Your Caper download is starting.</p>
 <p style="margin:0;color:#9BA0A4"><a style="color:inherit" href="${dmg}">Mac (.dmg)</a> · <a style="color:inherit" href="${ipad}">iPad (TestFlight)</a></p>
 </body>

@@ -788,12 +788,12 @@ button.chat-reply-source {
 .chat-message:where([data-reply-to-me="true"]),
 .chat-message:where([data-reply-to-me="true"]):hover,
 .chat-message:where([data-reply-to-me="true"]):focus-within {
-  background: rgb(182 77 50 / 12%);
+  background: rgb(var(--accent-rgb) / 12%);
   box-shadow: inset 3px 0 var(--terracotta);
 }
 /* Your pins are terracotta; other people's pins keep the faded gold wash. */
 .chat-message-pinned-own {
-  --pin-wash: rgb(182 77 50 / 12%);
+  --pin-wash: rgb(var(--accent-rgb) / 12%);
 }
 /* Keep pin ownership visible on hover/focus; thread and jump selections win. */
 .chat-message-pinned,
@@ -885,7 +885,7 @@ button.chat-reply-source {
 .chat-message-jump-target,
 .chat-message-jump-target:hover,
 .chat-message-jump-target:focus-within {
-  background: rgb(182 77 50 / 12%);
+  background: rgb(var(--accent-rgb) / 12%);
   box-shadow: inset 3px 0 var(--terracotta);
 }
 /* Direct children only (article > header/p in Pins, article > div > header/p in
@@ -1007,7 +1007,7 @@ button.chat-reply-source {
 .chat-add-reaction[aria-expanded="true"],
 .chat-message-actions-trigger[aria-expanded="true"] {
   color: var(--text);
-  background: rgb(182 77 50 / 16%);
+  background: rgb(var(--accent-rgb) / 16%);
   box-shadow: inset 0 0 0 1px var(--terracotta);
 }
 .chat-reactions,
@@ -1041,8 +1041,8 @@ button.chat-reply-source {
 }
 .chat-reaction[aria-pressed="true"] {
   border-color: var(--terracotta);
-  background: rgb(182 77 50 / 16%);
-  color: #f2ae9c;
+  background: rgb(var(--accent-rgb) / 16%);
+  color: var(--accent-soft-text);
 }
 /* Hover-capable pointers only, so a tapped chip does not keep a stale border. */
 @media (hover: hover) {
@@ -1143,7 +1143,7 @@ button.chat-reply-source {
 }
 .chat-quick-reactions button[aria-pressed="true"] {
   border-color: var(--terracotta);
-  background: rgb(182 77 50 / 16%);
+  background: rgb(var(--accent-rgb) / 16%);
 }
 /* Touch sheets open under the finger; hover fills there would look selected. */
 @media (hover: hover) {
@@ -1725,7 +1725,7 @@ button.chat-reply-source {
 .chat-mention {
   padding: 0 2px;
   border-radius: 4px;
-  background: rgb(182 77 50 / 24%);
+  background: rgb(var(--accent-rgb) / 24%);
   color: var(--text);
   font-weight: 600;
 }
@@ -1740,12 +1740,12 @@ button.chat-reply-source {
   cursor: pointer;
 }
 .chat-mention-person:focus-visible {
-  background: rgb(182 77 50 / 32%);
+  background: rgb(var(--accent-rgb) / 32%);
 }
 /* A tapped pill would otherwise stay highlighted after its profile sheet closes. */
 @media (hover: hover) {
   .chat-mention-person:hover {
-    background: rgb(182 77 50 / 32%);
+    background: rgb(var(--accent-rgb) / 32%);
   }
 }
 .chat-mention-person:focus-visible {
@@ -2085,7 +2085,7 @@ button.chat-mention-card-avatar {
 .chat-message-mentioned,
 .chat-message-mentioned:hover,
 .chat-message-mentioned:focus-within {
-  background: rgb(182 77 50 / 8%);
+  background: rgb(var(--accent-rgb) / 8%);
   box-shadow: inset 3px 0 var(--terracotta);
 }
 .chat-send-status {
@@ -2170,7 +2170,7 @@ button.chat-mention-card-avatar {
   cursor: pointer;
 }
 .chat-emoji-suggestions button[aria-selected="true"] {
-  background: rgb(182 77 50 / 18%);
+  background: rgb(var(--accent-rgb) / 18%);
   color: var(--text);
 }
 @media (hover: hover) {
@@ -2426,7 +2426,7 @@ button.chat-mention-card-avatar {
   font-style: italic;
 }
 .chat-rich-input .chat-draft-mention {
-  background: rgb(182 77 50 / 24%);
+  background: rgb(var(--accent-rgb) / 24%);
   border-radius: 3px;
 }
 .chat-rich-input .chat-draft-link {
@@ -3853,7 +3853,7 @@ a.chat-draft-preview {
 .chat-editor-eraser[aria-pressed="true"] {
   border-color: var(--terracotta);
   color: var(--text);
-  background: rgb(182 77 50 / 14%);
+  background: rgb(var(--accent-rgb) / 14%);
 }
 .chat-editor-eraser:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -3950,7 +3950,7 @@ a.chat-draft-preview {
 .chat-editor-modes button[aria-pressed="true"] {
   border-color: var(--terracotta);
   color: var(--text);
-  background: rgb(182 77 50 / 14%);
+  background: rgb(var(--accent-rgb) / 14%);
 }
 .chat-editor-modes .chat-editor-remove {
   color: var(--error-text);
@@ -4369,7 +4369,7 @@ a.chat-draft-preview {
 }
 .chat-viewer-tools button[aria-pressed="true"] {
   color: var(--terracotta-bright);
-  background: rgb(182 77 50 / 16%);
+  background: rgb(var(--accent-rgb) / 16%);
 }
 .chat-viewer-tools .chat-viewer-remove {
   color: var(--error-text);
@@ -4642,7 +4642,7 @@ a.chat-draft-preview {
 .chat-message-thread-active,
 .chat-message-thread-active:hover,
 .chat-message-thread-active:focus-within {
-  background: rgb(182 77 50 / 12%);
+  background: rgb(var(--accent-rgb) / 12%);
   box-shadow: inset 3px 0 var(--terracotta);
 }
 /* Touch feedback after a short rest (so a scroll never flashes it), layered over
@@ -5167,7 +5167,7 @@ a.chat-draft-preview {
   }
 }
 .chat-forward-destinations label:has(:checked) {
-  background: rgb(182 77 50 / 15%);
+  background: rgb(var(--accent-rgb) / 15%);
 }
 .chat-forward-destinations > .chat-forward-status {
   padding: 8px;
@@ -6118,10 +6118,10 @@ a.chat-draft-preview {
 }
 @keyframes chat-voice-live {
   from {
-    box-shadow: 0 0 0 0 rgb(219 104 73 / 55%);
+    box-shadow: 0 0 0 0 rgb(var(--accent-bright-rgb) / 55%);
   }
   to {
-    box-shadow: 0 0 0 7px rgb(219 104 73 / 0%);
+    box-shadow: 0 0 0 7px rgb(var(--accent-bright-rgb) / 0%);
   }
 }
 @media (hover: hover) {

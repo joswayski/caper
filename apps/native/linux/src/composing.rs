@@ -225,7 +225,7 @@ pub fn attach(view: &gtk::TextView, anchor: &gtk::Box) -> Rc<Rich> {
             .underline(pango::Underline::Single)
             .build(),
         gtk::TextTag::builder().strikethrough(true).build(),
-        gtk::TextTag::builder().background("#34383b").build(),
+        gtk::TextTag::builder().background("#29292f").build(),
         gtk::TextTag::builder().left_margin(QUOTE_INDENT).build(),
     ];
     for tag in &tags {

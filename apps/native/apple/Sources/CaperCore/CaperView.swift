@@ -11,36 +11,39 @@ import ServiceManagement
 #endif
 
 public enum CaperTheme {
-    public static let blackout = Color(red: 12/255, green: 13/255, blue: 15/255)
-    public static let surface = Color(red: 21/255, green: 23/255, blue: 25/255)
-    public static let raised = Color(red: 28/255, green: 31/255, blue: 33/255)
-    public static let sidebar = Color(red: 21/255, green: 28/255, blue: 30/255)
+    // BEGIN GENERATED THEME TOKENS
+    public static let blackout = Color(red: 11/255, green: 11/255, blue: 12/255)
+    public static let surface = Color(red: 18/255, green: 18/255, blue: 20/255)
+    public static let raised = Color(red: 27/255, green: 27/255, blue: 31/255)
+    public static let sidebar = Color(red: 15/255, green: 15/255, blue: 17/255)
     /// Web's --surface-hover (6% white) over the sidebar, opaque: a private
     /// channel's own members in the member list.
-    public static let sidebarRaised = Color(red: 35/255, green: 42/255, blue: 44/255)
-    public static let conversation = Color(red: 25/255, green: 33/255, blue: 35/255)
-    public static let composer = Color(red: 40/255, green: 49/255, blue: 51/255)
+    public static let sidebarRaised = Color(red: 28/255, green: 28/255, blue: 32/255)
+    public static let conversation = Color(red: 19/255, green: 19/255, blue: 22/255)
+    public static let composer = Color(red: 29/255, green: 29/255, blue: 34/255)
     /// 3% white over the conversation: the reply draft card above the composer.
-    public static let replyDraft = Color(red: 32/255, green: 40/255, blue: 42/255)
-    public static let border = Color(red: 52/255, green: 56/255, blue: 59/255)
-    public static let text = Color(red: 243/255, green: 244/255, blue: 245/255)
-    public static let muted = Color(red: 185/255, green: 188/255, blue: 190/255)
-    public static let link = Color(red: 105/255, green: 207/255, blue: 255/255)
-    public static let terracotta = Color(red: 182/255, green: 77/255, blue: 50/255)
-    public static let terracottaBright = Color(red: 219/255, green: 104/255, blue: 73/255)
-    /// Primary actions are eggshell with blackout labels (shared/design.css --action);
-    /// terracotta stays for selection and focus.
-    public static let action = Color(red: 241/255, green: 237/255, blue: 228/255)
-    public static let actionHover = Color(red: 251/255, green: 249/255, blue: 244/255)
-    public static let actionPress = Color(red: 221/255, green: 215/255, blue: 203/255)
+    public static let replyDraft = Color(red: 26/255, green: 26/255, blue: 30/255)
+    public static let border = Color(red: 41/255, green: 41/255, blue: 47/255)
+    public static let borderSubtle = Color.white.opacity(0.08)
+    public static let surfaceRim = Color.white.opacity(0.08)
+    public static let text = Color(red: 244/255, green: 243/255, blue: 239/255)
+    public static let muted = Color(red: 154/255, green: 153/255, blue: 162/255)
+    public static let link = Color(red: 124/255, green: 199/255, blue: 255/255)
+    public static let terracotta = Color(red: 85/255, green: 122/255, blue: 56/255)
+    public static let terracottaBright = Color(red: 135/255, green: 188/255, blue: 92/255)
+    /// Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json).
+    public static let action = Color(red: 244/255, green: 243/255, blue: 239/255)
+    public static let actionHover = Color(red: 255/255, green: 255/255, blue: 255/255)
+    public static let actionPress = Color(red: 223/255, green: 221/255, blue: 214/255)
     public static let onAction = blackout
-    public static let green = Color(red: 99/255, green: 122/255, blue: 67/255)
-    public static let voiceSessionGreen = Color(red: 74/255, green: 168/255, blue: 107/255)
+    public static let green = Color(red: 111/255, green: 153/255, blue: 72/255)
+    public static let voiceSessionGreen = Color(red: 74/255, green: 222/255, blue: 128/255)
     public static let pinGold = Color(red: 228/255, green: 199/255, blue: 106/255)
-    /// Web's error text (#ff9b82), in place of the system red.
-    public static let error = Color(red: 1, green: 155/255, blue: 130/255)
-    /// Web's muted/deafened account controls (#ED5265): the icon and its options chevron.
+    /// Web's error text, in place of the system red.
+    public static let error = Color(red: 255/255, green: 155/255, blue: 130/255)
+    /// Web's muted/deafened account controls: the icon and its options chevron.
     public static let voiceOff = Color(red: 237/255, green: 82/255, blue: 101/255)
+    // END GENERATED THEME TOKENS
     /// Shared bottom edge for the account dock and conversation composer.
     static let workspaceBottomInset: CGFloat = 16
     #if os(iOS)

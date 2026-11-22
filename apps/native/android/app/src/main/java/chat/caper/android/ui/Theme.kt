@@ -21,39 +21,43 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.R
 
-val Blackout = Color(0xFF0C0D0F)
-val Surface = Color(0xFF151719)
-val Border = Color(0xFF34383B)
-val Text = Color(0xFFF3F4F5)
-val Terracotta = Color(0xFFB64D32)
-/** Primary actions are eggshell with blackout labels (shared/design.css --action / --on-action). */
-val Action = Color(0xFFF1EDE4)
-val OnAction = Color(0xFF0C0D0F)
-val CaperGreen = Color(0xFF637A43)
+// BEGIN GENERATED THEME TOKENS
+val Blackout = Color(0xFF0B0B0C)
+val Surface = Color(0xFF121214)
+val Border = Color(0xFF29292F)
+val BorderSubtle = Color(0x17FFFFFF)
+val SurfaceRim = Color(0x14FFFFFF)
+val Text = Color(0xFFF4F3EF)
+val Terracotta = Color(0xFF557A38)
+/** Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json). */
+val Action = Color(0xFFF4F3EF)
+val OnAction = Color(0xFF0B0B0C)
+val CaperGreen = Color(0xFF6F9948)
 // Caper green mixed into Border: replaces a panel divider while its resize handle is in use.
-val ResizeHighlight = Color(0xFF49563E)
-val VoiceSessionGreen = Color(0xFF4AA86B)
-val SurfaceSidebar = Color(0xFF151C1E)
+val ResizeHighlight = Color(0xFF485D38)
+val VoiceSessionGreen = Color(0xFF4ADE80)
+val SurfaceSidebar = Color(0xFF0F0F11)
 /** Web's --surface-hover (6% white) over the sidebar, opaque: a private channel's own members in the member list. */
-val SurfaceSidebarRaised = Color(0xFF232A2C)
-val SurfaceConversation = Color(0xFF192123)
-val SurfaceComposer = Color(0xFF283133)
-val SurfaceRaised = Color(0xFF1C1F21)
-val TextMuted = Color(0xFFB9BCBE)
-val MessageText = Color(0xFFDEDFE0)
-val LinkBlue = Color(0xFF69CFFF)
-val LinkBlueActive = Color(0xFFA9E5FF)
-val TerracottaBright = Color(0xFFDB6849)
-val TerracottaDark = Color(0xFF39231E)
-val TerracottaBorder = Color(0xFF805143)
-val TerracottaWash = Color(0x29B64D32)
-/** Text on a terracotta wash, such as your own reaction's count (web's #F2AE9C). */
-val TerracottaLight = Color(0xFFF2AE9C)
+val SurfaceSidebarRaised = Color(0xFF1C1C20)
+val SurfaceConversation = Color(0xFF131316)
+val SurfaceComposer = Color(0xFF1D1D22)
+val SurfaceRaised = Color(0xFF1B1B1F)
+val TextMuted = Color(0xFF9A99A2)
+val MessageText = Color(0xFFE6E5E0)
+val LinkBlue = Color(0xFF7CC7FF)
+val LinkBlueActive = Color(0xFFB2DFFF)
+val TerracottaBright = Color(0xFF87BC5C)
+val TerracottaDark = Color(0xFF1C2816)
+val TerracottaBorder = Color(0xFF486832)
+val TerracottaWash = Color(0x29557A38)
+/** Text on an accent wash, such as your own reaction's count. */
+val TerracottaLight = Color(0xFFC3E4A4)
 val PinGold = Color(0xFFE4C76A)
 val PinGoldWash = Color(0x0FE4C76A)
-val Idle = Color(0xFFC58B3C)
-val Danger = Color(0xFFB93646)
+val Idle = Color(0xFFD6A44E)
+val Danger = Color(0xFFC83C4E)
 val ErrorText = Color(0xFFFF9B82)
+// END GENERATED THEME TOKENS
 private val ControlShape = RoundedCornerShape(8.dp)
 private val Inrond = FontFamily(
     Font(R.font.inrond40_regular, FontWeight.Normal),

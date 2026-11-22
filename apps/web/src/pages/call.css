@@ -386,7 +386,7 @@
   padding: 10px 12px;
   border-radius: 6px;
   color: var(--text);
-  background: rgb(182 77 50 / 0.14);
+  background: rgb(var(--accent-rgb) / 0.14);
   font-weight: 700;
   line-height: 20px;
   text-decoration: none;
@@ -404,7 +404,7 @@
 }
 @media (hover: hover) {
   .channel-link:hover:not([aria-current]) {
-    background: rgb(182 77 50 / 0.22);
+    background: rgb(var(--accent-rgb) / 0.22);
   }
 }
 .voice-actions {
@@ -423,7 +423,7 @@
   border: 1px solid color-mix(in srgb, var(--terracotta) 65%, var(--border));
   border-radius: var(--radius);
   color: color-mix(in srgb, var(--terracotta-bright) 65%, var(--text));
-  background: rgb(182 77 50 / 0.14);
+  background: rgb(var(--accent-rgb) / 0.14);
   font-size: 0.78rem;
   font-weight: 700;
   white-space: nowrap;
@@ -436,7 +436,7 @@
 @media (hover: hover) {
   .voice-button:hover:not([aria-disabled="true"]) {
     border-color: var(--terracotta-bright);
-    background: rgb(182 77 50 / 0.24);
+    background: rgb(var(--accent-rgb) / 0.24);
   }
 }
 /* Unavailable steps back to neutral chrome; Joining…/Leaving… keep the accent. */
@@ -720,13 +720,13 @@
   .range-slider:not([data-disabled]):hover .range-slider-thumb {
     box-shadow:
       0 1px 4px rgb(0 0 0 / 0.35),
-      0 0 0 4px rgb(219 104 73 / 0.18);
+      0 0 0 4px rgb(var(--accent-bright-rgb) / 0.18);
   }
 }
 .range-slider:not([data-disabled]) .range-slider-thumb:active {
   box-shadow:
     0 1px 4px rgb(0 0 0 / 0.35),
-    0 0 0 6px rgb(219 104 73 / 0.24);
+    0 0 0 6px rgb(var(--accent-bright-rgb) / 0.24);
 }
 /* Fingers need more than the 20px row: a larger thumb, and an invisible band
    that takes presses 10px above and below without changing the layout. */
@@ -929,7 +929,7 @@
   height: 10px;
   border-radius: 50%;
   background: var(--terracotta-bright);
-  box-shadow: 0 0 0 5px rgb(219 104 73 / 0.14);
+  box-shadow: 0 0 0 5px rgb(var(--accent-bright-rgb) / 0.14);
   animation: recording-pulse 1.2s ease-in-out infinite;
 }
 @keyframes recording-pulse {
@@ -1142,9 +1142,9 @@
   stroke-width: 2.25;
 }
 .voice-icon-button.active {
-  border-color: #805143;
+  border-color: var(--accent-border);
   color: #fff;
-  background: #39231e;
+  background: var(--accent-surface);
 }
 /* Mute and deafen stay dimmed while a mic test makes them unavailable. */
 .call-account .voice-icon-button:not([aria-disabled="true"]):focus-visible {
@@ -1156,9 +1156,9 @@
    pressed after toggling. Hover fills only apply with a real pointer. */
 @media (hover: hover) {
   .voice-icon-button:hover:not(:disabled, [aria-disabled="true"]) {
-    border-color: #805143;
+    border-color: var(--accent-border);
     color: #fff;
-    background: #39231e;
+    background: var(--accent-surface);
   }
   .call-account .voice-icon-button:not([aria-disabled="true"]):hover {
     color: #fff;
@@ -1402,7 +1402,7 @@
   .device-options label:hover input[role="switch"]:checked:not(:disabled) {
     border-color: var(--terracotta-bright);
     background: var(--terracotta-bright);
-    box-shadow: 0 0 0 3px rgb(182 77 50 / 0.18);
+    box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.18);
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1644,7 +1644,7 @@
   transition: background-color var(--motion-fast) var(--ease-out);
 }
 .channel-row:has(.channel-link[aria-current]) {
-  background: rgb(182 77 50 / 0.14);
+  background: rgb(var(--accent-rgb) / 0.14);
 }
 .channel-row .channel-link {
   min-width: 0;
@@ -1678,7 +1678,7 @@
   flex: 1 1 100%;
 }
 .channel-line:has(.channel-select[aria-current="page"]) {
-  background: rgb(182 77 50 / 0.16);
+  background: rgb(var(--accent-rgb) / 0.16);
 }
 @media (hover: hover) {
   .channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
@@ -1877,7 +1877,7 @@
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  box-shadow: 0 0 14px 2px rgb(219 104 73 / 0.45);
+  box-shadow: 0 0 14px 2px rgb(var(--accent-bright-rgb) / 0.45);
   opacity: 0;
   pointer-events: none;
   animation: voice-join-glow 2.4s ease-in-out infinite;
@@ -1890,7 +1890,7 @@
 @media (prefers-reduced-motion: reduce) {
   .header-voice-join[data-occupied]:not([aria-disabled="true"])::after {
     animation: none;
-    box-shadow: 0 0 10px 1px rgb(219 104 73 / 0.35);
+    box-shadow: 0 0 10px 1px rgb(var(--accent-bright-rgb) / 0.35);
     opacity: 1;
   }
 }
@@ -1928,7 +1928,7 @@
     color: var(--voice-off);
   }
   .chat-heading .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
-    background: rgb(182 77 50 / 0.16);
+    background: rgb(var(--accent-rgb) / 0.16);
   }
   .chat-heading .header-voice :is(.header-voice-join, .voice-leave, .header-voice-mute) svg {
     width: 20px;
@@ -2382,13 +2382,13 @@
 }
 .live-controls .voice-icon-button.active {
   color: var(--error-text);
-  background: rgb(219 104 73 / 0.16);
+  background: rgb(var(--accent-bright-rgb) / 0.16);
 }
 .live-controls .voice-leave {
   margin-left: auto;
   height: 34px;
   color: var(--error-text);
-  background: rgb(219 104 73 / 0.16);
+  background: rgb(var(--accent-bright-rgb) / 0.16);
   font-size: 0.78rem;
   font-weight: 700;
 }
@@ -2399,7 +2399,7 @@
   }
   .live-controls .voice-leave:hover {
     color: #ffb3a0;
-    background: rgb(219 104 73 / 0.26);
+    background: rgb(var(--accent-bright-rgb) / 0.26);
   }
 }
 .live-room-body {
@@ -2738,7 +2738,7 @@ button.voice-strip-open {
 }
 .voice-strip .voice-icon-button.active {
   color: var(--error-text);
-  background: rgb(219 104 73 / 0.16);
+  background: rgb(var(--accent-bright-rgb) / 0.16);
 }
 @media (max-width: 760px) {
   .live-everyone {

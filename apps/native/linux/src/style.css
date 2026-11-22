@@ -1,27 +1,36 @@
 /* Caper's tokens (shared/design.css), as GTK named colours. GTK 4.8 has no
    CSS custom properties; keep these in step with the web's. */
-@define-color caper_blackout #0c0d0f;
-@define-color caper_surface #151719;
-@define-color caper_surface_raised #1c1f21;
-@define-color caper_surface_sidebar #151c1e;
-@define-color caper_surface_conversation #192123;
-@define-color caper_surface_composer #283133;
+/* BEGIN GENERATED THEME TOKENS */
+@define-color caper_blackout #0b0b0c;
+@define-color caper_surface #121214;
+@define-color caper_surface_raised #1b1b1f;
+@define-color caper_surface_sidebar #0f0f11;
+@define-color caper_surface_conversation #131316;
+@define-color caper_surface_composer #1d1d22;
 @define-color caper_surface_hover rgba(255, 255, 255, 0.06);
-@define-color caper_border #34383b;
-@define-color caper_text #f3f4f5;
-@define-color caper_text_muted #b9bcbe;
-@define-color caper_link #69cfff;
-@define-color caper_link_hover #a9e5ff;
-@define-color caper_terracotta #b64d32;
-@define-color caper_terracotta_bright #db6849;
-@define-color caper_action #f1ede4;
-@define-color caper_action_hover #fbf9f4;
-@define-color caper_action_press #ddd7cb;
-@define-color caper_on_action #0c0d0f;
-@define-color caper_green #637a43;
+@define-color caper_border rgba(255, 255, 255, 0.09);
+@define-color caper_border_solid #29292f;
+@define-color caper_border_subtle rgba(255, 255, 255, 0.06);
+@define-color caper_surface_rim rgba(255, 255, 255, 0.08);
+@define-color caper_text #f4f3ef;
+@define-color caper_text_muted #9a99a2;
+@define-color caper_link #7cc7ff;
+@define-color caper_link_hover #b2dfff;
+@define-color caper_terracotta #557a38;
+@define-color caper_terracotta_bright #87bc5c;
+@define-color caper_accent_soft_text #c3e4a4;
+@define-color caper_accent_surface #1c2816;
+@define-color caper_accent_border #486832;
+@define-color caper_action #f4f3ef;
+@define-color caper_action_hover #ffffff;
+@define-color caper_action_press #dfddd6;
+@define-color caper_on_action #0b0b0c;
+@define-color caper_green #6f9948;
+@define-color caper_voice_green #4ade80;
 @define-color caper_error_text #ff9b82;
-@define-color caper_danger #b93646;
-@define-color caper_danger_hover #d44355;
+@define-color caper_danger #c83c4e;
+@define-color caper_danger_hover #e04c5f;
+/* END GENERATED THEME TOKENS */
 
 window.caper {
   background-color: @caper_blackout;
@@ -680,7 +689,7 @@ button.reaction:hover {
 button.reaction.mine {
   border-color: @caper_terracotta;
   background: alpha(@caper_terracotta, 0.16);
-  color: #f2ae9c;
+  color: @caper_accent_soft_text;
 }
 
 button.reaction.mine:hover {

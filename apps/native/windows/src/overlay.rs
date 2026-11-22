@@ -1607,7 +1607,7 @@ impl Tone {
             (Self::Primary, _) => (ACTION_PRESS, ACTION_PRESS, BLACKOUT),
             (Self::Secondary, 1) => (SURFACE_RAISED, BORDER, TEXT),
             (Self::Secondary, 2) => (BORDER, TEXT_MUTED, TEXT),
-            (Self::Secondary, _) => (0x39231E, TERRACOTTA_BRIGHT, TEXT),
+            (Self::Secondary, _) => (crate::theme::ACCENT_SURFACE, TERRACOTTA_BRIGHT, TEXT),
             (Self::Danger, 1) => (0xB93646, 0xB93646, 0xFFFFFF),
             (Self::Danger, 2) => (0xD44355, 0xD44355, 0xFFFFFF),
             (Self::Danger, _) => (0xA02E3C, 0xFF8C9A, 0xFFFFFF),

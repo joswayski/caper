@@ -14,8 +14,8 @@ macro_rules! card {
     ($glyph:literal) => {
         concat!(
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="54" height="66" viewBox="0 0 54 66">"##,
-            r##"<path d="M8 .5h31.5l14 14V58a7.5 7.5 0 0 1-7.5 7.5H8A7.5 7.5 0 0 1 .5 58V8A7.5 7.5 0 0 1 8 .5Z" fill="#1c1f21" stroke="#34383b"/>"##,
-            r##"<path d="M39.5 .5v8a6 6 0 0 0 6 6h8" fill="#151719" stroke="#34383b"/>"##,
+            r##"<path d="M8 .5h31.5l14 14V58a7.5 7.5 0 0 1-7.5 7.5H8A7.5 7.5 0 0 1 .5 58V8A7.5 7.5 0 0 1 8 .5Z" fill="#1b1b1f" stroke="#29292f"/>"##,
+            r##"<path d="M39.5 .5v8a6 6 0 0 0 6 6h8" fill="#121214" stroke="#29292f"/>"##,
             r##"<g transform="translate(17 23) scale(0.8333)" fill="none" stroke="#b9bcbe" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"##,
             $glyph,
             "</g></svg>"

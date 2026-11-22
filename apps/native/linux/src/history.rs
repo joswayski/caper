@@ -69,10 +69,10 @@ fn side(heading: &str, version: &MessageVersion, tokens: &[(String, bool)], old:
         .map(|(text, changed)| {
             let text = glib::markup_escape_text(text);
             if *changed {
-                // Removed words in terracotta, added ones in caper green.
+                // Removed words in danger red, added ones in caper green.
                 format!(
                     "<span background=\"{}\" bgalpha=\"30%\">{text}</span>",
-                    if old { "#b64d32" } else { "#637a43" }
+                    if old { "#c83c4e" } else { "#6f9948" }
                 )
             } else {
                 text.to_string()

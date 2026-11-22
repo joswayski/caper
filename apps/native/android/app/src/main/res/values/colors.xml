@@ -1,3 +1,5 @@
 <resources>
-    <color name="blackout">#0C0D0F</color>
+    <!-- BEGIN GENERATED THEME TOKENS -->
+    <color name="blackout">#0B0B0C</color>
+    <!-- END GENERATED THEME TOKENS -->
 </resources>

@@ -23,7 +23,7 @@ export const Route = createRootRoute({
         content: "Chat with anyone, about anything.",
       },
       { name: "twitter:card", content: "summary" },
-      { name: "theme-color", content: "#0c0d0f" },
+      { name: "theme-color", content: "#0b0b0c" },
       { name: "color-scheme", content: "dark" },
       { title: "Caper - A place for your people" },
     ],
@@ -91,7 +91,7 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
     <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
-        <style>{"html,body{background:#0c0d0f;color-scheme:dark}"}</style>
+        <style>{"html,body{background:#0b0b0c;color-scheme:dark}"}</style>
         <script dangerouslySetInnerHTML={{ __html: sidebarWidthScript }} />
       </head>
       <body>

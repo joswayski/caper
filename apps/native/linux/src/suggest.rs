@@ -92,7 +92,7 @@ impl Popup {
         popover.set_parent(&composer.root);
         let tag = gtk::TextTag::builder().name("mention").build();
         tag.set_foreground(Some("#F3F4F5"));
-        tag.set_background(Some("rgba(182, 77, 50, 0.28)"));
+        tag.set_background(Some("rgba(85, 122, 56, 0.28)"));
         composer.view.buffer().tag_table().add(&tag);
         let popup = Rc::new(Self {
             popover,

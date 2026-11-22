@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://caper.chat/schemas/theme.v1.json",
+  "title": "Caper Theme (caper.theme.v1)",
+  "description": "Portable semantic theme contract shared across Web, Apple (macOS/iOS), Android, Windows, Linux, and future third-party Caper clients.",
+  "type": "object",
+  "required": [
+    "schema",
+    "id",
+    "name",
+    "appearance",
+    "surfaces",
+    "borders",
+    "text",
+    "action",
+    "accent",
+    "brand",
+    "status",
+    "radii"
+  ],
+  "properties": {
+    "schema": { "const": "caper.theme.v1" },
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "appearance": { "enum": ["dark", "light"] },
+    "surfaces": {
+      "type": "object",
+      "required": [
+        "frame",
+        "base",
+        "sidebar",
+        "sidebarRaised",
+        "conversation",
+        "raised",
+        "composer",
+        "replyDraft",
+        "hover",
+        "hoverAlpha"
+      ]
+    },
+    "borders": {
+      "type": "object",
+      "required": ["default", "translucent", "subtle", "rim"]
+    },
+    "text": {
+      "type": "object",
+      "required": ["primary", "message", "muted", "link", "linkHover"]
+    },
+    "action": {
+      "type": "object",
+      "required": ["primary", "primaryHover", "primaryPress", "onPrimary"]
+    },
+    "accent": {
+      "type": "object",
+      "required": ["primary", "bright", "softText", "surface", "border"]
+    },
+    "brand": {
+      "type": "object",
+      "required": ["caper", "caperBright", "resizeHighlight"]
+    },
+    "status": {
+      "type": "object",
+      "required": [
+        "voice",
+        "pin",
+        "pinWash",
+        "idle",
+        "errorText",
+        "danger",
+        "dangerHover",
+        "dangerWash",
+        "onDanger",
+        "voiceOff",
+        "voiceOffIcon",
+        "voiceOffWash"
+      ]
+    },
+    "radii": {
+      "type": "object",
+      "required": ["canvas", "card", "composer", "control", "pill", "avatar"]
+    }
+  }
+}

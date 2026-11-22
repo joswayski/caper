@@ -81,20 +81,20 @@
 .space-rail-item[data-active="true"] button {
   color: var(--text);
   box-shadow:
-    0 0 0 1px rgb(182 77 50 / 0.9),
-    0 0 12px 1px rgb(182 77 50 / 0.36);
+    0 0 0 1px rgb(var(--accent-rgb) / 0.9),
+    0 0 12px 1px rgb(var(--accent-rgb) / 0.36);
   animation: space-rail-bloom 700ms var(--ease-out);
 }
 @keyframes space-rail-bloom {
   from {
     box-shadow:
-      0 0 0 1px rgb(182 77 50 / 0),
-      0 0 0 0 rgb(182 77 50 / 0);
+      0 0 0 1px rgb(var(--accent-rgb) / 0),
+      0 0 0 0 rgb(var(--accent-rgb) / 0);
   }
   45% {
     box-shadow:
-      0 0 0 1px rgb(182 77 50 / 1),
-      0 0 18px 3px rgb(182 77 50 / 0.52);
+      0 0 0 1px rgb(var(--accent-rgb) / 1),
+      0 0 18px 3px rgb(var(--accent-rgb) / 0.52);
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -813,7 +813,7 @@ html[data-resizing-sections] * {
 }
 .channel-select[aria-current="page"] {
   color: var(--text);
-  background: rgb(182 77 50 / 0.16);
+  background: rgb(var(--accent-rgb) / 0.16);
 }
 .channel-select[aria-current="page"] svg {
   color: var(--terracotta-bright);
@@ -1022,7 +1022,7 @@ html[data-resizing-sections] * {
   background: transparent;
 }
 .direct-line:has(.direct-select[aria-current="page"]) {
-  background: rgb(182 77 50 / 0.16);
+  background: rgb(var(--accent-rgb) / 0.16);
 }
 @media (hover: hover) {
   .direct-line:hover:not(:has(.direct-select[aria-current="page"])) {
@@ -1816,7 +1816,7 @@ html[data-resizing-sections] * {
 .space-field input:focus,
 .member-add input:focus {
   border-color: var(--terracotta);
-  outline: 2px solid rgb(182 77 50 / 0.22);
+  outline: 2px solid rgb(var(--accent-rgb) / 0.22);
 }
 .channel-name-input {
   position: relative;
@@ -1917,7 +1917,7 @@ html[data-resizing-sections] * {
   .channel-privacy label:hover input:checked:not(:disabled) {
     border-color: var(--terracotta-bright);
     background: var(--terracotta-bright);
-    box-shadow: 0 0 0 3px rgb(182 77 50 / 0.18);
+    box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.18);
   }
 }
 .channel-privacy input:focus-visible {
@@ -2022,7 +2022,7 @@ html[data-resizing-sections] * {
   margin-top: 12px;
 }
 .member-add > button {
-  border-color: #805143;
+  border-color: var(--accent-border);
   color: var(--terracotta-bright);
 }
 /* Username-field matches sit in the dialog's flow: dialogs scroll, which
@@ -2259,12 +2259,12 @@ html[data-resizing-sections] * {
 }
 .invite-link-options :is(select, input):focus {
   border-color: var(--terracotta);
-  outline: 2px solid rgb(182 77 50 / 0.22);
+  outline: 2px solid rgb(var(--accent-rgb) / 0.22);
 }
 .invite-link-options button {
   height: 42px;
   padding: 0 12px;
-  border: 1px solid #805143;
+  border: 1px solid var(--accent-border);
   border-radius: 8px;
   color: var(--terracotta-bright);
   background: var(--surface-raised);
@@ -3180,7 +3180,7 @@ html[data-resizing-sections] * {
   border-radius: var(--radius-control);
 }
 .feedback-line:has(.feedback-select[aria-current="page"]) {
-  background: rgb(182 77 50 / 0.16);
+  background: rgb(var(--accent-rgb) / 0.16);
 }
 .feedback-line .feedback-select[aria-current="page"] {
   background: transparent;

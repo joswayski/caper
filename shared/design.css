@@ -1,40 +1,54 @@
 :root {
-  --blackout: #0c0d0f;
-  --surface: #151719;
-  --surface-raised: #1c1f21;
-  --surface-sidebar: #151c1e;
-  --surface-conversation: #192123;
-  --surface-composer: #283133;
-  /* A neutral wash that stays visible on every dark surface; --surface-raised
-     is too close to the sidebar and conversation backgrounds to read as hover. */
+  /* BEGIN GENERATED THEME TOKENS */
+  --blackout: #0b0b0c;
+  --surface: #121214;
+  --surface-raised: #1b1b1f;
+  --surface-sidebar: #0f0f11;
+  --surface-conversation: #131316;
+  --surface-composer: #1d1d22;
   --surface-hover: rgb(255 255 255 / 6%);
-  --border: #34383b;
-  --text: #f3f4f5;
-  --text-muted: #b9bcbe;
-  --link: #69cfff;
-  --link-hover: #a9e5ff;
-  --terracotta: #b64d32;
-  --terracotta-bright: #db6849;
-  /* Primary actions are eggshell with blackout labels, so one calm, bright
-     fill leads each view; terracotta stays for selection and focus. */
-  --action: #f1ede4;
-  --action-hover: #fbf9f4;
-  --action-press: #ddd7cb;
-  --on-action: #0c0d0f;
-  --caper: #637a43;
-  --voice-session-green: #4aa86b;
+  --border: rgb(255 255 255 / 9%);
+  --border-solid: #29292f;
+  --border-subtle: rgb(255 255 255 / 6%);
+  --surface-rim: rgb(255 255 255 / 8%);
+  --text: #f4f3ef;
+  --text-message: #e6e5e0;
+  --text-muted: #9a99a2;
+  --link: #7cc7ff;
+  --link-hover: #b2dfff;
+  --accent: #557a38;
+  --accent-bright: #87bc5c;
+  --accent-soft-text: #c3e4a4;
+  --accent-surface: #1c2816;
+  --accent-border: #486832;
+  --accent-rgb: 85 122 56;
+  --accent-bright-rgb: 135 188 92;
+  /* Legacy aliases kept so existing rules resolve through the active theme. */
+  --terracotta: var(--accent);
+  --terracotta-bright: var(--accent-bright);
+  --action: #f4f3ef;
+  --action-hover: #ffffff;
+  --action-press: #dfddd6;
+  --on-action: #0b0b0c;
+  --caper: #6f9948;
+  --caper-bright: #8ec460;
+  --voice-session-green: #4ade80;
   --pin-gold: #e4c76a;
   --pin-wash: rgb(228 199 106 / 6%);
-  /* Errors and destructive actions: readable on every dark surface. */
   --error-text: #ff9b82;
-  --danger: #b93646;
-  --danger-hover: #d44355;
-  --danger-wash: rgb(185 54 70 / 16%);
-  --on-danger: #fff;
-  /* Muted microphone, hang up and leave voice. */
+  --danger: #c83c4e;
+  --danger-hover: #e04c5f;
+  --danger-wash: rgb(200 60 78 / 16%);
+  --on-danger: #ffffff;
   --voice-off: #ff7182;
-  --voice-off-wash: rgb(212 67 85 / 18%);
-  --radius: 8px;
+  --voice-off-wash: rgb(224 76 95 / 18%);
+  --radius: 10px;
+  --radius-canvas: 16px;
+  --radius-card: 13px;
+  --radius-composer: 15px;
+  --radius-pill: 999px;
+  --radius-avatar: 30%;
+  /* END GENERATED THEME TOKENS */
   /* The account dock and message field share one bottom edge. */
   --workspace-bottom-inset: 16px;
   /* Motion: things arrive, they never teleport. Short, decelerating and
@@ -43,8 +57,6 @@
   --motion-fast: 140ms;
   --motion-base: 200ms;
   --motion-slow: 260ms;
-  /* Avatars are squircles: rounded squares that match the 8px control corners. */
-  --radius-avatar: 30%;
   font-family: "Inrond 40", Inter, system-ui, "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--blackout);

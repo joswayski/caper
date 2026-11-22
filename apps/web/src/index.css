@@ -10,17 +10,26 @@
   --color-surface: var(--surface);
   --color-surface-raised: var(--surface-raised);
   --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-surface-rim: var(--surface-rim);
   --color-content: var(--text);
   --color-content-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-bright: var(--accent-bright);
   --color-terracotta: var(--terracotta);
   --color-terracotta-bright: var(--terracotta-bright);
   --color-caper: var(--caper);
+  --color-caper-bright: var(--caper-bright);
   --color-action: var(--action);
   --color-action-hover: var(--action-hover);
   --color-action-press: var(--action-press);
   --color-on-action: var(--on-action);
   --font-inrond: "Inrond 40", Inter, system-ui, "Segoe UI", sans-serif;
   --radius-control: var(--radius);
+  --radius-canvas: var(--radius-canvas);
+  --radius-card: var(--radius-card);
+  --radius-composer: var(--radius-composer);
+  --radius-pill: var(--radius-pill);
 }
 
 @layer base {

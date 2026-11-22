@@ -76,38 +76,38 @@ const RESTORE_LIMIT: Duration = Duration::from_secs(5);
 /// Settings' version reads "Copied" this long after a copy.
 const VERSION_COPIED_FOR: Duration = Duration::from_secs(2);
 use model::DELETE_ACCOUNT_URL;
-const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
-const SURFACE: Color32 = Color32::from_rgb(21, 23, 25);
-const RAISED: Color32 = Color32::from_rgb(28, 31, 33);
-const SIDEBAR: Color32 = Color32::from_rgb(21, 28, 30);
+// BEGIN GENERATED THEME TOKENS
+const BLACKOUT: Color32 = Color32::from_rgb(11, 11, 12);
+const SURFACE: Color32 = Color32::from_rgb(18, 18, 20);
+const RAISED: Color32 = Color32::from_rgb(27, 27, 31);
+const SIDEBAR: Color32 = Color32::from_rgb(15, 15, 17);
 /// Web's --surface-hover (6% white) over the sidebar, opaque: a private
 /// channel's own members in the member list.
-const SIDEBAR_RAISED: Color32 = Color32::from_rgb(35, 42, 44);
-const CONVERSATION: Color32 = Color32::from_rgb(25, 33, 35);
-const COMPOSER: Color32 = Color32::from_rgb(40, 49, 51);
-/// Web's `--surface-hover`: a neutral wash that reads on every dark surface,
-/// where `RAISED` is too close to the sidebar and conversation backgrounds.
+const SIDEBAR_RAISED: Color32 = Color32::from_rgb(28, 28, 32);
+const CONVERSATION: Color32 = Color32::from_rgb(19, 19, 22);
+const COMPOSER: Color32 = Color32::from_rgb(29, 29, 34);
+/// Web's `--surface-hover`: a neutral wash that reads on every dark surface.
 const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
-const BORDER: Color32 = Color32::from_rgb(52, 56, 59);
+const BORDER: Color32 = Color32::from_rgb(41, 41, 47);
 /// The reply-draft card: 3% white over the conversation surface.
-const REPLY_CARD: Color32 = Color32::from_rgb(32, 40, 42);
-const TEXT: Color32 = Color32::from_rgb(243, 244, 245);
-const MUTED: Color32 = Color32::from_rgb(185, 188, 190);
-const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
-const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
-const LINK: Color32 = Color32::from_rgb(105, 207, 255);
-const LINK_ACTIVE: Color32 = Color32::from_rgb(169, 229, 255);
-/// Primary actions are eggshell with blackout labels (shared/design.css `--action`);
-/// terracotta stays for selection and focus.
-const ACTION: Color32 = Color32::from_rgb(241, 237, 228);
-const ACTION_HOVER: Color32 = Color32::from_rgb(251, 249, 244);
-const ACTION_PRESS: Color32 = Color32::from_rgb(221, 215, 203);
+const REPLY_CARD: Color32 = Color32::from_rgb(26, 26, 30);
+const TEXT: Color32 = Color32::from_rgb(244, 243, 239);
+const MUTED: Color32 = Color32::from_rgb(154, 153, 162);
+const TERRACOTTA: Color32 = Color32::from_rgb(85, 122, 56);
+const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(135, 188, 92);
+const LINK: Color32 = Color32::from_rgb(124, 199, 255);
+const LINK_ACTIVE: Color32 = Color32::from_rgb(178, 223, 255);
+/// Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json).
+const ACTION: Color32 = Color32::from_rgb(244, 243, 239);
+const ACTION_HOVER: Color32 = Color32::from_rgb(255, 255, 255);
+const ACTION_PRESS: Color32 = Color32::from_rgb(223, 221, 214);
 const ON_ACTION: Color32 = BLACKOUT;
-const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
-const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
+const CAPER: Color32 = Color32::from_rgb(111, 153, 72);
+const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 222, 128);
 const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
-const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
+const MESSAGE_TEXT: Color32 = Color32::from_rgb(230, 229, 224);
+// END GENERATED THEME TOKENS
 
 #[derive(Clone, Copy)]
 enum NavigationSlide {

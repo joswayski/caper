@@ -56,7 +56,7 @@
   .whats-new-build:hover {
     opacity: 1;
     color: var(--action-hover);
-    background: rgb(182 77 50 / 12%);
+    background: rgb(var(--accent-rgb) / 12%);
     text-decoration-line: underline;
     text-decoration-thickness: 2px;
   }
@@ -64,7 +64,7 @@
 .whats-new-build:active {
   opacity: 1;
   color: var(--terracotta-bright);
-  background: rgb(182 77 50 / 24%);
+  background: rgb(var(--accent-rgb) / 24%);
   text-decoration-line: underline;
   text-decoration-thickness: 2px;
 }
