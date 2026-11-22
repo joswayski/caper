@@ -189,7 +189,6 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             self.remeasureRows()
         }
         composerObserver.start { [weak self] in self?.renderComposer() }
-        UIKitHosting.warmAttachGallery()
         // Nothing is presented before the first frame, so its SwiftUI graph waits.
         CADisplayLink(target: FirstFrame { [weak self] in
             DispatchQueue.main.async { self?.addPresentationHost() }

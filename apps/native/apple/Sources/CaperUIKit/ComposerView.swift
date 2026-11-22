@@ -123,6 +123,9 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             button.setContentHuggingPriority(.required, for: .horizontal)
         }
         attach.accessibilityIdentifier = "attach-files-button"
+        // The drawer's newest thumbnails and GIFs are prepared from the touch,
+        // not for every conversation that never opens it.
+        attach.addAction(UIAction { _ in UIKitHosting.warmAttachGallery() }, for: .touchDown)
         emoji.accessibilityIdentifier = "composer-emoji"
         microphone.setContentHuggingPriority(.required, for: .horizontal)
         microphone.clipsToBounds = false
