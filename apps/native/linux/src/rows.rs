@@ -1266,7 +1266,7 @@ fn tool(images: &Images, icon: Icon, label: &str) -> gtk::Button {
 pub fn factory(images: Rc<Images>, handler: Handler, spare: usize) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     let pool: Rc<RefCell<Vec<Rc<Widgets>>>> = Rc::default();
-    let live: Rc<RefCell<HashMap<gtk::Widget, Rc<Widgets>>>> = Rc::default();
+    let live: Rc<RefCell<HashMap<gtk::ListItem, Rc<Widgets>>>> = Rc::default();
     let filling = Rc::new(std::cell::Cell::new(false));
     let refill = {
         let (pool, images, handler) = (pool.clone(), images.clone(), handler.clone());
@@ -1312,7 +1312,7 @@ pub fn factory(images: Rc<Images>, handler: Handler, spare: usize) -> gtk::Signa
         item.set_child(Some(&widgets.root));
         setup_live
             .borrow_mut()
-            .insert(widgets.root.clone().upcast(), widgets.clone());
+            .insert(item.clone(), widgets.clone());
         refill();
         // GTK 4.12 names list rows; 4.8 has no such property, and the row's
         // labels carry the same text there. The description lists the
@@ -1337,15 +1337,14 @@ pub fn factory(images: Rc<Images>, handler: Handler, spare: usize) -> gtk::Signa
         });
     });
     // Twice the spares at most: a cleared list hands back every row it had.
+    // The row is found by its item: GTK has already taken the child off the
+    // item when it asks for the teardown.
     factory.connect_teardown(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let Some(child) = item.child() else {
-            return;
-        };
         item.set_child(None::<&gtk::Widget>);
-        if let Some(widgets) = live.borrow_mut().remove(&child)
+        if let Some(widgets) = live.borrow_mut().remove(item)
             && pool.borrow().len() < spare * 2
         {
             *widgets.row.borrow_mut() = None;
@@ -1875,16 +1874,20 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
         widgets.avatar.root.clone().upcast(),
     ] {
         let click = gtk::GestureClick::new();
-        let (weak, handler, anchor) = (Rc::downgrade(widgets), handler.clone(), target.clone());
+        // Weak: the target owns this gesture, and holding it here would keep
+        // it (and a discarded row's avatar) alive for good.
+        let (weak, handler, anchor) = (Rc::downgrade(widgets), handler.clone(), target.downgrade());
         click.connect_released(move |_, _, _, _| {
             let person = weak
                 .upgrade()
                 .and_then(|widgets| widgets.row.borrow().as_ref().map(|row| row.person.clone()));
-            if let Some(person) = person.filter(|person| !person.is_guest) {
+            if let (Some(person), Some(anchor)) =
+                (person.filter(|person| !person.is_guest), anchor.upgrade())
+            {
                 handler(Action::Profile {
                     id: person.id.clone(),
                     author: Some(person),
-                    anchor: anchor.clone(),
+                    anchor,
                 });
             }
         });
@@ -1989,8 +1992,13 @@ fn fill_quote(widgets: &Widgets, images: &Rc<Images>, row: &Row) {
     // shows the first three paragraphs.
     let start: String = full.split('\n').take(3).collect::<Vec<_>>().join("\n");
     widgets.quote_text.set_label(&start);
-    let (label, more) = (widgets.quote_text.clone(), widgets.quote_more.clone());
-    widgets.quote_text.add_tick_callback(move |_, _| {
+    // Weak: a row discarded before this runs would otherwise keep its label
+    // and button alive through their own callback.
+    let more = widgets.quote_more.downgrade();
+    widgets.quote_text.add_tick_callback(move |label, _| {
+        let Some(more) = more.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
         let width = label.width();
         if width <= 0 {
             return glib::ControlFlow::Continue;
