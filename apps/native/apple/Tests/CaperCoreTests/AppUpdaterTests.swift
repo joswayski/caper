@@ -106,6 +106,18 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertEqual(update.commitURL?.absoluteString, "https://github.com/joswayski/caper/commit/377205cd7c68e109b0d77f31a97c2cb3b2d40c39")
     }
 
+    func testReleaseChangesCompareTheInstalledBuildWithTheUpdate() {
+        let (old, new) = (String(repeating: "a", count: 40), String(repeating: "b", count: 40))
+        XCTAssertEqual(ReleaseChanges.url(from: old, to: new)?.absoluteString,
+                       "https://github.com/joswayski/caper/compare/\(old)...\(new)")
+        // A development build has no revision: the update's history instead.
+        XCTAssertEqual(ReleaseChanges.url(from: nil, to: new)?.absoluteString,
+                       "https://github.com/joswayski/caper/commits/\(new)")
+        XCTAssertEqual(ReleaseChanges.url(from: new, to: new)?.absoluteString,
+                       "https://github.com/joswayski/caper/commits/\(new)")
+        XCTAssertNil(ReleaseChanges.url(from: old, to: "main"))
+    }
+
     func testReviewNamesTheRealDownloadForAPatchOrTheFullArchive() throws {
         let patch = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.9","download_size":1259034,"patch":true}"#.utf8)))
         XCTAssertEqual(patch.downloadLabel, "1.3 MB")

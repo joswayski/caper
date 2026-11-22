@@ -85,6 +85,12 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
         TextButton(retry, enabled = !state.loading) { Text("Retry") }
     } else if (releases.isEmpty()) {
         Text("No release highlights for this version yet.", color = TextMuted)
+        // For anyone curious what changed: every commit up to this build.
+        if (isReleaseRevision(BuildConfig.SOURCE_REVISION)) ReleaseLink(
+            "See what changed on GitHub",
+            "https://github.com/joswayski/caper/commits/${BuildConfig.SOURCE_REVISION}",
+            onClickLabel = "Open this version’s changes on GitHub",
+        )
     } else releases.groupBy { it.publishedAt.take(10) }.forEach { (date, dayReleases) ->
         Text(releaseDayLabel(date), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextMuted)
         dayReleases.forEach { release ->
@@ -105,10 +111,14 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     }
 }
 
+@Composable private fun ReleaseCommitLink(label: String, revision: String, size: Int = 12) =
+    ReleaseLink(label, "https://github.com/joswayski/caper/commit/$revision", size)
+
 /** The icon identifies an external link; underline and brighten only during interaction. */
-@Composable private fun ReleaseCommitLink(label: String, revision: String, size: Int = 12) {
+@Composable private fun ReleaseLink(
+    label: String, url: String, size: Int = 12, onClickLabel: String = "View this version on GitHub",
+) {
     val uriHandler = LocalUriHandler.current
-    val url = "https://github.com/joswayski/caper/commit/$revision"
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val focused by interaction.collectIsFocusedAsState()
@@ -118,7 +128,7 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     Row(
         Modifier.pointerHoverIcon(PointerIcon.Hand)
             .clickable(interaction, indication = null, role = Role.Button,
-                onClickLabel = "View this version on GitHub") { openExternalLink(uriHandler, url) },
+                onClickLabel = onClickLabel) { openExternalLink(uriHandler, url) },
         horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, Modifier.weight(1f, fill = false), fontSize = size.sp, color = color,

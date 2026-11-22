@@ -394,6 +394,11 @@ impl App {
             let text = label("No release highlights for this version yet.", &["muted"]);
             text.set_xalign(0.0);
             open.body.append(&text);
+            if let Some(url) = updates::changes_url("", REVISION) {
+                let changes = release_link(&self.images, updates::CHANGES_LABEL, &url);
+                changes.set_margin_top(8);
+                open.body.append(&changes);
+            }
             return;
         }
         let mut previous_day = None;
@@ -705,6 +710,10 @@ impl App {
                 let text = label("Behind-the-scenes fixes this time.", &["muted"]);
                 text.set_xalign(0.0);
                 notes.append(&text);
+                let to = update.revision.as_deref().unwrap_or_default();
+                if let Some(url) = updates::changes_url(REVISION, to) {
+                    notes.append(&release_link(&self.images, updates::CHANGES_LABEL, &url));
+                }
             }
             Some(items) => {
                 for item in items {

@@ -81,6 +81,9 @@
 .whats-new-release article {
   margin-top: 20px;
 }
+.whats-new-changes {
+  margin-top: 8px;
+}
 .whats-new-release time + article {
   margin-top: 12px;
 }

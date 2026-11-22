@@ -181,12 +181,13 @@ impl Dialog {
             .map_or_else(String::new, |u| format!("Version {}", u.version))
     }
 
-    /// The version link's hover, eased: 0 at rest, 1 hovered or pressed. It
-    /// moves over `--motion-base` with CSS `ease-in-out`, at once under
-    /// reduced motion.
-    fn release_mix(&self) -> f32 {
-        let on = matches!(self.hover, Some(Part::Release)) || self.pressed == Some(Part::Release);
-        let (mut p, was, last) = self.release_glow.get();
+    /// A link's hover, eased: 0 at rest, 1 hovered or pressed. It moves
+    /// over `--motion-base` with CSS `ease-in-out`, at once under reduced
+    /// motion.
+    fn release_mix(&self, part: Part) -> f32 {
+        let on = self.hover == Some(part) || self.pressed == Some(part);
+        let glow = &self.release_glow[usize::from(part == Part::Changes)];
+        let (mut p, was, last) = glow.get();
         let now = Instant::now();
         let target = if on { 1.0 } else { 0.0 };
         p = if !crate::files::motion() {
@@ -202,7 +203,7 @@ impl Dialog {
                 (p - step).max(0.0)
             }
         };
-        self.release_glow.set((p, on, now));
+        glow.set((p, on, now));
         // Sixteen steps keep the icon cache's tinted copies few.
         let eased = if p < 0.5 {
             4.0 * p * p * p
@@ -212,17 +213,25 @@ impl Dialog {
         (eased * 16.0).round() / 16.0
     }
 
-    /// Whether the version link's hover is still on its way.
+    /// Whether a link's hover is still on its way.
     pub(crate) fn release_moving(&self) -> bool {
-        let (p, on, _) = self.release_glow.get();
-        self.kind == Kind::Update && p != if on { 1.0 } else { 0.0 }
+        self.kind == Kind::Update
+            && self.release_glow.iter().any(|glow| {
+                let (p, on, _) = glow.get();
+                p != if on { 1.0 } else { 0.0 }
+            })
     }
 
-    /// "Version 2026.11.19.3 ↗", a plain link: muted at rest, brightening
+    /// "Version 2026.11.19.3 ↗" (`Part::Release`) or "See what changed on
+    /// GitHub ↗" (`Part::Changes`), a plain link: muted at rest, brightening
     /// and underlined on hover, as web's release links without their fill.
-    pub(crate) fn draw_release(&self, g: &Gfx, dc: &ID2D1DeviceContext, r: Rect) -> Result<()> {
+    pub(crate) fn draw_release(&self, g: &Gfx, dc: &ID2D1DeviceContext, r: Rect, part: Part) -> Result<()> {
         let (x, y, w, h) = r;
-        let mix = self.release_mix();
+        let mix = self.release_mix(part);
+        let label = match part {
+            Part::Changes => caper_client::updates::CHANGES_LABEL.to_owned(),
+            _ => self.update_version(),
+        };
         let lerp = |a: u32, b: u32, shift: u32| {
             let (a, b) = ((a >> shift) & 0xff, (b >> shift) & 0xff);
             ((a as f32 + (b as f32 - a as f32) * mix).round() as u32) << shift
@@ -231,11 +240,7 @@ impl Dialog {
             | lerp(TEXT_MUTED, ACTION_HOVER, 8)
             | lerp(TEXT_MUTED, ACTION_HOVER, 0);
         let alpha = 0.72 + 0.28 * mix;
-        let l = g.layout(
-            &crate::gfx::wide(&self.update_version()),
-            &g.formats.dialog_note,
-            1e6,
-        )?;
+        let l = g.layout(&crate::gfx::wide(&label), &g.formats.dialog_note, 1e6)?;
         unsafe {
             let brush = dc.CreateSolidColorBrush(&crate::gfx::color(c, alpha), None)?;
             text::draw(dc, &l, x, y, &brush);
@@ -265,6 +270,16 @@ impl Dialog {
     pub(crate) fn update_commit(&self) -> Option<String> {
         let u = self.update.as_ref()?;
         caper_client::updates::commit_url(u.revision.as_deref()?)
+    }
+
+    /// Every commit since the installed build, linked under a release
+    /// without highlights for anyone curious what changed.
+    pub(crate) fn update_changes(&self) -> Option<String> {
+        let u = self.update.as_ref()?;
+        if !u.highlights.as_ref().is_some_and(Vec::is_empty) {
+            return None;
+        }
+        caper_client::updates::changes_url(caper_client::whats_new::REVISION, u.revision.as_deref()?)
     }
 
     pub(crate) fn update_primary(&self) -> &'static str {
@@ -646,6 +661,11 @@ impl App {
             }
             Part::Release => {
                 if let Some(url) = self.dialog.as_ref().and_then(|d| d.update_commit()) {
+                    crate::open_link(&url);
+                }
+            }
+            Part::Changes => {
+                if let Some(url) = self.dialog.as_ref().and_then(|d| d.update_changes()) {
                     crate::open_link(&url);
                 }
             }

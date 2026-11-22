@@ -98,6 +98,8 @@ pub enum SPart {
     /// "Version 2026.11.19.3": copies one line for bug reports.
     CopyVersion,
     ReleaseRevision(usize),
+    /// "See what changed on GitHub" under a version without highlights.
+    Changes,
     Done,
     Level(usize),
     VoiceStarted,
@@ -197,6 +199,7 @@ impl SPart {
             Self::FeedbackMore => 53,
             Self::FeedbackArchived => 54,
             Self::CopyVersion => 55,
+            Self::Changes => 56,
             Self::FeedbackOpen(k) => 2_000_000 + 2 * k,
             Self::FeedbackArchive(k) => 2_000_001 + 2 * k,
             Self::ReleaseRevision(k) => 4000 + k,
@@ -240,6 +243,7 @@ impl SPart {
                 | Self::InstalledRevision
                 | Self::CopyVersion
                 | Self::ReleaseRevision(_)
+                | Self::Changes
                 | Self::Done
                 | Self::RetryNotifications
                 | Self::RetryPrivacy
@@ -820,6 +824,10 @@ impl Builder<'_> {
             self.button(SPart::RetryHighlights, "Retry")?;
         } else if history.releases.is_empty() {
             self.text("No release highlights for this version yet.", Style::Detail)?;
+            if caper_client::updates::changes_url("", caper_client::whats_new::REVISION).is_some() {
+                self.y += 8.0;
+                self.button(SPart::Changes, caper_client::updates::CHANGES_LABEL)?;
+            }
         } else {
             for (k, release) in history.releases.iter().enumerate() {
                 self.text(&release.date, Style::Section)?;
@@ -1674,6 +1682,13 @@ impl App {
             SPart::InstalledRevision => {
                 if let Some(url) =
                     caper_client::updates::commit_url(caper_client::whats_new::REVISION)
+                {
+                    crate::open_link(&url);
+                }
+            }
+            SPart::Changes => {
+                if let Some(url) =
+                    caper_client::updates::changes_url("", caper_client::whats_new::REVISION)
                 {
                     crate::open_link(&url);
                 }

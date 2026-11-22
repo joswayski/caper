@@ -60,3 +60,31 @@ test("history lists every retained highlight newest first under its day, without
     container.remove();
   }
 });
+
+test("a version without highlights links its changes on GitHub", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.mocked(loadReleaseHighlights).mockResolvedValue({
+    schema: 1,
+    platform: "web",
+    revision: "b".repeat(40),
+    sequence: 1,
+    releases: [{ sequence: 1, revision: "b".repeat(40), publishedAt: "2026-10-21T12:00:00Z", highlights: [] }],
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(<WhatsNew ready blocked={false} manualOpen onManualClose={() => {}} />);
+    });
+    expect(container.querySelector(".whats-new-empty")?.textContent).toBe(
+      "No release highlights for this version yet.",
+    );
+    const link = container.querySelector<HTMLAnchorElement>(".whats-new-changes");
+    expect(link?.textContent).toBe("See what changed on GitHub");
+    expect(link?.href).toMatch(/^https:\/\/github\.com\/joswayski\/caper\/commits\//);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
