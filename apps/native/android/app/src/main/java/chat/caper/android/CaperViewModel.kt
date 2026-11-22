@@ -35,6 +35,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -325,6 +326,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingNeedsUpload = false
     /** Drafts moved into the pending message; restored by Edit, deleted once confirmed. */
     private var pendingDrafts: List<DraftAttachmentUi> = emptyList()
+    private val directRequests = LatestRequest()
+    /** The account's gateway notifications subscription is live: timer polls slow down ([shellPollIntervalMs]). */
+    private val notificationsLive = MutableStateFlow(false)
+    private var notificationsDropped = false
     private val urlRefresh = AttachmentUrlRefresh()
     private val urlQueue = linkedSetOf<String>()
     private var urlBatch: Job? = null
@@ -1341,11 +1346,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshDirectConversations() {
         val token = accountToken ?: return
         val request = accountGeneration
+        // Polls, pushes and returns to the app overlap: a slower, older reply must not undo a newer one.
+        val ticket = directRequests.next()
         val snapshotStartedAt = System.currentTimeMillis()
         viewModelScope.launch {
             val since = profileEventCount
             runCatching { api.directConversations(token) }.onSuccess { result ->
-                if (request == accountGeneration) {
+                if (request == accountGeneration && directRequests.isLatest(ticket)) {
                     // An unchanged poll keeps the same list, so rows reading it (every message's profile lookups) skip.
                     if (result.conversations != mutable.value.directConversations) mutable.value = mutable.value.copy(directConversations = result.conversations)
                     result.conversations.filter { it.readSeq == it.lastSeq }.forEach {
@@ -1553,7 +1560,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         directRefresh?.cancel()
         refreshUnreadSpaces()
         refreshVoiceActivity()
-        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshVoiceActivity(); refreshDirectConversations(); refreshUnreadSpaces(); refreshMembership() } }
+        directRefresh = viewModelScope.launch {
+            // Restarts on every change: a drop goes back to the short interval at once.
+            notificationsLive.collectLatest { live ->
+                // Live again after a drop: one refresh covers what the gap may have missed. (A return to the app
+                // reopens the feed on purpose and refreshes in setForeground instead.)
+                if (live && notificationsDropped) { notificationsDropped = false; refreshShell() }
+                while (true) { delay(shellPollIntervalMs(live)); refreshShell() }
+            }
+        }
+    }
+
+    /** What the timer polls: voice activity, the DM list, unread state (with threads) and the space list and detail. */
+    private fun refreshShell() {
+        refreshVoiceActivity(); refreshDirectConversations(); refreshUnreadSpaces(); refreshMembership()
     }
 
     private fun refreshVoiceActivity() {
@@ -2058,13 +2078,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val token = accountToken
         val wanted = foreground && token != null && mutable.value.account != null && mutable.value.screen == SessionScreen.Home
         if (wanted && profileFeed != null && profileFeedAccount == accountGeneration) return
-        profileFeed?.close(); profileFeed = null
+        // Detached first, so closing it on purpose (background, sign-out) is not a drop.
+        val old = profileFeed; profileFeed = null; old?.close()
+        notificationsLive.value = false
         if (!wanted || token == null) return
         val request = accountGeneration
         profileFeedAccount = request
-        profileFeed = ProfileFeedClient(api.baseUrl, token,
+        lateinit var feed: ProfileFeedClient
+        feed = ProfileFeedClient(api.baseUrl, token,
             onProfile = { event -> viewModelScope.launch { if (request == accountGeneration) receiveProfile(event) } },
-        ).also { it.start() }
+            // A notification refreshes unread state like a push does.
+            onNotification = { viewModelScope.launch { if (request == accountGeneration) scheduleUnreadRefresh() } },
+            onNotificationsLive = { live -> viewModelScope.launch {
+                if (profileFeed !== feed) return@launch
+                if (!live) notificationsDropped = true
+                notificationsLive.value = live
+            } },
+        )
+        profileFeed = feed.also { it.start() }
     }
 
     /** Web: a start goes out at most every [TYPING_INTERVAL_MS], and that long without typing sends the stop. */
