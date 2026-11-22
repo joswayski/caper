@@ -31,9 +31,13 @@ pub const HOVER: (u32, f32) = (0xFFFFFF, 0.06);
 // END GENERATED THEME TOKENS
 pub const SELECTION: (u32, f32) = (0x3A6EA5, 0.55);
 pub const RADIUS: f32 = 10.0;
+#[allow(dead_code)]
 pub const RADIUS_CARD: f32 = 13.0;
+#[allow(dead_code)]
 pub const RADIUS_COMPOSER: f32 = 15.0;
+#[allow(dead_code)]
 pub const RADIUS_CANVAS: f32 = 16.0;
+#[allow(dead_code)]
 pub const RADIUS_PILL: f32 = 999.0;
 
 pub const RAIL_W: f32 = 60.0;

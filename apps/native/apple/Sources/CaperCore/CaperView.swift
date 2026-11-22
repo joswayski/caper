@@ -9658,24 +9658,21 @@ struct PrimaryActionFill: ViewModifier {
     private var focused: Bool { isFocused ?? environmentFocused }
     func body(content: Content) -> some View {
         content.foregroundStyle(enabled ? CaperTheme.onAction : CaperTheme.muted)
-            .background(
-                Group {
-                    if !enabled {
-                        CaperTheme.raised
-                    } else if pressed {
-                        CaperTheme.actionPress
-                    } else if hovered {
-                        CaperTheme.actionHover
-                    } else {
-                        LinearGradient(
-                            colors: [Color(red: 250/255, green: 249/255, blue: 246/255), Color(red: 234/255, green: 232/255, blue: 225/255)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-                },
-                ignoresSafeAreaEdges: []
-            )
+            .background {
+                if !enabled {
+                    CaperTheme.raised
+                } else if pressed {
+                    CaperTheme.actionPress
+                } else if hovered {
+                    CaperTheme.actionHover
+                } else {
+                    LinearGradient(
+                        colors: [Color(red: 250 / 255, green: 249 / 255, blue: 246 / 255), Color(red: 234 / 255, green: 232 / 255, blue: 225 / 255)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
             .clipShape(Capsule())
             .overlay {
                 Capsule()
