@@ -1713,18 +1713,18 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     BackHandler { viewModel.closeThread() }
     // [preview] is the composer's link card; a retry resends the pending reply as it was.
     fun send(preview: LinkPreview? = null) {
-        if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
-        if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
+        // With nothing typed, Enter retries this thread's unconfirmed reply. A reply sent while another message is
+        // on its way follows it; a rejected one waits for Edit or Dismiss.
+        if (draft.text.isBlank() && files.isEmpty()) { if (pending?.error != null) viewModel.retryPending(); return }
+        if (state.pendingMessage?.rejected == true) return
         // "Also send to channel" applies to one reply, so it resets with the draft.
-        else if (draft.text.isNotBlank() || files.isNotEmpty()) {
-            val sent = draft.text
-            val sentBroadcast = broadcast
-            val clear = { draft = TextFieldValue(""); broadcast = false }
-            // As in the channel composer: the card shown rides on the pending row; a removed one sends without cards.
-            if (viewModel.send(sent, threadRootId = thread.rootId, broadcast = sentBroadcast,
-                unchanged = { draft.text == sent && broadcast == sentBroadcast }, accepted = clear,
-                suppressEmbeds = preview?.removed(sent) == true, embeds = listOfNotNull(preview?.embed))) clear()
-        }
+        val sent = draft.text
+        val sentBroadcast = broadcast
+        val clear = { draft = TextFieldValue(""); broadcast = false }
+        // As in the channel composer: the card shown rides on the pending row; a removed one sends without cards.
+        if (viewModel.send(sent, threadRootId = thread.rootId, broadcast = sentBroadcast,
+            unchanged = { draft.text == sent && broadcast == sentBroadcast }, accepted = clear,
+            suppressEmbeds = preview?.removed(sent) == true, embeds = listOfNotNull(preview?.embed))) clear()
     }
     Box(Modifier.onSizeChanged { swipeWidth = it.width }
         .graphicsLayer { translationX = if (swipeToClose) swipeOffset else 0f }
@@ -1746,7 +1746,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
                         (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
                 }
-                MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
+                val queued = remember(state.queuedMessages, thread.rootId) { state.queuedMessages.filter { it.threadRootId == thread.rootId } }
+                MessageTimeline(state.copy(messages = rows, pendingMessage = pending, queuedMessages = queued, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
                     pending?.error?.let { error ->
                         Text(error, color = ErrorText)
                         if (pending.rejected) Row {
@@ -1756,7 +1757,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 }
                             }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
                             TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
-                        } else TextButton({ send() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+                        } else TextButton(viewModel::retryPending, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
                     }
                 }
                 if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
@@ -1814,7 +1815,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 leadingIcon = {
                                     AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
                                         drawer = AttachDrawerHost(files, viewModel::removeDraft,
-                                            canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null, send = sendReply))
+                                            canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true, send = sendReply))
                                 },
                                 trailingIcon = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1832,7 +1833,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
                             FilledIconButton(
                                 sendReply, modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
-                                enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()),
+                                enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true && (draft.text.isNotBlank() || files.isNotEmpty()),
                                 shape = MaterialTheme.shapes.small,
                                 colors = IconButtonDefaults.filledIconButtonColors(
                                     containerColor = Action, contentColor = OnAction,
@@ -1844,7 +1845,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 DraftCounter(draft.text)
-                if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
+                if (state.pendingMessage?.rejected == true && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
             } } else Text(when {
                 state.selectedDirect?.incoming == true -> "Accept the request to reply."
                 direct -> "You can’t reply in this conversation."
@@ -2051,7 +2052,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         TextButton({
                             if (channelPending.rejected) {
                                 if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
-                            } else viewModel.send(channelPending.text)
+                            } else viewModel.retryPending()
                         }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
                             enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
                             Text(if (channelPending.uploadFailed) "Retry" else if (channelPending.rejected) "Edit" else "Retry send")
@@ -2104,7 +2105,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 VoiceRecordingNotice(recorder)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
                 fun sendDraft() {
-                    if (hasContent && state.pendingMessage == null) {
+                    // A message sent while another is on its way follows it; behind a rejected one it waits.
+                    if (hasContent && state.pendingMessage?.rejected != true) {
                         val sent = draft.text
                         viewModel.setTyping(false)
                         val clear = { updateDraft(TextFieldValue("")) }
@@ -2115,10 +2117,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 fun submit() {
                     val pending = state.pendingMessage
-                    // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
+                    // Web: Enter with nothing typed retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                     if (state.chatAuthorId != null) {
-                        if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                        else sendDraft()
+                        if (hasContent) sendDraft()
+                        else if (pending != null && pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.retryPending()
                     }
                 }
                 // One transformation per mention source, so typing and presence updates don't refilter the draft.
@@ -2145,7 +2147,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 leadingIcon = {
                                     AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
                                         drawer = AttachDrawerHost(state.drafts, viewModel::removeDraft,
-                                            canSend = hasContent && state.pendingMessage == null && state.chatAuthorId != null, send = ::sendDraft))
+                                            canSend = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null, send = ::sendDraft))
                                 },
                                 // The `:name:` shortcut still works; this is the visible way in.
                                 trailingIcon = {
@@ -2170,7 +2172,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             FilledIconButton(
                                 { sendDraft() },
                                 // Centred on a one-line field (56dp), and near the bottom as the field grows.
-                                modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
+                                modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null,
                                 shape = MaterialTheme.shapes.small,
                                 colors = IconButtonDefaults.filledIconButtonColors(
                                     containerColor = Action, contentColor = OnAction,
@@ -2502,7 +2504,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     }
     val listedPending = state.pendingMessage?.takeIf { inThread || it.threadRootId == null }
-    val clientIds = remember(messages, listedPending?.clientMessageId) { messages.map { it.clientMessageId } + listOfNotNull(listedPending?.clientMessageId) }
+    // Your in-flight message, then the ones queued behind it, in sending order.
+    val outgoing = remember(listedPending, state.queuedMessages, inThread) { listOfNotNull(listedPending) + state.queuedMessages.filter { inThread || it.threadRootId == null } }
+    val clientIds = remember(messages, outgoing) { messages.map { it.clientMessageId } + outgoing.map { it.clientMessageId } }
     // Rows sent or received while the reader is at the live end settle in; see Arrivals.
     val arrivals = remember { Arrivals() }
     arrivals.observe(
@@ -2551,19 +2555,20 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     } }
     val skeleton = inThread && state.thread?.loading == true && messages.none { it.threadRootId == state.thread.rootId }
-    val empty = messages.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)
+    val empty = messages.isEmpty() && outgoing.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)
     val firstRow = if (inThread) 0 else 1
     val newer = !inThread && state.hasNewerMessages
     val keys = remember(rows) { rows.map { it.key } }
     val threadPaging = state.thread?.loading == true && !skeleton
-    FollowLatest(listState, follow, FollowFrame(keys, listedPending?.clientMessageId,
+    // The newest of your outgoing messages: each send, queued or not, reveals the latest row.
+    FollowLatest(listState, follow, FollowFrame(keys, outgoing.lastOrNull()?.clientMessageId,
         clientIds = clientIds,
         loadingOlder = if (inThread) threadPaging else state.loadingOlder,
         historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
         reactions = messages.takeLast(FOLLOW_REACTION_ROWS).map { it.reactions },
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
-        firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton, displacement = displacement)
+        firstRow, firstRow + rows.size + outgoing.size + listOf(skeleton, empty, newer).count { it } - 1, ready = !skeleton, displacement = displacement)
     // Screen readers hear the newest message as it arrives (web's polite live region); a blocked
     // person's message stays collapsed for them too, and leaves the last announcement in place.
     var announcement by remember { mutableStateOf("") }
@@ -2718,14 +2723,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (skeleton) item("thread-loading", contentType = "skeleton") {
             MessageSkeleton(rows = 2, label = "Loading thread replies")
         }
-        listedPending?.let { pending -> item("pending:${pending.clientMessageId}", contentType = "pending") {
+        outgoing.forEachIndexed { index, pending -> item("pending:${pending.clientMessageId}", contentType = "pending") {
+            val before = outgoing.getOrNull(index - 1)
             Column(Modifier.displacement(displacement, listState, "pending:${pending.clientMessageId}")) {
-                if (messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
+                if ((before?.createdAt ?: messages.lastOrNull()?.createdAt)?.let { sameLocalDay(it, pending.createdAt) } != true) {
                     DateDivider(pending.createdAt)
                 }
-                // Your unsent message joins your run like a sent one.
-                val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
-                    pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = focusedId)
+                // Your unsent message joins your run like a sent one; queued ones join the one before them.
+                val grouped = if (before != null) pending.replyTo == null && sameLocalDay(before.createdAt, pending.createdAt)
+                    else groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
+                        pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = focusedId)
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
                     pending.replyTo?.let { reference ->
                         // Like a sent reply's quote, it opens the original (or says it's unavailable).
@@ -2735,7 +2742,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped,
                         admin = pending.author?.admin == true, avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif, embeds = pending.embeds)
-                    Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { rowPendingStatus() } }
+                    if (pending === listedPending) Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { rowPendingStatus() } }
                 }
             }
         } }

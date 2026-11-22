@@ -326,6 +326,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingNeedsUpload = false
     /** Drafts moved into the pending message; restored by Edit, deleted once confirmed. */
     private var pendingDrafts: List<DraftAttachmentUi> = emptyList()
+    /** Messages sent while another was in flight, in order; each goes once the one before it is confirmed. */
+    private var queuedSends: List<QueuedSend> = emptyList()
+    /** The pending send's next automatic retry ([sendRetryDelayMs]), and how many it has used. */
+    private var sendRetry: Job? = null
+    private var sendRetries = 0
     private val directRequests = LatestRequest()
     /** The account's gateway notifications subscription is live: timer polls slow down ([shellPollIntervalMs]). */
     private val notificationsLive = MutableStateFlow(false)
@@ -1768,7 +1773,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         refreshDirectConversations()
         refreshExpiringUrls()
         mutable.value.selectedChannel?.id?.let { renewDraftUploads(it) }
-        mutable.value.pendingMessage?.takeIf { it.uploadFailed }?.let { send(it.text, threadRootId = it.threadRootId, broadcast = it.broadcast) }
+        if (mutable.value.pendingMessage?.uploadFailed == true) retryPending()
         refreshMembership()
         refreshUnreadSpaces()
         refreshVoiceActivity()
@@ -2429,6 +2434,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     ): Boolean {
         if (uploadSend?.isActive == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
+        // Another message is still on its way: this one goes after it, in order, instead of being refused.
+        if (mutable.value.pendingMessage != null || queuedSends.isNotEmpty()) return enqueue(channel, text, confirmed, threadRootId, broadcast, suppressEmbeds, embeds)
         val target = AttachmentDraftTarget(channel.id, threadRootId)
         val files = mutable.value.attachmentDrafts[target].orEmpty()
         if (mutable.value.pendingMessage == null && files.any { it.attachment == null }) {
@@ -2470,12 +2477,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
      * recording is sent on its own instead of the composer's files, which stay where they are.
      * A [gif] goes alone too.
      */
-    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, voice: VoiceSend? = null, gif: KlipyGif? = null, suppressEmbeds: Boolean = false, embeds: List<ChatEmbed> = emptyList()): Boolean {
+    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, voice: VoiceSend? = null, gif: KlipyGif? = null, suppressEmbeds: Boolean = false, embeds: List<ChatEmbed> = emptyList(), queued: QueuedSend? = null): Boolean {
         if (mutable.value.pendingMessage?.let { it.error == null || it.rejected } == true) return false
         if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
         val target = AttachmentDraftTarget(channel.id, threadRootId)
-        val drafts = if (gif != null) emptyList() else voice?.let { listOf(it.draft) } ?: mutable.value.attachmentDrafts[target].orEmpty()
+        val drafts = queued?.drafts ?: if (gif != null) emptyList() else voice?.let { listOf(it.draft) } ?: mutable.value.attachmentDrafts[target].orEmpty()
         val author = chatAuthor ?: run {
             if (voice != null || text.isBlank() && drafts.isEmpty()) return false
             // The session is still being created (or failed earlier): create
@@ -2501,14 +2508,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail, spoiler = draft.spoiler) }
         }
         if (retry == null && text.isBlank() && files.isEmpty() && gif == null) return false
-        val request = generation
-        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, gif = gif, suppressEmbeds = suppressEmbeds, embeds = embeds, confirmed = confirmed)
+        val replyTo = if (queued != null) queued.ui.replyTo else mutable.value.replyTargets[threadRootId ?: "channel"]
+        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, replyTo, files.filter { it.spoiler }.map { it.id }, gif = gif, suppressEmbeds = suppressEmbeds, embeds = embeds,
+            id = queued?.let { UUID.fromString(it.ui.clientMessageId) } ?: UUID.randomUUID(), confirmed = confirmed)
         if (retry == null) {
+            sendRetry?.cancel(); sendRetries = 0
             pendingDrafts = drafts
             // A recording uploads only once it is sending, before the message itself.
             pendingNeedsUpload = voice != null || drafts.any { uploadStale(it) }
         }
-        if (retry == null && voice == null && gif == null) {
+        // A queued message's files and reply left the composer when it was queued.
+        if (retry == null && voice == null && gif == null && queued == null) {
             // If a server ever reports these as processing, this device shows its own picked images
             // (the working copies are deleted once the send is confirmed; the picked URI is not).
             val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.takeIf { draft.edit == null }?.let { id to it } } }
@@ -2517,8 +2527,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 localAttachmentPreviews = (mutable.value.localAttachmentPreviews + local).entries.toList().takeLast(64).associate { it.key to it.value },
             )
         }
-        mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - (threadRootId ?: "channel"), pendingMessage = PendingMessageUi(
-            operation.id.toString(), operation.text, author, Instant.now().toString(), attachments = files,
+        mutable.value = mutable.value.copy(replyTargets = if (queued != null) mutable.value.replyTargets else mutable.value.replyTargets - (threadRootId ?: "channel"), pendingMessage = PendingMessageUi(
+            operation.id.toString(), operation.text, author, queued?.ui?.createdAt ?: Instant.now().toString(), attachments = files,
             threadRootId = operation.threadRootId, broadcast = operation.broadcast, replyTo = operation.replyTo, gif = operation.gif, embeds = operation.embeds,
         ))
         viewModelScope.launch {
@@ -2530,7 +2540,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     if (pendingNeedsUpload) {
                         val token = accountToken ?: throw CancellationException()
                         val refreshed = pendingDrafts.map { uploadDraft(it.key, token, channel.id) }
-                        if (request != generation) return@launch
+                        if (!ownsPending(operation.id, channel.id)) return@launch
                         operation = pendingSends.replaceAttachments(operation.id, refreshed.map { it.id }) ?: return@launch
                         pendingNeedsUpload = false
                         mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(
@@ -2549,23 +2559,25 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                         break
                     } catch (error: ApiException) {
                         if (error.code != "attachment_unavailable" || error.status != 409) throw error
-                        if (request != generation || mutable.value.pendingMessage?.clientMessageId != operation.id.toString()) return@launch
+                        if (!ownsPending(operation.id, channel.id)) return@launch
                         pendingNeedsUpload = true
                         pendingDrafts = pendingDrafts.map { it.copy(uploadedAt = 0) }
                         if (recovered) throw UploadException("Failed to upload.")
                         recovered = true
                     }
                 }
-                if (request == generation && mutable.value.selectedChannel?.id == channel.id) {
+                // A resync (a new generation) keeps the same conversation and pending row: confirm it all the same.
+                if (mutable.value.selectedChannel?.id == channel.id) {
                     addMessage(sent)
                     confirmPending(sent)
                 }
             } catch (error: Throwable) {
-                if (request != generation || mutable.value.pendingMessage?.clientMessageId != operation.id.toString()) return@launch
+                if (!ownsPending(operation.id, channel.id)) return@launch
                 if (pendingNeedsUpload) {
                     mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(
                         error = "Failed to upload.", uploadFailed = true, rejected = false,
                     ))
+                    if (transientSendFailure(error)) scheduleSendRetry()
                     return@launch
                 }
                 // A DM privacy or block refusal keeps the conversation; it is not a lost channel.
@@ -2584,9 +2596,86 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     SendFailure.UNKNOWN -> mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error)))
                 } else mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error)))
+                if (transientSendFailure(error)) scheduleSendRetry()
             }
         }
         return true
+    }
+
+    /** The send [id] still owns the pending row of the open conversation [channelId]. */
+    private fun ownsPending(id: UUID, channelId: String) =
+        mutable.value.pendingMessage?.clientMessageId == id.toString() && mutable.value.selectedChannel?.id == channelId
+
+    /** Resends the unconfirmed (or upload-failed) pending message unchanged, with its client message ID. */
+    fun retryPending() {
+        val pending = mutable.value.pendingMessage?.takeIf { it.error != null && !it.rejected } ?: return
+        sendRetry?.cancel()
+        sendReady(pending.text, {}, pending.threadRootId, pending.broadcast)
+    }
+
+    /** After 3, 10 and 30 seconds an unconfirmed send goes again by itself; then it waits for Retry send. */
+    private fun scheduleSendRetry() {
+        val id = mutable.value.pendingMessage?.clientMessageId ?: return
+        val wait = sendRetryDelayMs(sendRetries) ?: return
+        sendRetries++
+        sendRetry?.cancel()
+        sendRetry = viewModelScope.launch {
+            delay(wait)
+            if (mutable.value.pendingMessage?.clientMessageId == id) retryPending()
+        }
+    }
+
+    /** One message waiting behind the pending send: its row, conversation, files and confirmation. */
+    private data class QueuedSend(val ui: PendingMessageUi, val channelId: String, val drafts: List<DraftAttachmentUi>, val suppressEmbeds: Boolean, val confirmed: () -> Unit)
+
+    private fun setQueue(queue: List<QueuedSend>) {
+        queuedSends = queue
+        mutable.value = mutable.value.copy(queuedMessages = queue.map { it.ui })
+    }
+
+    /**
+     * Queues a message behind the one in flight, taking its text, files and reply out of the composer. Refused (the
+     * composer keeps it) behind a rejected message, which waits for Edit or Dismiss, or while its files still upload.
+     */
+    private fun enqueue(channel: Channel, text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, suppressEmbeds: Boolean, embeds: List<ChatEmbed>): Boolean {
+        if (mutable.value.pendingMessage?.rejected == true || !mutable.value.canParticipate) return false
+        val author = chatAuthor ?: return false
+        val target = AttachmentDraftTarget(channel.id, threadRootId)
+        val drafts = mutable.value.attachmentDrafts[target].orEmpty()
+        if (drafts.any { it.attachment == null } || text.isBlank() && drafts.isEmpty()) return false
+        val files = drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail, spoiler = draft.spoiler) }
+        val key = threadRootId ?: "channel"
+        val ui = PendingMessageUi(UUID.randomUUID().toString(), text, author, Instant.now().toString(), attachments = files, threadRootId = threadRootId,
+            broadcast = broadcast, replyTo = mutable.value.replyTargets[key], embeds = if (suppressEmbeds) emptyList() else embeds)
+        setAttachmentDrafts(target, emptyList())
+        mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - key)
+        setQueue(queuedSends + QueuedSend(ui, channel.id, drafts, suppressEmbeds, confirmed))
+        return true
+    }
+
+    /** The pending send settled: the next queued message goes. */
+    private fun sendNextQueued() {
+        if (mutable.value.pendingMessage != null) return
+        val next = queuedSends.firstOrNull() ?: return
+        setQueue(queuedSends.drop(1))
+        if (next.channelId != mutable.value.selectedChannel?.id ||
+            !sendReady(next.ui.text, next.confirmed, next.ui.threadRootId, next.ui.broadcast, suppressEmbeds = next.suppressEmbeds, embeds = next.ui.embeds, queued = next)) {
+            // It could not start (the session is gone): back to the composer rather than lost.
+            restoreQueued(listOf(next) + queuedSends)
+        }
+    }
+
+    /** Unsent queued messages go back into their conversation's composer: text, files and nothing else. */
+    private fun restoreQueued(queue: List<QueuedSend>) {
+        if (queue.isEmpty()) return
+        setQueue(emptyList())
+        queue.groupBy { it.channelId }.forEach { (channelId, sends) ->
+            drafts[channelId] = restoredDraft(drafts[channelId], sends.map { it.ui.text })
+            val target = AttachmentDraftTarget(channelId)
+            val files = mutable.value.attachmentDrafts[target].orEmpty() + sends.flatMap { it.drafts }
+            files.drop(AttachmentPolicy.MAX_ATTACHMENTS).forEach { abandonDraft(it) }
+            setAttachmentDrafts(target, files.take(AttachmentPolicy.MAX_ATTACHMENTS))
+        }
     }
 
     /** A recording on its way: its working copy (as a draft only the pending message holds) and how it shows meanwhile. */
@@ -2755,6 +2844,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val targets = if (restoreReply && pending.replyTo != null) mutable.value.replyTargets + ((pending.threadRootId ?: "channel") to pending.replyTo) else mutable.value.replyTargets
         setAttachmentDrafts(target, kept)
         mutable.value = mutable.value.copy(pendingMessage = null, replyTargets = targets)
+        sendNextQueued()
         return pending.text
     }
 
@@ -2943,7 +3033,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Open, sending and stashed drafts: an upload continues while its file is in any of them. */
-    private fun knownDrafts() = mutable.value.attachmentDrafts.values.flatten() + pendingDrafts
+    private fun knownDrafts() = mutable.value.attachmentDrafts.values.flatten() + pendingDrafts + queuedSends.flatMap { it.drafts }
 
     private fun uploadStale(draft: DraftAttachmentUi) = draft.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
 
@@ -3294,7 +3384,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val channel = mutable.value.selectedChannel ?: return
         val author = chatAuthor ?: return
         if (pendingSends.retrying(channel.id, author) == null || uploadSend?.isActive == true) return
-        send(pending.text, threadRootId = pending.threadRootId, broadcast = pending.broadcast)
+        retryPending()
     }
 
     private fun watchVisiblePresence(force: Boolean = false) {
@@ -3590,6 +3680,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             pendingDrafts = emptyList()
             pendingNeedsUpload = false
             it.confirmed.invoke()
+            sendRetry?.cancel()
+            sendNextQueued()
             // HTTP and gateway confirmations both answer the report immediately.
             if (mutable.value.visit != null) {
                 refreshFeedback()
@@ -4209,6 +4301,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun closeChannel(clearPending: Boolean) {
+        if (clearPending) {
+            sendRetry?.cancel()
+            restoreQueued(queuedSends)
+        }
         cancelConversationOpening()
         ++historyAnchorRequest
         gateway?.close(); gateway = null

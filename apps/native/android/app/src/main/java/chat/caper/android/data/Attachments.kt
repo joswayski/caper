@@ -260,7 +260,8 @@ object AttachmentPolicy {
     }
 }
 
-class UploadException(override val message: String) : java.io.IOException(message)
+/** [transient]: the connection dropped or storage failed on its side, so the same upload may succeed later. */
+class UploadException(override val message: String, val transient: Boolean = false) : java.io.IOException(message)
 
 /** Bounded open-addressing ARGB → index table; avoids boxing millions of pixels. */
 internal class ColorTable(private val limit: Int) {

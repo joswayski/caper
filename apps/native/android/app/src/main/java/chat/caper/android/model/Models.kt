@@ -667,6 +667,8 @@ data class AppUiState(
     /** The open space's live invite links (owner only), newest first. */
     val inviteLinks: List<InviteLink> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
+    /** Messages sent while [pendingMessage] was in flight, oldest first; each goes once the one before is confirmed. */
+    val queuedMessages: List<PendingMessageUi> = emptyList(),
     val replyTargets: Map<String, MessageReply> = emptyMap(),
     val composerFocusRequest: ComposerFocusRequest? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
