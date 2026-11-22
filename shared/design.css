@@ -57,7 +57,9 @@
   --motion-fast: 140ms;
   --motion-base: 200ms;
   --motion-slow: 260ms;
-  font-family: "Inrond 40", Inter, system-ui, "Segoe UI", sans-serif;
+  --font-sans: "Figtree", system-ui, "Segoe UI", sans-serif;
+  --font-display: "Bricolage Grotesque", "Figtree", system-ui, sans-serif;
+  font-family: var(--font-sans);
   color: var(--text);
   background: var(--blackout);
   color-scheme: dark;

@@ -188,7 +188,7 @@ import UIKit
             guard let self, !SwipeTapGuard.swiping, self.reference.deleted != true else { return }; Task { _ = await chat.goToReply(self.reference) }
         }, for: .touchUpInside)
         expand.addAction(UIAction { [weak self] _ in self?.expanded.toggle(); self?.render(); self?.invalidateIntrinsicContentSize() }, for: .touchUpInside)
-        expand.titleLabel?.font = UIFont(name: "Inrond40-Regular", size: 11); expand.tintColor = UIColor(CaperTheme.link); expand.contentHorizontalAlignment = .leading
+        expand.titleLabel?.font = UIFont(name: "Figtree-Regular", size: 11); expand.tintColor = UIColor(CaperTheme.link); expand.contentHorizontalAlignment = .leading
         thumbnails.axis = .horizontal; thumbnails.alignment = .center; thumbnails.spacing = 4
         name.numberOfLines = 1; [avatar, name, hint, excerpt, thumbnails, open, expand].forEach(addSubview)
         avatar.translatesAutoresizingMaskIntoConstraints = true

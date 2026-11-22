@@ -353,7 +353,7 @@ private enum NativeEmbedSource {
     }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     private func link(_ text: String, url: String?, size: CGFloat, bold: Bool = false) -> UIView {
-        let view = UIKitMessageBody(), value = NSMutableAttributedString(string: text, attributes: [.font: UIFont(name: bold ? "Inrond40-Bold" : "Inrond40-Regular", size: size) ?? .systemFont(ofSize: size), .foregroundColor: UIColor(CaperTheme.text)])
+        let view = UIKitMessageBody(), value = NSMutableAttributedString(string: text, attributes: [.font: UIFont(name: bold ? "Figtree-Bold" : "Figtree-Regular", size: size) ?? .systemFont(ofSize: size), .foregroundColor: UIColor(CaperTheme.text)])
         if let url = LinkEmbeds.openableURL(url) { value.addAttribute(.link, value: url, range: NSRange(location: 0, length: value.length)) }
         view.update(value); return view
     }

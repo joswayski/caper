@@ -55,8 +55,9 @@ case "$MODE" in
     test -f "$ROOT/dist/Caper.app/Contents/Resources/WebRTC-LICENSE.txt"
     test -f "$ROOT/dist/Caper.app/Contents/Resources/WebRTC-PATENTS.txt"
     for license in libwebp-LICENSE libavif-LICENSE libaom-LICENSE libaom-PATENTS; do test -f "$ROOT/dist/Caper.app/Contents/Resources/$license.txt"; done
-    test -f "$ROOT/dist/Caper.app/Contents/Resources/Inrond-OFL.txt"
-    for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Contents/Resources/Inrond40-$font.ttf"; done
+    test -f "$ROOT/dist/Caper.app/Contents/Resources/Fonts-OFL.txt"
+    for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Contents/Resources/Figtree-$font.ttf"; done
+    for font in Bold ExtraBold; do test -f "$ROOT/dist/Caper.app/Contents/Resources/BricolageGrotesque-$font.ttf"; done
     lipo -archs "$ROOT/dist/Caper.app/Contents/MacOS/Caper" | tr ' ' '\n' | grep -qx "$mac_arch"
     lipo -archs "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC" | tr ' ' '\n' | grep -qx "$mac_arch"
     lipo -archs "$ROOT/dist/Caper.app/Contents/Frameworks/CaperRTCBridge.framework/CaperRTCBridge" | tr ' ' '\n' | grep -qx "$mac_arch"
@@ -86,8 +87,9 @@ case "$MODE" in
     test -f "$ROOT/dist/Caper.app/WebRTC-LICENSE.txt"
     test -f "$ROOT/dist/Caper.app/WebRTC-PATENTS.txt"
     for license in libwebp-LICENSE libavif-LICENSE libaom-LICENSE libaom-PATENTS; do test -f "$ROOT/dist/Caper.app/$license.txt"; done
-    test -f "$ROOT/dist/Caper.app/Inrond-OFL.txt"
-    for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Inrond40-$font.ttf"; done
+    test -f "$ROOT/dist/Caper.app/Fonts-OFL.txt"
+    for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Figtree-$font.ttf"; done
+    for font in Bold ExtraBold; do test -f "$ROOT/dist/Caper.app/BricolageGrotesque-$font.ttf"; done
     lipo -archs "$ROOT/dist/Caper.app/Caper" | tr ' ' '\n' | grep -qx arm64
     lipo -archs "$ROOT/dist/Caper.app/Frameworks/WebRTC.framework/WebRTC" | tr ' ' '\n' | grep -qx arm64
     lipo -archs "$ROOT/dist/Caper.app/Frameworks/CaperRTCBridgeIOS.framework/CaperRTCBridgeIOS" | tr ' ' '\n' | grep -qx arm64

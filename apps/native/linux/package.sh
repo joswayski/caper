@@ -46,7 +46,7 @@ licenses="$stage/licenses"
 install -d "$licenses/ffmpeg-licenses"
 install -m 0644 "$root/LICENSE" "$native/THIRD-PARTY-NOTICES.md" \
   "$native/voice-spike/licenses/"* "$licenses/"
-install -m 0644 "$root/shared/fonts/OFL.txt" "$licenses/Inrond-OFL.txt"
+install -m 0644 "$root/shared/fonts/OFL.txt" "$licenses/Fonts-OFL.txt"
 for notice in "$root/shared/emoji/"*.txt; do
   install -m 0644 "$notice" "$licenses/EMOJI-$(basename "$notice")"
 done

@@ -160,7 +160,7 @@ import UIKit
         play.addAction(UIAction { [weak self] _ in
             guard let self, !SwipeTapGuard.swiping, available?() != false else { return }; VoiceMessagePlayer.shared.toggle(self.file, chat: self.chat)
         }, for: .touchUpInside)
-        expand.titleLabel?.font = UIFont(name: "Inrond40-Bold", size: 12); expand.contentHorizontalAlignment = .leading
+        expand.titleLabel?.font = UIFont(name: "Figtree-Bold", size: 12); expand.contentHorizontalAlignment = .leading
         expand.tintColor = UIColor(CaperTheme.text)
         expand.addAction(UIAction { [weak self] _ in
             guard let self else { return }; expanded.toggle(); render(); heightChanged?()
@@ -170,7 +170,7 @@ import UIKit
         }
         transcript.isEditable = false; transcript.isScrollEnabled = false; transcript.backgroundColor = .clear
         transcript.textContainerInset = .zero; transcript.textContainer.lineFragmentPadding = 0
-        transcript.font = UIFont(name: "Inrond40-Regular", size: 13) ?? .systemFont(ofSize: 13); transcript.textColor = UIColor(CaperTheme.muted)
+        transcript.font = UIFont(name: "Figtree-Regular", size: 13) ?? .systemFont(ofSize: 13); transcript.textColor = UIColor(CaperTheme.muted)
         transcript.accessibilityIdentifier = "voice-transcript-text"
         for view in [play, waveform, time, transcript, expand] { addSubview(view) }
         NotificationCenter.default.addObserver(self, selector: #selector(motionChanged), name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)

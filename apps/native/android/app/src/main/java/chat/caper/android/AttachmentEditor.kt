@@ -177,7 +177,7 @@ private data class StageLayout(
     )
 }
 
-private val EditFont = FontFamily(Font(R.font.inrond40_bold, FontWeight.Bold))
+private val EditFont = FontFamily(Font(R.font.figtree_bold, FontWeight.Bold))
 /** The thumbnail and pending message's render of an edit, until the prepared file has its own. */
 private const val PREVIEW_EDGE = 1280
 

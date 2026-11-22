@@ -138,7 +138,7 @@ private typealias DropColor = UIColor
             #if os(macOS)
             let font = AppKitKit.font(size, weight: bold ? .bold : .regular)
             #else
-            let base = UIFont(name: bold ? "Inrond40-Bold" : "Inrond40-Regular", size: size)
+            let base = UIFont(name: bold ? "Figtree-Bold" : "Figtree-Regular", size: size)
                 ?? UIFont.systemFont(ofSize: size, weight: bold ? .bold : .regular)
             let font = UIFontMetrics.default.scaledFont(for: base, compatibleWith: traitCollection)
             #endif

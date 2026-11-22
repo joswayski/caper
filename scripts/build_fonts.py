@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Build Caper's fonts: Inrond 1.0 (rounded Inter, SIL OFL) with roundness fixed at 40.
+"""Build Caper's fonts: Bricolage Grotesque (display) and Figtree (UI/chat), both SIL OFL.
 
-Writes the committed outputs; rerun only to change the release or the roundness:
+Writes the committed outputs; rerun only to update pinned upstream revisions:
 
     uv run --locked --group fonts python scripts/build_fonts.py
 
-- apps/web/public/fonts/inrond-40/: woff2 subsets, still variable in weight and
-  optical size, roman and italic, plus apps/web/src/fonts.css to load them.
-- shared/fonts/: static Regular/Medium/Bold/Black TTFs (text optical size) and the
-  license, embedded by every native client.
+- apps/web/public/fonts/caper/: variable woff2 subsets (latin and latin-ext),
+  plus apps/web/src/fonts.css to load them.
+- shared/fonts/: static TTFs (Figtree Regular/Medium/Bold/Black and Bricolage
+  Grotesque Bold/ExtraBold) and the combined SIL OFL notice, embedded by every
+  native client.
 """
 
 from __future__ import annotations
@@ -16,126 +17,87 @@ from __future__ import annotations
 import hashlib
 import io
 from pathlib import Path
-import re
 import tempfile
 import urllib.request
-import zipfile
 
 from fontTools import subset
 from fontTools.ttLib import TTFont
 from fontTools.varLib import instancer
 
-RELEASE_URL = "https://github.com/Hairline-UI/inrond/releases/download/v1.0/Inrond-1.0.zip"
-RELEASE_SHA256 = "f87751f79d83bfe0759b6b60629bb482bb002a35c3ac82e0f6ea019bcb8e88cd"
-ROUNDNESS = 40
-FAMILY = f"Inrond {ROUNDNESS}"
-POSTSCRIPT = f"Inrond{ROUNDNESS}"
-# The weights the clients use, and Inter's text optical size for the static files.
-STATIC_WEIGHTS = {400: "Regular", 500: "Medium", 700: "Bold", 900: "Black"}
-STATIC_OPSZ = 14
+GOOGLE_FONTS_COMMIT = "06bfe0d62a98375cb09c942fa18e68bd32cff057"
+RAW_BASE = f"https://raw.githubusercontent.com/google/fonts/{GOOGLE_FONTS_COMMIT}"
+
+UPSTREAM_FILES: dict[str, tuple[str, str]] = {
+    "figtree_roman": (
+        f"{RAW_BASE}/ofl/figtree/Figtree%5Bwght%5D.ttf",
+        "26ad3db9b31ff7dde67a91ff515d022d2f495cd506590699cf264f0bfe6fb714",
+    ),
+    "figtree_italic": (
+        f"{RAW_BASE}/ofl/figtree/Figtree-Italic%5Bwght%5D.ttf",
+        "94dec1f18b9275d69e8b4a91b6514bdc18199048347e1c36e1285b11b0b87653",
+    ),
+    "figtree_ofl": (
+        f"{RAW_BASE}/ofl/figtree/OFL.txt",
+        "140d37233e7f3ce7313798befa9600893bcceaf41a55fa0fa5ad52f7f657a268",
+    ),
+    "bricolage_roman": (
+        f"{RAW_BASE}/ofl/bricolagegrotesque/BricolageGrotesque%5Bopsz%2Cwdth%2Cwght%5D.ttf",
+        "413e7357809ddd12fd80a96a8a396de0e401638d4acd3cb3e37532f0472ac682",
+    ),
+    "bricolage_ofl": (
+        f"{RAW_BASE}/ofl/bricolagegrotesque/OFL.txt",
+        "4b5a7d8f37f5602621c8a8d7358a6a2e71317e6c231c661e15aef0275d3e07ba",
+    ),
+}
+
+# Standard Google Fonts latin and latin-ext unicode ranges.
+SUBSETS: dict[str, str] = {
+    "latin": (
+        "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, "
+        "U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, "
+        "U+2212, U+2215, U+FEFF, U+FFFD"
+    ),
+    "latin-ext": (
+        "U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, "
+        "U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, "
+        "U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF"
+    ),
+}
+
+FIGTREE_WEIGHTS = {400: "Regular", 500: "Medium", 700: "Bold", 900: "Black"}
+BRICOLAGE_WEIGHTS = {700: "Bold", 800: "ExtraBold"}
 
 ROOT = Path(__file__).resolve().parents[1]
-WEB_DIR = ROOT / "apps" / "web" / "public" / "fonts" / "inrond-40"
+WEB_DIR = ROOT / "apps" / "web" / "public" / "fonts" / "caper"
+LEGACY_WEB_DIR = ROOT / "apps" / "web" / "public" / "fonts" / "inrond-40"
 WEB_CSS = ROOT / "apps" / "web" / "src" / "fonts.css"
 NATIVE_DIR = ROOT / "shared" / "fonts"
-SOURCE = "Inrond-1.0/fonts/variable/Inrond[ROND,opsz,wght].ttf"
-SOURCE_ITALIC = "Inrond-1.0/fonts/variable/Inrond-Italic[ROND,opsz,wght].ttf"
-# Unicode-range subsets, read from the release's own stylesheet so they match upstream.
-SUBSET_CSS = "Inrond-1.0/fonts/webfonts/inrond.css"
 
 
-def download() -> zipfile.ZipFile:
-    with urllib.request.urlopen(RELEASE_URL, timeout=60) as response:
+def fetch(key: str) -> bytes:
+    url, expected_sha = UPSTREAM_FILES[key]
+    with urllib.request.urlopen(url, timeout=60) as response:
         data = response.read()
     actual = hashlib.sha256(data).hexdigest()
-    if actual != RELEASE_SHA256:
-        raise RuntimeError(f"Inrond release SHA-256 mismatch: expected {RELEASE_SHA256}, got {actual}")
-    return zipfile.ZipFile(io.BytesIO(data))
+    if actual != expected_sha:
+        raise RuntimeError(f"{key} SHA-256 mismatch: expected {expected_sha}, got {actual}")
+    return data
 
 
-def subsets(release: zipfile.ZipFile) -> dict[str, str]:
-    css = release.read(SUBSET_CSS).decode()
-    found = {}
-    for face in re.findall(r"@font-face\s*{[^}]*}", css):
-        if "font-style: normal" not in face:
-            continue
-        name = re.search(r"Inrond\.([a-z-]+)\.woff2", face)
-        ranges = re.search(r"unicode-range:\s*([^;]+);", face)
-        if name and ranges:
-            found[name.group(1)] = ranges.group(1).strip()
-    if "latin" not in found:
-        raise RuntimeError("Inrond stylesheet has no latin subset")
-    return found
-
-
-def rounded(release: zipfile.ZipFile, member: str, axes: dict[str, float]) -> TTFont:
-    font = TTFont(io.BytesIO(release.read(member)))
-    return instancer.instantiateVariableFont(font, {"ROND": ROUNDNESS, **axes})
-
-
-def rename(font: TTFont, style: str, ribbi: bool = True) -> None:
-    """Name a face of FAMILY; non-RIBBI weights get their own legacy family, as in Inter's static fonts."""
+def rename(font: TTFont, family: str, postscript_prefix: str, style: str, ribbi: bool = True) -> None:
+    """Assign predictable cross-platform family and PostScript names."""
     names = font["name"]
     names.names = [record for record in names.names if record.nameID not in (1, 2, 3, 4, 6, 16, 17, 25)]
-    postscript = f"{POSTSCRIPT}-{style}"
+    postscript = f"{postscript_prefix}-{style}"
     for platform in ((3, 1, 0x409), (1, 0, 0)):
-        names.setName(FAMILY if ribbi else f"{FAMILY} {style}", 1, *platform)
+        names.setName(family if ribbi else f"{family} {style}", 1, *platform)
         names.setName(style if ribbi else "Regular", 2, *platform)
-        names.setName(f"{postscript};Inrond 1.0", 3, *platform)
-        names.setName(FAMILY if style == "Regular" else f"{FAMILY} {style}", 4, *platform)
+        names.setName(f"{postscript};Caper", 3, *platform)
+        names.setName(family if style == "Regular" else f"{family} {style}", 4, *platform)
         names.setName(postscript, 6, *platform)
         if not ribbi:
-            names.setName(FAMILY, 16, *platform)
+            names.setName(family, 16, *platform)
             names.setName(style, 17, *platform)
-
-
-def build_web(release: zipfile.ZipFile, ranges: dict[str, str]) -> None:
-    WEB_DIR.mkdir(parents=True, exist_ok=True)
-    for path in WEB_DIR.glob("*.woff2"):
-        path.unlink()
-    faces = []
-    for member, style, suffix in ((SOURCE, "normal", ""), (SOURCE_ITALIC, "italic", "-Italic")):
-        font = rounded(release, member, {})
-        rename(font, "Italic" if suffix else "Regular")
-        for subset_name, unicode_range in ranges.items():
-            options = subset.Options()
-            options.flavor = "woff2"
-            options.layout_features = ["*"]
-            options.name_IDs = ["*"]
-            options.notdef_outline = True
-            subsetter = subset.Subsetter(options)
-            subsetter.populate(unicodes=parse_ranges(unicode_range))
-            part = TTFont(io.BytesIO(save(font)))
-            subsetter.subset(part)
-            filename = f"{POSTSCRIPT}{suffix}.{subset_name}.woff2"
-            part.flavor = "woff2"
-            part.save(WEB_DIR / filename)
-            faces.append(
-                "@font-face {\n"
-                f'  font-family: "{FAMILY}";\n'
-                f"  font-style: {style};\n"
-                "  font-weight: 100 900;\n"
-                "  font-display: swap;\n"
-                f'  src: url("/fonts/inrond-40/{filename}") format("woff2");\n'
-                f"  unicode-range: {unicode_range};\n"
-                "}\n"
-            )
-    header = (
-        "/* Generated by scripts/build_fonts.py: Inrond 1.0 at ROND 40, variable in weight and optical size. */\n\n"
-    )
-    WEB_CSS.write_text(header + "\n".join(faces))
-
-
-def build_native(release: zipfile.ZipFile) -> None:
-    for weight, style in STATIC_WEIGHTS.items():
-        font = rounded(release, SOURCE, {"wght": weight, "opsz": STATIC_OPSZ})
-        rename(font, style, ribbi=style in ("Regular", "Bold"))
-        font["OS/2"].usWeightClass = weight
-        bold = style == "Bold"
-        font["OS/2"].fsSelection = (font["OS/2"].fsSelection & ~0b1100001) | (0b100000 if bold else 0b1000000)
-        font["head"].macStyle = 1 if bold else 0
-        font.save(NATIVE_DIR / f"{POSTSCRIPT}-{style}.ttf")
-    (NATIVE_DIR / "OFL.txt").write_bytes(release.read("Inrond-1.0/OFL.txt"))
 
 
 def parse_ranges(value: str) -> list[int]:
@@ -147,19 +109,136 @@ def parse_ranges(value: str) -> list[int]:
     return unicodes
 
 
-def save(font: TTFont) -> bytes:
+def save_bytes(font: TTFont) -> bytes:
     with tempfile.SpooledTemporaryFile() as output:
         font.save(output)
         output.seek(0)
         return output.read()
 
 
+def emit_web_family(
+    raw_ttf: bytes,
+    family: str,
+    file_prefix: str,
+    style: str,
+    weight_range: str,
+    axes: dict[str, float],
+    faces: list[str],
+) -> None:
+    font = TTFont(io.BytesIO(raw_ttf))
+    if axes:
+        font = instancer.instantiateVariableFont(font, axes)
+    font_bytes = save_bytes(font)
+    for subset_name, unicode_range in SUBSETS.items():
+        options = subset.Options()
+        options.flavor = "woff2"
+        options.layout_features = ["*"]
+        options.name_IDs = ["*"]
+        options.notdef_outline = True
+        subsetter = subset.Subsetter(options)
+        subsetter.populate(unicodes=parse_ranges(unicode_range))
+        part = TTFont(io.BytesIO(font_bytes))
+        subsetter.subset(part)
+        filename = f"{file_prefix}.{subset_name}.woff2"
+        part.flavor = "woff2"
+        part.save(WEB_DIR / filename)
+        faces.append(
+            "@font-face {\n"
+            f'  font-family: "{family}";\n'
+            f"  font-style: {style};\n"
+            f"  font-weight: {weight_range};\n"
+            "  font-display: swap;\n"
+            f'  src: url("/fonts/caper/{filename}") format("woff2");\n'
+            f"  unicode-range: {unicode_range};\n"
+            "}\n"
+        )
+
+
+def build_web(figtree_roman: bytes, figtree_italic: bytes, bricolage_roman: bytes) -> None:
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
+    for path in WEB_DIR.glob("*.woff2"):
+        path.unlink()
+    if LEGACY_WEB_DIR.exists():
+        for path in LEGACY_WEB_DIR.glob("*.woff2"):
+            path.unlink()
+        try:
+            LEGACY_WEB_DIR.rmdir()
+        except OSError:
+            pass
+
+    faces: list[str] = []
+    emit_web_family(figtree_roman, "Figtree", "Figtree", "normal", "300 900", {}, faces)
+    emit_web_family(figtree_italic, "Figtree", "Figtree-Italic", "italic", "300 900", {}, faces)
+    emit_web_family(
+        bricolage_roman,
+        "Bricolage Grotesque",
+        "BricolageGrotesque",
+        "normal",
+        "400 800",
+        {"wdth": 100},
+        faces,
+    )
+
+    header = (
+        "/* Generated by scripts/build_fonts.py: Figtree (UI/chat) and Bricolage Grotesque (display), SIL OFL. */\n\n"
+    )
+    WEB_CSS.write_text(header + "\n".join(faces))
+
+
+def emit_static(
+    raw_ttf: bytes,
+    family: str,
+    postscript_prefix: str,
+    weights: dict[int, str],
+    fixed_axes: dict[str, float],
+) -> None:
+    for weight, style in weights.items():
+        font = TTFont(io.BytesIO(raw_ttf))
+        font = instancer.instantiateVariableFont(font, {**fixed_axes, "wght": weight})
+        rename(font, family, postscript_prefix, style, ribbi=style in ("Regular", "Bold"))
+        font["OS/2"].usWeightClass = weight
+        bold = style == "Bold"
+        font["OS/2"].fsSelection = (font["OS/2"].fsSelection & ~0b1100001) | (0b100000 if bold else 0b1000000)
+        font["head"].macStyle = 1 if bold else 0
+        font.save(NATIVE_DIR / f"{postscript_prefix}-{style}.ttf")
+
+
+def build_native(figtree_roman: bytes, bricolage_roman: bytes, figtree_ofl: bytes, bricolage_ofl: bytes) -> None:
+    NATIVE_DIR.mkdir(parents=True, exist_ok=True)
+    for old in NATIVE_DIR.glob("Inrond40-*.ttf"):
+        old.unlink()
+    emit_static(figtree_roman, "Figtree", "Figtree", FIGTREE_WEIGHTS, {})
+    emit_static(
+        bricolage_roman,
+        "Bricolage Grotesque",
+        "BricolageGrotesque",
+        BRICOLAGE_WEIGHTS,
+        {"wdth": 100, "opsz": 36},
+    )
+    combined_license = (
+        "Figtree — SIL Open Font License 1.1\n"
+        "===================================\n\n"
+        + figtree_ofl.decode("utf-8").strip()
+        + "\n\n\n"
+        + "Bricolage Grotesque — SIL Open Font License 1.1\n"
+        + "===============================================\n\n"
+        + bricolage_ofl.decode("utf-8").strip()
+        + "\n"
+    )
+    (NATIVE_DIR / "OFL.txt").write_text(combined_license, encoding="utf-8")
+
+
 def main() -> None:
-    release = download()
-    build_web(release, subsets(release))
-    build_native(release)
+    figtree_roman = fetch("figtree_roman")
+    figtree_italic = fetch("figtree_italic")
+    figtree_ofl = fetch("figtree_ofl")
+    bricolage_roman = fetch("bricolage_roman")
+    bricolage_ofl = fetch("bricolage_ofl")
+    build_web(figtree_roman, figtree_italic, bricolage_roman)
+    build_native(figtree_roman, bricolage_roman, figtree_ofl, bricolage_ofl)
     print(
-        f"Built {FAMILY} into {WEB_DIR.relative_to(ROOT)}, {WEB_CSS.relative_to(ROOT)} and {NATIVE_DIR.relative_to(ROOT)}"
+        f"Built Figtree + Bricolage Grotesque into {WEB_DIR.relative_to(ROOT)}, "
+        f"{WEB_CSS.relative_to(ROOT)} and {NATIVE_DIR.relative_to(ROOT)}"
     )
 
 

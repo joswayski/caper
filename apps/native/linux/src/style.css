@@ -35,7 +35,7 @@
 window.caper {
   background-color: @caper_blackout;
   color: @caper_text;
-  font-family: "Inrond 40", sans-serif;
+  font-family: "Figtree", sans-serif;
   font-size: 14px;
   font-weight: 500;
 }
@@ -45,7 +45,7 @@ window.caper {
    type too. */
 window.caper popover.background,
 tooltip {
-  font-family: "Inrond 40", sans-serif;
+  font-family: "Figtree", sans-serif;
   font-size: 14px;
   font-weight: 500;
 }
@@ -251,8 +251,9 @@ button.login-action:disabled {
 }
 
 .title {
+  font-family: "Bricolage Grotesque", "Figtree", sans-serif;
   font-size: 24px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 popover.menu .title {

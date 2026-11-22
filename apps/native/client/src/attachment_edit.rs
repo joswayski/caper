@@ -48,8 +48,8 @@ pub const COLOR_NAMES: [&str; 6] = ["Red", "Yellow", "Green", "Blue", "White", "
 pub const STROKE_SIZES: (f32, f32, f32) = (2.0, 40.0, 6.0);
 pub const TEXT_SIZES: (f32, f32, f32) = (14.0, 96.0, 32.0);
 pub const MAX_TEXT: usize = 200;
-/// The app's Inrond 40 Bold, for text marks here and in the editor.
-pub const INROND_BOLD: &[u8] = include_bytes!("../../../../shared/fonts/Inrond40-Bold.ttf");
+/// The app's Figtree Bold, for text marks here and in the editor.
+pub const INROND_BOLD: &[u8] = include_bytes!("../../../../shared/fonts/Figtree-Bold.ttf");
 
 const EPSILON: f64 = 1e-6;
 /// How much of a file is read to tell whether it can be edited.

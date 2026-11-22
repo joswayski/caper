@@ -157,12 +157,14 @@ pub struct Gfx {
     solids: std::cell::RefCell<std::collections::HashMap<u32, ID2D1SolidColorBrush>>,
 }
 
-/// Inrond 40, the app font (see shared/fonts/README.md).
-const INROND: [&[u8]; 4] = [
-    include_bytes!("../../../../shared/fonts/Inrond40-Regular.ttf"),
-    include_bytes!("../../../../shared/fonts/Inrond40-Medium.ttf"),
-    include_bytes!("../../../../shared/fonts/Inrond40-Bold.ttf"),
-    include_bytes!("../../../../shared/fonts/Inrond40-Black.ttf"),
+/// Figtree (UI/chat) and Bricolage Grotesque (display), the app fonts (see shared/fonts/README.md).
+const APP_FONTS: [&[u8]; 6] = [
+    include_bytes!("../../../../shared/fonts/Figtree-Regular.ttf"),
+    include_bytes!("../../../../shared/fonts/Figtree-Medium.ttf"),
+    include_bytes!("../../../../shared/fonts/Figtree-Bold.ttf"),
+    include_bytes!("../../../../shared/fonts/Figtree-Black.ttf"),
+    include_bytes!("../../../../shared/fonts/BricolageGrotesque-Bold.ttf"),
+    include_bytes!("../../../../shared/fonts/BricolageGrotesque-ExtraBold.ttf"),
 ];
 
 /// The web app's wordmark, drawn with Direct2D's SVG renderer.
@@ -198,7 +200,7 @@ impl Gfx {
             let loader = dwrite.CreateInMemoryFontFileLoader()?;
             dwrite.RegisterFontFileLoader(&loader)?;
             let builder = dwrite.CreateFontSetBuilder()?;
-            for data in INROND {
+            for data in APP_FONTS {
                 let file = loader.CreateInMemoryFontFileReference(
                     &dwrite,
                     data.as_ptr().cast(),
@@ -243,7 +245,18 @@ impl Gfx {
             };
             let fmt = |size: f32, weight: DWRITE_FONT_WEIGHT| {
                 dwrite.CreateTextFormat(
-                    w!("Inrond 40"),
+                    w!("Figtree"),
+                    &fonts,
+                    weight,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    size,
+                    w!("en-us"),
+                )
+            };
+            let display_fmt = |size: f32, weight: DWRITE_FONT_WEIGHT| {
+                dwrite.CreateTextFormat(
+                    w!("Bricolage Grotesque"),
                     &fonts,
                     weight,
                     DWRITE_FONT_STYLE_NORMAL,
@@ -266,13 +279,13 @@ impl Gfx {
                 reaction: fmt(12.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
                 channel: fmt(15.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
                 section: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
-                space: fmt(17.0, DWRITE_FONT_WEIGHT_BOLD)?,
-                header: fmt(16.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
+                space: display_fmt(17.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                header: display_fmt(16.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 member: fmt(14.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 rail: centered(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 composer: fmt(15.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
                 toolbar: centered(14.0, DWRITE_FONT_WEIGHT_NORMAL)?,
-                title: fmt(40.0, DWRITE_FONT_WEIGHT_BLACK)?,
+                title: display_fmt(40.0, DWRITE_FONT_WEIGHT_EXTRA_BOLD)?,
                 body: fmt(16.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 field: fmt(16.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 label: fmt(14.0, DWRITE_FONT_WEIGHT_BOLD)?,
@@ -285,7 +298,7 @@ impl Gfx {
                 edited: fmt(10.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 quote: fmt(12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 quote_deleted: dwrite.CreateTextFormat(
-                    w!("Inrond 40"),
+                    w!("Figtree"),
                     &fonts,
                     DWRITE_FONT_WEIGHT_NORMAL,
                     DWRITE_FONT_STYLE_ITALIC,
@@ -298,7 +311,7 @@ impl Gfx {
                 quote_initials: centered(7.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 thread_count: fmt(12.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 thread_view: fmt(12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
-                dialog_title: fmt(18.4, DWRITE_FONT_WEIGHT_BOLD)?,
+                dialog_title: display_fmt(18.4, DWRITE_FONT_WEIGHT_BOLD)?,
                 dialog_note: fmt(12.8, DWRITE_FONT_WEIGHT_NORMAL)?,
                 button: fmt(12.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 picker: fmt(12.5, DWRITE_FONT_WEIGHT_NORMAL)?,

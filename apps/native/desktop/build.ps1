@@ -100,7 +100,7 @@ New-Item $Dist, $Stage -ItemType Directory -Force | Out-Null
 Copy-Item (Join-Path $Native "target\$Target\release\caper-windows.exe") (Join-Path $Stage "Caper.exe")
 Copy-Item (Join-Path $Native "target\$Target\release\caper-updater.exe") (Join-Path $Stage "caper-updater.exe")
 Copy-Item (Join-Path $Root "LICENSE"), (Join-Path $Native "README.md"), (Join-Path $Native "THIRD-PARTY-NOTICES.md") $Stage
-Copy-Item (Join-Path $Root "shared\fonts\OFL.txt") (Join-Path $Stage "Inrond-OFL.txt")
+Copy-Item (Join-Path $Root "shared\fonts\OFL.txt") (Join-Path $Stage "Fonts-OFL.txt")
 Copy-Item (Join-Path $Native "voice-spike\licenses\*") $Stage
 Get-ChildItem (Join-Path $Root 'shared\emoji\*.txt') | ForEach-Object {
     Copy-Item $_.FullName (Join-Path $Stage ("EMOJI-" + $_.Name))

@@ -19,8 +19,8 @@ import java.io.FileOutputStream
 internal object EditPainter {
     @Volatile private var bold: Typeface? = null
 
-    /** The app's bundled Inrond 40 Bold, which text marks use everywhere. */
-    fun typeface(context: Context): Typeface = bold ?: (runCatching { context.resources.getFont(R.font.inrond40_bold) }.getOrNull()
+    /** The app's bundled Figtree Bold, which text marks use everywhere. */
+    fun typeface(context: Context): Typeface = bold ?: (runCatching { context.resources.getFont(R.font.figtree_bold) }.getOrNull()
         ?: Typeface.DEFAULT_BOLD).also { bold = it }
 
     /**

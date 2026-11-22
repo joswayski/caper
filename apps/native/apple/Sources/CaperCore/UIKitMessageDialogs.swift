@@ -125,7 +125,7 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
     static func label(_ text: String, size: CGFloat = 12, bold: Bool = false, error: Bool = false) -> UILabel {
         let label = UILabel(); label.text = text; label.numberOfLines = 0
         label.font = UIFontMetrics(forTextStyle: .body).scaledFont(for:
-            UIFont(name: bold ? "Inrond40-Bold" : "Inrond40-Regular", size: size) ?? .systemFont(ofSize: size))
+            UIFont(name: bold ? "Figtree-Bold" : "Figtree-Regular", size: size) ?? .systemFont(ofSize: size))
         label.adjustsFontForContentSizeCategory = true
         label.textColor = UIColor(error ? CaperTheme.error : CaperTheme.text)
         return label
@@ -153,7 +153,7 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         config.title = title; config.cornerStyle = .fixed; config.background.cornerRadius = 8
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attributes = incoming
-            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Inrond40-Bold", size: 13) ?? .systemFont(ofSize: 13))
+            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Bold", size: 13) ?? .systemFont(ofSize: 13))
             return attributes
         }
         let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })

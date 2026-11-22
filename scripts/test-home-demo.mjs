@@ -335,10 +335,10 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), "30%");
   assert.deepEqual(
     evaluate(
-      'return [...new Set([...document.fonts].filter(font => font.family === "Inrond 40").map(font => [font.style, font.weight, font.display].join(" ")))].sort()',
+      'return [...new Set([...document.fonts].filter(font => font.family === "Figtree").map(font => [font.style, font.weight, font.display].join(" ")))].sort()',
     ),
-    ["italic 100 900 swap", "normal 100 900 swap"],
-    "Every Inrond face must paint fallback text while it downloads",
+    ["italic 300 900 swap", "normal 300 900 swap"],
+    "Every Figtree face must paint fallback text while it downloads",
   );
   assert.equal(
     evaluate(

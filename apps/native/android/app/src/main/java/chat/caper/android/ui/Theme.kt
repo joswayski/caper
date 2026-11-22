@@ -58,12 +58,17 @@ val Idle = Color(0xFFD6A44E)
 val Danger = Color(0xFFC83C4E)
 val ErrorText = Color(0xFFFF9B82)
 // END GENERATED THEME TOKENS
-private val ControlShape = RoundedCornerShape(8.dp)
-private val Inrond = FontFamily(
-    Font(R.font.inrond40_regular, FontWeight.Normal),
-    Font(R.font.inrond40_medium, FontWeight.Medium),
-    Font(R.font.inrond40_bold, FontWeight.Bold),
-    Font(R.font.inrond40_black, FontWeight.Black),
+private val ControlShape = RoundedCornerShape(10.dp)
+private val Figtree = FontFamily(
+    Font(R.font.figtree_regular, FontWeight.Normal),
+    Font(R.font.figtree_medium, FontWeight.Medium),
+    Font(R.font.figtree_bold, FontWeight.Bold),
+    Font(R.font.figtree_black, FontWeight.Black),
+)
+private val Bricolage = FontFamily(
+    Font(R.font.bricolage_bold, FontWeight.Bold),
+    Font(R.font.bricolage_extrabold, FontWeight.ExtraBold),
+    Font(R.font.bricolage_extrabold, FontWeight.Black),
 )
 
 @Composable fun CaperTheme(content: @Composable () -> Unit) {
@@ -71,9 +76,9 @@ private val Inrond = FontFamily(
         shapes = Shapes(
             extraSmall = ControlShape,
             small = ControlShape,
-            medium = ControlShape,
-            large = ControlShape,
-            extraLarge = ControlShape,
+            medium = RoundedCornerShape(13.dp),
+            large = RoundedCornerShape(15.dp),
+            extraLarge = RoundedCornerShape(16.dp),
         ),
         // Every role Material components read comes from the tokens; unset roles fall back to
         // Material's purple baseline (slider tracks, field labels, dividers, menus, sheets).
@@ -109,11 +114,11 @@ private val Inrond = FontFamily(
         ),
         typography = Typography().run {
             copy(
-                displayLarge = displayLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), displayMedium = displayMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), displaySmall = displaySmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
-                headlineLarge = headlineLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), headlineMedium = headlineMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), headlineSmall = headlineSmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
-                titleLarge = titleLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), titleMedium = titleMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), titleSmall = titleSmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
-                bodyLarge = bodyLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), bodyMedium = bodyMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), bodySmall = bodySmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
-                labelLarge = labelLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), labelMedium = labelMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), labelSmall = labelSmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
+                displayLarge = displayLarge.copy(fontFamily = Bricolage, letterSpacing = (-0.4).sp), displayMedium = displayMedium.copy(fontFamily = Bricolage, letterSpacing = (-0.3).sp), displaySmall = displaySmall.copy(fontFamily = Bricolage, letterSpacing = (-0.25).sp),
+                headlineLarge = headlineLarge.copy(fontFamily = Bricolage, letterSpacing = (-0.3).sp), headlineMedium = headlineMedium.copy(fontFamily = Bricolage, letterSpacing = (-0.25).sp), headlineSmall = headlineSmall.copy(fontFamily = Bricolage, letterSpacing = (-0.2).sp),
+                titleLarge = titleLarge.copy(fontFamily = Bricolage, letterSpacing = (-0.2).sp), titleMedium = titleMedium.copy(fontFamily = Figtree, letterSpacing = 0.sp), titleSmall = titleSmall.copy(fontFamily = Figtree, letterSpacing = 0.sp),
+                bodyLarge = bodyLarge.copy(fontFamily = Figtree, letterSpacing = 0.sp), bodyMedium = bodyMedium.copy(fontFamily = Figtree, letterSpacing = 0.sp), bodySmall = bodySmall.copy(fontFamily = Figtree, letterSpacing = 0.sp),
+                labelLarge = labelLarge.copy(fontFamily = Figtree, letterSpacing = 0.sp), labelMedium = labelMedium.copy(fontFamily = Figtree, letterSpacing = 0.sp), labelSmall = labelSmall.copy(fontFamily = Figtree, letterSpacing = 0.sp),
             )
         },
         content = content,

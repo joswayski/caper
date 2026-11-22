@@ -55,10 +55,18 @@ public enum CaperTheme {
     public static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let name: String
         switch weight {
-        case .black, .heavy: name = "Inrond40-Black"
-        case .bold, .semibold: name = "Inrond40-Bold"
-        case .medium: name = "Inrond40-Medium"
-        default: name = "Inrond40-Regular"
+        case .black, .heavy: name = "Figtree-Black"
+        case .bold, .semibold: name = "Figtree-Bold"
+        case .medium: name = "Figtree-Medium"
+        default: name = "Figtree-Regular"
+        }
+        return .custom(name, size: size)
+    }
+
+    public static func displayFont(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
+        let name = switch weight {
+        case .black, .heavy: "BricolageGrotesque-ExtraBold"
+        default: "BricolageGrotesque-Bold"
         }
         return .custom(name, size: size)
     }

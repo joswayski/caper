@@ -23,12 +23,21 @@ import SwiftUI
     static func font(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
         CaperFontLoader.register()
         let name = switch weight {
-        case .bold, .heavy, .semibold: "Inrond40-Bold"
-        case .medium: "Inrond40-Medium"
-        case .black: "Inrond40-Black"
-        default: "Inrond40-Regular"
+        case .bold, .heavy, .semibold: "Figtree-Bold"
+        case .medium: "Figtree-Medium"
+        case .black: "Figtree-Black"
+        default: "Figtree-Regular"
         }
         return NSFont(name: name, size: size) ?? .systemFont(ofSize: size, weight: weight)
+    }
+
+    static func displayFont(_ size: CGFloat, weight: NSFont.Weight = .bold) -> NSFont {
+        CaperFontLoader.register()
+        let name = switch weight {
+        case .black, .heavy: "BricolageGrotesque-ExtraBold"
+        default: "BricolageGrotesque-Bold"
+        }
+        return NSFont(name: name, size: size) ?? font(size, weight: weight)
     }
 
     /// A wrapping label; `width` caps its preferred layout width.

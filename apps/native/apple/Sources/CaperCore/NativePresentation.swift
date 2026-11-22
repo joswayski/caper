@@ -125,12 +125,12 @@ public enum NativePresentation {
                 let text = (segment.text as NSString).substring(with: NSRange(location: start - segmentStart, length: end - start))
                 let weight = run.bold ? "Bold" : segment.highlighted ? "Medium" : "Regular"
                 #if os(macOS)
-                let base = NSFont(name: "Inrond40-\(weight)", size: size) ?? NSFont.systemFont(ofSize: size)
+                let base = NSFont(name: "Figtree-\(weight)", size: size) ?? NSFont.systemFont(ofSize: size)
                 let font = run.italic ? NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask) : base
                 let color = NSColor(CaperTheme.text)
                 let highlight = NSColor(CaperTheme.terracotta).withAlphaComponent(0.24)
                 #else
-                let base = UIFont(name: "Inrond40-\(weight)", size: size) ?? UIFont.systemFont(ofSize: size)
+                let base = UIFont(name: "Figtree-\(weight)", size: size) ?? UIFont.systemFont(ofSize: size)
                 let descriptor = run.italic ? base.fontDescriptor.withSymbolicTraits(.traitItalic) ?? base.fontDescriptor : base.fontDescriptor
                 let font = UIFont(descriptor: descriptor, size: size)
                 let color = UIColor(CaperTheme.text)

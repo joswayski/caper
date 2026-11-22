@@ -57,7 +57,14 @@ export const Route = createRootRoute({
       { rel: "manifest", href: "/site.webmanifest" },
       {
         rel: "preload",
-        href: "/fonts/inrond-40/Inrond40.latin.woff2",
+        href: "/fonts/caper/Figtree.latin.woff2",
+        as: "font",
+        type: "font/woff2",
+        crossOrigin: "anonymous",
+      },
+      {
+        rel: "preload",
+        href: "/fonts/caper/BricolageGrotesque.latin.woff2",
         as: "font",
         type: "font/woff2",
         crossOrigin: "anonymous",

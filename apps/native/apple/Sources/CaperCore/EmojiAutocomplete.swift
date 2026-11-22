@@ -309,7 +309,7 @@ public typealias PlatformComposerFont = NSFont
     storage.removeAttribute(.kern, range: NSRange(location: 0, length: storage.length))
     for key in composerFormattingAttributes { storage.removeAttribute(key, range: NSRange(location: 0, length: storage.length)) }
     storage.addAttribute(.foregroundColor, value: textColor, range: NSRange(location: 0, length: storage.length))
-    let baseFont = PlatformComposerFont(name: "Inrond40-Regular", size: 14) ?? PlatformComposerFont.systemFont(ofSize: 14)
+    let baseFont = PlatformComposerFont(name: "Figtree-Regular", size: 14) ?? PlatformComposerFont.systemFont(ofSize: 14)
     storage.addAttribute(.font, value: baseFont, range: NSRange(location: 0, length: storage.length))
     let visibleIndices = Set(projection.sourceIndices)
     for index in 0..<storage.length where !visibleIndices.contains(index) {
@@ -318,7 +318,7 @@ public typealias PlatformComposerFont = NSFont
     var displayed = 0
     var quoted: [Int] = []
     for run in projection.runs {
-        let font = PlatformComposerFont(name: run.bold ? "Inrond40-Bold" : "Inrond40-Regular", size: 14) ?? baseFont
+        let font = PlatformComposerFont(name: run.bold ? "Figtree-Bold" : "Figtree-Regular", size: 14) ?? baseFont
         for index in displayed..<(displayed + run.text.utf16.count) {
             let character = NSRange(location: projection.sourceIndices[index], length: 1)
             storage.addAttribute(.font, value: font, range: character)
@@ -435,7 +435,7 @@ public final class ComposerTextView: UITextView {
         guard let window else { return }
         emojiTooltip?.removeFromSuperview()
         let label = UILabel()
-        label.text = ":\(name):"; label.font = UIFont(name: "Inrond40-Bold", size: 12)
+        label.text = ":\(name):"; label.font = UIFont(name: "Figtree-Bold", size: 12)
         label.textColor = UIColor(CaperTheme.text); label.backgroundColor = UIColor(CaperTheme.blackout)
         label.textAlignment = .center; label.numberOfLines = 0; label.isUserInteractionEnabled = false
         label.layer.cornerRadius = 8; label.layer.masksToBounds = true
@@ -609,7 +609,7 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         view.autocompleteActive = { [weak controller] in controller?.match != nil }
         view.handleKey = { [weak coordinator] in coordinator?.handle($0) }
         view.formatSelection = { [weak coordinator] in coordinator?.format($0) }
-        view.backgroundColor = .clear; view.textColor = UIColor(CaperTheme.text); view.font = UIFont(name: "Inrond40-Regular", size: 14)
+        view.backgroundColor = .clear; view.textColor = UIColor(CaperTheme.text); view.font = UIFont(name: "Figtree-Regular", size: 14)
         // The text container already supplies 5 points of line-fragment padding.
         view.textContainerInset = UIEdgeInsets(top: 11, left: 0, bottom: 11, right: 7)
         view.isScrollEnabled = true; view.accessibilityIdentifier = "message-composer"
@@ -733,7 +733,7 @@ struct NativeMessageTextEditor: UIViewRepresentable {
             highlightDraft(view.textStorage, source: parent.highlightSource ?? parent.mentions)
             view.typingAttributes.removeValue(forKey: .composerDelimiter)
             view.typingAttributes.removeValue(forKey: .obliqueness)
-            view.typingAttributes[.font] = UIFont(name: "Inrond40-Regular", size: 14)
+            view.typingAttributes[.font] = UIFont(name: "Figtree-Regular", size: 14)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
             view.typingAttributes.removeValue(forKey: .draftLink)
             view.typingAttributes.removeValue(forKey: .kern)
@@ -953,7 +953,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         view.layoutManager?.delegate = view.composerGlyphs
         scroll.documentView = view; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         view.delegate = coordinator; view.drawsBackground = false; view.textColor = NSColor(CaperTheme.text)
-        view.font = NSFont(name: "Inrond40-Regular", size: 14); view.textContainerInset = NSSize(width: 0, height: 10)
+        view.font = NSFont(name: "Figtree-Regular", size: 14); view.textContainerInset = NSSize(width: 0, height: 10)
         // AppKit sizes the text view: its width follows the scroll view and its height the text.
         view.minSize = NSSize(width: 0, height: 42)
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -1089,7 +1089,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             highlightDraft(storage, source: parent.highlightSource ?? parent.mentions)
             view.typingAttributes.removeValue(forKey: .composerDelimiter)
             view.typingAttributes.removeValue(forKey: .obliqueness)
-            view.typingAttributes[.font] = NSFont(name: "Inrond40-Regular", size: 14)
+            view.typingAttributes[.font] = NSFont(name: "Figtree-Regular", size: 14)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
             view.typingAttributes.removeValue(forKey: .toolTip)
             view.typingAttributes.removeValue(forKey: .draftLink)

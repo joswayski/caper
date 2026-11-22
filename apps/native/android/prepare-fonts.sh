@@ -9,6 +9,8 @@ GENERATED="$ROOT/app/build/generated/caper-fonts"
 mkdir -p "$GENERATED/res/font" "$GENERATED/assets"
 for weight in Regular Medium Bold Black; do
   # tr, not ${weight,,}: macOS ships bash 3.2.
-  cp "$FONTS/Inrond40-$weight.ttf" "$GENERATED/res/font/inrond40_$(printf %s "$weight" | tr "[:upper:]" "[:lower:]").ttf"
+  cp "$FONTS/Figtree-$weight.ttf" "$GENERATED/res/font/figtree_$(printf %s "$weight" | tr "[:upper:]" "[:lower:]").ttf"
 done
-cp "$FONTS/OFL.txt" "$GENERATED/assets/NOTICE-Inrond-OFL.txt"
+cp "$FONTS/BricolageGrotesque-Bold.ttf" "$GENERATED/res/font/bricolage_bold.ttf"
+cp "$FONTS/BricolageGrotesque-ExtraBold.ttf" "$GENERATED/res/font/bricolage_extrabold.ttf"
+cp "$FONTS/OFL.txt" "$GENERATED/assets/NOTICE-Fonts-OFL.txt"

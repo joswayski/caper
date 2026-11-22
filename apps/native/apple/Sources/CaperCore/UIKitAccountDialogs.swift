@@ -10,10 +10,10 @@ import UIKit
         config.titleAlignment = .leading; config.imagePlacement = .leading; config.imagePadding = 10
         config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { value in
-            var value = value; value.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Inrond40-Regular", size: 14) ?? .systemFont(ofSize: 14)); return value
+            var value = value; value.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Regular", size: 14) ?? .systemFont(ofSize: 14)); return value
         }
         config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { value in
-            var value = value; value.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Inrond40-Regular", size: 12) ?? .systemFont(ofSize: 12)); return value
+            var value = value; value.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Regular", size: 12) ?? .systemFont(ofSize: 12)); return value
         }
         configuration = config; contentHorizontalAlignment = .fill
         titleLabel?.numberOfLines = 0

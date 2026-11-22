@@ -10,22 +10,30 @@
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
-const FONTS: [(&str, &[u8]); 4] = [
+const FONTS: [(&str, &[u8]); 6] = [
     (
-        "Inrond40-Regular.ttf",
-        include_bytes!("../../../../shared/fonts/Inrond40-Regular.ttf"),
+        "Figtree-Regular.ttf",
+        include_bytes!("../../../../shared/fonts/Figtree-Regular.ttf"),
     ),
     (
-        "Inrond40-Medium.ttf",
-        include_bytes!("../../../../shared/fonts/Inrond40-Medium.ttf"),
+        "Figtree-Medium.ttf",
+        include_bytes!("../../../../shared/fonts/Figtree-Medium.ttf"),
     ),
     (
-        "Inrond40-Bold.ttf",
-        include_bytes!("../../../../shared/fonts/Inrond40-Bold.ttf"),
+        "Figtree-Bold.ttf",
+        include_bytes!("../../../../shared/fonts/Figtree-Bold.ttf"),
     ),
     (
-        "Inrond40-Black.ttf",
-        include_bytes!("../../../../shared/fonts/Inrond40-Black.ttf"),
+        "Figtree-Black.ttf",
+        include_bytes!("../../../../shared/fonts/Figtree-Black.ttf"),
+    ),
+    (
+        "BricolageGrotesque-Bold.ttf",
+        include_bytes!("../../../../shared/fonts/BricolageGrotesque-Bold.ttf"),
+    ),
+    (
+        "BricolageGrotesque-ExtraBold.ttf",
+        include_bytes!("../../../../shared/fonts/BricolageGrotesque-ExtraBold.ttf"),
     ),
 ];
 
@@ -44,7 +52,7 @@ pub fn prepare() {
     let configuration = match install(&directory) {
         Ok(configuration) => configuration,
         Err(error) => {
-            eprintln!("Inrond 40 is unavailable: {error}");
+            eprintln!("Bundled fonts are unavailable: {error}");
             return;
         }
     };
@@ -56,7 +64,7 @@ pub fn prepare() {
         .env(PREPARED, "1")
         .env("FONTCONFIG_FILE", configuration)
         .exec();
-    eprintln!("Inrond 40 is unavailable: {error}");
+    eprintln!("Bundled fonts are unavailable: {error}");
 }
 
 fn directory() -> Option<PathBuf> {

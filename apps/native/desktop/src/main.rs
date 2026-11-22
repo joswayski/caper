@@ -32953,16 +32953,16 @@ fn configure(context: &egui::Context) {
     for (name, bytes) in [
         (
             "Inrond Regular",
-            include_bytes!("../../../../shared/fonts/Inrond40-Regular.ttf").as_slice(),
+            include_bytes!("../../../../shared/fonts/Figtree-Regular.ttf").as_slice(),
         ),
         (
             "Inrond Medium",
-            include_bytes!("../../../../shared/fonts/Inrond40-Medium.ttf").as_slice(),
+            include_bytes!("../../../../shared/fonts/Figtree-Medium.ttf").as_slice(),
         ),
         ("Inrond Bold", attachment_edit::INROND_BOLD),
         (
             "Inrond Black",
-            include_bytes!("../../../../shared/fonts/Inrond40-Black.ttf").as_slice(),
+            include_bytes!("../../../../shared/fonts/Figtree-Black.ttf").as_slice(),
         ),
     ] {
         fonts

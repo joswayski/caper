@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 enum AttachmentEditRenderer {
     /// Registered by `CaperFontLoader`; CoreText falls back to the system font
     /// where it is missing (unit tests).
-    static let fontName = "Inrond40-Bold" as CFString
+    static let fontName = "Figtree-Bold" as CFString
 
     /// The edited `region` (pixels of the rotated image) of the upright
     /// `source` of `width` × `height` pixels, scaled to `outputWidth` ×

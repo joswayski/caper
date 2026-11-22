@@ -1,23 +1,14 @@
-# Inrond 40
+# Caper Fonts
 
-Every Caper client uses Inrond 40: [Inrond](https://github.com/Hairline-UI/inrond)
-1.0, a rounded Inter with a roundness axis, frozen at `ROND 40`. It keeps
-Inter's widths, kerning, features, Cyrillic/Greek/Vietnamese coverage and drawn
-italic. It is licensed under the SIL Open Font License 1.1 ([OFL.txt](OFL.txt)),
-which allows committing, modifying and bundling it; ship `OFL.txt` with any
-application that embeds the fonts.
+Caper bundles two SIL OFL 1.1 open-source typefaces identically across Web, Apple (macOS/iOS), Android, Windows, and Linux:
 
-| File | Used by |
-| --- | --- |
-| `Inrond40-Regular.ttf`, `-Medium`, `-Bold`, `-Black` | Native clients: static weights 400/500/700/900 at the text optical size (14). Families are named `Inrond 40` (Medium and Black also carry the legacy families `Inrond 40 Medium`/`Inrond 40 Black`); PostScript names match the file names. |
-| `apps/web/public/fonts/inrond-40/` | Web: woff2 unicode-range subsets, roman and italic, still variable in weight (100-900) and optical size. |
-| `apps/web/src/fonts.css` | Web: the generated `@font-face` rules for those subsets. |
+- **Bricolage Grotesque** (Bold 700, ExtraBold 800): expressive display headings, space/channel titles, welcome headers, and dialogs.
+- **Figtree** (Regular 400, Medium 500, Bold 700, Black 900, plus web Italic): clean, friendly UI controls, navigation, and chat messages.
 
-All of these are generated from the SHA-256-pinned upstream release by:
+Rebuild both the web WOFF2 subsets (`apps/web/public/fonts/caper/`, `apps/web/src/fonts.css`) and native static TTFs (`shared/fonts/`) from the SHA-256-pinned upstream `google/fonts` commit:
 
-```sh
+```bash
 uv run --locked --group fonts python scripts/build_fonts.py
 ```
 
-Rerun it only to change the release or the roundness (`ROUNDNESS` in the
-script), and commit every output together.
+The combined SIL Open Font License 1.1 notice for both families lives in [`OFL.txt`](OFL.txt).
