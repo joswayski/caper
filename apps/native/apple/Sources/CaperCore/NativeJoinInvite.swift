@@ -114,7 +114,7 @@ import UIKit
     override func viewDidLoad() {
         super.viewDidLoad()
         field.placeholder = "caper.chat/invite/AbCdE12345"; field.text = state.link
-        field.font = UIFont(name: "Satoshi-Regular", size: 14); field.borderStyle = .roundedRect
+        field.font = UIFont(name: "Inrond40-Regular", size: 14); field.borderStyle = .roundedRect
         field.autocapitalizationType = .none; field.autocorrectionType = .no; field.keyboardType = .URL; field.returnKeyType = .go
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         field.accessibilityIdentifier = "invite-link-field"; field.accessibilityLabel = "Invite link"; field.delegate = self

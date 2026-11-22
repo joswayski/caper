@@ -5,7 +5,7 @@ The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipp
 ## Features
 
 - Email sign-in and onboarding with no Guest/General fallback. Sessions restore through the origin-namespaced Keychain; logout returns to sign-in.
-- The caper.chat shell at desktop and narrow widths: space rail, channel sidebar, responsive member panel, Browse navigation, Satoshi typography and the web color/spacing tokens.
+- The caper.chat shell at desktop and narrow widths: space rail, channel sidebar, responsive member panel, Browse navigation, Inrond 40 typography and the web color/spacing tokens.
 - Owner workflows: create/delete/rename spaces and channels, add/remove existing accounts by username, private channels and grants.
 - Invite links: owners create (expiry, use limit, optional landing channel), copy and revoke them in Manage space; anyone can join from **Join with invite link**. iPhone opens `https://caper.chat/invite/<code>` universal links (`applinks:caper.chat` Associated Domains entitlement); both apps register `caper://invite/<code>`. The Mac app ships as a Developer ID DMG without a provisioning profile, so it opens only `caper://` links. Universal links need the Associated Domains capability on the `chat.caper.ios` App ID (automatic signing with `-allowProvisioningUpdates` in `upload-testflight.sh` normally enables it; otherwise enable it in the Apple Developer portal) and `/.well-known/apple-app-site-association` on caper.chat.
 - Chat history and pagination, idempotent sends, ordered gateway replay, reconnect state, typing, paginated presence, and deleting your own messages (`DELETE /api/chat/channels/<channel>/messages/<message>`; the row disappears everywhere).
@@ -32,7 +32,7 @@ The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipp
 
 ## Fonts and licenses
 
-`prepare.sh` runs the repository's verified `scripts/native_fonts.py`, then bundles the original, unmodified Satoshi Regular/Medium/Bold/Black OTF files and unchanged Fontshare license. Generated font inputs are ignored. Both app archives also contain, from `Resources/`:
+`prepare.sh` copies the committed Inrond 40 Regular/Medium/Bold/Black TTFs and their SIL OFL license (as `Inrond-OFL.txt`) from [`shared/fonts`](../../../shared/fonts/README.md) into the ignored `Resources/Fonts/`. Both app archives also contain, from `Resources/`:
 
 - `WebRTC-LICENSE.txt`;
 - `libwebp-LICENSE.txt` (libwebp 1.6.0 via `SDWebImage/libwebp-Xcode`, BSD-3-Clause plus the WebM patent grant);

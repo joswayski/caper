@@ -2566,10 +2566,8 @@ button.chat-mention-card-avatar {
   border-radius: 4px;
   background: var(--border);
 }
-/* The bundled Satoshi faces are upright; allow oblique synthesis only for message emphasis. */
 .chat-italic {
   font-style: italic;
-  font-synthesis: style;
 }
 .chat-attach {
   grid-column: 1;
@@ -3781,7 +3779,7 @@ a.chat-draft-preview {
   border-radius: 4px;
   outline: none;
   background: rgb(0 0 0 / 25%);
-  font-family: var(--font-satoshi);
+  font-family: var(--font-inrond);
   font-weight: 700;
   line-height: 1.2;
   text-align: center;

@@ -295,7 +295,7 @@ import Observation
         config.background.cornerRadius = 8; config.background.strokeWidth = 1
         config.background.backgroundInsets = NSDirectionalEdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var attributes = incoming; attributes.font = font("Satoshi-Medium", 13); return attributes
+            var attributes = incoming; attributes.font = font("Inrond40-Medium", 13); return attributes
         }
         let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
         button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
@@ -316,7 +316,7 @@ import Observation
         config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
         config.baseForegroundColor = UIColor(CaperTheme.muted)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var attributes = incoming; attributes.font = font("Satoshi-Medium", 12); return attributes
+            var attributes = incoming; attributes.font = font("Inrond40-Medium", 12); return attributes
         }
         let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
         button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
@@ -373,7 +373,7 @@ import Observation
         doneConfig.title = "Done"; doneConfig.baseForegroundColor = UIColor(CaperTheme.text)
         doneConfig.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 0)
         doneConfig.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var attributes = incoming; attributes.font = UIKitInboxStyle.font("Satoshi-Bold", 15); return attributes
+            var attributes = incoming; attributes.font = UIKitInboxStyle.font("Inrond40-Bold", 15); return attributes
         }
         let done = UIButton(configuration: doneConfig, primaryAction: UIAction { [weak self] _ in self?.finish() })
         done.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true

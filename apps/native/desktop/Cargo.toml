@@ -47,7 +47,7 @@ caper-client = { path = "../client" }
 caper-web-player = { path = "web-player" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # system_fonts: load installed fonts on demand for scripts and emoji that
-# Satoshi and egui's bundled fonts lack (CJK, Arabic, Devanagari, color emoji).
+# Inrond and egui's bundled fonts lack (CJK, Arabic, Devanagari, color emoji).
 # experimental: the widget theme API, which keeps text fields' earlier metrics.
 eframe = { version = "=0.37.0", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts", "persistence", "system_fonts", "experimental"] }
 egui_extras = { version = "=0.37.0", default-features = false, features = ["svg", "image"] }

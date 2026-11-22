@@ -82,7 +82,7 @@ import Observation
     private func field(_ field: UITextField, label: String, placeholder: String? = nil) {
         body.addArrangedSubview(UIKitMessageDialog.label(label, bold: true))
         field.accessibilityLabel = label; field.placeholder = placeholder; field.borderStyle = .roundedRect
-        field.font = UIFont(name: "Satoshi-Regular", size: 14); field.autocapitalizationType = .none; field.autocorrectionType = .no
+        field.font = UIFont(name: "Inrond40-Regular", size: 14); field.autocapitalizationType = .none; field.autocorrectionType = .no
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true; field.returnKeyType = .done; field.delegate = self
         field.addAction(UIAction { [weak self] _ in self?.render() }, for: .editingChanged); body.addArrangedSubview(field)
     }

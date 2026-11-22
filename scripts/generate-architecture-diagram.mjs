@@ -558,8 +558,8 @@ for (const a of placed) {
   }
 }
 
-const font = (weight) =>
-  `@font-face{font-family:Satoshi;font-weight:${weight};src:url(data:font/woff2;base64,${read(`apps/web/public/fonts/satoshi-${weight}.woff2`).toString("base64")}) format("woff2")}`;
+// The app's own Latin subset, variable in weight (see scripts/build_fonts.py).
+const font = `@font-face{font-family:"Inrond 40";font-weight:100 900;src:url(data:font/woff2;base64,${read("apps/web/public/fonts/inrond-40/Inrond40.latin.woff2").toString("base64")}) format("woff2")}`;
 const lettering = read("apps/web/public/caper-wordmark-letters.svg", "utf8").match(/<path[^>]+\/>/)[0];
 
 const pad = 40;
@@ -568,8 +568,8 @@ const [minX, minY, maxX, maxY] = all;
 const width = Math.ceil(maxX - minX + pad * 2);
 const height = Math.ceil(maxY - minY + pad * 2 + header);
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Caper architecture: web, iOS, Android and desktop clients reach the Rust API, Rust gateway and web server on AWS through Cloudflare Tunnel; voice audio flows through Cloudflare's Realtime SFU, files through R2 and the CDN Worker, link previews through the Embed Worker; data lives in PlanetScale Postgres with Valkey for fanout; the API uses Amazon SES, APNs/FCM and OpenRouter, and clients search GIFs on KLIPY.">
-<style>${font(500)}${font(700)}
-text{font-family:Satoshi,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+<style>${font}
+text{font-family:"Inrond 40",-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 .halo{paint-order:stroke;stroke:#0C0D0F;stroke-width:4px;stroke-linejoin:round}
 .backdrop{fill:#0C0D0F;stroke:#34383B;stroke-opacity:.35}
 .wire{fill:none;stroke:#2E3236;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}

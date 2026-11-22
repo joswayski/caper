@@ -754,7 +754,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     /// Plain runs in the body colour; pills and links keep their own. Spoilers
     /// not in `revealed` stay hidden, without links or pills.
     private static func render(_ row: MessageRowState, revealed: Set<Int>) -> NSAttributedString {
-        // Satoshi 14 at the reader's text size, as SwiftUI's custom fonts scale.
+        // Inrond 14 at the reader's text size, as SwiftUI's custom fonts scale.
         let size = UIFontMetrics.default.scaledValue(for: 14)
         let text = NSMutableAttributedString(attributedString: NativePresentation.messageText(row.text, size: size, mentions: row.mentions))
         text.enumerateAttribute(NativePresentation.mentionAttribute, in: NSRange(location: 0, length: text.length)) { value, range, _ in

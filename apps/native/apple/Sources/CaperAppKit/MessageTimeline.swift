@@ -517,7 +517,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         day.alignment = .center
         dayLeading.backgroundColor = NativeStyle.border.cgColor
         dayTrailing.backgroundColor = NativeStyle.border.cgColor
-        unread.font = NSFont(name: "Satoshi-Medium", size: 11) ?? NativeStyle.font(11)
+        unread.font = NSFont(name: "Inrond40-Medium", size: 11) ?? NativeStyle.font(11)
         unread.textColor = NativeStyle.accent
         unread.isHidden = true
         unread.alignment = .center
@@ -753,7 +753,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         } else {
             NativePresentation.concealSpoilers(text, revealed: revealedSpoilers)
         }
-        // Emoji fallback fonts have larger metrics than Satoshi. Use the same
+        // Emoji fallback fonts have larger metrics than Inrond. Use the same
         // 20-point pitch for measurement and TextKit drawing, not per-glyph height.
         // Quoted lines keep their indent.
         var styles: [(NSRange, NSParagraphStyle?)] = []

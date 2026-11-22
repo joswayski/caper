@@ -74,7 +74,7 @@ function Profile() {
         <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">
           {account.username ? "YOUR ACCOUNT" : "ONE LAST THING"}
         </p>
-        <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em]">
+        <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.025em]">
           {account.username ? "Make it yours." : "Choose how you show up."}
         </h1>
         <ProfileForm

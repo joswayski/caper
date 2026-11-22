@@ -52,10 +52,10 @@ public enum CaperTheme {
     public static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let name: String
         switch weight {
-        case .black, .heavy: name = "Satoshi-Black"
-        case .bold, .semibold: name = "Satoshi-Bold"
-        case .medium: name = "Satoshi-Medium"
-        default: name = "Satoshi-Regular"
+        case .black, .heavy: name = "Inrond40-Black"
+        case .bold, .semibold: name = "Inrond40-Bold"
+        case .medium: name = "Inrond40-Medium"
+        default: name = "Inrond40-Regular"
         }
         return .custom(name, size: size)
     }
@@ -1486,7 +1486,7 @@ private struct ChannelSidebar: View {
                 Text("Private invitations").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.top, 12)
                 ForEach(invitations) { invitation in
                     Button { if !SwipeTapGuard.swiping { sheet = .channelInvitation(invitation) } } label: {
-                        // Satoshi like the channel rows, with the whole row as the target.
+                        // Inrond like the channel rows, with the whole row as the target.
                         Text("#\(invitation.channel.name) · from @\(invitation.inviter.username)").lineLimit(1)
                             .font(CaperTheme.font(13, weight: .medium))
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)

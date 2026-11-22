@@ -23,10 +23,10 @@ import SwiftUI
     static func font(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
         CaperFontLoader.register()
         let name = switch weight {
-        case .bold, .heavy, .semibold: "Satoshi-Bold"
-        case .medium: "Satoshi-Medium"
-        case .black: "Satoshi-Black"
-        default: "Satoshi-Regular"
+        case .bold, .heavy, .semibold: "Inrond40-Bold"
+        case .medium: "Inrond40-Medium"
+        case .black: "Inrond40-Black"
+        default: "Inrond40-Regular"
         }
         return NSFont(name: name, size: size) ?? .systemFont(ofSize: size, weight: weight)
     }

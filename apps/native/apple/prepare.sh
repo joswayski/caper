@@ -11,15 +11,13 @@ revision="${CAPER_RELEASE_SHA:-$(git -C "$REPO" rev-parse HEAD)}"
 mkdir -p "$ROOT/.build"
 printf 'CAPER_SOURCE_REVISION = %s\n' "$revision" > "$ROOT/.build/SourceRevision.xcconfig"
 
-python3 "$REPO/scripts/native_fonts.py"
-FONT_CACHE="$REPO/shared/fonts/cache"
 FONT_RESOURCES="$ROOT/Resources/Fonts"
 rm -rf "$FONT_RESOURCES"
 mkdir -p "$FONT_RESOURCES"
-for file in Satoshi-Regular.otf Satoshi-Medium.otf Satoshi-Bold.otf Satoshi-Black.otf Satoshi-FFL.txt; do
-  test -s "$FONT_CACHE/$file"
-  cp "$FONT_CACHE/$file" "$FONT_RESOURCES/$file"
+for file in Inrond40-Regular.ttf Inrond40-Medium.ttf Inrond40-Bold.ttf Inrond40-Black.ttf; do
+  cp "$REPO/shared/fonts/$file" "$FONT_RESOURCES/$file"
 done
+cp "$REPO/shared/fonts/OFL.txt" "$FONT_RESOURCES/Inrond-OFL.txt"
 
 # Native CPU inference runs from the app bundle, never a runtime network fetch.
 # Keep the exact ORT headers and macOS binaries from the same release: Microsoft's

@@ -44,8 +44,9 @@ install -m 0755 "$here/install.sh" "$stage/install.sh"
 native="$root/apps/native/desktop"
 licenses="$stage/licenses"
 install -d "$licenses/ffmpeg-licenses"
-install -m 0644 "$root/LICENSE" "$native/THIRD-PARTY-NOTICES.md" "$root/shared/fonts/cache/Satoshi-FFL.txt" \
+install -m 0644 "$root/LICENSE" "$native/THIRD-PARTY-NOTICES.md" \
   "$native/voice-spike/licenses/"* "$licenses/"
+install -m 0644 "$root/shared/fonts/OFL.txt" "$licenses/Inrond-OFL.txt"
 for notice in "$root/shared/emoji/"*.txt; do
   install -m 0644 "$notice" "$licenses/EMOJI-$(basename "$notice")"
 done

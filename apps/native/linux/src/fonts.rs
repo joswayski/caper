@@ -1,4 +1,4 @@
-//! Satoshi for Pango, through fontconfig.
+//! Inrond 40 for Pango, through fontconfig.
 //!
 //! GTK 4.8's Pango (1.50) cannot add a font file to its font map, and this
 //! crate forbids the unsafe fontconfig calls that could. Instead the bundled
@@ -12,20 +12,20 @@ use std::path::{Path, PathBuf};
 
 const FONTS: [(&str, &[u8]); 4] = [
     (
-        "Satoshi-Regular.otf",
-        include_bytes!("../../../../shared/fonts/cache/Satoshi-Regular.otf"),
+        "Inrond40-Regular.ttf",
+        include_bytes!("../../../../shared/fonts/Inrond40-Regular.ttf"),
     ),
     (
-        "Satoshi-Medium.otf",
-        include_bytes!("../../../../shared/fonts/cache/Satoshi-Medium.otf"),
+        "Inrond40-Medium.ttf",
+        include_bytes!("../../../../shared/fonts/Inrond40-Medium.ttf"),
     ),
     (
-        "Satoshi-Bold.otf",
-        include_bytes!("../../../../shared/fonts/cache/Satoshi-Bold.otf"),
+        "Inrond40-Bold.ttf",
+        include_bytes!("../../../../shared/fonts/Inrond40-Bold.ttf"),
     ),
     (
-        "Satoshi-Black.otf",
-        include_bytes!("../../../../shared/fonts/cache/Satoshi-Black.otf"),
+        "Inrond40-Black.ttf",
+        include_bytes!("../../../../shared/fonts/Inrond40-Black.ttf"),
     ),
 ];
 
@@ -44,7 +44,7 @@ pub fn prepare() {
     let configuration = match install(&directory) {
         Ok(configuration) => configuration,
         Err(error) => {
-            eprintln!("Satoshi is unavailable: {error}");
+            eprintln!("Inrond 40 is unavailable: {error}");
             return;
         }
     };
@@ -56,7 +56,7 @@ pub fn prepare() {
         .env(PREPARED, "1")
         .env("FONTCONFIG_FILE", configuration)
         .exec();
-    eprintln!("Satoshi is unavailable: {error}");
+    eprintln!("Inrond 40 is unavailable: {error}");
 }
 
 fn directory() -> Option<PathBuf> {

@@ -19,7 +19,7 @@ function Privacy() {
         <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] max-[480px]:mt-[42px]">
           UPDATED {UPDATED.toUpperCase()}
         </p>
-        <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] text-content">
+        <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.025em] text-content">
           Privacy
         </h1>
         <p>

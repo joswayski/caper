@@ -23,7 +23,7 @@ Adapted from the conventions in `joswayski/captures`.
 
 ## Visual design
 
-- Use shared tokens: blackout #0C0D0F, surface #151719, border #34383B, text #F3F4F5, eggshell action #F1EDE4, terracotta #B64D32, caper green #637A43. Satoshi typography; restrained borders and 8px control corners.
+- Use shared tokens: blackout #0C0D0F, surface #151719, border #34383B, text #F3F4F5, eggshell action #F1EDE4, terracotta #B64D32, caper green #637A43. Inrond 40 (rounded Inter, `shared/fonts`) typography; restrained borders and 8px control corners.
 - Primary actions are eggshell fills with blackout labels; disabled ones step back to neutral chrome. Terracotta is for selection, focus, mentions and unread state. Green primarily belongs to the character, with restrained presence/status use. Keep general chrome neutral.
 - Motion: things arrive rather than teleport. Use the shared `--motion-*`/`--ease-out` tokens: short, decelerating, opacity/translate-only entrances; closing stays instant; animate only messages that arrive while the reader watches the live end; honor reduced-motion settings on every client.
 - Build hierarchy with typography, spacing, and clear layouts rather than large color fields. Fictional participants/messages belong only in the explicitly labelled homepage simulation; never use them in real account spaces or add working-looking controls for unimplemented features.
@@ -33,7 +33,7 @@ Adapted from the conventions in `joswayski/captures`.
 
 - Leave README accurate and concise. Put operational detail in `docs/media.md`. Docs describe the current system only (how it works, how to configure, run and recreate it): never record test runs, validation results, dated history or completed rollout steps in the repository; report those in the thread instead.
 - Run `npm run check` (Oxlint, Oxfmt, Vite build and native TypeScript 7 typecheck) and `npm test` (Vitest web and shared native-support tests); use `npm run fmt` to format first-party JS/TS/CSS. For Rust, run `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`.
-- For Python tooling, use pinned uv and `uv.lock`: `uv run --locked ruff check .`, `uv run --locked ruff format --check .`, `uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v`, and `uv run --locked python shared/fonts/test_native_fonts.py -v`. Use `uv run --locked ruff format .` to format Python; keep release/authoring dependencies in their separate groups, not the global interpreter.
+- For Python tooling, use pinned uv and `uv.lock`: `uv run --locked ruff check .`, `uv run --locked ruff format --check .`, `uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v`. Use `uv run --locked ruff format .` to format Python; keep release/authoring dependencies in their separate groups, not the global interpreter.
 - Build changed Docker images when a daemon is available; otherwise validate build stages directly and report the limitation.
 - Never equate mocks with live SFU validation. Report multi-network/TURN, sustained voice, and physical device checks separately.
 

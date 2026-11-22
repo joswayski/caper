@@ -249,7 +249,7 @@ struct NativeAttachmentEditorBridge: UIViewControllerRepresentable {
                 addSubview(text); self.text = text
             }
             if text.markedTextRange == nil, text.text != field.value { text.text = field.value }
-            text.font = UIFont(name: "Satoshi-Bold", size: field.points) ?? .boldSystemFont(ofSize: field.points)
+            text.font = UIFont(name: "Inrond40-Bold", size: field.points) ?? .boldSystemFont(ofSize: field.points)
             text.textColor = UIColor(cgColor: AttachmentEditRenderer.cgColor(field.color))
             text.accessibilityLabel = field.index == nil ? "New text" : "Edit text"
             if new { text.becomeFirstResponder() }

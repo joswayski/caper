@@ -87,7 +87,7 @@ fn toolbar_button(
         ),
         _ => {
             let family = if style == BOLD {
-                egui::FontFamily::Name("Satoshi Bold".into())
+                egui::FontFamily::Name("Inrond Bold".into())
             } else {
                 egui::FontFamily::Proportional
             };

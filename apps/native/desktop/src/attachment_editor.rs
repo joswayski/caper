@@ -738,7 +738,7 @@ impl Editor {
         let title = line(
             caper_client::attachment_edit::title(self.kind, profile_picture),
             14.0,
-            egui::FontFamily::Name("Satoshi Bold".into()),
+            egui::FontFamily::Name("Inrond Bold".into()),
             TEXT,
         );
         let file = (rect.width() > caper_client::attachment_edit::NAME_HIDES_AT)
@@ -1416,7 +1416,7 @@ impl Editor {
                 .id(id)
                 .font(egui::FontId::new(
                     points.min(MAX_GLYPH_POINTS),
-                    egui::FontFamily::Name("Satoshi Bold".into()),
+                    egui::FontFamily::Name("Inrond Bold".into()),
                 ))
                 .text_color(Color32::from_rgb(red, green, blue))
                 .align(egui::Align2::CENTER_CENTER)
@@ -1731,7 +1731,7 @@ impl Editor {
                 "Aa",
                 egui::FontId::new(
                     value.min(32.0),
-                    egui::FontFamily::Name("Satoshi Bold".into()),
+                    egui::FontFamily::Name("Inrond Bold".into()),
                 ),
                 color,
             );
@@ -1926,7 +1926,7 @@ fn paint_spoiler_cover(
     );
     let text = painter.layout_no_wrap(
         "Spoiler".into(),
-        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
         TEXT.gamma_multiply(opacity),
     );
     let content = 14.0 + 6.0 + text.size().x;
@@ -2051,7 +2051,7 @@ fn paint_picture(
 }
 
 /// Marks with the export's geometry: round-capped strokes (joined with
-/// dots) and Satoshi Bold text centred on its point.
+/// dots) and Inrond 40 Bold text centred on its point.
 fn paint_marks(painter: &egui::Painter, layout: &Layout, marks: &[Mark]) {
     for mark in marks {
         let [red, green, blue] = mark.color();
@@ -2086,7 +2086,7 @@ fn paint_marks(painter: &egui::Painter, layout: &Layout, marks: &[Mark]) {
                 let scale = pixels / base;
                 let galley = painter.layout_no_wrap(
                     text.clone(),
-                    egui::FontId::new(base, egui::FontFamily::Name("Satoshi Bold".into())),
+                    egui::FontId::new(base, egui::FontFamily::Name("Inrond Bold".into())),
                     color,
                 );
                 // The galley's own baseline, placed where the export puts it.
@@ -2235,7 +2235,7 @@ fn text_button(ui: &mut egui::Ui, rect: Rect, label: &str, enabled: bool) -> egu
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
         if !enabled {
             Color32::from_white_alpha(60)
         } else if hot {
@@ -2306,7 +2306,7 @@ fn tool_button_toned(
     };
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
-        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
         color,
     );
     let labelled = 18.0 + 6.0 + galley.size().x <= rect.width() - 8.0;
@@ -2365,7 +2365,7 @@ fn action_button(ui: &mut egui::Ui, rect: Rect, icon: NavIcon, label: &str) -> e
     );
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
-        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
         TEXT,
     );
     let width = 18.0 + 6.0 + galley.size().x;

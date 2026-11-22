@@ -50,7 +50,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     private var fieldToBottom: NSLayoutConstraint!
     private var fieldToCounter: [NSLayoutConstraint] = []
     private var height: NSLayoutConstraint!
-    /// The shared draft rendering sets Satoshi 14 itself, as SwiftUI does.
+    /// The shared draft rendering sets Inrond 14 itself, as SwiftUI does.
     private let font = UIKitStyle.font(14, scaled: false)
     /// Text edits; the owner writes them to the model's draft.
     var changed: ((String) -> Void)?
@@ -134,7 +134,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         field.addSubview(fieldRow)
         field.addSubview(linkPreview)
         counter.translatesAutoresizingMaskIntoConstraints = false
-        // Satoshi with tabular digits, as SwiftUI's .monospacedDigit().
+        // Inrond with tabular digits, as SwiftUI's .monospacedDigit().
         let base = UIKitStyle.font(10, scaled: false)
         counter.font = UIFont(descriptor: base.fontDescriptor.addingAttributes([.featureSettings: [[
             UIFontDescriptor.FeatureKey.type: kNumberSpacingType, UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector,

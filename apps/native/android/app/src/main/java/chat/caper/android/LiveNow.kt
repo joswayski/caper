@@ -279,7 +279,7 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
         color = color,
         fontSize = 11.sp,
         maxLines = 1,
-        // Satoshi's tabular figures, as on web, so nothing shifts each second.
+        // Inrond's tabular figures, as on web, so nothing shifts each second.
         style = TabularNumbers,
     )
 }

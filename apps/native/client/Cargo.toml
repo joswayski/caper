@@ -10,7 +10,7 @@ publish = false
 workspace = "../desktop"
 
 [dependencies]
-# Text drawn on edited attachments, from Satoshi Bold's outlines: the same
+# Text drawn on edited attachments, from Inrond 40 Bold's outlines: the same
 # font parser egui already uses, pinned to its locked version.
 ab_glyph = "=0.2.32"
 # AVIF photos: rav1e (pure-Rust AV1, BSD-2-Clause) in an avif-serialize

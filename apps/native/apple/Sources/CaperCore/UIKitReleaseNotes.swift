@@ -168,7 +168,7 @@ import Observation
         config.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attributes = incoming
-            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Satoshi-Regular", size: 12) ?? .systemFont(ofSize: 12))
+            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Inrond40-Regular", size: 12) ?? .systemFont(ofSize: 12))
             return attributes
         }
         if let icon = UIImage(named: "caper-external-link") {
@@ -205,7 +205,7 @@ import Observation
         config.baseForegroundColor = UIColor(CaperTheme.text)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attributes = incoming
-            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Satoshi-Regular", size: 13) ?? .systemFont(ofSize: 13))
+            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Inrond40-Regular", size: 13) ?? .systemFont(ofSize: 13))
             return attributes
         }
         config.title = installed.label

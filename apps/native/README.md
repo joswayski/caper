@@ -237,9 +237,8 @@ only the public key compiled into it.
 
 ## Comparing native screens with the web
 
-The web UI is the visual reference. Acquire the official Satoshi fonts with
-`python3 scripts/native_fonts.py` (see [shared/fonts](../../shared/fonts/README.md));
-never commit or publish them.
+The web UI is the visual reference. Every client uses the committed Inrond 40
+fonts in [shared/fonts](../../shared/fonts/README.md).
 
 The parity fixture is a disposable, loopback-only fake API. After `npm ci`, run
 with Node 24:

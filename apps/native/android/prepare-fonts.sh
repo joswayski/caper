@@ -3,19 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPOSITORY="$(cd "$ROOT/../../.." && pwd)"
-CACHE="$REPOSITORY/shared/fonts/cache"
+FONTS="$REPOSITORY/shared/fonts"
 GENERATED="$ROOT/app/build/generated/caper-fonts"
-
-python3 "$REPOSITORY/scripts/native_fonts.py"
 
 mkdir -p "$GENERATED/res/font" "$GENERATED/assets"
 for weight in Regular Medium Bold Black; do
-  source="$CACHE/Satoshi-$weight.otf"
-  [[ -f "$source" ]] || { echo "Missing official Satoshi font: $source" >&2; exit 1; }
   # tr, not ${weight,,}: macOS ships bash 3.2.
-  cp "$source" "$GENERATED/res/font/satoshi_$(printf %s "$weight" | tr "[:upper:]" "[:lower:]").otf"
+  cp "$FONTS/Inrond40-$weight.ttf" "$GENERATED/res/font/inrond40_$(printf %s "$weight" | tr "[:upper:]" "[:lower:]").ttf"
 done
-
-license="$CACHE/Satoshi-FFL.txt"
-[[ -f "$license" ]] || { echo "Missing official Fontshare license: $license" >&2; exit 1; }
-cp "$license" "$GENERATED/assets/NOTICE-Satoshi-Fontshare.txt"
+cp "$FONTS/OFL.txt" "$GENERATED/assets/NOTICE-Inrond-OFL.txt"

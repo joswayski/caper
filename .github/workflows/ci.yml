@@ -151,7 +151,6 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v
-      - run: uv run --locked python shared/fonts/test_native_fonts.py -v
       - name: Verify bundled Apple emoji match the shared artwork and licenses
         run: diff -qr shared/emoji apps/native/apple/Sources/CaperCore/EmojiAssets
 

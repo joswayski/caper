@@ -335,15 +335,10 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), "30%");
   assert.deepEqual(
     evaluate(
-      'return [...document.fonts].filter(font => font.family === "Satoshi").map(font => [font.weight, font.display]).sort()',
+      'return [...new Set([...document.fonts].filter(font => font.family === "Inrond 40").map(font => [font.style, font.weight, font.display].join(" ")))].sort()',
     ),
-    [
-      ["400", "swap"],
-      ["500", "swap"],
-      ["700", "swap"],
-      ["900", "swap"],
-    ],
-    "All font weights must paint fallback text while Satoshi downloads",
+    ["italic 100 900 swap", "normal 100 900 swap"],
+    "Every Inrond face must paint fallback text while it downloads",
   );
   assert.equal(
     evaluate(

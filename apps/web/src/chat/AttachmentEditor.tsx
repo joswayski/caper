@@ -279,7 +279,7 @@ export default function AttachmentEditor({
     };
   }, [file, kind, pictureMode]);
   useEffect(() => {
-    // Canvas text needs Satoshi loaded; repaint once it is.
+    // Canvas text needs Inrond loaded; repaint once it is.
     void document.fonts?.load(editFont(32)).then(() => setFontsReady((count) => count + 1));
   }, []);
   // The portal attaches the stage after this component's first effects run.

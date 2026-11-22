@@ -596,7 +596,7 @@ impl Viewer {
         let mut job = egui::text::LayoutJob::single_section(
             title,
             egui::TextFormat::simple(
-                egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                egui::FontId::new(14.0, egui::FontFamily::Name("Inrond Bold".into())),
                 TEXT,
             ),
         );

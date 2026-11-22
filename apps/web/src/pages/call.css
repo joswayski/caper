@@ -398,7 +398,7 @@
   height: 20px;
   color: var(--terracotta-bright);
 }
-/* Center Satoshi's visible lowercase glyphs, not just their line box. */
+/* Center the visible lowercase glyphs, not just their line box. */
 .channel-link > span {
   transform: translateY(-2px);
 }

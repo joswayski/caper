@@ -83,8 +83,6 @@ reveal".
 
 ## Build and run
 
-Satoshi must be in `shared/fonts/cache` first (`python3 scripts/native_fonts.py`).
-
 It is a member of the desktop workspace (`apps/native/desktop/Cargo.toml`),
 which needs the same environment as `apps/native/desktop/build.ps1`. That
 script (PowerShell 7 in an x64 Visual Studio developer environment) checks

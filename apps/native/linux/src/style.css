@@ -26,7 +26,7 @@
 window.caper {
   background-color: @caper_blackout;
   color: @caper_text;
-  font-family: Satoshi, sans-serif;
+  font-family: "Inrond 40", sans-serif;
   font-size: 14px;
   font-weight: 500;
 }
@@ -36,7 +36,7 @@ window.caper {
    type too. */
 window.caper popover.background,
 tooltip {
-  font-family: Satoshi, sans-serif;
+  font-family: "Inrond 40", sans-serif;
   font-size: 14px;
   font-weight: 500;
 }

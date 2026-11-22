@@ -113,7 +113,6 @@ if [ -z "${SKIP_BUILD:-}" ]; then
     LK_CUSTOM_WEBRTC=$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux | tail -1)
     export LK_CUSTOM_WEBRTC
   fi
-  python3 scripts/native_fonts.py >/dev/null
   cargo build --manifest-path apps/native/desktop/Cargo.toml --release -p caper-linux -p caper-desktop || {
     echo "Build failed; fix it or rerun with SKIP_BUILD=1."
     exit 1

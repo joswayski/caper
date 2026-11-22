@@ -60,14 +60,14 @@ enum UIKitStyle {
 
     enum Weight { case regular, medium, bold, black }
 
-    /// Satoshi at a fixed size, scaled with the reader's text size.
+    /// Inrond at a fixed size, scaled with the reader's text size.
     static func font(_ size: CGFloat, _ weight: Weight = .regular, scaled: Bool = true) -> UIFont {
         let name: String
         switch weight {
-        case .regular: name = "Satoshi-Regular"
-        case .medium: name = "Satoshi-Medium"
-        case .bold: name = "Satoshi-Bold"
-        case .black: name = "Satoshi-Black"
+        case .regular: name = "Inrond40-Regular"
+        case .medium: name = "Inrond40-Medium"
+        case .bold: name = "Inrond40-Bold"
+        case .black: name = "Inrond40-Black"
         }
         let font = UIFont(name: name, size: size) ?? .systemFont(ofSize: size)
         return scaled ? UIFontMetrics.default.scaledFont(for: font) : font

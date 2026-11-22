@@ -59,8 +59,6 @@ Expand-Archive $FfmpegArchive -DestinationPath $FfmpegExtract -Force
 & (Join-Path $FfmpegExtract 'ffmpeg.exe') -hide_banner -version
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-python (Join-Path $Root "scripts\native_fonts.py")
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # Windows ships the Win32 client (apps/native/windows, package caper-windows)
 # as Caper.exe in the egui client's layout, so installs, the updater,
 # shortcuts, caper:// links and launch at login carry over.
@@ -96,7 +94,7 @@ New-Item $Dist, $Stage -ItemType Directory -Force | Out-Null
 Copy-Item (Join-Path $Native "target\$Target\release\caper-windows.exe") (Join-Path $Stage "Caper.exe")
 Copy-Item (Join-Path $Native "target\$Target\release\caper-updater.exe") (Join-Path $Stage "caper-updater.exe")
 Copy-Item (Join-Path $Root "LICENSE"), (Join-Path $Native "README.md"), (Join-Path $Native "THIRD-PARTY-NOTICES.md") $Stage
-Copy-Item (Join-Path $Root "shared\fonts\cache\Satoshi-FFL.txt") $Stage
+Copy-Item (Join-Path $Root "shared\fonts\OFL.txt") (Join-Path $Stage "Inrond-OFL.txt")
 Copy-Item (Join-Path $Native "voice-spike\licenses\*") $Stage
 Get-ChildItem (Join-Path $Root 'shared\emoji\*.txt') | ForEach-Object {
     Copy-Item $_.FullName (Join-Path $Stage ("EMOJI-" + $_.Name))

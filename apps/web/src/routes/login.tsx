@@ -116,7 +116,7 @@ function Login() {
     <main className="grid min-h-dvh place-items-start justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-12 max-[480px]:px-5 max-[480px]:pt-8">
       <section className="w-full max-w-[440px]">
         <Wordmark />
-        <h1 className="mt-14 mb-1 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] max-[480px]:mt-[42px]">
+        <h1 className="mt-14 mb-1 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.025em] max-[480px]:mt-[42px]">
           {challengeId ? "Check your email." : "Welcome to Caper"}
         </h1>
         {challengeId ? (

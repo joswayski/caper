@@ -1153,7 +1153,7 @@ phones the editor takes over the preview's history entry, so Back closes it.
 
 - **Crop** with corner and edge handles (drag inside to move; arrow keys nudge on
   web and Android) and **Rotate left** in quarter turns.
-- **Draw** freehand with round lines, and **Text** (Satoshi Bold, one line, up to
+- **Draw** freehand with round lines, and **Text** (Inrond 40 Bold, one line, up to
   200 characters): click or tap to place, click to change, drag to move. With a
   mouse, trackpad, pen or iPad pointer, Draw shows a ring the size and colour of
   the brush in place of the cursor (at least 6 px). Both take one of six colours
@@ -1210,7 +1210,7 @@ The server sees an ordinary upload.
 | Web | `AttachmentEditor.tsx` (loaded on demand), full-window dialog | Canvas at full resolution, then the existing encoders | Mediabunny/WebCodecs: rotate, crop and resize, then the overlay; HDR through `hdr-video.ts`. Offered only where the browser encodes H.264 |
 | Android | `AttachmentEditor.kt`, full-screen Compose dialog; the custom swatch opens a small hue and saturation/value picker | `EditPainter` (android.graphics) on the decoded crop region, then the existing encoders | Media3: `ScaleAndRotateTransformation`, `Crop`, `Presentation`, then a `BitmapOverlay`; HDR needs Android 10+. AVIF editable from Android 12, HEIC from 9; TIFF not at all |
 | Apple | `AttachmentEditor.swift`: full-screen cover on iPhone/iPad, window overlay on Mac (inside the profile popover there); system `ColorPicker` | `AttachmentEditRenderer` (CoreGraphics/CoreText), then the existing encoders | The BT.709 composition read as BGRA, each frame turned, cropped, scaled and overlaid with Core Image, written through a pixel-buffer adaptor |
-| Rust desktop | `attachment_editor.rs`, full-window egui modal with egui's colour picker | `attachment_edit.rs`: tiny-skia strokes, Satoshi Bold through ab_glyph, then the existing encoders; HEIC/AVIF decode through the bundled FFmpeg | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or tone map. Marks need `overlay` with `png_pipe` input, which the bundled FFmpeg lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables them; the app detects them once present. Videos show a frame from 1 s in |
+| Rust desktop | `attachment_editor.rs`, full-window egui modal with egui's colour picker | `attachment_edit.rs`: tiny-skia strokes, Inrond 40 Bold through ab_glyph, then the existing encoders; HEIC/AVIF decode through the bundled FFmpeg | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or tone map. Marks need `overlay` with `png_pipe` input, which the bundled FFmpeg lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables them; the app detects them once present. Videos show a frame from 1 s in |
 
 ### Editing attachments after sending
 

@@ -63,8 +63,8 @@ export const EDIT_COLORS = ["#E5484D", "#F5C542", "#4CAF50", "#3B82F6", "#FFFFFF
 /** Stroke widths and text sizes in on-screen pixels, converted to fractions as they are drawn. */
 export const STROKE_SIZES = { min: 2, max: 40, initial: 6 } as const;
 export const TEXT_SIZES = { min: 14, max: 96, initial: 32 } as const;
-/** Satoshi Bold, like the app; the fallbacks match `shared/design.css`. */
-export const EDIT_FONT = `"Satoshi", "Avenir Next", "Segoe UI", sans-serif`;
+/** Inrond 40 Bold, like the app; the fallbacks match `shared/design.css`. */
+export const EDIT_FONT = `"Inrond 40", Inter, system-ui, "Segoe UI", sans-serif`;
 export const EDIT_FONT_WEIGHT = 700;
 
 const EPSILON = 1e-6;

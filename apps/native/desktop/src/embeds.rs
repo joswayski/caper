@@ -274,7 +274,7 @@ pub fn composer_card(ui: &mut egui::Ui, media: &mut Media, embed: &Embed, arriva
                                         egui::RichText::new(heading(embed))
                                             .font(egui::FontId::new(
                                                 13.6,
-                                                egui::FontFamily::Name("Satoshi Medium".into()),
+                                                egui::FontFamily::Name("Inrond Medium".into()),
                                             ))
                                             .color(TEXT),
                                     )
@@ -418,7 +418,7 @@ fn site_line(ui: &mut egui::Ui, id: (&str, usize), embed: &Embed, shown: &mut Sh
 }
 
 fn bold(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name("Satoshi Bold".into()))
+    egui::FontId::new(size, egui::FontFamily::Name("Inrond Bold".into()))
 }
 
 #[allow(clippy::too_many_arguments)]

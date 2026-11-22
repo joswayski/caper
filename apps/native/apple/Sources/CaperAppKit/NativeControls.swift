@@ -48,7 +48,7 @@ enum NativeStyle {
     /// divider while its resize handle is dragged or keyboard-focused.
     static var resizeHighlight: NSColor { NSColor(srgbRed: 0x49 / 255, green: 0x56 / 255, blue: 0x3E / 255, alpha: 1) }
     static func font(_ size: CGFloat, bold: Bool = false) -> NSFont {
-        NSFont(name: bold ? "Satoshi-Bold" : "Satoshi-Regular", size: size) ?? .systemFont(ofSize: size)
+        NSFont(name: bold ? "Inrond40-Bold" : "Inrond40-Regular", size: size) ?? .systemFont(ofSize: size)
     }
     static func label(_ text: String, size: CGFloat = 14, bold: Bool = false) -> NSTextField {
         let label = NSTextField(labelWithString: text)

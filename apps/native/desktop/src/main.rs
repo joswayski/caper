@@ -11377,7 +11377,7 @@ impl CaperApp {
                             let submit = ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
                                 let width = ui.painter().layout_no_wrap(
                                     "Email me a code".into(),
-                                    egui::FontId::new(16.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                                    egui::FontId::new(16.0, egui::FontFamily::Name("Inrond Medium".into())),
                                     TEXT,
                                 ).size().x + 84.0;
                                 ui.allocate_ui_with_layout(
@@ -12366,7 +12366,7 @@ impl CaperApp {
                         let galley = truncated_galley(
                             ui,
                             name,
-                            egui::FontId::new(15.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                            egui::FontId::new(15.0, egui::FontFamily::Name("Inrond Bold".into())),
                             TEXT,
                             title_rect.width() - if muted.is_some() { 46.0 } else { 24.0 },
                         );
@@ -13055,9 +13055,9 @@ impl CaperApp {
                             13.0,
                             egui::FontFamily::Name(
                                 if self_unread {
-                                    "Satoshi Bold"
+                                    "Inrond Bold"
                                 } else {
-                                    "Satoshi Medium"
+                                    "Inrond Medium"
                                 }
                                 .into(),
                             ),
@@ -13070,7 +13070,7 @@ impl CaperApp {
                     ),
                     (
                         "you",
-                        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                        egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Medium".into())),
                         MUTED,
                     ),
                     true,
@@ -13350,7 +13350,7 @@ impl CaperApp {
             &direct.peer.display_name,
             0.0,
             egui::TextFormat {
-                font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
                 color: TEXT,
                 ..Default::default()
             },
@@ -13506,7 +13506,7 @@ impl CaperApp {
                 rect.width() - 47.0 - 6.0,
                 (
                     &request.peer.display_name,
-                    egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                    egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Medium".into())),
                     if active || lit { TEXT } else { MUTED },
                 ),
                 (
@@ -13795,7 +13795,7 @@ impl CaperApp {
             };
             let name = line(
                 name,
-                egui::FontId::new(13.76, egui::FontFamily::Name("Satoshi Bold".into())),
+                egui::FontId::new(13.76, egui::FontFamily::Name("Inrond Bold".into())),
                 TEXT,
                 text.width() - 20.0,
             );
@@ -14167,9 +14167,9 @@ impl CaperApp {
         );
         paint_icon(ui.painter(), icon, NavIcon::AudioLines, VOICE_SESSION_GREEN);
         let left = icon.right() + 8.0;
-        let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
+        let font = egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Medium".into()));
         let mark = self.call_mark(ui, call);
-        let title = egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into()));
+        let title = egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into()));
         let name = ui
             .painter()
             .layout_no_wrap(format!("#{}", call.channel_name), title.clone(), TEXT)
@@ -14198,7 +14198,7 @@ impl CaperApp {
             truncated_galley(
                 ui,
                 &call.space_name,
-                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Medium".into())),
                 MUTED,
                 room - name.size().x - 6.0,
             )
@@ -14337,7 +14337,7 @@ impl CaperApp {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 format!("+{more}"),
-                egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
                 TEXT,
             );
             // Someone folded in is speaking: the tile lights for them.
@@ -14495,7 +14495,7 @@ impl CaperApp {
         let name = truncated_galley(
             ui,
             &room.row.name,
-            egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
             TEXT,
             (right - row.left() - 24.0).max(1.0),
         );
@@ -14555,7 +14555,7 @@ impl CaperApp {
                 if timer && let Some(started) = self.voice_started(&room.row.id) {
                     let text = live_timer(ui.ctx(), started);
                     let font =
-                        egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
+                        egui::FontId::new(11.5, egui::FontFamily::Name("Inrond Medium".into()));
                     let width = tabular_galley(ui, &text, &font, VOICE_SESSION_GREEN).1;
                     let (rect, _) =
                         ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
@@ -14590,7 +14590,7 @@ impl CaperApp {
                     if room.people.len() > 3 && !crowded {
                         let text = ui.painter().layout_no_wrap(
                             format!("+{}", room.people.len() - 3),
-                            egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                            egui::FontId::new(11.0, egui::FontFamily::Name("Inrond Bold".into())),
                             MUTED,
                         );
                         let (chip, _) = ui.allocate_exact_size(
@@ -14610,7 +14610,7 @@ impl CaperApp {
                     let galley = truncated_galley(
                         ui,
                         &names,
-                        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                        egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Medium".into())),
                         MUTED,
                         ui.available_width(),
                     );
@@ -14895,9 +14895,9 @@ impl CaperApp {
                                         12.5,
                                         egui::FontFamily::Name(
                                             if speaking {
-                                                "Satoshi Black"
+                                                "Inrond Black"
                                             } else {
-                                                "Satoshi Medium"
+                                                "Inrond Medium"
                                             }
                                             .into(),
                                         ),
@@ -15068,7 +15068,7 @@ impl CaperApp {
             let text = live_timer(ui.ctx(), started);
             right = paint_live_timer(ui, &text, right, inner.center().y, 12.0) - 10.0;
         }
-        let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
+        let font = egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Medium".into()));
         let status = Some(self.call_status())
             .filter(|(status, ..)| !status.is_empty())
             .map(|(status, _, tone)| {
@@ -15819,7 +15819,7 @@ impl CaperApp {
                     tabular_label(
                         ui,
                         &format!("{:.1}s", started.elapsed().as_secs_f32().min(30.0)),
-                        egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                        egui::FontId::new(14.0, egui::FontFamily::Name("Inrond Bold".into())),
                         TEXT,
                     );
                     let (dot, _) =
@@ -15862,7 +15862,7 @@ impl CaperApp {
                                 &format!("{strength}%"),
                                 egui::FontId::new(
                                     12.5,
-                                    egui::FontFamily::Name("Satoshi Bold".into()),
+                                    egui::FontFamily::Name("Inrond Bold".into()),
                                 ),
                                 TERRACOTTA_BRIGHT,
                             );
@@ -16147,7 +16147,7 @@ impl CaperApp {
                 egui::pos2(heading.left() + 16.0, heading.center().y),
                 egui::Align2::LEFT_CENTER,
                 "Members",
-                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Bold".into())),
                 MUTED,
             );
             // A thread can squeeze the channel toolbar, and phones show the
@@ -16240,7 +16240,7 @@ impl CaperApp {
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
+                ui.label(RichText::new(title).family(egui::FontFamily::Name("Inrond Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
                 ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
             });
             ui.add_space(4.0);
@@ -16664,7 +16664,7 @@ impl CaperApp {
             &destination,
             0.0,
             egui::TextFormat::simple(
-                egui::FontId::new(11.52, egui::FontFamily::Name("Satoshi Bold".into())),
+                egui::FontId::new(11.52, egui::FontFamily::Name("Inrond Bold".into())),
                 MUTED,
             ),
         );
@@ -17362,7 +17362,7 @@ impl CaperApp {
                         let mut copy = egui::text::LayoutJob::default();
                         copy.append("Join ", 0.0, format.clone());
                         copy.append(&format!("#{}", self.channel_name()), 0.0, egui::TextFormat {
-                            font_id: egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                            font_id: egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Bold".into())),
                             ..format.clone()
                         });
                         copy.append(" to interact with people here", 0.0, format);
@@ -18059,7 +18059,7 @@ impl CaperApp {
                 };
                 let galley = ui.painter().layout_no_wrap(
                     text.into(),
-                    egui::FontId::new(11.2, egui::FontFamily::Name("Satoshi Bold".into())),
+                    egui::FontId::new(11.2, egui::FontFamily::Name("Inrond Bold".into())),
                     MUTED,
                 );
                 let anchor = egui::pos2(heading.right() - 18.0, heading.bottom() + 8.0);
@@ -20208,7 +20208,7 @@ impl CaperApp {
                 badge.center(),
                 egui::Align2::CENTER_CENTER,
                 "GIF",
-                egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                egui::FontId::new(11.0, egui::FontFamily::Name("Inrond Bold".into())),
                 TEXT,
             );
         } else if !processing && !removed && !failed && video {
@@ -26594,7 +26594,7 @@ fn spoiler_badge(ui: &egui::Ui, bounds: egui::Rect, instruction: bool, emphasize
         egui::pos2(center.x - 13.0, y),
         egui::Align2::LEFT_CENTER,
         "Spoiler",
-        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Bold".into())),
         TEXT,
     );
     if instruction {
@@ -27404,7 +27404,7 @@ fn voice_text_button(
     // Placeholder-colored, so the label takes the tone's color when painted.
     let galley = ui.painter().layout_no_wrap(
         text.to_owned(),
-        egui::FontId::new(12.5, egui::FontFamily::Name("Satoshi Bold".into())),
+        egui::FontId::new(12.5, egui::FontFamily::Name("Inrond Bold".into())),
         Color32::PLACEHOLDER,
     );
     let (rect, response) = ui.allocate_exact_size(
@@ -27820,7 +27820,7 @@ fn paint_live_timer(ui: &egui::Ui, text: &str, right: f32, y: f32, size: f32) ->
 /// [`paint_live_timer`]'s timer, painted only while `shown`; it keeps its
 /// place and accessible duration either way.
 fn place_live_timer(ui: &egui::Ui, text: &str, right: f32, y: f32, size: f32, shown: bool) -> f32 {
-    let font = egui::FontId::new(size, egui::FontFamily::Name("Satoshi Medium".into()));
+    let font = egui::FontId::new(size, egui::FontFamily::Name("Inrond Medium".into()));
     let (galley, width) = tabular_galley(ui, text, &font, VOICE_SESSION_GREEN);
     let rect = egui::Rect::from_min_size(
         egui::pos2(right - width, y - galley.size().y / 2.0),
@@ -27934,7 +27934,7 @@ fn strip_lead(ui: &egui::Ui, inner: egui::Rect, text: &str, width: f32) -> f32 {
     let galley = truncated_galley(
         ui,
         text,
-        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
         TEXT,
         (width - (left - inner.left())).max(1.0),
     );
@@ -28041,7 +28041,7 @@ fn strip_call_faces(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             format!("+{more}"),
-            egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            egui::FontId::new(11.0, egui::FontFamily::Name("Inrond Bold".into())),
             TEXT,
         );
         label(
@@ -28179,7 +28179,7 @@ fn channel_button(
     let mut live_left = rect.right();
     if let Some(count) = extras.live {
         let text = count.to_string();
-        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
+        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Inrond Medium".into()));
         let (galley, width) = tabular_galley(ui, &text, &font, VOICE_SESSION_GREEN);
         let right = rect.right() - 8.0;
         let live = egui::Rect::from_min_max(
@@ -28217,14 +28217,14 @@ fn channel_button(
         // Your call's state and timer step aside for the menu the same way.
         let revealed = (row_hovered || response.has_focus())
             && (extras.voice.is_some() || extras.menu.is_some());
-        let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
+        let font = egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Medium".into()));
         let right = rect.right() - 8.0;
         // The name, with its unread dot and bell.
         let name = ui
             .painter()
             .layout_no_wrap(
                 name.to_owned(),
-                egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Medium".into())),
                 TEXT,
             )
             .size()
@@ -28314,7 +28314,7 @@ fn channel_button(
         } else {
             count.to_string()
         };
-        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Bold".into()));
+        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Inrond Bold".into()));
         let (galley, width) = tabular_galley(ui, &text, &font, TEXT);
         let badge = egui::Rect::from_center_size(
             egui::pos2(name_right - (width + 12.0) / 2.0, rect.center().y),
@@ -28347,9 +28347,9 @@ fn channel_button(
         13.0,
         egui::FontFamily::Name(
             if extras.direct && extras.unread {
-                "Satoshi Bold"
+                "Inrond Bold"
             } else {
-                "Satoshi Medium"
+                "Inrond Medium"
             }
             .into(),
         ),
@@ -28362,7 +28362,7 @@ fn channel_button(
             (name, name_font, color),
             (
                 suffix,
-                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Medium".into())),
                 dim(MUTED),
             ),
             true,
@@ -28467,7 +28467,7 @@ fn account_panel_row(
         } else {
             count.to_string()
         };
-        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Bold".into()));
+        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Inrond Bold".into()));
         let (galley, width) = tabular_galley(ui, &text, &font, TEXT);
         let badge = egui::Rect::from_center_size(
             egui::pos2(name_right - (width + 12.0) / 2.0, rect.center().y),
@@ -28484,7 +28484,7 @@ fn account_panel_row(
         );
         name_right = badge.left() - 8.0;
     }
-    let font = egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into()));
+    let font = egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Medium".into()));
     let galley = truncated_galley(ui, name, font, color, name_right - rect.left() - 30.0);
     ui.painter().galley(
         egui::pos2(
@@ -28859,7 +28859,7 @@ fn feedback_row(
                             egui::TextFormat::simple(
                                 egui::FontId::new(
                                     11.0,
-                                    egui::FontFamily::Name("Satoshi Medium".into()),
+                                    egui::FontFamily::Name("Inrond Medium".into()),
                                 ),
                                 if waiting { TERRACOTTA_BRIGHT } else { MUTED },
                             ),
@@ -30995,7 +30995,7 @@ fn file_card(
         rect.min + egui::vec2(44.0, 9.0),
         line(
             attachment.name.clone(),
-            egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
             TEXT,
         ),
         TEXT,
@@ -31184,7 +31184,7 @@ const QUOTE_INDENT: f32 = 15.0;
 /// decorations take the text's color.
 fn apply_style(format: &mut egui::TextFormat, style: i32) {
     if style & formatting::BOLD != 0 {
-        format.font_id.family = egui::FontFamily::Name("Satoshi Bold".into());
+        format.font_id.family = egui::FontFamily::Name("Inrond Bold".into());
     }
     format.italics |= style & formatting::ITALIC != 0;
     if style & formatting::UNDERLINE != 0 {
@@ -31585,7 +31585,7 @@ fn rich_text_rows(
     let pill = |hot: bool| egui::TextFormat {
         font_id: egui::FontId::new(
             plain.font_id.size,
-            egui::FontFamily::Name("Satoshi Medium".into()),
+            egui::FontFamily::Name("Inrond Medium".into()),
         ),
         color: TEXT,
         background: TERRACOTTA.gamma_multiply(if hot { 0.32 } else { 0.24 }),
@@ -32107,7 +32107,7 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::R
         &count,
         0.0,
         egui::TextFormat::simple(
-            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            egui::FontId::new(12.0, egui::FontFamily::Name("Inrond Bold".into())),
             TERRACOTTA_BRIGHT,
         ),
     );
@@ -32975,17 +32975,17 @@ fn configure(context: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     for (name, bytes) in [
         (
-            "Satoshi Regular",
-            include_bytes!("../../../../shared/fonts/cache/Satoshi-Regular.otf").as_slice(),
+            "Inrond Regular",
+            include_bytes!("../../../../shared/fonts/Inrond40-Regular.ttf").as_slice(),
         ),
         (
-            "Satoshi Medium",
-            include_bytes!("../../../../shared/fonts/cache/Satoshi-Medium.otf").as_slice(),
+            "Inrond Medium",
+            include_bytes!("../../../../shared/fonts/Inrond40-Medium.ttf").as_slice(),
         ),
-        ("Satoshi Bold", attachment_edit::SATOSHI_BOLD),
+        ("Inrond Bold", attachment_edit::INROND_BOLD),
         (
-            "Satoshi Black",
-            include_bytes!("../../../../shared/fonts/cache/Satoshi-Black.otf").as_slice(),
+            "Inrond Black",
+            include_bytes!("../../../../shared/fonts/Inrond40-Black.ttf").as_slice(),
         ),
     ] {
         fonts
@@ -32999,7 +32999,7 @@ fn configure(context: &egui::Context) {
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
-        .insert(0, "Satoshi Regular".into());
+        .insert(0, "Inrond Regular".into());
     context.set_fonts(fonts);
 
     let mut style = (*context.global_style()).clone();
@@ -33064,11 +33064,11 @@ impl egui::theme::StyleProvider<egui::widget_style::TextEditStyle> for TextField
 }
 
 fn bold(text: impl Into<String>) -> RichText {
-    RichText::new(text).family(egui::FontFamily::Name("Satoshi Bold".into()))
+    RichText::new(text).family(egui::FontFamily::Name("Inrond Bold".into()))
 }
 
 fn black(text: impl Into<String>) -> RichText {
-    RichText::new(text).family(egui::FontFamily::Name("Satoshi Black".into()))
+    RichText::new(text).family(egui::FontFamily::Name("Inrond Black".into()))
 }
 
 /// Web's shared sign-in/profile primary: `login_action` at the end of the
@@ -33084,7 +33084,7 @@ fn compact_login_action(
         .painter()
         .layout_no_wrap(
             idle.into(),
-            egui::FontId::new(16.0, egui::FontFamily::Name("Satoshi Medium".into())),
+            egui::FontId::new(16.0, egui::FontFamily::Name("Inrond Medium".into())),
             TEXT,
         )
         .size()
@@ -33130,7 +33130,7 @@ fn login_action(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response
         egui::pos2(rect.left() + 21.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         text,
-        egui::FontId::new(16.0, egui::FontFamily::Name("Satoshi Medium".into())),
+        egui::FontId::new(16.0, egui::FontFamily::Name("Inrond Medium".into())),
         label,
     );
     let center = egui::pos2(rect.right() - 22.0, rect.center().y);
@@ -33168,7 +33168,7 @@ fn volume_slider(ui: &mut egui::Ui, name: &str, value: &mut u16) -> bool {
                 tabular_label(
                     ui,
                     &format!("{value}%"),
-                    egui::FontId::new(12.8, egui::FontFamily::Name("Satoshi Bold".into())),
+                    egui::FontId::new(12.8, egui::FontFamily::Name("Inrond Bold".into())),
                     MUTED,
                 );
             });
@@ -33490,7 +33490,7 @@ fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Respons
     )
 }
 
-/// Satoshi has no tabular figures: lay `text` out with every digit in a cell
+/// egui can't turn on Inrond's tabular figures: lay `text` out with every digit in a cell
 /// as wide as the widest digit, so a running timer or a dragged percentage
 /// keeps its width (web's `font-variant-numeric: tabular-nums`). Returns the
 /// galley and the width to reserve for it.
@@ -33559,7 +33559,7 @@ fn history_row<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -
 }
 
 fn history_button_font() -> egui::FontId {
-    egui::FontId::new(11.52, egui::FontFamily::Name("Satoshi Bold".into()))
+    egui::FontId::new(11.52, egui::FontFamily::Name("Inrond Bold".into()))
 }
 
 /// Web's quiet bordered history button.
@@ -33775,7 +33775,7 @@ fn typing_dots(ui: &mut egui::Ui) {
 fn navigation_toggle(ui: &mut egui::Ui, icon: NavIcon, text: &str) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(
         text.into(),
-        egui::FontId::new(11.2, egui::FontFamily::Name("Satoshi Bold".into())),
+        egui::FontId::new(11.2, egui::FontFamily::Name("Inrond Bold".into())),
         MUTED,
     );
     let size = egui::vec2(9.0 + 15.0 + 6.0 + galley.size().x + 9.0, 34.0);
@@ -37883,9 +37883,9 @@ mod tests {
                 font,
                 &egui::FontFamily::Name(
                     if unread {
-                        "Satoshi Bold"
+                        "Inrond Bold"
                     } else {
-                        "Satoshi Medium"
+                        "Inrond Medium"
                     }
                     .into()
                 )
@@ -39559,7 +39559,7 @@ mod tests {
             egui::epaint::Shape::Text(text) if text.galley.job.text == "Join #design to interact with people here"
                 && text.galley.job.sections.iter().any(|section|
                     &text.galley.job.text[section.byte_range.start.0..section.byte_range.end.0] == "#design"
-                        && section.format.font_id.family == egui::FontFamily::Name("Satoshi Bold".into())
+                        && section.format.font_id.family == egui::FontFamily::Name("Inrond Bold".into())
                 )
         )), "preview channel name must be bold");
         assert!(
@@ -48752,7 +48752,7 @@ mod tests {
                             && section.format.background == TERRACOTTA.gamma_multiply(0.24)
                             && section.format.color == TEXT
                             && section.format.font_id.family
-                                == egui::FontFamily::Name("Satoshi Medium".into())))
+                                == egui::FontFamily::Name("Inrond Medium".into())))
             })
         };
         assert!(pill("@everyone from me", "@everyone"));
@@ -48916,7 +48916,7 @@ mod tests {
                     assert!(galley.job.sections.iter().any(|section| {
                         section.format.italics
                             && section.format.font_id.family
-                                == egui::FontFamily::Name("Satoshi Bold".into())
+                                == egui::FontFamily::Name("Inrond Bold".into())
                             && galley.job.text[section.byte_range.start.0..section.byte_range.end.0]
                                 .contains('🙂')
                     }));
@@ -49019,7 +49019,7 @@ mod tests {
                                 assert_eq!(sections.len(), 2);
                                 assert_eq!(
                                     sections[0].format.font_id.family,
-                                    egui::FontFamily::Name("Satoshi Bold".into())
+                                    egui::FontFamily::Name("Inrond Bold".into())
                                 );
                                 assert_eq!(
                                     sections[1].format.font_id.family,

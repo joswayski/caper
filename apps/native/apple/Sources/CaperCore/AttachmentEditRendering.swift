@@ -9,11 +9,11 @@ import UniformTypeIdentifiers
 /// the upload, the composer thumbnail, a video's overlay and the editor's
 /// stage (docs/media.md, "Editing attachments before sending"): the upright
 /// original turned by the rotation, the marks painted in the rotated image's
-/// space (round-capped strokes, upright Satoshi Bold text), then the crop.
+/// space (round-capped strokes, upright Inrond Bold text), then the crop.
 enum AttachmentEditRenderer {
     /// Registered by `CaperFontLoader`; CoreText falls back to the system font
     /// where it is missing (unit tests).
-    static let fontName = "Satoshi-Bold" as CFString
+    static let fontName = "Inrond40-Bold" as CFString
 
     /// The edited `region` (pixels of the rotated image) of the upright
     /// `source` of `width` × `height` pixels, scaled to `outputWidth` ×

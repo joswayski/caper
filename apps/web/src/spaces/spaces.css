@@ -1436,7 +1436,7 @@ html[data-resizing-sections] * {
   font-size: clamp(2.2rem, 7vw, 3.1rem);
   font-weight: 700;
   line-height: 1.08;
-  letter-spacing: -0.055em;
+  letter-spacing: -0.025em;
 }
 /* These pages sit outside .call-page and its focus ring. */
 .spaces-empty :focus-visible {

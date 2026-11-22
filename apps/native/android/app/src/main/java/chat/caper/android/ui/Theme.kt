@@ -55,11 +55,11 @@ val Idle = Color(0xFFC58B3C)
 val Danger = Color(0xFFB93646)
 val ErrorText = Color(0xFFFF9B82)
 private val ControlShape = RoundedCornerShape(8.dp)
-private val Satoshi = FontFamily(
-    Font(R.font.satoshi_regular, FontWeight.Normal),
-    Font(R.font.satoshi_medium, FontWeight.Medium),
-    Font(R.font.satoshi_bold, FontWeight.Bold),
-    Font(R.font.satoshi_black, FontWeight.Black),
+private val Inrond = FontFamily(
+    Font(R.font.inrond40_regular, FontWeight.Normal),
+    Font(R.font.inrond40_medium, FontWeight.Medium),
+    Font(R.font.inrond40_bold, FontWeight.Bold),
+    Font(R.font.inrond40_black, FontWeight.Black),
 )
 
 @Composable fun CaperTheme(content: @Composable () -> Unit) {
@@ -105,11 +105,11 @@ private val Satoshi = FontFamily(
         ),
         typography = Typography().run {
             copy(
-                displayLarge = displayLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), displayMedium = displayMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), displaySmall = displaySmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
-                headlineLarge = headlineLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), headlineMedium = headlineMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), headlineSmall = headlineSmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
-                titleLarge = titleLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), titleMedium = titleMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), titleSmall = titleSmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
-                bodyLarge = bodyLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), bodyMedium = bodyMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), bodySmall = bodySmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
-                labelLarge = labelLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), labelMedium = labelMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), labelSmall = labelSmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
+                displayLarge = displayLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), displayMedium = displayMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), displaySmall = displaySmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
+                headlineLarge = headlineLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), headlineMedium = headlineMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), headlineSmall = headlineSmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
+                titleLarge = titleLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), titleMedium = titleMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), titleSmall = titleSmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
+                bodyLarge = bodyLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), bodyMedium = bodyMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), bodySmall = bodySmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
+                labelLarge = labelLarge.copy(fontFamily = Inrond, letterSpacing = 0.sp), labelMedium = labelMedium.copy(fontFamily = Inrond, letterSpacing = 0.sp), labelSmall = labelSmall.copy(fontFamily = Inrond, letterSpacing = 0.sp),
             )
         },
         content = content,

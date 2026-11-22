@@ -173,8 +173,7 @@ jobs:
           CC: clang-21
           CXX: clang++-21
         run: |
-          # The client embeds Satoshi, and caper-client links the pinned libwebrtc.
-          python3 scripts/native_fonts.py
+          # caper-client links the pinned libwebrtc.
           export LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)"
           manifest=apps/native/desktop/Cargo.toml
           cargo fmt --manifest-path "$manifest" --package caper-linux -- --check
@@ -244,10 +243,8 @@ jobs:
         shell: pwsh
         working-directory: apps/native/desktop
         run: |
-          # The compile-time inputs build.ps1 also prepares: Satoshi, which
-          # the client embeds, and libwebrtc, which caper-client links.
-          python ../../../scripts/native_fonts.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The compile-time input build.ps1 also prepares: libwebrtc, which
+          # caper-client links.
           $env:LK_CUSTOM_WEBRTC = python voice-spike/fetch_libwebrtc.py --platform windows
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:RUSTFLAGS = "-C target-feature=+crt-static"

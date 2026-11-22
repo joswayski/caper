@@ -2,11 +2,11 @@
 
 These owner-supplied references describe the intended brand, not implemented product features.
 
-- [Identity and style guide](identity.png): wordmark, character, colors, Satoshi type, and controls.
+- [Identity and style guide](identity.png): wordmark, character, colors, type (shown in Satoshi; the apps now use Inrond 40), and controls.
 - [Conversation layout](conversation.png): neutral chrome, channel selection, conversation and thread hierarchy.
 - [Call layout](call.png): screen-sharing stage, participant strip, and restrained call controls.
 
-Canonical colors: blackout `#0C0D0F`, surface `#151719`, border `#34383B`, text `#F3F4F5`, eggshell action `#F1EDE4`, terracotta `#B64D32`, caper green `#637A43`. Use `shared/design.css` tokens. Prefer 8px control corners, subtle borders, and Satoshi regular/medium/bold. Green for the character; eggshell for primary actions (blackout labels); terracotta for selection, focus and mentions. Motion is short and decelerating (`--motion-*`, `--ease-out` in `shared/design.css`); nothing teleports, and reduced-motion settings turn it off. The examples are design references, not image assets to slice into a working UI.
+Canonical colors: blackout `#0C0D0F`, surface `#151719`, border `#34383B`, text `#F3F4F5`, eggshell action `#F1EDE4`, terracotta `#B64D32`, caper green `#637A43`. Use `shared/design.css` tokens. Prefer 8px control corners, subtle borders, and Inrond 40 (rounded Inter) regular/medium/bold. Green for the character; eggshell for primary actions (blackout labels); terracotta for selection, focus and mentions. Motion is short and decelerating (`--motion-*`, `--ease-out` in `shared/design.css`); nothing teleports, and reduced-motion settings turn it off. The examples are design references, not image assets to slice into a working UI.
 
 Thread unread indicators use the existing gold `#E4C76A` (`--pin-gold`) for both the dot and label, distinct from the terracotta reply count. This does not change channel or DM unread colors.
 

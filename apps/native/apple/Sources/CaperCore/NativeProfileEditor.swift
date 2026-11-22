@@ -242,7 +242,7 @@ struct NativeProfileForm: UIViewControllerRepresentable {
         let pictures = UIStackView(arrangedSubviews: [art, controls]); pictures.spacing = 12; pictures.alignment = .center
         for (field, label) in [(username, "Username"), (displayName, "Display name")] {
             field.borderStyle = .roundedRect; field.delegate = self; field.accessibilityLabel = label
-            field.font = UIFont(name: "Satoshi-Regular", size: 14); field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            field.font = UIFont(name: "Inrond40-Regular", size: 14); field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
             field.addTarget(self, action: #selector(changed), for: .editingChanged)
         }
         username.autocapitalizationType = .none; username.autocorrectionType = .no; username.returnKeyType = .next; displayName.returnKeyType = .done

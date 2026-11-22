@@ -330,7 +330,7 @@ pub fn paint(
             };
             let title = centered(
                 title,
-                egui::FontId::new(18.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                egui::FontId::new(18.0, egui::FontFamily::Name("Inrond Bold".into())),
                 crate::TEXT,
             );
             let detail = centered(detail, egui::FontId::proportional(13.0), crate::MUTED);

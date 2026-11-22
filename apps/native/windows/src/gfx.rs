@@ -1,5 +1,5 @@
 //! Devices and shared drawing resources: a D3D11 device shared by Direct2D
-//! and DirectComposition, DirectWrite with Satoshi in an in-memory font
+//! and DirectComposition, DirectWrite with Inrond 40 in an in-memory font
 //! collection, WIC for images, and the theme's brushes and text formats.
 use crate::theme;
 use windows::Win32::Foundation::*;
@@ -157,12 +157,12 @@ pub struct Gfx {
     solids: std::cell::RefCell<std::collections::HashMap<u32, ID2D1SolidColorBrush>>,
 }
 
-/// Satoshi, embedded unchanged (see shared/fonts/README.md).
-const SATOSHI: [&[u8]; 4] = [
-    include_bytes!("../../../../shared/fonts/cache/Satoshi-Regular.otf"),
-    include_bytes!("../../../../shared/fonts/cache/Satoshi-Medium.otf"),
-    include_bytes!("../../../../shared/fonts/cache/Satoshi-Bold.otf"),
-    include_bytes!("../../../../shared/fonts/cache/Satoshi-Black.otf"),
+/// Inrond 40, the app font (see shared/fonts/README.md).
+const INROND: [&[u8]; 4] = [
+    include_bytes!("../../../../shared/fonts/Inrond40-Regular.ttf"),
+    include_bytes!("../../../../shared/fonts/Inrond40-Medium.ttf"),
+    include_bytes!("../../../../shared/fonts/Inrond40-Bold.ttf"),
+    include_bytes!("../../../../shared/fonts/Inrond40-Black.ttf"),
 ];
 
 /// The web app's wordmark, drawn with Direct2D's SVG renderer.
@@ -198,7 +198,7 @@ impl Gfx {
             let loader = dwrite.CreateInMemoryFontFileLoader()?;
             dwrite.RegisterFontFileLoader(&loader)?;
             let builder = dwrite.CreateFontSetBuilder()?;
-            for data in SATOSHI {
+            for data in INROND {
                 let file = loader.CreateInMemoryFontFileReference(
                     &dwrite,
                     data.as_ptr().cast(),
@@ -243,7 +243,7 @@ impl Gfx {
             };
             let fmt = |size: f32, weight: DWRITE_FONT_WEIGHT| {
                 dwrite.CreateTextFormat(
-                    w!("Satoshi"),
+                    w!("Inrond 40"),
                     &fonts,
                     weight,
                     DWRITE_FONT_STYLE_NORMAL,
@@ -285,7 +285,7 @@ impl Gfx {
                 edited: fmt(10.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 quote: fmt(12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 quote_deleted: dwrite.CreateTextFormat(
-                    w!("Satoshi"),
+                    w!("Inrond 40"),
                     &fonts,
                     DWRITE_FONT_WEIGHT_NORMAL,
                     DWRITE_FONT_STYLE_ITALIC,

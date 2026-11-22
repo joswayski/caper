@@ -45,7 +45,7 @@
   --motion-slow: 260ms;
   /* Avatars are squircles: rounded squares that match the 8px control corners. */
   --radius-avatar: 30%;
-  font-family: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;
+  font-family: "Inrond 40", Inter, system-ui, "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--blackout);
   color-scheme: dark;

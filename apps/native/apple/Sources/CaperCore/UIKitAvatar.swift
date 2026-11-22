@@ -17,7 +17,7 @@ import UIKit
         clipsToBounds = true; backgroundColor = UIColor(CaperTheme.raised)
         imageView.contentMode = .scaleAspectFit
         imageView.frame = CGRect(x: 0, y: 0, width: side, height: side)
-        initial.font = UIFont(name: "Satoshi-Black", size: side * 0.36) ?? .systemFont(ofSize: side * 0.36)
+        initial.font = UIFont(name: "Inrond40-Black", size: side * 0.36) ?? .systemFont(ofSize: side * 0.36)
         initial.textColor = UIColor(CaperTheme.text); initial.textAlignment = .center
         initial.frame = imageView.frame
         addSubview(imageView); addSubview(initial)

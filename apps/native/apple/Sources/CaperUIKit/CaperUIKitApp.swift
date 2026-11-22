@@ -10,7 +10,7 @@ final class CaperUIKitAppDelegate: UIResponder, UIApplicationDelegate {
     static let push = PushNotifications()
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Satoshi is registered by UIAppFonts before launch; nothing to load here.
+        // Inrond is registered by UIAppFonts before launch; nothing to load here.
         Self.push.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
 

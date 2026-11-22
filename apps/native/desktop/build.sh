@@ -48,7 +48,6 @@ python3 -m zipfile -e "$ffmpeg_archive" "$ffmpeg_dir"
 chmod 0755 "$ffmpeg_dir/ffmpeg"
 "$ffmpeg_dir/ffmpeg" -hide_banner -version | sed -n 1p
 
-python3 "$root/scripts/native_fonts.py"
 # Linux ships the GTK 4 client (apps/native/linux, package caper-linux) under
 # the egui client's name and layout (caper-desktop), so installs, the
 # updater, launchers and launch at login carry over. Windows still builds
@@ -87,7 +86,7 @@ install -m 0755 "$CARGO_TARGET_DIR/release/caper-linux" "$package_dir/Caper-linu
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$package_dir/Caper-linux-x64/caper-updater"
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-web-player" "$package_dir/Caper-linux-x64/caper-web-player"
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$package_dir/Caper-linux-x64/"
-install -m 0644 "$root/shared/fonts/cache/Satoshi-FFL.txt" "$package_dir/Caper-linux-x64/"
+install -m 0644 "$root/shared/fonts/OFL.txt" "$package_dir/Caper-linux-x64/Inrond-OFL.txt"
 install -m 0644 "$native/voice-spike/licenses/"* "$package_dir/Caper-linux-x64/"
 for notice in "$root/shared/emoji/"*.txt; do
   install -m 0644 "$notice" "$package_dir/Caper-linux-x64/EMOJI-$(basename "$notice")"
@@ -117,7 +116,7 @@ install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0" "$d
 install -m 0644 "$native/resources/caper.desktop" "$deb/usr/share/applications/caper.desktop"
 install -m 0644 "$native/resources/caper.svg" "$deb/usr/share/icons/hicolor/scalable/apps/caper.svg"
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$deb/usr/share/doc/caper-desktop/"
-install -m 0644 "$root/shared/fonts/cache/Satoshi-FFL.txt" "$deb/usr/share/doc/caper-desktop/"
+install -m 0644 "$root/shared/fonts/OFL.txt" "$deb/usr/share/doc/caper-desktop/Inrond-OFL.txt"
 install -m 0644 "$native/voice-spike/licenses/"* "$deb/usr/share/doc/caper-desktop/"
 for notice in "$root/shared/emoji/"*.txt; do
   install -m 0644 "$notice" "$deb/usr/share/doc/caper-desktop/EMOJI-$(basename "$notice")"

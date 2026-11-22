@@ -19,8 +19,8 @@ import java.io.FileOutputStream
 internal object EditPainter {
     @Volatile private var bold: Typeface? = null
 
-    /** The app's bundled Satoshi Bold, which text marks use everywhere. */
-    fun typeface(context: Context): Typeface = bold ?: (runCatching { context.resources.getFont(R.font.satoshi_bold) }.getOrNull()
+    /** The app's bundled Inrond 40 Bold, which text marks use everywhere. */
+    fun typeface(context: Context): Typeface = bold ?: (runCatching { context.resources.getFont(R.font.inrond40_bold) }.getOrNull()
         ?: Typeface.DEFAULT_BOLD).also { bold = it }
 
     /**
@@ -43,7 +43,7 @@ internal object EditPainter {
         canvas.restore()
     }
 
-    /** Text paint for a mark: Satoshi Bold at [pixels], centred horizontally on its anchor. */
+    /** Text paint for a mark: Inrond 40 Bold at [pixels], centred horizontally on its anchor. */
     fun textPaint(typeface: Typeface, pixels: Float, color: Int): Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         this.typeface = typeface
         textSize = pixels

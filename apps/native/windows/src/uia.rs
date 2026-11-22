@@ -3124,7 +3124,7 @@ impl ITextRangeProvider_Impl for TextRange_Impl {
     fn GetAttributeValue(&self, id: UIA_TEXTATTRIBUTE_ID) -> Result<VARIANT> {
         Ok(match id {
             UIA_IsReadOnlyAttributeId => VARIANT::from(matches!(self.doc, Doc::Row(_))),
-            UIA_FontNameAttributeId => VARIANT::from(BSTR::from("Satoshi")),
+            UIA_FontNameAttributeId => VARIANT::from(BSTR::from("Inrond 40")),
             UIA_FontSizeAttributeId => VARIANT::from(11.25f64),
             _ => VARIANT::from(unsafe { UiaGetReservedNotSupportedValue()? }),
         })

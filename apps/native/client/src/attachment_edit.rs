@@ -7,7 +7,7 @@
 //! through `shared/messages/edit-cases.json`.
 //!
 //! Marks are painted with tiny-skia (round caps and joins, anti-aliased) and
-//! text with the app's own Satoshi Bold outlines, so the exported pixels follow
+//! text with the app's own Inrond 40 Bold outlines, so the exported pixels follow
 //! the same rules as the editor's preview.
 
 use image::DynamicImage;
@@ -48,8 +48,8 @@ pub const COLOR_NAMES: [&str; 6] = ["Red", "Yellow", "Green", "Blue", "White", "
 pub const STROKE_SIZES: (f32, f32, f32) = (2.0, 40.0, 6.0);
 pub const TEXT_SIZES: (f32, f32, f32) = (14.0, 96.0, 32.0);
 pub const MAX_TEXT: usize = 200;
-/// The app's Satoshi Bold, for text marks here and in the editor.
-pub const SATOSHI_BOLD: &[u8] = include_bytes!("../../../../shared/fonts/cache/Satoshi-Bold.otf");
+/// The app's Inrond 40 Bold, for text marks here and in the editor.
+pub const INROND_BOLD: &[u8] = include_bytes!("../../../../shared/fonts/Inrond40-Bold.ttf");
 
 const EPSILON: f64 = 1e-6;
 /// How much of a file is read to tell whether it can be edited.
@@ -710,7 +710,7 @@ fn paint_marks(
 fn font() -> Option<&'static ab_glyph::FontRef<'static>> {
     static FONT: std::sync::OnceLock<Option<ab_glyph::FontRef<'static>>> =
         std::sync::OnceLock::new();
-    FONT.get_or_init(|| ab_glyph::FontRef::try_from_slice(SATOSHI_BOLD).ok())
+    FONT.get_or_init(|| ab_glyph::FontRef::try_from_slice(INROND_BOLD).ok())
         .as_ref()
 }
 
@@ -762,7 +762,7 @@ pub fn text_metrics(text: &str, pixels: f32) -> Option<TextMetrics> {
     layout(text, pixels).map(|(_, metrics)| metrics)
 }
 
-/// The outline of one line of Satoshi Bold text centred on `x`, `y`.
+/// The outline of one line of Inrond 40 Bold text centred on `x`, `y`.
 fn text_path(text: &str, pixels: f32, x: f32, y: f32) -> Option<tiny_skia::Path> {
     use ab_glyph::{Font, OutlineCurve};
     if text.is_empty() || pixels <= 0.0 {
@@ -1330,7 +1330,7 @@ mod tests {
                 .filter(|&(x, y)| painted.get_pixel(x, y).0[0] < 40)
                 .count()
         };
-        // 40 pixel Satoshi Bold around the centre, nothing far away.
+        // 40 pixel Inrond 40 Bold around the centre, nothing far away.
         assert!(dark(80, 120, 35, 65) > 150, "text darkens its centre");
         assert_eq!(dark(0, 60, 0, 100) + dark(140, 200, 0, 100), 0);
         let metrics = text_metrics("Hi", 40.0).unwrap();

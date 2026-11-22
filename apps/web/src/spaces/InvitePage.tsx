@@ -41,7 +41,7 @@ export default function InvitePage({ code, state: loadedState }: { code: string;
         <Wordmark />
         {(state.status === "invalid" || state.status === "unavailable") && (
           <>
-            <h1 className="mt-14 mb-4 text-[clamp(2rem,6vw,2.6rem)] leading-[1.1] font-bold tracking-[-.05em]">
+            <h1 className="mt-14 mb-4 text-[clamp(2rem,6vw,2.6rem)] leading-[1.1] font-bold tracking-[-.025em]">
               {state.status === "invalid" ? "This invite link is invalid or has expired." : "Invites are unavailable."}
             </h1>
             <p className="leading-[1.65] text-content-muted">
@@ -67,7 +67,7 @@ export default function InvitePage({ code, state: loadedState }: { code: string;
                 <SpaceIcon space={state.preview.space} />
               </span>
             )}
-            <h1 className="my-4 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] wrap-anywhere">
+            <h1 className="my-4 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.025em] wrap-anywhere">
               {state.preview.space.name}
             </h1>
             <div className="flex items-center gap-2 text-content-muted">

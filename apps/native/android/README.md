@@ -35,11 +35,11 @@ The checked-in wrapper pins Gradle 9.1.0 and verifies the official distribution 
 
 The build:
 
-1. runs `scripts/native_fonts.py`, which downloads and verifies the official, unmodified Satoshi Regular/Medium/Bold/Black OTF files and Fontshare license;
+1. copies the committed Inrond 40 Regular/Medium/Bold/Black TTFs and their SIL OFL license from [`shared/fonts`](../../../shared/fonts/README.md);
 2. validates the checked-in DPDFNet-8 HR model and downloads SHA-256-pinned ONNX Runtime 1.23.2 Android and RNNoise source/model archives for native microphone processing;
 3. runs `prepare-avif.sh`, which builds the AVIF photo encoder from pinned libaom 3.15.1 (SHA-256) and libavif 1.4.2 (commit) sources (BSD-2-Clause; notices in `third_party/`);
 4. builds `libcaper_mobile.so`, the shared Rust logic in [`../mobile`](../mobile/README.md), with cargo-ndk for every ABI (and once for this machine, for the unit tests);
-5. runs JVM unit tests, Android lint, and `assembleDebug`, asserts that the Satoshi and WebRTC notices are packaged, and writes `apps/native/android/dist/Caper-android-debug.apk` (debug-signed, for development only).
+5. runs JVM unit tests, Android lint, and `assembleDebug`, asserts that the Inrond and WebRTC notices are packaged, and writes `apps/native/android/dist/Caper-android-debug.apk` (debug-signed, for development only).
 
 Neither model nor native code is fetched at runtime. Generated inputs are ignored.
 

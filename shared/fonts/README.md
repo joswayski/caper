@@ -1,50 +1,23 @@
-# Native Satoshi fonts
+# Inrond 40
 
-Caper's native clients use the same Satoshi family as the web client. The font
-binaries are not stored in this repository because the ITF Free Font License
-does not permit standalone redistribution through repositories.
+Every Caper client uses Inrond 40: [Inrond](https://github.com/Hairline-UI/inrond)
+1.0, a rounded Inter with a roundness axis, frozen at `ROND 40`. It keeps
+Inter's widths, kerning, features, Cyrillic/Greek/Vietnamese coverage and drawn
+italic. It is licensed under the SIL Open Font License 1.1 ([OFL.txt](OFL.txt)),
+which allows committing, modifying and bundling it; ship `OFL.txt` with any
+application that embeds the fonts.
 
-Acquire the official, unmodified OTF files with:
+| File | Used by |
+| --- | --- |
+| `Inrond40-Regular.ttf`, `-Medium`, `-Bold`, `-Black` | Native clients: static weights 400/500/700/900 at the text optical size (14). Families are named `Inrond 40` (Medium and Black also carry the legacy families `Inrond 40 Medium`/`Inrond 40 Black`); PostScript names match the file names. |
+| `apps/web/public/fonts/inrond-40/` | Web: woff2 unicode-range subsets, roman and italic, still variable in weight (100-900) and optical size. |
+| `apps/web/src/fonts.css` | Web: the generated `@font-face` rules for those subsets. |
 
-```sh
-python3 scripts/native_fonts.py
-```
-
-This downloads the official Fontshare family package into the ignored
-`shared/fonts/cache/` directory and verifies pinned SHA-256 hashes of all four
-font files and the accompanying license before caching or extracting them.
-Running the command downloads licensed font software
-and constitutes acceptance of the license.
-
-Official download: `https://api.fontshare.com/v2/fonts/download/satoshi`
-
-Fontshare's `Satoshi_Complete.zip` container varies across downloads/regions.
-The build pins the embedded resources, not the ZIP's packaging metadata.
-Downloads are bounded to 8 MiB and each extracted member to 1 MiB. Unused ZIP
-members are never extracted. Altered fonts or license terms fail closed.
-
-| Cached resource | Weight | PostScript name | SHA-256 |
-| --- | ---: | --- | --- |
-| `Satoshi-Regular.otf` | 400 | `Satoshi-Regular` | `711c6243cdc5431f9cc966e4de18bfb940365bad81acffd1e7948dbe3f254386` |
-| `Satoshi-Medium.otf` | 500 | `Satoshi-Medium` | `93330866d109f6b2e298748958ec6fa4010cacef586783f281a0b268cab7fc6e` |
-| `Satoshi-Bold.otf` | 700 | `Satoshi-Bold` | `50e4f9b7c1864c50761d729d6001bfac708c80457fa6fc41559a8ab1bd2573ff` |
-| `Satoshi-Black.otf` | 900 | `Satoshi-Black` | `49bdb8b9436b8b9192f6f14b7ce4b96d1a3822e13c504c00c0b2842357d265cc` |
-
-Source: [Satoshi on Fontshare](https://www.fontshare.com/fonts/satoshi),
-designed by Indian Type Foundry. The package contains
-`Satoshi_Complete/License/FFL.txt`, ITF Free Font License version 2.0,
-17 Aug 2026. The license permits embedding in mobile and desktop applications.
-It prohibits modifying, subsetting, or converting the fonts and prohibits
-redistributing the standalone font software. Platform builds must copy these
-files unchanged into application resources and must not publish the cache or
-the font files as separate artifacts. The helper also extracts the unchanged
-license as `shared/fonts/cache/Satoshi-FFL.txt`; bundle it with the application.
-Its SHA-256 is `145e7fe2429a3336ba215c070ef722000e01348a3e1baaa127e871bb5012f554`.
-See the
-[current license page](https://www.fontshare.com/licenses/itf-ffl).
-
-Run the focused integrity/refusal tests with:
+All of these are generated from the SHA-256-pinned upstream release by:
 
 ```sh
-python3 shared/fonts/test_native_fonts.py -v
+uv run --locked --group fonts python scripts/build_fonts.py
 ```
+
+Rerun it only to change the release or the roundness (`ROUNDNESS` in the
+script), and commit every output together.

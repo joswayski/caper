@@ -186,7 +186,7 @@ extension UIKitMessageDialog {
     }
     static func workspaceField(_ placeholder: String, label: String) -> UITextField {
         let field = UITextField(); field.placeholder = placeholder; field.accessibilityLabel = label; field.borderStyle = .roundedRect
-        field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Satoshi-Regular", size: 14) ?? .systemFont(ofSize: 14)); field.adjustsFontForContentSizeCategory = true
+        field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Inrond40-Regular", size: 14) ?? .systemFont(ofSize: 14)); field.adjustsFontForContentSizeCategory = true
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true; return field
     }
     static func workspaceMember(_ member: Member, action: String?, enabled: Bool, perform: @escaping () -> Void) -> UIView {

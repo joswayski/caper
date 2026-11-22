@@ -1819,7 +1819,7 @@ fn paint(session: &mut Session, cr: &cairo::Context, width: f64, height: f64) {
         };
         cr.set_source_rgb(0.725, 0.737, 0.745);
         cr.select_font_face(
-            "Satoshi",
+            "Inrond 40",
             cairo::FontSlant::Normal,
             cairo::FontWeight::Normal,
         );

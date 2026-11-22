@@ -20,7 +20,7 @@ import UIKit
     init(identifier: String, listIdentifier: String, normalize: @escaping (String) -> String) {
         self.normalize = normalize; super.init(frame: .zero); axis = .vertical; spacing = 6
         field.placeholder = "Exact username"; field.accessibilityLabel = "Exact username"; field.accessibilityIdentifier = identifier
-        field.font = UIFont(name: "Satoshi-Regular", size: 14); field.borderStyle = .roundedRect
+        field.font = UIFont(name: "Inrond40-Regular", size: 14); field.borderStyle = .roundedRect
         field.autocapitalizationType = .none; field.autocorrectionType = .no; field.delegate = self
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         field.addAction(UIAction { [weak self] _ in self?.edited() }, for: .editingChanged)
@@ -68,10 +68,10 @@ import UIKit
             config.titleAlignment = .leading; config.baseForegroundColor = UIColor(CaperTheme.text)
             config.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 48, bottom: 7, trailing: 8)
             config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { value in
-                var value = value; value.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Satoshi-Medium", size: 12) ?? .systemFont(ofSize: 12)); return value
+                var value = value; value.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Inrond40-Medium", size: 12) ?? .systemFont(ofSize: 12)); return value
             }
             config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { value in
-                var value = value; value.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: UIFont(name: "Satoshi-Regular", size: 11) ?? .systemFont(ofSize: 11)); return value
+                var value = value; value.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: UIFont(name: "Inrond40-Regular", size: 11) ?? .systemFont(ofSize: 11)); return value
             }
             let button = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in self?.pick(candidate) })
             let avatar = UIKitAvatar(side: 30); avatar.show(name: candidate.displayName, avatarID: candidate.avatarId, picture: candidate.picture)
