@@ -59,6 +59,7 @@ val Danger = Color(0xFFC83C4E)
 val ErrorText = Color(0xFFFF9B82)
 // END GENERATED THEME TOKENS
 private val ControlShape = RoundedCornerShape(10.dp)
+val PillShape = RoundedCornerShape(999.dp)
 private val Figtree = FontFamily(
     Font(R.font.figtree_regular, FontWeight.Normal),
     Font(R.font.figtree_medium, FontWeight.Medium),

@@ -9628,7 +9628,15 @@ private struct CaperField: View {
 }
 
 private struct CaperTextFieldStyle: TextFieldStyle {
-    func _body(configuration: TextField<Self._Label>) -> some View { configuration.textFieldStyle(.plain).font(CaperTheme.font(14)).padding(.horizontal, 11).frame(height: 42).background(CaperTheme.composer).overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 8)) }
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration.textFieldStyle(.plain)
+            .font(CaperTheme.font(14))
+            .padding(.horizontal, 13)
+            .frame(height: 44)
+            .background(CaperTheme.composer)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(CaperTheme.borderSubtle))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
 }
 
 struct CaperPrimaryButton: ButtonStyle {
@@ -9637,28 +9645,49 @@ struct CaperPrimaryButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).frame(maxWidth: .infinity).frame(height: 42).modifier(PrimaryActionFill(pressed: configuration.isPressed, isFocused: isFocused)) }
 }
 
-/// Web's primary action: an eggshell fill with a blackout label that brightens on hover and
-/// deepens on press. A white hover wash would vanish on eggshell, so focus is a terracotta ring.
-/// Disabled, it steps back to neutral chrome rather than a faded fill.
+/// Web's primary action: a tactile warm chalk pill with an obsidian ink label,
+/// subtle top highlight, soft elevation, and press detent. Disabled, it steps
+/// back to neutral chrome rather than a faded fill.
 struct PrimaryActionFill: ViewModifier {
     let pressed: Bool
     var isFocused: Bool? = nil
     @Environment(\.isEnabled) private var enabled
     @Environment(\.isFocused) private var environmentFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
     private var focused: Bool { isFocused ?? environmentFocused }
     func body(content: Content) -> some View {
         content.foregroundStyle(enabled ? CaperTheme.onAction : CaperTheme.muted)
             .background(
-                !enabled ? CaperTheme.raised : pressed ? CaperTheme.actionPress : hovered ? CaperTheme.actionHover : CaperTheme.action,
+                Group {
+                    if !enabled {
+                        CaperTheme.raised
+                    } else if pressed {
+                        CaperTheme.actionPress
+                    } else if hovered {
+                        CaperTheme.actionHover
+                    } else {
+                        LinearGradient(
+                            colors: [Color(red: 250/255, green: 249/255, blue: 246/255), Color(red: 234/255, green: 232/255, blue: 225/255)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+                },
                 ignoresSafeAreaEdges: []
             )
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(Capsule())
             .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(!enabled ? CaperTheme.border : focused ? CaperTheme.terracottaBright : .clear, lineWidth: focused && enabled ? 2 : 1)
+                Capsule()
+                    .strokeBorder(
+                        !enabled ? CaperTheme.borderSubtle : focused ? CaperTheme.terracottaBright : Color.white.opacity(0.5),
+                        lineWidth: focused && enabled ? 2 : 1
+                    )
                     .allowsHitTesting(false)
             }
+            .shadow(color: enabled ? Color.black.opacity(0.32) : .clear, radius: 6, y: 2)
+            .scaleEffect(pressed && enabled && !reduceMotion ? 0.97 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: pressed)
             .focusEffectDisabled()
             .onHover { hovered = $0 }
             .modifier(ControlPointer())
@@ -9764,15 +9793,19 @@ struct CaperSecondaryButton: ButtonStyle {
     /// The button's own focus, where a focusable ancestor would otherwise ring it (see ControlHover).
     var isFocused: Bool? = nil
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(CaperTheme.font(12, weight: .medium))
-            .foregroundStyle(configuration.role == .destructive ? CaperTheme.terracottaBright : CaperTheme.text)
-            .padding(.horizontal, 12).padding(.vertical, 8)
+        configuration.label.font(CaperTheme.font(12, weight: .semibold))
+            .foregroundStyle(configuration.role == .destructive ? CaperTheme.error : CaperTheme.text)
+            .padding(.horizontal, 14).padding(.vertical, 8)
             .frame(minHeight: minHeight)
             .background(configuration.isPressed ? CaperTheme.composer : CaperTheme.raised)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-            .opacity(enabled ? 1 : 0.45).modifier(ControlHover(isFocused: isFocused))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(CaperTheme.borderSubtle))
+            .opacity(enabled ? 1 : 0.45)
+            .scaleEffect(configuration.isPressed && enabled && !reduceMotion ? 0.97 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: configuration.isPressed)
+            .modifier(ControlHover(isFocused: isFocused))
     }
 }
 

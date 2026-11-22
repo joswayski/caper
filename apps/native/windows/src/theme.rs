@@ -30,7 +30,11 @@ pub const VOICE_GREEN: u32 = 0x4ADE80;
 pub const HOVER: (u32, f32) = (0xFFFFFF, 0.06);
 // END GENERATED THEME TOKENS
 pub const SELECTION: (u32, f32) = (0x3A6EA5, 0.55);
-pub const RADIUS: f32 = 8.0;
+pub const RADIUS: f32 = 10.0;
+pub const RADIUS_CARD: f32 = 13.0;
+pub const RADIUS_COMPOSER: f32 = 15.0;
+pub const RADIUS_CANVAS: f32 = 16.0;
+pub const RADIUS_PILL: f32 = 999.0;
 
 pub const RAIL_W: f32 = 60.0;
 pub const SIDEBAR_W: f32 = 280.0;
