@@ -35,6 +35,25 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+/// A gateway socket that never opens or delivers anything until cancelled.
+private final class SilentSocket: GatewaySocket, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<GatewaySocketMessage, Error>?
+    private var cancelled = false
+    func resume() {}
+    func receive() async throws -> GatewaySocketMessage {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.lock(); defer { lock.unlock() }
+            if cancelled { continuation.resume(throwing: CancellationError()) } else { waiter = continuation }
+        }
+    }
+    func send(_ message: GatewaySocketMessage) async throws {}
+    func cancel() {
+        lock.lock(); let waiter = self.waiter; self.waiter = nil; cancelled = true; lock.unlock()
+        waiter?.resume(throwing: CancellationError())
+    }
+}
+
 private func requestBodyData(_ request: URLRequest) throws -> Data? {
     if let body = request.httpBody { return body }
     guard let stream = request.httpBodyStream else { return nil }
@@ -1138,6 +1157,92 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(sentIDs.count, 2)
         XCTAssertEqual(Set(sentIDs).count, 1, "the retry reuses the first attempt's clientMessageId")
         XCTAssertEqual(chat.messages.map(\.content.text), ["hello"])
+        await chat.stop()
+    }
+
+    @MainActor
+    func testUnconfirmedSendRetriesWhileConnectedThenWaitsForRetry() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        for succeedsOnAttempt in [3, Int.max] {
+            var sentIDs: [String] = []
+            MockURLProtocol.handler = { request in
+                switch request.url?.path {
+                case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+                case "/api/chat/channels/\(channel)/messages" where request.httpMethod == "GET":
+                    return (200, Data(#"{"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\#(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
+                case "/api/chat/channels/\(channel)/messages":
+                    let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: Any])
+                    let id = try XCTUnwrap(body["clientMessageId"] as? String)
+                    sentIDs.append(id)
+                    if sentIDs.count < succeedsOnAttempt { return (503, Data(#"{"error":"busy"}"#.utf8)) }
+                    return (200, Data(#"{"id":"m1","channelId":"\#(channel)","seq":"1","clientMessageId":"\#(id)","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"hello"},"createdAt":"2026-01-01T00:00:00Z"}"#.utf8))
+                default: throw URLError(.badURL)
+                }
+            }
+            let chat = ChatModel(api: client())
+            // A socket that never opens: the test alone says when the connection is up.
+            chat.gateway = Gateway(baseURL: URL(string: "https://caper.invalid")!, socketFactory: { _ in SilentSocket() }, token: { nil }) { _, _ in }
+            chat.autoRetryDelays = [.milliseconds(30), .milliseconds(60), .milliseconds(90)]
+            await chat.open(channelID: channel, displayName: "Me")
+            chat.receiveGatewayState(.connected, error: nil)
+            chat.draft = "hello"
+            await chat.send()
+            if succeedsOnAttempt == 3 {
+                await waitUntil { chat.pendingMessage == nil }
+                XCTAssertEqual(sentIDs.count, 3)
+                XCTAssertEqual(chat.messages.map(\.content.text), ["hello"])
+            } else {
+                await waitUntil { sentIDs.count == 4 && !chat.sending }
+                try await Task.sleep(for: .milliseconds(300))
+                XCTAssertEqual(sentIDs.count, 4, "after three retries it waits for the Retry control")
+                XCTAssertNotNil(chat.pendingMessage)
+            }
+            XCTAssertEqual(Set(sentIDs).count, 1, "every retry is the same command")
+            await chat.stop()
+        }
+    }
+
+    @MainActor
+    func testSendingWhileAnEarlierMessageIsInFlightSendsBothInOrder() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var texts: [String] = []
+        var seq = 0
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages" where request.httpMethod == "GET":
+                return (200, Data(#"{"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\#(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages":
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: Any])
+                let id = try XCTUnwrap(body["clientMessageId"] as? String), text = try XCTUnwrap(body["text"] as? String)
+                texts.append(text); seq += 1
+                return (200, Data(#"{"id":"m\#(seq)","channelId":"\#(channel)","seq":"\#(seq)","clientMessageId":"\#(id)","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"\#(text)"},"createdAt":"2026-01-01T00:00:0\#(seq)Z"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "Me")
+        let requested = expectation(description: "first send held")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.httpMethod == "POST", held == nil else { return false }
+            held = request; requested.fulfill(); return true
+        }
+        chat.draft = "first"
+        let first = Task { await chat.send() }
+        await fulfillment(of: [requested], timeout: 2)
+        chat.draft = "second"
+        XCTAssertTrue(chat.canPressSend(inThread: false), "Send stays available for the next message")
+        await chat.send()
+        XCTAssertEqual(chat.draft, "second", "queued, not dropped")
+        let firstID = try XCTUnwrap(chat.pendingMessage?.id)
+        held?.respond(status: 200, data: Data(#"{"id":"m0","channelId":"\#(channel)","seq":"1","clientMessageId":"\#(firstID)","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"first"},"createdAt":"2026-01-01T00:00:00Z"}"#.utf8))
+        seq = 1
+        await first.value
+        await waitUntil { chat.messages.count == 2 && chat.pendingMessage == nil && !chat.sending }
+        XCTAssertEqual(chat.messages.map(\.content.text), ["first", "second"])
+        XCTAssertEqual(texts, ["second"], "the held first request is answered by the test, the second follows it")
+        XCTAssertEqual(chat.draft, "")
         await chat.stop()
     }
 

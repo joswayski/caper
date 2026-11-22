@@ -744,7 +744,9 @@ import CaperCore
         let startedRecording = recording && !wasRecording
         wasRecording = recording
         pinsButton.isEnabled = pins.isAvailable
-        composer.isEditable = !recording && ready && directBar.isHidden && chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
+        // Typing goes on while a message is in flight; Return queues the next one behind it.
+        composer.isEditable = !recording && ready && directBar.isHidden && chat.canInteract && !chat.sendRejected
+            && (chat.sending || chat.pendingMessage == nil)
         send.isEnabled = !recording && ready && directBar.isHidden && chat.canInteract && chat.canPressSend(inThread: inThread)
         let sendLabel = chat.sending ? "Sending…" : inThread ? "Send reply" : "Send"
         send.title = ""

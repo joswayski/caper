@@ -2753,6 +2753,41 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
+    func testAFileThatFailedOnTheNetworkUploadsAgainWhenTheConnectionReturns() async throws {
+        for refused in [false, true] {
+            AttachmentURLProtocol.reset()
+            let base = composerHandler()
+            var failing = true
+            AttachmentURLProtocol.handler = { request, body in
+                if failing, request.httpMethod == "POST", request.url?.path == "/api/assets" {
+                    if refused { return (413, Data(#"{"error":"too large"}"#.utf8)) }
+                    throw URLError(.networkConnectionLost)
+                }
+                return try base(request, body)
+            }
+            let chat = ChatModel(api: client())
+            await chat.open(channelID: channelID, displayName: "Me")
+            await chat.checkUploadAvailability()
+            chat.receiveGatewayState(.connected, error: nil)
+            chat.addAttachments([try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")])
+            await waitUntil("failed") { chat.attachmentDrafts.first?.error != nil }
+            failing = false
+            chat.receiveGatewayState(.reconnecting, error: nil)
+            chat.receiveGatewayState(.connected, error: nil)
+            if refused {
+                for _ in 0..<30 { await Task.yield() }
+                try await Task.sleep(for: .milliseconds(100))
+                XCTAssertNotNil(chat.attachmentDrafts.first?.error, "a file the server refused waits for the reader")
+                XCTAssertNil(chat.attachmentDrafts.first?.attachment)
+            } else {
+                await waitUntil("uploaded again") { chat.attachmentDrafts.first?.attachment != nil }
+                XCTAssertNil(chat.attachmentDrafts.first?.error)
+            }
+            await chat.stop()
+        }
+    }
+
+    @MainActor
     private func checkUnavailableRecovery(failRenewal: Bool) async throws {
         AttachmentURLProtocol.reset()
         let base = composerHandler()

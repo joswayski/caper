@@ -1167,6 +1167,17 @@ public struct PendingMessage: Equatable, Sendable {
 /// Owns the send/replay invariants shared by HTTP confirmation and gateway
 /// delivery. HTTP can confirm a write but only ordered gateway events advance
 /// the durable replay cursor.
+/// A failure the network caused (no connection, timeout, a server error),
+/// as opposed to the server refusing the request; only these retry by themselves.
+enum NetworkFailure {
+    static func isTransient(_ error: Error) -> Bool {
+        if let error = error as? URLError { return ![.cancelled, .badURL, .unsupportedURL].contains(error.code) }
+        if let error = error as? StorageUploadError { return error.status == 0 || error.status == 408 || error.status == 429 || error.status >= 500 }
+        if let error = error as? APIError { return error.status == 0 || error.status == 408 || error.status == 429 || error.status >= 500 }
+        return false
+    }
+}
+
 public struct ChatDeliveryState: Sendable {
     public private(set) var cursor: String
     public private(set) var pending: PendingMessage?

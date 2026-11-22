@@ -3314,6 +3314,18 @@ public final class ChatModel {
     public var attachmentDrafts: [AttachmentDraft] { attachmentFiles() }
     public var threadAttachmentDrafts: [AttachmentDraft] { attachmentFiles(inThread: true) }
     public private(set) var sendUploadFailed = false
+    /// The pending message's upload failed for a network reason: it goes again when the connection returns.
+    @ObservationIgnored private var sendUploadNetworkFailure = false
+    /// Staged files whose upload failed for a network reason; they upload again when the connection returns.
+    @ObservationIgnored private var networkFailedUploads: Set<String> = []
+    /// Send was pressed while an earlier message was in flight. This composer's
+    /// draft (as it is then) goes once the earlier one is confirmed or refused.
+    @ObservationIgnored private var queuedSend: (inThread: Bool, channelID: String, generation: Int)?
+    /// An unconfirmed send retries by itself after each delay while connected,
+    /// always as the same command; then it waits for Retry.
+    @ObservationIgnored var autoRetryDelays: [Duration] = [.seconds(3), .seconds(10), .seconds(30)]
+    @ObservationIgnored private var autoRetry: (id: String, attempts: Int)?
+    @ObservationIgnored private var autoRetryTask: Task<Void, Never>?
     private var preparedUploads: [String: PreparedAttachment] = [:]
     private var pendingDrafts: [AttachmentDraft] = []
     private var pendingNeedsUpload = false
@@ -3343,12 +3355,19 @@ public final class ChatModel {
     /// Whether Send can be pressed now. Unlike `canSubmit`, files may still be
     /// preparing or uploading: `send` waits for them, as web and Android do.
     public func canPressSend(inThread: Bool) -> Bool {
-        if sending || uploadSubmission != nil || delivery.rejected { return false }
+        if uploadSubmission != nil || delivery.rejected { return false }
         let root = inThread ? threadRootID : nil
         if inThread && root == nil { return false }
+        // While an earlier message is in flight, a new draft queues behind it.
+        if sending { return queuedSend == nil && hasSendableDraft(inThread: inThread) }
         if let pending = delivery.pending { return pending.threadRootId == root }
         let files = attachmentFiles(inThread: inThread)
         return MessageValidation.error(for: inThread ? threadDraft : draft, attachmentCount: files.count) == nil
+    }
+    private func hasSendableDraft(inThread: Bool) -> Bool {
+        let text = inThread ? threadDraft : draft, files = attachmentFiles(inThread: inThread)
+        guard !(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty) else { return false }
+        return MessageValidation.error(for: text, attachmentCount: files.count) == nil
     }
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []
@@ -3596,7 +3615,7 @@ public final class ChatModel {
     /// Input on this device: the chat socket counts it toward "used most recently".
     func reportActivity() async { await gateway.reportActivity() }
 
-    @ObservationIgnored private lazy var gateway: Gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
+    @ObservationIgnored lazy var gateway: Gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
         self?.receiveGatewayState(state, error: error)
     }
 
@@ -3713,10 +3732,39 @@ public final class ChatModel {
         // once the connection is back, as the same command and clientMessageId,
         // so a send that did land is not duplicated. Refusals and failed
         // uploads keep waiting for the reader.
-        if recovered, error == nil, let pending = delivery.pending, !sending, !delivery.rejected, !sendUploadFailed,
+        guard recovered, error == nil else { return }
+        if let pending = delivery.pending, !sending, !delivery.rejected, !sendUploadFailed || sendUploadNetworkFailure,
            uploadSubmission == nil {
             Task { await send(inThread: pending.threadRootId != nil, retryPending: true) }
         }
+        // Staged files that failed for a network reason upload again too.
+        for id in networkFailedUploads { retryAttachmentDraft(id: id) }
+    }
+
+    /// Retries an unconfirmed send after 3, 10, then 30 seconds while the
+    /// gateway stays connected (a reconnect retries at once instead), always
+    /// as the same command with the same clientMessageId.
+    private func scheduleAutoRetry(commandID: String, inThread: Bool) {
+        let attempts = autoRetry?.id == commandID ? autoRetry!.attempts : 0
+        autoRetryTask?.cancel()
+        guard attempts < autoRetryDelays.count else { return }
+        autoRetry = (commandID, attempts + 1)
+        let delay = autoRetryDelays[attempts], expectedGeneration = generation
+        autoRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, self.generation == expectedGeneration, self.liveState == .connected,
+                  self.delivery.pending?.id == commandID, !self.sending, !self.delivery.rejected else { return }
+            await self.send(inThread: inThread, retryPending: true)
+        }
+    }
+
+    /// The draft queued behind a message that is now settled goes, in the
+    /// same conversation only.
+    private func sendQueuedIfReady() {
+        guard let queued = queuedSend, !sending, delivery.pending == nil else { return }
+        queuedSend = nil
+        guard channelID == queued.channelID, generation == queued.generation else { return }
+        Task { await self.send(inThread: queued.inThread) }
     }
 
     func updateAuthor(account: Account) {
@@ -3801,6 +3849,7 @@ public final class ChatModel {
         let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
         unreadThreads = [:]; unreadThreadChannel = nil; visibleThreadReply = nil
+        queuedSend = nil; autoRetryTask?.cancel(); autoRetryTask = nil; autoRetry = nil; networkFailedUploads = []
         threadPages = [:]
         mutations = MessageMutations(); pendingPins = []
         let requestGeneration = generation
@@ -4141,6 +4190,12 @@ public final class ChatModel {
     /// `gif` sends a KLIPY GIF as its own message: no text or files, and the
     /// composer's draft and staged files stay. Retries resend the pending GIF.
     public func send(inThread: Bool = false, retryPending: Bool = false, gif: ChatGif? = nil) async {
+        if sending, !retryPending, gif == nil, uploadSubmission == nil, !delivery.rejected, queuedSend == nil,
+           let channelID, !inThread || threadRootID != nil, hasSendableDraft(inThread: inThread) {
+            // Never dropped: it goes, in order, once the message in flight is confirmed.
+            queuedSend = (inThread, channelID, generation)
+            return
+        }
         guard !sending, uploadSubmission == nil, !delivery.rejected else { return }
         guard !retryPending || delivery.pending != nil else { return }
         guard gif == nil || delivery.pending == nil else { return }
@@ -4217,9 +4272,10 @@ public final class ChatModel {
             }
         }
         let requestGeneration = generation
-        sending = true; error = nil; sendUploadFailed = false
+        sending = true; error = nil; sendUploadFailed = false; sendUploadNetworkFailure = false
         defer {
             sending = false
+            sendQueuedIfReady()
             if delivery.pending == nil, self.channelID == channelID, generation == requestGeneration {
                 if inThread, let rootID, threadHasNewer {
                     focusedMessageID = nil
@@ -4281,6 +4337,7 @@ public final class ChatModel {
             }
             if pendingNeedsUpload {
                 sendUploadFailed = true; self.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload."
+                sendUploadNetworkFailure = NetworkFailure.isTransient(error)
                 return
             }
             if let apiError = error as? APIError, [400, 404, 409, 413, 422].contains(apiError.status)
@@ -4290,6 +4347,7 @@ public final class ChatModel {
                 if apiError.code == "dm_blocked" { onDirectMessageBlocked?() }
             } else {
                 self.error = "Send outcome is unknown. Retry to safely resend the same message. \(error.localizedDescription)"
+                scheduleAutoRetry(commandID: command.id, inThread: command.threadRootId != nil)
             }
         }
     }
@@ -4338,7 +4396,7 @@ public final class ChatModel {
             do { _ = try await self.uploadAttachmentDraft(id: id) }
             catch {
                 if !Task.isCancelled, self.uploadGeneration == expected {
-                    self.updateDraft(id) { $0.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload." }
+                    self.uploadFailed(id, error)
                 }
             }
             if !Task.isCancelled { self.uploadTasks[id] = nil }
@@ -4608,6 +4666,8 @@ public final class ChatModel {
         }
         releasePendingUploads(keepingDrafts: edit)
         error = nil
+        // A draft queued behind the refused message goes now.
+        sendQueuedIfReady()
         return true
     }
 
@@ -4821,6 +4881,7 @@ public final class ChatModel {
                     error = nil
                     releasePendingUploads()
                     onMessageSent?()
+                    sendQueuedIfReady()
                 }
                 if let subscriptionID {
                     let cursor = delivery.cursor
@@ -4895,6 +4956,7 @@ public final class ChatModel {
     private func clearLocal(preservingPending: Bool = false) {
         uploadSubmission = nil
         unreadThreads = [:]; unreadThreadChannel = nil; visibleThreadReply = nil
+        queuedSend = nil; autoRetryTask?.cancel(); autoRetryTask = nil; autoRetry = nil; networkFailedUploads = []
         stashDraft()
         typingTask?.cancel(); typingIdleTask?.cancel(); typingExpiryTask?.cancel()
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
@@ -5260,7 +5322,7 @@ public final class ChatModel {
             _ = try await uploadAttachmentDraft(id: id)
         } catch {
             guard uploadGeneration == expected, !Task.isCancelled else { return }
-            updateDraft(id) { $0.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload." }
+            uploadFailed(id, error)
         }
         uploadTasks[id] = nil
     }
@@ -5339,7 +5401,13 @@ public final class ChatModel {
         if sendUploadFailed { Task { await send(inThread: delivery.pending?.threadRootId != nil, retryPending: true) } }
     }
 
+    private func uploadFailed(_ id: String, _ error: Error) {
+        updateDraft(id) { $0.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload." }
+        if NetworkFailure.isTransient(error) { networkFailedUploads.insert(id) }
+    }
+
     public func retryAttachmentDraft(id: String) {
+        networkFailedUploads.remove(id)
         guard uploadTasks[id] == nil, let draft = stagedDraft(id) else { return }
         guard preparedUploads[id] != nil else {
             // Edits that couldn't be applied are tried again, from the original.
@@ -5356,7 +5424,7 @@ public final class ChatModel {
             guard let self else { return }
             do { _ = try await uploadAttachmentDraft(id: id) }
             catch {
-                if !Task.isCancelled { updateDraft(id) { $0.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload." } }
+                if !Task.isCancelled { uploadFailed(id, error) }
             }
             // An edit cancels this task and starts its own.
             if !Task.isCancelled { uploadTasks[id] = nil }
