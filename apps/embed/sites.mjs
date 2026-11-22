@@ -437,7 +437,8 @@ export function instagramShortcode(url) {
   return INSTAGRAM_POST.exec(url.pathname)?.[1] ?? null;
 }
 
-export async function instagramItem(code) {
+/** Instagram's answer to the logged-out post query, or null when unreadable. */
+export async function instagramQuery(code) {
   const lsd = [...crypto.getRandomValues(new Uint8Array(12))]
     .map((byte) => byte.toString(36).padStart(2, "0"))
     .join("");
@@ -467,11 +468,15 @@ export async function instagramItem(code) {
     return null;
   }
   try {
-    const body = JSON.parse(await readText(response, PAGE_DATA_LIMIT));
-    return body?.data?.xdt_api__v1__media__shortcode__web_info?.items?.[0] ?? null;
+    return JSON.parse(await readText(response, PAGE_DATA_LIMIT));
   } catch {
     return null;
   }
+}
+
+export async function instagramItem(code) {
+  const body = await instagramQuery(code);
+  return body?.data?.xdt_api__v1__media__shortcode__web_info?.items?.[0] ?? null;
 }
 
 function largest(candidates) {

@@ -2677,7 +2677,11 @@ X, TikTok and Instagram use undocumented endpoints that change without notice
 `node apps/embed/live-check.mjs` runs every reader against real posts (the `Embed
 live check` workflow runs it nightly). Instagram limits logged-out requests per
 address; if Cloudflare's addresses are limited, cards fall back to the page's
-image and caption.
+image and caption. GitHub runners' shared addresses are often limited, so a local
+run skips an Instagram post when Instagram answers that runner with its
+rate-limit error (code 1675004); any other failure fails. Run against the
+deployed Worker (`EMBED_ORIGIN` and `EMBED_API_SECRET` as Actions secrets), the
+check never skips and covers what production sees.
 
 **Configuration.** API only: `EMBED_ORIGIN` (`https://embed.caper.chat`) and
 `EMBED_API_SECRET` (at least 32 characters), together or not at all. Without them

@@ -6,7 +6,19 @@
 //                                                   the deployed Worker, from Cloudflare
 //
 
-import { unfurl } from "./sites.mjs";
+import { instagramQuery, instagramShortcode, unfurl } from "./sites.mjs";
+
+// Instagram answers addresses it is throttling with this error instead of the
+// post, and GitHub runners' shared addresses often get it. Production fetches
+// from Cloudflare, so a refused runner says nothing about previews; checks
+// through the deployed Worker never skip.
+const INSTAGRAM_RATE_LIMITED = 1675004;
+
+async function instagramRefusedHere(url) {
+  if (process.env.EMBED_ORIGIN || url.hostname !== "www.instagram.com") return false;
+  const body = await instagramQuery(instagramShortcode(url)).catch(() => null);
+  return Boolean(body?.errors?.some((error) => error?.code === INSTAGRAM_RATE_LIMITED));
+}
 
 const CASES = [
   { url: "https://x.com/jack/status/20", expect: ["author", "text", "footer"] },
@@ -45,10 +57,11 @@ for (const { url, expect, optional } of CASES) {
   const types = embed?.blocks.map((block) => block.type) ?? [];
   const missing = expect.filter((type) => !types.includes(type));
   const ok = embed && !missing.length;
-  if (!ok && !optional) failed++;
-  const status = ok ? "ok  " : optional ? "skip" : "FAIL";
+  const refused = !ok && (await instagramRefusedHere(new URL(url)));
+  if (!ok && !optional && !refused) failed++;
+  const status = ok ? "ok  " : optional || refused ? "skip" : "FAIL";
   console.log(
-    `${status} ${url}  [${types.join(", ")}]${missing.length ? ` missing ${missing.join(", ")}` : ""}${error ? ` ${error.message}` : ""}`,
+    `${status} ${url}  [${types.join(", ")}]${missing.length ? ` missing ${missing.join(", ")}` : ""}${error ? ` ${error.message}` : ""}${refused ? " (Instagram rate-limited this runner)" : ""}`,
   );
 }
 process.exitCode = failed ? 1 : 0;
