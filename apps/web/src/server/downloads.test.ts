@@ -12,6 +12,7 @@ import {
   playTestingUrl,
 } from "../downloads.ts";
 import Home from "../pages/Home";
+import { downloadRedirect } from "./download-redirect.ts";
 
 test("desktop hints select current platform packages", () => {
   for (const [userAgent, expected] of [
@@ -140,4 +141,34 @@ test("the homepage join link skips the spaces loader until the visitor has a com
     assert.ok(join);
     assert.ok(join.includes(`href="${destination}"`), join);
   }
+});
+
+test("/download sends each device straight to its install, or home when it needs a choice", async () => {
+  const base = "https://github.com/joswayski/caper/releases/download/native-latest/";
+  const visit = (headers: Record<string, string>) =>
+    downloadRedirect(new Request("https://caper.chat/download", { headers }));
+  for (const [userAgent, location] of [
+    ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", "https://testflight.apple.com/join/khGQMuYP"],
+    ["Mozilla/5.0 (Windows NT 10.0; Win64; x64)", `${base}Caper-Windows-x64-Setup.exe`],
+    ["Mozilla/5.0 (Linux; Android 15; Pixel 9)", "/"],
+    ["Mozilla/5.0 (X11; Ubuntu; Linux x86_64)", "/"],
+    ["Mozilla/5.0 (X11; CrOS x86_64 16093.0.0)", "/"],
+  ] as const) {
+    const response = visit({ "user-agent": userAgent });
+    assert.equal(response.status, 302, userAgent);
+    assert.equal(response.headers.get("location"), location, userAgent);
+    assert.match(response.headers.get("vary") ?? "", /User-Agent/);
+  }
+  // Client hints alone identify an Android phone whose user agent is reduced.
+  assert.equal(visit({ "sec-ch-ua-platform": '"Android"', "sec-ch-ua-mobile": "?1" }).headers.get("location"), "/");
+
+  // A Mac user agent may be an iPad, so the browser picks with touch points.
+  const mac = visit({ "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" });
+  assert.equal(mac.status, 200);
+  const page = await mac.text();
+  assert.ok(
+    page.includes(
+      `navigator.maxTouchPoints > 1 ? "https://testflight.apple.com/join/khGQMuYP" : "${base}Caper-macOS-Apple-Silicon.dmg"`,
+    ),
+  );
 });

@@ -3,6 +3,7 @@
 ## Install
 
 Use it in the browser at [caper.chat](https://caper.chat), or install an app.
+[caper.chat/download](https://caper.chat/download) (or `/mobile`) picks the install for whatever device opens it.
 All builds are on the [latest release](https://github.com/joswayski/caper/releases/tag/native-latest).
 
 | Platform | How to install |

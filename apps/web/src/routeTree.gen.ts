@@ -10,8 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DownloadRouteImport } from './routes/download'
 import { Route as HealthRouteImport } from './routes/health'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as MobileRouteImport } from './routes/mobile'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SpacesRouteImport } from './routes/spaces'
@@ -24,6 +26,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DownloadRoute = DownloadRouteImport.update({
+  id: '/download',
+  path: '/download',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const HealthRoute = HealthRouteImport.update({
   id: '/health',
   path: '/health',
@@ -32,6 +39,11 @@ const HealthRoute = HealthRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MobileRoute = MobileRouteImport.update({
+  id: '/mobile',
+  path: '/mobile',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PrivacyRoute = PrivacyRouteImport.update({
@@ -69,8 +81,10 @@ const InviteCodeRoute = InviteCodeRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/download': typeof DownloadRoute
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
+  '/mobile': typeof MobileRoute
   '/privacy': typeof PrivacyRoute
   '/profile': typeof ProfileRoute
   '/spaces': typeof SpacesRoute
@@ -80,8 +94,10 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/download': typeof DownloadRoute
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
+  '/mobile': typeof MobileRoute
   '/privacy': typeof PrivacyRoute
   '/profile': typeof ProfileRoute
   '/spaces': typeof SpacesRoute
@@ -92,8 +108,10 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/download': typeof DownloadRoute
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
+  '/mobile': typeof MobileRoute
   '/privacy': typeof PrivacyRoute
   '/profile': typeof ProfileRoute
   '/spaces': typeof SpacesRoute
@@ -105,8 +123,10 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/download'
     | '/health'
     | '/login'
+    | '/mobile'
     | '/privacy'
     | '/profile'
     | '/spaces'
@@ -116,8 +136,10 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/download'
     | '/health'
     | '/login'
+    | '/mobile'
     | '/privacy'
     | '/profile'
     | '/spaces'
@@ -127,8 +149,10 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/download'
     | '/health'
     | '/login'
+    | '/mobile'
     | '/privacy'
     | '/profile'
     | '/spaces'
@@ -139,8 +163,10 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DownloadRoute: typeof DownloadRoute
   HealthRoute: typeof HealthRoute
   LoginRoute: typeof LoginRoute
+  MobileRoute: typeof MobileRoute
   PrivacyRoute: typeof PrivacyRoute
   ProfileRoute: typeof ProfileRoute
   SpacesRoute: typeof SpacesRoute
@@ -158,6 +184,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/download': {
+      id: '/download'
+      path: '/download'
+      fullPath: '/download'
+      preLoaderRoute: typeof DownloadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/health': {
       id: '/health'
       path: '/health'
@@ -170,6 +203,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mobile': {
+      id: '/mobile'
+      path: '/mobile'
+      fullPath: '/mobile'
+      preLoaderRoute: typeof MobileRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/privacy': {
@@ -219,8 +259,10 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DownloadRoute: DownloadRoute,
   HealthRoute: HealthRoute,
   LoginRoute: LoginRoute,
+  MobileRoute: MobileRoute,
   PrivacyRoute: PrivacyRoute,
   ProfileRoute: ProfileRoute,
   SpacesRoute: SpacesRoute,
