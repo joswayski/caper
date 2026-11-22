@@ -638,7 +638,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                                         }
                                     }
                                     val spectrum = Brush.sweepGradient(listOf(0f, 60f, 120f, 180f, 240f, 300f, 360f).map { Color.hsv(it, 0.85f, 0.95f) })
-                                    Swatch(custom && !erasing, "Custom colour", if (custom) SolidColor(Color(AttachmentEdits.argb(color))) else spectrum) {
+                                    Swatch(custom && !erasing, "Custom color", if (custom) SolidColor(Color(AttachmentEdits.argb(color))) else spectrum) {
                                         picking = true
                                     }
                                 }
@@ -882,8 +882,8 @@ private fun textAt(edit: AttachmentEdit, layout: StageLayout, position: Offset, 
     val chosen = android.graphics.Color.HSVToColor(floatArrayOf(hue, saturation, brightness))
     Dialog(onDismissRequest = dismiss) {
         Surface(Modifier.widthIn(max = 340.dp).swipeCancelsPresses(), shape = MaterialTheme.shapes.small, color = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
-            Column(Modifier.padding(16.dp).semantics { paneTitle = "Custom colour" }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text("Custom colour", Modifier.semantics { heading() }, color = Text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Column(Modifier.padding(16.dp).semantics { paneTitle = "Custom color" }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("Custom color", Modifier.semantics { heading() }, color = Text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 Box(
                     Modifier.fillMaxWidth().aspectRatio(1.5f).clip(MaterialTheme.shapes.small)
                         .semantics {

@@ -76,7 +76,7 @@ export default function AvatarHistory({
   return (
     <Dialog title="Previous pictures" width="wide" onClose={onClose} dismissOnBackdrop>
       <div className="avatar-history" aria-busy={loading}>
-        <p className="avatar-history-hint">Choose a picture for your profile draft. Save profile to publish it.</p>
+        <p className="avatar-history-hint">Choose a previous picture, then save your profile to use it.</p>
         <div className="avatar-history-body">
           <div className="avatar-history-library">
             <div className="avatar-history-grid" role="group" aria-label="Saved profile pictures">

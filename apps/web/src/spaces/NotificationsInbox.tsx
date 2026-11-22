@@ -285,7 +285,7 @@ export default function NotificationsInbox({
     <Dialog
       title="Notifications"
       titleIcon={<Bell aria-hidden="true" />}
-      description="Messages, replies and reactions. All in one place."
+      description="Messages, replies, reactions, and invitations—all in one place."
       onClose={onClose}
       closeDisabled={composerBusy}
       width="wide"
@@ -415,7 +415,7 @@ export default function NotificationsInbox({
               <p>
                 {unread
                   ? "No unread notifications in this view."
-                  : "Messages, mentions, replies and reactions will appear here."}
+                  : "Messages, mentions, replies, reactions, and invitations will appear here."}
               </p>
             </div>
           )}
