@@ -210,6 +210,16 @@ import CaperCore
         jumpToLatest.setAccessibilityIdentifier(inThread ? "thread-jump-to-latest" : "jump-to-latest")
         jumpToLatest.layer?.backgroundColor = NSColor(CaperTheme.surface).cgColor
         jumpToLatest.layer?.borderWidth = 1
+        // Web's lift off the history: 0 8px 24px at 35% black. NSShadow
+        // offsets are in window coordinates, so -8 is downward.
+        let lift = NSShadow()
+        lift.shadowColor = NSColor.black.withAlphaComponent(0.35)
+        lift.shadowBlurRadius = 24
+        lift.shadowOffset = NSSize(width: 0, height: -8)
+        jumpToLatest.shadow = lift
+        jumpToLatest.hoverChanged = { [weak self] hovering in
+            self?.jumpToLatest.layer?.backgroundColor = NSColor(hovering ? CaperTheme.raised : CaperTheme.surface).cgColor
+        }
         jumpToLatest.image = NSImage(systemSymbolName: "arrow.down", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
         jumpToLatest.imageHugsTitle = true
@@ -853,22 +863,15 @@ import CaperCore
         layer.add(entrance, forKey: "entrance")
     }
 
-    /// 16 points above the composer (and anything stacked on it) and from the
-    /// history's trailing edge; above the status row while it holds Retry.
+    /// 16 points inside the history's bottom trailing corner, as on web. Below
+    /// the history it would overhang the status row, which is stacked above
+    /// it and would take its clicks.
     private func layoutJumpToLatest() {
         guard !jumpToLatest.isHidden else { return }
         let height: CGFloat = 36
         let hasCount = jumpToLatest.imagePosition != .imageOnly
         let width = hasCount ? min(max(36, jumpToLatest.attributedTitle.size().width + 44), max(36, timeline.frame.width - 32)) : 36
-        var bottom = timeline.frame.maxY - 16
-        if retry.isHidden, directBar.isHidden, !composerField.isHidden || !voiceComposer.bar.isHidden {
-            let composerTop = composerField.isHidden ? voiceComposer.bar.frame.minY : composerField.frame.minY
-            let stackTop = [replyDraft?.frame.minY, attachmentScroll.isHidden ? nil : attachmentScroll.frame.minY,
-                            linkPreview?.frame.minY, editRejected.isHidden ? nil : editRejected.frame.minY]
-                .compactMap { $0 }.reduce(composerTop, min)
-            bottom = stackTop - 16
-        }
-        jumpToLatest.frame = NSRect(x: timeline.frame.maxX - 16 - width, y: bottom - height, width: width, height: height)
+        jumpToLatest.frame = NSRect(x: timeline.frame.maxX - 16 - width, y: timeline.frame.maxY - 16 - height, width: width, height: height)
     }
 
     /// The status row: an error, loading, or who is typing. Its own

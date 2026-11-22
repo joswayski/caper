@@ -628,6 +628,31 @@ import XCTest
         XCTAssertFalse(timeline.jump.shows)
     }
 
+    func testJumpToLatestScrollsToTheNewestMessageAndFollowsAgain() throws {
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        var history = (0..<60).map { message($0) }
+        timeline.update(history, conversationID: "channel", viewerID: "me")
+        timeline.layoutSubtreeIfNeeded()
+        func distanceFromEnd() -> CGFloat { (timeline.documentView?.frame.height ?? 0) - timeline.contentView.bounds.maxY }
+        // Both paths: animated from two screens up, instant from the top.
+        for start in [max(0, distanceFromEnd() + timeline.contentView.bounds.minY - 2 * 360), 0] {
+            timeline.contentView.scroll(to: NSPoint(x: 0, y: start))
+            timeline.layoutSubtreeIfNeeded()
+            XCTAssertTrue(timeline.jump.shows)
+            timeline.jumpToLatest()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            timeline.layoutSubtreeIfNeeded()
+            XCTAssertEqual(distanceFromEnd(), 0, accuracy: 1, "from \(start)")
+            XCTAssertFalse(timeline.jump.shows)
+        }
+        // Following again: the next arrival stays in view.
+        history.append(message(60, author: "maya"))
+        timeline.update(history, conversationID: "channel", viewerID: "me")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(distanceFromEnd(), 0, accuracy: 1)
+        XCTAssertEqual(timeline.jump.count, 0)
+    }
+
     func testEmojiKeepsLinePitchAndTimestampsFollowAuthorNames() throws {
         CaperFontLoader.register()
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
