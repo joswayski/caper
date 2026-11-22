@@ -111,6 +111,31 @@ export function useLinkPreview(draft: string) {
 }
 
 /** Shown from Send until the staged files have uploaded and the message goes. */
+/**
+ * Enter pressed while the previous message is still on its way is not lost: it
+ * sends once that message is confirmed. Editing the draft cancels it, and so
+ * does the earlier message failing, so only text the sender saw when pressing
+ * Enter goes out. Set `submit.current` to the composer's submit on each render.
+ */
+export function useQueuedSubmit(busy: boolean, failed: boolean) {
+  const waiting = useRef(false);
+  const submit = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    if (failed) waiting.current = false;
+    if (busy || failed || !waiting.current) return;
+    waiting.current = false;
+    submit.current();
+  }, [busy, failed]);
+  return useMemo(
+    () => ({
+      submit,
+      queue: () => void (waiting.current = true),
+      cancel: () => void (waiting.current = false),
+    }),
+    [],
+  );
+}
+
 export function UploadWaitNotice() {
   return (
     <p className="chat-send-status chat-upload-wait" role="status">
@@ -224,6 +249,8 @@ export default function Composer({
       setValidationError(error instanceof Error ? error.message : "Message could not be sent.");
     }
   };
+  const queued = useQueuedSubmit(sending, !!pendingSend && !sending);
+  queued.submit.current = () => void submit();
   useImperativeHandle(ref, () => ({
     focus() {
       composerRef.current?.focus();
@@ -312,6 +339,7 @@ export default function Composer({
           placeholder={`Message ${direct ? "" : "#"}${channelName}`}
           onValueChange={(value, input) => {
             setDraft(value);
+            queued.cancel();
             suggestions.change(input);
             setValidationError(undefined);
             onTyping(!!value.trim());
@@ -330,7 +358,8 @@ export default function Composer({
             if (suggestions.keyDown(event)) return;
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              if (!sending) void submit();
+              if (sending) queued.queue();
+              else void submit();
             }
           }}
         />

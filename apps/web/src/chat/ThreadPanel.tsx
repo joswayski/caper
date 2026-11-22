@@ -4,7 +4,7 @@ import AttachmentPicker from "./AttachmentPicker.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState, PendingChatMessage } from "./client.ts";
 import { DraftAttachments } from "./Attachments.tsx";
-import { UploadWaitNotice, useLinkPreview, type ComposerAttachments } from "./Composer.tsx";
+import { UploadWaitNotice, useLinkPreview, useQueuedSubmit, type ComposerAttachments } from "./Composer.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import JumpToLatest from "./JumpToLatest.tsx";
 import { carriesFiles } from "./drop.ts";
@@ -452,9 +452,10 @@ export default function ThreadPanel({
       !canAttach || readOnly || state.phase !== "ready" || !!state.thread?.loading || !!state.pendingSend || !client,
     returnFocus: composer,
   });
+  const sending = !!state.pendingSend && !state.sendError;
+  const queued = useQueuedSubmit(sending, !!state.pendingSend && !sending);
   if (!state.thread) return null;
   const count = Array.from(draft.text).length;
-  const sending = !!state.pendingSend && !state.sendError;
   const blocked = !!state.pendingSend && !pending;
   const submit = async () => {
     if (
@@ -481,6 +482,7 @@ export default function ThreadPanel({
       setValidation(error instanceof Error ? error.message : "Reply could not be sent.");
     }
   };
+  queued.submit.current = () => void submit();
   return (
     <aside
       ref={panel}
@@ -853,6 +855,7 @@ export default function ThreadPanel({
                 disabled={state.phase !== "ready"}
                 onValueChange={(value, input) => {
                   update({ text: value });
+                  queued.cancel();
                   suggestions.change(input);
                 }}
                 onBlur={suggestions.blur}
@@ -866,7 +869,8 @@ export default function ThreadPanel({
                   if (suggestions.keyDown(event)) return;
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
-                    void submit();
+                    if (sending) queued.queue();
+                    else void submit();
                   }
                 }}
               />

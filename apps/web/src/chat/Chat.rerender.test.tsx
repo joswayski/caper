@@ -260,6 +260,81 @@ test("a send that failed offline is retried once when the connection returns, un
   expect(client.sent).toHaveLength(1);
 });
 
+test("an unconfirmed send goes again by itself after 3, 10 and 30 seconds, then waits; a refusal never does", async () => {
+  vi.useFakeTimers();
+  try {
+    await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
+    const client = fixture.clients.at(-1)!;
+    const pendingSend = {
+      clientMessageId: "client-pending",
+      text: "sent during a deploy",
+      createdAt: history.messages[0].createdAt,
+    };
+    const fail = async (change: Partial<ChatViewState> = {}) => {
+      // Each attempt clears the error while it is in flight, then fails again.
+      await act(async () => client.emit({ pendingSend, sendError: undefined, ...change }));
+      await act(async () => client.emit({ sendError: "Message could not be sent." }));
+    };
+    await act(async () => client.emit({ phase: "ready", online: true, author: history.messages[0].author }));
+    await fail();
+    for (const [attempt, delay] of [3_000, 10_000, 30_000].entries()) {
+      await act(async () => vi.advanceTimersByTime(delay - 1));
+      expect(client.sent).toHaveLength(attempt);
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(client.sent).toHaveLength(attempt + 1);
+      await fail();
+    }
+    await act(async () => vi.advanceTimersByTime(300_000));
+    expect(client.sent).toHaveLength(3);
+    // A new message starts over, but the server refusing it is final.
+    await fail({ pendingSend: { ...pendingSend, clientMessageId: "client-refused" }, sendRejected: true });
+    await act(async () => vi.advanceTimersByTime(300_000));
+    expect(client.sent).toHaveLength(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("Enter during a send in flight sends the next draft once it is confirmed, unless edited or the send failed", async () => {
+  await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
+  const client = fixture.clients.at(-1)!;
+  const pendingSend = { clientMessageId: "client-first", text: "first", createdAt: history.messages[0].createdAt };
+  const input = container.querySelector<ComposerInput>("#chat-message")!;
+  const type = (text: string) =>
+    act(async () => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData("text/plain", text);
+      input.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+    });
+  const enter = () =>
+    act(async () =>
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })),
+    );
+  const confirmed = () => act(async () => client.emit({ pendingSend: undefined, sendError: undefined }));
+  await act(async () => client.emit({ phase: "ready", online: true, author: history.messages[0].author }));
+
+  await act(async () => client.emit({ pendingSend }));
+  await type("second");
+  await enter();
+  expect(client.sent).toEqual([]);
+  await confirmed();
+  expect(client.sent.map((command) => command[0])).toEqual(["second"]);
+
+  // Typing after Enter means the draft is no longer what Enter approved.
+  await act(async () => client.emit({ pendingSend }));
+  await enter();
+  await type(" and more");
+  await confirmed();
+  expect(client.sent).toHaveLength(1);
+
+  // A failed send keeps the composer for its own retry.
+  await act(async () => client.emit({ pendingSend }));
+  await enter();
+  await act(async () => client.emit({ sendError: "Message could not be sent." }));
+  await confirmed();
+  expect(client.sent).toHaveLength(1);
+});
+
 test.each([false, true])("Reply focuses within the click, including a repeated target (menu: %s)", async (menu) => {
   await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
   await act(async () => fixture.clients.at(-1)!.emit({ phase: "ready", author: history.messages[0].author }));

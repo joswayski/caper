@@ -2098,6 +2098,14 @@ messages", terracotta border), scrolls back to the newest message and resumes
 following. It is hidden while a history window is detached from the live end;
 Load newer and Back to latest cover that case.
 
+A send whose outcome is unknown (a network error, a timeout or a 5xx) keeps its
+pending row and is sent again with the same `clientMessageId`, so it is stored
+once: at once when the connection returns, and otherwise after 3, 10 and 30
+seconds, after which it waits for the sender's Retry. A refusal (4xx) is final
+and never retried. One message is in flight per conversation; Enter pressed
+meanwhile sends the next draft as soon as the earlier message is confirmed,
+unless the draft was edited or the earlier message failed.
+
 `PUT /api/chat/channels/{channel}/messages/{message}/pin` accepts
 `{active:boolean}` and `X-Caper-Chat-Token`; clients cannot supply a pin author.
 The response and outbox event are

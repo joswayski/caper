@@ -96,6 +96,8 @@ import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
 const INITIAL_ITEM_INDEX = 1_000_000_000;
+/** How long an unconfirmed send waits before each automatic retry. */
+const SEND_RETRY_DELAYS_MS = [3_000, 10_000, 30_000];
 
 const NO_CANDIDATES: MentionCandidate[] = [];
 
@@ -1036,9 +1038,12 @@ export default function Chat({
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
+    // A file that failed to upload for want of a network goes again when it returns.
+    window.addEventListener("online", refresh);
     return () => {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("online", refresh);
     };
   }, [state.sendUploadFailed, state.pendingSend]);
   // A send that failed while the connection was down goes out again when it
@@ -1059,6 +1064,25 @@ export default function Chat({
     window.addEventListener("online", retry);
     return () => window.removeEventListener("online", retry);
   }, [state.online, state.pendingSend, state.sendError, state.sendRejected, state.sendUploadFailed]);
+  // It also goes again by itself while the connection holds, a server error
+  // or a timeout being as unknown an outcome: three times, further apart, and
+  // then it waits for Retry. A refusal never retries.
+  const autoRetry = useRef({ id: "", attempts: 0 });
+  const unconfirmed = state.pendingSend && state.sendError && !state.sendRejected ? state.pendingSend : undefined;
+  useEffect(() => {
+    if (!unconfirmed) return;
+    if (autoRetry.current.id !== unconfirmed.clientMessageId)
+      autoRetry.current = { id: unconfirmed.clientMessageId, attempts: 0 };
+    const delay = SEND_RETRY_DELAYS_MS[autoRetry.current.attempts];
+    if (delay === undefined) return;
+    const timer = setTimeout(() => {
+      autoRetry.current.attempts++;
+      void clientRef.current
+        ?.send(unconfirmed.text, { threadRootId: unconfirmed.threadRootId, broadcast: unconfirmed.broadcast })
+        .catch(() => {});
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [unconfirmed?.clientMessageId, state.sendError]);
 
   const addFiles = (files: File[], threadRootId?: string) => {
     const channel = state.channelId;
