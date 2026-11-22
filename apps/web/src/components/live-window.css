@@ -506,47 +506,8 @@
 .sim-demo * {
   pointer-events: none;
 }
-.sim-demo :is(.sim-channel-list, .sim-messages) {
+.sim-demo :is(.sim-channel-list, .sim-messages, .chat-jump-latest, .chat-text-spoiler) {
   pointer-events: auto;
-}
-.sim-rail {
-  position: relative;
-  padding-top: 14px;
-  border-right: 1px solid var(--border);
-  background: var(--blackout);
-}
-.sim-rail::before {
-  position: absolute;
-  left: 0;
-  top: 22px;
-  width: 3px;
-  height: 24px;
-  border-radius: 0 3px 3px 0;
-  background: var(--terracotta-bright);
-  content: "";
-}
-.sim-rail > span {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  margin-inline: auto;
-  border: 1px solid #805143;
-  border-radius: 8px;
-  background: #39231e;
-  font-size: 0.8rem;
-  font-weight: 700;
-}
-.sim-rail > .sim-add-space {
-  margin-top: 10px;
-  border-color: var(--border);
-  border-style: dashed;
-  border-radius: 8px;
-  color: var(--terracotta-bright);
-  background: var(--surface);
-}
-.sim-add-space svg {
-  width: 18px;
 }
 /* Use the real sidebar/channel/voice CSS, not a second imitation of its roster. */
 .sim-sidebar .sidebar-channels {
@@ -619,7 +580,13 @@
     .chat-reaction,
     .chat-thread-summary,
     .chat-edited,
-    .live-card
+    .live-card,
+    .space-rail button,
+    .notifications-entry,
+    .chat-attach,
+    .chat-composer-tool,
+    .chat-rich-input,
+    .chat-voice-play
   ) {
   cursor: inherit;
 }
@@ -658,6 +625,16 @@
   width: 14px;
   height: 14px;
   color: var(--text-muted);
+}
+/* The scaled desktop canvas keeps the desktop composer on phones and touch screens. */
+.sim-demo .chat-composer form[data-voice] .chat-rich-input {
+  padding-right: 84px;
+}
+/* Positions Jump to latest over the timeline's corner, as in the app. */
+.sim-timeline {
+  position: relative;
+  min-height: 0;
+  display: grid;
 }
 .sim-messages {
   min-height: 0;
@@ -714,16 +691,6 @@
 .sim-reaction img {
   width: 18px;
   height: 18px;
-}
-.sim-composer {
-  min-height: 42px;
-  padding: 10px 11px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-composer);
-  color: var(--text-muted);
-  font-size: 0.85rem;
-  line-height: 1.4;
 }
 @keyframes sim-enter {
   from {
@@ -805,6 +772,13 @@
   .sim-demo .live-face > .live-avatar {
     width: 34px;
     height: 34px;
+  }
+  .sim-demo .chat-composer-tool {
+    width: 32px;
+    height: 32px;
+  }
+  .sim-demo .chat-composer-tools {
+    margin: 5px 5px 5px 0;
   }
 }
 

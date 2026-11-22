@@ -197,7 +197,9 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     frame = requestAnimationFrame(loop);
   };
 
-  const interactive = (target: EventTarget | null) => (target as Element | null)?.closest?.("[data-live-control]");
+  // Presses on the demo's working controls (a spoiler, Jump to latest) stay clicks, not tilts.
+  const interactive = (target: EventTarget | null) =>
+    (target as Element | null)?.closest?.("[data-live-control], button, [role='button']");
   const pointerDown = (event: PointerEvent) => {
     if (active || press || !event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
     if (interactive(event.target)) return;

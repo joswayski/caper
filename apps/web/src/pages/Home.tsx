@@ -12,7 +12,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { ChevronDown, ExternalLink, Mail, TriangleAlert, X } from "lucide-react";
+import { Check, ChevronDown, Copy, ExternalLink, Hash, Mail, TriangleAlert, X } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
@@ -109,16 +109,16 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
               </a>
             </div>
           </div>
-          <div className="experimental-note">
-            <p className="wip-alert" role="note">
-              <TriangleAlert aria-hidden="true" />
-              <span>
-                <strong>Work in progress.</strong> Caper may contain bugs or incomplete features.
-              </span>
-            </p>
-            <p className="feedback-label">Questions or feedback?</p>
+          <p className="wip-alert" role="note">
+            <TriangleAlert aria-hidden="true" />
+            <span>
+              <strong>Work in progress.</strong> Expect bugs and unfinished features.
+            </span>
+          </p>
+          <section className="contact" aria-labelledby="feedback-heading">
+            <h2 id="feedback-heading">Questions or feedback?</h2>
             <FeedbackList />
-          </div>
+          </section>
           <p className="made-by">
             Made by{" "}
             <a href={authorUrl} target="_blank" rel="noreferrer">
@@ -171,47 +171,49 @@ function FeedbackList() {
     }
   }
 
+  // One row per channel: what you do on the left, where it goes on the right.
   return (
-    <ul className="feedback-list">
+    <ul className="contact-list">
       <li>
-        Tell me on{" "}
-        <a className="feedback-chip" href={xUrl} target="_blank" rel="noreferrer" aria-label="@josevalerio on X">
+        <a className="contact-row" href={feedbackInviteUrl} target="_blank" rel="noreferrer">
+          <Hash aria-hidden="true" />
+          <span className="contact-action">Post in #feedback</span>
+          <span className="contact-detail">caper.chat</span>
+          <ExternalLink aria-hidden="true" className="contact-trailing" />
+        </a>
+      </li>
+      <li>
+        <a className="contact-row" href={xUrl} target="_blank" rel="noreferrer">
           <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
             <path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.6 5.5 22H2.3l7.9-9L1.8 2h6.5l4.5 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z" />
           </svg>
-          @josevalerio
-          <ExternalLink aria-hidden="true" className="feedback-chip-external" />
+          <span className="contact-action">Message me on X</span>
+          <span className="contact-detail">@josevalerio</span>
+          <ExternalLink aria-hidden="true" className="contact-trailing" />
         </a>
       </li>
       <li>
-        Share it in the{" "}
-        <a className="feedback-chip" href={feedbackInviteUrl} target="_blank" rel="noreferrer">
-          #feedback channel on caper.chat
-          <ExternalLink aria-hidden="true" className="feedback-chip-external" />
-        </a>
-      </li>
-      <li>
-        Email me at{" "}
         <button
           type="button"
-          className="feedback-chip feedback-email"
-          data-copied={status === "copied"}
+          className="contact-row"
+          data-copied={status === "copied" ? "" : undefined}
           onClick={() => void copyEmail()}
-          aria-label={`Copy email ${contactEmail}`}
+          title="Copy email address"
         >
-          <span className="feedback-email-address">
-            <Mail aria-hidden="true" />
-            {contactEmail}
-          </span>
-          <span className="feedback-email-hint" aria-hidden="true">
-            {status === "copied" ? "copied!" : "click to copy"}
-          </span>
+          <Mail aria-hidden="true" />
+          <span className="contact-action">Email me</span>
+          <span className="contact-detail">{status === "copied" ? "Copied" : contactEmail}</span>
+          {status === "copied" ? (
+            <Check aria-hidden="true" className="contact-trailing" />
+          ) : (
+            <Copy aria-hidden="true" className="contact-trailing" />
+          )}
         </button>
         <span className={status === "failed" ? "contact-feedback" : "sr-only"} role="status">
           {status === "copied"
             ? "Email address copied to clipboard."
             : status === "failed"
-              ? `Couldn’t copy. ${contactEmail}`
+              ? `Couldn’t copy. Email ${contactEmail}`
               : ""}
         </span>
       </li>

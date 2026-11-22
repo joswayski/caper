@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
+  ArrowDown,
   AudioLines,
+  Bell,
   ChevronDown,
   Forward,
   Hash,
@@ -11,12 +13,16 @@ import {
   MoreHorizontal,
   PhoneOff,
   Pin,
+  Play,
   Plus,
   Search,
   Settings,
+  Smile,
   Users,
+  Volume2,
 } from "lucide-react";
 import { avatarUrl } from "../account/avatar";
+import LinkedText from "../chat/LinkedText";
 import { liveNames } from "../media/live-now";
 import { sessionDuration } from "../media/session-duration";
 import PresenceDot from "./PresenceDot";
@@ -25,6 +31,7 @@ import { createDemoTiming } from "./demoTiming";
 import "../pages/call.css";
 import "../spaces/spaces.css";
 import "../chat/chat.css";
+import "../spaces/notifications-inbox.css";
 import "./live-window.css";
 
 const people = [
@@ -121,6 +128,8 @@ type DemoPost = {
   edit?: { at: number; text: string };
   thread?: { at: number; person: number }[];
   forward?: { person: number; text: string; replies: number[] };
+  /** A voice message: its length and the transcript that lands a moment after it. */
+  voice?: { duration: string; transcript: string };
 };
 
 const messages: DemoPost[] = [
@@ -148,9 +157,9 @@ const messages: DemoPost[] = [
   { person: 3, at: 4.75, text: "i leave for TWO minutes 😂", emoji: 4, reactionCount: 1 },
   { person: 0, at: 7.5, text: "anyway… who’s up for a game?" },
   { person: 4, at: 9.25, text: "did someone say game night? 👀" },
-  { person: 1, at: 11.25, text: "already here. bringing the playlist 🎶" },
+  { person: 1, at: 11.25, text: "already here. playlist is _locked in_ 🎶" },
   { person: 3, at: 11.75, text: "save me a spot" },
-  { person: 2, at: 12.5, text: "rule one: nobody lets me choose the map", emoji: 0, reactionCount: 2 },
+  { person: 2, at: 12.5, text: "rule one: **nobody** lets me choose the map", emoji: 0, reactionCount: 2 },
   { person: 5, at: 16.25, text: "hello hello! what did i miss?" },
   {
     person: 4,
@@ -164,9 +173,24 @@ const messages: DemoPost[] = [
   { person: 0, at: 26.5, text: "back! the kettle was faster than this lobby" },
   { person: 2, at: 28.25, text: "we’re waiting for theo’s 400-song playlist" },
   { person: 1, at: 30.5, text: "it’s called having range" },
-  { person: 4, at: 32.25, text: "i’m requesting exactly one ridiculous song" },
-  { person: 5, at: 34.75, text: "fun fact: capybaras are excellent swimmers", emoji: 3, reactionCount: 2 },
+  { person: 4, at: 32.25, text: "i’m requesting exactly one ridiculous song: ||the capybara song, on loop||" },
+  {
+    person: 5,
+    at: 34.75,
+    text: "fun fact: capybaras are excellent swimmers https://en.wikipedia.org/wiki/Capybara",
+    emoji: 3,
+    reactionCount: 2,
+  },
   { person: 3, at: 36.25, text: "so our mascot can carry us on the water map?" },
+  {
+    person: 4,
+    at: 37.25,
+    text: "",
+    voice: {
+      duration: "0:07",
+      transcript: "okay real talk. whoever loses tonight is on snack duty next week. no take-backs.",
+    },
+  },
   { person: 5, at: 38, text: "joining voice to defend this theory" },
   { person: 0, at: 40.5, text: "this is now a capybara appreciation channel", meme: true, emoji: 1, reactionCount: 3 },
   { person: 4, at: 42.75, text: "the hat really ties the whole team together" },
@@ -192,6 +216,8 @@ const activity = [
   { at: 44, person: 2, online: true, voice: true, text: "June rejoined the channel" },
 ];
 const cycleLength = 49;
+const initialPhase = 3;
+const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 const emoji = [
   { text: "😂", code: "1f602" },
@@ -200,6 +226,19 @@ const emoji = [
   { text: "👏", code: "1f44f" },
   { text: "💀", code: "1f480" },
 ];
+
+// Other spaces in the rail: one with new messages, one with mentions of you.
+const otherSpaces = [
+  { name: "Book club", unread: true, mentions: 2 },
+  { name: "Weekend hikes", unread: true, mentions: 0 },
+];
+// A fixed, speech-like waveform for the voice message.
+const voiceBars = Array.from({ length: 40 }, (_, index) =>
+  Math.max(0.12, Math.abs(Math.sin(index * 0.9) * Math.cos(index * 0.37)) * 0.9 + (index % 3) * 0.04),
+);
+const transcriptDelay = 2.5;
+
+const messageKey = (message: DemoMessage) => `${message.cycle}:${message.at}`;
 
 function Avatar({ person }: { person: (typeof people)[number] }) {
   return (
@@ -222,9 +261,13 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
   const sceneRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  // The newest message when the reader scrolled away from the live end.
+  const [awayFrom, setAwayFrom] = useState<string>();
+  // Wall-clock time of the loop's start, so messages show times like the app's.
+  const [startedAt, setStartedAt] = useState<number>();
   const [ready, setReady] = useState(false);
   const [{ phase, cycle, history }, setDemo] = useState<{ phase: number; cycle: number; history: DemoMessage[] }>({
-    phase: 3,
+    phase: initialPhase,
     cycle: 0,
     history: [],
   });
@@ -262,6 +305,7 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
       interacted: () => undefined,
     });
     setReady(true);
+    setStartedAt(Date.now() - initialPhase * 1_000);
     return () => motion.detach();
   }, []);
 
@@ -341,10 +385,21 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
     <span className="voice-session-timer">{sessionDuration(0, (cycle * cycleLength + phase) * 1_000)}</span>
   );
   const visibleMessages = [...history, ...timedMessages.filter((message) => message.at <= phase)];
+  const latestKey = useRef<string>(undefined);
+  latestKey.current = visibleMessages.length ? messageKey(visibleMessages.at(-1)!) : undefined;
+  const jumping = useRef(false);
+  // As in the app, Jump to latest counts what other people posted while you read.
+  const awayIndex =
+    awayFrom === undefined ? -1 : visibleMessages.findIndex((message) => messageKey(message) === awayFrom);
+  const newWhileAway =
+    awayIndex === -1 ? 0 : visibleMessages.slice(awayIndex + 1).filter((message) => message.person !== 0).length;
   const typingPeople = [
     ...new Set(
       timedMessages
-        .filter((message) => message.at > phase && message.typing <= phase && present[message.person].online)
+        .filter(
+          (message) =>
+            !message.voice && message.at > phase && message.typing <= phase && present[message.person].online,
+        )
         .map((message) => people[message.person].name),
     ),
   ];
@@ -385,12 +440,30 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
         </div>
         <div className="live-window">
           <div className="sim-demo spaces-room" aria-label="Simulated Caper conversation">
-            <aside className="sim-rail" aria-label="Demo space">
-              <span>C</span>
-              <span className="sim-add-space" aria-hidden="true">
-                <Plus />
-              </span>
-            </aside>
+            <nav
+              className="space-rail"
+              role="img"
+              aria-label={`Demo spaces: Caper${inCall ? ", connected to voice" : ""}; Book club, 2 mentions; Weekend hikes, unread messages`}
+            >
+              <div className="space-rail-item" data-active="true" data-voice={inCall ? "" : undefined}>
+                <button type="button" tabIndex={-1}>
+                  <span>C</span>
+                  {inCall && <Volume2 className="space-rail-voice" data-connected="" aria-hidden="true" />}
+                </button>
+              </div>
+              {otherSpaces.map((space) => (
+                <div className="space-rail-item" data-active="false" key={space.name}>
+                  {space.unread && <i className="space-unread" aria-hidden="true" />}
+                  <button type="button" tabIndex={-1}>
+                    <span>{space.name[0]}</span>
+                    {space.mentions > 0 && <i className="space-mentions">{space.mentions}</i>}
+                  </button>
+                </div>
+              ))}
+              <button className="add-space" type="button" tabIndex={-1}>
+                <Plus aria-hidden="true" />
+              </button>
+            </nav>
             <aside className="sim-sidebar people-panel">
               <div className="sidebar-channels">
                 <nav className="channel-navigation" aria-label="Simulated channels">
@@ -495,6 +568,8 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                           <div className="channel-select">
                             <Hash aria-hidden="true" />
                             <span>feedback</span>
+                            <i className="channel-unread" aria-hidden="true" />
+                            <span className="sr-only">, unread activity</span>
                           </div>
                           <span className="channel-manage" aria-hidden="true">
                             <MoreHorizontal />
@@ -523,11 +598,16 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                       </li>
                       {[1, 2].map((index) => (
                         <li key={people[index].name}>
-                          <div className="channel-select direct-select">
+                          <div className="channel-select direct-select" data-unread={index === 1 ? "" : undefined}>
                             <span className="direct-avatar">
                               <Avatar person={people[index]} />
                             </span>
                             <span>{people[index].name}</span>
+                            {index === 1 && (
+                              <span className="direct-unread-count" aria-label="2 unread messages">
+                                2
+                              </span>
+                            )}
                           </div>
                         </li>
                       ))}
@@ -544,6 +624,13 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                 </nav>
               </div>
               <div className="voice-panel sim-voice-panel">
+                <div className="account-shortcuts">
+                  <span className="notifications-entry" role="img" aria-label="Notifications, 3 unread">
+                    <Bell aria-hidden="true" />
+                    Notifications
+                    <small aria-hidden="true">3</small>
+                  </span>
+                </div>
                 <div
                   className="call-account sim-account"
                   role="img"
@@ -596,113 +683,178 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                   <Users aria-hidden="true" />
                 </span>
               </header>
-              <div
-                className="sim-messages"
-                ref={messagesRef}
-                role="log"
-                aria-label="Simulated message history"
-                aria-live="off"
-                tabIndex={0}
-                onScroll={(event) => {
-                  const viewport = event.currentTarget;
-                  following.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48;
-                }}
-              >
-                <div className="sim-message-list">
-                  {visibleMessages.map((message) => {
-                    const item = message.emoji === undefined ? undefined : emoji[message.emoji];
-                    // Keep edits, replies and reactions on the original message's
-                    // clock so retained history never rewinds at a loop boundary.
-                    const elapsed = phase + (cycle - message.cycle) * cycleLength;
-                    const count = message.reactions.filter((at) => at <= elapsed).length;
-                    const edited = message.edit && message.edit.at <= elapsed ? message.edit : undefined;
-                    const replies = message.thread?.filter((reply) => reply.at <= elapsed) ?? [];
-                    const forwardReplies = message.forward?.replies.filter((at) => at <= elapsed).length ?? 0;
-                    return (
-                      <article
-                        className={`sim-message chat-message${message.pinnedBy !== undefined ? " chat-message-pinned" : ""}`}
-                        key={`${message.cycle}:${message.at}`}
-                      >
-                        {message.pinnedBy !== undefined && (
-                          <div className="chat-pin-marker">
-                            <Pin size={12} aria-hidden="true" />
-                            Pinned by {people[message.pinnedBy].name}
-                          </div>
-                        )}
-                        <div className="chat-avatar">
-                          <Avatar person={people[message.person]} />
-                        </div>
-                        <div>
-                          <header>
-                            <strong>{people[message.person].name}</strong>
-                            <time>just now</time>
-                            {edited && <small className="chat-edited">edited</small>}
-                          </header>
-                          <p>{edited?.text ?? message.text}</p>
-                          {message.meme && (
-                            <img
-                              className="sim-meme"
-                              src="/images/demo-tiny-hat.webp"
-                              width="384"
-                              height="384"
-                              draggable={false}
-                              alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy."
-                            />
-                          )}
-                          {message.forward && (
-                            <div className="chat-forward-card">
-                              <small className="chat-forward-label">
-                                <Forward size={12} aria-hidden="true" />
-                                Forwarded
-                              </small>
-                              <div className="chat-forward-original">
-                                <header>
-                                  <div className="chat-avatar">
-                                    <Avatar person={people[message.forward.person]} />
-                                  </div>
-                                  <strong>{people[message.forward.person].name}</strong>
-                                </header>
-                                <p>{message.forward.text}</p>
-                              </div>
-                              <span className="sim-forward-summary">
-                                {forwardReplies > 0 &&
-                                  `${forwardReplies} ${forwardReplies === 1 ? "reply" : "replies"} · `}
-                                View conversation
-                              </span>
+              <div className="sim-timeline">
+                <div
+                  className="sim-messages"
+                  ref={messagesRef}
+                  role="log"
+                  aria-label="Simulated message history"
+                  aria-live="off"
+                  tabIndex={0}
+                  onScroll={(event) => {
+                    const viewport = event.currentTarget;
+                    const gap = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+                    // A jump's own smooth scroll must not bring the button straight back.
+                    if (jumping.current) {
+                      if (gap >= 48) return;
+                      jumping.current = false;
+                    }
+                    following.current = gap < 48;
+                    if (gap <= viewport.clientHeight / 2) setAwayFrom(undefined);
+                    else setAwayFrom((current) => current ?? latestKey.current);
+                  }}
+                >
+                  <div className="sim-message-list">
+                    {visibleMessages.map((message) => {
+                      const item = message.emoji === undefined ? undefined : emoji[message.emoji];
+                      // Keep edits, replies and reactions on the original message's
+                      // clock so retained history never rewinds at a loop boundary.
+                      const elapsed = phase + (cycle - message.cycle) * cycleLength;
+                      const count = message.reactions.filter((at) => at <= elapsed).length;
+                      const edited = message.edit && message.edit.at <= elapsed ? message.edit : undefined;
+                      const replies = message.thread?.filter((reply) => reply.at <= elapsed) ?? [];
+                      const forwardReplies = message.forward?.replies.filter((at) => at <= elapsed).length ?? 0;
+                      return (
+                        <article
+                          className={`sim-message chat-message${message.pinnedBy !== undefined ? " chat-message-pinned" : ""}`}
+                          key={`${message.cycle}:${message.at}`}
+                        >
+                          {message.pinnedBy !== undefined && (
+                            <div className="chat-pin-marker">
+                              <Pin size={12} aria-hidden="true" />
+                              Pinned by {people[message.pinnedBy].name}
                             </div>
                           )}
-                          <div className="sim-reactions chat-reactions">
-                            {item && count > 0 && (
-                              <span
-                                className="sim-reaction chat-reaction"
-                                role="img"
-                                aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}`}
-                              >
-                                <img src={`/images/demo-emoji/${item.code}.svg`} draggable={false} alt="" />
-                                <span>{count}</span>
-                              </span>
+                          <div className="chat-avatar">
+                            <Avatar person={people[message.person]} />
+                          </div>
+                          <div>
+                            <header>
+                              <strong>{people[message.person].name}</strong>
+                              <time>
+                                {startedAt === undefined
+                                  ? ""
+                                  : timeFormatter.format(
+                                      startedAt + (message.cycle * cycleLength + message.at) * 1_000,
+                                    )}
+                              </time>
+                              {edited && <small className="chat-edited">edited</small>}
+                            </header>
+                            {message.voice ? (
+                              <div className="chat-voice-message">
+                                <div className="chat-voice">
+                                  <span className="chat-voice-play">
+                                    <Play size={16} fill="currentColor" aria-hidden="true" />
+                                  </span>
+                                  <div className="chat-voice-wave" aria-hidden="true">
+                                    {voiceBars.map((height, index) => (
+                                      <span key={index} style={{ height: `${height * 100}%` }} />
+                                    ))}
+                                  </div>
+                                  <span className="chat-voice-time">{message.voice.duration}</span>
+                                  <span className="sr-only">Voice message, 7 seconds</span>
+                                </div>
+                                {/* Transcribing first, then the transcript fades in, as in the app. */}
+                                <div
+                                  className="chat-voice-transcript"
+                                  data-arrive={elapsed >= message.at + transcriptDelay || undefined}
+                                >
+                                  {elapsed >= message.at + transcriptDelay ? (
+                                    <p>{message.voice.transcript}</p>
+                                  ) : (
+                                    <p className="chat-voice-transcribing">Transcribing…</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <p>
+                                <LinkedText text={edited?.text ?? message.text} />
+                              </p>
+                            )}
+                            {message.meme && (
+                              <img
+                                className="sim-meme"
+                                src="/images/demo-tiny-hat.webp"
+                                width="384"
+                                height="384"
+                                draggable={false}
+                                alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy."
+                              />
+                            )}
+                            {message.forward && (
+                              <div className="chat-forward-card">
+                                <small className="chat-forward-label">
+                                  <Forward size={12} aria-hidden="true" />
+                                  Forwarded
+                                </small>
+                                <div className="chat-forward-original">
+                                  <header>
+                                    <div className="chat-avatar">
+                                      <Avatar person={people[message.forward.person]} />
+                                    </div>
+                                    <strong>{people[message.forward.person].name}</strong>
+                                  </header>
+                                  <p>{message.forward.text}</p>
+                                </div>
+                                <span className="sim-forward-summary">
+                                  {forwardReplies > 0 &&
+                                    `${forwardReplies} ${forwardReplies === 1 ? "reply" : "replies"} · `}
+                                  View conversation
+                                </span>
+                              </div>
+                            )}
+                            <div className="sim-reactions chat-reactions">
+                              {item && count > 0 && (
+                                <span
+                                  className="sim-reaction chat-reaction"
+                                  role="img"
+                                  aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}`}
+                                >
+                                  <img src={`/images/demo-emoji/${item.code}.svg`} draggable={false} alt="" />
+                                  <span>{count}</span>
+                                </span>
+                              )}
+                            </div>
+                            {replies.length > 0 && (
+                              <div className="chat-thread-summary">
+                                <span className="chat-thread-avatars">
+                                  {replies.map((reply) => (
+                                    <span key={reply.person}>
+                                      <Avatar person={people[reply.person]} />
+                                    </span>
+                                  ))}
+                                </span>
+                                <strong>
+                                  {replies.length} {replies.length === 1 ? "reply" : "replies"}
+                                </strong>
+                                <span>View thread</span>
+                              </div>
                             )}
                           </div>
-                          {replies.length > 0 && (
-                            <div className="chat-thread-summary">
-                              <span className="chat-thread-avatars">
-                                {replies.map((reply) => (
-                                  <span key={reply.person}>
-                                    <Avatar person={people[reply.person]} />
-                                  </span>
-                                ))}
-                              </span>
-                              <strong>
-                                {replies.length} {replies.length === 1 ? "reply" : "replies"}
-                              </strong>
-                              <span>View thread</span>
-                            </div>
-                          )}
-                        </div>
-                      </article>
-                    );
-                  })}
+                        </article>
+                      );
+                    })}
+                  </div>
                 </div>
+                {awayFrom !== undefined && (
+                  <button
+                    type="button"
+                    className="chat-jump-latest"
+                    data-new={newWhileAway > 0 || undefined}
+                    title="Jump to latest"
+                    onClick={() => {
+                      const viewport = messagesRef.current;
+                      if (!viewport) return;
+                      jumping.current = true;
+                      following.current = true;
+                      setAwayFrom(undefined);
+                      viewport.scrollTo({ top: viewport.scrollHeight, behavior: reducedMotion ? "auto" : "smooth" });
+                    }}
+                  >
+                    <ArrowDown size={16} aria-hidden="true" />
+                    {newWhileAway > 0 && `${newWhileAway} new ${newWhileAway === 1 ? "message" : "messages"}`}
+                  </button>
+                )}
               </div>
               <div className="sim-typing chat-typing">
                 <span className="chat-typing-content" data-visible={!!typingLabel}>
@@ -719,7 +871,22 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                 </span>
               </div>
               <footer className="sim-footer chat-composer" aria-hidden="true">
-                <div className="sim-composer">Message #general</div>
+                <form data-attach="" data-voice="">
+                  <button type="button" className="chat-attach" tabIndex={-1}>
+                    <Plus size={18} aria-hidden="true" />
+                  </button>
+                  <div className="chat-mention-input">
+                    <div className="chat-rich-input" data-empty="" data-placeholder="Message #general" />
+                  </div>
+                  <div className="chat-composer-tools">
+                    <button type="button" className="chat-composer-tool" tabIndex={-1}>
+                      <Smile size={18} aria-hidden="true" />
+                    </button>
+                    <button type="button" className="chat-composer-tool chat-voice-mic" tabIndex={-1}>
+                      <Mic size={16} aria-hidden="true" />
+                    </button>
+                  </div>
+                </form>
               </footer>
             </section>
           </div>

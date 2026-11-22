@@ -395,13 +395,19 @@ an accessible simulation label. Its profile and mic/headphone/settings icons are
 passive illustration. It plays no audio and requests no chat/media capability or
 gateway subscription. Reduced-motion visitors get a static illustration. The
 centered join CTA (to `/spaces`; signed-out visitors reach email-code sign-in) is
-its only action; channels, roster, composer and reactions are read-only. Seven of
-the 24 scripted posts receive one to three delayed reactions. Messages stay in
+its only navigation; channels, roster, composer and reactions are read-only.
+Message text goes through the app's formatting and link rendering, so spoilers
+reveal on click, and scrolling up shows Jump to latest with a count of new posts.
+The sidebar mirrors the app's unread states (space rail dot and mentions, channel
+dot, DM count, Notifications badge), and one post is a voice message whose
+transcript lands after "Transcribing…". Seven of the 25 scripted posts receive
+one to three delayed reactions. Messages stay in
 local history for one earlier loop; older loops are dropped and the clock pauses
 off screen or in a hidden tab. Avatars (`public/images/demo-avatars.webp`) were
 generated from `caper-face.svg`; the bundled Twemoji 15.0 SVGs carry their CC BY
-4.0 attribution in `images/demo-emoji`. Contact actions link to X and copy the
-email address, showing the address when clipboard access is denied.
+4.0 attribution in `images/demo-emoji`. Contact rows link to the #feedback
+invite and X, and copy the email address, showing it when clipboard access is
+denied.
 
 The API does not seed General or expose `/api/chat/general` or unscoped
 `/api/media/*` (both 404). Chat session creation requires an account. Shared
