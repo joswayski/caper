@@ -24,16 +24,31 @@ import Observation
     override func loadView() { view = UIView(); view.isUserInteractionEnabled = false; view.accessibilityElementsHidden = true }
     override func didMove(toParent parent: UIViewController?) {
         super.didMove(toParent: parent); generation += 1
+        let center = NotificationCenter.default
         if parent != nil {
             CaperEffects.shared.preload(); observe(generation)
-            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tick() } }
+            // tick() does nothing unless Caper is active, so neither does the timer.
+            center.addObserver(self, selector: #selector(becameActive), name: UIApplication.didBecomeActiveNotification, object: nil)
+            center.addObserver(self, selector: #selector(resigningActive), name: UIApplication.willResignActiveNotification, object: nil)
+            if UIApplication.shared.applicationState == .active { becameActive() }
         } else {
+            center.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
+            center.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
             refreshGeneration += 1
             timer?.invalidate(); timer = nil; refresh?.cancel(); refresh = nil; speaking?.cancel(); speaking = nil
             model.voice.clearSpeaking(); sheet?.dismiss(animated: false); sheet = nil
         }
     }
     isolated deinit { timer?.invalidate(); refresh?.cancel(); speaking?.cancel() }
+    @objc private func becameActive() {
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tick() } }
+    }
+    /// What an inactive tick() did: stop a refresh, and start afresh next time.
+    @objc private func resigningActive() {
+        timer?.invalidate(); timer = nil
+        refreshGeneration += 1; refresh?.cancel(); refresh = nil; wasActive = false
+    }
     override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); tick(); sync() }
     private func observe(_ token: Int) {
         guard token == generation, parent != nil else { return }

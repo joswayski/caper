@@ -79,10 +79,17 @@ public enum ProfilePicturePolicy {
 
     /// Display decoding: at most 300 frames and 16 MiB of frame pixels per
     /// picture (fewer than inline attachments' 600 frames and 32 MiB); an
-    /// animation over either shows one still. The cache keeps 96 MiB.
+    /// animation over either shows one still. Pictures on screen stay findable
+    /// while shown, so the cache only keeps recently scrolled-away ones: 96 MiB
+    /// on a Mac window, 32 MiB (about a dozen animated or 400 still pictures)
+    /// on an iPhone screen.
     static let maxAnimationFrames = 300
     static let maxAnimationBytes = 16 * 1_024 * 1_024
+    #if os(iOS)
+    static let cacheBytes = 32 * 1_024 * 1_024
+    #else
     static let cacheBytes = 96 * 1_024 * 1_024
+    #endif
     static let cacheCount = 400
     /// Downloaded files kept so an evicted or resized picture (an animation's
     /// frames are the large part) decodes again without downloading.
@@ -406,7 +413,9 @@ enum ProfilePictureDecoder {
         let (data, response) = try await session.data(from: url)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { throw AttachmentLoadError.status(http.statusCode) }
         guard data.count <= ProfilePicturePolicy.maxDownloadBytes else { throw AttachmentLoadError.undecodable }
-        return data
+        // The session's Data keeps its network buffers alive beside its own
+        // contiguous copy; the file cache keeps a plain copy instead.
+        return data.withUnsafeBytes { Data($0) }
     }
 
     /// Frames at most about `pixelSize` (covering a square), within the
@@ -439,6 +448,8 @@ public final class ProfilePictureLoader {
     public static let shared = ProfilePictureLoader()
 
     private let cache = NSCache<NSString, ProfilePictureFrames>()
+    /// Pictures a view still holds, found again without the cache keeping them.
+    private let shown = NSMapTable<NSString, ProfilePictureFrames>.strongToWeakObjects()
     private let files = NSCache<NSString, NSData>()
     private let session: URLSession
     private var loading: [String: Task<(frames: ProfilePictureFrames, data: Data)?, Never>] = [:]
@@ -457,7 +468,9 @@ public final class ProfilePictureLoader {
 
     public nonisolated static func key(asset: String, pixelSize: Int) -> String { "\(asset):\(pixelSize)" }
 
-    public func cached(_ key: String) -> ProfilePictureFrames? { cache.object(forKey: key as NSString) }
+    public func cached(_ key: String) -> ProfilePictureFrames? {
+        cache.object(forKey: key as NSString) ?? shown.object(forKey: key as NSString)
+    }
 
     /// The decoded picture, or nil when it can't load (the caller keeps
     /// showing the mascot or initial).
@@ -481,6 +494,7 @@ public final class ProfilePictureLoader {
         loading[key] = nil
         if let result {
             cache.setObject(result.frames, forKey: key as NSString, cost: result.frames.cost)
+            shown.setObject(result.frames, forKey: key as NSString)
             files.setObject(result.data as NSData, forKey: asset as NSString, cost: result.data.count)
             failures[key] = nil
         } else {

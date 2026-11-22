@@ -7,6 +7,8 @@ import UIKit
     private let initial = UILabel()
     private let side: CGFloat
     private var pictureKey: String?
+    /// Held while shown, so the loader finds it again for other rows.
+    private var frames: ProfilePictureFrames?
     private var loading: Task<Void, Never>?
 
     public init(side: CGFloat, corner: CGFloat? = nil) {
@@ -33,8 +35,9 @@ import UIKit
         if let key, key == pictureKey, imageView.contentMode == .scaleAspectFill { return }
         loading?.cancel(); loading = nil; pictureKey = key
         if let key, let frames = ProfilePictureLoader.shared.cached(key), let image = Self.image(frames, scale: scale) {
-            showPicture(image); return
+            showPicture(image, frames: frames); return
         }
+        frames = nil
         let mascot = CaperAvatar.image(for: avatarID)
         imageView.contentMode = .scaleAspectFit; imageView.image = mascot
         backgroundColor = mascot == nil ? UIColor(CaperTheme.raised) : .clear
@@ -43,11 +46,12 @@ import UIKit
         loading = Task { @MainActor [weak self] in
             guard let frames = await ProfilePictureLoader.shared.load(asset: picture.asset, url: picture.url, pixelSize: pixelSize),
                   !Task.isCancelled, let self, self.pictureKey == key, let image = Self.image(frames, scale: scale) else { return }
-            self.showPicture(image)
+            self.showPicture(image, frames: frames)
         }
     }
 
-    private func showPicture(_ image: UIImage) {
+    private func showPicture(_ image: UIImage, frames: ProfilePictureFrames) {
+        self.frames = frames
         imageView.contentMode = .scaleAspectFill; imageView.image = image
         backgroundColor = UIColor(CaperTheme.raised); initial.text = nil
     }
