@@ -32,6 +32,7 @@ import "../pages/call.css";
 import "../spaces/spaces.css";
 import "../chat/chat.css";
 import "../spaces/notifications-inbox.css";
+import "./picture.css";
 import "./live-window.css";
 
 const people = [
@@ -132,6 +133,9 @@ type DemoPost = {
   voice?: { duration: string; transcript: string };
 };
 
+// Who talks where: people in voice talk to each other there, so the typing
+// comes from people outside voice (before they join, or after stepping out).
+// People in voice only drop the things that belong in text: memes and pins.
 const messages: DemoPost[] = [
   {
     person: 0,
@@ -141,25 +145,25 @@ const messages: DemoPost[] = [
     emoji: 0,
     reactionCount: 3,
     thread: [
-      { at: 2, person: 1 },
-      { at: 8, person: 2 },
-      { at: 15, person: 3 },
+      { at: 2, person: 3 },
+      { at: 8, person: 4 },
+      { at: 16.5, person: 5 },
     ],
   },
   {
-    person: 1,
+    person: 3,
     at: 1.25,
-    text: "game night at 8. bringing the playlist 🎶",
+    text: "game night at 8. who’s in? 🎲",
     pinnedBy: 0,
-    edit: { at: 6, text: "game night at 8:30. bringing the playlist 🎶" },
+    edit: { at: 6, text: "game night at 8:30. who’s in? 🎲" },
   },
-  { person: 2, at: 3, text: "new group photo. no objections please" },
-  { person: 3, at: 4.75, text: "i leave for TWO minutes 😂", emoji: 4, reactionCount: 1 },
-  { person: 0, at: 7.5, text: "anyway… who’s up for a game?" },
-  { person: 4, at: 9.25, text: "did someone say game night? 👀" },
-  { person: 1, at: 11.25, text: "already here. playlist is _locked in_ 🎶" },
-  { person: 3, at: 11.75, text: "save me a spot" },
-  { person: 2, at: 12.5, text: "rule one: **nobody** lets me choose the map", emoji: 0, reactionCount: 2 },
+  { person: 4, at: 3, text: "in! sounds like the voice crew started without us" },
+  { person: 3, at: 4.75, text: "they ALWAYS do 😂", emoji: 4, reactionCount: 1 },
+  { person: 4, at: 7.5, text: "anyway… whose turn is it to pick the game?" },
+  { person: 3, at: 9.25, text: "rule one: **nobody** lets june choose the map", emoji: 0, reactionCount: 2 },
+  { person: 4, at: 11.25, text: "the lava one. never again" },
+  { person: 3, at: 11.75, text: "save me a spot, hopping in voice" },
+  { person: 4, at: 12.5, text: "_rude_. leaving me alone in here" },
   { person: 5, at: 16.25, text: "hello hello! what did i miss?" },
   {
     person: 4,
@@ -169,9 +173,9 @@ const messages: DemoPost[] = [
   },
   { person: 5, at: 20.25, text: "excellent. i brought snacks 🍿" },
   { person: 0, at: 22, text: "brb, getting tea. please behave" },
-  { person: 3, at: 24, text: "no promises", emoji: 0, reactionCount: 1 },
+  { person: 4, at: 24, text: "no promises", emoji: 0, reactionCount: 1 },
   { person: 0, at: 26.5, text: "back! the kettle was faster than this lobby" },
-  { person: 2, at: 28.25, text: "we’re waiting for theo’s 400-song playlist" },
+  { person: 5, at: 28.25, text: "we’re waiting for theo’s 400-song playlist" },
   { person: 1, at: 30.5, text: "it’s called having range" },
   { person: 4, at: 32.25, text: "i’m requesting exactly one ridiculous song: ||the capybara song, on loop||" },
   {
@@ -181,7 +185,7 @@ const messages: DemoPost[] = [
     emoji: 3,
     reactionCount: 2,
   },
-  { person: 3, at: 36.25, text: "so our mascot can carry us on the water map?" },
+  { person: 4, at: 36.25, text: "so our mascot can carry us on the water map?" },
   {
     person: 4,
     at: 37.25,
@@ -193,27 +197,31 @@ const messages: DemoPost[] = [
   },
   { person: 5, at: 38, text: "joining voice to defend this theory" },
   { person: 0, at: 40.5, text: "this is now a capybara appreciation channel", meme: true, emoji: 1, reactionCount: 3 },
-  { person: 4, at: 42.75, text: "the hat really ties the whole team together" },
+  { person: 4, at: 42.75, text: "okay fine, joining. the hat really ties the whole team together" },
   { person: 2, at: 45, text: "back with cookies. let’s gooo", emoji: 3, reactionCount: 2 },
 ];
 
 type DemoMessage = (typeof messages)[number] & { cycle: number; reactions: number[] };
 
-// Arrivals and voice changes belong only to this local illustration.
+// Arrivals and voice changes belong only to this local illustration. Each
+// author is out of voice when they type (see messages above).
 const activity = [
-  { at: 0, person: 2, online: true, voice: true, text: "June joined voice" },
-  { at: 4, person: 3, online: true, voice: false, text: "Leo joined the channel" },
-  { at: 8, person: 4, online: true, voice: false, text: "Noor joined the channel" },
-  { at: 10, person: 3, online: true, voice: true, text: "Leo joined voice" },
-  { at: 15, person: 5, online: true, voice: false, text: "Sam joined the channel" },
-  { at: 18, person: 4, online: true, voice: true, text: "Noor joined voice" },
-  { at: 22, person: 0, online: true, voice: false, text: "Maya stepped out of voice" },
-  { at: 25, person: 0, online: true, voice: true, text: "Maya rejoined voice" },
-  { at: 31, person: 1, online: true, voice: false, text: "Theo stepped out of voice" },
-  { at: 35, person: 1, online: true, voice: true, text: "Theo rejoined voice" },
-  { at: 38, person: 5, online: true, voice: true, text: "Sam joined voice" },
-  { at: 39, person: 2, online: false, voice: false, text: "June stepped away from the channel" },
-  { at: 44, person: 2, online: true, voice: true, text: "June rejoined the channel" },
+  { at: 0, person: 0, online: true, voice: true },
+  { at: 0, person: 1, online: true, voice: true },
+  { at: 0, person: 2, online: true, voice: true },
+  { at: 0, person: 3, online: true, voice: false },
+  { at: 0, person: 4, online: true, voice: false },
+  { at: 13, person: 3, online: true, voice: true },
+  { at: 15, person: 5, online: true, voice: false },
+  { at: 21.5, person: 0, online: true, voice: false },
+  { at: 27, person: 0, online: true, voice: true },
+  { at: 29.5, person: 1, online: true, voice: false },
+  { at: 35, person: 1, online: true, voice: true },
+  { at: 38.5, person: 5, online: true, voice: true },
+  { at: 39, person: 2, online: false, voice: false },
+  { at: 43.5, person: 4, online: true, voice: true },
+  { at: 44, person: 2, online: true, voice: false },
+  { at: 46, person: 2, online: true, voice: true },
 ];
 const cycleLength = 49;
 const initialPhase = 3;
@@ -227,11 +235,24 @@ const emoji = [
   { text: "💀", code: "1f480" },
 ];
 
+// Owner-set icons on the rail's tiles, as real spaces can have.
+const caperIcon = "/images/demo-emoji/1f913.svg";
 // Other spaces in the rail: one with new messages, one with mentions of you.
 const otherSpaces = [
-  { name: "Book club", unread: true, mentions: 2 },
-  { name: "Weekend hikes", unread: true, mentions: 0 },
+  { name: "Iced out", icon: "/images/demo-spaces/dario-bling.webp", unread: true, mentions: 2 },
+  { name: "Smackdown", icon: "/images/demo-spaces/jbl-cowboy.webp", unread: true, mentions: 0 },
 ];
+
+function SpaceTile({ name, icon }: { name: string; icon: string }) {
+  return (
+    <>
+      <span>{name[0]}</span>
+      <span className="caper-picture" data-state="ready">
+        <img src={icon} alt="" draggable={false} />
+      </span>
+    </>
+  );
+}
 // A fixed, speech-like waveform for the voice message.
 const voiceBars = Array.from({ length: 40 }, (_, index) =>
   Math.max(0.12, Math.abs(Math.sin(index * 0.9) * Math.cos(index * 0.37)) * 0.9 + (index % 3) * 0.04),
@@ -369,10 +390,10 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
 
   const present = people.map((person, index) => {
     const last = activity.filter((event) => event.person === index && event.at <= phase).at(-1);
-    const voice = last?.voice ?? index < 2;
+    const voice = last?.voice ?? false;
     return {
       ...person,
-      online: last?.online ?? index < 3,
+      online: last?.online ?? false,
       voice,
       speaking: voice && timing.speech[index].some(([start, end]) => phase >= start && phase < end),
     };
@@ -397,8 +418,15 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
     ...new Set(
       timedMessages
         .filter(
+          // Never yourself (Maya), and nobody in voice: they say it out loud instead.
           (message) =>
-            !message.voice && message.at > phase && message.typing <= phase && present[message.person].online,
+            message.person !== 0 &&
+            !message.voice &&
+            !message.meme &&
+            message.at > phase &&
+            message.typing <= phase &&
+            present[message.person].online &&
+            !present[message.person].voice,
         )
         .map((message) => people[message.person].name),
     ),
@@ -443,11 +471,11 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
             <nav
               className="space-rail"
               role="img"
-              aria-label={`Demo spaces: Caper${inCall ? ", connected to voice" : ""}; Book club, 2 mentions; Weekend hikes, unread messages`}
+              aria-label={`Demo spaces: Caper${inCall ? ", connected to voice" : ""}; Iced out, 2 mentions; Smackdown, unread messages`}
             >
               <div className="space-rail-item" data-active="true" data-voice={inCall ? "" : undefined}>
                 <button type="button" tabIndex={-1}>
-                  <span>C</span>
+                  <SpaceTile name="Caper" icon={caperIcon} />
                   {inCall && <Volume2 className="space-rail-voice" data-connected="" aria-hidden="true" />}
                 </button>
               </div>
@@ -455,7 +483,7 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                 <div className="space-rail-item" data-active="false" key={space.name}>
                   {space.unread && <i className="space-unread" aria-hidden="true" />}
                   <button type="button" tabIndex={-1}>
-                    <span>{space.name[0]}</span>
+                    <SpaceTile name={space.name} icon={space.icon} />
                     {space.mentions > 0 && <i className="space-mentions">{space.mentions}</i>}
                   </button>
                 </div>
