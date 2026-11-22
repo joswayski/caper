@@ -717,8 +717,13 @@ and every client replays `shared/invites/invite-cases.json`, generated from web.
 Only the ten-character code is taken from a pasted link: previews and joins always
 go to the client's configured API origin, never the link's host or scheme.
 Existing members see
-**You’re already a member** and **Open space**, which uses the idempotent join
-endpoint; newcomers choose **Join space**.
+**You’re already a member, along with N others** and **Open space**, which uses
+the idempotent join endpoint, then tries the installed app (`caper://invite/<code>`;
+an `intent://` URL with the web space as fallback on Android). If the page keeps
+focus for 1.5 seconds it opens the web space; if it loses focus it offers
+**Continue in the browser**. iPhone/iPad Safari skips the app attempt, because it
+alerts on an unknown scheme and installed apps already receive the link as a
+universal link. Newcomers choose **Join space**.
 
 Every native app registers the `caper://` scheme, and the invite page links to
 `caper://invite/<code>` ("Open in the Caper app"). An opened link fills in the

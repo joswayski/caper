@@ -4,7 +4,7 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvid
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { test, vi } from "vitest";
-import InvitePage from "../spaces/InvitePage";
+import InvitePage, { alreadyMemberLabel } from "../spaces/InvitePage";
 import type { InvitePageState } from "../spaces/invite-server";
 import { androidAssetLinks, appleAppSiteAssociation } from "./app-links.ts";
 import {
@@ -66,13 +66,18 @@ test("invite HTML contains the resolved content and session action without waiti
     assert.ok(html.includes(action), action);
     assert.doesNotMatch(html, /Loading invite/);
     if (state.status === "ready") {
-      for (const text of ["Test space", "Test host", "#introductions", "7 members"])
-        assert.ok(html.includes(text), text);
+      const members = state.preview.alreadyMember ? "You’re already a member, along with 6 others" : "7 members";
+      for (const text of ["Test space", "Test host", "#introductions", members]) assert.ok(html.includes(text), text);
       // Invitees aren't shown link bookkeeping such as expiry.
       assert.doesNotMatch(html, /expires|invited to join/i);
-      assert.equal(html.includes("You’re already a member"), !!state.preview.alreadyMember);
     }
   }
+});
+
+test("members hear how many others are in the space", () => {
+  assert.equal(alreadyMemberLabel(1), "You’re already a member");
+  assert.equal(alreadyMemberLabel(2), "You’re already a member, along with 1 other");
+  assert.equal(alreadyMemberLabel(12), "You’re already a member, along with 11 others");
 });
 
 test("invite codes come from full, scheme-less or bare pasted links", () => {

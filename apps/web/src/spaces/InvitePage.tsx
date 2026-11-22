@@ -7,6 +7,45 @@ import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
 import Wordmark from "../components/Wordmark";
 import { appInviteUrl, invitedSpacePath, joinInvite, SpacesApiError } from "./client";
+
+/** "You’re already a member, along with 3 others" */
+export function alreadyMemberLabel(memberCount: number) {
+  const others = memberCount - 1;
+  return others > 0
+    ? `You’re already a member, along with ${others} ${others === 1 ? "other" : "others"}`
+    : "You’re already a member";
+}
+
+/**
+ * Hands an invite to the installed app. A page can't tell whether it is installed:
+ * this resolves true once the page loses focus or visibility (the app, or a browser
+ * or OS prompt, took over) and false if nothing happened within 1.5 seconds.
+ */
+function openInApp(code: string, fallback: string): Promise<boolean> {
+  // Chrome on Android opens the app, or the web space when it isn't installed.
+  location.href = /Android/i.test(navigator.userAgent)
+    ? `intent://invite/${code}#Intent;scheme=caper;S.browser_fallback_url=${encodeURIComponent(fallback)};end`
+    : appInviteUrl(code);
+  return new Promise((resolve) => {
+    const left = () => {
+      if (document.hidden || !document.hasFocus()) finish(true);
+    };
+    const finish = (opened: boolean) => {
+      clearTimeout(timer);
+      window.removeEventListener("blur", left);
+      document.removeEventListener("visibilitychange", left);
+      resolve(opened);
+    };
+    const timer = setTimeout(() => finish(false), 1500);
+    window.addEventListener("blur", left);
+    document.addEventListener("visibilitychange", left);
+  });
+}
+
+/** iPhones with the app open invite links in it directly; Safari alerts on an unknown scheme. */
+const appleMobile = () =>
+  /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 import { friendlyError } from "./errors";
 import type { InvitePageState } from "./invite-server";
 
@@ -17,6 +56,7 @@ export default function InvitePage({ code, state: loadedState }: { code: string;
   const state: InvitePageState = invalid ? { status: "invalid" } : loadedState;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [openedInApp, setOpenedInApp] = useState<string>();
 
   const join = async () => {
     if (pending || state.status !== "ready") return;
@@ -27,7 +67,14 @@ export default function InvitePage({ code, state: loadedState }: { code: string;
     setError(undefined);
     try {
       const joined = await joinInvite(code);
-      await navigate({ href: invitedSpacePath(joined.space.id, joined.channelId) });
+      const path = invitedSpacePath(joined.space.id, joined.channelId);
+      // Members open the space in the app when it's installed, else here.
+      if (state.preview.alreadyMember && !appleMobile() && (await openInApp(code, new URL(path, location.href).href))) {
+        setOpenedInApp(path);
+        setPending(false);
+        return;
+      }
+      await navigate({ href: path });
     } catch (reason) {
       if (reason instanceof SpacesApiError && reason.status === 404) setInvalid(true);
       else setError(friendlyError(reason));
@@ -89,8 +136,9 @@ export default function InvitePage({ code, state: loadedState }: { code: string;
               </p>
             </div>
             <p className="mt-3 text-[.85rem] text-content-muted">
-              {state.preview.memberCount} {state.preview.memberCount === 1 ? "member" : "members"}
-              {state.preview.alreadyMember && <> · You’re already a member</>}
+              {state.preview.alreadyMember
+                ? alreadyMemberLabel(state.preview.memberCount)
+                : `${state.preview.memberCount} ${state.preview.memberCount === 1 ? "member" : "members"}`}
             </p>
             {error && (
               <p className="mt-6 rounded-control border border-terracotta px-3.5 py-3 leading-[1.5]" role="alert">
@@ -122,13 +170,13 @@ export default function InvitePage({ code, state: loadedState }: { code: string;
                 </>
               )}
             </button>
-            <p className="mt-5 text-right text-[.85rem] text-content-muted">
-              Have the app?{" "}
+            <p className="mt-5 text-right text-[.85rem] text-content-muted" role={openedInApp ? "status" : undefined}>
+              {openedInApp ? "Opening in the Caper app… Didn’t open?" : "Have the app?"}{" "}
               <a
                 className="rounded-control text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2"
-                href={appInviteUrl(code)}
+                href={openedInApp ?? appInviteUrl(code)}
               >
-                Open in the Caper app
+                {openedInApp ? "Continue in the browser" : "Open in the Caper app"}
               </a>
             </p>
           </>
