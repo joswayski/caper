@@ -52,13 +52,21 @@ chmod 0755 "$ffmpeg_dir/ffmpeg"
 # the egui client's name and layout (caper-desktop), so installs, the
 # updater, launchers and launch at login carry over. Windows still builds
 # the egui client (build.ps1).
-cargo fmt --manifest-path "$native/Cargo.toml" --package caper-linux --package caper-client --package caper-web-player -- --check
-cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-linux --package caper-client
-cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine
-CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-client iphone_heic_photos_convert_upright_for_upload -- --ignored
-cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-client native_inference_is_finite_and_owns_fresh_state -- --ignored
-cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-linux --package caper-client --all-targets --no-deps -- -D warnings
-cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine --all-targets --no-deps -- -D warnings
+# A release runs the checks and the packaging as two jobs side by side
+# (CAPER_DESKTOP_STAGE=checks or package), so the tests gate publishing without
+# delaying the packages. Without it, this script does both.
+if [[ "${CAPER_DESKTOP_STAGE:-}" != package ]]; then
+  cargo fmt --manifest-path "$native/Cargo.toml" --package caper-linux --package caper-client --package caper-web-player -- --check
+  cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-linux --package caper-client
+  cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine
+  CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-client iphone_heic_photos_convert_upright_for_upload -- --ignored
+  cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-client native_inference_is_finite_and_owns_fresh_state -- --ignored
+  cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-linux --package caper-client --all-targets --no-deps -- -D warnings
+  cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine --all-targets --no-deps -- -D warnings
+fi
+if [[ "${CAPER_DESKTOP_STAGE:-}" == checks ]]; then
+  exit 0
+fi
 # rav1e's assembly halves AVIF photo encode time when NASM is available.
 release_features=()
 if command -v nasm >/dev/null 2>&1; then

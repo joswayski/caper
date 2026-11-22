@@ -564,22 +564,30 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/caper-release.jks" "$RUNNER_TEMP/android.json" "$RUNNER_TEMP/play.json"
 
+  # Each target runs twice, side by side: `checks` (format, tests, Clippy) and
+  # `package` (release build and installers). Both must pass before anything
+  # that needs `desktop`, so the tests still gate publishing, but the packages
+  # no longer wait for them (about 6 of the Windows job's 15 minutes).
   desktop:
-    name: Desktop / ${{ matrix.target }}
+    name: Desktop${{ matrix.stage == 'checks' && ' checks' || '' }} / ${{ matrix.target }}
     needs: resolve
     strategy:
       fail-fast: false
       matrix:
+        target: [linux-x64, windows-x64]
+        stage: [package, checks]
         include:
-          - os: ubuntu-24.04
-            target: linux-x64
-          - os: windows-2025
-            target: windows-x64
+          - target: linux-x64
+            os: ubuntu-24.04
+          - target: windows-x64
+            os: windows-2025
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
       CAPER_BUILD_NUMBER: ${{ needs.resolve.outputs.build }}
       CAPER_VERSION: ${{ needs.resolve.outputs.version }}
+      # build.sh and build.ps1 run only this half.
+      CAPER_DESKTOP_STAGE: ${{ matrix.stage }}
     permissions:
       contents: read
     steps:
@@ -594,8 +602,9 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
           cache-workspaces: apps/native/desktop
-          # Same key as native.yml's desktop job, so releases reuse its cache.
-          cache-key: ${{ matrix.target == 'windows-x64' && 'windows-target-triple' || '' }}
+          # Packaging uses the same key as native.yml's desktop job, so releases
+          # reuse its cache. The checks keep their debug builds in their own.
+          cache-key: ${{ matrix.stage == 'checks' && 'release-checks' || matrix.target == 'windows-x64' && 'windows-target-triple' || '' }}
       - name: Linux native build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -615,7 +624,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
-      - name: Build and package Linux
+      - name: Check or package Linux
         if: runner.os == 'Linux'
         env:
           CAPER_UPDATE_PUBLIC_KEY: ${{ needs.resolve.outputs.update_public_key }}
@@ -623,16 +632,21 @@ jobs:
           set -euo pipefail
           [[ -n "$CAPER_UPDATE_PUBLIC_KEY" ]] || unset CAPER_UPDATE_PUBLIC_KEY
           bash apps/native/desktop/build.sh
+          [[ "$CAPER_DESKTOP_STAGE" == package ]] || exit 0
           mkdir -p release
           cp apps/native/desktop/dist/Caper-linux-x64.deb release/Caper-Linux-x64.deb
           cp apps/native/desktop/dist/Caper-linux-x64.tar.gz release/Caper-Linux-x64.tar.gz
-      - name: Build and package Windows
+      - name: Check or package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           CAPER_UPDATE_PUBLIC_KEY: ${{ needs.resolve.outputs.update_public_key }}
         run: |
           if (-not $env:CAPER_UPDATE_PUBLIC_KEY) { Remove-Item Env:CAPER_UPDATE_PUBLIC_KEY }
+          if ($env:CAPER_DESKTOP_STAGE -eq 'checks') {
+            ./apps/native/desktop/build.ps1
+            exit $LASTEXITCODE
+          }
           # The Chocolatey feed can return 504 while resolving nsis.install.
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             choco install nsis --version=3.11 -y --no-progress
@@ -658,6 +672,7 @@ jobs:
             printf 'Signature: 8a477f597d28d172789f06886806bc55\n' >"$triple_dir/CACHEDIR.TAG"
           fi
       - uses: actions/upload-artifact@v4
+        if: matrix.stage == 'package'
         with:
           name: release-desktop-${{ matrix.target }}
           path: release/

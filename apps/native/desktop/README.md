@@ -134,6 +134,10 @@ Windows Server 2025 / Windows 11 build host:
    `powershell -ExecutionPolicy Bypass -File apps/native/desktop/build.ps1`.
    Packaging uses its `VCToolsRedistDir` to locate the signed app-local runtime.
 
+Both scripts check formatting, run the tests and Clippy, then build and package.
+`CAPER_DESKTOP_STAGE=checks` or `CAPER_DESKTOP_STAGE=package` runs only that
+half; a release runs the two as parallel jobs and needs both to pass.
+
 Outputs are unsigned:
 
 - `dist/Caper-linux-x64.tar.gz`
