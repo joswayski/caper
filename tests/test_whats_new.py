@@ -112,6 +112,8 @@ class HighlightsTests(unittest.TestCase):
                 "GEMINI_API_KEY": "fake-api-key",
                 "GEMINI_MODEL": "",
                 "GEMINI_THINKING_LEVEL": "",
+                "OPENROUTER_API_KEY": "",
+                "OPENROUTER_MODEL": "",
             },
         )
         self.environment.start()
@@ -549,6 +551,51 @@ class HighlightsTests(unittest.TestCase):
         sleep.assert_not_called()
         self.assertEqual(len(self.requests), 1)
 
+    def test_openrouter_writes_the_notes_when_gemini_fails_or_answers_invalidly(self):
+        self.seed()
+        newest = self.commit("Improve channel controls")
+        depleted = {"error": {"status": "RESOURCE_EXHAUSTED", "message": "Prepayment credits are depleted"}}
+        fallback = []
+
+        def route(request, timeout):
+            if not request.full_url.startswith("https://openrouter.ai/"):
+                return self.provider(request, timeout)
+            body = json.loads(request.data)
+            fallback.append(body)
+            self.assertEqual(request.full_url, "https://openrouter.ai/api/v1/chat/completions")
+            self.assertEqual(request.get_header("Authorization"), "Bearer fake-openrouter-key")
+            self.assertEqual(body["model"], "meta/muse-spark-1.3")
+            self.assertEqual(body["response_format"]["json_schema"]["schema"], notes.OUTPUT_SCHEMA)
+            self.assertEqual(body["messages"][1]["content"], prompt_of(self.requests[-1]))
+            answer = {"highlights": [highlight([newest], title="Clearer channel controls")]}
+            message = {"content": json.dumps(answer)}
+            return io.BytesIO(encoded({"choices": [{"finish_reason": "stop", "message": message}]}))
+
+        gemini_failures = {
+            "out of credits": lambda: setattr(
+                self,
+                "provider_error",
+                urllib.error.HTTPError("https://example.test", 429, "quota", {}, io.BytesIO(encoded(depleted))),
+            ),
+            "invalid answer": lambda: setattr(
+                self, "response", {"highlights": [highlight(["0" * 40], title="Invented change")]}
+            ),
+        }
+        for case, fail in gemini_failures.items():
+            with (
+                self.subTest(case=case),
+                patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake-openrouter-key"}),
+                patch.object(notes.urllib.request, "urlopen", side_effect=route),
+                patch.object(notes, "wait_before_retry"),
+            ):
+                self.provider_error, self.response = None, {"highlights": []}
+                self.github = FakeGitHub()
+                self.seed()
+                fail()
+                feeds = self.generate(newest)
+                self.assertEqual(feeds["web"]["releases"][-1]["highlights"][0]["title"], "Clearer channel controls")
+        self.assertEqual(len(fallback), 2)
+
     def assert_cli_failure(self, revision, expected):
         before = {path.relative_to(self.output): path.read_bytes() for path in self.output.rglob("*.json")}
         stderr = io.StringIO()
@@ -579,16 +626,16 @@ class HighlightsTests(unittest.TestCase):
             self.assert_cli_failure(newest, "GEMINI_API_KEY")
         self.assertEqual(self.requests, [])
 
-    def test_defaults_to_neon_medium_thinking_and_variables_override(self):
+    def test_defaults_to_hydrogen_medium_thinking_and_variables_override(self):
         self.seed()
         newest = self.commit("Improve channel controls")
         self.generate(newest)
-        self.assertTrue(self.urls[0].endswith("/models/gemini-4-neon:generateContent"))
+        self.assertTrue(self.urls[0].endswith("/models/gemini-4-hydrogen:generateContent"))
         self.assertEqual(self.requests[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "MEDIUM"})
         later = self.commit("Improve channel search")
-        with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-4-hydrogen", "GEMINI_THINKING_LEVEL": "xhigh"}):
+        with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-4-neon", "GEMINI_THINKING_LEVEL": "xhigh"}):
             self.generate(later)
-        self.assertTrue(self.urls[1].endswith("/models/gemini-4-hydrogen:generateContent"))
+        self.assertTrue(self.urls[1].endswith("/models/gemini-4-neon:generateContent"))
         self.assertEqual(self.requests[1]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "XHIGH"})
 
     def test_invalid_thinking_level_fails_before_any_provider_call(self):

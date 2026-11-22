@@ -41,6 +41,8 @@ on:
     secrets:
       GEMINI_API_KEY:
         required: false
+      OPENROUTER_API_KEY:
+        required: false
 
 permissions:
   contents: write
@@ -88,9 +90,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # Empty variables fall back to the generator defaults (Gemini 4 Neon, medium thinking).
+          # Empty variables fall back to the generator defaults (Gemini 4 Hydrogen,
+          # medium thinking, and the OpenRouter fallback model).
           GEMINI_MODEL: ${{ vars.CAPER_RELEASE_NOTES_MODEL }}
           GEMINI_THINKING_LEVEL: ${{ vars.CAPER_RELEASE_NOTES_THINKING_LEVEL }}
+          # Writes the notes when Gemini fails or answers invalidly, such as when credits run out.
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.CAPER_RELEASE_NOTES_FALLBACK_MODEL }}
           RELEASE_SHA: ${{ inputs.git_sha }}
           AUDIENCE: ${{ inputs.audience }}
           NATIVE_VERSION: ${{ inputs.native_version }}

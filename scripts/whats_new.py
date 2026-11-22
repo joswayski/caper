@@ -32,7 +32,8 @@ PLATFORMS = ("web", "android", "ios", "macos", "windows", "linux")
 MAX_SNAPSHOT_BYTES = 64 * 1024
 MAX_INPUT_CHARS = 400_000
 MAX_RESPONSE_BYTES = 128 * 1024
-DEFAULT_MODEL = "gemini-4-neon"
+DEFAULT_MODEL = "gemini-4-hydrogen"
+DEFAULT_FALLBACK_MODEL = "meta/muse-spark-1.3"
 DEFAULT_THINKING_LEVEL = "medium"
 THINKING_LEVELS = ("low", "medium", "high", "xhigh")
 PROVIDER_TIMEOUT_SECONDS = 300
@@ -442,6 +443,49 @@ def wait_before_retry(delay):
     time.sleep(delay)
 
 
+def post(name, url, body, headers):
+    """Send one JSON request, retrying transient failures; return the parsed reply."""
+    payload = encode(body)
+    if len(payload.decode("utf-8")) > MAX_INPUT_CHARS:
+        raise GenerationError(f"{name} request exceeds {MAX_INPUT_CHARS} input characters")
+    request = urllib.request.Request(
+        url, data=payload, method="POST", headers={**headers, "Content-Type": "application/json"}
+    )
+    for delay in (*PROVIDER_RETRY_DELAYS, None):
+        try:
+            with urllib.request.urlopen(request, timeout=PROVIDER_TIMEOUT_SECONDS) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+            break
+        except urllib.error.HTTPError as error:
+            # The request holds only public commits and this script's prompt,
+            # so the API's explanation is safe to log once made printable.
+            status = error.code
+            try:
+                detail = json.loads(error.read(4096))["error"]
+                kind, reason = detail.get("status"), detail.get("message", "")
+            except (OSError, http.client.HTTPException, ValueError, TypeError, KeyError, AttributeError):
+                kind, reason = None, ""
+            finally:
+                error.close()
+            if not isinstance(kind, str) or not re.fullmatch(r"[A-Z_]{1,64}", kind):
+                kind = "UNKNOWN"
+            reason = " ".join("".join(c if c.isprintable() else " " for c in str(reason)).split())[:300]
+            if delay is None or status not in PROVIDER_RETRY_STATUSES:
+                raise GenerationError(
+                    f"{name} request failed (HTTP {status} {kind}{': ' + reason if reason else ''}); "
+                    "no snapshots published"
+                ) from None
+        except (urllib.error.URLError, ConnectionError) as error:
+            if delay is None or isinstance(getattr(error, "reason", None), TimeoutError):
+                raise GenerationError(f"{name} request failed; no snapshots published") from None
+        except (TimeoutError, OSError, http.client.HTTPException, ValueError):
+            raise GenerationError(f"{name} request failed; no snapshots published") from None
+        wait_before_retry(delay)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise GenerationError(f"{name} response exceeds the size limit")
+    return parse_json(raw)
+
+
 def ask_gemini(prompt):
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
@@ -464,48 +508,12 @@ def ask_gemini(prompt):
             "thinkingConfig": {"thinkingLevel": level.upper()},
         },
     }
-    payload = encode(body)
-    if len(payload.decode("utf-8")) > MAX_INPUT_CHARS:
-        raise GenerationError(f"Gemini request exceeds {MAX_INPUT_CHARS} input characters")
-    request = urllib.request.Request(
+    response = post(
+        "Gemini",
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        data=payload,
-        method="POST",
-        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+        body,
+        {"x-goog-api-key": key},
     )
-    for delay in (*PROVIDER_RETRY_DELAYS, None):
-        try:
-            with urllib.request.urlopen(request, timeout=PROVIDER_TIMEOUT_SECONDS) as response:
-                raw = response.read(MAX_RESPONSE_BYTES + 1)
-            break
-        except urllib.error.HTTPError as error:
-            # The request holds only public commits and this script's prompt,
-            # so the API's explanation is safe to log once made printable.
-            status = error.code
-            try:
-                detail = json.loads(error.read(4096))["error"]
-                kind, reason = detail["status"], detail.get("message", "")
-            except (OSError, http.client.HTTPException, ValueError, TypeError, KeyError, AttributeError):
-                kind, reason = None, ""
-            finally:
-                error.close()
-            if not isinstance(kind, str) or not re.fullmatch(r"[A-Z_]{1,64}", kind):
-                kind = "UNKNOWN"
-            reason = " ".join("".join(c if c.isprintable() else " " for c in str(reason)).split())[:300]
-            if delay is None or status not in PROVIDER_RETRY_STATUSES:
-                raise GenerationError(
-                    f"Gemini request failed (HTTP {status} {kind}{': ' + reason if reason else ''}); "
-                    "no snapshots published"
-                ) from None
-        except (urllib.error.URLError, ConnectionError) as error:
-            if delay is None or isinstance(getattr(error, "reason", None), TimeoutError):
-                raise GenerationError("Gemini request failed; no snapshots published") from None
-        except (TimeoutError, OSError, http.client.HTTPException, ValueError):
-            raise GenerationError("Gemini request failed; no snapshots published") from None
-        wait_before_retry(delay)
-    if len(raw) > MAX_RESPONSE_BYTES:
-        raise GenerationError("Gemini response exceeds the size limit")
-    response = parse_json(raw)
     candidates = response.get("candidates") if isinstance(response, dict) else None
     if (
         not isinstance(candidates, list)
@@ -523,6 +531,57 @@ def ask_gemini(prompt):
     if not texts or not all(isinstance(text, str) for text in texts):
         raise GenerationError("Gemini returned no structured text")
     return parse_json("".join(texts))
+
+
+def ask_openrouter(prompt):
+    """The fallback writer, used when Gemini fails or answers invalidly."""
+    model = os.environ.get("OPENROUTER_MODEL") or DEFAULT_FALLBACK_MODEL
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}/[a-z0-9][a-z0-9._-]{0,63}", model):
+        raise GenerationError("OPENROUTER_MODEL must be an OpenRouter model ID")
+    body = {
+        "model": model,
+        "max_tokens": 32768,
+        "messages": [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "highlights", "strict": True, "schema": OUTPUT_SCHEMA},
+        },
+        # Only providers that enforce the schema may serve the request.
+        "provider": {"require_parameters": True},
+    }
+    response = post(
+        "OpenRouter",
+        "https://openrouter.ai/api/v1/chat/completions",
+        body,
+        {"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+    )
+    choices = response.get("choices") if isinstance(response, dict) else None
+    if (
+        not isinstance(choices, list)
+        or len(choices) != 1
+        or not isinstance(choices[0], dict)
+        or choices[0].get("finish_reason") != "stop"
+        or not isinstance(choices[0].get("message"), dict)
+        or not isinstance(choices[0]["message"].get("content"), str)
+    ):
+        raise GenerationError("OpenRouter refused, errored, or did not finish the response")
+    return parse_json(choices[0]["message"]["content"])
+
+
+def ask(prompt, ranges, commits, platforms):
+    """Gemini's validated answer, else the OpenRouter fallback's when its key is set."""
+    providers = [ask_gemini] + ([ask_openrouter] if os.environ.get("OPENROUTER_API_KEY") else [])
+    for provider in providers:
+        try:
+            result = provider(prompt)
+            return result, validate_highlights(result, ranges, commits, platforms)
+        except GenerationError as error:
+            if provider is providers[-1]:
+                raise
+            print(f"whats-new: {error}; asking the fallback model", file=sys.stderr)
 
 
 def evidence_hash(prompt):
@@ -775,8 +834,9 @@ def generate(
         if any(commit["platforms"] for commit in commits.values()):
             result = saved_answer(answer, revision, prompt) if answer else None
             if result is None:
-                result = ask_gemini(prompt)
-            highlights = validate_highlights(result, ranges, commits, missing)
+                result, highlights = ask(prompt, ranges, commits, missing)
+            else:
+                highlights = validate_highlights(result, ranges, commits, missing)
             if save_answer:
                 Path(save_answer).parent.mkdir(parents=True, exist_ok=True)
                 Path(save_answer).write_bytes(

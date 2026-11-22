@@ -4674,7 +4674,9 @@ generation failure never holds back a release.
 commit messages, relevant runtime diffs and recent highlights, and makes one Gemini
 API `generateContent` request selecting at most five highlights. Output must cite commits in
 range, have client/shared runtime evidence and pass schema/text/claim checks; an
-empty list is valid. Only repository evidence is sent, never user data. One request
+empty list is valid. When Gemini fails (for example, its credits run out) or its
+answer fails those checks, the same request goes to an OpenRouter fallback model
+with the same schema and checks. Only repository evidence is sent, never user data. One request
 sends at most 400,000 characters; over that, server-only diffs drop and client diffs
 shorten (`diffTruncated`), keeping every commit's subject, body and paths.
 Highlights describe behavior reachable in the released client, not native migration
@@ -4713,16 +4715,22 @@ flight.
 
 - `GEMINI_API_KEY` is a Caper Actions secret
   (`gh secret set GEMINI_API_KEY --repo joswayski/caper`): a Gemini API key from
-  Google AI Studio whose project uses the paid tier (Neon has no free tier).
+  Google AI Studio whose project uses the paid tier, so prompts are not used for training.
   Captures and dbm use the same key. Removing it stops generation without
   affecting deploys.
+- `OPENROUTER_API_KEY` is an optional Caper Actions secret
+  (`gh secret set OPENROUTER_API_KEY --repo joswayski/caper`). With it set, an
+  OpenRouter model writes the notes whenever Gemini cannot; without it, a Gemini
+  failure leaves that release without new notes.
 - Ship's dispatch identity is stored in infrastructure with
   `./scripts/store-ship-dispatch-secrets.sh --profile production` (from the
   infrastructure checkout).
-- The generator defaults to `gemini-4-neon` at the `medium` thinking level.
-  Optional Actions variables `CAPER_RELEASE_NOTES_MODEL` (a Gemini model ID) and
-  `CAPER_RELEASE_NOTES_THINKING_LEVEL` (`low`, `medium`, `high` or `xhigh`)
-  override them.
+- The generator defaults to `gemini-4-hydrogen` at the `medium` thinking level,
+  with `meta/muse-spark-1.3` as the OpenRouter fallback. Optional Actions
+  variables `CAPER_RELEASE_NOTES_MODEL` (a Gemini model ID),
+  `CAPER_RELEASE_NOTES_THINKING_LEVEL` (`low`, `medium`, `high` or `xhigh`) and
+  `CAPER_RELEASE_NOTES_FALLBACK_MODEL` (an OpenRouter model ID whose provider
+  supports structured outputs) override them.
 
 Repair a failed generation only for a revision that actually shipped:
 
