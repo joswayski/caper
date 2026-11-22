@@ -517,7 +517,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         day.alignment = .center
         dayLeading.backgroundColor = NativeStyle.border.cgColor
         dayTrailing.backgroundColor = NativeStyle.border.cgColor
-        unread.font = NSFont(name: "Inrond40-Medium", size: 11) ?? NativeStyle.font(11)
+        unread.font = NSFont(name: "Figtree-Medium", size: 11) ?? NativeStyle.font(11)
         unread.textColor = NativeStyle.accent
         unread.isHidden = true
         unread.alignment = .center

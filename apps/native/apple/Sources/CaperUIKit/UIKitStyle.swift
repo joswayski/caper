@@ -64,10 +64,10 @@ enum UIKitStyle {
     static func font(_ size: CGFloat, _ weight: Weight = .regular, scaled: Bool = true) -> UIFont {
         let name: String
         switch weight {
-        case .regular: name = "Inrond40-Regular"
-        case .medium: name = "Inrond40-Medium"
-        case .bold: name = "Inrond40-Bold"
-        case .black: name = "Inrond40-Black"
+        case .regular: name = "Figtree-Regular"
+        case .medium: name = "Figtree-Medium"
+        case .bold: name = "Figtree-Bold"
+        case .black: name = "Figtree-Black"
         }
         let font = UIFont(name: name, size: size) ?? .systemFont(ofSize: size)
         return scaled ? UIFontMetrics.default.scaledFont(for: font) : font

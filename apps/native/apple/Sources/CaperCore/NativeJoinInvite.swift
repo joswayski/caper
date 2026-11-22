@@ -153,7 +153,7 @@ import UIKit
         let avatar = UIKitAvatar(side: 28); avatar.show(name: value.inviter.displayName, avatarID: value.inviter.avatarId, picture: value.inviter.avatarPicture)
         let invited = Self.label("", size: 13)
         let font = { (bold: Bool) in UIFontMetrics(forTextStyle: .body).scaledFont(for:
-            UIFont(name: bold ? "Inrond40-Bold" : "Inrond40-Regular", size: 13) ?? .systemFont(ofSize: 13)) }
+            UIFont(name: bold ? "Figtree-Bold" : "Figtree-Regular", size: 13) ?? .systemFont(ofSize: 13)) }
         invited.attributedText = NativeJoinInvite.runs(value).reduce(into: NSMutableAttributedString()) { line, run in
             line.append(NSAttributedString(string: run.text, attributes: [
                 .font: font(run.strong), .foregroundColor: UIColor(run.strong ? CaperTheme.text : CaperTheme.muted),
