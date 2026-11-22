@@ -22,6 +22,7 @@ import {
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import { subscribeProfiles } from "../account/profiles.ts";
+import { shellPoll } from "../account/shell-poll.ts";
 import type { ReactionSave } from "./MessageReactions.tsx";
 import MessageActions, { preloadReactionPicker, type MessageActionTarget } from "./MessageActions.tsx";
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
@@ -780,10 +781,10 @@ export default function Chat({
     };
     refresh();
     document.addEventListener("visibilitychange", refresh);
-    const timer = setInterval(refresh, 15_000);
+    const stopPoll = shellPoll(refresh);
     return () => {
       document.removeEventListener("visibilitychange", refresh);
-      clearInterval(timer);
+      stopPoll();
     };
   }, [channelId, readActive, signedIn]);
 

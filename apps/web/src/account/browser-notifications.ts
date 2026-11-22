@@ -2,6 +2,7 @@ import { appGateway } from "../gateway/client";
 import { avatarUrl } from "./avatar";
 import { notificationImage } from "./notification-image";
 import { pictureUrl } from "./pictures";
+import { setAccountFeedLive } from "./shell-poll";
 
 const CHOICE = "caper.browserNotifications";
 
@@ -98,7 +99,8 @@ export function notificationLocation(event: MessageNotification) {
 export function watchBrowserNotifications(
   accountId: string,
   showing: () => string | undefined,
-  onActivity?: () => void,
+  /** Called with the kinds of the notifications that arrived, about a second after the first. */
+  onActivity?: (kinds: ReadonlySet<string>) => void,
   open?: (location: string) => boolean,
 ) {
   let active = true;
@@ -128,11 +130,16 @@ export function watchBrowserNotifications(
   document.addEventListener("visibilitychange", visibility);
   // A burst of notifications coalesces into one unread refresh about a second later.
   let activityTimer: ReturnType<typeof setTimeout> | undefined;
-  const activity = () => {
-    if (!onActivity || activityTimer !== undefined) return;
+  let activityKinds = new Set<string>();
+  const activity = (kind: string | undefined) => {
+    if (!onActivity) return;
+    if (kind) activityKinds.add(kind);
+    if (activityTimer !== undefined) return;
     activityTimer = setTimeout(() => {
       activityTimer = undefined;
-      if (active) onActivity();
+      const kinds = activityKinds;
+      activityKinds = new Set();
+      if (active) onActivity(kinds);
     }, 1_000);
   };
   const receive = async (value: unknown) => {
@@ -155,7 +162,7 @@ export function watchBrowserNotifications(
       retracted.has(identity)
     )
       return;
-    activity();
+    activity(event.kind);
     const location = notificationLocation(event);
     const fresh = () => {
       const age = Date.now() - Date.parse(event.createdAt);
@@ -231,6 +238,10 @@ export function watchBrowserNotifications(
       event: (value) => {
         void receive(value);
       },
+      // Polls slow down while this feed reports activity itself.
+      status: (online) => {
+        if (active) setAccountFeedLive(online);
+      },
     },
   );
   void subscription.ready.catch(() => undefined);
@@ -252,6 +263,7 @@ export function watchBrowserNotifications(
   void retractions.ready.catch(() => undefined);
   return () => {
     active = false;
+    setAccountFeedLive(false);
     retractions.unsubscribe();
     clearTimeout(activityTimer);
     downloads.abort();

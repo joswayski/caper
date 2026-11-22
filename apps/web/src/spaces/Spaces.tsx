@@ -39,6 +39,7 @@ import {
   type Account,
 } from "../account/client";
 import { watchBrowserNotifications } from "../account/browser-notifications";
+import { shellPoll } from "../account/shell-poll";
 import { setApplicationBadge, UNREAD_CHANGED } from "../account/app-badge";
 import { watchLiveUpdates } from "../account/live-updates";
 import {
@@ -1864,21 +1865,22 @@ export default function Spaces({
       readRefresh = setTimeout(refresh, 100);
     };
     // Returning to the tab fires both events: one snapshot serves them, and
-    // hiding it needs none.
-    let woke = 0;
+    // hiding it needs none. Focus arriving as the page loads is served by the
+    // first snapshot below.
+    let woke = performance.now();
     const wake = () => {
       if (document.hidden || performance.now() - woke < 1000) return;
       woke = performance.now();
       refresh();
     };
     refresh();
-    const timer = setInterval(refresh, 15_000);
+    const stopPoll = shellPoll(refresh);
     window.addEventListener("focus", wake);
     window.addEventListener(UNREAD_CHANGED, onRead);
     document.addEventListener("visibilitychange", wake);
     return () => {
       unreadRevision.current++;
-      clearInterval(timer);
+      stopPoll();
       clearTimeout(readRefresh);
       window.removeEventListener("focus", wake);
       window.removeEventListener(UNREAD_CHANGED, onRead);
@@ -2098,12 +2100,15 @@ export default function Spaces({
   }, [refreshFeedback, feedbackTeam]);
   // Set below, once navigation is defined; read when a notification is clicked.
   const openNotification = useRef<(location: string) => boolean>(() => false);
+  // Set by the polls below, so a notification can bring their next read forward.
+  const refreshVoiceActivity = useRef<() => void>(() => undefined);
+  const refreshMembership = useRef<() => void>(() => undefined);
   useEffect(() => {
     if (account?.id)
       return watchBrowserNotifications(
         account.id,
         () => notificationConversation.current,
-        () => {
+        (kinds) => {
           void refreshUnread();
           void refreshFeedback();
           // A new conversation or request shows in the sidebar now, not at its next poll.
@@ -2111,6 +2116,9 @@ export default function Spaces({
             (result) => setDirects(unlessSame(result.conversations)),
             () => undefined,
           );
+          // So does a call that started, and an invitation in the rail.
+          if (kinds.has("voice.started")) refreshVoiceActivity.current();
+          if (kinds.has("space.invitation") || kinds.has("channel.invitation")) refreshMembership.current();
         },
         (location) => openNotification.current(location),
       );
@@ -2294,7 +2302,7 @@ export default function Spaces({
     };
     // Account initialization below owns the first read. Start only the poll
     // here, otherwise mounting the page fetches the same DM list twice.
-    const timer = setInterval(refresh, 15_000);
+    const stopPoll = shellPoll(refresh);
     document.addEventListener("visibilitychange", refresh);
     // Blocked accounts' messages collapse in every chat.
     void refreshBlocks().catch(() => undefined);
@@ -2302,7 +2310,7 @@ export default function Spaces({
     void refreshNotificationSettings().catch(() => undefined);
     return () => {
       current = false;
-      clearInterval(timer);
+      stopPoll();
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [account?.id]);
@@ -2639,20 +2647,22 @@ export default function Spaces({
       }
     };
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 15_000);
+    refreshVoiceActivity.current = () => void refresh();
+    const stopPoll = shellPoll(() => void refresh());
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
       current = false;
-      clearInterval(interval);
+      refreshVoiceActivity.current = () => undefined;
+      stopPoll();
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [account?.id]);
 
   // Membership can change in another account/tab while this page is open.
-  // Reconcile the rail on focus and every 15s; transport authorization still
-  // enforces access independently of this UI refresh.
+  // Reconcile the rail on focus and on the shell poll; transport authorization
+  // still enforces access independently of this UI refresh.
   useEffect(() => {
     if (loading || !account) return;
     let current = true;
@@ -2705,12 +2715,14 @@ export default function Spaces({
         refreshing = false;
       }
     };
-    const interval = window.setInterval(() => void refresh(), 15_000);
+    refreshMembership.current = () => void refresh();
+    const stopPoll = shellPoll(() => void refresh());
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
       current = false;
-      clearInterval(interval);
+      refreshMembership.current = () => undefined;
+      stopPoll();
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };

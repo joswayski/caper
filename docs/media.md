@@ -786,8 +786,9 @@ incoming-envelope artwork on every client (canonical PNG and CC BY 4.0
 attribution in `apps/web/public/images/invitation`; the web suite checks the
 Android/Apple copies byte-for-byte). Decline has initial focus. Owners see
 pending invitees separately and can cancel them. Browser space lists refresh on
-focus/visibility and every 15 seconds while visible; revocation removes the rail
-entry and clears the selected space; an outage is not revocation. Native clients
+focus/visibility, on the shell poll while visible and when an invitation's
+notification arrives; revocation removes the rail entry and clears the selected
+space; an outage is not revocation. Native clients
 discover invites at account load and prune spaces when navigation returns 404.
 
 Reaction mutations require an active `channel_joins` row (including cross-channel
@@ -2048,7 +2049,15 @@ Accepting a username invitation joins one public starter channel, preferring
 oldest public channel. Creating a channel joins only its creator. Space removal
 clears participation and revokes channel invitations. Clients discover
 invitations and joins on account/space reload and after mutations; the browser
-also refreshes on focus/visibility and every 15 seconds.
+also refreshes on focus/visibility and on the shell poll.
+
+**Shell poll.** Clients read sidebar state on a timer: unread and badge counts,
+the DM list, the space list and open space, voice activity and thread unread
+state. The timer runs every 15 seconds. While the account's `notifications`
+gateway subscription is live it runs every 60 seconds instead, because that
+feed reports activity within about a second and each client refreshes on it;
+the poll then only catches what never notifies, such as muted conversations,
+membership changes and a call ending.
 
 ## Message pins
 
@@ -2082,8 +2091,8 @@ answered with "That message was deleted." on web, Android, Apple and the egui
 desktop, which hide deleted rows; Linux and Windows land on its "This message
 was deleted." row.
 
-On web, a channel, DM or thread scrolled more than half a screen above its
-newest loaded message shows a floating **Jump to latest** button over the list's
+On every client, a channel, DM or thread scrolled more than half a screen above
+its newest loaded message shows a floating **Jump to latest** button over the list's
 bottom corner. It counts messages other people post meanwhile ("3 new
 messages", terracotta border), scrolls back to the newest message and resumes
 following. It is hidden while a history window is detached from the live end;
