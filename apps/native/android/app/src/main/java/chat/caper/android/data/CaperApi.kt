@@ -392,10 +392,10 @@ class CaperApi(
         }.build()
         try {
             storageClient.newCall(request).awaitDecoded { response ->
-                if (!response.isSuccessful) throw UploadException("Storage refused the upload (${response.code}).")
+                if (!response.isSuccessful) throw UploadException("Storage refused the upload (${response.code}).", transient = response.code >= 500)
             }
         } catch (error: UploadException) { throw error } catch (error: IOException) {
-            throw UploadException("The upload was interrupted.")
+            throw UploadException("The upload was interrupted.", transient = true)
         }
     }
 

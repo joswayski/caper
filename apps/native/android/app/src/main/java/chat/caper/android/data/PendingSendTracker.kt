@@ -34,10 +34,12 @@ internal class PendingSendTracker {
     fun begin(
         channel: String, author: ChatAuthor, text: String, attachmentIds: List<String> = emptyList(),
         threadRootId: String? = null, broadcast: Boolean = false, replyTo: MessageReply? = null,
-        spoilerAttachmentIds: List<String> = emptyList(), gif: KlipyGif? = null, suppressEmbeds: Boolean = false, embeds: List<ChatEmbed> = emptyList(), confirmed: () -> Unit,
+        spoilerAttachmentIds: List<String> = emptyList(), gif: KlipyGif? = null, suppressEmbeds: Boolean = false, embeds: List<ChatEmbed> = emptyList(),
+        /** A queued message keeps the client ID its row already showed. */
+        id: UUID = UUID.randomUUID(), confirmed: () -> Unit,
     ): PendingSend =
         retrying(channel, author)
-            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds, gif, suppressEmbeds,
+            ?: PendingSend(channel, author, text, id, confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds, gif, suppressEmbeds,
                 if (suppressEmbeds) emptyList() else embeds).also { pending = it }
 
     /** The unknown-outcome send a new attempt must repeat, if any. */
