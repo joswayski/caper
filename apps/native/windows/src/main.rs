@@ -269,6 +269,18 @@ impl Panel {
         }
     }
 
+    /// Moves a closed panel off-screen and frees its surface, so a
+    /// window-sized overlay (dialog, viewer, Settings, Pins) holds no GPU
+    /// memory while closed; the next `ensure` makes a new one.
+    fn hide(&mut self) -> Result<()> {
+        self.offset(-100_000.0, 0.0)?;
+        if self.surface.take().is_some() {
+            self.size = (0, 0);
+            unsafe { self.visual.SetContent(None)? };
+        }
+        Ok(())
+    }
+
     fn draw(&self, scale: f32, f: impl FnOnce(&ID2D1DeviceContext) -> Result<()>) -> Result<()> {
         match &self.surface {
             Some(s) => {
@@ -530,6 +542,9 @@ pub struct App {
     thread_box_p: Panel,
     drop_overlay: Option<drop_overlay::Open>,
     drop_p: Panel,
+    /// The caret stopped blinking while the window was minimized; it
+    /// resumes when the window is restored.
+    caret_paused: bool,
     quit: bool,
 }
 
@@ -822,6 +837,7 @@ impl App {
                 thread_box_p,
                 drop_overlay: None,
                 drop_p,
+                caret_paused: false,
                 quit: false,
             })
         }
@@ -2437,6 +2453,17 @@ impl App {
             WM_SIZE => {
                 let (pw, ph) = ((lp.0 & 0xffff) as f32, ((lp.0 >> 16) & 0xffff) as f32);
                 self.resized(pw, ph);
+                if wp.0 != SIZE_MINIMIZED as usize && std::mem::take(&mut self.caret_paused) {
+                    let hwnd = self.hwnd;
+                    if let Some(f) = self.focused_field_mut() {
+                        f.caret_on = true;
+                        unsafe {
+                            SetTimer(Some(hwnd), TIMER_CARET, GetCaretBlinkTime(), None);
+                        }
+                    }
+                }
+                // Nothing was drawn while minimized; GIFs resume with this frame.
+                self.need = true;
             }
             WM_SETTINGCHANGE => self.motion_changed(),
             WM_TIMER => match wp.0 {
@@ -2444,6 +2471,11 @@ impl App {
                 TIMER_LIVE => unsafe {
                     let _ = KillTimer(Some(self.hwnd), TIMER_LIVE);
                     let _ = PostMessageW(Some(self.hwnd), live::WM_LIVE, WPARAM(0), LPARAM(0));
+                },
+                // Nobody sees a minimized caret blink: stop until restored.
+                TIMER_CARET if unsafe { IsIconic(self.hwnd) }.as_bool() => unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_CARET);
+                    self.caret_paused = true;
                 },
                 TIMER_CARET => {
                     if let Some(f) = self.focused_field_mut() {
@@ -5120,7 +5152,11 @@ fn main() -> Result<()> {
                 DispatchMessageW(&msg);
             }
             let state = with_app(|a| {
-                let render = !a.quit && (a.need || a.bench.wants_frames());
+                // A minimized window draws nothing: `need` waits for the
+                // restore, and GIF and media timers, which re-arm only after
+                // a drawn frame, stop meanwhile.
+                let render =
+                    !a.quit && (a.need || a.bench.wants_frames()) && !IsIconic(a.hwnd).as_bool();
                 if render {
                     a.need = false;
                     if let Err(e) = a.frame() {

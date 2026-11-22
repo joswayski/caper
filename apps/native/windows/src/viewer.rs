@@ -1073,7 +1073,7 @@ impl App {
         }
         let _ = opacity(&self.dialog_p.visual, None);
         let _ = opacity(&self.viewer_p.visual, None);
-        let _ = self.viewer_p.offset(-100_000.0, 0.0);
+        let _ = self.viewer_p.hide();
         self.dirty.overlay = true;
         self.need = true;
         self.events |= EV_SCREEN | EV_FOCUS;

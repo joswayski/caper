@@ -2680,7 +2680,7 @@ impl App {
     /// Redraws the menu and dialog surfaces when they changed.
     pub fn draw_overlays(&mut self) -> windows::core::Result<()> {
         if self.viewer.is_some() {
-            self.dialog_card_p.offset(-100_000.0, 0.0)?;
+            self.dialog_card_p.hide()?;
             self.dirty.overlay = false;
             return self.draw_viewer();
         }
@@ -2701,7 +2701,7 @@ impl App {
             None => self.menu_p.offset(-10_000.0, 0.0)?,
         }
         if let Some(e) = &self.attachment_editor {
-            self.dialog_card_p.offset(-100_000.0, 0.0)?;
+            self.dialog_card_p.hide()?;
             self.dialog_p.ensure(g, px(self.w), px(self.h))?;
             self.dialog_p.offset(0.0, 0.0)?;
             self.dialog_p.draw(s, |dc| e.draw(g, dc, self.w))?;
@@ -2744,8 +2744,8 @@ impl App {
                 }
             }
             None => {
-                self.dialog_p.offset(-100_000.0, 0.0)?;
-                self.dialog_card_p.offset(-100_000.0, 0.0)?;
+                self.dialog_p.hide()?;
+                self.dialog_card_p.hide()?;
             }
         }
         Ok(())

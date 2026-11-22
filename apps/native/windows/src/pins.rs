@@ -660,7 +660,7 @@ impl App {
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         let g = &self.g;
         let Some(p) = &mut self.pins else {
-            return self.pins_p.offset(-100_000.0, 0.0);
+            return self.pins_p.hide();
         };
         self.pins_p.ensure(g, px(self.w), px(self.h))?;
         self.pins_p.offset(0.0, 0.0)?;

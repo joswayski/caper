@@ -2247,7 +2247,7 @@ impl App {
         }
         self.settings_shown = false;
         let Some(m) = &self.account_menu else {
-            return self.settings_p.offset(-100_000.0, 0.0);
+            return self.settings_p.hide();
         };
         let (mx, my, mw, mh) = self.account_menu_rect();
         let items: Vec<(usize, Rect)> = self
