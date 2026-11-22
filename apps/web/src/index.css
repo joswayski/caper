@@ -24,14 +24,10 @@
   --color-action-hover: var(--action-hover);
   --color-action-press: var(--action-press);
   --color-on-action: var(--on-action);
-  --font-sans: var(--font-sans);
-  --font-display: var(--font-display);
-  --font-inrond: var(--font-sans);
+  --font-sans: "Figtree", system-ui, "Segoe UI", sans-serif;
+  --font-display: "Bricolage Grotesque", "Figtree", system-ui, sans-serif;
+  --font-inrond: "Figtree", system-ui, "Segoe UI", sans-serif;
   --radius-control: var(--radius);
-  --radius-canvas: var(--radius-canvas);
-  --radius-card: var(--radius-card);
-  --radius-composer: var(--radius-composer);
-  --radius-pill: var(--radius-pill);
 }
 
 @layer base {

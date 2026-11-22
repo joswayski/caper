@@ -423,7 +423,7 @@ const INTERNATIONAL: &[&str] = &[
     "Привет всем, сервер снова работает",
     "שלום לכולם, הכול עובד עכשיו",
 ];
-pub const AUTHOR_COLORS: [u32; 6] = [0x637A43, 0xB64D32, 0x4D6FB6, 0x8A5BB0, 0xC29A3A, 0x3A9C9A];
+pub const AUTHOR_COLORS: [u32; 6] = [0x6F9948, 0xB64D32, 0x4D6FB6, 0x8A5BB0, 0xC29A3A, 0x3A9C9A];
 
 struct Demo {
     rng: u64,

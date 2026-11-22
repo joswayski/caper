@@ -109,8 +109,31 @@
   text-align: left;
   cursor: default;
 }
+.voice-panel:has(.connected-channel[data-phase="connected"]) {
+  border-color: rgb(74 222 128 / 26%);
+  background:
+    radial-gradient(120% 90% at 10% 0%, rgb(74 222 128 / 11%), transparent 62%),
+    linear-gradient(180deg, #1e1e23 0%, var(--surface-raised) 100%);
+}
 .connected-channel[data-phase="connected"] .voice-dock-channel :is(svg, strong) {
   color: var(--voice-session-green);
+}
+.connected-channel[data-phase="connected"] .voice-dock-channel > svg {
+  animation: voice-live-pulse 2.4s ease-in-out infinite;
+}
+@keyframes voice-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .connected-channel[data-phase="connected"] .voice-dock-channel > svg {
+    animation: none;
+  }
 }
 .connected-channel:not([data-phase="connected"]) .voice-dock-channel :is(svg, strong) {
   color: #d9ab5c;

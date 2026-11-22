@@ -15,8 +15,8 @@ const pngSize = (bytes) => {
   return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
 };
 
-test("Linux installed icon uses the canonical main SVG", () => {
-  assert.deepEqual(read(`${desktop}caper.svg`), read("apps/web/public/caper-face.svg"));
+test("Linux installed icon uses the canonical Echo app icon SVG", () => {
+  assert.deepEqual(read(`${desktop}caper.svg`), read("docs/brand/echo/echo-app-icon.svg"));
 });
 
 test("native message actions share the web's spool and long-tailed reply icons", () => {

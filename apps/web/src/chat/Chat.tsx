@@ -2399,6 +2399,14 @@ export default function Chat({
         <p className="chat-typing" role="status" aria-atomic="true" data-visible={!!typingLabel}>
           {typingLabel && (
             <span className="chat-typing-content">
+              <img
+                className="chat-typing-echo"
+                src="/caper-echo.svg"
+                width={14}
+                height={14}
+                alt=""
+                aria-hidden="true"
+              />
               <span className="chat-typing-dots" aria-hidden="true">
                 <i />
                 <i />

@@ -1791,9 +1791,9 @@ button.space-header .space-name {
 }
 
 .call-card {
-  border-top: 1px solid @caper_border;
+  border-top: 1px solid alpha(@caper_voice_green, 0.28);
   padding: 10px 12px;
-  background: @caper_surface;
+  background: linear-gradient(180deg, alpha(@caper_voice_green, 0.08), @caper_surface);
 }
 
 .call-card .call-channel {
@@ -2058,8 +2058,9 @@ checkbutton.broadcast {
 
 .empty-state.stage .empty-title {
   margin-top: 6px;
+  font-family: "Bricolage Grotesque", "Figtree", sans-serif;
   font-size: 20px;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 .empty-state.stage button {
@@ -2077,8 +2078,9 @@ checkbutton.broadcast {
 }
 
 .first-title {
+  font-family: "Bricolage Grotesque", "Figtree", sans-serif;
   font-size: 40px;
-  font-weight: 900;
+  font-weight: 800;
   color: @caper_text;
 }
 
