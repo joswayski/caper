@@ -43,7 +43,9 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.FocusInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
@@ -3866,12 +3868,23 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
         }.onFailure { picking = false; interaction(open) }
     }
     if (drawer != null) {
-        // Prepare the gallery while the composer is up, so the drawer opens filled.
-        LaunchedEffect(Unit) { AttachDrawerCache.warm(context) }
+        // Prepare the gallery from the press (or keyboard focus) that opens the drawer, so it opens
+        // filled without every composer holding the newest thumbnails. TalkBack opens it without a
+        // press, so with touch exploration on the composer still prepares it up front.
+        val scope = rememberCoroutineScope()
+        val attachInteractions = remember { MutableInteractionSource() }
+        LaunchedEffect(attachInteractions) {
+            if (context.getSystemService(android.view.accessibility.AccessibilityManager::class.java)?.isTouchExplorationEnabled == true) {
+                scope.launch { AttachDrawerCache.warm(context) }
+            }
+            attachInteractions.interactions.collect {
+                if (it is PressInteraction.Press || it is FocusInteraction.Focus) scope.launch { AttachDrawerCache.warm(context) }
+            }
+        }
         IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
             contentDescription = "Attach files"
             (disabledReason?.takeIf { it != limitReason } ?: AttachCapacity.hint(drawer.files.size))?.let { stateDescription = it }
-        }, enabled = enabled) {
+        }, enabled = enabled, interactionSource = attachInteractions) {
             Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp),
                 tint = if (!enabled) TextMuted.copy(alpha = 0.4f) else if (open) Text else TextMuted)
         }
