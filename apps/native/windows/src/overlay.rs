@@ -703,7 +703,7 @@ impl Dialog {
                     .map_or("", |(a, _)| a.display_name.as_str())
             ),
             Kind::Browse => "Browse channels".into(),
-            Kind::JoinInvite | Kind::Invitation => self.invite_title().into(),
+            Kind::JoinInvite | Kind::Invitation => self.invite_title(),
             Kind::CreateSpace => "Create a space".into(),
             Kind::CreateChannel => "Create a channel".into(),
             Kind::InvitePeople => self.invite_people_title(),
