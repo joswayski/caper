@@ -225,7 +225,13 @@ impl Dialog {
     /// "Version 2026.11.19.3 ↗" (`Part::Release`) or "See what changed on
     /// GitHub ↗" (`Part::Changes`), a plain link: muted at rest, brightening
     /// and underlined on hover, as web's release links without their fill.
-    pub(crate) fn draw_release(&self, g: &Gfx, dc: &ID2D1DeviceContext, r: Rect, part: Part) -> Result<()> {
+    pub(crate) fn draw_release(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        r: Rect,
+        part: Part,
+    ) -> Result<()> {
         let (x, y, w, h) = r;
         let mix = self.release_mix(part);
         let label = match part {
@@ -279,7 +285,10 @@ impl Dialog {
         if !u.highlights.as_ref().is_some_and(Vec::is_empty) {
             return None;
         }
-        caper_client::updates::changes_url(caper_client::whats_new::REVISION, u.revision.as_deref()?)
+        caper_client::updates::changes_url(
+            caper_client::whats_new::REVISION,
+            u.revision.as_deref()?,
+        )
     }
 
     pub(crate) fn update_primary(&self) -> &'static str {

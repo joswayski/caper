@@ -644,7 +644,9 @@ impl Dialog {
             request: 0,
             hover: None,
             pressed: None,
-            release_glow: std::array::from_fn(|_| std::cell::Cell::new((0.0, false, std::time::Instant::now()))),
+            release_glow: std::array::from_fn(|_| {
+                std::cell::Cell::new((0.0, false, std::time::Instant::now()))
+            }),
             field_origin: (0.0, 0.0),
             history: None,
             scroll: 0.0,
@@ -1416,7 +1418,9 @@ impl Dialog {
                         };
                         self.button(g, dc, *part, self.primary_label(), (x, y, pw, ph), tone)?;
                     }
-                    Part::Release | Part::Changes => self.draw_release(g, dc, (x, y, pw, ph), *part)?,
+                    Part::Release | Part::Changes => {
+                        self.draw_release(g, dc, (x, y, pw, ph), *part)?
+                    }
                     _ => {}
                 }
             }
