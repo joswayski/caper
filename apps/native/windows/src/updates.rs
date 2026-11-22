@@ -161,21 +161,15 @@ impl Dialog {
         "A fresh Caper is ready"
     }
 
-    /// "Version 2026.11.19.3 · 1.5 MB · October 18, 2026": the size sits beside
-    /// the version it downloads.
+    /// "Version 2026.11.19.3 · 1.5 MB": the size sits beside the version it
+    /// downloads. No date: the CalVer version already says when it was built.
     pub(crate) fn update_note(&self) -> String {
         let Some(u) = &self.update else {
             return String::new();
         };
         let size = u.download_label().filter(|_| u.can_apply);
-        let date = u
-            .released
-            .as_deref()
-            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-            .map(|d| d.format("%B %-d, %Y").to_string());
         std::iter::once(self.update_version())
             .chain(size)
-            .chain(date)
             .collect::<Vec<_>>()
             .join(" \u{b7} ")
     }
@@ -732,10 +726,7 @@ mod tests {
     fn the_review_reads_as_egui_s() {
         let d = Dialog::update(release(), None, false);
         assert_eq!(d.title(), "A fresh Caper is ready");
-        assert_eq!(
-            d.note(),
-            "Version 0.1.90 \u{b7} 1.5 MB \u{b7} November 9, 2026"
-        );
+        assert_eq!(d.note(), "Version 0.1.90 \u{b7} 1.5 MB");
         assert_eq!(
             d.update_commit(),
             Some(format!(
@@ -766,7 +757,7 @@ mod tests {
         let d = Dialog::update(manual, Some("Access denied".into()), false);
         assert_eq!(d.primary_label(), "Download");
         // The installer's size isn't the update's, so the note leaves it out.
-        assert_eq!(d.note(), "Version 0.1.90 \u{b7} November 9, 2026");
+        assert_eq!(d.note(), "Version 0.1.90");
         assert_eq!(
             d.update_lines()[..3],
             [

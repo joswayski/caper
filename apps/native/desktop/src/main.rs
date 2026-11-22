@@ -10587,14 +10587,9 @@ impl CaperApp {
                     });
                 });
                 ui.label(bold("A fresh Caper is ready").size(20.0));
-                // "Version 2026.11.19.3 · October 18, 2026" sits right under the title;
-                // the version opens its commit.
+                // "Version 2026.11.19.3" sits right under the title; the version opens
+                // its commit. No date: the CalVer version already says when it was built.
                 ui.add_space(-ui.spacing().item_spacing.y + 2.0);
-                let date = update
-                    .released
-                    .as_deref()
-                    .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
-                    .map(|date| date.format("%B %-d, %Y").to_string());
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let version = format!("Version {}", update.version);
@@ -10608,8 +10603,8 @@ impl CaperApp {
                     }
                     // The size sits beside the version it downloads.
                     let size = update.download_label().filter(|_| update.can_apply);
-                    for part in size.into_iter().chain(date) {
-                        ui.label(RichText::new(format!(" · {part}")).color(MUTED).size(13.0));
+                    if let Some(size) = size {
+                        ui.label(RichText::new(format!(" · {size}")).color(MUTED).size(13.0));
                     }
                 });
                 ui.add_space(12.0);
@@ -36517,7 +36512,10 @@ mod tests {
                     visible(&initial, "Version 0.1.42"),
                     "version links to GitHub"
                 );
-                assert!(visible(&initial, " · October 18, 2026"), "with its date");
+                assert!(
+                    !visible(&initial, "October 18, 2026"),
+                    "CalVer already dates it"
+                );
                 assert!(
                     !visible(&initial, "Having issues? Download installer instead"),
                     "the installer lives in the error sentence only"

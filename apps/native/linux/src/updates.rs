@@ -607,13 +607,9 @@ impl App {
         }
         // The size sits beside the version it downloads.
         let size = update.download_label().filter(|_| update.can_apply);
-        let date = update
-            .released
-            .as_deref()
-            .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
-            .map(|date| date.format("%B %-d, %Y").to_string());
-        for part in size.into_iter().chain(date) {
-            line.append(&label(&format!(" · {part}"), &["muted", "small"]));
+        // No date: the CalVer version already says when it was built.
+        if let Some(size) = size {
+            line.append(&label(&format!(" · {size}"), &["muted", "small"]));
         }
         body.append(&line);
         if let Some(error) = &error {
