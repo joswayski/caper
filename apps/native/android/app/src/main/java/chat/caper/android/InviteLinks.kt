@@ -19,12 +19,15 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.DEFAULT_INVITE_EXPIRY_NUMBER
@@ -37,7 +40,7 @@ import chat.caper.android.data.inviteCode
 import chat.caper.android.data.inviteExpirySeconds
 import chat.caper.android.data.inviteLinkMeta
 import chat.caper.android.data.inviteMaxUses
-import chat.caper.android.data.inviteMemberCount
+import chat.caper.android.data.inviteMembersLine
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.InvitePreview
 import chat.caper.android.model.SpaceDetail
@@ -298,7 +301,8 @@ import kotlinx.coroutines.delay
         viewModel.previewInvite(parsed, { code = parsed; preview = it; checking = false }) { error = it; checking = false }
     }
     LaunchedEffect(Unit) { if (opened != null) submit() }
-    CaperDialog(if (preview?.alreadyMember == true) "Open space" else "Join with invite link", close, busy = busy || checking) {
+    // A previewed link is titled with its space, as on web's invite page.
+    CaperDialog(preview?.space?.name ?: "Join with invite link", close, busy = busy || checking) {
         val shown = preview
         val shownCode = code
         if (shown == null || shownCode == null) {
@@ -323,28 +327,22 @@ import kotlinx.coroutines.delay
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(Modifier.size(48.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, Border)) {
-                    SpaceTileFace(shown.space.name, shown.space.iconAsset, shown.space.iconUrl, 48.dp, TextMuted)
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(shown.space.name, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    if (shown.alreadyMember) Text("You’re already a member", color = TextMuted, fontSize = 12.sp)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(shown.inviter.displayName, 16.dp, avatarId = shown.inviter.avatarId,
-                            avatarAsset = shown.inviter.avatarAsset, avatarUrl = shown.inviter.avatarUrl)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Invited by ${shown.inviter.displayName}", modifier = Modifier.weight(1f, fill = false),
-                            color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (shown.inviter.admin) {
-                            Spacer(Modifier.width(6.dp))
-                            AdminBadge()
-                        }
-                    }
-                    Text(listOfNotNull(inviteMemberCount(shown.memberCount), shown.channel?.let { "Opens in #${it.name}" }).joinToString(" · "),
-                        color = TextMuted, fontSize = 12.sp)
+                Avatar(shown.inviter.displayName, 28.dp, avatarId = shown.inviter.avatarId,
+                    avatarAsset = shown.inviter.avatarAsset, avatarUrl = shown.inviter.avatarUrl)
+                Spacer(Modifier.width(10.dp))
+                val strong = SpanStyle(color = Text, fontWeight = FontWeight.Bold)
+                Text(buildAnnotatedString {
+                    withStyle(strong) { append(shown.inviter.displayName) }
+                    append(" invited you")
+                    shown.channel?.let { append(" to "); withStyle(strong) { append("#${it.name}") } }
+                    append(".")
+                }, Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 13.sp)
+                if (shown.inviter.admin) {
+                    Spacer(Modifier.width(6.dp))
+                    AdminBadge()
                 }
             }
+            Text(inviteMembersLine(shown.memberCount, shown.alreadyMember), color = TextMuted, fontSize = 12.sp)
             error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }; Spacer(Modifier.width(8.dp))

@@ -8629,7 +8629,7 @@ private struct JoinInviteSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SheetHeader(title: preview?.alreadyMember == true ? "Open space" : "Join with invite link", closeDisabled: pending, close: close)
+            SheetHeader(title: preview?.space.name ?? "Join with invite link", closeDisabled: pending, close: close)
             VStack(alignment: .leading, spacing: 16) {
                 if let preview { InvitePreviewCard(preview: preview) } else { linkField }
                 if let error {
@@ -8730,33 +8730,35 @@ private struct JoinInviteSheet: View {
     }
 }
 
-/// The space an invite link opens: name, inviter, size and landing channel.
+/// What an invite link opens, under its space's name (the sheet's title), as
+/// on web's invite page: who invited you where, then its members.
 private struct InvitePreviewCard: View {
     let preview: InvitePreview
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            SpaceIconTile(name: preview.space.name, picture: preview.space.iconPicture, size: 52, fontSize: 18)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(preview.space.name).font(CaperTheme.font(18, weight: .bold)).foregroundStyle(CaperTheme.text)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Avatar(name: preview.inviter.displayName, size: 28, avatarID: preview.inviter.avatarId, picture: preview.inviter.avatarPicture)
+                Text(invited).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                if preview.alreadyMember == true { Text("You’re already a member") }
-                HStack(spacing: 6) {
-                    Avatar(name: preview.inviter.displayName, size: 18, avatarID: preview.inviter.avatarId, picture: preview.inviter.avatarPicture)
-                    Text("Invited by \(preview.inviter.displayName)").lineLimit(1)
-                    if preview.inviter.admin == true { AdminBadge().fixedSize() }
-                }
-                Text(InviteLinks.memberCount(preview.memberCount))
-                if let channel = preview.channel { Text("Opens in #\(channel.name)").lineLimit(1) }
-            }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-            Spacer(minLength: 0)
+                if preview.inviter.admin == true { AdminBadge().fixedSize() }
+                Spacer(minLength: 0)
+            }
+            Text(InviteLinks.membersLine(preview)).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
         }
-        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("invite-preview")
+    }
+
+    private var invited: AttributedString {
+        InviteLinks.invitedLine(preview).reduce(into: AttributedString()) { line, run in
+            var part = AttributedString(run.text)
+            if run.strong {
+                part.swiftUI.font = CaperTheme.font(13, weight: .bold)
+                part.swiftUI.foregroundColor = CaperTheme.text
+            }
+            line += part
+        }
     }
 }
 

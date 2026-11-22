@@ -1734,8 +1734,7 @@ impl App {
                 entry.set_placeholder_text(Some("it looks like → caper.chat/invite/AbCdE12345"));
                 input.append(&entry);
                 body.append(&input);
-                let preview = gtk::Box::new(gtk::Orientation::Vertical, 4);
-                preview.add_css_class("invite-preview");
+                let preview = gtk::Box::new(gtk::Orientation::Vertical, 10);
                 body.append(&preview);
                 body.append(&error);
                 let cancel = button("Cancel", "");
@@ -2491,16 +2490,14 @@ impl App {
                 if let Some(cancel) = &widgets.cancel {
                     cancel.set_sensitive(!join.joining);
                 }
-                let title = if join
-                    .preview
-                    .as_ref()
-                    .is_some_and(|preview| preview.already_member)
-                {
-                    "Open space"
-                } else {
-                    "Join with invite link"
-                };
-                widgets.title.set_label(title);
+                // A previewed link is titled with its space, as on web.
+                widgets.title.set_label(
+                    join.preview
+                        .as_ref()
+                        .map_or("Join with invite link", |preview| {
+                            preview.space.name.as_str()
+                        }),
+                );
             }
             Dialog::InvitePeople => {}
         }
@@ -2895,18 +2892,11 @@ impl App {
             return;
         };
         root.set_visible(true);
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let tile = label(
-            &caper_client::space_initial(&preview.space.name),
-            &["space-tile"],
-        );
-        tile.set_xalign(0.5);
-        line.append(&tile);
-        line.append(&label(&preview.space.name, &["admin-heading"]));
-        root.append(&line);
+        // As on web's invite page: the inviter's avatar and sentence, its name
+        // and channel emphasised, then the membership line.
         let inviter = &preview.inviter;
-        let by = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let avatar = AvatarView::new(18, false);
+        let by = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let avatar = AvatarView::new(28, false);
         avatar.set(
             &self.images,
             &Avatar::new(
@@ -2917,26 +2907,25 @@ impl App {
             ),
         );
         by.append(&avatar.root);
-        by.append(&label(
-            &format!("Invited by {}", inviter.display_name),
-            &["muted", "small"],
-        ));
-        root.append(&by);
-        for line in [
-            preview
-                .already_member
-                .then(|| "You’re already a member".to_owned()),
-            Some(invites::plural(preview.member_count, "member")),
-            preview
-                .channel
-                .as_ref()
-                .map(|channel| format!("Opens in #{}", channel.name)),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            root.append(&label(&line, &["muted", "small"]));
+        let (line, strong) = invites::invited_line(preview);
+        let mut markup = String::new();
+        let mut at = 0;
+        for range in strong {
+            markup.push_str(&glib::markup_escape_text(&line[at..range.start]));
+            markup.push_str(&format!(
+                "<span weight=\"bold\" foreground=\"#F3F4F5\">{}</span>",
+                glib::markup_escape_text(&line[range.clone()])
+            ));
+            at = range.end;
         }
+        markup.push_str(&glib::markup_escape_text(&line[at..]));
+        let sentence = label("", &["muted"]);
+        sentence.set_markup(&markup);
+        sentence.set_wrap(true);
+        sentence.set_hexpand(true);
+        by.append(&sentence);
+        root.append(&by);
+        root.append(&label(&invites::members_line(preview), &["muted", "small"]));
     }
 
     // ---------------------------------------------------------------------

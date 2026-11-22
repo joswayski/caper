@@ -84,15 +84,17 @@ extension AppKitDialogContent { var initialFocus: NSView? { nil } }
 @MainActor final class AppKitDialogHeader: NSView {
     let close: AppKitKitButton
     let titleLabel: NSTextField
+    let detailLabel: NSTextField?
 
     init(title: String, detail: String? = nil, closeLabel: String = "Close", close action: @escaping () -> Void) {
         close = AppKitKitButton("✕", kind: .plain, action: action)
         titleLabel = AppKitKit.label(title, size: 20, weight: .bold)
+        detailLabel = detail.map { AppKitKit.label($0, size: 12, color: AppKitKit.muted) }
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         close.setAccessibilityLabel(closeLabel)
         var rows: [NSView] = [titleLabel]
-        if let detail { rows.append(AppKitKit.label(detail, size: 12, color: AppKitKit.muted)) }
+        if let detailLabel { rows.append(detailLabel) }
         let text = AppKitKit.stack(rows, spacing: 6)
         for row in rows { AppKitKit.fillWidth(row, of: text) }
         let line = AppKitKit.divider()

@@ -63,6 +63,10 @@ class InviteLinksTest {
         assertNull(inviteExpiryLabel("soon", now))
         assertEquals("1 member", inviteMemberCount(1))
         assertEquals("4 members", inviteMemberCount(4))
+        assertEquals("4 members", inviteMembersLine(4, alreadyMember = false))
+        assertEquals("You’re already a member", inviteMembersLine(1, alreadyMember = true))
+        assertEquals("You’re already a member, along with 1 other", inviteMembersLine(2, alreadyMember = true))
+        assertEquals("You’re already a member, along with 1,233 others", inviteMembersLine(1234, alreadyMember = true))
     }
 
     @Test fun `expiry is a number of minutes, hours or days, or never, with web's default`() {

@@ -14,7 +14,9 @@ use crate::theme::*;
 use crate::{App, EV_SCREEN, text};
 use caper_client::invites::{self, InvitePreview};
 use windows::Win32::Graphics::Direct2D::*;
-use windows::Win32::Graphics::DirectWrite::{DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteTextLayout};
+use windows::Win32::Graphics::DirectWrite::{
+    DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteTextLayout,
+};
 use windows::core::Result;
 
 /// The sidebar section's gap above, label and rows (the DM section's).
@@ -22,6 +24,12 @@ const GAP: f32 = 14.0;
 const LABEL_H: f32 = 28.0;
 const ROW_H: f32 = 28.0;
 const PITCH: f32 = 30.0;
+
+/// A previewed link's inviter avatar, the gap beside it, and the gap above
+/// the membership line.
+const AVATAR: f32 = 28.0;
+const AVATAR_GAP: f32 = 10.0;
+const MEMBERS_GAP: f32 = 10.0;
 
 /// A membership control: an invited space's rail tile, the rail's
 /// Create space and Join with invite link, the Channels heading's
@@ -70,12 +78,15 @@ impl Dialog {
         d
     }
 
-    pub(crate) fn invite_title(&self) -> &'static str {
-        match (self.kind, self.invitation.as_deref()) {
-            (Kind::Invitation, Some(Invitation::Channel(_))) => "Private channel invitation",
-            (Kind::Invitation, _) => "You\u{2019}re invited!",
-            _ if self.invite.as_ref().is_some_and(|p| p.already_member) => "Open space",
-            _ => "Join with invite link",
+    /// A previewed link is titled with its space, as web's invite page is.
+    pub(crate) fn invite_title(&self) -> String {
+        match (self.kind, self.invitation.as_deref(), &self.invite) {
+            (Kind::Invitation, Some(Invitation::Channel(_)), _) => {
+                "Private channel invitation".into()
+            }
+            (Kind::Invitation, ..) => "You\u{2019}re invited!".into(),
+            (_, _, Some(p)) => p.space.name.clone(),
+            _ => "Join with invite link".into(),
         }
     }
 
@@ -132,30 +143,20 @@ impl Dialog {
         }
     }
 
-    /// The preview card's lines under the space's name, as egui lists them.
-    fn preview_lines(p: &InvitePreview) -> Vec<String> {
-        [
-            Some(format!("Invited by {}", p.inviter.display_name)),
-            p.already_member
-                .then(|| "You\u{2019}re already a member".into()),
-            Some(invites::plural(p.member_count, "member")),
-            p.channel.as_ref().map(|c| format!("Opens in #{}", c.name)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
-    }
-
-    /// The preview card's accessible name: its space, then its lines.
+    /// The preview's accessible name: its space, then its lines.
     pub fn preview_label(&self) -> String {
         self.invite.as_ref().map_or_else(String::new, |p| {
-            std::iter::once(p.space.name.clone())
-                .chain(Self::preview_lines(p))
-                .collect::<Vec<_>>()
-                .join(", ")
+            format!(
+                "{}, {} {}",
+                p.space.name,
+                invites::invited_line(p).0,
+                invites::members_line(p)
+            )
         })
     }
 
+    /// The inviter's sentence, muted with its name and channel emphasised,
+    /// and the membership line under it, as on web's invite page.
     fn preview_layouts(
         &self,
         g: &Gfx,
@@ -164,34 +165,68 @@ impl Dialog {
         let Some(p) = &self.invite else {
             return Ok(None);
         };
-        let w = (w - 28.0).max(1.0);
-        let name = g.layout(&gfx::wide(&p.space.name), &g.formats.dialog_title, w)?;
-        let lines = Self::preview_lines(p).join("\n");
-        let lines = g.layout(&gfx::wide(&lines), &g.formats.dialog_note, w)?;
-        Ok(Some((name, lines)))
+        let (line, strong) = invites::invited_line(p);
+        let by = g.layout(
+            &gfx::wide(&line),
+            &g.formats.card,
+            (w - AVATAR - AVATAR_GAP).max(1.0),
+        )?;
+        let utf16 = |byte: usize| line[..byte].encode_utf16().count() as u32;
+        for r in strong {
+            let range = DWRITE_TEXT_RANGE {
+                startPosition: utf16(r.start),
+                length: utf16(r.end) - utf16(r.start),
+            };
+            unsafe {
+                by.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range)?;
+                by.SetDrawingEffect(&g.brushes.text, range)?;
+            }
+        }
+        let members = invites::members_line(p);
+        let members = g.layout(&gfx::wide(&members), &g.formats.dialog_note, w.max(1.0))?;
+        Ok(Some((by, members)))
+    }
+
+    /// The inviter row: as tall as its avatar or its wrapped sentence.
+    fn by_height(by: &IDWriteTextLayout) -> f32 {
+        gfx::metrics(by).height.max(AVATAR)
     }
 
     pub(crate) fn preview_height(&self, g: &Gfx, w: f32) -> Result<f32> {
         Ok(match self.preview_layouts(g, w)? {
-            Some((name, lines)) => {
-                12.0 + gfx::metrics(&name).height + 6.0 + gfx::metrics(&lines).height + 12.0
+            Some((by, members)) => {
+                Self::by_height(&by) + MEMBERS_GAP + gfx::metrics(&members).height
             }
             None => 0.0,
         })
     }
 
-    /// The raised card: the space's name over its muted lines.
+    /// The inviter's avatar and sentence, then the membership line.
     pub(crate) fn draw_preview(&self, g: &Gfx, dc: &ID2D1DeviceContext, r: Rect) -> Result<()> {
-        let (x, y, w, h) = r;
-        let Some((name, lines)) = self.preview_layouts(g, w)? else {
+        let (x, y, _, _) = r;
+        let (Some(p), Some((by, members))) = (&self.invite, self.preview_layouts(g, r.2)?) else {
             return Ok(());
         };
-        let card = rect(x, y, x + w, y + h);
-        fill_round(dc, card, RADIUS, &g.brushes.raised);
-        stroke_round(dc, card, RADIUS, &g.brushes.border);
-        text::draw(dc, &name, x + 14.0, y + 12.0, &g.brushes.text);
-        let ly = y + 12.0 + gfx::metrics(&name).height + 6.0;
-        text::draw(dc, &lines, x + 14.0, ly, &g.brushes.muted);
+        let row = Self::by_height(&by);
+        let inviter = &p.inviter;
+        let face = crate::live::person(
+            &inviter.username,
+            &inviter.display_name,
+            crate::avatars::Face::avatar(inviter),
+        );
+        let half = AVATAR / 2.0;
+        crate::avatars::circle(
+            g,
+            dc,
+            &face.avatar,
+            (x + half, y + row / 2.0, half),
+            face.color,
+            &face.initials,
+        )?;
+        let text_h = gfx::metrics(&by).height;
+        let tx = x + AVATAR + AVATAR_GAP;
+        text::draw(dc, &by, tx, y + (row - text_h) / 2.0, &g.brushes.muted);
+        text::draw(dc, &members, x, y + row + MEMBERS_GAP, &g.brushes.muted);
         Ok(())
     }
 }
@@ -571,26 +606,26 @@ mod tests {
         d.invite = Some(Box::new(preview(false, true)));
         assert_eq!(
             (
-                d.invite_title(),
+                d.invite_title().as_str(),
                 d.invite_note().as_str(),
                 d.invite_primary()
             ),
-            ("Join with invite link", "", "Join space")
+            ("Studio", "", "Join space")
         );
         assert_eq!(
             d.preview_label(),
-            "Studio, Invited by Maya, 1 member, Opens in #feedback"
+            "Studio, Maya invited you to #feedback. 1 member"
         );
         // A member opens the space instead.
         d.invite = Some(Box::new(preview(true, false)));
         d.busy = true;
         assert_eq!(
-            (d.invite_title(), d.invite_primary()),
-            ("Open space", "Opening\u{2026}")
+            (d.invite_title().as_str(), d.invite_primary()),
+            ("Studio", "Opening\u{2026}")
         );
         assert_eq!(
             d.preview_label(),
-            "Studio, Invited by Maya, You\u{2019}re already a member, 1 member"
+            "Studio, Maya invited you. You\u{2019}re already a member"
         );
     }
 }

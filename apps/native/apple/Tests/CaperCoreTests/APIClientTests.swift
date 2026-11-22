@@ -872,6 +872,8 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(preview.channel)
         XCTAssertEqual(preview.memberCount, 3)
         XCTAssertEqual(preview.alreadyMember, true)
+        XCTAssertEqual(InviteLinks.membersLine(preview), "You’re already a member, along with 2 others")
+        XCTAssertEqual(InviteLinks.invitedLine(preview).map(\.text).joined(), "Owner invited you.")
         let joined = try await api.joinInvite(code: code)
         XCTAssertEqual(joined.space.id, spaceID)
         XCTAssertTrue(joined.joined)

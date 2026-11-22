@@ -17,6 +17,13 @@ import Observation
         if preview?.alreadyMember == true { return pending ? "Opening…" : "Open space" }
         return pending ? "Joining…" : "Join space"
     }
+    /// The inviter's sentence; an admin's name carries " · ADMIN" as message
+    /// headers do.
+    static func runs(_ preview: InvitePreview) -> [(text: String, strong: Bool)] {
+        var runs = InviteLinks.invitedLine(preview)
+        if preview.inviter.admin == true { runs.insert((" · ADMIN", false), at: 1) }
+        return runs
+    }
     func submit() {
         guard !pending else { return }
         let code: String
@@ -47,7 +54,7 @@ import AppKit
     private let state: NativeJoinInvite
     private let field = AppKitKitField()
     private let failure = AppKitKit.label("", size: 12, color: AppKitKit.error)
-    private let preview = AppKitKit.stack([], spacing: 6)
+    private let preview = AppKitKit.stack([], spacing: 10)
     private var previewID: String?
     private var submit: AppKitKitButton!
     private var cancel: AppKitKitButton!
@@ -80,18 +87,23 @@ import AppKit
         submit.title = state.label; submit.isEnabled = !state.pending && !state.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         submit.setAccessibilityIdentifier(state.preview == nil ? "invite-link-continue" : "invite-link-join")
         failure.stringValue = state.error ?? ""; failure.isHidden = state.error == nil; preview.isHidden = state.preview == nil
+        // A previewed link is titled with its space, as on web's invite page.
+        header.titleLabel.stringValue = state.preview?.space.name ?? "Join with invite link"
+        header.detailLabel?.isHidden = state.preview != nil
         guard let value = state.preview, previewID != value.code else { return }; previewID = value.code
-        let icon = AppKitAvatar(); icon.update(name: value.space.name, avatarId: nil, picture: value.space.iconPicture)
-        icon.widthAnchor.constraint(equalToConstant: 52).isActive = true; icon.heightAnchor.constraint(equalToConstant: 52).isActive = true
-        preview.addArrangedSubview(icon)
-        var lines = [value.space.name]
-        if value.alreadyMember == true { lines.append("You’re already a member") }
-        lines += ["Invited by \(value.inviter.displayName)\(value.inviter.admin == true ? " · Admin" : "")", InviteLinks.memberCount(value.memberCount)]
-        if let channel = value.channel { lines.append("Opens in #\(channel.name)") }
-        for (index, line) in lines.enumerated() {
-            let label = AppKitKit.label(line, size: index == 0 ? 18 : 12, weight: index == 0 ? .bold : .regular)
-            preview.addArrangedSubview(label); AppKitKit.fillWidth(label, of: preview)
+        let avatar = AppKitAvatar(); avatar.update(name: value.inviter.displayName, avatarId: value.inviter.avatarId, picture: value.inviter.avatarPicture)
+        avatar.widthAnchor.constraint(equalToConstant: 28).isActive = true; avatar.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        let invited = AppKitKit.label("", size: 13, color: AppKitKit.muted)
+        invited.attributedStringValue = NativeJoinInvite.runs(value).reduce(into: NSMutableAttributedString()) { line, run in
+            line.append(NSAttributedString(string: run.text, attributes: [
+                .font: AppKitKit.font(13, weight: run.strong ? .bold : .regular),
+                .foregroundColor: run.strong ? AppKitKit.text : AppKitKit.muted,
+            ]))
         }
+        let by = NSStackView(views: [avatar, invited]); by.spacing = 10; by.alignment = .centerY
+        preview.addArrangedSubview(by); AppKitKit.fillWidth(by, of: preview)
+        let members = AppKitKit.label(InviteLinks.membersLine(value), size: 12, color: AppKitKit.muted)
+        preview.addArrangedSubview(members); AppKitKit.fillWidth(members, of: preview)
     }
 }
 #elseif os(iOS)
@@ -102,6 +114,7 @@ import UIKit
     private let opened: Bool
     private let field = UITextField()
     private let failure = UIKitMessageDialog.label("", error: true)
+    private let hint = UIKitMessageDialog.label("Paste it below to join!")
     private let preview = UIStackView()
     private var previewID: String?
     private var submit: UIButton!
@@ -119,10 +132,10 @@ import UIKit
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         field.accessibilityIdentifier = "invite-link-field"; field.accessibilityLabel = "Invite link"; field.delegate = self
         field.addAction(UIAction { [weak self] _ in self?.state.link = self?.field.text ?? ""; self?.state.error = nil }, for: .editingChanged)
-        preview.axis = .vertical; preview.spacing = 6; preview.accessibilityIdentifier = "invite-preview"
+        preview.axis = .vertical; preview.spacing = 10; preview.accessibilityIdentifier = "invite-preview"
         failure.accessibilityIdentifier = "invite-link-error"
         submit = Self.button("Continue", primary: true) { [state] in state.submit() }
-        [Self.label("Paste it below to join!"), field, preview, failure, submit!].forEach(body.addArrangedSubview)
+        [hint, field, preview, failure, submit!].forEach(body.addArrangedSubview)
         observe(); if opened { state.submit() }
     }
     override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); if !opened { field.becomeFirstResponder() } }
@@ -133,15 +146,23 @@ import UIKit
         submit.configuration?.title = state.label
         submit.isEnabled = !state.pending && !state.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         submit.accessibilityIdentifier = state.preview == nil ? "invite-link-continue" : "invite-link-join"
-        preview.isHidden = state.preview == nil
+        preview.isHidden = state.preview == nil; hint.isHidden = state.preview != nil
+        // A previewed link is titled with its space, as on web's invite page.
+        setTitle(state.preview?.space.name ?? "Join with invite link")
         guard let value = state.preview, previewID != value.code else { return }; previewID = value.code; field.resignFirstResponder()
-        let icon = UIKitAvatar(side: 52); icon.show(name: value.space.name, avatarID: nil, picture: value.space.iconPicture)
-        let header = UIStackView(arrangedSubviews: [icon, Self.label(value.space.name, size: 18, bold: true)]); header.spacing = 14; header.alignment = .center
-        preview.addArrangedSubview(header)
-        if value.alreadyMember == true { preview.addArrangedSubview(Self.label("You’re already a member")) }
-        preview.addArrangedSubview(Self.label("Invited by \(value.inviter.displayName)\(value.inviter.admin == true ? " · Admin" : "")"))
-        preview.addArrangedSubview(Self.label(InviteLinks.memberCount(value.memberCount)))
-        if let channel = value.channel { preview.addArrangedSubview(Self.label("Opens in #\(channel.name)")) }
+        let avatar = UIKitAvatar(side: 28); avatar.show(name: value.inviter.displayName, avatarID: value.inviter.avatarId, picture: value.inviter.avatarPicture)
+        let invited = Self.label("", size: 13)
+        let font = { (bold: Bool) in UIFontMetrics(forTextStyle: .body).scaledFont(for:
+            UIFont(name: bold ? "Inrond40-Bold" : "Inrond40-Regular", size: 13) ?? .systemFont(ofSize: 13)) }
+        invited.attributedText = NativeJoinInvite.runs(value).reduce(into: NSMutableAttributedString()) { line, run in
+            line.append(NSAttributedString(string: run.text, attributes: [
+                .font: font(run.strong), .foregroundColor: UIColor(run.strong ? CaperTheme.text : CaperTheme.muted),
+            ]))
+        }
+        let by = UIStackView(arrangedSubviews: [avatar, invited]); by.spacing = 10; by.alignment = .center
+        preview.addArrangedSubview(by)
+        let members = Self.label(InviteLinks.membersLine(value)); members.textColor = UIColor(CaperTheme.muted)
+        preview.addArrangedSubview(members)
     }
 }
 #endif

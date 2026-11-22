@@ -104,3 +104,10 @@ fun inviteLinkMeta(link: InviteLink, now: Instant): String = listOfNotNull(
 
 /** "1 member" or "12 members". */
 fun inviteMemberCount(count: Int): String = plural(count.toLong(), "member")
+
+/** Web's `alreadyMemberLabel` for members ("You’re already a member, along with 3 others"), else "12 members". */
+fun inviteMembersLine(count: Int, alreadyMember: Boolean): String = when {
+    !alreadyMember -> inviteMemberCount(count)
+    count > 1 -> "You’re already a member, along with ${plural(count - 1L, "other")}"
+    else -> "You’re already a member"
+}

@@ -1743,20 +1743,11 @@ button.space-header .space-name {
   font-family: monospace;
 }
 
-.invite-link,
-.invite-preview {
+.invite-link {
   background: @caper_surface_raised;
   border: 1px solid @caper_border;
   border-radius: 8px;
   padding: 10px 12px;
-}
-
-.space-tile {
-  min-width: 40px;
-  min-height: 40px;
-  border-radius: 12px;
-  background: @caper_surface;
-  font-weight: 700;
 }
 
 .save-bar {

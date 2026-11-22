@@ -23309,18 +23309,11 @@ impl CaperApp {
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
             Dialog::InvitePeople => "Invite people",
-            Dialog::JoinInvite => {
-                if self
-                    .invite_join
-                    .preview
-                    .as_ref()
-                    .is_some_and(|preview| preview.already_member)
-                {
-                    "Open space"
-                } else {
-                    "Join with invite link"
-                }
-            }
+            // A previewed link is titled with its space, as on web.
+            Dialog::JoinInvite => match &self.invite_join.preview {
+                Some(preview) => leave_title.get_or_insert(preview.space.name.clone()),
+                None => "Join with invite link",
+            },
             Dialog::Invitation(_) => "You’re invited!",
             Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
             Dialog::LeaveChannel { name, .. } => {
@@ -25747,59 +25740,45 @@ impl CaperApp {
     /// "Join with invite link": paste a link, preview its space, then join.
     fn join_invite_dialog(&mut self, ui: &mut egui::Ui, close: &mut bool) {
         if let Some(preview) = self.invite_join.preview.clone() {
-            egui::Frame::new()
-                .fill(RAISED)
-                .stroke(Stroke::new(1.0_f32, BORDER))
-                .corner_radius(8)
-                .inner_margin(egui::Margin::symmetric(14, 12))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
-                        let (tile, _) =
-                            ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
-                        paint_space_tile(ui, tile, 12.0, &preview.space.name, preview.space.icon());
-                        ui.label(bold(&preview.space.name).size(16.0));
-                    });
-                    ui.add_space(4.0);
-                    // As tall as the text lines below it.
-                    ui.spacing_mut().interact_size.y = 18.0;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        let inviter = &preview.inviter;
-                        avatar(
-                            ui,
-                            &inviter.display_name,
-                            inviter.avatar_id,
-                            inviter.picture(),
-                            18.0,
-                            false,
-                        );
-                        ui.label(
-                            RichText::new(format!("Invited by {}", inviter.display_name))
-                                .size(12.8)
-                                .color(MUTED),
-                        );
-                        if inviter.admin {
-                            admin_badge(ui);
-                        }
-                    });
-                    for line in [
-                        preview
-                            .already_member
-                            .then(|| "You’re already a member".into()),
-                        Some(invites::plural(preview.member_count, "member")),
-                        preview
-                            .channel
-                            .as_ref()
-                            .map(|channel| format!("Opens in #{}", channel.name)),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    {
-                        ui.label(RichText::new(line).size(12.8).color(MUTED));
-                    }
-                });
+            // As on web's invite page: the inviter's avatar and sentence, its
+            // name and channel emphasised, then the membership line.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let inviter = &preview.inviter;
+                avatar(
+                    ui,
+                    &inviter.display_name,
+                    inviter.avatar_id,
+                    inviter.picture(),
+                    28.0,
+                    false,
+                );
+                let (line, strong) = invites::invited_line(&preview);
+                let plain = egui::TextFormat::simple(egui::FontId::proportional(13.0), MUTED);
+                let emphasis = egui::TextFormat {
+                    font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Inrond Bold".into())),
+                    color: TEXT,
+                    ..Default::default()
+                };
+                let mut job = egui::text::LayoutJob::default();
+                let mut at = 0;
+                for range in strong {
+                    job.append(&line[at..range.start], 0.0, plain.clone());
+                    job.append(&line[range.clone()], 0.0, emphasis.clone());
+                    at = range.end;
+                }
+                job.append(&line[at..], 0.0, plain);
+                ui.label(job);
+                if inviter.admin {
+                    admin_badge(ui);
+                }
+            });
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(invites::members_line(&preview))
+                    .size(12.8)
+                    .color(MUTED),
+            );
             if let Some(error) = &self.invite_join.error {
                 ui.add_space(8.0);
                 ui.label(RichText::new(error).size(12.0).color(ERROR));

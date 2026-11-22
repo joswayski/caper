@@ -193,6 +193,23 @@ public enum InviteLinks {
 
     public static func memberCount(_ count: Int) -> String { "\(count) \(count == 1 ? "member" : "members")" }
 
+    /// The invite page's sentence, "Maya invited you to #feedback.", as runs
+    /// whose name and channel are emphasised.
+    public static func invitedLine(_ preview: InvitePreview) -> [(text: String, strong: Bool)] {
+        var runs: [(text: String, strong: Bool)] = [(preview.inviter.displayName, true), (" invited you", false)]
+        if let channel = preview.channel { runs += [(" to ", false), ("#\(channel.name)", true)] }
+        return runs + [(".", false)]
+    }
+
+    /// Web's `alreadyMemberLabel` for members, else "7 members".
+    public static func membersLine(_ preview: InvitePreview) -> String {
+        guard preview.alreadyMember == true else { return memberCount(preview.memberCount) }
+        let others = preview.memberCount - 1
+        return others > 0
+            ? "You’re already a member, along with \(grouped(others)) \(others == 1 ? "other" : "others")"
+            : "You’re already a member"
+    }
+
     /// "#feedback · 7 of 10 joins remaining · Expires in 6 days" or "2 uses · Never expires".
     public static func meta(for link: InviteLink, now: Date = Date()) -> String {
         var parts: [String] = []

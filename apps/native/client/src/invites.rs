@@ -239,6 +239,40 @@ fn expires_in(remaining: chrono::TimeDelta) -> String {
     format!("Expires in {text}")
 }
 
+/// The invite page's sentence: "Maya invited you to #feedback." (or "Maya
+/// invited you."), with the byte ranges of the name and channel, which
+/// clients emphasise as web does.
+pub fn invited_line(p: &InvitePreview) -> (String, Vec<std::ops::Range<usize>>) {
+    let name = &p.inviter.display_name;
+    let mut line = format!("{name} invited you");
+    let mut strong = Vec::with_capacity(2);
+    strong.push(0..name.len());
+    if let Some(channel) = &p.channel {
+        line.push_str(" to ");
+        let start = line.len();
+        line.push('#');
+        line.push_str(&channel.name);
+        strong.push(start..line.len());
+    }
+    line.push('.');
+    (line, strong)
+}
+
+/// Web's `alreadyMemberLabel` for members ("You’re already a member, along
+/// with 3 others"), else "7 members".
+pub fn members_line(p: &InvitePreview) -> String {
+    let others = p.member_count.saturating_sub(1);
+    match (p.already_member, others) {
+        (false, _) => plural(p.member_count, "member"),
+        (true, 0) => "You\u{2019}re already a member".into(),
+        (true, 1) => "You\u{2019}re already a member, along with 1 other".into(),
+        (true, n) => format!(
+            "You\u{2019}re already a member, along with {} others",
+            grouped(n)
+        ),
+    }
+}
+
 /// "1 member", "3 members".
 pub fn plural(count: u64, noun: &str) -> String {
     if count == 1 {
@@ -327,10 +361,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preview.space.name, "Studio");
-        assert_eq!(preview.channel.unwrap().name, "feedback");
+        assert_eq!(preview.channel.as_ref().unwrap().name, "feedback");
         assert_eq!(preview.inviter.display_name, "Owner");
         assert_eq!(preview.member_count, 12);
         assert!(preview.already_member);
+        assert_eq!(
+            members_line(&preview),
+            "You\u{2019}re already a member, along with 11 others"
+        );
+        let mut preview = preview;
+        preview.inviter.display_name = "Zoë".into();
+        let (line, strong) = invited_line(&preview);
+        assert_eq!(line, "Zoë invited you to #feedback.");
+        let strong: Vec<_> = strong.into_iter().map(|r| &line[r]).collect();
+        assert_eq!(strong, ["Zoë", "#feedback"]);
+        preview.member_count = 2;
+        assert_eq!(
+            members_line(&preview),
+            "You\u{2019}re already a member, along with 1 other"
+        );
+        preview.member_count = 1;
+        assert_eq!(members_line(&preview), "You\u{2019}re already a member");
+        preview.already_member = false;
+        preview.channel = None;
+        assert_eq!(members_line(&preview), "1 member");
+        assert_eq!(invited_line(&preview).0, "Zoë invited you.");
 
         let joined: JoinedInvite = serde_json::from_str(
             r#"{"space":{"id":"space0000001","name":"Studio","ownerId":"owner01"},
