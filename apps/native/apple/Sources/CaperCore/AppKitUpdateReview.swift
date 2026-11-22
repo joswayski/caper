@@ -167,7 +167,13 @@ import AppKit
             add(AppKitKit.label("Earlier release notes aren’t available.", size: 13, color: AppKitKit.muted))
         }
         if let highlights = update.highlights {
-            if highlights.isEmpty { add(AppKitKit.label("Behind-the-scenes fixes this time.", color: AppKitKit.muted)) }
+            if highlights.isEmpty {
+                let quiet = AppKitKit.stack([AppKitKit.label("Behind-the-scenes fixes this time.", color: AppKitKit.muted)], spacing: 6)
+                if let url = ReleaseChanges.url(from: InstalledVersion.current.revision, to: update.revision) {
+                    quiet.addArrangedSubview(AppKitKitLink(ReleaseChanges.label, url: url, help: "Open every change since your version on GitHub"))
+                }
+                add(quiet)
+            }
             for item in highlights { add(highlightRow(item)) }
         } else {
             let notes = AppKitKit.label(update.notes, color: AppKitKit.muted); notes.isSelectable = true

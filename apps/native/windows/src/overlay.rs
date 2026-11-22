@@ -421,6 +421,8 @@ pub enum Part {
     DeleteOpen,
     /// The update review's "Version 2026.11.19.3", which opens its commit.
     Release,
+    /// "See what changed on GitHub" under a review without highlights.
+    Changes,
     Profile(crate::profile::editor::Control),
     ReactorTab(usize),
     ReactorPerson(usize),
@@ -478,6 +480,7 @@ impl Part {
             Self::RemoveMember(k) => 120_000 + k,
             Self::DeleteOpen => 30_210,
             Self::Release => 30_211,
+            Self::Changes => 30_212,
             Self::Profile(control) => 130_000 + control.index(),
             Self::ReactorTab(k) => 140_000 + k,
             Self::ReactorPerson(k) => 150_000 + k,
@@ -535,9 +538,10 @@ pub struct Dialog {
     pub request: u64,
     pub hover: Option<Part>,
     pub pressed: Option<Part>,
-    /// The update review's version link: how far its hover has come (0 to
-    /// 1, before easing), toward which end, and when it last stepped.
-    pub release_glow: std::cell::Cell<(f32, bool, std::time::Instant)>,
+    /// The update review's version link, then its changes link: how far
+    /// each hover has come (0 to 1, before easing), toward which end, and
+    /// when it last stepped.
+    pub release_glow: [std::cell::Cell<(f32, bool, std::time::Instant)>; 2],
     /// Client DIP origin of the field's text, before it scrolls.
     pub field_origin: (f32, f32),
     /// The history's versions, while `kind` is History.
@@ -640,7 +644,7 @@ impl Dialog {
             request: 0,
             hover: None,
             pressed: None,
-            release_glow: std::cell::Cell::new((0.0, false, std::time::Instant::now())),
+            release_glow: std::array::from_fn(|_| std::cell::Cell::new((0.0, false, std::time::Instant::now()))),
             field_origin: (0.0, 0.0),
             history: None,
             scroll: 0.0,
@@ -960,6 +964,7 @@ impl Dialog {
             | Part::Invitee(_)
             | Part::LinkRow(_) => true,
             Part::Release => self.update_commit().is_some(),
+            Part::Changes => self.update_changes().is_some(),
         }
     }
 
@@ -990,6 +995,7 @@ impl Dialog {
                         | Part::Cancel
                         | Part::Primary
                         | Part::Release
+                        | Part::Changes
                         | Part::Close
                         | Part::Version(_)
                         | Part::Retry
@@ -1161,6 +1167,16 @@ impl Dialog {
                 let n = self.update_shown.len() as u8;
                 parts.push((Part::Line(n), (0.0, y, inner, height(&l))));
                 self.update_shown.push((line, s));
+                y += height(&l);
+            }
+            if self.update_changes().is_some() {
+                let label = caper_client::updates::CHANGES_LABEL;
+                let l = layout(g, label, &g.formats.dialog_note, 1e6)?;
+                y += 8.0;
+                parts.push((
+                    Part::Changes,
+                    (0.0, y, width(&l) + crate::updates::RELEASE_ICON, height(&l)),
+                ));
                 y += height(&l);
             }
             if let Some(s) = footer {
@@ -1400,7 +1416,7 @@ impl Dialog {
                         };
                         self.button(g, dc, *part, self.primary_label(), (x, y, pw, ph), tone)?;
                     }
-                    Part::Release => self.draw_release(g, dc, (x, y, pw, ph))?,
+                    Part::Release | Part::Changes => self.draw_release(g, dc, (x, y, pw, ph), *part)?,
                     _ => {}
                 }
             }
@@ -2140,6 +2156,7 @@ impl App {
             | Part::RemoveMember(_)
             | Part::DeleteOpen
             | Part::Release
+            | Part::Changes
             | Part::ReactorTab(_)
             | Part::ReactorPerson(_)
             | Part::Forward(_)

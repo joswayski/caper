@@ -378,7 +378,12 @@ import ServiceManagement
             if fill { AppKitKit.fillWidth(view, of: body) }
         }
         if let releases = display.releases {
-            if releases.isEmpty { add(AppKitKit.label("No release highlights for this version yet.", color: AppKitKit.muted)) }
+            if releases.isEmpty {
+                add(AppKitKit.label("No release highlights for this version yet.", color: AppKitKit.muted))
+                if let url = ReleaseChanges.url(from: nil, to: InstalledVersion.current.revision) {
+                    add(AppKitKitLink(ReleaseChanges.label, url: url, help: "Open this version’s changes on GitHub"), fill: false)
+                }
+            }
             let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
             for day in days.keys.sorted(by: >) {
                 add(AppKitKit.label(releaseDayLabel(day), size: 12, weight: .bold, color: AppKitKit.muted))

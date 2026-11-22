@@ -333,13 +333,32 @@ fn installed(build: u64) -> String {
         .map_or_else(|| build.to_string(), str::to_owned)
 }
 
-/// A build's source on GitHub, or `None` for anything but a full commit SHA.
-pub fn commit_url(revision: &str) -> Option<String> {
-    (revision.len() == 40
+/// The link under an empty release's notes, for anyone curious what changed.
+pub const CHANGES_LABEL: &str = "See what changed on GitHub";
+
+fn is_revision(revision: &str) -> bool {
+    revision.len() == 40
         && revision
             .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
-    .then(|| format!("https://github.com/joswayski/caper/commit/{revision}"))
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A build's source on GitHub, or `None` for anything but a full commit SHA.
+pub fn commit_url(revision: &str) -> Option<String> {
+    is_revision(revision).then(|| format!("https://github.com/joswayski/caper/commit/{revision}"))
+}
+
+/// Every commit from the installed build `from` to `to` on GitHub; the
+/// history up to `to` when the installed build is unknown or the same.
+pub fn changes_url(from: &str, to: &str) -> Option<String> {
+    if !is_revision(to) {
+        return None;
+    }
+    Some(if is_revision(from) && from != to {
+        format!("https://github.com/joswayski/caper/compare/{from}...{to}")
+    } else {
+        format!("https://github.com/joswayski/caper/commits/{to}")
+    })
 }
 
 /// The installed app's version in What's new, distinct from an available update.
@@ -690,6 +709,20 @@ mod tests {
         assert!(!preview.can_check());
         preview.check_now();
         assert_eq!(preview.status(), Status::Available);
+    }
+
+    #[test]
+    fn links_an_update_s_changes_from_the_installed_build() {
+        let (old, new) = ("a".repeat(40), "b".repeat(40));
+        assert_eq!(
+            changes_url(&old, &new).as_deref(),
+            Some(format!("https://github.com/joswayski/caper/compare/{old}...{new}").as_str())
+        );
+        // A development build has no revision: the update's history instead.
+        let history = format!("https://github.com/joswayski/caper/commits/{new}");
+        assert_eq!(changes_url("", &new).as_deref(), Some(history.as_str()));
+        assert_eq!(changes_url(&new, &new).as_deref(), Some(history.as_str()));
+        assert_eq!(changes_url(&old, "main"), None);
     }
 
     #[test]

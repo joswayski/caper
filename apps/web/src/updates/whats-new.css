@@ -97,6 +97,9 @@
 .whats-new-release article {
   margin-top: 20px;
 }
+.whats-new-changes {
+  margin-top: 8px;
+}
 .whats-new-source + article {
   margin-top: 12px;
 }

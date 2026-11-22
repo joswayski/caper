@@ -132,7 +132,14 @@ import Observation
         body.addArrangedSubview(faceRow); body.setCustomSpacing(6, after: faceRow)
         body.addArrangedSubview(version); body.setCustomSpacing(20, after: version)
         if let releases = display.releases {
-            if releases.isEmpty { body.addArrangedSubview(Self.label("No release highlights for this version yet.")) }
+            if releases.isEmpty {
+                let empty = Self.label("No release highlights for this version yet.")
+                body.addArrangedSubview(empty)
+                if let url = ReleaseChanges.url(from: nil, to: InstalledVersion.current.revision) {
+                    body.setCustomSpacing(8, after: empty)
+                    body.addArrangedSubview(link(ReleaseChanges.label, url: url, hint: "Open this version’s changes on GitHub"))
+                }
+            }
             let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
             for date in days.keys.sorted(by: >) {
                 let day = Self.label(releaseDayLabel(date), bold: true)
@@ -140,7 +147,8 @@ import Observation
                 for release in days[date] ?? [] {
                     // Web's spacing: the link 6 above its highlights, each title
                     // 4 above its text, 12 between highlights, 20 around the rule.
-                    let source = link(release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)), revision: release.revision)
+                    let source = link(release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)),
+                                      url: URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)"))
                     body.addArrangedSubview(source); body.setCustomSpacing(6, after: source)
                     for highlight in release.highlights {
                         let title = Self.label(highlight.title, size: 16, bold: true); title.accessibilityTraits.insert(.header)
@@ -162,7 +170,7 @@ import Observation
     }
     /// A quiet commit link like every other client's: flush with the text,
     /// muted at rest with an external-link icon, brightening while pressed.
-    private func link(_ title: String, revision: String) -> UIButton {
+    private func link(_ title: String, url: URL?, hint: String = "View this version on GitHub") -> UIButton {
         var config = UIButton.Configuration.plain()
         config.title = title
         config.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0)
@@ -178,12 +186,12 @@ import Observation
             config.imagePlacement = .trailing; config.imagePadding = 4
         }
         let button = UIKitTallTapButton(configuration: config, primaryAction: UIAction { _ in
-            if let url = URL(string: "https://github.com/joswayski/caper/commit/\(revision)") { UIApplication.shared.open(url) }
+            if let url { UIApplication.shared.open(url) }
         })
         button.configurationUpdateHandler = { button in
             button.configuration?.baseForegroundColor = button.isHighlighted ? UIColor(CaperTheme.text) : UIColor(CaperTheme.muted).withAlphaComponent(0.72)
         }
-        button.accessibilityHint = "View this version on GitHub"
+        button.accessibilityHint = hint
         button.contentHorizontalAlignment = .leading
         return button
     }

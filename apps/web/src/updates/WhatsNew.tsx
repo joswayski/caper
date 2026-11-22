@@ -211,7 +211,22 @@ export default function WhatsNew({
           </div>
         )}
         {!loading && !error && feed && !releases.length && (
-          <p className="whats-new-empty">No release highlights for this version yet.</p>
+          <>
+            <p className="whats-new-empty">No release highlights for this version yet.</p>
+            {/* For anyone curious what changed: every commit up to this build. */}
+            {sourceRevisionValid(revision) && (
+              <a
+                className="whats-new-source whats-new-changes"
+                href={`https://github.com/joswayski/caper/commits/${revision}`}
+                target="_blank"
+                rel="noreferrer"
+                title="Open this version’s changes on GitHub"
+              >
+                See what changed on GitHub
+                <ExternalLink size={12} aria-hidden="true" />
+              </a>
+            )}
+          </>
         )}
         {releaseHighlightDays(releases).map(({ date, releases: dayReleases }) => (
           <section className="whats-new-release" key={date}>

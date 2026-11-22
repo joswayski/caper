@@ -1028,6 +1028,7 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Field if d.kind == Kind::InvitePeople => "Exact username".into(),
                 DPart::Line(k) if d.kind == Kind::Update => d.update_line(k),
                 DPart::Release => d.update_version(),
+                DPart::Changes => caper_client::updates::CHANGES_LABEL.into(),
                 DPart::Heading(k) => d.invite_heading(k),
                 DPart::Line(k) => d.invite_line(k),
                 DPart::Link => d.invite_link_name(),
@@ -1277,7 +1278,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::LinkRow(_),
         ) => UIA_TextControlTypeId,
         Id::Dialog(DPart::Toggle) => UIA_CheckBoxControlTypeId,
-        Id::Dialog(DPart::Release) => UIA_HyperlinkControlTypeId,
+        Id::Dialog(DPart::Release | DPart::Changes) => UIA_HyperlinkControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
         Id::AttachmentEditor(EPart::Field) => UIA_EditControlTypeId,
         Id::AttachmentEditor(EPart::Title | EPart::Status) => UIA_TextControlTypeId,
@@ -1928,7 +1929,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::RemoveMember(_)
                 | DPart::ReactorTab(_)
                 | DPart::DeleteOpen
-                | DPart::Release,
+                | DPart::Release
+                | DPart::Changes,
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId

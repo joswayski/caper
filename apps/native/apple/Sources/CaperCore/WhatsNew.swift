@@ -103,6 +103,21 @@ extension Bundle {
     }
 }
 
+/// The link under a release without highlights, for anyone curious what changed.
+public enum ReleaseChanges {
+    public static let label = "See what changed on GitHub"
+
+    /// Every commit from the installed build `from` to `to`; the history up
+    /// to `to` when the installed build is unknown or the same.
+    public static func url(from: String?, to: String?) -> URL? {
+        guard let to, WhatsNewSnapshot.validRevision(to) else { return nil }
+        if let from, WhatsNewSnapshot.validRevision(from), from != to {
+            return URL(string: "https://github.com/joswayski/caper/compare/\(from)...\(to)")
+        }
+        return URL(string: "https://github.com/joswayski/caper/commits/\(to)")
+    }
+}
+
 /// The installed version, as every client shows and copies it: "Version
 /// 2026.11.19.3" on screen, "Caper 2026.11.19.3 for macOS (5c00469)" when copied.
 /// Builds without a release revision are development builds.
