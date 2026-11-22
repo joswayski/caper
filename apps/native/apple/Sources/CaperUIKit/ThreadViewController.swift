@@ -322,7 +322,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                 items.append(.day(key))
             }
             nextRows[root.clientMessageId] = MessageRowState(message: root, grouped: false, continued: false, viewerID: viewer,
-                                                             focused: chat.focusedMessageID == root.id, chat: chat, inThread: true)
+                                                             focused: chat.focusedMessageID == root.id, context: RowContext(chat), inThread: true)
             items.append(.row(root.clientMessageId))
             if let count = root.thread?.replyCount, count > 0 {
                 nextDays["replies"] = "\(count) \(count == 1 ? "reply" : "replies")"

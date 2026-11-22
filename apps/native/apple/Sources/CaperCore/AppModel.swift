@@ -3227,9 +3227,23 @@ public final class ChatModel {
     /// Authors (and their nested copies) show other people's live profile
     /// updates and your own saved profile.
     public var messages: [ChatMessage] {
-        get { profiled(messageSnapshots) }
+        get {
+            // Reads stay observed; the mapped list is reused until the
+            // snapshots, the profile directory or your own profile change.
+            let profiles = profileDirectory(), own = profileAuthor
+            if let cache = profiledCache, cache.snapshots == messageSnapshots, cache.own == own, cache.profiles == profiles {
+                return cache.result
+            }
+            let result = messageSnapshots.map { profiles.apply($0).withProfile(own) }
+            profiledCache = (messageSnapshots, profiles, own, result)
+            return result
+        }
         set { messageSnapshots = newValue }
     }
+    /// Array equality returns at once for the same storage, so a hit costs no per-message work.
+    @ObservationIgnored private var profiledCache: (snapshots: [ChatMessage], profiles: ProfileDirectory, own: ChatAuthor?, result: [ChatMessage])?
+    @ObservationIgnored private var displayedCache: (messages: [ChatMessage], mutations: Int, own: ChatAuthor?, result: [ChatMessage])?
+    @ObservationIgnored private var mutationsRevision = 0
     private var pinnedMessageSnapshots: [ChatMessage] = []
     public var pinnedMessages: [ChatMessage] {
         get { profiled(pinnedMessageSnapshots) }
@@ -3239,9 +3253,21 @@ public final class ChatModel {
         let profiles = profileDirectory(), own = profileAuthor
         return messages.map { profiles.apply($0).withProfile(own) }
     }
-    private var mutations = MessageMutations()
+    private var mutations = MessageMutations() { didSet { mutationsRevision += 1 } }
     private func project(_ message: ChatMessage) -> ChatMessage { mutations.project(message).withProfile(profileAuthor) }
-    public var displayedMessages: [ChatMessage] { messages.map(project) }
+    /// Projects a list with your profile read once, not once per message.
+    private func projected(_ list: [ChatMessage]) -> [ChatMessage] {
+        let own = profileAuthor
+        return list.map { mutations.project($0).withProfile(own) }
+    }
+    public var displayedMessages: [ChatMessage] {
+        let source = messages, own = profileAuthor
+        _ = mutations.edits.count // Observed, like `project`.
+        if let cache = displayedCache, cache.messages == source, cache.mutations == mutationsRevision, cache.own == own { return cache.result }
+        let result = projected(source)
+        displayedCache = (source, mutationsRevision, own, result)
+        return result
+    }
     public var displayedPins: [ChatMessage] { profiled(mutations.pinned(messages: messages, confirmed: pinnedMessages)) }
     public var channelName = "general"
     public var spaceName = "Caper"
@@ -3335,6 +3361,9 @@ public final class ChatModel {
     private var threadReadInFlight: Set<String> = []
     public var visibleThreadReply: (rootID: String, seq: String)?
 
+    /// Roots of the open channel's unread threads.
+    public var unreadThreadRoots: Set<String> { unreadThreadChannel == channelID ? Set(unreadThreads.keys) : [] }
+
     public func threadUnread(_ rootID: String) -> Bool {
         unreadThreadChannel == channelID && unreadThreads[rootID] != nil
     }
@@ -3427,9 +3456,9 @@ public final class ChatModel {
     private var restoredDraft: String?
     private var threadBroadcasts: [String: Bool] = [:]
     public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) && Self.inWindow($0, start: windowStart, end: windowEnd) } }
-    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(project).filter { !$0.isDeleted } }
+    public var displayedChannelMessages: [ChatMessage] { projected(channelMessages).filter { !$0.isDeleted } }
     public var threadMessages: [ChatMessage] { messages.filter { $0.threadRootId != nil && $0.threadRootId == threadRootID && Self.inWindow($0, start: threadWindowStart, end: threadWindowEnd) } }
-    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(project).filter { !$0.isDeleted } }
+    public var displayedThreadMessages: [ChatMessage] { projected(threadMessages).filter { !$0.isDeleted } }
     private static func inWindow(_ message: ChatMessage, start: String?, end: String?) -> Bool {
         (start == nil || (try? Sequence.compare(message.seq, start!)) != .orderedAscending) &&
         (end == nil || (try? Sequence.compare(message.seq, end!)) != .orderedDescending)

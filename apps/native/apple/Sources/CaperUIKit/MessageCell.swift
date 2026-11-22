@@ -3,6 +3,22 @@ import SwiftUI
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
+/// What every row reads from the chat, read once per render rather than
+/// once per row (each observed read costs a registrar access).
+struct RowContext {
+    let unreadThreads: Set<String>
+    let canInteract: Bool
+    let reactionErrors: [String: String]
+    let pinErrors: [String: String]
+
+    @MainActor init(_ chat: ChatModel) {
+        unreadThreads = chat.unreadThreadRoots
+        canInteract = chat.canInteract
+        reactionErrors = chat.reactionErrors
+        pinErrors = chat.pinErrors
+    }
+}
+
 /// One timeline row's display state. Built per snapshot from the model; cells
 /// read it only when they are realized.
 struct MessageRowState: Equatable {
@@ -70,7 +86,7 @@ struct MessageRowState: Equatable {
 
     @MainActor
     init(message: ChatMessage, grouped: Bool, continued: Bool, viewerID: String?, focused: Bool = false, inPins: Bool = false,
-         chat: ChatModel? = nil, inThread: Bool = false) {
+         context: RowContext? = nil, inThread: Bool = false) {
         id = message.clientMessageId
         messageID = message.id
         authorName = message.author.name
@@ -111,15 +127,15 @@ struct MessageRowState: Equatable {
         if !inThread && !inPins {
             if message.threadRootId == nil, let summary = message.thread, summary.replyCount > 0 {
                 thread = ThreadLink(rootID: message.id, replyCount: summary.replyCount,
-                                    participants: summary.participants, unread: chat?.threadUnread(message.id) ?? false)
+                                    participants: summary.participants, unread: context?.unreadThreads.contains(message.id) ?? false)
             } else if let root = message.threadRootId {
-                thread = ThreadLink(rootID: root, replyCount: 0, participants: [], unread: chat?.threadUnread(root) ?? false)
+                thread = ThreadLink(rootID: root, replyCount: 0, participants: [], unread: context?.unreadThreads.contains(root) ?? false)
             }
         }
-        if let chat {
-            canInteract = chat.canInteract
-            reactionError = chat.reactionErrors[message.id]
-            pinError = message.isDeleted ? nil : chat.pinErrors[message.id]
+        if let context {
+            canInteract = context.canInteract
+            reactionError = context.reactionErrors[message.id]
+            pinError = message.isDeleted ? nil : context.pinErrors[message.id]
         }
     }
 

@@ -1189,6 +1189,7 @@ enum TimelineRows {
         }
         // A thread passes its shown root: the first reply gets a divider only on another day.
         var dayReference = above
+        let context = chat.map { RowContext($0) }
         for (index, message) in messages.enumerated() {
             if dayReference.map({ !NativePresentation.sameDay($0.createdAt, message.createdAt) }) ?? true,
                let label = NativePresentation.dayLabel(message.createdAt) {
@@ -1216,7 +1217,7 @@ enum TimelineRows {
                     && NativePresentation.sameDay(message.createdAt, $0.createdAt) && NativePresentation.grouped($0, after: message)
             } ?? false
             built.rows[message.clientMessageId] = MessageRowState(message: message, grouped: grouped, continued: continued, viewerID: viewerID,
-                                                                  focused: focusedID == message.id, chat: chat, inThread: inThread)
+                                                                  focused: focusedID == message.id, context: context, inThread: inThread)
             if shown.contains(message.id) { built.rows[message.clientMessageId]?.revealedBlocked = true }
             built.items.append(.row(message.clientMessageId))
             previous = message

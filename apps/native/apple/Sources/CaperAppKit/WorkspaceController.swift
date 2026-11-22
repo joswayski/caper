@@ -29,6 +29,7 @@ import CaperCore
     private let navigationObservation = NativeObservation()
     private let timelineObservation = NativeObservation()
     private let composerObservation = NativeObservation()
+    private let statusObservation = NativeObservation()
     private let attachmentObservation = NativeObservation()
     private let forwardingObservation = NativeObservation()
     private let invitationObservation = NativeObservation()
@@ -407,6 +408,7 @@ import CaperCore
             DispatchQueue.main.async { [weak self] in self?.acknowledgeVisibleThread() }
         }
         composerObservation.start { [weak self] in self?.updateComposer() }
+        statusObservation.start { [weak self] in self?.updateStatus() }
         attachmentObservation.start(reading: { [weak self] in
             guard let self else { return false }
             let chat = self.model.chat
@@ -805,21 +807,6 @@ import CaperCore
         retry.isHidden = !(chat.loadFailed || historyError != nil || chat.sessionError != nil || (pending != nil && !chat.sending && !chat.sendRejected))
         retry.isEnabled = inThread ? !chat.threadLoading : !chat.loadingOlder
         editRejected.isHidden = !chat.sendRejected || pending == nil
-        let error = (chat.pendingMessage == nil || pending != nil ? chat.error : nil) ?? historyError ?? chat.jumpError ?? chat.sessionError ?? model.navigationError
-        status.setAccessibilityIdentifier(inThread ? (error == nil ? "thread-status" : "thread-error") : (error == nil ? "conversation-status" : "conversation-error"))
-        status.textColor = error == nil ? NativeStyle.muted : NSColor(CaperTheme.error)
-        status.stringValue = error
-            ?? (inThread ? (chat.threadLoading ? "Loading replies…" : chat.threadMessages.isEmpty ? "No replies yet. Start the thread." : "")
-                : model.previewingChannel ? "Preview · Join #\(chat.channelName) to interact with people here" : chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? (model.selectedDirectMessage?.status == .outgoing ? model.selectedDirectMessage.flatMap(NativePresentation.directMessageNotice) ?? "" : "") : "\(chat.typingNames.joined(separator: ", ")) typing…")
-        // Who is typing is announced politely when it starts or changes, like
-        // web's role="status", without moving VoiceOver's focus.
-        let typingShown = !inThread && error == nil && !chat.typingNames.isEmpty && status.stringValue.hasSuffix(" typing…") ? status.stringValue : ""
-        if !typingShown.isEmpty, typingShown != announcedTyping {
-            NSAccessibility.post(element: status, notification: .announcementRequested, userInfo: [
-                .announcement: typingShown, .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-            ])
-        }
-        announcedTyping = typingShown
         // Layout consumes focus only once the requested pane is on screen.
         _ = chat.composerFocusRequest(inThread: inThread)
         view.needsLayout = true
@@ -880,6 +867,30 @@ import CaperCore
             bottom = stackTop - 16
         }
         jumpToLatest.frame = NSRect(x: timeline.frame.maxX - 16 - width, y: bottom - height, width: width, height: height)
+    }
+
+    /// The status row: an error, loading, or who is typing. Its own
+    /// observation, so a typing event never reruns the composer or layout.
+    private func updateStatus() {
+        let chat = model.chat
+        let root = inThread ? chat.threadRootID : nil
+        let pending = chat.pendingMessage.flatMap { $0.threadRootId == root ? $0 : nil }
+        let historyError = inThread ? chat.threadError : chat.olderError
+        let error = (chat.pendingMessage == nil || pending != nil ? chat.error : nil) ?? historyError ?? chat.jumpError ?? chat.sessionError ?? model.navigationError
+        status.setAccessibilityIdentifier(inThread ? (error == nil ? "thread-status" : "thread-error") : (error == nil ? "conversation-status" : "conversation-error"))
+        status.textColor = error == nil ? NativeStyle.muted : NSColor(CaperTheme.error)
+        status.stringValue = error
+            ?? (inThread ? (chat.threadLoading ? "Loading replies…" : chat.threadMessages.isEmpty ? "No replies yet. Start the thread." : "")
+                : model.previewingChannel ? "Preview · Join #\(chat.channelName) to interact with people here" : chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? (model.selectedDirectMessage?.status == .outgoing ? model.selectedDirectMessage.flatMap(NativePresentation.directMessageNotice) ?? "" : "") : "\(chat.typingNames.joined(separator: ", ")) typing…")
+        // Who is typing is announced politely when it starts or changes, like
+        // web's role="status", without moving VoiceOver's focus.
+        let typingShown = !inThread && error == nil && !chat.typingNames.isEmpty && status.stringValue.hasSuffix(" typing…") ? status.stringValue : ""
+        if !typingShown.isEmpty, typingShown != announcedTyping {
+            NSAccessibility.post(element: status, notification: .announcementRequested, userInfo: [
+                .announcement: typingShown, .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+            ])
+        }
+        announcedTyping = typingShown
     }
 
     private func showAttachMenu() {
