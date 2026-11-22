@@ -2405,11 +2405,14 @@ button.chat-mention-card-avatar {
   caret-color: var(--text);
 }
 /* A long channel or person name stays on one line instead of growing the
-   empty composer to four. */
+   empty composer to four. In flow, it is as wide as the text area, so it
+   ends before the composer's tools; the negative margin overlays the
+   empty paragraph. */
 .chat-rich-input[data-empty]::before {
   content: attr(data-placeholder);
-  position: absolute;
-  max-width: calc(100% - 100px);
+  display: block;
+  height: 1lh;
+  margin-bottom: -1lh;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6495,6 +6498,42 @@ a.chat-draft-preview {
   }
   :is(.chat-composer, .chat-profile-composer) form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 178px;
+  }
+}
+/* The profile card is too narrow for four tools inside its field, so, as on
+   the Windows and macOS cards, the field spans the card and its tools sit
+   on a row beneath: attach, GIF, emoji and microphone, then Send. */
+.chat-mention-card .chat-profile-composer form {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 2px;
+}
+.chat-mention-card .chat-profile-composer form > :is(.chat-mention-input, .chat-voice-recorder) {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+.chat-mention-card .chat-profile-composer form .chat-mention-input .chat-rich-input {
+  padding: 10px 11px;
+}
+.chat-mention-card .chat-profile-composer form > .chat-attach {
+  grid-column: 1;
+  grid-row: 2;
+  align-self: center;
+  margin: 0;
+}
+.chat-mention-card .chat-profile-composer .chat-composer-tools {
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: stretch;
+  align-self: center;
+  margin: 0;
+}
+.chat-mention-card .chat-profile-composer .chat-composer-send {
+  margin-left: auto;
+}
+@media (hover: hover) and (pointer: fine) {
+  .chat-mention-card .chat-profile-composer form > .chat-attach {
+    width: 32px;
+    height: 32px;
   }
 }
 .chat-thread-composer form:has(.chat-gif-tool) .chat-rich-input {
