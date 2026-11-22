@@ -555,6 +555,18 @@ public final class AppModel {
     /// Keeps opening and closing the feed in order across sign-in and logout.
     @ObservationIgnored private var profileFeedTask: Task<Void, Never>?
     private var directMessageRefreshTask: Task<Void, Never>?
+    /// The account's gateway notifications feed is live: its events refresh
+    /// unread state about a second after they happen, so the shell polls
+    /// only as a backstop (`shellPollInterval`).
+    @ObservationIgnored private(set) var notificationFeedLive = false
+    /// Set to cut the poll loop's current wait short.
+    @ObservationIgnored private var pollSoon = false
+    @ObservationIgnored var shellPollInterval: (live: Duration, offline: Duration) = (.seconds(60), .seconds(15))
+    #if os(iOS)
+    /// iPhone's notifications feed rides the profiles socket (the Mac's has its own).
+    @ObservationIgnored private var notificationFeedID: String?
+    @ObservationIgnored private var notificationFeedRefused = false
+    #endif
     private var foreground = false
     #if os(macOS)
     @ObservationIgnored private lazy var desktopNotifications = DesktopNotifications(model: self)
@@ -795,25 +807,64 @@ public final class AppModel {
     private func startProfileUpdates() {
         let gateway = profileGateway, previous = profileFeedTask
         let handler: Gateway.Handler = { [weak self] event in self?.receiveProfileFeed(event) }
-        profileFeedTask = Task {
+        #if os(iOS)
+        let notifications: Gateway.Handler = { [weak self] event in self?.receiveNotificationFeed(event) }
+        #endif
+        profileFeedTask = Task { [weak self] in
             await previous?.value
             await gateway.subscribeProfiles(handler: handler)
+            #if os(iOS)
+            let id = await gateway.subscribeNotifications(handler: notifications)
+            self?.notificationFeedID = id
+            #endif
         }
     }
+
+    #if os(iOS)
+    /// Only unread state: alerts come from APNs.
+    private func receiveNotificationFeed(_ event: [String: Any]) {
+        guard account != nil else { return }
+        switch event["type"] as? String {
+        case "notification.created": scheduleUnreadRefresh()
+        case "subscription.error": notificationFeedRefused = true; notificationFeedChanged(live: false)
+        case "ready": notificationFeedRefused = false; notificationFeedChanged(live: profileConnection == .connected)
+        default: break
+        }
+    }
+    #endif
 
     private func stopProfileUpdates() {
         profileConnection = .disconnected
         profileUpdates = ProfileDirectory()
+        notificationFeedChanged(live: false)
         let gateway = profileGateway, previous = profileFeedTask
+        #if os(iOS)
+        let notifications = notificationFeedID; notificationFeedID = nil
+        #endif
         profileFeedTask = Task {
             await previous?.value
             await gateway.unsubscribe(Gateway.profilesSubscriptionID)
+            #if os(iOS)
+            if let notifications { await gateway.unsubscribe(notifications) }
+            #endif
         }
     }
 
     func receiveProfileConnection(_ state: GatewayState) {
         guard account != nil else { return }
         profileConnection = state
+        #if os(iOS)
+        if state != .connected { notificationFeedRefused = false }
+        notificationFeedChanged(live: state == .connected && notificationFeedID != nil && !notificationFeedRefused)
+        #endif
+    }
+
+    /// The notifications feed went live or dropped. Coming back refreshes the
+    /// shell once, for whatever happened while it was down.
+    func notificationFeedChanged(live: Bool) {
+        guard live != notificationFeedLive else { return }
+        notificationFeedLive = live
+        if live, account != nil { pollSoon = true }
     }
 
     func receiveProfileFeed(_ raw: [String: Any]) {
@@ -951,7 +1002,7 @@ public final class AppModel {
     }
 
     /// The launch's space and DM list requests, started together.
-    private struct WorkspacePrefetch: Sendable {
+    struct WorkspacePrefetch: Sendable {
         let spaces: Task<SpacesResponse, Error>
         let directMessages: Task<[DirectMessageConversation], Error>
         /// Profiles known when the DM list was requested.
@@ -1794,7 +1845,7 @@ public final class AppModel {
         await setPushEnabled?(enabled)
     }
 
-    private func startDirectMessageRefresh(prefetched: WorkspacePrefetch? = nil) {
+    func startDirectMessageRefresh(prefetched: WorkspacePrefetch? = nil) {
         #if os(macOS)
         desktopNotifications.start()
         #endif
@@ -1822,7 +1873,14 @@ public final class AppModel {
                 await self?.refreshUnreadSpaces()
                 if reconcile { self?.refreshMembership() }
                 reconcile = true
-                try? await Task.sleep(for: .seconds(15))
+                // Every 60 seconds while the notifications feed is live, else 15;
+                // the feed coming back cuts the wait short.
+                let started = ContinuousClock.now
+                while !Task.isCancelled, let self, self.generation == attempt, !self.pollSoon,
+                      ContinuousClock.now - started < (self.notificationFeedLive ? self.shellPollInterval.live : self.shellPollInterval.offline) {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                self?.pollSoon = false
                 guard self?.generation == attempt else { return }
             }
         }

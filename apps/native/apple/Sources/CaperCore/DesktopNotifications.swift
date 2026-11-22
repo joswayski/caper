@@ -9,6 +9,8 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     private var gateway: Gateway?
     private var accountID: String?
     private var epoch = 0
+    /// The gateway refused the notifications subscription.
+    private var refused = false
     /// Deleted messages (`notification.retracted`, from the `profiles` feed),
     /// so an original still downloading or arriving late is never shown.
     private var retracted: [String] = []
@@ -27,7 +29,12 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         let api = model.api
-        let gateway = Gateway(baseURL: api.baseURL, token: { await api.authorizationToken() }) { _, _ in }
+        // While this feed is live, the shell polls only as a backstop.
+        let gateway = Gateway(baseURL: api.baseURL, token: { await api.authorizationToken() }) { [weak self] state, _ in
+            guard let self, self.accountID == account.id, self.epoch == epoch else { return }
+            if state != .connected { self.refused = false }
+            self.model?.notificationFeedChanged(live: state == .connected && !self.refused)
+        }
         self.gateway = gateway
         model.removeDeliveredNotifications = { id in
             Task {
@@ -40,8 +47,9 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
             _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
             guard self?.accountID == account.id, self?.epoch == epoch else { return }
             await gateway.subscribeNotifications { [weak self] event in
-                guard self?.accountID == account.id, self?.epoch == epoch else { return }
-                self?.receive(event)
+                guard let self, self.accountID == account.id, self.epoch == epoch else { return }
+                if event["type"] as? String == "subscription.error" { self.refused = true; self.model?.notificationFeedChanged(live: false) }
+                self.receive(event)
             }
         }
     }
@@ -55,6 +63,8 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     func stop() {
         epoch += 1
         accountID = nil
+        refused = false
+        model?.notificationFeedChanged(live: false)
         retracted = []
         let previous = gateway; gateway = nil
         Task { await previous?.stop() }

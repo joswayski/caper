@@ -1247,6 +1247,35 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testShellPollsSlowlyWhileTheNotificationsFeedIsLive() async throws {
+        let model = AppModel(api: client(), landingDefaults: UserDefaults(suiteName: "caper.tests.\(UUID().uuidString)")!)
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        model.phase = .ready
+        model.shellPollInterval = (live: .seconds(30), offline: .milliseconds(100))
+        var unread = 0
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/spaces/unread": unread += 1; return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+            case "/api/dms": return (200, Data(#"{"conversations":[]}"#.utf8))
+            default: return (204, Data())
+            }
+        }
+        model.startDirectMessageRefresh()
+        await waitUntil { unread >= 3 }
+        // Live: one refresh for what happened meanwhile, then only the backstop.
+        model.notificationFeedChanged(live: true)
+        let atLive = unread
+        await waitUntil { unread > atLive }
+        let settled = unread
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(unread, settled, "no 15-second-style polling while the feed is live")
+        // Dropping goes back to frequent polls.
+        model.notificationFeedChanged(live: false)
+        await waitUntil { unread >= settled + 3 }
+        await model.logout()
+    }
+
+    @MainActor
     func testRefusedSendIsNotRetriedOnReconnect() async throws {
         let channel = "Aaaaaaaaaaaa"
         var sends = 0
