@@ -106,7 +106,7 @@ function InviteLinkActions({
               <RefreshCw size={16} aria-hidden="true" />
               <span>
                 Regenerate link
-                <small id={warningId}>Creates a new 30-day link (up to 100 joins). The old link stops working.</small>
+                <small id={warningId}>Replaces this link with 30 days and 100 joins. The old link stops working.</small>
               </span>
             </button>
             <button type="button" onClick={() => choose(settings)}>
@@ -456,7 +456,7 @@ export function InviteLinkManager({
           onClose={() => setConfirmation(undefined)}
         >
           <div className="delete-confirmation">
-            <p>This invite link will stop working.</p>
+            <p>This shared URL will stop accepting new joins.</p>
             {confirmation.action === "regenerate" && <p>The replacement allows 100 joins for 30 days.</p>}
             <p className="channel-name-guidance">Current link: {inviteUrl(confirmation.code)}</p>
             <div className="space-dialog-actions">
@@ -527,7 +527,7 @@ export function JoinInviteLinkForm({
       }}
     >
       <p className="invite-link-example" id={`${id}-example`}>
-        Paste an invite link below.
+        Paste it below to join!
       </p>
       <div className="member-add">
         <label className="sr-only" htmlFor={id}>

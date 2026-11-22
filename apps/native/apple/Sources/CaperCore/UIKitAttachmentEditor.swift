@@ -93,7 +93,7 @@ struct NativeAttachmentEditorBridge: UIViewControllerRepresentable {
             colors.addArrangedSubview(button); swatches.append(button)
         }
         let custom = UIButton(type: .system); custom.setImage(UIImage(systemName: "paintpalette"), for: .normal)
-        custom.accessibilityLabel = "Custom color"; custom.tintColor = UIColor(CaperTheme.text)
+        custom.accessibilityLabel = "Custom colour"; custom.tintColor = UIColor(CaperTheme.text)
         custom.addAction(UIAction { [weak self] _ in self?.pickColor() }, for: .touchUpInside); colors.addArrangedSubview(custom)
         eraser = UIKitMessageDialog.button("Eraser") { [state] in state.erasing.toggle() }
         size.addTarget(self, action: #selector(sizeChanged), for: .valueChanged)

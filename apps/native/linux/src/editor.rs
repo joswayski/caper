@@ -1512,8 +1512,8 @@ impl App {
             });
             options.append(&button);
         }
-        // Any other color.
-        let custom = crate::app::named::<gtk::ColorButton>("GtkColorButton", "Custom color");
+        // Any other colour.
+        let custom = crate::app::named::<gtk::ColorButton>("GtkColorButton", "Custom colour");
         #[allow(deprecated)]
         custom.set_rgba(&gdk::RGBA::new(
             f32::from(color[0]) / 255.0,
@@ -1521,7 +1521,7 @@ impl App {
             f32::from(color[2]) / 255.0,
             1.0,
         ));
-        custom.set_tooltip_text(Some("Custom color"));
+        custom.set_tooltip_text(Some("Custom colour"));
         let weak = Rc::downgrade(self);
         #[allow(deprecated)]
         custom.connect_color_set(move |button| {

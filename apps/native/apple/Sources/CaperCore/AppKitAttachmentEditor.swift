@@ -81,7 +81,7 @@ import SwiftUI
             button.image = image; button.imagePosition = .imageOnly
             markOptions.addArrangedSubview(button); swatches.append(button)
         }
-        color.target = self; color.action = #selector(colorChanged); color.setAccessibilityLabel("Custom color")
+        color.target = self; color.action = #selector(colorChanged); color.setAccessibilityLabel("Custom colour")
         color.widthAnchor.constraint(equalToConstant: 36).isActive = true
         eraser = AppKitKitButton("Eraser") { [state] in state.erasing.toggle() }
         size.target = self; size.action = #selector(sizeChanged)

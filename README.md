@@ -1,6 +1,4 @@
-# Caper — [caper.chat](https://caper.chat)
-
-Text and voice chat spaces for your people, on the web and native apps for macOS, Windows, Linux, iPhone, and Android.
+# Caper Chat - [https://caper.chat](https://caper.chat)
 
 ## Install
 
@@ -20,26 +18,26 @@ All builds are on the [latest release](https://github.com/joswayski/caper/releas
 
 ![Caper architecture: clients reach the Rust API, gateway and web server on AWS through Cloudflare Tunnel; voice, files and link previews run on Cloudflare; data lives in PlanetScale Postgres with Valkey for fanout](docs/architecture.svg)
 
-- **API** owns accounts, spaces, channels, and messages. Messages are written
+- **API** owns accounts, spaces, channels and messages. Messages are written
   to Postgres with an outbox.
 - **Gateway** is the same Rust binary run with `--gateway`. It holds one
-  WebSocket per tab or app and pushes live messages, typing, presence, and call
+  WebSocket per tab or app and pushes live messages, typing, presence and call
   rosters. Valkey fans events out across pods.
 - **Voice** audio goes straight between clients and Cloudflare's SFU. It never
   passes through AWS.
-- **Files** upload straight to R2 with presigned URLs. Photos are re-encoded on
-  your device before upload to strip metadata; the API checks uploads, and the
-  CDN Worker serves them through signed, expiring links.
+- **Files** upload straight to R2 with presigned URLs. The API checks them and
+  strips their metadata, and the CDN Worker serves them through signed,
+  expiring links.
 - **Link previews** are fetched by the Embed Worker on Cloudflare, so links
   people post are never fetched from inside the cluster.
 
 ## Features
 
-- Spaces with text and voice channels, private channels, and invite links
-- Direct messages and a Notifications inbox for unread messages, mentions, replies, reactions, and invitations
-- Threads, pins, forwarding, editing, and deleting messages
-- File and media attachments, with an editor to crop, draw, and add text
-- Link previews for X, TikTok, YouTube, Instagram, and most other sites, with video playing in Caper
+- Spaces with text and voice channels, private channels and invite links
+- Direct messages and a Notifications inbox for unread messages, mentions, replies, reactions and invitations
+- Threads, pins, forwarding, editing and deleting messages
+- File and media attachments, with an editor to crop, draw and add text
+- Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper
 - Voice messages with automatic transcripts, and AI dictation into any composer
 - GIFs and stickers from [KLIPY](https://klipy.com) in every composer
 - Profile pictures and space icons

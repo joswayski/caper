@@ -1016,12 +1016,12 @@ export default function AttachmentEditor({
                         <label
                           className="chat-editor-swatch chat-editor-custom"
                           data-selected={(custom && !(tool === "draw" && erasing)) || undefined}
-                          title="Custom color"
+                          title="Custom colour"
                           style={custom ? ({ "--swatch": color } as CSSProperties) : undefined}
                         >
                           <input
                             type="color"
-                            aria-label="Custom color"
+                            aria-label="Custom colour"
                             value={color.toLowerCase()}
                             onChange={(event) => chooseColor(event.target.value)}
                           />

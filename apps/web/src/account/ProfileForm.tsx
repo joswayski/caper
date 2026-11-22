@@ -228,7 +228,7 @@ export default function ProfileForm({
       </fieldset>
       {(closeAction || blocker.status === "blocked") && (
         <Dialog title="Discard changes?" onClose={keepEditing}>
-          <p>Your profile has unsaved changes.</p>
+          <p>Your profile has unsaved changes. Discard them or keep editing.</p>
           <footer className="space-dialog-actions">
             <button type="button" className="secondary" data-initial-focus onClick={keepEditing}>
               Keep editing

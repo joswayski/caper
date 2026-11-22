@@ -1747,7 +1747,7 @@ const SERVER_ERRORS: &[(&str, &str)] = &[
     ),
     (
         "invite link limit reached",
-        "This space has too many active invite links. Deactivate one to create another.",
+        "This space has too many active invite links. Revoke one to create another.",
     ),
     (
         "invite links cannot target private channels",
@@ -2310,7 +2310,7 @@ mod tests {
         assert_eq!(limit.status.map(|status| status.as_u16()), Some(409));
         assert_eq!(
             limit.message,
-            "This space has too many active invite links. Deactivate one to create another."
+            "This space has too many active invite links. Revoke one to create another."
         );
         let links = api.invite_links("account", "space0000001").unwrap();
         assert_eq!(links.len(), 1);

@@ -18,7 +18,7 @@ test("known server errors read as sentences", () => {
 test("invite link errors read like the native apps' sentences", () => {
   assert.equal(
     friendlyError(new SpacesApiError(409, "invite link limit reached")),
-    "This space has too many active invite links. Deactivate one to create another.",
+    "This space has too many active invite links. Revoke one to create another.",
   );
   assert.equal(
     friendlyError(new SpacesApiError(409, "invite links cannot target private channels")),

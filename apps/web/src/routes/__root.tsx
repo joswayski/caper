@@ -12,20 +12,11 @@ export const Route = createRootRoute({
       { name: "viewport", content: "width=device-width, initial-scale=1.0" },
       {
         name: "description",
-        content: "Text and voice chat spaces for your people, on the web and every device.",
+        content: "Chat with anyone, about anything.",
       },
-      { property: "og:site_name", content: "Caper" },
-      { property: "og:type", content: "website" },
-      { property: "og:url", content: "https://caper.chat" },
-      { property: "og:title", content: "Caper — A place for your people" },
-      {
-        property: "og:description",
-        content: "Text and voice chat spaces for your people, on the web and every device.",
-      },
-      { name: "twitter:card", content: "summary" },
       { name: "theme-color", content: "#0c0d0f" },
       { name: "color-scheme", content: "dark" },
-      { title: "Caper — Text and voice spaces for your people" },
+      { title: "Caper - A place for your people" },
     ],
     links: [
       {

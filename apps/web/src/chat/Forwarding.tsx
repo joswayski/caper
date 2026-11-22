@@ -295,7 +295,7 @@ export function ForwardPicker({
           `${confirmed ? `Forwarded to ${confirmed} ${confirmed === 1 ? "destination" : "destinations"}. ` : ""}${
             rejected
               ? `${confirmed ? "Remaining forwards not sent." : "Not sent."} ${detail || "Try again."}`
-              : `${confirmed ? "Remaining forwards not confirmed yet." : "Not confirmed yet."}${detail ? ` ${detail}` : ""} Retry to check delivery.`
+              : `${confirmed ? "Remaining forwards not confirmed yet." : "Not confirmed yet."}${detail ? ` ${detail}` : ""} Retry checks the same ${pending.length === 1 ? "forward" : "forwards"}.`
           }`,
         );
       }
@@ -315,8 +315,8 @@ export function ForwardPicker({
     <ForwardDialog title="Forward message" anchor={target.anchor} busy={sending} onClose={onClose}>
       <div className="chat-forward-body">
         <p className="chat-forward-disclosure">
-          Shares this message and its conversation, including future edits, reactions, and replies. People in that
-          conversation can read and forward it.
+          Shares this message and its conversation, including future edits, reactions and replies. People in the
+          destination can read and forward it.
         </p>
         <OriginalMessage
           message={original}
@@ -328,7 +328,7 @@ export function ForwardPicker({
           Send to
           <input
             type="search"
-            placeholder="Find a space, channel, or DM"
+            placeholder="Find a space, channel or DM"
             value={search}
             disabled={!!command}
             onChange={(event) => setSearch(event.target.value)}
@@ -366,7 +366,7 @@ export function ForwardPicker({
           )}
           {visible?.length === 0 && (
             <p className="chat-forward-status">
-              {destinations?.length ? "No matching destinations." : "Join a channel or start a DM to forward messages."}
+              {destinations?.length ? "No matching destination." : "Join a channel or start a DM to forward here."}
             </p>
           )}
         </div>

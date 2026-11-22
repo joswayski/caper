@@ -925,25 +925,13 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
           data-live-control
           to={joinTo}
           preload={joinTo === "/spaces" ? "intent" : false}
-          aria-label={joinTo === "/spaces" ? "Open Caper" : joinTo === "/profile" ? "Finish setup" : "Join Caper"}
+          aria-label="Join Caper"
           draggable={false}
         >
           <span className="live-invite">
             <i aria-hidden="true" />
-            <span className="live-invite-fine">
-              {joinTo === "/spaces"
-                ? "Simulated preview · Click to open"
-                : joinTo === "/profile"
-                  ? "Simulated preview · Finish setup"
-                  : "Simulated preview · Click to join"}
-            </span>
-            <span className="live-invite-coarse">
-              {joinTo === "/spaces"
-                ? "Preview · Tap to open"
-                : joinTo === "/profile"
-                  ? "Finish setup"
-                  : "Preview · Tap to join"}
-            </span>
+            <span className="live-invite-fine">Click to join</span>
+            <span className="live-invite-coarse">Tap to join</span>
           </span>
         </Link>
       </div>

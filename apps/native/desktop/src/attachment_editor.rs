@@ -2511,9 +2511,9 @@ fn custom_swatch(ui: &mut egui::Ui, rect: Rect, color: [u8; 3], selected: bool) 
         painter.circle_stroke(centre, radius + 3.0, Stroke::new(1.0_f32, ACTION));
     }
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::ColorWell, true, selected, "Custom color")
+        egui::WidgetInfo::selected(egui::Role::ColorWell, true, selected, "Custom colour")
     });
-    response.on_hover_text("Custom color")
+    response.on_hover_text("Custom colour")
 }
 
 fn color_image(image: &image::RgbaImage) -> egui::ColorImage {
