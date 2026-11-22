@@ -84,6 +84,13 @@ const benchMembers = Array.from({ length: benchCount > 0 ? 45 : 0 }, (_, i) => (
   displayName: `${benchFirstNames[i % benchFirstNames.length]} ${benchLastNames[i % benchLastNames.length]}`,
   owner: false,
   avatarId: (i * 37) % 1000,
+  // CAPER_BENCH_AVATAR_GIF=<file>: each bench member's custom picture is that animated GIF.
+  ...(process.env.CAPER_BENCH_AVATAR_GIF
+    ? {
+        avatarAsset: `benchavatar${String(i).padStart(9, "0")}`,
+        avatarUrl: `http://${process.env.CAPER_FIXTURE_HOST ?? "127.0.0.1"}:${process.env.CAPER_FIXTURE_PORT ?? 3001}/__fixture/bench-avatar/${i}.gif`,
+      }
+    : {}),
 }));
 const accounts = [
   ...members,
@@ -1982,6 +1989,10 @@ export async function startFixture({
         const clip = process.env.CAPER_FIXTURE_EMBED_VIDEO;
         if (!clip) return reject(response, 404, "No embed clip configured.");
         return sendRange(request, response, readFileSync(clip), "video/mp4");
+      }
+      if (path.startsWith("/__fixture/bench-avatar/") && method === "GET" && process.env.CAPER_BENCH_AVATAR_GIF) {
+        response.writeHead(200, { "content-type": "image/gif", "cache-control": "max-age=3600" });
+        return response.end(readFileSync(process.env.CAPER_BENCH_AVATAR_GIF));
       }
       if (path === "/__fixture/embed.svg" && method === "GET") {
         response.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "max-age=3600" });
