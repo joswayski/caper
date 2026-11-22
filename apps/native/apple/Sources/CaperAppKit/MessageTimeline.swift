@@ -503,7 +503,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         guard pending == nil else { return 0 }
         // A grouped row sits right under its author's previous one, as on
         // web; its hover actions float over the row's top edge.
-        return dividerHeight + pinHeight + quoteHeight + (grouped ? 2 : compact ? 70 : 32)
+        return dividerHeight + pinHeight + quoteHeight + (grouped ? 2 : compact ? 52 : 32)
     }
     /// Space under the row: a hairline when the next row continues the run.
     private var bottomPadding: CGFloat { continued ? 2 : 12 }
@@ -874,12 +874,14 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         avatar.frame = NSRect(x: 20, y: messageTop + 10, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.
-        let timeWidth = min(ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width), compact ? textWidth : .greatestFiniteMagnitude)
-        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - (compact ? 0 : timeWidth + 7)))
+        // The time stays beside the name at every width, as on web and the
+        // desktop clients; a long name gives way and ends in "…".
+        let timeWidth = min(ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width), max(0, bounds.width - 95))
+        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - timeWidth - 7))
         // A label's cell draws its text 2 points in; the body has no inset.
         // Start the name 2 points early so it lines up with the message.
         author.frame = NSRect(x: 66, y: messageTop + 10, width: authorWidth, height: 20)
-        timestamp.frame = NSRect(x: compact ? textInset : author.frame.maxX + 7, y: messageTop + (compact ? 50 : 13), width: timeWidth, height: 17)
+        timestamp.frame = NSRect(x: author.frame.maxX + 7, y: messageTop + 13, width: timeWidth, height: 17)
         // The hover wash and focus ring get room around the name, which
         // otherwise touches their left edge.
         authorAction.frame = author.frame.insetBy(dx: -4, dy: -1)
