@@ -383,3 +383,32 @@ test.each([false, true])("Reply in thread focuses before history arrives (menu: 
   expect(container.querySelector(".chat-thread-messages")?.getAttribute("aria-busy")).toBe("true");
   expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send reply"]')!.disabled).toBe(true);
 });
+
+test("a mouse row keeps every action button but draws their icons only for hover, focus or an open menu", async () => {
+  const mouse = (query: string) =>
+    ({ matches: query.includes("hover: hover"), addEventListener() {}, removeEventListener() {} }) as never;
+  vi.spyOn(window, "matchMedia").mockImplementation(mouse);
+  await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
+  await act(async () => fixture.clients.at(-1)!.emit({ phase: "ready", author: history.messages[0].author }));
+  const [row, other] = container.querySelectorAll<HTMLElement>(".chat-message[data-message-key]");
+  const buttons = (item: Element) => item.querySelectorAll(".chat-message-tools > button").length;
+  const icons = (item: Element) => item.querySelectorAll(".chat-message-tools :is(svg, img)").length;
+  // Three quick reactions, Reply in thread, Reply, Add reaction and the actions menu.
+  expect(buttons(row)).toBe(7);
+  // Only the actions menu, which is all a touch layout shows.
+  expect(icons(row)).toBe(1);
+
+  await act(async () => row.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })));
+  expect(icons(row)).toBe(7);
+  expect(icons(other)).toBe(1);
+  await act(async () => row.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })));
+  expect(icons(row)).toBe(1);
+
+  // Tab reaches a button the pointer is nowhere near.
+  await act(async () => row.querySelector<HTMLButtonElement>(".chat-reply-message")!.focus());
+  expect(icons(row)).toBe(7);
+  await act(async () => row.querySelector<HTMLButtonElement>(".chat-message-actions-trigger")!.click());
+  await act(async () => (document.activeElement as HTMLElement).blur());
+  expect(document.querySelector(".chat-message-actions")).not.toBeNull();
+  expect(icons(row)).toBe(7);
+});

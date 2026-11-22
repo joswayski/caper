@@ -1,4 +1,4 @@
-import { memo, useContext, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useContext, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { Ban, MoreHorizontal, Pin, SmilePlus } from "lucide-react";
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
@@ -30,7 +30,21 @@ import { feedbackAliases, mentionSegments, mentionsAccount, reportsFeedback, typ
 
 export type FreshUrls = Record<string, { url?: string; previewUrl?: string }>;
 
-export const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
+const TOUCH_LAYOUT = "(max-width: 760px), (pointer: coarse)";
+const HOVER_POINTER = "(hover: hover) and (pointer: fine)";
+export const isTouchLayout = () => window.matchMedia(TOUCH_LAYOUT).matches;
+
+// chat.css hides a row's action buttons until hover or focus for a mouse, and
+// all but the actions menu on touch layouts. Anything else (a wide window with
+// no hovering pointer) shows every button on every row.
+const toolsAlwaysShown = () => !window.matchMedia(TOUCH_LAYOUT).matches && !window.matchMedia(HOVER_POINTER).matches;
+function subscribeToolsShown(listener: () => void) {
+  const queries = [window.matchMedia(TOUCH_LAYOUT), window.matchMedia(HOVER_POINTER)];
+  for (const query of queries) query.addEventListener("change", listener);
+  return () => {
+    for (const query of queries) query.removeEventListener("change", listener);
+  };
+}
 
 /** Only ready files have URLs worth refreshing; processing ones get theirs from events. */
 export const withFreshUrls = (attachments: ChatAttachment[], freshUrls: FreshUrls = {}) =>
@@ -335,6 +349,11 @@ function MessageRowView({
   const deleted = !pending && !!message.deletedAt;
   const author = message.author;
   const canAct = !!ownId;
+  // The action buttons are always in the row, for Tab and screen readers, but
+  // hidden until the pointer or focus is in it. Their icons were a third of each
+  // row's elements, so only a row that shows its buttons draws them.
+  const [engaged, setEngaged] = useState(false);
+  const tools = useSyncExternalStore(subscribeToolsShown, toolsAlwaysShown, () => false) || engaged || !!actionMode;
   const run = runFirst === undefined ? undefined : { first: runFirst, count: runCount };
   const edited =
     "content" in message && !message.forward && !message.deletedAt && (message.revision ?? 1) > 1 ? (
@@ -415,6 +434,21 @@ function MessageRowView({
           data-reply-to-me={
             !pending && !deleted && !!viewerId && message.replyTo?.author.id === viewerId && author?.id !== viewerId
           }
+          // Not onPointerEnter: React skips it when the row turns up under a
+          // still pointer, as it does when a menu covering it closes.
+          onPointerOver={() => setEngaged(true)}
+          onFocus={() => setEngaged(true)}
+          // :hover follows the mouse events, which outlast a finger's pointer
+          // events: a tap on a touchscreen laptop leaves the row hovered.
+          onMouseLeave={(event) => {
+            if (!event.currentTarget.contains(document.activeElement)) setEngaged(false);
+          }}
+          onBlur={(event) => {
+            const row = event.currentTarget;
+            // A blurred window keeps its focus here, and shows it again on return.
+            if (row.contains(event.relatedTarget) || row.contains(document.activeElement)) return;
+            if (!row.matches(":hover")) setEngaged(false);
+          }}
           onPointerDown={(event) => {
             actions.cancelPress();
             if (
@@ -556,7 +590,7 @@ function MessageRowView({
                           aria-pressed={mine}
                           onClick={() => void actions.react(message.id, emoji, !mine)}
                         >
-                          <img src={emojiAsset(emojiCode(emoji))} width={18} height={18} alt="" />
+                          {tools && <img src={emojiAsset(emojiCode(emoji))} width={18} height={18} alt="" />}
                         </button>
                       );
                     })}
@@ -570,11 +604,11 @@ function MessageRowView({
                       onFocus={() => actions.prefetchThread(message.threadRootId ?? message.id)}
                       onClick={() => actions.openThread(message.threadRootId ?? message.id, true)}
                     >
-                      <Thread size={14} aria-hidden="true" />
+                      {tools && <Thread size={14} aria-hidden="true" />}
                     </button>
                   )}
                   {!readOnly && canAct && !deleted && (
-                    <ReplyButton message={message} inThread={inThread} actions={actions} />
+                    <ReplyButton message={message} inThread={inThread} actions={actions} icon={tools} />
                   )}
                   {!deleted && (
                     <>
@@ -592,7 +626,7 @@ function MessageRowView({
                         aria-haspopup="dialog"
                         aria-expanded={emojiOpen}
                       >
-                        <SmilePlus size={14} aria-hidden="true" />
+                        {tools && <SmilePlus size={14} aria-hidden="true" />}
                       </button>
                       <button
                         type="button"
@@ -695,7 +729,17 @@ function MessageRowView({
   );
 }
 
-function ReplyButton({ message, inThread, actions }: { message: ChatMessage; inThread: boolean; actions: RowActions }) {
+function ReplyButton({
+  message,
+  inThread,
+  actions,
+  icon,
+}: {
+  message: ChatMessage;
+  inThread: boolean;
+  actions: RowActions;
+  icon: boolean;
+}) {
   return (
     <button
       type="button"
@@ -705,7 +749,7 @@ function ReplyButton({ message, inThread, actions }: { message: ChatMessage; inT
       disabled={useContext(SendPendingContext)}
       onClick={() => actions.reply(message, inThread)}
     >
-      <Reply size={14} aria-hidden="true" />
+      {icon && <Reply size={14} aria-hidden="true" />}
     </button>
   );
 }
