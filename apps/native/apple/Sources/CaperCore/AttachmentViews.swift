@@ -10,6 +10,34 @@ import UniformTypeIdentifiers
 
 enum AttachmentLoadError: Error { case status(Int), undecodable }
 
+/// Decoded images in the colour space the main window composites in. Core
+/// Animation re-renders, and keeps, a second copy of any layer image in
+/// another space; drawing each decoded image into this space once, off the
+/// main thread, leaves one copy. The Mac host sets it from its window's screen;
+/// nil (iOS, extended-range screens) keeps images as decoded.
+public enum DisplayPixels {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var target: CGColorSpace?
+
+    public static var colorSpace: CGColorSpace? {
+        get { lock.withLock { target } }
+        set {
+            let usable = newValue.flatMap { $0.model == .rgb && !CGColorSpaceUsesExtendedRange($0) ? $0 : nil }
+            lock.withLock { target = usable }
+        }
+    }
+
+    static func prepare(_ image: CGImage) -> CGImage {
+        guard let space = colorSpace, image.colorSpace != space else { return image }
+        let opaque = [.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo)
+        let alpha: CGImageAlphaInfo = opaque ? .noneSkipFirst : .premultipliedFirst
+        guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                      bitmapInfo: alpha.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return image }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage() ?? image
+    }
+}
+
 /// Cancellation may arrive before the continuation installs its task delegate.
 private final class AttachmentDownloadCancellation: @unchecked Sendable {
     private let lock = NSLock()
@@ -126,7 +154,7 @@ final class AttachmentImageLoader: @unchecked Sendable {
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
               let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
               let height = properties[kCGImagePropertyPixelHeight as String] as? Int,
-              let image = Self.decodeStill(source, maxPixelSize: max(width, height)) else {
+              let image = Self.decodeStill(source, maxPixelSize: max(width, height), forDisplay: false) else {
             throw AttachmentLoadError.undecodable
         }
         return image
@@ -142,7 +170,8 @@ final class AttachmentImageLoader: @unchecked Sendable {
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw AttachmentLoadError.undecodable }
+              let decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw AttachmentLoadError.undecodable }
+        let image = DisplayPixels.prepare(decoded)
         cache.setObject(CachedAttachmentImage(image), forKey: key as NSString, cost: image.bytesPerRow * image.height)
         return image
     }
@@ -157,7 +186,7 @@ final class AttachmentImageLoader: @unchecked Sendable {
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
         let seconds = duration.isFinite && duration > 0 ? min(0.5, duration / 2) : 0
-        let image = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+        let image = DisplayPixels.prepare(try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image)
         try Task.checkCancellation()
         cache.setObject(CachedAttachmentImage(image), forKey: key as NSString, cost: image.bytesPerRow * image.height)
         return image
@@ -205,7 +234,7 @@ final class AttachmentImageLoader: @unchecked Sendable {
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceThumbnailMaxPixelSize: edge,
             ]
-            guard let first = CGImageSourceCreateThumbnailAtIndex(source, 0, frameOptions as CFDictionary) else { return nil }
+            guard let first = CGImageSourceCreateThumbnailAtIndex(source, 0, frameOptions as CFDictionary).map(DisplayPixels.prepare) else { return nil }
             let firstBytes = first.bytesPerRow * first.height
             if firstBytes > byteLimit / count {
                 // Use the actual row stride, not width × 4; ImageIO may
@@ -219,7 +248,7 @@ final class AttachmentImageLoader: @unchecked Sendable {
             var bytes = firstBytes
             for index in 1..<count {
                 try Task.checkCancellation()
-                guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, frameOptions as CFDictionary) else { break }
+                guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, frameOptions as CFDictionary).map(DisplayPixels.prepare) else { break }
                 bytes += image.bytesPerRow * image.height
                 guard bytes <= byteLimit else { break }
                 images.append(image)
@@ -233,15 +262,17 @@ final class AttachmentImageLoader: @unchecked Sendable {
         return nil
     }
 
-    /// The first image, orientation applied, at most `maxPixelSize` on its longest edge.
-    static func decodeStill(_ source: CGImageSource, maxPixelSize: Int) -> CGImage? {
+    /// The first image, orientation applied, at most `maxPixelSize` on its
+    /// longest edge; in the display's colour space unless it leaves the app.
+    static func decodeStill(_ source: CGImageSource, maxPixelSize: Int, forDisplay: Bool = true) -> CGImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        return forDisplay ? image.map(DisplayPixels.prepare) : image
     }
 
     /// A frame's GIF, WebP or APNG delay in seconds; nil when the image is

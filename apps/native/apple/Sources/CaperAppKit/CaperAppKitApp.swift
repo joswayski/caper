@@ -71,6 +71,12 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         window.setContentSize(NSSize(width: fixture ? 1440 : 1180, height: fixture ? 900 : 760))
         window.center()
         self.window = window
+        // Decoded images are drawn in the space this window composites in.
+        let center = NotificationCenter.default
+        for name in [NSWindow.didChangeScreenNotification, NSApplication.didChangeScreenParametersNotification] {
+            center.addObserver(self, selector: #selector(trackDisplayColorSpace), name: name, object: nil)
+        }
+        trackDisplayColorSpace()
         installMenus()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -95,6 +101,10 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
     func applicationDidBecomeActive(_ notification: Notification) { model?.applicationActivityChanged(active: true) }
     func applicationDidResignActive(_ notification: Notification) { model?.applicationActivityChanged(active: false) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    @objc private func trackDisplayColorSpace() {
+        DisplayPixels.colorSpace = (window?.screen ?? NSScreen.main)?.colorSpace?.cgColorSpace
+    }
 
     @objc private func showSettings(_ sender: Any?) { settings?.show(from: window) }
     @objc private func showWhatsNew(_ sender: Any?) { settings?.openWhatsNew(from: window) }
