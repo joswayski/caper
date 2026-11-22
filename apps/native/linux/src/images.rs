@@ -24,6 +24,8 @@ const MAX_FETCHES: usize = 4;
 /// Twemoji sheets are 1024px squares of 64px cells.
 const SHEET_EDGE: usize = 1024;
 const EMOJI_EDGE: usize = 64;
+/// Emoji cells kept before the ones nothing shows are dropped.
+const EMOJI_KEPT: usize = 256;
 
 /// The Lucide icons the client draws (`desktop/resources/icons`, white
 /// strokes recoloured per use).
@@ -176,10 +178,14 @@ pub struct Images {
     icons: RefCell<HashMap<(Icon, &'static str), gdk::Texture>>,
     mascots: RefCell<HashMap<u16, gdk::Texture>>,
     pictures: RefCell<Pictures>,
-    /// Decoded Twemoji sheets (`caper_client::emoji::sheet`), then each
-    /// emoji's 64px cell by catalog id.
-    emoji_sheets: RefCell<HashMap<usize, Vec<u8>>>,
+    /// The Twemoji sheet decoded last (`caper_client::emoji::sheet`), by its
+    /// index. A decoded sheet is 4 MiB, so only one stays: runs of emoji
+    /// (a picker category, a message's reactions) mostly share theirs.
+    emoji_sheet: RefCell<Option<(usize, Vec<u8>)>>,
+    /// Each emoji's 64px cell by catalog id, and the count past which cells
+    /// nothing shows are dropped (`EMOJI_KEPT` at first).
     emoji: RefCell<HashMap<String, gdk::Texture>>,
+    emoji_trim: Cell<usize>,
 }
 
 impl Images {
@@ -194,8 +200,9 @@ impl Images {
             icons: RefCell::default(),
             mascots: RefCell::default(),
             pictures: RefCell::default(),
-            emoji_sheets: RefCell::default(),
+            emoji_sheet: RefCell::default(),
             emoji: RefCell::default(),
+            emoji_trim: Cell::new(EMOJI_KEPT),
         }
     }
 
@@ -230,23 +237,26 @@ impl Images {
         if let Some(texture) = self.emoji.borrow().get(&entry.id) {
             return Some(texture.clone());
         }
-        let mut sheets = self.emoji_sheets.borrow_mut();
-        let sheet = match sheets.entry(entry.sheet) {
-            std::collections::hash_map::Entry::Occupied(sheet) => sheet.into_mut(),
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                let sheet = gdk::Texture::from_bytes(&glib::Bytes::from_static(
-                    caper_client::emoji::sheet(entry.sheet),
-                ))
-                .ok()?;
-                let mut pixels = vec![0; SHEET_EDGE * SHEET_EDGE * 4];
-                sheet.download(&mut pixels, SHEET_EDGE * 4);
-                slot.insert(pixels)
-            }
-        };
         let (x, y) = (entry.x as usize, entry.y as usize);
         if x + EMOJI_EDGE > SHEET_EDGE || y + EMOJI_EDGE > SHEET_EDGE {
             return None;
         }
+        let mut decoded = self.emoji_sheet.borrow_mut();
+        if decoded
+            .as_ref()
+            .is_none_or(|(index, _)| *index != entry.sheet)
+        {
+            // Free the last sheet before decoding the next.
+            *decoded = None;
+            let sheet = gdk::Texture::from_bytes(&glib::Bytes::from_static(
+                caper_client::emoji::sheet(entry.sheet),
+            ))
+            .ok()?;
+            let mut pixels = vec![0; SHEET_EDGE * SHEET_EDGE * 4];
+            sheet.download(&mut pixels, SHEET_EDGE * 4);
+            *decoded = Some((entry.sheet, pixels));
+        }
+        let (_, sheet) = decoded.as_ref()?;
         let mut cell = Vec::with_capacity(EMOJI_EDGE * EMOJI_EDGE * 4);
         for row in y..y + EMOJI_EDGE {
             let start = (row * SHEET_EDGE + x) * 4;
@@ -254,9 +264,15 @@ impl Images {
         }
         // `download` writes GDK's default format, premultiplied BGRA.
         let texture = straight_texture(EMOJI_EDGE, EMOJI_EDGE, cell, gdk::MemoryFormat::B8g8r8a8);
-        self.emoji
-            .borrow_mut()
-            .insert(entry.id.clone(), texture.clone());
+        let mut cells = self.emoji.borrow_mut();
+        cells.insert(entry.id.clone(), texture.clone());
+        // A browsed picker leaves thousands of cells behind (16 KiB each).
+        // Past the mark, keep only those a widget still shows; when most
+        // are showing, the mark moves up rather than trimming every time.
+        if cells.len() > self.emoji_trim.get() {
+            cells.retain(|_, cell| cell.ref_count() > 1);
+            self.emoji_trim.set(EMOJI_KEPT.max(cells.len() * 2));
+        }
         Some(texture)
     }
 

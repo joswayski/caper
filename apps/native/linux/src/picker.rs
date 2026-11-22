@@ -85,33 +85,38 @@ pub fn show(
     popover.set_child(Some(&root));
 
     let category = Rc::new(Cell::new(0_usize));
-    let tab_buttons: Rc<Vec<gtk::Button>> = Rc::new(
-        emoji::CATEGORIES
-            .iter()
-            .map(|(_, name, icon)| {
-                let button: gtk::Button = named("GtkButton", name);
-                button.add_css_class("flat");
-                button.add_css_class("emoji-tab");
-                button.set_tooltip_text(Some(name));
-                if let Some(entry) = emoji::find(icon) {
-                    button.set_child(Some(&images.emoji_image(entry, 22)));
-                }
-                tabs.append(&button);
-                button
-            })
-            .collect(),
-    );
+    let tab_buttons: Vec<gtk::Button> = emoji::CATEGORIES
+        .iter()
+        .map(|(_, name, icon)| {
+            let button: gtk::Button = named("GtkButton", name);
+            button.add_css_class("flat");
+            button.add_css_class("emoji-tab");
+            button.set_tooltip_text(Some(name));
+            if let Some(entry) = emoji::find(icon) {
+                button.set_child(Some(&images.emoji_image(entry, 22)));
+            }
+            tabs.append(&button);
+            button
+        })
+        .collect();
     let fill = {
-        let (store, search, section, empty, category, tabs, scroller) = (
+        // The tabs and the search field own this closure, so it holds them
+        // weakly: a cycle would keep a closed picker's grid and every emoji
+        // it showed.
+        let tabs: Vec<glib::WeakRef<gtk::Button>> =
+            tab_buttons.iter().map(|tab| tab.downgrade()).collect();
+        let (store, search, section, empty, category, scroller) = (
             store.clone(),
-            search.clone(),
+            search.downgrade(),
             section.clone(),
             empty.clone(),
             category.clone(),
-            tab_buttons.clone(),
             scroller.clone(),
         );
         Rc::new(move || {
+            let Some(search) = search.upgrade() else {
+                return;
+            };
             let query = search.text().trim().to_lowercase();
             let (id, name, _) = emoji::CATEGORIES[category.get()];
             section.set_label(if query.is_empty() {
@@ -120,6 +125,9 @@ pub fn show(
                 "Search results"
             });
             for (index, tab) in tabs.iter().enumerate() {
+                let Some(tab) = tab.upgrade() else {
+                    continue;
+                };
                 if query.is_empty() && index == category.get() {
                     tab.add_css_class("selected");
                 } else {
