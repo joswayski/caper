@@ -62,7 +62,7 @@ import CaperCore
 
     init(model: AppModel, channelID: String, expanding id: String?, close: @escaping () -> Void) {
         self.model = model; self.channelID = channelID; self.close = close; expandedID = id
-        super.init(NSColor(CaperTheme.surface))
+        super.init(NativeStyle.surface)
         frame.size = NSSize(width: 320, height: 420)
         [title, dismiss, scroll].forEach { addSubview($0) }
         title.setAccessibilityIdentifier("voice-list-title")
@@ -136,6 +136,10 @@ import CaperCore
         status.textColor = NativeStyle.muted; note.textColor = NativeStyle.muted
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func applyTheme() {
+        super.applyTheme()
+        layer?.backgroundColor = expanded ? NativeStyle.raised.cgColor : NSColor.clear.cgColor
+    }
     @objc private func muteChanged() {
         let value = muted.state == .on
         voice.setParticipantMuted(value, participantID: id); VoicePresentation.muteFeedback(value)
@@ -146,7 +150,7 @@ import CaperCore
         name.font = NativeStyle.font(13, bold: person.speaking)
         avatar.update(name: person.name, avatarId: person.avatarID, picture: person.picture)
         status.stringValue = person.locallyMuted ? "You muted \(person.name)" : person.speaking ? "Speaking" : person.deafened ? "Deafened" : person.muted ? "Muted" : ""
-        status.textColor = person.locallyMuted ? NativeStyle.accent : person.speaking ? NSColor(CaperTheme.voiceSessionGreen) : NativeStyle.muted
+        status.textColor = person.locallyMuted ? NativeStyle.accent : person.speaking ? NativeStyle.voiceSessionGreen : NativeStyle.muted
         status.setAccessibilityIdentifier(person.locallyMuted ? "participant-local-muted-\(id)" : "participant-status-\(id)")
         audio.isHidden = person.isSelf
         audio.setAccessibilityLabel("Audio controls for \(person.name)"); audio.setAccessibilityValue(expanded ? "Expanded" : "Collapsed")
@@ -155,7 +159,7 @@ import CaperCore
         slider.setValue(voice.participantGains[id] ?? 100)
         volume.stringValue = "User volume · \(slider.integerValue)%"
         muted.state = person.locallyMuted ? .on : .off
-        layer?.backgroundColor = expanded ? NSColor(CaperTheme.raised).cgColor : NSColor.clear.cgColor
+        layer?.backgroundColor = expanded ? NativeStyle.raised.cgColor : NSColor.clear.cgColor
         needsLayout = true
     }
     override func layout() {
@@ -193,13 +197,13 @@ import CaperCore
     }
     init(voice: VoiceClient, input: Bool) {
         self.voice = voice; self.input = input
-        super.init(NSColor(CaperTheme.surface))
+        super.init(NativeStyle.surface)
         frame.size = NSSize(width: 288, height: 204)
         [title, devices, volume, slider, error].forEach { addSubview($0) }
         title.stringValue = input ? "Microphone" : "Audio output"
         devices.setAccessibilityLabel(input ? "Microphone device" : "Output device")
         slider.setAccessibilityLabel(input ? "Input volume" : "Output volume")
-        error.textColor = NSColor(CaperTheme.error); error.maximumNumberOfLines = 2
+        error.textColor = NativeStyle.error; error.maximumNumberOfLines = 2
         observation.start { [weak self] in self?.render() }
         refresh = Task { [weak voice] in
             guard let voice else { return }; await voice.refreshAudioDevices()

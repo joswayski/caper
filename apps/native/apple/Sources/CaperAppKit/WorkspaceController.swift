@@ -99,9 +99,12 @@ import CaperCore
     private var announcedTyping = ""
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
+    /// Outer recessed bezel creating an Antigravity-style secondary border around the composer card.
+    private let composerShell = NativeView(NativeStyle.composerOuterBg)
     /// Web's message field: one bordered box holding attach, the editor, and
     /// the GIF, emoji, microphone and send tools.
     private let composerField = NativeView(NativeStyle.composer)
+    private var composerFocused = false
     private var laidOutEditorHeight: CGFloat = 0
     private let attachmentScroll = NSScrollView()
     private var attachmentTray: AppKitAttachmentSurface?
@@ -195,7 +198,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, composerShell, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         browse.setAccessibilityIdentifier("open-navigation")
         pinsButton.setAccessibilityIdentifier("channel-pins")
         pinsButton.isHidden = inThread
@@ -208,7 +211,7 @@ import CaperCore
         broadcast.setAccessibilityIdentifier("thread-broadcast")
         newer.font = NativeStyle.font(11); latest.font = NativeStyle.font(11)
         jumpToLatest.setAccessibilityIdentifier(inThread ? "thread-jump-to-latest" : "jump-to-latest")
-        jumpToLatest.layer?.backgroundColor = NSColor(CaperTheme.surface).cgColor
+        jumpToLatest.layer?.backgroundColor = NativeStyle.surface.cgColor
         jumpToLatest.layer?.borderWidth = 1
         // Web's lift off the history: 0 8px 24px at 35% black. NSShadow
         // offsets are in window coordinates, so -8 is downward.
@@ -218,7 +221,7 @@ import CaperCore
         lift.shadowOffset = NSSize(width: 0, height: -8)
         jumpToLatest.shadow = lift
         jumpToLatest.hoverChanged = { [weak self] hovering in
-            self?.jumpToLatest.layer?.backgroundColor = NSColor(hovering ? CaperTheme.raised : CaperTheme.surface).cgColor
+            self?.jumpToLatest.layer?.backgroundColor = (hovering ? NativeStyle.raised : NativeStyle.surface).cgColor
         }
         jumpToLatest.image = NSImage(systemSymbolName: "arrow.down", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
@@ -319,8 +322,10 @@ import CaperCore
             return self.model.chat.pasteAttachments(inThread: self.inThread)
         }
         composer.focusChanged = { [weak self] focused in
-            self?.composerField.layer?.borderColor = (focused ? NativeStyle.accent : NativeStyle.border).cgColor
-            if focused { self?.refreshSuggestions() } else { self?.suggestions.update(nil) }
+            guard let self else { return }
+            self.composerFocused = focused
+            self.applyComposerChrome()
+            if focused { self.refreshSuggestions() } else { self.suggestions.update(nil) }
         }
         composer.setAccessibilityHelp("Return sends. Shift-Return adds a new line. Use arrows and Return or Tab to choose a suggestion; Escape dismisses.")
         suggestions.accept = { [weak self] in self?.acceptSuggestion($0) }
@@ -328,8 +333,17 @@ import CaperCore
         composerScroll.hasVerticalScroller = true
         composerScroll.autohidesScrollers = true
         composerScroll.drawsBackground = false
-        composerField.layer?.cornerRadius = 8; composerField.layer?.borderWidth = 1
-        composerField.layer?.borderColor = NativeStyle.border.cgColor
+        composerShell.layer?.cornerRadius = 15
+        composerShell.layer?.borderWidth = 1
+        composerField.layer?.cornerRadius = 11
+        composerField.layer?.borderWidth = 1
+        applyComposerChrome()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleThemeChange),
+            name: CaperThemeStore.didChangeNotification,
+            object: nil
+        )
         send.setAccessibilityIdentifier(inThread ? "thread-send" : "send-message")
         send.image = NSImage(systemSymbolName: "paperplane.fill", accessibilityDescription: nil)
         send.imagePosition = .imageOnly
@@ -665,6 +679,7 @@ import CaperCore
         let editorHeight = min(laidOutEditorHeight, max(40, min(318, height * 0.4) - toolRows))
         let fieldHeight = max(42, editorHeight + 2 + toolRows)
         composerField.frame = NSRect(x: fieldX, y: fieldBottom - fieldHeight, width: fieldWidth, height: fieldHeight)
+        composerShell.frame = composerField.frame.insetBy(dx: -4, dy: -4)
         composerScroll.frame = NSRect(x: editorX, y: composerField.frame.minY + 1, width: max(0, editorRight - editorX), height: fieldHeight - 2 - toolRows)
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: composerScroll.contentSize.height)
@@ -761,10 +776,16 @@ import CaperCore
         let sendLabel = chat.sending ? "Sending…" : inThread ? "Send reply" : "Send"
         send.title = ""
         send.setAccessibilityLabel(sendLabel); send.toolTip = sendLabel
-        send.layer?.backgroundColor = (send.isEnabled ? NSColor(CaperTheme.action) : NativeStyle.composer).cgColor
-        send.contentTintColor = send.isEnabled ? NativeStyle.blackout : NativeStyle.muted
+        send.layer?.backgroundColor = (send.isEnabled ? NativeStyle.action : NativeStyle.composer).cgColor
+        send.contentTintColor = send.isEnabled ? NativeStyle.onAction : NativeStyle.muted
         composerScroll.isHidden = hidden || recording
-        if composerField.isHidden != composerScroll.isHidden { composerField.isHidden = composerScroll.isHidden; view.needsLayout = true }
+        if composerField.isHidden != composerScroll.isHidden {
+            composerField.isHidden = composerScroll.isHidden
+            composerShell.isHidden = composerScroll.isHidden
+            view.needsLayout = true
+        } else {
+            composerShell.isHidden = composerField.isHidden
+        }
         voiceComposer.button.isHidden = hidden
         voiceComposer.bar.isHidden = !recording
         send.isHidden = composerScroll.isHidden
@@ -1206,6 +1227,25 @@ import CaperCore
         suggestionsDismissed = true
         suggestions.update(nil)
     }
+    private func applyComposerChrome() {
+        composerField.layer?.borderColor = (composerFocused ? NativeStyle.accentBright : NativeStyle.border).cgColor
+        composerShell.layer?.borderColor = (composerFocused
+            ? NativeStyle.accentBright.withAlphaComponent(0.32)
+            : NativeStyle.composerOuterBorder).cgColor
+        composerShell.layer?.backgroundColor = NativeStyle.composerOuterBg.cgColor
+        composerField.layer?.backgroundColor = NativeStyle.composer.cgColor
+        composer.backgroundColor = NativeStyle.composer
+        composer.textColor = NativeStyle.text
+        composer.insertionPointColor = NativeStyle.text
+    }
+
+    @objc private func handleThemeChange() {
+        applyComposerChrome()
+        jumpToLatest.layer?.backgroundColor = NativeStyle.surface.cgColor
+        jumpToLatest.layer?.borderColor = NativeStyle.border.cgColor
+        updateComposer()
+    }
+
     private func submit() {
         guard send.isEnabled, !composer.hasMarkedText() else { return }
         timeline.showLatest()

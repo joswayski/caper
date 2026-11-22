@@ -2645,6 +2645,12 @@ public final class AppModel {
     }
 
     public func leaveVoice() {
+        let leavingChannelID = voice.context?.channelID ?? pendingVoiceChannelID
+        let selfIDs = [account?.id, voice.currentSelfID].compactMap { $0 }.filter { !$0.isEmpty }
+        if let leavingChannelID, !selfIDs.isEmpty {
+            voicePresence.optimisticallyRemove(channelID: leavingChannelID, ids: selfIDs)
+            visitVoicePresence.optimisticallyRemove(channelID: leavingChannelID, ids: selfIDs)
+        }
         voiceJoinGeneration += 1
         pendingVoiceChannelID = nil
         voice.leaveImmediately()

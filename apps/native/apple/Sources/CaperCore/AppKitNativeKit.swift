@@ -6,22 +6,20 @@ import SwiftUI
 /// Building blocks for the AppKit app's native dialogs, which replace the
 /// SwiftUI views it used to host. Colors come from CaperTheme's tokens.
 @MainActor enum AppKitKit {
-    private static func themeColor(_ hex: String, fallback: Color) -> NSColor {
-        NSColor(CaperThemeStore.color(fromHex: hex) ?? fallback)
-    }
-    static var surface: NSColor { themeColor(CaperThemeStore.shared.active.surfaces.base, fallback: CaperTheme.surface) }
-    static var raised: NSColor { themeColor(CaperThemeStore.shared.active.surfaces.raised, fallback: CaperTheme.raised) }
-    static var composer: NSColor { themeColor(CaperThemeStore.shared.active.surfaces.composer, fallback: CaperTheme.composer) }
-    static var border: NSColor { themeColor(CaperThemeStore.shared.active.borders.default, fallback: CaperTheme.border) }
-    static var text: NSColor { themeColor(CaperThemeStore.shared.active.text.primary, fallback: CaperTheme.text) }
-    static var muted: NSColor { themeColor(CaperThemeStore.shared.active.text.muted, fallback: CaperTheme.muted) }
-    static var error: NSColor { themeColor(CaperThemeStore.shared.active.status.errorText, fallback: CaperTheme.error) }
-    static var terracotta: NSColor { themeColor(CaperThemeStore.shared.active.accent.primary, fallback: CaperTheme.terracotta) }
-    static var terracottaBright: NSColor { themeColor(CaperThemeStore.shared.active.accent.bright, fallback: CaperTheme.terracottaBright) }
-    static var action: NSColor { themeColor(CaperThemeStore.shared.active.action.primary, fallback: CaperTheme.action) }
-    static var actionHover: NSColor { themeColor(CaperThemeStore.shared.active.action.primaryHover, fallback: CaperTheme.actionHover) }
-    static var actionPress: NSColor { themeColor(CaperThemeStore.shared.active.action.primaryPress, fallback: CaperTheme.actionPress) }
-    static var onAction: NSColor { themeColor(CaperThemeStore.shared.active.action.onPrimary, fallback: CaperTheme.onAction) }
+    static var surface: NSColor { CaperThemeStore.baseColor }
+    static var raised: NSColor { CaperThemeStore.raisedColor }
+    static var composer: NSColor { CaperThemeStore.composerColor }
+    static var border: NSColor { CaperThemeStore.borderColor }
+    static var text: NSColor { CaperThemeStore.textColor }
+    static var muted: NSColor { CaperThemeStore.mutedColor }
+    static var error: NSColor { CaperThemeStore.errorColor }
+    static var terracotta: NSColor { CaperThemeStore.accentColor }
+    static var terracottaBright: NSColor { CaperThemeStore.accentBrightColor }
+    static var action: NSColor { CaperThemeStore.actionColor }
+    static var actionHover: NSColor { CaperThemeStore.actionHoverColor }
+    static var actionPress: NSColor { CaperThemeStore.actionPressColor }
+    static var onAction: NSColor { CaperThemeStore.onActionColor }
+    static var hoverWash: NSColor { CaperThemeStore.hoverWashColor }
 
     static func font(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
         CaperFontLoader.register()
@@ -243,9 +241,12 @@ import SwiftUI
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityLabel(title)
         if kind == .primary { minimumHeight = 42 }
+        NotificationCenter.default.addObserver(self, selector: #selector(handleThemeChange),
+                                               name: CaperThemeStore.didChangeNotification, object: nil)
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func handleThemeChange() { refresh() }
 
     override var title: String {
         // A custom accessibility label (e.g. "Close What’s new") stays; one that
@@ -267,6 +268,7 @@ import SwiftUI
     private var focused: Bool { window?.firstResponder === self && window?.isKeyWindow == true }
 
     func refresh() {
+        let isLight = CaperThemeStore.shared.active.isLight
         var color: NSColor
         var fill: NSColor
         var stroke: NSColor = .clear
@@ -281,14 +283,14 @@ import SwiftUI
             stroke = AppKitKit.border
         case .plain:
             color = hovered ? AppKitKit.text : AppKitKit.muted
-            fill = .clear
+            fill = hovered ? AppKitKit.hoverWash : .clear
         case .text:
             color = AppKitKit.text
-            fill = hovered ? NSColor.white.withAlphaComponent(0.06) : .clear
+            fill = hovered ? AppKitKit.hoverWash : .clear
         }
         if showsSelection {
             color = AppKitKit.terracottaBright
-            fill = AppKitKit.terracotta.withAlphaComponent(0.12)
+            fill = AppKitKit.terracotta.withAlphaComponent(0.14)
             stroke = AppKitKit.terracotta
         }
         let size: CGFloat = kind == .primary ? 13 : 12
@@ -296,7 +298,13 @@ import SwiftUI
         attributedTitle = NSAttributedString(string: title, attributes: [
             .font: AppKitKit.font(size, weight: weight), .foregroundColor: color,
         ])
-        layer?.backgroundColor = fill.cgColor
+        let resolvedFill: NSColor
+        if (kind == .secondary || kind == .destructive) && hovered && isEnabled {
+            resolvedFill = fill.blended(withFraction: isLight ? 0.06 : 0.12, of: isLight ? .black : .white) ?? fill
+        } else {
+            resolvedFill = fill
+        }
+        layer?.backgroundColor = resolvedFill.cgColor
         if kind == .primary {
             layer?.cornerRadius = max(18, bounds.height / 2)
         }
@@ -304,10 +312,13 @@ import SwiftUI
             layer?.borderColor = (kind == .primary ? AppKitKit.terracottaBright : AppKitKit.terracotta).cgColor
             layer?.borderWidth = 2
         } else if kind == .primary && isEnabled {
-            layer?.borderColor = NSColor.white.withAlphaComponent(0.62).cgColor
+            layer?.borderColor = (isLight ? NSColor.black.withAlphaComponent(0.28) : NSColor.white.withAlphaComponent(0.62)).cgColor
             layer?.borderWidth = 1
         } else if (kind == .secondary || kind == .destructive) && isEnabled {
-            layer?.borderColor = NSColor.white.withAlphaComponent(hovered ? 0.24 : 0.14).cgColor
+            let rim = isLight
+                ? NSColor.black.withAlphaComponent(hovered ? 0.22 : 0.12)
+                : NSColor.white.withAlphaComponent(hovered ? 0.24 : 0.14)
+            layer?.borderColor = rim.cgColor
             layer?.borderWidth = 1
         } else {
             layer?.borderColor = stroke.cgColor
@@ -315,7 +326,7 @@ import SwiftUI
         }
         if (kind == .primary || kind == .secondary || kind == .destructive) && isEnabled {
             layer?.shadowColor = NSColor.black.cgColor
-            layer?.shadowOpacity = pressed ? 0.18 : hovered ? 0.42 : 0.32
+            layer?.shadowOpacity = pressed ? (isLight ? 0.08 : 0.18) : hovered ? (isLight ? 0.18 : 0.42) : (isLight ? 0.11 : 0.32)
             layer?.shadowOffset = NSSize(width: 0, height: pressed ? -1 : -3)
             layer?.shadowRadius = hovered ? 8 : 5
             layer?.masksToBounds = false
@@ -323,9 +334,6 @@ import SwiftUI
             layer?.shadowOpacity = 0
         }
         alphaValue = kind == .secondary && !isEnabled ? 0.45 : 1
-        if kind == .secondary || kind == .destructive, hovered, isEnabled {
-            layer?.backgroundColor = fill.blended(withFraction: 0.1, of: .white)?.cgColor
-        }
         invalidateIntrinsicContentSize()
     }
 
@@ -381,8 +389,12 @@ import SwiftUI
     override func draw(_ dirtyRect: NSRect) {
         let track = bounds.insetBy(dx: 2, dy: 2)
         let radius = track.height / 2
+        let isLight = CaperThemeStore.shared.active.isLight
         // The row dims itself when disabled.
-        (isOn ? AppKitKit.terracotta : AppKitKit.raised.blended(withFraction: 0.12, of: .white) ?? AppKitKit.raised).setFill()
+        let offFill = isLight
+            ? (AppKitKit.border.blended(withFraction: 0.12, of: .black) ?? AppKitKit.border)
+            : (AppKitKit.raised.blended(withFraction: 0.14, of: .white) ?? AppKitKit.raised)
+        (isOn ? AppKitKit.terracotta : offFill).setFill()
         NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
         if !isOn {
             AppKitKit.border.setStroke()
@@ -391,7 +403,12 @@ import SwiftUI
         }
         let side = track.height - 4
         NSColor.white.setFill()
-        NSBezierPath(ovalIn: NSRect(x: isOn ? track.maxX - side - 2 : track.minX + 2, y: track.minY + 2, width: side, height: side)).fill()
+        let knob = NSBezierPath(ovalIn: NSRect(x: isOn ? track.maxX - side - 2 : track.minX + 2, y: track.minY + 2, width: side, height: side))
+        knob.fill()
+        if isLight {
+            NSColor.black.withAlphaComponent(0.14).setStroke()
+            knob.lineWidth = 0.75; knob.stroke()
+        }
         if focused && isEnabled {
             AppKitKit.terracottaBright.setStroke()
             let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: bounds.height / 2 - 1, yRadius: bounds.height / 2 - 1)
@@ -451,11 +468,14 @@ import SwiftUI
 /// in place of the system bezel and blue focus ring.
 @MainActor public final class AppKitKitField: NSTextField {
     private let height: CGFloat
+    private let customFill: NSColor?
+    private var themeObserver: NSObjectProtocol?
 
     /// `height`: 42 in dialogs, as on web; pickers use a shorter search field.
     /// `fill` replaces the composer fill, e.g. surface on the sign-in page.
     public init(height: CGFloat = 42, size: CGFloat = 14, fill: NSColor? = nil) {
         self.height = height
+        self.customFill = fill
         super.init(frame: .zero)
         isBezeled = false; isBordered = false; drawsBackground = false
         focusRingType = .none
@@ -463,10 +483,26 @@ import SwiftUI
         usesSingleLineMode = true; cell?.wraps = false; cell?.isScrollable = true
         wantsLayer = true
         layer?.cornerRadius = 8; layer?.borderWidth = 1
-        layer?.backgroundColor = (fill ?? AppKitKit.composer).cgColor
-        layer?.borderColor = AppKitKit.border.cgColor
+        applyTheme()
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: CaperThemeStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyTheme() }
+        }
     }
     public required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+    }
+
+    private func applyTheme() {
+        textColor = AppKitKit.text
+        layer?.backgroundColor = (customFill ?? AppKitKit.composer).cgColor
+        layer?.borderColor = (currentEditor() != nil ? AppKitKit.terracotta : AppKitKit.border).cgColor
+        needsDisplay = true
+    }
 
     public override class var cellClass: AnyClass? {
         get { AppKitKitFieldCell.self }
@@ -1033,7 +1069,7 @@ final class AppKitKitFlippedView: NSView {
         card.layer?.backgroundColor = AppKitKit.surface.cgColor
         card.layer?.cornerRadius = 13
         card.layer?.borderWidth = 1
-        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        card.layer?.borderColor = AppKitKit.border.cgColor
         card.layer?.masksToBounds = true
 
         let list = AppKitSelectListView(items: items, selectedIndex: selectedIndex, width: width - pad * 2, rowH: rowH, onChoose: onChoose)
@@ -1103,9 +1139,9 @@ final class AppKitKitFlippedView: NSView {
             let pill = row.insetBy(dx: 0, dy: 1)
             let path = NSBezierPath(roundedRect: pill, xRadius: 8, yRadius: 8)
             if isHovered {
-                NSColor.white.withAlphaComponent(0.1).setFill()
+                AppKitKit.hoverWash.setFill()
                 path.fill()
-                NSColor.white.withAlphaComponent(0.14).setStroke()
+                AppKitKit.border.setStroke()
                 path.lineWidth = 1
                 path.stroke()
             } else if isSelected {

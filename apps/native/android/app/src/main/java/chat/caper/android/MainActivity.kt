@@ -2138,8 +2138,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     consumeFocus = viewModel::consumeComposerFocus) { field, change, actions ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                            Box(
+                                Modifier.weight(1f)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color.White.copy(alpha = 0.03f))
+                                    .border(1.dp, Border.copy(alpha = 0.65f), RoundedCornerShape(14.dp))
+                                    .padding(3.dp),
+                            ) {
                             EmojiTextField(
-                                draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
+                                draft, change, modifier = Modifier.fillMaxWidth().attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
                                 keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
                                 // One line: a long channel or DM name would otherwise wrap and grow the empty field.
                                 placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
@@ -2171,6 +2178,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 colors = composerFieldColors(),
                                 below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } },
                             )
+                            }
                             FilledIconButton(
                                 { sendDraft() },
                                 // Centred on a one-line field (56dp), and near the bottom as the field grows.

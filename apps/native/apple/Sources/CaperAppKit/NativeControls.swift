@@ -26,27 +26,63 @@ import Observation
 
 class NativeView: NSView {
     override var isFlipped: Bool { true }
-    init(_ color: NSColor = .clear) {
+    private var backgroundColorProvider: () -> NSColor
+    private var themeObserver: NSObjectProtocol?
+
+    init(_ color: @autoclosure @escaping () -> NSColor = .clear) {
+        self.backgroundColorProvider = color
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = color.cgColor
+        layer?.backgroundColor = backgroundColorProvider().cgColor
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: CaperThemeStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyTheme() }
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+    }
+
+    func applyTheme() {
+        layer?.backgroundColor = backgroundColorProvider().cgColor
+        needsDisplay = true
+    }
 }
 
-enum NativeStyle {
-    // Derive from the shipping tokens until the shared token generator lands.
-    static var blackout: NSColor { NSColor(CaperTheme.blackout) }
-    static var sidebar: NSColor { NSColor(CaperTheme.sidebar) }
-    static var conversation: NSColor { NSColor(CaperTheme.conversation) }
-    static var composer: NSColor { NSColor(CaperTheme.composer) }
-    static var text: NSColor { NSColor(CaperTheme.text) }
-    static var muted: NSColor { NSColor(CaperTheme.muted) }
-    static var border: NSColor { NSColor(CaperTheme.border) }
-    static var accent: NSColor { NSColor(CaperTheme.terracotta) }
+@MainActor enum NativeStyle {
+    static var blackout: NSColor { CaperThemeStore.frameColor }
+    static var surface: NSColor { CaperThemeStore.baseColor }
+    static var sidebar: NSColor { CaperThemeStore.sidebarColor }
+    static var sidebarRaised: NSColor { CaperThemeStore.sidebarRaisedColor }
+    static var conversation: NSColor { CaperThemeStore.conversationColor }
+    static var raised: NSColor { CaperThemeStore.raisedColor }
+    static var composer: NSColor { CaperThemeStore.composerColor }
+    static var text: NSColor { CaperThemeStore.textColor }
+    static var message: NSColor { CaperThemeStore.messageColor }
+    static var muted: NSColor { CaperThemeStore.mutedColor }
+    static var link: NSColor { CaperThemeStore.linkColor }
+    static var border: NSColor { CaperThemeStore.borderColor }
+    static var accent: NSColor { CaperThemeStore.accentColor }
+    static var accentBright: NSColor { CaperThemeStore.accentBrightColor }
+    static var action: NSColor { CaperThemeStore.actionColor }
+    static var actionHover: NSColor { CaperThemeStore.actionHoverColor }
+    static var onAction: NSColor { CaperThemeStore.onActionColor }
+    static var green: NSColor { CaperThemeStore.caperColor }
+    static var voiceSessionGreen: NSColor { CaperThemeStore.voiceSessionGreenColor }
+    static var pinGold: NSColor { CaperThemeStore.pinGoldColor }
+    static var error: NSColor { CaperThemeStore.errorColor }
+    static var voiceOff: NSColor { CaperThemeStore.voiceOffColor }
+    static var hoverWash: NSColor { CaperThemeStore.hoverWashColor }
+    static var surfaceRim: NSColor { CaperThemeStore.surfaceRimColor }
+    static var composerOuterBg: NSColor { CaperThemeStore.composerOuterBgColor }
+    static var composerOuterBorder: NSColor { CaperThemeStore.composerOuterBorderColor }
     /// A subtle olive (caper green mixed into the border) that replaces a panel's
     /// divider while its resize handle is dragged or keyboard-focused.
-    static var resizeHighlight: NSColor { NSColor(srgbRed: 0x49 / 255, green: 0x56 / 255, blue: 0x3E / 255, alpha: 1) }
+    static var resizeHighlight: NSColor { CaperThemeStore.resizeHighlightColor }
     static func font(_ size: CGFloat, bold: Bool = false) -> NSFont {
         NSFont(name: bold ? "Figtree-Bold" : "Figtree-Regular", size: size) ?? .systemFont(ofSize: size)
     }
@@ -61,41 +97,69 @@ enum NativeStyle {
 
 final class NativeButton: NSButton {
     private let actionHandler: () -> Void
+    private let isPrimary: Bool
+    private var themeObserver: NSObjectProtocol?
     var focusChanged: ((Bool) -> Void)?
     var hoverChanged: ((Bool) -> Void)?
+    /// Set false only for buttons with a custom subview hover treatment (like space rail tiles).
+    var showsDefaultHover = true {
+        didSet { needsLayout = true }
+    }
     var profileFeedback = false {
         didSet {
             guard profileFeedback != oldValue else { return }
-            if profileFeedback {
-                let wash = CALayer()
-                wash.cornerRadius = 8; wash.isHidden = true
-                layer?.addSublayer(wash); hoverWash = wash
-                focusRingType = .none
-            } else {
-                hoverWash?.removeFromSuperlayer(); hoverWash = nil
-                focusRingType = .default
-            }
+            focusRingType = profileFeedback ? .none : .default
             needsLayout = true
         }
     }
     private var tracking: NSTrackingArea?
     private var hovered = false
-    private var hoverWash: CALayer?
+    private let hoverWash = CALayer()
     init(_ title: String, primary: Bool = false, action: @escaping () -> Void) {
         actionHandler = action
+        isPrimary = primary
         super.init(frame: .zero)
         self.title = title
         target = self; self.action = #selector(pressed)
         bezelStyle = .rounded
         isBordered = false
-        font = NativeStyle.font(14)
+        font = NativeStyle.font(14, bold: primary)
         wantsLayer = true
-        layer?.cornerRadius = 8
-        layer?.backgroundColor = (primary ? NSColor(CaperTheme.action) : NativeStyle.composer).cgColor
-        contentTintColor = primary ? NativeStyle.blackout : NativeStyle.text
+        layer?.cornerRadius = primary ? 16 : 8
+        hoverWash.cornerRadius = primary ? 16 : 8
+        hoverWash.isHidden = true
+        layer?.addSublayer(hoverWash)
+        applyThemeColors()
         setAccessibilityLabel(title)
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: CaperThemeStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyThemeColors(); self?.needsLayout = true }
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+    }
+
+    private func applyThemeColors() {
+        if isPrimary {
+            layer?.backgroundColor = (hovered ? NativeStyle.actionHover : NativeStyle.action).cgColor
+            contentTintColor = NativeStyle.onAction
+            layer?.borderWidth = 1
+            layer?.borderColor = (CaperThemeStore.shared.active.isLight
+                ? NSColor.black.withAlphaComponent(0.24)
+                : NSColor.white.withAlphaComponent(0.55)).cgColor
+        } else if imagePosition != .imageOnly && layer?.backgroundColor != NSColor.clear.cgColor {
+            layer?.backgroundColor = NativeStyle.composer.cgColor
+            contentTintColor = NativeStyle.text
+        } else if contentTintColor == nil {
+            contentTintColor = NativeStyle.text
+        }
+    }
+
     @objc private func pressed() { actionHandler() }
     override var isEnabled: Bool {
         didSet { alphaValue = isEnabled ? 1 : 0.45; needsLayout = true; window?.invalidateCursorRects(for: self) }
@@ -129,22 +193,27 @@ final class NativeButton: NSButton {
 
     override func layout() {
         super.layout()
-        guard let hoverWash else { return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let focused = window?.firstResponder === self
+        let radius = isPrimary ? min(bounds.height / 2, 18) : (layer?.cornerRadius ?? 8)
+        if isPrimary { layer?.cornerRadius = radius }
+        hoverWash.cornerRadius = radius
         hoverWash.frame = bounds
-        hoverWash.backgroundColor = (hovered ? NSColor.white.withAlphaComponent(0.06) : .clear).cgColor
-        hoverWash.borderColor = NativeStyle.accent.cgColor
-        hoverWash.borderWidth = focused ? 2 : 0
-        hoverWash.isHidden = (!hovered && !focused) || !isEnabled
+        if isPrimary {
+            layer?.backgroundColor = (hovered && isEnabled ? NativeStyle.actionHover : NativeStyle.action).cgColor
+            hoverWash.backgroundColor = NSColor.clear.cgColor
+        } else {
+            hoverWash.backgroundColor = (hovered && showsDefaultHover ? NativeStyle.hoverWash : .clear).cgColor
+        }
+        hoverWash.borderColor = (focused ? NativeStyle.accentBright : NativeStyle.border).cgColor
+        hoverWash.borderWidth = focused ? 2 : (hovered && showsDefaultHover && !isPrimary && bounds.height >= 24 ? 0.5 : 0)
+        hoverWash.isHidden = ((!hovered || !showsDefaultHover) && !focused) || !isEnabled
         CATransaction.commit()
     }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let tracking { removeTrackingArea(tracking) }
-        tracking = nil
-        guard profileFeedback || hoverChanged != nil else { return }
         let tracking = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
         self.tracking = tracking; addTrackingArea(tracking)
     }
@@ -171,6 +240,7 @@ final class NativeButton: NSButton {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         button.imagePosition = .imageOnly
         button.layer?.backgroundColor = NSColor.clear.cgColor
+        button.contentTintColor = NativeStyle.muted
         button.toolTip = label
         return button
     }

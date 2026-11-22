@@ -118,18 +118,171 @@
   color: var(--text-muted);
   font-size: 0.72rem;
 }
-.appearance-custom-badge {
-  margin-top: 12px;
-  padding: 10px 12px;
+.appearance-card-wrap {
+  position: relative;
+}
+.appearance-card-wrap .appearance-card {
+  width: 100%;
+}
+.appearance-card-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .appearance-card-delete:hover {
+    color: var(--error-text);
+    border-color: var(--danger);
+    background: var(--danger-wash);
+  }
+}
+.appearance-editor {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  display: grid;
+  gap: 12px;
+}
+.appearance-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.appearance-editor-title {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.appearance-editor-sub {
+  margin: 2px 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+.appearance-mode-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-composer);
+  gap: 2px;
+}
+.appearance-mode-btn {
+  min-height: 26px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+.appearance-mode-btn[aria-pressed="true"] {
+  background: var(--btn-primary-bg);
+  color: var(--on-action);
+}
+.appearance-name-row {
+  display: grid;
+  gap: 5px;
+}
+.appearance-name-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.appearance-name-input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-composer);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+.appearance-name-input:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: -1px;
+}
+.appearance-color-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (max-width: 480px) {
+  .appearance-color-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.appearance-color-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  border: 1px solid var(--accent-border);
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--accent-surface);
-  color: var(--accent-soft-text);
-  font-size: 0.78rem;
+  background: var(--surface-composer);
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .appearance-color-row:hover {
+    border-color: var(--btn-secondary-border-hover);
+  }
+}
+.appearance-color-meta {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.appearance-color-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.appearance-color-hex {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+.appearance-color-input {
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.appearance-color-input::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+.appearance-color-input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 4px;
 }
 .appearance-actions {
   margin-top: 12px;

@@ -67,12 +67,24 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
             name: NSView.boundsDidChangeNotification, object: contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleThemeChange),
+            name: CaperThemeStore.didChangeNotification, object: nil)
         setAccessibilityIdentifier("message-timeline")
         setAccessibilityLabel("Messages")
         document.setAccessibilityElement(false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func handleThemeChange() {
+        backgroundColor = NativeStyle.conversation
+        document.applyTheme()
+        for row in rows.values {
+            row.applyTheme()
+            row.needsDisplay = true
+        }
+        needsDisplay = true
+    }
 
     func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = [], pending: PendingMessage? = nil, canInteract: Bool = false, reactionErrors: [String: String] = [:], pinErrors: [String: String] = [:], pendingPins: Set<String> = []) {
         let changedConversation = self.conversationID != conversationID
@@ -543,7 +555,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         body.isHorizontallyResizable = false
         body.isVerticallyResizable = false
         body.layoutManager?.usesFontLeading = false
-        body.linkTextAttributes = [.foregroundColor: NSColor(CaperTheme.link), .cursor: NSCursor.pointingHand]
+        body.linkTextAttributes = [.foregroundColor: NativeStyle.link, .cursor: NSCursor.pointingHand]
         timestamp.textColor = NativeStyle.muted
         avatar.wantsLayer = true; avatar.layer?.cornerRadius = 10; avatar.layer?.masksToBounds = true
         avatar.setAccessibilityElement(false)
@@ -553,7 +565,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         edited.layer?.backgroundColor = NSColor.clear.cgColor
         edited.font = NativeStyle.font(10); edited.contentTintColor = NativeStyle.muted
         edited.isHidden = true
-        reactionFailure.textColor = NSColor(CaperTheme.error)
+        reactionFailure.textColor = NativeStyle.error
         reactionFailure.maximumNumberOfLines = 2; reactionFailure.lineBreakMode = .byWordWrapping
         pinnedBy.isHidden = true; pinnedBy.alignment = .left
         pinnedBy.font = NativeStyle.font(10); pinnedBy.contentTintColor = NativeStyle.muted
@@ -564,7 +576,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             guard entered, let self, let message = self.message, !message.isDeleted, let pin = message.pin else { return }
             self.openAuthor?(pin.author, self.pinnedBy)
         }
-        pinFailure.textColor = NSColor(CaperTheme.error)
+        pinFailure.textColor = NativeStyle.error
         pinFailure.maximumNumberOfLines = 2; pinFailure.lineBreakMode = .byWordWrapping
         thread.isHidden = true; thread.alignment = .left
         thread.font = NativeStyle.font(11, bold: true); thread.contentTintColor = NativeStyle.accent
@@ -591,6 +603,29 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         }])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func applyTheme() {
+        super.applyTheme()
+        dayLeading.backgroundColor = NativeStyle.border.cgColor
+        dayTrailing.backgroundColor = NativeStyle.border.cgColor
+        unreadLeading.backgroundColor = NativeStyle.accent.cgColor
+        unreadTrailing.backgroundColor = NativeStyle.accent.cgColor
+        mentionBar.backgroundColor = NativeStyle.accent.cgColor
+        blockedBar.backgroundColor = NativeStyle.border.cgColor
+        body.linkTextAttributes = [.foregroundColor: NativeStyle.link, .cursor: NSCursor.pointingHand]
+        if let message {
+            body.textStorage?.setAttributedString(bodyText(message))
+            layer?.backgroundColor = revealedBlocked ? NativeStyle.surface.cgColor : NSColor.clear.cgColor
+            for button in reactions {
+                let selected = button.state == .on
+                button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : NativeStyle.surface).cgColor
+                button.layer?.borderColor = (selected ? NativeStyle.accent : NativeStyle.border).cgColor
+            }
+        } else if let blockedRun {
+            layer?.backgroundColor = blockedRun.revealed ? NativeStyle.surface.cgColor : NSColor.clear.cgColor
+        }
+        body.needsDisplay = true
+    }
 
     func configure(_ pending: PendingMessage, make: ((PendingMessage) -> AppKitAttachmentSurface?)?) {
         guard self.pending != pending else { return }
@@ -672,12 +707,12 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         let mentionsViewer = !message.isDeleted && NativePresentation.mentionsViewer(message, viewerID: viewerID)
         setAccessibilityHelp(mentionsViewer ? "Mentions you" : nil)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        layer?.backgroundColor = revealedBlocked ? NSColor(CaperTheme.surface).cgColor : NSColor.clear.cgColor
+        layer?.backgroundColor = revealedBlocked ? NativeStyle.surface.cgColor : NSColor.clear.cgColor
         blockedBar.isHidden = !revealedBlocked
         let pin = message.isDeleted ? nil : message.pin
         mentionTint.isHidden = !mentionsViewer && pin == nil
         mentionTint.backgroundColor = pin.map { ($0.author.id == viewerID
-            ? NativeStyle.accent.withAlphaComponent(0.12) : NSColor(CaperTheme.pinGold).withAlphaComponent(0.06)).cgColor }
+            ? NativeStyle.accent.withAlphaComponent(0.12) : NativeStyle.pinGold.withAlphaComponent(0.06)).cgColor }
             ?? NativeStyle.accent.withAlphaComponent(0.08).cgColor
         mentionBar.isHidden = !mentionsViewer || message.pin != nil
         CATransaction.commit()
@@ -713,7 +748,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             }
             button.attributedTitle = NSAttributedString(string: button.image == nil ? "\(reaction.emoji) \(count)" : " \(count)", attributes: [
                 .font: NativeStyle.font(12, bold: true),
-                .foregroundColor: selected ? NSColor(CaperTheme.terracottaBright) : NativeStyle.muted,
+                .foregroundColor: selected ? NativeStyle.accentBright : NativeStyle.muted,
             ])
             button.setAccessibilityLabel("\(reaction.emoji) \(count)")
             button.isEnabled = canInteract
@@ -729,7 +764,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             button.menu = NavigationMenus.menu([NavigationMenuItem("Show who reacted", action: showPeople)])
             button.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Show who reacted") { showPeople(); return true }])
             button.state = selected ? .on : .off
-            button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : NSColor(CaperTheme.surface)).cgColor
+            button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : NativeStyle.surface).cgColor
             button.layer?.borderWidth = 1
             button.layer?.borderColor = (selected ? NativeStyle.accent : NativeStyle.border).cgColor
             return button
@@ -801,7 +836,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         blockedToggle.title = "\(run.label) — \(run.revealed ? "Hide" : "Show")"
         blockedToggle.setAccessibilityLabel("\(run.revealed ? "Hide" : "Show") \(run.label)")
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        layer?.backgroundColor = run.revealed ? NSColor(CaperTheme.surface).cgColor : NSColor.clear.cgColor
+        layer?.backgroundColor = run.revealed ? NativeStyle.surface.cgColor : NSColor.clear.cgColor
         blockedBar.isHidden = !run.revealed
         mentionTint.isHidden = true; mentionBar.isHidden = true
         CATransaction.commit()
@@ -1106,7 +1141,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
 
     init() {
-        super.init(NSColor(CaperTheme.surface))
+        super.init(NativeStyle.surface)
         layer?.cornerRadius = 8; layer?.borderWidth = 1; layer?.borderColor = NativeStyle.border.cgColor
         quick = NativePresentation.quickReactions.map { emoji in
             let button = NativeButton("React with \(emoji)") { [weak self] in
@@ -1130,6 +1165,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         alphaValue = 0
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func applyTheme() {
+        super.applyTheme()
+        layer?.borderColor = NativeStyle.border.cgColor
+    }
 
     func configure(_ message: ChatMessage, canInteract: Bool, viewerID: String?) {
         for (emoji, button) in zip(NativePresentation.quickReactions, quick) {

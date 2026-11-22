@@ -51,7 +51,7 @@ import CaperCore
         addSubview(heading); addSubview(body); addSubview(join)
         [state, clock, roomOverflow, mute, deafen, leave].forEach { body.addSubview($0) }
         roomOverflow.alignment = .center; roomOverflow.wantsLayer = true
-        roomOverflow.layer?.backgroundColor = NSColor(CaperTheme.raised).cgColor
+        roomOverflow.layer?.backgroundColor = NativeStyle.raised.cgColor
         roomOverflow.layer?.cornerRadius = 10
         roomOverflow.setAccessibilityIdentifier("room-faces-more")
         layer?.cornerRadius = 10
@@ -76,6 +76,11 @@ import CaperCore
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { timer?.invalidate(); availability?.cancel() }
 
+    override func applyTheme() {
+        super.applyTheme()
+        render()
+    }
+
     private func render() {
         let wasLive = live
         own = model.voice.isActive(channelID: channelID)
@@ -85,9 +90,9 @@ import CaperCore
         startedAt = own ? VoicePresentation.startedAt(model)
             : model.voicePresence.sessionStartedAt(for: channelID) ?? model.visitVoicePresence.sessionStartedAt(for: channelID)
         body.isHidden = !live
-        layer?.backgroundColor = live ? NSColor(own ? VoicePresentation.callFill : VoicePresentation.roomFill).cgColor : NSColor.clear.cgColor
+        layer?.backgroundColor = live ? (own ? CaperThemeStore.callFillColor : CaperThemeStore.roomFillColor).cgColor : NSColor.clear.cgColor
         layer?.borderWidth = live ? 1 : 0
-        layer?.borderColor = NSColor(own ? VoicePresentation.callBorder : VoicePresentation.roomBorder).cgColor
+        layer?.borderColor = (own ? CaperThemeStore.callBorderColor : CaperThemeStore.roomBorderColor).cgColor
         setAccessibilityIdentifier(own ? "voice-call-card" : "live-room-\(channelID)")
         state.stringValue = own ? VoicePresentation.pending(model.voice) ?? "You’re in · \(people.count)"
             : LiveNow.names(occupants.map(\.name))
@@ -107,8 +112,8 @@ import CaperCore
             join.isEnabled = action.enabled
             join.setAccessibilityLabel(action.description); join.toolTip = action.help
             join.setAccessibilityIdentifier("\(live ? "live-join" : "channel-voice")-\(channelID)")
-            join.contentTintColor = live && !action.switches ? NativeStyle.blackout : NativeStyle.text
-            join.layer?.backgroundColor = live ? (action.switches ? NativeStyle.composer : NSColor(CaperTheme.action)).cgColor : NSColor.clear.cgColor
+            join.contentTintColor = live && !action.switches ? NativeStyle.onAction : NativeStyle.text
+            join.layer?.backgroundColor = live ? (action.switches ? NativeStyle.composer : NativeStyle.action).cgColor : NSColor.clear.cgColor
             if action.busy { join.alphaValue = 1 }
         } else { join.isHidden = true }
         updateJoinVisibility()
@@ -130,8 +135,8 @@ import CaperCore
         button.image = NSImage(systemSymbolName: on ? onSymbol : offSymbol, accessibilityDescription: nil)
         button.setAccessibilityLabel(on ? onLabel : offLabel)
         button.setAccessibilityValue(on ? value : "On"); button.toolTip = on ? onLabel : offLabel
-        button.contentTintColor = on ? NSColor(CaperTheme.voiceOff) : NativeStyle.text
-        button.layer?.backgroundColor = (on ? NSColor(CaperTheme.voiceOff).withAlphaComponent(0.16) : NSColor(CaperTheme.raised)).cgColor
+        button.contentTintColor = on ? NativeStyle.voiceOff : NativeStyle.text
+        button.layer?.backgroundColor = (on ? NativeStyle.voiceOff.withAlphaComponent(0.16) : NativeStyle.raised).cgColor
     }
 
     func height(width: CGFloat) -> CGFloat {

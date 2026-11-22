@@ -127,8 +127,8 @@ public enum NativePresentation {
                 #if os(macOS)
                 let base = NSFont(name: "Figtree-\(weight)", size: size) ?? NSFont.systemFont(ofSize: size)
                 let font = run.italic ? NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask) : base
-                let color = NSColor(CaperTheme.text)
-                let highlight = NSColor(CaperTheme.terracotta).withAlphaComponent(0.24)
+                let color = CaperThemeStore.textColor
+                let highlight = CaperThemeStore.accentColor.withAlphaComponent(0.24)
                 #else
                 let base = UIFont(name: "Figtree-\(weight)", size: size) ?? UIFont.systemFont(ofSize: size)
                 let descriptor = run.italic ? base.fontDescriptor.withSymbolicTraits(.traitItalic) ?? base.fontDescriptor : base.fontDescriptor
@@ -170,11 +170,11 @@ public enum NativePresentation {
     }
 
     /// Hides each spoiler group of `messageText` not in `revealed`: its text
-    /// and lines clear on a rounded #34383B fill, without any link or person
-    /// pill to activate. A revealed spoiler keeps a faint 6% white fill.
+    /// and lines clear on a rounded border fill, without any link or person
+    /// pill to activate. A revealed spoiler keeps a faint hover wash fill.
     public static func concealSpoilers(_ text: NSMutableAttributedString, revealed: Set<Int>) {
         #if os(macOS)
-        let hidden = NSColor(CaperTheme.border), shown = NSColor.white.withAlphaComponent(0.06), clear = NSColor.clear
+        let hidden = CaperThemeStore.borderColor, shown = CaperThemeStore.hoverWashColor, clear = NSColor.clear
         #else
         let hidden = UIColor(CaperTheme.border), shown = UIColor.white.withAlphaComponent(0.06), clear = UIColor.clear
         #endif

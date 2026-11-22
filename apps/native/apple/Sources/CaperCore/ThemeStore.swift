@@ -137,38 +137,121 @@ public struct CaperThemeDocument: Codable, Equatable, Sendable {
     )
 }
 
-/// Shared observable theme store backed by UserDefaults (`caper.theme.v1`).
+/// Thread-safe snapshot box so dynamic NSColor providers can read the active
+/// theme synchronously without violating Swift 6 MainActor isolation.
+private final class ThemeSnapshotBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var doc: CaperThemeDocument = .obsidian
+    func get() -> CaperThemeDocument {
+        lock.lock(); defer { lock.unlock() }
+        return doc
+    }
+    func set(_ next: CaperThemeDocument) {
+        lock.lock(); defer { lock.unlock() }
+        doc = next
+    }
+}
+
+/// Shared observable theme store backed by UserDefaults (`caper.theme.v1`) with
+/// saved custom themes, live color editing, and cross-window repaint broadcast.
 @MainActor @Observable public final class CaperThemeStore {
     public static let shared = CaperThemeStore()
     public static let defaultsKey = "caper.theme.v1"
+    public static let savedThemesKey = "caper.customThemes.v1"
+    public static let didChangeNotification = Notification.Name("CaperThemeDidChange")
+    private static let snapshotBox = ThemeSnapshotBox()
 
     public private(set) var active: CaperThemeDocument
+    public private(set) var savedThemes: [CaperThemeDocument] = []
     public var isCustom: Bool { active.id != "obsidian" && active.id != "paper" }
+    public var allThemes: [CaperThemeDocument] { [.obsidian, .paper] + savedThemes }
 
     private init() {
+        if let rawSaved = UserDefaults.standard.data(forKey: Self.savedThemesKey),
+           let decoded = try? JSONDecoder().decode([CaperThemeDocument].self, from: rawSaved) {
+            savedThemes = decoded.filter { $0.id != "obsidian" && $0.id != "paper" }
+        }
         if let raw = UserDefaults.standard.string(forKey: Self.defaultsKey),
            let parsed = try? Self.decode(raw) {
             active = parsed
         } else {
             active = .obsidian
         }
+        Self.snapshotBox.set(active)
         applySystemAppearance()
     }
 
+    public nonisolated static func currentSnapshot() -> CaperThemeDocument {
+        snapshotBox.get()
+    }
+
     public func selectPreset(_ id: String) {
-        active = id == "paper" ? .paper : .obsidian
-        UserDefaults.standard.set(active.id, forKey: Self.defaultsKey)
+        if id == "obsidian" {
+            active = .obsidian
+            UserDefaults.standard.set("obsidian", forKey: Self.defaultsKey)
+        } else if id == "paper" {
+            active = .paper
+            UserDefaults.standard.set("paper", forKey: Self.defaultsKey)
+        } else if let found = savedThemes.first(where: { $0.id == id }) {
+            active = found
+            persistActiveDocument(found)
+        } else {
+            active = .obsidian
+            UserDefaults.standard.set("obsidian", forKey: Self.defaultsKey)
+        }
+        Self.snapshotBox.set(active)
         applySystemAppearance()
+    }
+
+    /// Applies an in-progress custom theme live while editing swatches.
+    public func applyLiveTheme(_ doc: CaperThemeDocument, persist: Bool = true) {
+        active = doc
+        Self.snapshotBox.set(doc)
+        if persist {
+            if doc.id == "obsidian" || doc.id == "paper" {
+                UserDefaults.standard.set(doc.id, forKey: Self.defaultsKey)
+            } else {
+                persistActiveDocument(doc)
+            }
+        }
+        applySystemAppearance()
+    }
+
+    /// Saves a custom theme into the user's library and activates it.
+    public func saveCustomTheme(_ draft: CaperThemeDocument) {
+        var doc = draft
+        let cleanName = doc.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        doc.name = cleanName.isEmpty ? "Custom Theme" : String(cleanName.prefix(48))
+        let slug = doc.name.lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if doc.id == "obsidian" || doc.id == "paper" || doc.id.isEmpty {
+            doc.id = slug.isEmpty || slug == "obsidian" || slug == "paper" ? "custom-\(Int(Date().timeIntervalSince1970))" : slug
+        }
+        if let idx = savedThemes.firstIndex(where: { $0.id == doc.id }) {
+            savedThemes[idx] = doc
+        } else {
+            savedThemes.append(doc)
+        }
+        persistSavedThemes()
+        applyLiveTheme(doc, persist: true)
+    }
+
+    public func deleteCustomTheme(id: String) {
+        savedThemes.removeAll { $0.id == id }
+        persistSavedThemes()
+        if active.id == id {
+            selectPreset("obsidian")
+        }
     }
 
     public func importThemeJSON(_ json: String) throws {
         let doc = try Self.decode(json)
-        active = doc
-        let data = try JSONEncoder().encode(doc)
-        if let encoded = String(data: data, encoding: .utf8) {
-            UserDefaults.standard.set(encoded, forKey: Self.defaultsKey)
+        if doc.id != "obsidian" && doc.id != "paper" {
+            saveCustomTheme(doc)
+        } else {
+            selectPreset(doc.id)
         }
-        applySystemAppearance()
     }
 
     public func exportCurrentJSON() -> String {
@@ -179,18 +262,144 @@ public struct CaperThemeDocument: Codable, Equatable, Sendable {
         return str + "\n"
     }
 
-    private func applySystemAppearance() {
+    private func persistActiveDocument(_ doc: CaperThemeDocument) {
+        if let data = try? JSONEncoder().encode(doc),
+           let encoded = String(data: data, encoding: .utf8) {
+            UserDefaults.standard.set(encoded, forKey: Self.defaultsKey)
+        }
+    }
+
+    private func persistSavedThemes() {
+        if let data = try? JSONEncoder().encode(savedThemes) {
+            UserDefaults.standard.set(data, forKey: Self.savedThemesKey)
+        }
+    }
+
+    public func applySystemAppearance() {
         #if os(macOS)
         let name: NSAppearance.Name = active.isLight ? .aqua : .darkAqua
         if let appearance = NSAppearance(named: name) {
             NSApp?.appearance = appearance
+            let bg = Self.frameColor
             for window in NSApp?.windows ?? [] {
                 window.appearance = appearance
-                window.contentView?.needsDisplay = true
+                window.backgroundColor = bg
+                Self.invalidateHierarchy(window.contentView)
             }
         }
         #endif
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
+
+    #if os(macOS)
+    private static func invalidateHierarchy(_ view: NSView?) {
+        guard let view else { return }
+        view.needsDisplay = true
+        view.needsLayout = true
+        for child in view.subviews {
+            invalidateHierarchy(child)
+        }
+    }
+
+    /// Creates an NSColor that dynamically resolves against the active theme
+    /// document whenever AppKit draws text, icons, or controls.
+    public nonisolated static func dynamicNSColor(_ read: @Sendable @escaping (CaperThemeDocument) -> String,
+                                                  fallback: NSColor) -> NSColor {
+        NSColor(name: nil) { _ in
+            let doc = snapshotBox.get()
+            return nsColor(fromHex: read(doc)) ?? fallback
+        }
+    }
+
+    public nonisolated static func dynamicNSColor(_ resolve: @Sendable @escaping (CaperThemeDocument) -> NSColor) -> NSColor {
+        NSColor(name: nil) { _ in resolve(snapshotBox.get()) }
+    }
+
+    public nonisolated static func nsColor(fromHex hex: String) -> NSColor? {
+        guard hex.hasPrefix("#"), hex.count == 7, let value = UInt32(hex.dropFirst(), radix: 16) else { return nil }
+        return NSColor(
+            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    public nonisolated static func hexString(from color: NSColor) -> String {
+        let srgb = color.usingColorSpace(.sRGB) ?? color
+        let r = Int((min(1, max(0, srgb.redComponent)) * 255).rounded())
+        let g = Int((min(1, max(0, srgb.greenComponent)) * 255).rounded())
+        let b = Int((min(1, max(0, srgb.blueComponent)) * 255).rounded())
+        return String(format: "#%02x%02x%02x", r, g, b)
+    }
+
+    /// Computes a readable foreground hex (`#0b0b0c` or `#ffffff`) for any background hex.
+    public nonisolated static func readableForegroundHex(forHex hex: String) -> String {
+        guard let c = nsColor(fromHex: hex) else { return "#ffffff" }
+        let luma = 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+        return luma > 0.56 ? "#0b0b0c" : "#ffffff"
+    }
+
+    // Dynamic semantic NSColor tokens backed by the active CaperThemeDocument.
+    public nonisolated static let frameColor = dynamicNSColor(\.surfaces.frame, fallback: NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 1))
+    public nonisolated static let baseColor = dynamicNSColor(\.surfaces.base, fallback: NSColor(srgbRed: 18/255, green: 18/255, blue: 20/255, alpha: 1))
+    public nonisolated static let sidebarColor = dynamicNSColor(\.surfaces.sidebar, fallback: NSColor(srgbRed: 15/255, green: 15/255, blue: 17/255, alpha: 1))
+    public nonisolated static let sidebarRaisedColor = dynamicNSColor(\.surfaces.sidebarRaised, fallback: NSColor(srgbRed: 28/255, green: 28/255, blue: 32/255, alpha: 1))
+    public nonisolated static let conversationColor = dynamicNSColor(\.surfaces.conversation, fallback: NSColor(srgbRed: 19/255, green: 19/255, blue: 22/255, alpha: 1))
+    public nonisolated static let raisedColor = dynamicNSColor(\.surfaces.raised, fallback: NSColor(srgbRed: 27/255, green: 27/255, blue: 31/255, alpha: 1))
+    public nonisolated static let composerColor = dynamicNSColor(\.surfaces.composer, fallback: NSColor(srgbRed: 29/255, green: 29/255, blue: 34/255, alpha: 1))
+    public nonisolated static let replyDraftColor = dynamicNSColor(\.surfaces.replyDraft, fallback: NSColor(srgbRed: 23/255, green: 23/255, blue: 27/255, alpha: 1))
+    public nonisolated static let borderColor = dynamicNSColor(\.borders.default, fallback: NSColor(srgbRed: 41/255, green: 41/255, blue: 47/255, alpha: 1))
+    public nonisolated static let textColor = dynamicNSColor(\.text.primary, fallback: NSColor(srgbRed: 244/255, green: 243/255, blue: 239/255, alpha: 1))
+    public nonisolated static let messageColor = dynamicNSColor(\.text.message, fallback: NSColor(srgbRed: 230/255, green: 229/255, blue: 224/255, alpha: 1))
+    public nonisolated static let mutedColor = dynamicNSColor(\.text.muted, fallback: NSColor(srgbRed: 154/255, green: 153/255, blue: 162/255, alpha: 1))
+    public nonisolated static let linkColor = dynamicNSColor(\.text.link, fallback: NSColor(srgbRed: 124/255, green: 199/255, blue: 255/255, alpha: 1))
+    public nonisolated static let actionColor = dynamicNSColor(\.action.primary, fallback: NSColor(srgbRed: 244/255, green: 243/255, blue: 239/255, alpha: 1))
+    public nonisolated static let actionHoverColor = dynamicNSColor(\.action.primaryHover, fallback: .white)
+    public nonisolated static let actionPressColor = dynamicNSColor(\.action.primaryPress, fallback: NSColor(srgbRed: 223/255, green: 221/255, blue: 214/255, alpha: 1))
+    public nonisolated static let onActionColor = dynamicNSColor(\.action.onPrimary, fallback: NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 1))
+    public nonisolated static let accentColor = dynamicNSColor(\.accent.primary, fallback: NSColor(srgbRed: 85/255, green: 122/255, blue: 56/255, alpha: 1))
+    public nonisolated static let accentBrightColor = dynamicNSColor(\.accent.bright, fallback: NSColor(srgbRed: 135/255, green: 188/255, blue: 92/255, alpha: 1))
+    public nonisolated static let accentSurfaceColor = dynamicNSColor(\.accent.surface, fallback: NSColor(srgbRed: 28/255, green: 40/255, blue: 22/255, alpha: 1))
+    public nonisolated static let caperColor = dynamicNSColor(\.brand.caper, fallback: NSColor(srgbRed: 111/255, green: 153/255, blue: 72/255, alpha: 1))
+    public nonisolated static let resizeHighlightColor = dynamicNSColor(\.brand.resizeHighlight, fallback: NSColor(srgbRed: 72/255, green: 93/255, blue: 56/255, alpha: 1))
+    public nonisolated static let voiceSessionGreenColor = dynamicNSColor(\.status.voice, fallback: NSColor(srgbRed: 74/255, green: 222/255, blue: 128/255, alpha: 1))
+    public nonisolated static let pinGoldColor = dynamicNSColor(\.status.pin, fallback: NSColor(srgbRed: 228/255, green: 199/255, blue: 106/255, alpha: 1))
+    public nonisolated static let errorColor = dynamicNSColor(\.status.errorText, fallback: NSColor(srgbRed: 255/255, green: 155/255, blue: 130/255, alpha: 1))
+    public nonisolated static let voiceOffColor = dynamicNSColor(\.status.voiceOff, fallback: NSColor(srgbRed: 255/255, green: 113/255, blue: 130/255, alpha: 1))
+    public nonisolated static let hoverWashColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.07)
+                    : NSColor.white.withAlphaComponent(0.08)
+    }
+    public nonisolated static let surfaceRimColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor.white.withAlphaComponent(0.9)
+                    : NSColor.white.withAlphaComponent(0.11)
+    }
+    public nonisolated static let composerOuterBgColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.035)
+                    : NSColor.white.withAlphaComponent(0.03)
+    }
+    public nonisolated static let composerOuterBorderColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.11)
+                    : NSColor.white.withAlphaComponent(0.09)
+    }
+    public nonisolated static let callFillColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 226/255, green: 240/255, blue: 217/255, alpha: 1)
+                    : NSColor(srgbRed: 34/255, green: 56/255, blue: 44/255, alpha: 1)
+    }
+    public nonisolated static let callBorderColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 111/255, green: 153/255, blue: 72/255, alpha: 1)
+                    : NSColor(srgbRed: 75/255, green: 138/255, blue: 96/255, alpha: 1)
+    }
+    public nonisolated static let roomFillColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 238/255, green: 245/255, blue: 233/255, alpha: 1)
+                    : NSColor(srgbRed: 24/255, green: 35/255, blue: 31/255, alpha: 1)
+    }
+    public nonisolated static let roomBorderColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 197/255, green: 218/255, blue: 184/255, alpha: 1)
+                    : NSColor(srgbRed: 40/255, green: 54/255, blue: 47/255, alpha: 1)
+    }
+    #endif
 
     public static func decode(_ raw: String) throws -> CaperThemeDocument {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

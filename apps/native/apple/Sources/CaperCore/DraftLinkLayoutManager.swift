@@ -37,8 +37,8 @@ public final class DraftLinkLayoutManager: NSLayoutManager {
         let border = UIColor(CaperTheme.border)
         #else
         let context = NSGraphicsContext.current?.cgContext
-        let color = NSColor(CaperTheme.link)
-        let border = NSColor(CaperTheme.border)
+        let color = CaperThemeStore.linkColor
+        let border = CaperThemeStore.borderColor
         #endif
         if let context {
             context.saveGState()
@@ -142,7 +142,7 @@ public final class DraftLinkLayoutManager: NSLayoutManager {
         let cover = UIColor(CaperTheme.border).cgColor
         #else
         let context = NSGraphicsContext.current?.cgContext
-        let cover = NSColor(CaperTheme.border).cgColor
+        let cover = CaperThemeStore.borderColor.cgColor
         #endif
         if let context {
             context.saveGState()
@@ -156,7 +156,7 @@ public final class DraftLinkLayoutManager: NSLayoutManager {
         UIImage(systemName: "link")?.withTintColor(UIColor(CaperTheme.link), renderingMode: .alwaysOriginal).draw(in: rect)
         #else
         let image = NSImage(systemSymbolName: "link", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(paletteColors: [NSColor(CaperTheme.link)]))
+            .withSymbolConfiguration(.init(paletteColors: [CaperThemeStore.linkColor]))
         image?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         #endif
     }

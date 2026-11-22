@@ -1092,11 +1092,30 @@ impl Composer {
     ) -> Result<()> {
         unsafe {
             dc.Clear(Some(&gfx::color(crate::theme::SURFACE_CONVERSATION, 1.0)));
+            // Antigravity-style recessed outer shell + crisp inner composer frame.
             fill_round(
                 dc,
-                rect(0.0, 0.0, w, h),
+                rect(0.5, 0.5, w - 0.5, h - 0.5),
+                crate::theme::RADIUS + 2.0,
+                &g.brushes.hover,
+            );
+            crate::gfx::stroke_round(
+                dc,
+                rect(0.5, 0.5, w - 0.5, h - 0.5),
+                crate::theme::RADIUS + 2.0,
+                &g.brushes.border,
+            );
+            fill_round(
+                dc,
+                rect(3.0, 3.0, w - 3.0, h - 3.0),
                 crate::theme::RADIUS,
                 &g.brushes.composer,
+            );
+            crate::gfx::stroke_round(
+                dc,
+                rect(3.0, 3.0, w - 3.0, h - 3.0),
+                crate::theme::RADIUS,
+                &g.brushes.border,
             );
             // The selection's toolbar, as web's: one group of buttons with a
             // gap before Quote; a pressed button (the selection has

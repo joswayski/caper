@@ -981,18 +981,24 @@ button.send:not(:disabled) {
   background: @caper_surface_raised;
 }
 
-/* As desktop: one 40px line, flat 28px tools, a terracotta edge while
-   typing. */
+/* Recessed secondary hairline bezel around the composer, echoing Antigravity's
+   framed input while keeping the focus accent crisp. */
 .composer {
   background: @caper_surface_composer;
   border: 1px solid @caper_border;
-  border-radius: 8px;
-  margin: 4px 18px 17px;
+  border-radius: 11px;
+  margin: 6px 20px 18px;
   padding: 5px 8px 5px 6px;
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.03),
+    0 0 0 5px rgba(255, 255, 255, 0.09);
 }
 
 .composer:focus-within {
   border-color: @caper_terracotta;
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.03),
+    0 0 0 5px alpha(@caper_terracotta, 0.34);
 }
 
 .composer textview,

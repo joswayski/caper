@@ -14,7 +14,7 @@ import CaperCore
     var height: CGFloat { min(CGFloat(match?.count ?? 0) * 44, 176) + 2 }
 
     init() {
-        super.init(NSColor(CaperTheme.surface))
+        super.init(NativeStyle.surface)
         layer?.borderWidth = 1; layer?.borderColor = NativeStyle.border.cgColor
         layer?.cornerRadius = 6; layer?.masksToBounds = true
         scroll.documentView = document
@@ -24,6 +24,10 @@ import CaperCore
         isHidden = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func applyTheme() {
+        super.applyTheme()
+        layer?.borderColor = NativeStyle.border.cgColor
+    }
 
     func update(_ match: ComposerAutocompleteMatch?) {
         guard self.match != match else { return }

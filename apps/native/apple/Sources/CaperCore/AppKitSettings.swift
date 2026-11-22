@@ -36,17 +36,30 @@ import UniformTypeIdentifiers
             previousResponder = parent?.firstResponder
             previousContext = focusContext
         }
+        let parityMode = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
+        let useSheet = !parityMode && parent != nil && parent?.attachedSheet == nil
         if window == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 480),
-                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let window = AppKitSettingsSheetWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 540, height: 600),
+                styleMask: useSheet ? [.titled] : [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
             window.title = title
             window.identifier = AppKitWhatsNew.settingsWindowID
             window.isReleasedWhenClosed = false
             window.appearance = NSAppearance(named: CaperThemeStore.shared.active.isLight ? .aqua : .darkAqua)
+            window.backgroundColor = CaperThemeStore.baseColor
             window.delegate = self
+            window.onCancel = { [weak self] in self?.dismiss() }
             let loginItem = loginItem ?? CaperLoginItem(available: false, status: { .notRegistered }, register: {}, unregister: {})
-            window.contentViewController = AppKitSettingsController(whatsNew: model.whatsNew, loginItem: loginItem, updater: updater)
-            window.setContentSize(NSSize(width: 500, height: 380))
+            window.contentViewController = AppKitSettingsController(
+                whatsNew: model.whatsNew,
+                loginItem: loginItem,
+                updater: updater,
+                onClose: { [weak self] in self?.dismiss() }
+            )
+            window.setContentSize(NSSize(width: 540, height: 600))
             window.center()
             self.window = window
         }
@@ -54,7 +67,27 @@ import UniformTypeIdentifiers
         // owns the release-note presentation gate.
         model.whatsNew.settingsOpen = true
         (window?.contentViewController as? AppKitSettingsController)?.refreshLoginItem()
-        window?.makeKeyAndOrderFront(nil)
+        guard let window else { return }
+        if useSheet, let parent {
+            if window.sheetParent == nil {
+                parent.beginSheet(window) { [weak self] _ in
+                    self?.handleDismissed()
+                }
+            }
+        } else {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    public func dismiss() {
+        guard let window else { return }
+        guard windowShouldClose(window) else { return }
+        if let parent = window.sheetParent {
+            parent.endSheet(window)
+            window.orderOut(nil)
+        } else {
+            window.close()
+        }
     }
 
     public func openWhatsNew(from parent: NSWindow?) {
@@ -72,7 +105,11 @@ import UniformTypeIdentifiers
     }
 
     public func windowWillClose(_ notification: Notification) {
-        let restore = window?.isKeyWindow == true
+        handleDismissed()
+    }
+
+    private func handleDismissed() {
+        let restore = window?.isKeyWindow == true || window?.sheetParent != nil
         model.whatsNew.settingsOpen = false
         let context = previousContext
         let responder = previousResponder as? NSView
@@ -90,24 +127,99 @@ import UniformTypeIdentifiers
     }
 }
 
-/// Startup, sounds, voice messages, updates and release notes.
+@MainActor private final class AppKitSettingsSheetWindow: NSWindow {
+    var onCancel: (() -> Void)?
+    override func cancelOperation(_ sender: Any?) { onCancel?() }
+}
+
+/// A compact labeled color swatch picker for live theme customization.
+@MainActor private final class ThemeColorSwatchRow: NSView {
+    let well: NSColorWell
+    private let label: NSTextField
+    private let onPick: (NSColor) -> Void
+
+    init(title: String, color: NSColor, onPick: @escaping (NSColor) -> Void) {
+        self.onPick = onPick
+        well = NSColorWell(frame: NSRect(x: 0, y: 0, width: 34, height: 24))
+        well.color = color
+        if #available(macOS 13.0, *) {
+            well.colorWellStyle = .minimal
+        }
+        label = AppKitKit.label(title, size: 12, weight: .medium, wraps: false)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        well.translatesAutoresizingMaskIntoConstraints = false
+        well.target = self
+        well.action = #selector(colorChanged)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(well)
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 28),
+            well.leadingAnchor.constraint(equalTo: leadingAnchor),
+            well.centerYAnchor.constraint(equalTo: centerYAnchor),
+            well.widthAnchor.constraint(equalToConstant: 36),
+            well.heightAnchor.constraint(equalToConstant: 24),
+            label.leadingAnchor.constraint(equalTo: well.trailingAnchor, constant: 8),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setHex(_ hex: String) {
+        if let color = CaperThemeStore.nsColor(fromHex: hex), well.color != color {
+            well.color = color
+        }
+    }
+
+    @objc private func colorChanged() {
+        onPick(well.color)
+    }
+}
+
+/// Startup, appearance/theme customizer, sounds, voice messages, updates and release notes.
 @MainActor private final class AppKitSettingsController: NSViewController {
     private let whatsNew: WhatsNewModel
     private let loginItem: CaperLoginItem
     private let updater: AppUpdater?
+    private let onClose: () -> Void
     private let effects = CaperEffects.shared
     private let voiceMessages = VoiceMessageSettings.shared
     private let themeStore = CaperThemeStore.shared
     private let observation = AppKitObservation()
+    private var draftTheme: CaperThemeDocument
 
+    private lazy var closeButton = AppKitKitButton("Done", kind: .secondary) { [weak self] in self?.onClose() }
     private lazy var themeSelect = AppKitCaperSelect(items: ["Obsidian (Dark)", "Paper (Light)"]) { [weak self] idx in
         guard let self else { return }
-        if idx == 0 { self.themeStore.selectPreset("obsidian"); self.themeStatus.stringValue = "" }
-        else if idx == 1 { self.themeStore.selectPreset("paper"); self.themeStatus.stringValue = "" }
+        let themes = self.themeStore.allThemes
+        guard themes.indices.contains(idx) else { return }
+        let picked = themes[idx]
+        self.themeStore.selectPreset(picked.id)
+        self.draftTheme = self.themeStore.active
+        self.themeStatus.stringValue = ""
+        self.syncThemeEditor()
     }
-    private lazy var importTheme = AppKitKitButton("Import .capertheme.json") { [weak self] in self?.chooseThemeFile() }
-    private lazy var exportTheme = AppKitKitButton("Export theme") { [weak self] in self?.saveThemeFile() }
+    private lazy var themeNameField = AppKitKitField(height: 32, size: 12.5)
+    private lazy var darkModeBtn = AppKitKitButton("Dark") { [weak self] in self?.setDraftAppearance("dark") }
+    private lazy var lightModeBtn = AppKitKitButton("Light") { [weak self] in self?.setDraftAppearance("light") }
+    private lazy var bgSwatch = ThemeColorSwatchRow(title: "Background", color: AppKitKit.surface) { [weak self] c in self?.updateDraftColor(\.surfaces.frame, also: \.surfaces.base, color: c) }
+    private lazy var sidebarSwatch = ThemeColorSwatchRow(title: "Sidebar", color: CaperThemeStore.sidebarColor) { [weak self] c in self?.updateDraftColor(\.surfaces.sidebar, color: c) }
+    private lazy var chatSwatch = ThemeColorSwatchRow(title: "Conversation", color: CaperThemeStore.conversationColor) { [weak self] c in self?.updateDraftColor(\.surfaces.conversation, color: c) }
+    private lazy var cardSwatch = ThemeColorSwatchRow(title: "Cards & Input", color: AppKitKit.raised) { [weak self] c in self?.updateDraftColor(\.surfaces.raised, also: \.surfaces.composer, color: c) }
+    private lazy var accentSwatch = ThemeColorSwatchRow(title: "Accent", color: AppKitKit.terracotta) { [weak self] c in self?.updateDraftColor(\.accent.primary, also: \.accent.bright, color: c) }
+    private lazy var actionSwatch = ThemeColorSwatchRow(title: "Primary Button", color: AppKitKit.action) { [weak self] c in self?.updatePrimaryActionColor(c) }
+    private lazy var textSwatch = ThemeColorSwatchRow(title: "Text", color: AppKitKit.text) { [weak self] c in self?.updateDraftColor(\.text.primary, also: \.text.message, color: c) }
+    private lazy var borderSwatch = ThemeColorSwatchRow(title: "Borders", color: AppKitKit.border) { [weak self] c in self?.updateDraftColor(\.borders.default, color: c) }
+
+    private lazy var saveCustomTheme = AppKitKitButton("Save theme", kind: .primary) { [weak self] in self?.saveDraftCustomTheme() }
+    private lazy var deleteCustomTheme = AppKitKitButton("Delete", kind: .destructive) { [weak self] in self?.deleteActiveCustomTheme() }
+    private lazy var resetTheme = AppKitKitButton("Reset") { [weak self] in self?.resetDraftTheme() }
+    private lazy var importTheme = AppKitKitButton("Import JSON") { [weak self] in self?.chooseThemeFile() }
+    private lazy var exportTheme = AppKitKitButton("Export JSON") { [weak self] in self?.saveThemeFile() }
     private let themeStatus = AppKitKit.label("", size: 12, color: AppKitKit.muted)
+
     private lazy var launch = AppKitKitSwitchRow(title: "Launch at login", detail: "Open Caper when you sign in to your computer.",
                                                  identifier: "launch-at-login") { [weak self] on in self?.loginItem.setEnabled(on) }
     private let startupNotes = AppKitKit.stack([], spacing: 8)
@@ -120,8 +232,9 @@ import UniformTypeIdentifiers
     private lazy var check = AppKitKitButton("Check for updates") { [weak self] in self?.controls.check?() }
     private lazy var notes = AppKitKitButton("What’s new") { [weak self] in self?.whatsNew.open() }
 
-    init(whatsNew: WhatsNewModel, loginItem: CaperLoginItem, updater: AppUpdater?) {
-        self.whatsNew = whatsNew; self.loginItem = loginItem; self.updater = updater
+    init(whatsNew: WhatsNewModel, loginItem: CaperLoginItem, updater: AppUpdater?, onClose: @escaping () -> Void) {
+        self.whatsNew = whatsNew; self.loginItem = loginItem; self.updater = updater; self.onClose = onClose
+        self.draftTheme = CaperThemeStore.shared.active
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -129,42 +242,57 @@ import UniformTypeIdentifiers
     private var controls: DesktopUpdateControls { updater?.controls ?? DesktopUpdateControls() }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 480))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 540, height: 600))
         root.wantsLayer = true
         root.layer?.backgroundColor = AppKitKit.surface.cgColor
         check.setAccessibilityIdentifier("check-for-updates")
         notes.setAccessibilityIdentifier("open-whats-new")
         themeSelect.setAccessibilityIdentifier("appearance-theme-select")
         themeSelect.setAccessibilityLabel("Theme")
+        closeButton.setAccessibilityIdentifier("close-settings")
+        saveCustomTheme.minimumHeight = 32
+        themeNameField.placeholderString = "Custom theme name"
         version.orientation = .horizontal; version.spacing = 4
         // Built once, so its "Copied" feedback and keyboard focus survive renders.
         version.addArrangedSubview(appKitVersionControl())
         func section(_ title: String, _ rows: [NSView]) -> NSStackView {
-            AppKitKit.stack([AppKitKit.label(title, size: 12, weight: .bold, color: AppKitKit.muted)] + rows, spacing: 14)
+            AppKitKit.stack([AppKitKit.label(title, size: 12, weight: .bold, color: AppKitKit.muted)] + rows, spacing: 12)
         }
-        let themeButtons = NSStackView(views: [importTheme, exportTheme]); themeButtons.orientation = .horizontal; themeButtons.spacing = 8
-        let appearance = section("Appearance", [themeSelect, themeButtons, themeStatus])
-        // Check for updates and What's new share the version's left edge. The
-        // status line below shows only a check's result and is hidden while
-        // empty, so an idle section ends at the buttons with no blank row.
+
+        let header = NSStackView(views: [AppKitKit.label("Settings", size: 20, weight: .bold, wraps: false), NSView(), closeButton])
+        header.orientation = .horizontal; header.alignment = .centerY; header.translatesAutoresizingMaskIntoConstraints = false
+
+        let nameAndMode = NSStackView(views: [themeNameField, darkModeBtn, lightModeBtn])
+        nameAndMode.orientation = .horizontal; nameAndMode.spacing = 8; nameAndMode.alignment = .centerY
+        let leftCol = AppKitKit.stack([bgSwatch, sidebarSwatch, chatSwatch, cardSwatch], spacing: 6)
+        let rightCol = AppKitKit.stack([accentSwatch, actionSwatch, textSwatch, borderSwatch], spacing: 6)
+        let swatchGrid = NSStackView(views: [leftCol, rightCol])
+        swatchGrid.orientation = .horizontal; swatchGrid.distribution = .fillEqually; swatchGrid.spacing = 16
+        let customActions = NSStackView(views: [saveCustomTheme, deleteCustomTheme, resetTheme])
+        customActions.orientation = .horizontal; customActions.spacing = 8
+        let fileActions = NSStackView(views: [importTheme, exportTheme])
+        fileActions.orientation = .horizontal; fileActions.spacing = 8
+        let customLabel = AppKitKit.label("Customize colors (live preview)", size: 12, weight: .medium, color: AppKitKit.muted)
+        let appearance = section("Appearance", [themeSelect, customLabel, nameAndMode, swatchGrid, customActions, fileActions, themeStatus])
+
         let buttons = NSStackView(views: [check, notes]); buttons.orientation = .horizontal; buttons.spacing = 8
         let updates = section("Updates", [version, buttons, status])
         let content = AppKitKit.stack([
-            AppKitKit.label("Settings", size: 20, weight: .bold),
+            header,
             appearance, AppKitKit.divider(),
             section("Startup", [launch, startupNotes]), AppKitKit.divider(),
             section("Sounds", [sounds]), AppKitKit.divider(),
             section("Voice messages", [sendOnStop]), AppKitKit.divider(),
             updates,
-        ], spacing: 20)
+        ], spacing: 18)
         for case let child as NSStackView in content.arrangedSubviews { AppKitKit.fillWidth(child, of: content) }
         for view in content.arrangedSubviews where !(view is NSStackView) && !(view is NSButton) && !(view is NSTextField) {
             AppKitKit.fillWidth(view, of: content)
         }
-        for row in [themeSelect, launch, sounds, sendOnStop] as [NSView] {
+        for row in [themeSelect, nameAndMode, swatchGrid, launch, sounds, sendOnStop] as [NSView] {
             if let stack = row.superview as? NSStackView { AppKitKit.fillWidth(row, of: stack) }
         }
-        let scroll = appKitKitScroll(content, insets: NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24))
+        let scroll = appKitKitScroll(content, insets: NSEdgeInsets(top: 22, left: 24, bottom: 24, right: 24))
         scroll.setAccessibilityIdentifier("desktop-settings")
         root.addSubview(scroll)
         NSLayoutConstraint.activate([
@@ -179,15 +307,128 @@ import UniformTypeIdentifiers
         observation.start(reading: { [weak self] in self?.snapshot() }) { [weak self] _ in self?.render() }
         NotificationCenter.default.addObserver(self, selector: #selector(applicationBecameActive),
                                                name: NSApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleThemeChange),
+                                               name: CaperThemeStore.didChangeNotification, object: nil)
+        syncThemeEditor()
     }
 
     override func viewWillAppear() {
         super.viewWillAppear()
         refreshLoginItem()
+        draftTheme = themeStore.active
+        syncThemeEditor()
     }
 
     func refreshLoginItem() { loginItem.refresh() }
     @objc private func applicationBecameActive() { loginItem.refresh() }
+    @objc private func handleThemeChange() {
+        view.layer?.backgroundColor = AppKitKit.surface.cgColor
+        view.window?.backgroundColor = AppKitKit.surface
+        view.window?.appearance = NSAppearance(named: themeStore.active.isLight ? .aqua : .darkAqua)
+        view.needsDisplay = true
+    }
+
+    private func setDraftAppearance(_ appearance: String) {
+        guard draftTheme.appearance != appearance else { return }
+        let base = appearance == "light" ? CaperThemeCatalog.paper : CaperThemeCatalog.obsidian
+        let keepAccent = draftTheme.accent
+        let keepBrand = draftTheme.brand
+        let keepID = (draftTheme.id == "obsidian" || draftTheme.id == "paper") ? "custom-draft" : draftTheme.id
+        let typedName = themeNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keepName = (draftTheme.id == "obsidian" || draftTheme.id == "paper")
+            ? (typedName.isEmpty || typedName == "Obsidian" || typedName == "Paper" ? "My Theme" : typedName)
+            : draftTheme.name
+        var next = base
+        next.id = keepID
+        next.name = keepName
+        next.accent = keepAccent
+        next.brand = keepBrand
+        draftTheme = next
+        themeStore.applyLiveTheme(draftTheme, persist: true)
+        syncThemeEditor()
+    }
+
+    private func updateDraftColor(_ keyPath: WritableKeyPath<CaperThemeDocument, String>,
+                                  also secondary: WritableKeyPath<CaperThemeDocument, String>? = nil,
+                                  color: NSColor) {
+        let hex = CaperThemeStore.hexString(from: color)
+        draftTheme[keyPath: keyPath] = hex
+        if let secondary { draftTheme[keyPath: secondary] = hex }
+        if draftTheme.id == "obsidian" || draftTheme.id == "paper" {
+            draftTheme.id = "custom-draft"
+            if themeNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || themeNameField.stringValue == "Obsidian" || themeNameField.stringValue == "Paper" {
+                draftTheme.name = "My Theme"
+            }
+        }
+        themeStore.applyLiveTheme(draftTheme, persist: true)
+        syncThemeEditor()
+    }
+
+    private func updatePrimaryActionColor(_ color: NSColor) {
+        let hex = CaperThemeStore.hexString(from: color)
+        draftTheme.action.primary = hex
+        draftTheme.action.primaryHover = hex
+        draftTheme.action.primaryPress = hex
+        draftTheme.action.onPrimary = CaperThemeStore.readableForegroundHex(forHex: hex)
+        if draftTheme.id == "obsidian" || draftTheme.id == "paper" {
+            draftTheme.id = "custom-draft"
+            draftTheme.name = "My Theme"
+        }
+        themeStore.applyLiveTheme(draftTheme, persist: true)
+        syncThemeEditor()
+    }
+
+    private func saveDraftCustomTheme() {
+        let entered = themeNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        draftTheme.name = entered.isEmpty || entered == "Obsidian" || entered == "Paper" ? "My Custom Theme" : entered
+        if draftTheme.id == "obsidian" || draftTheme.id == "paper" || draftTheme.id == "custom-draft" {
+            draftTheme.id = ""
+        }
+        themeStore.saveCustomTheme(draftTheme)
+        draftTheme = themeStore.active
+        themeStatus.textColor = AppKitKit.terracottaBright
+        themeStatus.stringValue = "Saved \"\(draftTheme.name)\"."
+        themeStatus.isHidden = false
+        syncThemeEditor()
+    }
+
+    private func deleteActiveCustomTheme() {
+        guard themeStore.isCustom else { return }
+        let removed = themeStore.active.name
+        themeStore.deleteCustomTheme(id: themeStore.active.id)
+        draftTheme = themeStore.active
+        themeStatus.textColor = AppKitKit.muted
+        themeStatus.stringValue = "Deleted \"\(removed)\"."
+        themeStatus.isHidden = false
+        syncThemeEditor()
+    }
+
+    private func resetDraftTheme() {
+        let baseId = draftTheme.isLight ? "paper" : "obsidian"
+        themeStore.selectPreset(baseId)
+        draftTheme = themeStore.active
+        themeStatus.textColor = AppKitKit.muted
+        themeStatus.stringValue = "Reset to \(draftTheme.name)."
+        themeStatus.isHidden = false
+        syncThemeEditor()
+    }
+
+    private func syncThemeEditor() {
+        if themeNameField.stringValue != draftTheme.name {
+            themeNameField.stringValue = draftTheme.name
+        }
+        darkModeBtn.showsSelection = !draftTheme.isLight
+        lightModeBtn.showsSelection = draftTheme.isLight
+        bgSwatch.setHex(draftTheme.surfaces.base)
+        sidebarSwatch.setHex(draftTheme.surfaces.sidebar)
+        chatSwatch.setHex(draftTheme.surfaces.conversation)
+        cardSwatch.setHex(draftTheme.surfaces.raised)
+        accentSwatch.setHex(draftTheme.accent.primary)
+        actionSwatch.setHex(draftTheme.action.primary)
+        textSwatch.setHex(draftTheme.text.primary)
+        borderSwatch.setHex(draftTheme.borders.default)
+        deleteCustomTheme.isHidden = !themeStore.savedThemes.contains(where: { $0.id == themeStore.active.id })
+    }
 
     private func chooseThemeFile() {
         let panel = NSOpenPanel()
@@ -199,7 +440,9 @@ import UniformTypeIdentifiers
         do {
             let text = try String(contentsOf: url, encoding: .utf8)
             try themeStore.importThemeJSON(text)
-            themeStatus.textColor = AppKitKit.muted
+            draftTheme = themeStore.active
+            syncThemeEditor()
+            themeStatus.textColor = AppKitKit.terracottaBright
             themeStatus.stringValue = "Applied \"\(themeStore.active.name)\"."
         } catch {
             themeStatus.textColor = AppKitKit.error
@@ -229,17 +472,25 @@ import UniformTypeIdentifiers
         let c = controls
         return [loginItem.registered, loginItem.available, loginItem.status == .requiresApproval, loginItem.error,
                 effects.soundsEnabled, voiceMessages.sendOnStop, themeStore.active.id, themeStore.active.name,
+                themeStore.savedThemes.count,
                 c.isChecking, c.review != nil, c.check != nil, c.lastSuccessfulCheck, c.installedVersion, c.sourceRevision]
     }
 
     private func render() {
         view.layer?.backgroundColor = AppKitKit.surface.cgColor
-        if themeStore.isCustom {
-            themeSelect.items = ["Obsidian (Dark)", "Paper (Light)", "Custom: \(themeStore.active.name)"]
-            themeSelect.selectedIndex = 2
+        let themes = themeStore.allThemes
+        var labels = themes.map { doc -> String in
+            if doc.id == "obsidian" { return "Obsidian (Dark)" }
+            if doc.id == "paper" { return "Paper (Light)" }
+            return "\(doc.name) (\(doc.isLight ? "Light" : "Dark"))"
+        }
+        if let idx = themes.firstIndex(where: { $0.id == themeStore.active.id }) {
+            themeSelect.items = labels
+            themeSelect.selectedIndex = idx
         } else {
-            themeSelect.items = ["Obsidian (Dark)", "Paper (Light)"]
-            themeSelect.selectedIndex = themeStore.active.id == "paper" ? 1 : 0
+            labels.append("Unsaved: \(themeStore.active.name)")
+            themeSelect.items = labels
+            themeSelect.selectedIndex = labels.count - 1
         }
         themeStatus.isHidden = themeStatus.stringValue.isEmpty
         launch.isOn = loginItem.registered
@@ -386,7 +637,7 @@ import UniformTypeIdentifiers
     init(notes: WhatsNewModel, display: WhatsNewDisplay, close: @escaping () -> Void) {
         self.notes = notes; self.display = display; self.finish = close
         super.init(contentRect: NSRect(x: 0, y: 0, width: 520, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
-        appearance = NSAppearance(named: .darkAqua)
+        appearance = NSAppearance(named: CaperThemeStore.shared.active.isLight ? .aqua : .darkAqua)
         isReleasedWhenClosed = false
         contentView = makeContent()
         observation.start(reading: { [notes] in (notes.presentation?.id, notes.presentation?.releases?.count, notes.loading, notes.error) }) { [weak self] _ in

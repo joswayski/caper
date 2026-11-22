@@ -10,7 +10,7 @@ import CaperCore
     private let username = SignInController.field()
     private let name = SignInController.field()
     /// Web's sign-in input: surface fill on the blackout page, 16-point text.
-    private static func field() -> AppKitKitField { AppKitKitField(height: 48, size: 16, fill: NSColor(CaperTheme.surface)) }
+    private static func field() -> AppKitKitField { AppKitKitField(height: 48, size: 16, fill: NativeStyle.surface) }
     private let error = NativeStyle.label("")
     private lazy var submit = NativeButton("Continue", primary: true) { [weak self] in self?.submitForm() }
     private lazy var resend: NativeButton = NativeButton("Resend code") { [weak self] in
@@ -38,7 +38,7 @@ import CaperCore
             field.target = self; field.action = #selector(enterPressed)
             view.addSubview(field)
         }
-        error.textColor = NSColor(CaperTheme.error)
+        error.textColor = NativeStyle.error
         error.maximumNumberOfLines = 4
         error.lineBreakMode = .byWordWrapping
         error.setAccessibilityIdentifier("sign-in-error")

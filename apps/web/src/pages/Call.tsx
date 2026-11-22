@@ -1025,16 +1025,45 @@ export default function Call({
     if (available === true && engaged) clientRef.current?.prefetchMicrophone();
   }, [available, engaged, mediaRoot]);
 
+  const recentlyLeftRef = useRef<{ channelId: string; mediaRoot: string; selfIds: Set<string>; until: number } | null>(
+    null,
+  );
+  const filterRecentlyLeft = (
+    channelId: string | undefined,
+    root: string | undefined,
+    snapshot: PublicPresence,
+  ): PublicPresence => {
+    const left = recentlyLeftRef.current;
+    if (!left) return snapshot;
+    if (Date.now() >= left.until) {
+      recentlyLeftRef.current = null;
+      return snapshot;
+    }
+    const matchesChannel = (channelId && channelId === left.channelId) || (root && root === left.mediaRoot);
+    if (!matchesChannel) return snapshot;
+    const hasSelf = snapshot.participants.some((p) => left.selfIds.has(p.id));
+    if (!hasSelf) {
+      recentlyLeftRef.current = null;
+      return snapshot;
+    }
+    const participants = snapshot.participants.filter((p) => !left.selfIds.has(p.id));
+    return participants.length === 0 ? { participants: [] } : { ...snapshot, participants };
+  };
+
   useEffect(() => {
     if (!idle || available !== true) return;
     return watchPresence(
-      (snapshot) => setPublicParticipants((previous) => ({ ...previous, [mediaRoot]: snapshot })),
+      (snapshot) =>
+        setPublicParticipants((previous) => ({
+          ...previous,
+          [mediaRoot]: filterRecentlyLeft(channel?.id, mediaRoot, snapshot),
+        })),
       (online) => {
         if (!online) setPublicParticipants((previous) => ({ ...previous, [mediaRoot]: { participants: [] } }));
       },
       mediaRoot,
     );
-  }, [idle, available, mediaRoot]);
+  }, [idle, available, mediaRoot, channel?.id]);
 
   // Who is in voice in each of the space's channels, so people can see where
   // others are and join them. One spectator subscription per channel, capped
@@ -1050,7 +1079,11 @@ export default function Call({
     if (!watchedChannels || available !== true) return;
     const stops = watchedChannels.split(",").map((id) =>
       watchPresence(
-        (snapshot) => setChannelRosters((previous) => ({ ...previous, [id]: snapshot })),
+        (snapshot) =>
+          setChannelRosters((previous) => ({
+            ...previous,
+            [id]: filterRecentlyLeft(id, `/api/channels/${encodeURIComponent(id)}/media`, snapshot),
+          })),
         (online) => {
           if (!online) setChannelRosters((previous) => ({ ...previous, [id]: { participants: [] } }));
         },
@@ -1137,6 +1170,35 @@ export default function Call({
   };
   const leave = () => {
     setVoiceError(undefined);
+    const leavingChannelId = voiceChannel?.id ?? channel?.id;
+    const leavingRoot = voiceChannel?.id ? `/api/channels/${encodeURIComponent(voiceChannel.id)}/media` : mediaRoot;
+    const selfIds = new Set([state.selfId, account?.id].filter((id): id is string => Boolean(id)));
+    if (leavingChannelId && selfIds.size > 0) {
+      recentlyLeftRef.current = {
+        channelId: leavingChannelId,
+        mediaRoot: leavingRoot,
+        selfIds,
+        until: Date.now() + 2500,
+      };
+      setChannelRosters((previous) => {
+        const current = previous[leavingChannelId];
+        if (!current) return previous;
+        const participants = current.participants.filter((p) => !selfIds.has(p.id));
+        return {
+          ...previous,
+          [leavingChannelId]: participants.length === 0 ? { participants: [] } : { ...current, participants },
+        };
+      });
+      setPublicParticipants((previous) => {
+        const current = previous[leavingRoot];
+        if (!current) return previous;
+        const participants = current.participants.filter((p) => !selfIds.has(p.id));
+        return {
+          ...previous,
+          [leavingRoot]: participants.length === 0 ? { participants: [] } : { ...current, participants },
+        };
+      });
+    }
     if (connected) playSound("disconnect");
     void act(() => clientRef.current!.leave());
   };

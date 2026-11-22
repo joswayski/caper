@@ -394,6 +394,74 @@ export function isBuiltinTheme(theme: CaperThemeDocument): boolean {
   return theme.id === "obsidian" || theme.id === "paper";
 }
 
+export const SAVED_THEMES_STORAGE_KEY = "caper.customThemes.v1";
+
+export function readableForeground(hex: string): "#0b0b0c" | "#ffffff" {
+  const [r, g, b] = hexToRgbTuple(hex);
+  const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luma > 0.56 ? "#0b0b0c" : "#ffffff";
+}
+
+export function loadSavedCustomThemes(): CaperThemeDocument[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(SAVED_THEMES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: CaperThemeDocument[] = [];
+    for (const item of parsed) {
+      const checked = validateThemeDocument(item);
+      if (checked.ok && !isBuiltinTheme(checked.theme)) out.push(checked.theme);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomTheme(draft: CaperThemeDocument): CaperThemeDocument {
+  const cleanName = draft.name.trim().slice(0, 48) || "Custom Theme";
+  const slug = cleanName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const id =
+    !draft.id || draft.id === "obsidian" || draft.id === "paper" || draft.id === "custom-draft"
+      ? !slug || slug === "obsidian" || slug === "paper"
+        ? `custom-${Date.now()}`
+        : slug
+      : draft.id;
+  const saved: CaperThemeDocument = { ...draft, id, name: cleanName };
+  const existing = loadSavedCustomThemes().filter((item) => item.id !== id);
+  const next = [...existing, saved];
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(SAVED_THEMES_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore storage quota errors.
+    }
+  }
+  selectCustomTheme(saved);
+  return saved;
+}
+
+export function deleteCustomTheme(id: string) {
+  const next = loadSavedCustomThemes().filter((item) => item.id !== id);
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(SAVED_THEMES_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore storage quota errors.
+    }
+  }
+  if (loadSavedTheme().id === id) {
+    selectPresetTheme("obsidian");
+  } else {
+    notifyThemeChanged();
+  }
+}
+
 /**
  * Tiny inline bootstrap script for __root.tsx so saved Paper Light or custom
  * .capertheme.json themes paint before first frame with zero dark flash.

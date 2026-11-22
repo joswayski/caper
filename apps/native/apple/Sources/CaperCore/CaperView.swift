@@ -3994,8 +3994,11 @@ private struct ChatView: View {
             }
             ComposerEmbedPreview(chat: chat)
         }
-        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).stroke(CaperTheme.border, lineWidth: 1))
+        .padding(3)
+        .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(CaperTheme.border.opacity(0.65), lineWidth: 1))
     }
     /// Its own property: inline in `channelBody` it pushed that expression past
     /// the Swift type checker's time limit.

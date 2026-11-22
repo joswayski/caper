@@ -296,10 +296,10 @@ public typealias PlatformComposerFont = NSFont
     let linkTextColor = UIColor(CaperTheme.link)
     let spoilerFill = UIColor(CaperTheme.border)
     #else
-    let color = NSColor(CaperTheme.terracotta).withAlphaComponent(0.24)
-    let textColor = NSColor(CaperTheme.text)
-    let linkTextColor = NSColor(CaperTheme.link)
-    let spoilerFill = NSColor(CaperTheme.border)
+    let color = CaperThemeStore.accentColor.withAlphaComponent(0.24)
+    let textColor = CaperThemeStore.textColor
+    let linkTextColor = CaperThemeStore.linkColor
+    let spoilerFill = CaperThemeStore.borderColor
     #endif
     storage.beginEditing()
     storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
@@ -790,7 +790,7 @@ public final class ComposerTextView: NSTextView {
             let line = NSRect(x: textContainerInset.width + 5, y: textContainerInset.height,
                 width: max(0, bounds.width - textContainerInset.width * 2 - 10), height: ceil(font.ascender - font.descender + font.leading))
             (placeholder as NSString).draw(with: line, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                attributes: [.font: font, .foregroundColor: NSColor(CaperTheme.muted), .paragraphStyle: style])
+                attributes: [.font: font, .foregroundColor: CaperThemeStore.mutedColor, .paragraphStyle: style])
         }
     }
     private func moveVisible(backward: Bool, extending: Bool) {
@@ -952,7 +952,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         view.textContainer?.replaceLayoutManager(DraftLinkLayoutManager())
         view.layoutManager?.delegate = view.composerGlyphs
         scroll.documentView = view; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        view.delegate = coordinator; view.drawsBackground = false; view.textColor = NSColor(CaperTheme.text)
+        view.delegate = coordinator; view.drawsBackground = false; view.textColor = CaperThemeStore.textColor
         view.font = NSFont(name: "Figtree-Regular", size: 14); view.textContainerInset = NSSize(width: 0, height: 10)
         // AppKit sizes the text view: its width follows the scroll view and its height the text.
         view.minSize = NSSize(width: 0, height: 42)
@@ -1095,7 +1095,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             view.typingAttributes.removeValue(forKey: .draftLink)
             view.typingAttributes.removeValue(forKey: .kern)
             for key in composerFormattingAttributes { view.typingAttributes.removeValue(forKey: key) }
-            view.typingAttributes[.foregroundColor] = NSColor(CaperTheme.text)
+            view.typingAttributes[.foregroundColor] = CaperThemeStore.textColor
             highlighting = false
         }
         @MainActor func insert(_ emoji: String, selection: NSRange) {

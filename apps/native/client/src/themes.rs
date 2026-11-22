@@ -310,6 +310,12 @@ impl ThemeDocument {
                  }\n\
                  button.primary:hover {\n\
                    background-image: linear-gradient(180deg, @caper_action_hover, @caper_action);\n\
+                 }\n\
+                 .composer {\n\
+                   box-shadow: 0 0 0 4px rgba(17, 17, 20, 0.035), 0 0 0 5px rgba(17, 17, 20, 0.12);\n\
+                 }\n\
+                 .composer:focus-within {\n\
+                   box-shadow: 0 0 0 4px rgba(17, 17, 20, 0.035), 0 0 0 5px alpha(@caper_terracotta, 0.35);\n\
                  }\n",
             );
         }

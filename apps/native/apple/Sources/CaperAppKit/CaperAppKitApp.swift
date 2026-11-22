@@ -38,7 +38,7 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         CaperFontLoader.register()
-        NSApp.appearance = NSAppearance(named: .darkAqua)
+        CaperThemeStore.shared.applySystemAppearance()
         let environment = ProcessInfo.processInfo.environment
         let fixture = environment["CAPER_TEST_MODE"] == "parity"
             && URL(string: environment["CAPER_API_BASE_URL"] ?? "").map {
@@ -154,6 +154,26 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
 
 /// Tab order for the main window: see KeyboardTabOrder.
 @MainActor final class CaperWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown,
+           let textResponder = firstResponder as? NSTextView,
+           let contentView {
+            let pt = contentView.convert(event.locationInWindow, from: nil)
+            if let hit = contentView.hitTest(pt) {
+                let insideText = hit === textResponder
+                    || hit.isDescendant(of: textResponder)
+                    || hit is NSTextView
+                    || hit is NSTextField
+                    || (hit as? NSControl) != nil
+                if !insideText {
+                    makeFirstResponder(nil)
+                }
+            } else {
+                makeFirstResponder(nil)
+            }
+        }
+        super.sendEvent(event)
+    }
     override func selectNextKeyView(_ sender: Any?) { KeyboardTabOrder.step(in: self, forward: true) }
     override func selectPreviousKeyView(_ sender: Any?) { KeyboardTabOrder.step(in: self, forward: false) }
     override func selectKeyView(following view: NSView) { KeyboardTabOrder.step(in: self, forward: true, from: view) }

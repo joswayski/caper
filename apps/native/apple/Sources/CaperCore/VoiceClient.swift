@@ -475,6 +475,7 @@ public final class VoiceClient {
         refreshLocalPlayback(participantID: participantID)
     }
 
+    public var currentSelfID: String? { selfID }
     public func isSelf(participantID: String) -> Bool { participantID == selfID }
 
     // Loopback UI fixture only: displays controls without opening capture,

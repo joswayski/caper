@@ -112,7 +112,7 @@ import CaperCore
     /// Web's voice panel: the account row floats in its own bordered card,
     /// 42 points tall and 16 above the bottom like the message field beside it.
     /// Notifications and Feedback rows grow the card upward, above a hairline.
-    private let accountPanel = NativeView(NSColor(CaperTheme.raised))
+    private let accountPanel = NativeView(NativeStyle.raised)
     private let accountAvatar = NativeAvatar()
     private let accountPresence = CALayer()
     private let accountName = NativeStyle.label("", size: 13)
@@ -149,7 +149,7 @@ import CaperCore
         railScroll.documentView = rail; railScroll.drawsBackground = false
         [space, close, channels, sectionsDivider, directs, feedbackList, updateButton, accountPanel, panelDivider, activity, feedback,
          accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
-        accountPanel.layer?.cornerRadius = 8; accountPanel.layer?.borderWidth = 1
+        accountPanel.layer?.cornerRadius = 10; accountPanel.layer?.borderWidth = 1
         accountPanel.layer?.borderColor = NativeStyle.border.cgColor
         feedbackList.isHidden = true; feedback.isHidden = true
         panelDivider.setAccessibilityElement(false)
@@ -159,7 +159,7 @@ import CaperCore
         updateButton.focusChanged = { [weak self] focused in self?.updateShine.focusChanged(focused) }
         sidebar.layer?.addSublayer(accountPresence)
         accountPresence.cornerRadius = 5; accountPresence.borderWidth = 2
-        accountPresence.borderColor = NSColor(CaperTheme.raised).cgColor
+        accountPresence.borderColor = NativeStyle.raised.cgColor
         accountName.setAccessibilityElement(false)
         newMessage.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
         newMessage.imagePosition = .imageLeft; newMessage.alignment = .left
@@ -201,10 +201,17 @@ import CaperCore
         inputOptions.setAccessibilityIdentifier("microphone-options")
         outputOptions.setAccessibilityIdentifier("output-options")
         settings.setAccessibilityIdentifier("account-settings-menu")
-        error.textColor = NSColor(CaperTheme.error)
+        error.textColor = NativeStyle.error
         observation.start { [weak self] in self?.render() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func applyTheme() {
+        super.applyTheme()
+        accountPanel.layer?.borderColor = NativeStyle.border.cgColor
+        accountPresence.borderColor = NativeStyle.raised.cgColor
+        render()
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -454,17 +461,17 @@ import CaperCore
         if let current = model.account { accountAvatar.update(current) }
         account.setAccessibilityValue(model.ownPresence == nil || model.ownPresence == .unknown
             ? "Status unavailable" : model.ownPresence!.rawValue.capitalized)
-        accountPresence.backgroundColor = (model.ownPresence == .online ? NSColor(CaperTheme.green) : model.ownPresence == .idle
+        accountPresence.backgroundColor = (model.ownPresence == .online ? NativeStyle.green : model.ownPresence == .idle
             ? NSColor(srgbRed: 0.72, green: 0.60, blue: 0.35, alpha: 1) : NativeStyle.border).cgColor
         mute.image = NSImage(systemSymbolName: model.voice.muted ? "mic.slash" : "mic", accessibilityDescription: nil)
         mute.setAccessibilityLabel(model.voice.muted ? "Unmute microphone" : "Mute microphone")
         mute.setAccessibilityValue(model.voice.muted ? "Muted" : "On")
-        mute.contentTintColor = model.voice.muted ? NSColor(CaperTheme.voiceOff) : NativeStyle.muted
+        mute.contentTintColor = model.voice.muted ? NativeStyle.voiceOff : NativeStyle.muted
         inputOptions.contentTintColor = mute.contentTintColor
         deafen.image = NSImage(systemSymbolName: model.voice.deafened ? "speaker.slash" : "headphones", accessibilityDescription: nil)
         deafen.setAccessibilityLabel(model.voice.deafened ? "Undeafen audio" : "Deafen audio")
         deafen.setAccessibilityValue(model.voice.deafened ? "Deafened" : "On")
-        deafen.contentTintColor = model.voice.deafened ? NSColor(CaperTheme.voiceOff) : NativeStyle.muted
+        deafen.contentTintColor = model.voice.deafened ? NativeStyle.voiceOff : NativeStyle.muted
         outputOptions.contentTintColor = deafen.contentTintColor
         error.stringValue = model.voice.error ?? model.notificationError ?? model.error ?? ""
         if !error.stringValue.isEmpty { channels.append(error, height: 30) }
@@ -897,19 +904,27 @@ private final class NativeDirectRow: NativeView {
 /// The unread count belongs to the same action, not a second focus stop.
 private final class NativeActivityEntry: NativeView {
     private let open: NativeButton
-    private let count = NativeStyle.label("", size: 13)
+    private let iconView = NSImageView()
+    private let titleLabel = NativeStyle.label("Notifications", size: 13)
+    private let count = NativeStyle.label("", size: 12, bold: true)
 
     init(action: @escaping () -> Void) {
-        open = NativeButton("Notifications", action: action)
+        open = NativeButton("", action: action)
         super.init()
-        open.image = NSImage(systemSymbolName: "bell", accessibilityDescription: nil)
-        open.imagePosition = .imageLeft; open.alignment = .left
-        open.font = NativeStyle.font(13); open.profileFeedback = true
+        open.profileFeedback = true
         open.layer?.backgroundColor = NSColor.clear.cgColor
         open.setAccessibilityIdentifier("activity-inbox")
-        count.textColor = NativeStyle.accent; count.alignment = .right
+        open.setAccessibilityLabel("Notifications")
+        iconView.image = NSImage(systemSymbolName: "bell", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        iconView.contentTintColor = NativeStyle.muted
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.setAccessibilityElement(false)
+        titleLabel.textColor = NativeStyle.text
+        titleLabel.setAccessibilityElement(false)
+        count.textColor = NativeStyle.accentBright; count.alignment = .right
         count.setAccessibilityElement(false)
-        addSubview(open); addSubview(count)
+        addSubview(open); addSubview(iconView); addSubview(titleLabel); addSubview(count)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -921,8 +936,11 @@ private final class NativeActivityEntry: NativeView {
     override func layout() {
         super.layout()
         open.frame = bounds
-        let width = count.cell?.cellSize.width ?? 0
-        count.frame = NSRect(x: bounds.width - width - 6, y: (bounds.height - 20) / 2, width: width, height: 20)
+        iconView.frame = NSRect(x: 9, y: ((bounds.height - 16) / 2).rounded(), width: 18, height: 16)
+        let width = count.stringValue.isEmpty ? 0 : ceil(count.cell?.cellSize.width ?? 0) + 2
+        let titleEnd = bounds.width - (width > 0 ? width + 14 : 8)
+        titleLabel.frame = NSRect(x: 35, y: ((bounds.height - 18) / 2).rounded(), width: max(0, titleEnd - 35), height: 18)
+        count.frame = NSRect(x: bounds.width - width - 8, y: ((bounds.height - 16) / 2).rounded(), width: width, height: 16)
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard super.hitTest(point) != nil else { return nil }
@@ -985,24 +1003,39 @@ final class NavigationRow: NativeView {
 /// "Feedback" with its waiting count: one action that shows or hides the list.
 private final class NativeFeedbackEntry: NativeView {
     private let open: NativeButton
-    private let count = NativeStyle.label("", size: 13)
+    private let iconView = NSImageView()
+    private let titleLabel = NativeStyle.label(FeedbackInbox.title, size: 13)
+    private let count = NativeStyle.label("", size: 12, bold: true)
+    private var isExpanded = false
 
     init(action: @escaping () -> Void) {
-        open = NativeButton(FeedbackInbox.title, action: action)
+        open = NativeButton("", action: action)
         super.init()
-        open.image = NSImage(systemSymbolName: "lifepreserver", accessibilityDescription: nil)
-        open.imagePosition = .imageLeft; open.alignment = .left
-        open.font = NativeStyle.font(13); open.profileFeedback = true
+        open.profileFeedback = true
         open.layer?.backgroundColor = NSColor.clear.cgColor
         open.setAccessibilityIdentifier("feedback-inbox")
-        count.textColor = NativeStyle.accent; count.alignment = .right
+        open.setAccessibilityLabel(FeedbackInbox.title)
+        iconView.image = NSImage(systemSymbolName: "lifepreserver", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        iconView.contentTintColor = NativeStyle.muted
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.setAccessibilityElement(false)
+        titleLabel.textColor = NativeStyle.text
+        titleLabel.setAccessibilityElement(false)
+        count.textColor = NativeStyle.accentBright; count.alignment = .right
         count.setAccessibilityElement(false)
-        addSubview(open); addSubview(count)
+        addSubview(open); addSubview(iconView); addSubview(titleLabel); addSubview(count)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func applyTheme() {
+        super.applyTheme()
+        layer?.backgroundColor = (isExpanded ? NativeStyle.accent.withAlphaComponent(0.16) : .clear).cgColor
+    }
+
     func update(title: String, waiting: Int, expanded: Bool) {
-        open.title = title
+        isExpanded = expanded
+        titleLabel.stringValue = title
         open.setAccessibilityLabel(title)
         count.stringValue = waiting > 0 ? String(waiting) : ""
         open.setAccessibilityValue([waiting > 0 ? FeedbackInbox.waitingLabel(waiting) : "", expanded ? "Expanded" : "Collapsed"]
@@ -1015,8 +1048,11 @@ private final class NativeFeedbackEntry: NativeView {
     override func layout() {
         super.layout()
         open.frame = bounds
-        let width = count.cell?.cellSize.width ?? 0
-        count.frame = NSRect(x: bounds.width - width - 6, y: (bounds.height - 20) / 2, width: width, height: 20)
+        iconView.frame = NSRect(x: 9, y: ((bounds.height - 16) / 2).rounded(), width: 18, height: 16)
+        let width = count.stringValue.isEmpty ? 0 : ceil(count.cell?.cellSize.width ?? 0) + 2
+        let titleEnd = bounds.width - (width > 0 ? width + 14 : 8)
+        titleLabel.frame = NSRect(x: 35, y: ((bounds.height - 18) / 2).rounded(), width: max(0, titleEnd - 35), height: 18)
+        count.frame = NSRect(x: bounds.width - width - 8, y: ((bounds.height - 16) / 2).rounded(), width: width, height: 16)
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard super.hitTest(point) != nil else { return nil }
@@ -1110,7 +1146,7 @@ private final class NativeFeedbackRow: NativeView {
     static let inset: CGFloat = 5
     static var height: CGFloat { side + 2 * inset }
     private let face: Face
-    private let tile = NativeView(NSColor(CaperTheme.surface))
+    private let tile = NativeView(NativeStyle.surface)
     private let initial = NativeStyle.label("", size: 15, bold: true)
     private let icon = NativeAvatar(corner: 12)
     private let symbol = NSImageView()
@@ -1155,8 +1191,8 @@ private final class NativeFeedbackRow: NativeView {
         switch face {
         case .space: break
         case .invitation:
-            initial.textColor = NSColor(CaperTheme.terracottaBright)
-            dash.strokeColor = NSColor(CaperTheme.terracottaBright).cgColor; dash.isHidden = false
+            initial.textColor = NativeStyle.accentBright
+            dash.strokeColor = NativeStyle.accentBright.cgColor; dash.isHidden = false
         case .symbol(let name, let color):
             symbol.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
@@ -1169,8 +1205,17 @@ private final class NativeFeedbackRow: NativeView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    override func applyTheme() {
+        super.applyTheme()
+        dot.backgroundColor = NativeStyle.text.cgColor
+        mentionBadge.layer?.borderColor = NativeStyle.blackout.cgColor
+        mutedBadge.layer?.backgroundColor = NativeStyle.blackout.cgColor
+        refreshRing()
+    }
+
     static func button(_ label: String, face: Face, hover: ((Bool) -> Void)? = nil, action: @escaping () -> Void) -> NativeButton {
         let button = NativeButton("", action: action)
+        button.showsDefaultHover = false
         let view = NativeRailFace(face)
         view.autoresizingMask = [.width, .height]
         button.addSubview(view)
@@ -1194,7 +1239,7 @@ private final class NativeFeedbackRow: NativeView {
         if case .space = face { initial.textColor = selected ? NativeStyle.text : NativeStyle.muted }
         mutedBadge.isHidden = !muted
         voiceBadge.isHidden = voice == nil
-        voiceBadge.layer?.backgroundColor = (voice == .connected ? NSColor(CaperTheme.voiceSessionGreen) : NativeStyle.blackout).cgColor
+        voiceBadge.layer?.backgroundColor = (voice == .connected ? NativeStyle.voiceSessionGreen : NativeStyle.blackout).cgColor
         mentionBadge.isHidden = mentions == 0
         mentionText.stringValue = mentions > 99 ? "99+" : "\(mentions)"
         let motion = window != nil && !CaperAccessibility.reduceMotion
@@ -1223,7 +1268,7 @@ private final class NativeFeedbackRow: NativeView {
         if case .space = face { isSpace = true } else { isSpace = false }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         if focused {
-            layer.borderWidth = 2; layer.borderColor = NSColor(CaperTheme.terracottaBright).cgColor
+            layer.borderWidth = 2; layer.borderColor = NativeStyle.accentBright.cgColor
         } else if selected {
             layer.borderWidth = 1; layer.borderColor = NativeStyle.accent.withAlphaComponent(0.9).cgColor
         } else if hovered && isSpace {
@@ -1233,7 +1278,7 @@ private final class NativeFeedbackRow: NativeView {
         }
         layer.shadowOpacity = selected ? 0.36 : 0
         // Create, join and invitation tiles lift on hover, as web's rail controls.
-        layer.backgroundColor = NSColor(hovered && !isSpace ? CaperTheme.raised : CaperTheme.surface).cgColor
+        layer.backgroundColor = (hovered && !isSpace ? NativeStyle.raised : NativeStyle.surface).cgColor
         if case .symbol = face { dash.strokeColor = (hovered ? NativeStyle.muted : NativeStyle.border).cgColor }
         CATransaction.commit()
     }

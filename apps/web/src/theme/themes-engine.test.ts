@@ -1,7 +1,26 @@
-import { describe, expect, it } from "vitest";
-import { OBSIDIAN_THEME, PAPER_THEME, parseThemeJson, themeToCssVars, validateThemeDocument } from "./themes";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  OBSIDIAN_THEME,
+  PAPER_THEME,
+  SAVED_THEMES_STORAGE_KEY,
+  THEME_STORAGE_KEY,
+  deleteCustomTheme,
+  loadSavedCustomThemes,
+  parseThemeJson,
+  readableForeground,
+  saveCustomTheme,
+  themeToCssVars,
+  validateThemeDocument,
+} from "./themes";
 
 describe("web theme engine (caper.theme.v1)", () => {
+  afterEach(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(THEME_STORAGE_KEY);
+      window.localStorage.removeItem(SAVED_THEMES_STORAGE_KEY);
+    }
+  });
+
   it("validates built-in Obsidian and Paper presets and maps CSS variables", () => {
     expect(validateThemeDocument(OBSIDIAN_THEME).ok).toBe(true);
     expect(validateThemeDocument(PAPER_THEME).ok).toBe(true);
@@ -45,5 +64,24 @@ describe("web theme engine (caper.theme.v1)", () => {
         text: { primary: "#1a1a1d" },
       }).ok,
     ).toBe(false);
+  });
+
+  it("picks readable foregrounds and persists/deletes saved custom themes", () => {
+    expect(readableForeground("#ffffff")).toBe("#0b0b0c");
+    expect(readableForeground("#111114")).toBe("#ffffff");
+
+    if (typeof window !== "undefined") {
+      const saved = saveCustomTheme({
+        ...OBSIDIAN_THEME,
+        id: "custom-draft",
+        name: "Midnight Forest",
+        accent: { ...OBSIDIAN_THEME.accent, primary: "#4f8a42", bright: "#66ab57" },
+      });
+      expect(saved.id).toBe("midnight-forest");
+      expect(loadSavedCustomThemes().map((t) => t.id)).toContain("midnight-forest");
+
+      deleteCustomTheme("midnight-forest");
+      expect(loadSavedCustomThemes().map((t) => t.id)).not.toContain("midnight-forest");
+    }
   });
 });

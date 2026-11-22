@@ -29,6 +29,7 @@ public final class VoicePresenceModel {
     private var subscriptions: [String: String] = [:]
     private var watching: Set<String> = []
     private var revisions: [String: MonotonicRevision] = [:]
+    private var suppressedSelf: [String: (ids: Set<String>, until: Date)] = [:]
     private var generation = 0
     private var spaceID: String?
 
@@ -38,13 +39,35 @@ public final class VoicePresenceModel {
 
     public func sessionStartedAt(for channelID: String) -> Double? { sessionStartedAt[channelID] }
 
+    /// Immediately removes the leaving user from a channel's spectator roster
+    /// and suppresses stale in-flight snapshots briefly so leaving an otherwise
+    /// empty call never flashes a "Join" card before disappearing.
+    public func optimisticallyRemove(channelID: String, ids: [String]) {
+        let removeSet = Set(ids.filter { !$0.isEmpty })
+        guard !removeSet.isEmpty else { return }
+        suppressedSelf[channelID] = (removeSet, Date().addingTimeInterval(2.5))
+        if let current = rosters[channelID] {
+            let filtered = current.filter { !removeSet.contains($0.id) }
+            if filtered.isEmpty {
+                rosters.removeValue(forKey: channelID)
+                sessionStartedAt.removeValue(forKey: channelID)
+            } else {
+                rosters[channelID] = filtered
+            }
+        }
+    }
+
+    public func clearOptimisticRemoval(channelID: String) {
+        suppressedSelf.removeValue(forKey: channelID)
+    }
+
     public func watch(spaceID: String, channels: [Channel], demo: Bool) async {
         let wanted = Array(channels.prefix(demo ? 1 : 24)).map(\.id)
         if self.spaceID == spaceID, watching == Set(wanted) { return }
         generation += 1
         let attempt = generation
         let previous = subscriptions.values
-        subscriptions = [:]; watching = Set(wanted); rosters = [:]; sessionStartedAt = [:]; revisions = [:]; online = false
+        subscriptions = [:]; watching = Set(wanted); rosters = [:]; sessionStartedAt = [:]; revisions = [:]; suppressedSelf = [:]; online = false
         unavailableChannels = []
         self.spaceID = spaceID
         for id in previous { await gateway.unsubscribe(id) }
@@ -64,7 +87,7 @@ public final class VoicePresenceModel {
     public func stop() async {
         generation += 1
         let previous = subscriptions.values
-        subscriptions = [:]; watching = []; rosters = [:]; sessionStartedAt = [:]; revisions = [:]; spaceID = nil; online = false
+        subscriptions = [:]; watching = []; rosters = [:]; sessionStartedAt = [:]; revisions = [:]; suppressedSelf = [:]; spaceID = nil; online = false
         unavailableChannels = []
         for id in previous { await gateway.unsubscribe(id) }
     }
@@ -75,6 +98,7 @@ public final class VoicePresenceModel {
         rosters.removeValue(forKey: channelID)
         sessionStartedAt.removeValue(forKey: channelID)
         revisions.removeValue(forKey: channelID)
+        suppressedSelf.removeValue(forKey: channelID)
         if let id = subscriptions.removeValue(forKey: channelID) {
             Task { await gateway.unsubscribe(id) }
         }
@@ -89,13 +113,26 @@ public final class VoicePresenceModel {
         guard event["type"] as? String == "snapshot",
               let values = event["participants"] as? [[String: Any]],
               let data = try? JSONSerialization.data(withJSONObject: values),
-              let people = try? JSONDecoder().decode([VoiceSpectator].self, from: data),
+              var people = try? JSONDecoder().decode([VoiceSpectator].self, from: data),
               people.count <= 256, Set(people.map(\.id)).count == people.count else { return }
         var revision = revisions[channelID] ?? MonotonicRevision()
         guard revision.accept(event["revision"] as? Int) else { return }
         revisions[channelID] = revision
+        if let suppressed = suppressedSelf[channelID] {
+            if Date() >= suppressed.until {
+                suppressedSelf.removeValue(forKey: channelID)
+            } else {
+                let containsSelf = people.contains { suppressed.ids.contains($0.id) }
+                if containsSelf {
+                    people.removeAll { suppressed.ids.contains($0.id) }
+                } else {
+                    // Server has caught up with our departure.
+                    suppressedSelf.removeValue(forKey: channelID)
+                }
+            }
+        }
         rosters[channelID] = people
-        if let milliseconds = event["sessionStartedAt"] as? NSNumber {
+        if !people.isEmpty, let milliseconds = event["sessionStartedAt"] as? NSNumber {
             sessionStartedAt[channelID] = milliseconds.doubleValue
         } else {
             sessionStartedAt.removeValue(forKey: channelID)

@@ -6,15 +6,29 @@ import SwiftUI
 /// freezing a snapshot of the changing navigation and message descendants.
 @MainActor public final class AppKitWorkspaceContainer: NSView {
     fileprivate weak var dialogView: NSView?
+    private var themeObserver: NSObjectProtocol?
     public override var isFlipped: Bool { true }
     public init() {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(CaperTheme.blackout).cgColor
+        layer?.backgroundColor = CaperThemeStore.frameColor.cgColor
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: CaperThemeStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.layer?.backgroundColor = CaperThemeStore.frameColor.cgColor
+                self?.needsDisplay = true
+            }
+        }
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+    }
     public override func accessibilityChildren() -> [Any]? {
         if let dialogView { return [dialogView] }
         return super.accessibilityChildren()
@@ -618,7 +632,7 @@ private final class AppKitPointerPassthroughView: NSView {
         self.model = model; self.messageID = messageID; self.emoji = emoji; self.close = close
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(CaperTheme.blackout).cgColor
+        layer?.backgroundColor = CaperThemeStore.baseColor.cgColor
         layer?.cornerRadius = 8; layer?.borderWidth = 1; layer?.borderColor = AppKitKit.border.cgColor
         layer?.shadowColor = NSColor.black.cgColor; layer?.shadowOpacity = 0.35; layer?.shadowRadius = 8; layer?.shadowOffset = CGSize(width: 0, height: -3)
         setAccessibilityElement(true)

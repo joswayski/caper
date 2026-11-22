@@ -233,7 +233,7 @@ import CaperCore
                     let label = NativeStyle.label(entry.text, size: 11, bold: true)
                     label.textColor = NativeStyle.muted
                     label.wantsLayer = true
-                    label.layer?.backgroundColor = (entry.raised ? NSColor(CaperTheme.sidebarRaised) : .clear).cgColor
+                    label.layer?.backgroundColor = (entry.raised ? NativeStyle.sidebarRaised : .clear).cgColor
                     row = label
                 }
                 realized[index] = row
@@ -248,16 +248,19 @@ private final class MemberRow: NativeView {
     private let avatar = NativeAvatar()
     private let name: NSTextField
     private let badge = CALayer()
+    private let status: PresenceStatus
+    private let raised: Bool
     private let open: (NSView) -> Void
     private lazy var action = NativeButton("") { [weak self] in
         guard let self else { return }; self.open(self)
     }
 
     init(member: Member, status: PresenceStatus, quiet: Bool, raised: Bool, open: @escaping (NSView) -> Void) {
+        self.status = status
+        self.raised = raised
         self.open = open
         name = NativeStyle.label(member.displayName, size: 12)
-        let background = raised ? NSColor(CaperTheme.sidebarRaised) : NativeStyle.sidebar
-        super.init(background)
+        super.init(raised ? NativeStyle.sidebarRaised : NativeStyle.sidebar)
         addSubview(avatar); addSubview(name); addSubview(action)
         action.layer?.backgroundColor = NSColor.clear.cgColor
         action.profileFeedback = true
@@ -266,11 +269,10 @@ private final class MemberRow: NativeView {
         avatar.update(member)
         name.textColor = quiet && status != .offline ? NativeStyle.muted : NativeStyle.text
         alphaValue = status == .offline ? 0.6 : 1
-        badge.backgroundColor = (status == .online ? NSColor(CaperTheme.green) : status == .idle
-            ? NSColor(srgbRed: 0.72, green: 0.60, blue: 0.35, alpha: 1) : NativeStyle.border).cgColor
-        badge.cornerRadius = 5; badge.borderWidth = 2; badge.borderColor = background.cgColor
+        badge.cornerRadius = 5; badge.borderWidth = 2
         badge.zPosition = 1
         layer?.addSublayer(badge)
+        applyBadgeColors()
         setAccessibilityElement(true); setAccessibilityRole(.group)
         setAccessibilityIdentifier("member-\(member.id)")
         let label = status == .online ? "Online" : status == .idle ? "Idle" : status == .offline ? "Offline" : "Status unavailable"
@@ -278,6 +280,16 @@ private final class MemberRow: NativeView {
         name.setAccessibilityElement(false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    private func applyBadgeColors() {
+        let background = raised ? NativeStyle.sidebarRaised : NativeStyle.sidebar
+        badge.backgroundColor = (status == .online ? NativeStyle.green : status == .idle
+            ? NSColor(srgbRed: 0.72, green: 0.60, blue: 0.35, alpha: 1) : NativeStyle.border).cgColor
+        badge.borderColor = background.cgColor
+    }
+    override func applyTheme() {
+        super.applyTheme()
+        applyBadgeColors()
+    }
     override func layout() {
         super.layout()
         avatar.frame = NSRect(x: 6, y: 4, width: 30, height: 30)
