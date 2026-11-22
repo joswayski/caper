@@ -43,6 +43,7 @@ on:
       - scripts/native_update_patches.py
       - scripts/native-update-retain.sh
       - scripts/play-upload.py
+      - scripts/release_notes.py
       - scripts/testflight-distribute.py
       - scripts/vectorize-avatars.py
       - pyproject.toml
@@ -362,13 +363,22 @@ jobs:
           github-token: ${{ github.token }}
           app-id: ${{ secrets.DEPLOY_APP_ID }}
           private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+      - name: Read the drafted release highlights
+        # Written by whats-new-draft while the apps build; missing when drafting
+        # failed or found nothing, and then the notes fall back to the commit.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: whats-new-answer-native
+          path: ${{ runner.temp }}/whats-new-answer
       - name: Give the build to every TestFlight tester group
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
-          export WHAT_TO_TEST="$(bash scripts/release-notes.sh "$RELEASE_SHA")"
+          export WHAT_TO_TEST="$(python3 scripts/release_notes.py "$RELEASE_SHA" ios \
+            --answer "$RUNNER_TEMP/whats-new-answer/answer.json")"
           uv run --project "$RUNNER_TEMP/python-tooling" --locked --only-group publish python scripts/testflight-distribute.py
       - name: Remove signing material
         if: always()
@@ -535,6 +545,15 @@ jobs:
           github-token: ${{ github.token }}
           app-id: ${{ secrets.DEPLOY_APP_ID }}
           private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+      - name: Read the drafted release highlights
+        # Written by whats-new-draft while the apps build; missing when drafting
+        # failed or found nothing, and then the notes fall back to the commit.
+        if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: whats-new-answer-native
+          path: ${{ runner.temp }}/whats-new-answer
       - name: Roll out to Google Play internal and closed testers
         if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
         env:
@@ -544,7 +563,8 @@ jobs:
         run: |
           set -euo pipefail
           export PLAY_RELEASE_NAME="$CAPER_VERSION"
-          export PLAY_RELEASE_NOTES="$(bash scripts/release-notes.sh "$RELEASE_SHA")"
+          export PLAY_RELEASE_NOTES="$(python3 scripts/release_notes.py "$RELEASE_SHA" android --limit 500 \
+            --answer "$RUNNER_TEMP/whats-new-answer/answer.json")"
           # Play has transient outages (HTTP 503 while assigning a track). A failed
           # attempt never commits its edit, so the next one uploads the same version
           # code into a new edit. Only server-side and network errors retry.

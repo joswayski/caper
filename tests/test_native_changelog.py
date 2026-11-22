@@ -11,6 +11,12 @@ spec = importlib.util.spec_from_file_location(
 )
 changelog = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(changelog)
+notes_spec = importlib.util.spec_from_file_location(
+    "release_notes", Path(__file__).resolve().parents[1] / "scripts/release_notes.py"
+)
+release_notes = importlib.util.module_from_spec(notes_spec)
+with patch("sys.path", [str(Path(spec.origin).parent), *__import__("sys").path]):
+    notes_spec.loader.exec_module(release_notes)
 
 
 class ChangelogTests(unittest.TestCase):
@@ -100,6 +106,62 @@ class ChangelogTests(unittest.TestCase):
         self.assertEqual(current["notes"], expected)
         self.assertEqual(self.produce(self.latest(12, newest))["notes"], expected + "\n• Initial feature (#1)")
 
+    def test_notes_for_some_desktop_apps_are_labelled_and_others_left_out(self):
+        first = self.commit("Initial feature")
+        old = self.produce(self.latest(1, first))
+        self.commit("Tray menu", {"apps/native/windows/src/tray.rs": "windows"})
+        self.commit("Mac menus", {"apps/native/apple/Sources/CaperCore/AppKitCaperMenu.swift": "mac"})
+        self.commit("Phone sheet", {"apps/native/apple/Sources/CaperCore/UIKitReleaseNotes.swift": "ios"})
+        self.commit("Android sheet", {"apps/native/android/app/src/main/java/Sheet.kt": "android"})
+        self.commit("Desktop composer", {"apps/native/client/src/compose.rs": "both"})
+        self.commit("Font", {"shared/fonts/inrond.css": "all"})
+        self.commit("Web and Linux", {"apps/web/src/A.tsx": "web", "apps/native/linux/src/a.rs": "linux"})
+        self.commit("Improve CI", {".github/workflows/native.yml": "ci"})
+        newest = self.commit("Faster delivery", {"apps/api/src/push/delivery.rs": "server"})
+        current = self.produce(self.latest(2, newest), old)
+        self.assertEqual(
+            current["notes"],
+            "• Faster delivery\n• Linux: Web and Linux\n• Font\n• Windows, Linux: Desktop composer\n"
+            "• macOS: Mac menus\n• Windows: Tray menu",
+        )
+        # Retained labelled notes still lose commits that later turned out internal.
+        current["changelog"][0]["notes"] += "\n• Windows: Improve CI"
+        self.assertNotIn("Improve CI", self.produce(self.latest(2, newest), current)["changelog"][0]["notes"])
+
+    def test_store_notes_use_their_platforms_highlights_else_a_matching_commit(self):
+        sha = "a" * 40
+        answer = self.repo / "answer.json"
+
+        def highlight(title, platforms):
+            return {"title": title, "body": "Body.", "platforms": platforms, "commits": []}
+
+        answer.write_text(
+            json.dumps(
+                {
+                    "revision": sha,
+                    "evidence": "x",
+                    "result": {
+                        "highlights": [highlight("Mac menus", ["macos"]), highlight("Faster", ["ios", "android"])]
+                    },
+                }
+            )
+        )
+        self.assertEqual(release_notes.drafted(answer, sha, "ios"), ["Faster: Body."])
+        self.assertEqual(release_notes.drafted(answer, "b" * 40, "ios"), [])
+        self.assertEqual(release_notes.drafted(self.repo / "missing.json", sha, "ios"), [])
+        self.assertEqual(release_notes.notes("ios", sha, ["One: x", "Two: y"], None, [], 9), "One: x")
+        windows = ["apps/native/windows/src/tray.rs"]
+        self.assertEqual(
+            release_notes.notes("ios", sha, [], "Tray menu", windows, 4000), "Latest Caper build from aaaaaaa."
+        )
+        mac = ["apps/native/apple/Sources/CaperCore/AppKitCaperMenu.swift"]
+        self.assertEqual(
+            release_notes.notes("ios", sha, [], "Mac menus", mac, 4000), "Latest Caper build from aaaaaaa."
+        )
+        phone = ["apps/native/apple/Sources/CaperUIKit/Browse.swift"]
+        self.assertEqual(release_notes.notes("ios", sha, [], "Browse", phone, 4000), "Browse")
+        self.assertEqual(release_notes.notes("android", sha, [], "Fix API", ["apps/api/src/lib.rs"], 4000), "Fix API")
+
     def test_test_paths_do_not_hide_mixed_product_changes(self):
         first = self.commit("Initial feature")
         old = self.produce(self.latest(1, first))
@@ -118,7 +180,7 @@ class ChangelogTests(unittest.TestCase):
         )
         newest = self.commit(
             "Add microphone test playback",
-            {"apps/web/src/pages/MicPlayback.tsx": "feature", "apps/web/src/pages/MicPlayback.test.tsx": "test"},
+            {"shared/messages/mic-playback.ts": "feature", "shared/messages/mic-playback.test.ts": "test"},
         )
         self.assertEqual(self.produce(self.latest(2, newest), old)["notes"], "• Add microphone test playback")
 
@@ -127,8 +189,8 @@ class ChangelogTests(unittest.TestCase):
         old = self.produce(self.latest(1, first))
         self.commit("Align controls", {"shared/design.css": "styles"})
         self.commit("Add notification settings", {"apps/api/migrations/notifications.sql": "migration"})
-        self.commit("Improve launcher icon", {"apps/native/android/app/src/main/res/drawable/icon.xml": "icon"})
-        self.commit("Improve emoji artwork", {"apps/web/public/emoji/café.svg": "artwork"})
+        self.commit("Improve launcher icon", {"assets/icon.svg": "icon"})
+        self.commit("Improve emoji artwork", {"shared/emoji/café.svg": "artwork"})
         newest = self.commit("Remove obsolete desktop screen", {"apps/native/desktop/src/main.rs": None})
         self.assertEqual(
             self.produce(self.latest(2, newest), old)["notes"],
@@ -140,11 +202,11 @@ class ChangelogTests(unittest.TestCase):
         first = self.commit("Initial feature")
         old = self.produce(self.latest(1, first))
         self.git("checkout", "-qb", "feature")
-        self.commit("Implementation detail", {"apps/web/src/chat/Chat.tsx": "feature"})
+        self.commit("Implementation detail", {"shared/messages/chat.ts": "feature"})
         self.git("checkout", "-q", "-")
         self.git("merge", "--no-ff", "-qm", "Add channel navigation (#2)", "feature")
         self.git("checkout", "-qb", "checks")
-        self.commit("Test implementation detail", {"apps/web/src/chat/Chat.test.tsx": "test"})
+        self.commit("Test implementation detail", {"shared/messages/chat.test.ts": "test"})
         self.git("checkout", "-q", "-")
         self.git("merge", "--no-ff", "-qm", "Improve navigation checks (#3)", "checks")
         newest = self.git("rev-parse", "HEAD")

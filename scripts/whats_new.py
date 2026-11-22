@@ -23,12 +23,11 @@ import urllib.error
 import urllib.request
 
 try:
-    from .native_changelog import INTERNAL_TITLE, is_product_path
+    from .native_changelog import INTERNAL_TITLE, PLATFORMS, is_product_path, path_platforms
 except ImportError:
-    from native_changelog import INTERNAL_TITLE, is_product_path
+    from native_changelog import INTERNAL_TITLE, PLATFORMS, is_product_path, path_platforms
 
 
-PLATFORMS = ("web", "android", "ios", "macos", "windows", "linux")
 MAX_SNAPSHOT_BYTES = 64 * 1024
 MAX_INPUT_CHARS = 400_000
 MAX_RESPONSE_BYTES = 128 * 1024
@@ -133,7 +132,10 @@ without inventing a generic improvement or announcing future availability.
 API changes are context, not a
 standalone client feature. Each platform needs changed client/shared runtime
 paths in cited commits, and all citations must be within that platform's range.
-Group equivalent changes across platforms when the evidence permits. At most
+Group equivalent changes across platforms when the evidence permits. Each
+platform's app shows only the highlights listing it, so never name a platform
+or device in a title or body ("on Linux", "on Mac", "iPhone"): put it in
+platforms instead, and write separate highlights when platforms differ. At most
 five highlights total; zero is valid. Omit maintenance, dependencies, tests,
 documentation, implementation details and repeated prior highlights. Readers
 are ordinary people, not the Caper team: omit changes that only feedback team
@@ -270,42 +272,6 @@ def runtime_path(path):
         and not re.search(r"[-_](?:cases|fixtures)\.json$", path, re.IGNORECASE)
         and Path(path).name not in {"package.json", "package-lock.json", "Cargo.toml", "Cargo.lock"}
     )
-
-
-def path_platforms(path):
-    if path.startswith(("shared/", "assets/")):
-        return set(PLATFORMS)
-    if path.startswith(("apps/web/src/", "apps/web/public/")):
-        return {"web"}
-    if path.startswith("apps/native/android/app/src/main/"):
-        return {"android"}
-    if path.startswith("apps/native/apple/"):
-        if "/CaperUIKit/" in path or re.search(r"(?:IOS|iOS|icon-ios)", Path(path).name):
-            return {"ios"}
-        if "/CaperAppKit/" in path or re.search(r"(?:Mac|macOS)", Path(path).name):
-            return {"macos"}
-        return {"ios", "macos"}
-    if path.startswith("apps/native/updater/"):
-        return {"macos", "windows", "linux"}
-    if path.startswith("apps/native/client/"):
-        return {"windows", "linux"}
-    if path.startswith("apps/native/windows/src/"):
-        return {"windows"}
-    if path.startswith("apps/native/linux/src/"):
-        return {"linux"}
-    # The egui client is no longer released; the rest of desktop/ is packaging,
-    # the web player and WebRTC, which both desktop releases ship.
-    if path.startswith("apps/native/desktop/src/"):
-        return set()
-    if path.startswith(
-        ("apps/native/desktop/build.ps1", "apps/native/desktop/installer.nsi", "apps/native/desktop/test-installer.ps1")
-    ):
-        return {"windows"}
-    if path.startswith("apps/native/desktop/build.sh"):
-        return {"linux"}
-    if path.startswith("apps/native/desktop/"):
-        return {"windows", "linux"}
-    return set()  # Server-only changes may provide context, never platform eligibility.
 
 
 def evidence(repo, revision, previous, platforms):

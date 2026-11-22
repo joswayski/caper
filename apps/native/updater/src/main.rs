@@ -166,7 +166,7 @@ struct CheckResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     notes: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    changelog: Vec<&'a manifest::ChangelogEntry>,
+    changelog: Vec<manifest::ChangelogEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     history_complete: Option<bool>,
     /// Structured highlights for every release being installed, newest first,
@@ -253,6 +253,8 @@ fn check(options: &Options) -> Result<()> {
     } else {
         None
     };
+    // The signed notes cover every desktop app; show only this one's.
+    let notes = manifest::notes_for(&manifest.notes, platform);
     match manifest.update_for(platform, current) {
         Some(artifact) => print_json(&CheckResult {
             update: true,
@@ -266,12 +268,19 @@ fn check(options: &Options) -> Result<()> {
                 highlights
                     .as_ref()
                     .map(|highlights| highlights.notes.as_str())
-                    .unwrap_or(&manifest.notes),
+                    .unwrap_or(&notes),
             ),
             changelog: if highlights.is_some() {
                 Vec::new()
             } else {
-                manifest.changes_since(current)
+                manifest
+                    .changes_since(current)
+                    .into_iter()
+                    .map(|entry| manifest::ChangelogEntry {
+                        notes: manifest::notes_for(&entry.notes, platform),
+                        ..entry.clone()
+                    })
+                    .collect()
             },
             history_complete: Some(
                 highlights

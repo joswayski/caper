@@ -36,6 +36,12 @@ INTERNAL_TITLE = re.compile(
     r"|\b(?:clippy|tooling)\b",
     re.IGNORECASE,
 )
+PLATFORMS = ("web", "android", "ios", "macos", "windows", "linux")
+# The self-update manifest serves only the desktop apps. A note for some of them
+# starts with a readable label ("• Windows: …", "• macOS, Linux: …"): updaters
+# show their own notes without it and drop the rest; older updaters show it as text.
+DESKTOP = {"macos": "macOS", "windows": "Windows", "linux": "Linux"}
+LABEL = re.compile(r"^• ((?:macOS|Windows|Linux)(?:, (?:macOS|Windows|Linux))*): ")
 
 
 def git(*args):
@@ -53,6 +59,56 @@ def is_product_path(path):
     )
 
 
+def path_platforms(path):
+    """The released clients a changed path ships in; empty for server-only paths."""
+    if path.startswith(("shared/", "assets/")):
+        return set(PLATFORMS)
+    if path.startswith(("apps/web/src/", "apps/web/public/")):
+        return {"web"}
+    if path.startswith("apps/native/android/app/src/main/"):
+        return {"android"}
+    if path.startswith("apps/native/apple/"):
+        # CaperCore holds both hosts' UIKit (iOS) and AppKit (macOS) views.
+        if "/CaperUIKit/" in path or re.search(r"(?:UIKit|IOS|iOS|icon-ios)", Path(path).name):
+            return {"ios"}
+        if "/CaperAppKit/" in path or re.search(r"(?:AppKit|Mac|macOS)", Path(path).name):
+            return {"macos"}
+        return {"ios", "macos"}
+    if path.startswith("apps/native/updater/"):
+        return {"macos", "windows", "linux"}
+    if path.startswith("apps/native/client/"):
+        return {"windows", "linux"}
+    if path.startswith("apps/native/windows/src/"):
+        return {"windows"}
+    if path.startswith("apps/native/linux/src/"):
+        return {"linux"}
+    # The egui client is no longer released; the rest of desktop/ is packaging,
+    # the web player and WebRTC, which both desktop releases ship.
+    if path.startswith("apps/native/desktop/src/"):
+        return set()
+    if path.startswith(
+        ("apps/native/desktop/build.ps1", "apps/native/desktop/installer.nsi", "apps/native/desktop/test-installer.ps1")
+    ):
+        return {"windows"}
+    if path.startswith("apps/native/desktop/build.sh"):
+        return {"linux"}
+    if path.startswith("apps/native/desktop/"):
+        return {"windows", "linux"}
+    return set()
+
+
+def desktop_label(paths):
+    """A note's label: "" for every desktop app (or server-only changes),
+    "Windows: " for some, None when no desktop app ships the change."""
+    platforms = set().union(*(path_platforms(path) for path in paths if is_product_path(path)))
+    if not platforms:
+        return ""
+    desktop = [name for platform, name in DESKTOP.items() if platform in platforms]
+    if not desktop:
+        return None
+    return "" if len(desktop) == len(DESKTOP) else ", ".join(desktop) + ": "
+
+
 def commit_notes(*revisions):
     # First-parent diffs include merge changes, root commits and removed files.
     records = git(
@@ -67,21 +123,32 @@ def commit_notes(*revisions):
     for record in records.split("\0\0")[1:]:
         header, _, paths = record.partition("\n")
         commit, subject, author, email = header.split("\0")
+        paths = paths.splitlines()
         visible = (
             not INTERNAL_TITLE.search(subject)
             and "dependabot" not in author.lower()
             and "dependabot" not in email.lower()
-            and any(is_product_path(path) for path in paths.splitlines())
+            and any(is_product_path(path) for path in paths)
         )
-        commits[commit] = (subject, visible)
+        commits[commit] = (subject, visible, desktop_label(paths))
     return commits
+
+
+def note(commit):
+    """The commit's bullet, or None when it is internal or ships in no desktop app."""
+    subject, visible, label = commit
+    return f"• {label}{subject}" if visible and label is not None else None
 
 
 def filter_retained_notes(notes, hidden):
     # Only remove known generated commit bullets; preserve custom/legacy prose.
     if not notes:
         return notes
-    lines = [line for line in notes.splitlines() if not (line.startswith("• ") and line[2:] in hidden)]
+    lines = [
+        line
+        for line in notes.splitlines()
+        if not (line.startswith("• ") and LABEL.sub("• ", line, count=1)[2:] in hidden)
+    ]
     return "\n".join(lines) or NO_PRODUCT_CHANGES
 
 
@@ -98,8 +165,8 @@ def with_changelog(latest, previous):
         if previous["build"] == build and previous["commit"] != commit:
             raise ValueError("a published build number cannot change commits")
     commits = commit_notes(commit, *([previous["commit"]] if previous else []))
-    hidden = {subject for subject, visible in commits.values() if not visible}
-    hidden -= {subject for subject, visible in commits.values() if visible}
+    hidden = {subject for subject, visible, _ in commits.values() if not visible}
+    hidden -= {subject for subject, visible, _ in commits.values() if visible}
     history = []
     oldest = 0
     if previous:
@@ -121,11 +188,11 @@ def with_changelog(latest, previous):
             notes = f"• Rebuilt earlier source {commit[:7]}; replaces the previous release."
         else:
             changed = git("rev-list", "--first-parent", f"{previous['commit']}..{commit}").splitlines()
-            notes = "\n".join(f"• {commits[sha][0]}" for sha in changed if commits[sha][1])
+            notes = "\n".join(filter(None, (note(commits[sha]) for sha in changed)))
             if changed and not notes:
                 notes = NO_PRODUCT_CHANGES
     else:
-        notes = "\n".join(f"• {subject}" for subject, visible in commits.values() if visible) or NO_PRODUCT_CHANGES
+        notes = "\n".join(filter(None, map(note, commits.values()))) or NO_PRODUCT_CHANGES
     if not notes:
         notes = "• Rebuilt the same source; no new code changes."
     entry = {"build": build, "version": latest["version"], "notes": notes}

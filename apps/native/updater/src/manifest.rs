@@ -197,6 +197,43 @@ impl Manifest {
     }
 }
 
+/// Release notes as `platform` shows them. A line may start with a label
+/// naming the desktop apps it is for (`• Windows: …`, `• macOS, Linux: …`):
+/// this platform's lines lose the label, other platforms' lines are left out,
+/// and unlabelled lines (including every note written before labels) stay.
+pub fn notes_for(notes: &str, platform: &str) -> String {
+    let name = match platform.split('-').next() {
+        Some("macos") => "macOS",
+        Some("windows") => "Windows",
+        Some("linux") => "Linux",
+        _ => return notes.to_owned(),
+    };
+    let lines = notes
+        .lines()
+        .filter_map(|line| {
+            let Some((label, rest)) = line
+                .strip_prefix("• ")
+                .and_then(|line| line.split_once(": "))
+            else {
+                return Some(line.to_owned());
+            };
+            let names = label.split(", ").collect::<Vec<_>>();
+            if !names
+                .iter()
+                .all(|name| matches!(*name, "macOS" | "Windows" | "Linux"))
+            {
+                return Some(line.to_owned());
+            }
+            names.contains(&name).then(|| format!("• {rest}"))
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() && !notes.is_empty() {
+        "• No user-facing changes in this build.".to_owned()
+    } else {
+        lines.join("\n")
+    }
+}
+
 fn is_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -291,6 +328,24 @@ mod tests {
         assert!(legacy.changes_since(10).is_empty());
         assert!(!legacy.history_complete(10));
         assert_eq!(legacy.notes, "Screen sharing");
+    }
+
+    #[test]
+    fn notes_show_only_this_platforms_labelled_lines() {
+        let notes = "• Windows: Tray menu\n• macOS, Linux: Drag files in\n• Faster sign-in\n• Release: kept as written";
+        assert_eq!(
+            notes_for(notes, "macos-arm64"),
+            "• Drag files in\n• Faster sign-in\n• Release: kept as written"
+        );
+        assert_eq!(
+            notes_for(notes, "windows-x64"),
+            "• Tray menu\n• Faster sign-in\n• Release: kept as written"
+        );
+        assert_eq!(
+            notes_for("• Windows: Tray menu", "linux-x64"),
+            "• No user-facing changes in this build."
+        );
+        assert_eq!(notes_for("", "linux-x64"), "");
     }
 
     #[test]

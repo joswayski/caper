@@ -4704,6 +4704,19 @@ immutable assets. Each snapshot is at most 64 KiB, holds at most 30 releases wit
 positive JavaScript-safe sequences, and plain-text titles/bodies of at most 100/500
 code points.
 
+Each platform shows only its own notes. Highlights list their platforms, and each
+platform's snapshot holds only the highlights listing it; the prompt keeps platform
+names out of the text. Which platforms a path ships in is `path_platforms` in
+`scripts/native_changelog.py` (`CaperCore`'s `UIKit*` files are iOS, `AppKit*`
+macOS). The signed manifest's commit notes leave out commits no desktop app ships
+and label those for some desktop apps (`• Windows: …`, `• macOS, Linux: …`);
+`caper-updater check` shows its platform's lines without the label and drops the
+rest, unlabelled lines show everywhere, and older updaters show the label as text.
+TestFlight's What to Test and Play's release notes come from
+`scripts/release_notes.py`: the drafted highlights for iOS or Android, else the
+release commit's pull request title when that commit ships in the app (or in no
+client), else a generic line.
+
 The homepage's Latest changes shows the newest eight highlights from
 `whats-new-web/latest.json`, cached per web pod for 60 seconds (stale-while-
 refresh, 3-second cold fetch limit), falling back to the build-time list or recent
