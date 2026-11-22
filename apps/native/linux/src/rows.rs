@@ -723,7 +723,7 @@ fn author_avatar(author: &Author) -> crate::images::Avatar {
 /// The rows for `messages`, oldest first, then `draft`.
 pub fn build<'a>(
     messages: impl Iterator<Item = &'a Message>,
-    draft: Option<Draft<'a>>,
+    drafts: Vec<Draft<'a>>,
     markup: &mut Markup,
     cache: &mut Cache,
     viewer: &Viewer<'_>,
@@ -820,7 +820,7 @@ pub fn build<'a>(
         );
         cache.rows.insert(message.id.clone(), (key, row, this_day));
     }
-    if let Some(draft) = draft {
+    for draft in drafts {
         let avatar = author_avatar(draft.author);
         let (time, this_day) = when(draft.created_at);
         let row = Row {

@@ -21,6 +21,7 @@ use caper_client::model::{
 };
 use caper_client::notifications::Scope;
 use caper_client::reactions::Reacted;
+use caper_client::sends::Settled;
 use caper_client::sign_in::{MAX_RESENDS, resend_countdown, resend_wait};
 use caper_client::worker::{
     AccountOperation, AccountResult, AdminOperation, Command, Event, Worker, current,
@@ -89,6 +90,8 @@ const TYPING_SHOWN: Duration = Duration::from_secs(6);
 /// long after your last keystroke.
 const TYPING_PULSE: Duration = Duration::from_secs(2);
 const TYPING_IDLE: Duration = Duration::from_secs(3);
+/// The status while the conversation's gateway is connected.
+const LIVE: &str = "Live";
 
 /// A widget of GType `class` with the accessible name `name`. gtk4-rs binds
 /// `gtk_accessible_update_property` only from GTK 4.10 (`v4_10`), so this uses
@@ -164,11 +167,9 @@ enum Page {
 }
 
 struct Pending {
-    /// The send as it went out, resent unchanged when the connection
-    /// returns after a failure with an unknown outcome.
+    /// The send as it went out, resent unchanged after a failure with an
+    /// unknown outcome (`caper_client::sends`).
     outgoing: caper_client::worker::Outgoing,
-    /// Its last attempt failed without a refusal: it waits for the gateway.
-    unconfirmed: bool,
     client_id: String,
     text: String,
     created_at: String,
@@ -178,6 +179,12 @@ struct Pending {
     /// A KLIPY GIF sent on its own, and what to tell KLIPY once it is.
     gif: Option<caper_client::klipy::Gif>,
     share: Option<caper_client::klipy::Share>,
+}
+
+impl caper_client::sends::Queued for Pending {
+    fn outgoing(&self) -> &caper_client::worker::Outgoing {
+        &self.outgoing
+    }
 }
 
 /// What the main composer is doing besides a new message.
@@ -249,7 +256,8 @@ struct State {
     has_more: bool,
     loading_older: bool,
     status: String,
-    pending: Option<Pending>,
+    /// Your messages on their way, one at a time and in order.
+    sends: caper_client::sends::Sends<Pending>,
     send_error: Option<String>,
     /// A draft that failed to send, returned to an empty composer.
     returned_draft: Option<(String, bool)>,
@@ -580,6 +588,8 @@ pub struct App {
     zoom: Cell<f64>,
     /// Hides "Zoom N%" when the latest change is two seconds old.
     zoom_shown: Cell<u64>,
+    /// When the armed automatic retry wakes (`arm_retries`).
+    retry_armed: Cell<Option<Instant>>,
     /// `pin_tail` is moving the list: its scrolling is not the reader's.
     settling: Cell<bool>,
     /// The same for the thread while Jump to latest glides it (`jump`).
@@ -781,6 +791,7 @@ pub fn start(
         zoom: Cell::new(zoom),
         zoom_shown: Cell::new(0),
         settling: Cell::new(false),
+        retry_armed: Cell::new(None),
         gliding: Cell::new(false),
         landing: Cell::new(false),
         rendered_layout: Cell::new(u64::MAX),
@@ -1717,16 +1728,26 @@ impl App {
         state.loading_older = false;
         state.session = None;
         state.session_error = None;
-        // Leaving with an unconfirmed send gives it back as that
-        // conversation's draft, as a refused one would be.
-        if let Some(pending) = state.pending.take().filter(|pending| pending.unconfirmed) {
+        // Leaving gives back a send that has not gone out or whose outcome
+        // is unknown as that conversation's draft, as a refused one would
+        // be. One in flight was most likely stored.
+        let mut returned: Option<(String, String)> = None;
+        for (pending, in_flight) in state.sends.take() {
+            if in_flight {
+                continue;
+            }
             state.files.extend(pending.files);
             if pending.thread.is_none() && !pending.text.is_empty() {
-                state
-                    .drafts
-                    .entry(pending.outgoing.channel.clone())
-                    .or_insert(pending.text);
+                let (_, text) = returned
+                    .get_or_insert_with(|| (pending.outgoing.channel.clone(), String::new()));
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&pending.text);
             }
+        }
+        if let Some((channel, text)) = returned {
+            state.drafts.entry(channel).or_insert(text);
         }
         state.compose = None;
         state.thread = None;
@@ -2169,7 +2190,7 @@ impl App {
                 .flat_map(|message| {
                     rows::build(
                         std::iter::once(message),
-                        None,
+                        Vec::new(),
                         &mut state.markup,
                         &mut rows::Cache::default(),
                         &viewer,
@@ -2693,7 +2714,7 @@ impl App {
             .iter_mut()
             .chain(
                 state
-                    .pending
+                    .sends
                     .iter_mut()
                     .flat_map(|pending| pending.files.iter_mut()),
             )
@@ -3018,6 +3039,63 @@ impl App {
     // ---------------------------------------------------------------------
     // Sending, replies, edits, deletes, pins and reactions.
 
+    /// Sends `pending` now, or after the sends before it in its conversation.
+    fn submit(&self, state: &mut State, chat_token: String, pending: Pending) {
+        if let Some(outgoing) = state.sends.add(pending) {
+            self.worker
+                .send(outgoing.command(state.generation, state.token.clone(), chat_token));
+        }
+    }
+
+    /// Sends these requests in the open conversation.
+    fn dispatch(&self, state: &State, sends: Vec<caper_client::worker::Outgoing>) {
+        let Some(session) = &state.session else {
+            return;
+        };
+        for outgoing in sends {
+            self.worker.send(outgoing.command(
+                state.generation,
+                state.token.clone(),
+                session.token.clone(),
+            ));
+        }
+    }
+
+    /// A send is done with: the next one in line goes, else a voice message
+    /// waiting its turn.
+    fn send_next(&self, state: &mut State, next: Option<caper_client::worker::Outgoing>) {
+        self.dispatch(state, next.into_iter().collect());
+        self.send_voice_messages(state);
+    }
+
+    /// Wakes when the next automatic retry of a send is due
+    /// (`caper_client::sends::AUTO_RETRY`).
+    fn arm_retries(self: &Rc<Self>) {
+        let Some(due) = self.state.borrow().sends.next_due() else {
+            return;
+        };
+        if self.retry_armed.get().is_some_and(|armed| armed <= due) {
+            return;
+        }
+        self.retry_armed.set(Some(due));
+        let app = Rc::downgrade(self);
+        glib::timeout_add_local_once(due.saturating_duration_since(Instant::now()), move || {
+            let Some(app) = app.upgrade() else { return };
+            app.retry_armed.set(None);
+            {
+                let mut state = app.state.borrow_mut();
+                let live = state.status == LIVE;
+                let due = state.sends.due(live, Instant::now());
+                if !due.is_empty() {
+                    state.send_error = None;
+                }
+                app.dispatch(&state, due);
+            }
+            app.arm_retries();
+            app.render();
+        });
+    }
+
     fn send_message(self: &Rc<Self>, thread: bool) {
         let composer = if thread {
             &self.ui.thread_composer
@@ -3091,23 +3169,15 @@ impl App {
                 self.render();
                 return;
             }
-            // Enter retries an unconfirmed send now, unchanged; the
-            // composer keeps what was typed since.
-            let (generation, token) = (state.generation, state.token.clone());
-            if let Some(pending) = state.pending.as_mut().filter(|pending| pending.unconfirmed) {
-                pending.unconfirmed = false;
-                self.worker
-                    .send(pending.outgoing.command(generation, token, chat_token));
+            // Enter retries an unconfirmed send now, unchanged; the new
+            // message goes after it.
+            for outgoing in state.sends.resend(None) {
+                self.worker.send(outgoing.command(
+                    state.generation,
+                    state.token.clone(),
+                    chat_token.clone(),
+                ));
                 state.send_error = None;
-                drop(state);
-                self.render();
-                return;
-            }
-            if state.pending.is_some() {
-                state.send_error = Some("Wait for your last message to send first.".into());
-                drop(state);
-                self.render();
-                return;
             }
             let thread_root = thread
                 .then(|| state.thread.as_ref().map(|thread| thread.root.clone()))
@@ -3150,19 +3220,20 @@ impl App {
                 suppress_embeds: self.link_preview_of(thread).0.borrow().removed(text),
                 ..caper_client::worker::Outgoing::new(channel, text.to_owned())
             };
-            self.worker
-                .send(outgoing.command(state.generation, state.token.clone(), chat_token));
-            state.pending = Some(Pending {
-                client_id: outgoing.client_id.clone(),
-                outgoing,
-                unconfirmed: false,
-                text: text.to_owned(),
-                created_at: chrono::Local::now().to_rfc3339(),
-                thread: thread_root,
-                files: sent,
-                gif: None,
-                share: None,
-            });
+            self.submit(
+                &mut state,
+                chat_token,
+                Pending {
+                    client_id: outgoing.client_id.clone(),
+                    outgoing,
+                    text: text.to_owned(),
+                    created_at: chrono::Local::now().to_rfc3339(),
+                    thread: thread_root,
+                    files: sent,
+                    gif: None,
+                    share: None,
+                },
+            );
             if !thread {
                 state.compose = None;
             }
@@ -3952,6 +4023,7 @@ impl App {
             }
             self.sync_thread_unread(&mut state);
         }
+        self.arm_retries();
         // Who is typing and who is online have their own lines; rebuilding
         // every message row for them is wasted work.
         if ambient == Some(true) {
@@ -4472,45 +4544,66 @@ impl App {
                 Some(&channel),
                 state.channel.as_deref(),
             ) && state
-                .pending
-                .as_ref()
-                .is_some_and(|pending| pending.client_id == client_id) =>
+                .sends
+                .iter()
+                .any(|pending| pending.client_id == client_id) =>
             {
-                let pending = state.pending.take();
-                match result {
-                    Ok(message) => {
+                let live = state.status == LIVE;
+                let settled = state.sends.settle(
+                    &client_id,
+                    result.as_ref().map(|_| ()),
+                    live,
+                    Instant::now(),
+                );
+                match (result, settled) {
+                    (
+                        Ok(message),
+                        Some(Settled {
+                            done: Some(item),
+                            next,
+                        }),
+                    ) => {
                         if state.timeline.merge_sent(message).is_err() {
                             state.send_error =
                                 Some("Caper returned an invalid send confirmation.".into());
-                        } else if let Some(share) = pending.and_then(|pending| pending.share) {
+                        } else if let Some(share) = item.share {
                             // Best effort, once KLIPY's GIF is really sent.
                             share.send();
                         }
                         self.mark_read(state);
                         // A reply can answer a report.
                         self.sent_in_visit(state);
+                        self.send_next(state, next);
                     }
                     // A network drop or server error may have stored it:
-                    // it stays pending and goes again unchanged (same
-                    // client message ID) once the gateway is live.
-                    Err(failure) if !failure.rejected() && pending.is_some() => {
+                    // it stays first and goes again unchanged (same client
+                    // message ID), by itself while the gateway is live and
+                    // at once when it returns.
+                    (Err(failure), Some(Settled { done: None, .. })) => {
+                        let again = if state.sends.next_due().is_some() {
+                            "It will be sent again shortly"
+                        } else {
+                            "It will be sent again when the connection returns"
+                        };
                         state.send_error = Some(format!(
-                            "{} It will be sent again when the connection returns, or press Enter to retry now.",
+                            "{} {again}, or press Enter to retry now.",
                             failure.message
                         ));
-                        state.pending = pending.map(|pending| Pending {
-                            unconfirmed: true,
-                            ..pending
-                        });
                     }
-                    Err(failure) => {
+                    (
+                        Err(failure),
+                        Some(Settled {
+                            done: Some(item),
+                            next,
+                        }),
+                    ) => {
                         state.send_error = Some(failure.message);
-                        if let Some(pending) = pending {
-                            state.files.extend(pending.files);
-                            state.files_revision += 1;
-                            state.returned_draft = Some((pending.text, pending.thread.is_some()));
-                        }
+                        state.files.extend(item.files);
+                        state.files_revision += 1;
+                        state.returned_draft = Some((item.text, item.thread.is_some()));
+                        self.send_next(state, next);
                     }
+                    _ => {}
                 }
                 // A voice message waiting its turn goes next.
                 self.send_voice_messages(state);
@@ -5101,7 +5194,7 @@ impl App {
                 ("No joined channels".to_owned(), note.to_owned(), true)
             }
         } else if settled
-            && state.pending.is_none()
+            && state.sends.is_empty()
             && !state
                 .timeline
                 .messages()
@@ -5234,23 +5327,14 @@ impl App {
                 online,
                 detail,
             } if fresh(generation, &channel) => {
-                state.status = if online { "Live".into() } else { detail };
+                state.status = if online { LIVE.into() } else { detail };
                 if !online {
                     state.typers.clear();
                 }
                 // Back online: an unconfirmed send goes again unchanged.
-                if online
-                    && let Some(chat_token) =
-                        state.session.as_ref().map(|session| session.token.clone())
-                    && let Some(pending) =
-                        state.pending.as_mut().filter(|pending| pending.unconfirmed)
-                {
-                    pending.unconfirmed = false;
-                    self.worker.send(pending.outgoing.command(
-                        state.generation,
-                        state.token.clone(),
-                        chat_token,
-                    ));
+                if online && state.sends.unconfirmed() {
+                    let resend = state.sends.resend(None);
+                    self.dispatch(state, resend);
                     state.send_error = None;
                 }
                 Ok(Apply::Applied)
@@ -5261,16 +5345,22 @@ impl App {
                 message,
             } if fresh(generation, &channel) => {
                 let mine = state.session.as_ref().map(|session| &session.author.id);
-                if state.pending.as_ref().is_some_and(|pending| {
-                    pending.client_id == message.client_message_id
-                        && Some(&message.author.id) == mine
-                }) {
+                if Some(&message.author.id) == mine
+                    && let Some(Settled {
+                        done: Some(item),
+                        next,
+                    }) =
+                        state
+                            .sends
+                            .settle(&message.client_message_id, Ok(()), true, Instant::now())
+                {
                     // Best effort, once KLIPY's GIF is really sent.
-                    if let Some(share) = state.pending.take().and_then(|pending| pending.share) {
+                    if let Some(share) = item.share {
                         share.send();
                     }
                     // A reply can answer a report.
                     self.sent_in_visit(state);
+                    self.send_next(state, next);
                 }
                 // Their message ends their typing.
                 state.typers.remove(&message.author.id);
@@ -5561,7 +5651,7 @@ impl App {
             format!("# {}", state.channel_name)
         });
         // As desktop: a live connection says nothing; only its absence shows.
-        ui.status.set_label(if state.status == "Live" {
+        ui.status.set_label(if state.status == LIVE {
             ""
         } else {
             &state.status
@@ -5683,8 +5773,9 @@ impl App {
         }
         let send_error = state.send_error.as_deref().unwrap_or_default();
         let in_thread = state
-            .pending
-            .as_ref()
+            .sends
+            .iter()
+            .next()
             .is_some_and(|pending| pending.thread.is_some());
         ui.composer_error.set_label(send_error);
         ui.composer_error.set_visible(!send_error.is_empty());
@@ -5812,13 +5903,16 @@ impl App {
                 images: &self.images,
                 reactions: &state.reactions,
             };
-            let draft = |thread: Option<&str>| {
+            // Your sends on their way, in the order they go.
+            let drafts = |thread: Option<&str>| -> Vec<rows::Draft<'_>> {
+                let Some(session) = state.session.as_ref() else {
+                    return Vec::new();
+                };
                 state
-                    .pending
-                    .as_ref()
+                    .sends
+                    .iter()
                     .filter(|pending| pending.thread.as_deref() == thread)
-                    .zip(state.session.as_ref())
-                    .map(|(pending, session)| rows::Draft {
+                    .map(|pending| rows::Draft {
                         id: &pending.client_id,
                         author: &session.author,
                         created_at: &pending.created_at,
@@ -5834,6 +5928,7 @@ impl App {
                             ..Default::default()
                         },
                     })
+                    .collect()
             };
             let (window, has_newer) = (state.context_window, state.has_newer);
             let main = rows::build(
@@ -5841,8 +5936,8 @@ impl App {
                     message.is_channel_message()
                         && window.is_none_or(|window| window.contains(message))
                 }),
-                // A pending send shows at the live end only.
-                draft(None).filter(|_| !has_newer),
+                // Pending sends show at the live end only.
+                if has_newer { Vec::new() } else { drafts(None) },
                 &mut state.markup,
                 &mut state.row_cache,
                 &viewer(false),
@@ -5916,7 +6011,7 @@ impl App {
                             .chain(state.timeline.messages().filter(|message| {
                                 message.thread_root_id.as_deref() == Some(thread.root.as_str())
                             })),
-                        draft(Some(&thread.root)),
+                        drafts(Some(&thread.root)),
                         &mut state.markup,
                         &mut state.thread_row_cache,
                         &viewer(true),

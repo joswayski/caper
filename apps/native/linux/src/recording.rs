@@ -524,7 +524,7 @@ impl App {
     /// other send in flight: on its own, so the composer's text and files
     /// stay where they are.
     pub(super) fn send_voice_messages(&self, state: &mut State) {
-        if state.pending.is_some() {
+        if !state.sends.is_empty() {
             return;
         }
         let (Some(chat_token), Some(channel)) = (
@@ -550,19 +550,20 @@ impl App {
             attachment_ids: vec![id],
             ..caper_client::worker::Outgoing::new(channel, String::new())
         };
-        self.worker
-            .send(outgoing.command(state.generation, state.token.clone(), chat_token));
-        state.pending = Some(super::Pending {
-            client_id: outgoing.client_id.clone(),
-            thread: outgoing.thread_root_id.clone(),
-            outgoing,
-            unconfirmed: false,
-            text: String::new(),
-            created_at: chrono::Local::now().to_rfc3339(),
-            files: vec![send.file],
-            gif: None,
-            share: None,
-        });
+        self.submit(
+            state,
+            chat_token,
+            super::Pending {
+                client_id: outgoing.client_id.clone(),
+                thread: outgoing.thread_root_id.clone(),
+                outgoing,
+                text: String::new(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                files: vec![send.file],
+                gif: None,
+                share: None,
+            },
+        );
         state.files_revision += 1;
     }
 

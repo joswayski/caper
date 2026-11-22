@@ -494,12 +494,6 @@ impl App {
             ) else {
                 return;
             };
-            if state.pending.is_some() {
-                state.send_error = Some("Wait for your last message to send first.".into());
-                drop(state);
-                self.render();
-                return;
-            }
             let thread = root.is_some();
             let reply_to_id = match (&state.compose, thread) {
                 (Some(Compose::Reply { id, .. }), false) => Some(id.clone()),
@@ -513,24 +507,25 @@ impl App {
                 gif: Some(gif.clone()),
                 ..caper_client::worker::Outgoing::new(channel, String::new())
             };
-            self.worker
-                .send(outgoing.command(state.generation, state.token.clone(), chat_token));
-            state.pending = Some(Pending {
-                client_id: outgoing.client_id.clone(),
-                outgoing,
-                unconfirmed: false,
-                text: String::new(),
-                created_at: chrono::Local::now().to_rfc3339(),
-                thread: root,
-                files: Vec::new(),
-                share: Some(Share {
-                    config,
-                    kind,
-                    slug: gif.slug.clone(),
-                    query,
-                }),
-                gif: Some(gif.clone()),
-            });
+            self.submit(
+                &mut state,
+                chat_token,
+                Pending {
+                    client_id: outgoing.client_id.clone(),
+                    outgoing,
+                    text: String::new(),
+                    created_at: chrono::Local::now().to_rfc3339(),
+                    thread: root,
+                    files: Vec::new(),
+                    share: Some(Share {
+                        config,
+                        kind,
+                        slug: gif.slug.clone(),
+                        query,
+                    }),
+                    gif: Some(gif.clone()),
+                },
+            );
             if !thread && matches!(state.compose, Some(Compose::Reply { .. })) {
                 state.compose = None;
             }
