@@ -5,7 +5,8 @@
 //! fonts are written to the cache directory with a fontconfig file that
 //! includes the system configuration plus that directory, and the process
 //! re-executes itself once with `FONTCONFIG_FILE` pointing at it, before GTK
-//! or any thread starts.
+//! or any thread starts. The same re-exec caps glibc's malloc arenas
+//! (`ARENAS`), which is also read only at startup.
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,14 @@ const FONTS: [(&str, &[u8]); 6] = [
 /// Set on the re-executed process.
 const PREPARED: &str = "CAPER_LINUX_FONTS";
 
+/// glibc gives every thread that allocates an arena of its own, and an arena
+/// keeps the memory its busiest moment needed. Pictures and media decode on
+/// short-lived threads, whose arenas held tens of megabytes of freed decode
+/// buffers. With two arenas, the main loop's and one the other threads
+/// share, the next decode reuses them. glibc reads this as the process
+/// starts, so it rides on the re-exec; a value already set stays.
+const ARENAS: (&str, &str) = ("MALLOC_ARENA_MAX", "2");
+
 /// Returns only when the fonts are configured, or when they cannot be (the
 /// client then falls back to the system's sans-serif).
 pub fn prepare() {
@@ -59,11 +68,15 @@ pub fn prepare() {
     let Ok(program) = std::env::current_exe() else {
         return;
     };
-    let error = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .args(std::env::args_os().skip(1))
         .env(PREPARED, "1")
-        .env("FONTCONFIG_FILE", configuration)
-        .exec();
+        .env("FONTCONFIG_FILE", configuration);
+    if std::env::var_os(ARENAS.0).is_none() {
+        command.env(ARENAS.0, ARENAS.1);
+    }
+    let error = command.exec();
     eprintln!("Bundled fonts are unavailable: {error}");
 }
 
