@@ -61,6 +61,7 @@ pub enum PPart {
     Edit,
     Attach,
     Emoji,
+    Gif,
     Mic,
     Stop,
     DiscardRecording,
@@ -95,6 +96,7 @@ impl PPart {
             Self::DiscardSend => 100_007,
             Self::PreviousFiles => 100_008,
             Self::NextFiles => 100_009,
+            Self::Gif => 100_010,
             Self::File(k) => 110_000 + k,
             Self::Remove(k) => 120_000 + k,
             Self::Spoiler(k) => 130_000 + k,
@@ -160,6 +162,7 @@ impl View {
             PPart::Edit => "Edit profile".into(),
             PPart::Attach => "Attach files".into(),
             PPart::Emoji => "Insert emoji".into(),
+            PPart::Gif => "Send a GIF".into(),
             PPart::Mic => "Record voice message".into(),
             PPart::Stop => "Finish voice message".into(),
             PPart::DiscardRecording => "Discard recording".into(),
@@ -277,6 +280,7 @@ impl App {
             PPart::Space(k) => !v.busy && v.spaces.get(k).is_some_and(|s| !s.2),
             PPart::Field | PPart::Emoji => v.editable && v.can_message,
             PPart::Attach => v.editable && self.profile_can_attach(),
+            PPart::Gif => v.editable && v.can_message && self.profile_gif_shown(),
             PPart::Mic => v.editable && self.profile_can_record(),
             PPart::Stop => self
                 .profile
@@ -385,9 +389,17 @@ impl App {
                 let fh = field_h(&card.field);
                 geo.parts.push((PPart::Field, (PAD, y, inner, fh)));
                 y += fh + 6.0;
-                for (k, part) in [PPart::Attach, PPart::Emoji, PPart::Mic]
-                    .into_iter()
-                    .enumerate()
+                // GIF only while KLIPY answered, as in the channel composer.
+                let gif = self.profile_gif_shown().then_some(PPart::Gif);
+                for (k, part) in [
+                    Some(PPart::Attach),
+                    Some(PPart::Emoji),
+                    gif,
+                    Some(PPart::Mic),
+                ]
+                .into_iter()
+                .flatten()
+                .enumerate()
                 {
                     geo.parts
                         .push((part, (PAD + k as f32 * 36.0, y, SEND, SEND)));
@@ -556,6 +568,9 @@ impl App {
             self.close_menu();
             if self.profile_emoji_open() {
                 self.close_picker();
+            }
+            if self.profile_gifs_open() {
+                self.close_gifs(false);
             }
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_PROFILE_RECORDING);
@@ -787,6 +802,7 @@ impl App {
             PPart::Field => self.set_profile_focus(true),
             PPart::Attach
             | PPart::Emoji
+            | PPart::Gif
             | PPart::Mic
             | PPart::Stop
             | PPart::DiscardRecording

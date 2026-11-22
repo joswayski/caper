@@ -32,6 +32,8 @@ pub(super) struct Picker {
     channel: Option<String>,
     /// The inbox row it answers instead of a composer.
     activity: Option<caper_client::activity::Item>,
+    /// The person whose profile card it sends to instead of a composer.
+    profile: Option<String>,
     kind: Kind,
     tabs: [gtk::ToggleButton; 2],
     search: gtk::SearchEntry,
@@ -93,6 +95,14 @@ impl App {
         self.ui.composer.gif.set_visible(shown && !editing);
         self.ui.thread_composer.gif.set_visible(shown);
         let stale = self.gif_picker.borrow().as_ref().is_some_and(|picker| {
+            // A card's picker lasts while that card is open.
+            if let Some(person) = &picker.profile {
+                return state.klipy.is_none()
+                    || state
+                        .card
+                        .as_ref()
+                        .is_none_or(|card| &card.person != person);
+            }
             // The inbox's picker answers a row, not the open conversation.
             picker.activity.is_none()
                 && (!shown
@@ -117,6 +127,29 @@ impl App {
     ) {
         self.close_gif_picker();
         self.open_gif_picker(None, None, Some(item), anchor);
+    }
+
+    /// The profile card's GIF button toggles a picker sending to its person.
+    pub(super) fn toggle_profile_gifs(self: &Rc<Self>, anchor: &gtk::Widget) {
+        let person = self
+            .state
+            .borrow()
+            .card
+            .as_ref()
+            .map(|card| card.person.clone());
+        let same = self
+            .gif_picker
+            .borrow()
+            .as_ref()
+            .is_some_and(|picker| picker.profile.is_some() && picker.profile == person);
+        self.close_gif_picker();
+        if same || person.is_none() {
+            return;
+        }
+        self.open_gif_picker(None, None, None, anchor);
+        if let Some(picker) = self.gif_picker.borrow_mut().as_mut() {
+            picker.profile = person;
+        }
     }
 
     /// Closes a picker opened from the inbox.
@@ -145,11 +178,9 @@ impl App {
                 .flatten();
             (root, state.channel.clone())
         };
-        let same = self
-            .gif_picker
-            .borrow()
-            .as_ref()
-            .is_some_and(|picker| picker.activity.is_none() && picker.root == root);
+        let same = self.gif_picker.borrow().as_ref().is_some_and(|picker| {
+            picker.activity.is_none() && picker.profile.is_none() && picker.root == root
+        });
         self.close_gif_picker();
         if same || thread && root.is_none() {
             return;
@@ -304,6 +335,7 @@ impl App {
             root,
             channel,
             activity,
+            profile: None,
             kind: Kind::Gif,
             tabs: [gifs, stickers],
             search: search.clone(),
@@ -457,15 +489,28 @@ impl App {
     }
 
     fn choose_gif(self: &Rc<Self>, gif: Gif, kind: Kind, query: String) {
-        let Some((root, activity)) = self
-            .gif_picker
-            .borrow()
-            .as_ref()
-            .map(|picker| (picker.root.clone(), picker.activity.clone()))
-        else {
+        let Some((root, activity, profile)) = self.gif_picker.borrow().as_ref().map(|picker| {
+            (
+                picker.root.clone(),
+                picker.activity.clone(),
+                picker.profile.is_some(),
+            )
+        }) else {
             return;
         };
         self.close_gif_picker();
+        if profile {
+            let share = self.state.borrow().klipy.clone().map(|config| Share {
+                config,
+                kind,
+                slug: gif.slug.clone(),
+                query,
+            });
+            if let Some(share) = share {
+                self.profile_send_gif(gif, share);
+            }
+            return;
+        }
         if let Some(item) = activity {
             let share = self.state.borrow().klipy.clone().map(|config| Share {
                 config,

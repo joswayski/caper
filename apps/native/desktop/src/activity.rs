@@ -83,6 +83,7 @@ impl crate::CaperApp {
                 retrying: draft.retry_id.is_some(),
                 open_only: false,
                 voice_only: false,
+                gif: None,
                 direct: None,
             }),
         });

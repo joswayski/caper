@@ -42,6 +42,13 @@ impl App {
                 .is_none_or(|d| d.files.len() < caper_client::uploads::MAX_ATTACHMENTS)
     }
 
+    /// Whether the card offers GIFs (KLIPY answered for this account).
+    pub(super) fn profile_gif_shown(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(crate::live::Live::can_profile_gif)
+    }
+
     pub(super) fn profile_can_record(&self) -> bool {
         self.profile_can_attach()
             && self.rec.is_none()
@@ -234,6 +241,7 @@ impl App {
                 self.profile.as_mut().unwrap().file_dialog = Some(crate::uploads::pick(self.hwnd));
             }
             PPart::Emoji => self.toggle_profile_emoji(),
+            PPart::Gif => self.toggle_profile_gifs(),
             PPart::Mic => {
                 self.playback.stop();
                 self.set_profile_focus(false);
@@ -411,6 +419,17 @@ impl App {
             fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
         }
         let icon = match part {
+            PPart::Gif => {
+                let open = self.profile_gifs_open();
+                let color = if !enabled {
+                    BORDER
+                } else if hover || open {
+                    TEXT
+                } else {
+                    TEXT_MUTED
+                };
+                return crate::uploads::gif_button(g, dc, rect(x, y, x + w, y + h), color);
+            }
             PPart::Attach => Icon::Plus,
             PPart::Emoji => Icon::Smile,
             PPart::Mic => Icon::Mic,

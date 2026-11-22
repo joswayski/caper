@@ -1645,6 +1645,7 @@ impl Live {
                 retrying: false,
                 open_only,
                 voice_only: false,
+                gif: None,
                 direct: None,
             })
         };
@@ -1678,6 +1679,7 @@ impl Live {
             retrying: false,
             open_only: false,
             voice_only: true,
+            gif: None,
             direct: None,
         }));
     }
@@ -2061,6 +2063,50 @@ impl Live {
             && self.token.is_some()
             && self.channel.is_some()
             && self.chat_token.is_some()
+    }
+
+    /// Whether a profile card can send a GIF: the account has KLIPY.
+    pub fn can_profile_gif(&self) -> bool {
+        self.klipy.is_some() && self.token.is_some()
+    }
+
+    /// Sends a GIF chosen from `person`'s card on its own to their DM,
+    /// keeping the card's draft. KLIPY hears of it once the send succeeds.
+    pub fn profile_gif(
+        &mut self,
+        person: &str,
+        username: String,
+        gif: caper_client::klipy::Gif,
+        share: caper_client::klipy::Share,
+    ) -> bool {
+        if self
+            .profile_drafts
+            .get(person)
+            .is_some_and(|d| d.retry.is_some())
+        {
+            return false;
+        }
+        let client_id = uuid::Uuid::new_v4().to_string();
+        self.shares.insert(client_id.clone(), share);
+        let sent = self.dispatch_profile(Box::new(caper_client::profile_dm::Send {
+            person: person.into(),
+            username,
+            name: self.account_name.clone(),
+            client_id: client_id.clone(),
+            text: String::new(),
+            files: Vec::new(),
+            settings: self.uploads.clone(),
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            retrying: false,
+            open_only: false,
+            voice_only: false,
+            gif: Some(gif),
+            direct: None,
+        }));
+        if !sent {
+            self.shares.remove(&client_id);
+        }
+        sent
     }
 
     /// Sends a GIF chosen in the picker as its own message, replying to
@@ -5693,9 +5739,14 @@ impl Live {
                     card.sending = false;
                     card.status = None;
                     let draft = self.profile_drafts.entry(person.clone()).or_default();
+                    // Voice messages and GIFs go on their own, keeping the draft.
+                    let alone = send.voice_only || send.gif.is_some();
                     match result {
                         Ok(direct) => {
-                            if !send.voice_only && !send.open_only {
+                            if let Some(share) = self.shares.remove(&send.client_id) {
+                                share.send();
+                            }
+                            if !alone && !send.open_only {
                                 draft.files.clear();
                             }
                             if !send.open_only {
@@ -5705,20 +5756,25 @@ impl Live {
                             if send.voice_only {
                                 out.push(Update::Profile(None));
                             } else {
-                                // Explicit Open preserves the unsent draft.
+                                // Explicit Open and a GIF preserve the unsent draft.
                                 self.card = None;
-                                out.push(Update::Profile(Some((person, !send.open_only))));
+                                out.push(Update::Profile(Some((
+                                    person,
+                                    !send.open_only && !alone,
+                                ))));
                                 self.open_direct(direct.id);
                             }
                         }
                         Err(error) => {
                             if !send.open_only {
-                                if !send.voice_only {
+                                if !alone {
                                     draft.files = send.files.clone();
                                 }
                                 send.retrying = error.uncertain;
                                 if error.uncertain || send.voice_only {
                                     draft.retry = Some(send);
+                                } else {
+                                    self.shares.remove(&send.client_id);
                                 }
                             }
                             draft.error = Some(error.message);
@@ -6450,6 +6506,7 @@ mod tests {
                 retrying: false,
                 open_only,
                 voice_only,
+                gif: None,
                 direct: None,
             })
         };
@@ -6546,6 +6603,41 @@ mod tests {
         assert!(live.profile_drafts["alex-id"].retry.is_none());
         assert!(live.card.is_some(), "voice alone keeps the card and draft");
         assert_eq!(live.profile_drafts["alex-id"].files.len(), 1);
+
+        // A GIF goes alone too: it opens the DM but keeps the typed text
+        // (`false`: not cleared) and the staged file.
+        let mut gif = send(false, false);
+        gif.text = String::new();
+        gif.files.clear();
+        gif.gif = Some(caper_client::klipy::Gif {
+            kind: caper_client::klipy::Kind::Gif,
+            slug: "wave".into(),
+            title: "Wave".into(),
+            width: 200,
+            height: 200,
+            gif: Some("https://static.klipy.com/wave.gif".into()),
+            webp: None,
+            mp4: None,
+            still: None,
+        });
+        updates.clear();
+        live.handle(
+            Event::ProfileSent {
+                epoch,
+                person: "alex-id".into(),
+                send: gif,
+                result: Ok(direct()),
+            },
+            &mut updates,
+        );
+        assert!(live.card.is_none(), "a GIF opens the DM like Send");
+        assert_eq!(live.profile_drafts["alex-id"].files.len(), 1);
+        assert!(
+            updates
+                .iter()
+                .any(|u| matches!(u, Update::Profile(Some((id, false))) if id == "alex-id"))
+        );
+        live.card = Some(card());
 
         live.handle(
             Event::ProfileSent {

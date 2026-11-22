@@ -68,6 +68,8 @@ struct Loaded {
 pub struct Picker {
     /// The thread whose reply box opened it; None is the channel's composer.
     pub root: Option<String>,
+    /// The person whose profile card opened it, to send them the GIF.
+    pub profile: Option<String>,
     pub x: f32,
     pub y: f32,
     pub kind: Kind,
@@ -124,6 +126,7 @@ impl Picker {
         let (sender, receiver) = channel();
         Self {
             root: None,
+            profile: None,
             x: (anchor.0 + 14.0 - W).min(window.0 - W).max(0.0),
             y: (anchor.1 - 18.0 - H).min(window.1 - H).max(0.0),
             kind: Kind::Gif,
@@ -684,6 +687,38 @@ impl App {
         self.events |= EV_SCREEN | EV_FOCUS;
     }
 
+    pub fn profile_gifs_open(&self) -> bool {
+        self.gifs.as_ref().is_some_and(|p| p.profile.is_some())
+    }
+
+    /// The profile card's GIF button toggles the picker, above the button,
+    /// as its emoji picker does. A chosen GIF goes to the person's DM.
+    pub fn toggle_profile_gifs(&mut self) {
+        if self.profile_gifs_open() {
+            return self.close_gifs(true);
+        }
+        let Some(card) = &self.profile else { return };
+        let id = card.id.clone();
+        let Some((_, (x, y, w, h))) = self
+            .profile_parts()
+            .into_iter()
+            .find(|(p, _)| *p == crate::profile::PPart::Gif)
+        else {
+            return;
+        };
+        self.close_gifs(false);
+        self.close_picker();
+        self.close_menu();
+        self.set_profile_focus(false);
+        let mut picker = Picker::new((x + w / 2.0, y + h / 2.0), (self.w, self.h));
+        picker.profile = Some(id);
+        self.gifs = Some(picker);
+        self.gifs_poll();
+        self.gifs_changed(true);
+        self.profile_changed();
+        self.events |= EV_SCREEN | EV_FOCUS;
+    }
+
     /// Closes the picker; `focus` returns focus to the composer that
     /// opened it.
     pub fn close_gifs(&mut self, focus: bool) {
@@ -699,7 +734,12 @@ impl App {
         self.dirty.thread_box = true;
         self.need = true;
         self.events |= EV_SCREEN | EV_FOCUS;
-        if focus && p.root.is_some() {
+        if p.profile.is_some() {
+            self.profile_changed();
+            if focus {
+                self.set_profile_focus(true);
+            }
+        } else if focus && p.root.is_some() {
             self.set_thread_focus(true);
         } else if focus {
             self.set_composer_focus(true);
@@ -740,12 +780,23 @@ impl App {
         if self.gifs.is_none() {
             return;
         }
+        // A card's picker lasts while its card is open.
+        let profile = self.gifs.as_ref().and_then(|p| p.profile.clone());
+        let card_open = profile
+            .as_ref()
+            .is_none_or(|id| self.profile.as_ref().is_some_and(|c| &c.id == id));
         let config = self
             .live
             .as_ref()
-            .filter(|l| l.can_gif())
+            .filter(|l| {
+                if profile.is_some() {
+                    l.can_profile_gif()
+                } else {
+                    l.can_gif()
+                }
+            })
             .and_then(|l| l.klipy.clone());
-        if config.is_none() {
+        if config.is_none() || !card_open {
             return self.close_gifs(false);
         }
         let Some(p) = &mut self.gifs else { return };
@@ -802,6 +853,20 @@ impl App {
                 let Some((gif, share)) = config.as_ref().and_then(|c| p.choose(i, c)) else {
                     return;
                 };
+                // A card's GIF goes on its own to the person's DM; the
+                // card's draft stays.
+                if let Some(person) = p.profile.clone() {
+                    self.close_gifs(false);
+                    let username = self.profile_view().and_then(|v| v.profile.username.clone());
+                    if let (Some(live), Some(username)) = (&mut self.live, username) {
+                        live.profile_gif(&person, username, gif, share);
+                    }
+                    self.profile_changed();
+                    if let Err(e) = self.drain_live() {
+                        eprintln!("profile GIF send failed: {e:?}");
+                    }
+                    return;
+                }
                 // As in egui: sent at once, into its thread with the box's
                 // "Also send to" choice (which stays), or answering the
                 // channel composer's reply.
@@ -870,7 +935,11 @@ impl App {
                     // An outside click closes only the picker and still
                     // reaches what it landed on (its own GIF button
                     // toggles; the other composer's moves it).
-                    let own = if p.root.is_some() {
+                    let own = if p.profile.is_some() {
+                        self.profile_parts().into_iter().any(|(part, r)| {
+                            part == crate::profile::PPart::Gif && contains(r, x, y)
+                        })
+                    } else if p.root.is_some() {
                         self.in_thread(x, y)
                             && self.thread_hit(x, y) == Some(crate::thread::Part::Gif)
                     } else {

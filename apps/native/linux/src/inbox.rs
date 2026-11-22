@@ -895,6 +895,7 @@ impl App {
                     retrying,
                     open_only: false,
                     voice_only: false,
+                    gif: None,
                     direct: None,
                 }),
                 gif,

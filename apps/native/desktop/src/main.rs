@@ -23113,6 +23113,7 @@ impl CaperApp {
                 retrying: false,
                 open_only: false,
                 voice_only: false,
+                gif: None,
                 direct: None,
             }),
         });
@@ -23166,6 +23167,7 @@ impl CaperApp {
                 retrying: draft.retry_id.is_some(),
                 open_only,
                 voice_only: false,
+                gif: None,
                 direct: None,
             }),
         });
@@ -29540,6 +29542,7 @@ impl CaperApp {
                         retrying: false,
                         open_only: false,
                         voice_only: true,
+                        gif: None,
                         direct: None,
                     });
                     self.send_profile_voice(send);
@@ -36256,6 +36259,7 @@ mod tests {
                 retrying: false,
                 open_only: false,
                 voice_only: false,
+                gif: None,
                 direct: None,
             })
         };
@@ -48062,6 +48066,7 @@ mod tests {
                         retrying: true,
                         open_only: false,
                         voice_only: false,
+                        gif: None,
                         direct: None,
                     }),
                     result: Err(crate::profile_dm::Failure {
@@ -52775,6 +52780,7 @@ mod tests {
                 retrying: false,
                 open_only: false,
                 voice_only: true,
+                gif: None,
                 direct: Some(alex_direct()),
             })
         };
@@ -52896,6 +52902,7 @@ mod tests {
             retrying: false,
             open_only: false,
             voice_only: true,
+            gif: None,
             direct: None,
         }));
         app.profile_voice_retry("fixture-alex", false);

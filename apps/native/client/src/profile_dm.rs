@@ -139,6 +139,7 @@ impl File {
             retrying: false,
             open_only: false,
             voice_only: false,
+            gif: None,
             direct: None,
         };
         self.upload = Some(Arc::new(Upload {
@@ -185,6 +186,8 @@ pub struct Send {
     /// A voice message sent alone as soon as recording stopped (the "send
     /// at once" setting): it keeps the card's draft instead of clearing it.
     pub voice_only: bool,
+    /// A GIF sent on its own (with no text or files), keeping the card's draft.
+    pub gif: Option<crate::klipy::Gif>,
     pub direct: Option<model::DirectConversation>,
 }
 
@@ -266,7 +269,14 @@ impl Send {
                 uncertain: retrying,
             });
         }
-        self.deliver(api, token, status, (&direct.id, None, None), upload_only)?;
+        let gif = self.gif.clone();
+        self.deliver(
+            api,
+            token,
+            status,
+            (&direct.id, None, gif.as_ref()),
+            upload_only,
+        )?;
         Ok(direct)
     }
 
@@ -479,6 +489,7 @@ mod tests {
             retrying: false,
             open_only: false,
             voice_only: false,
+            gif: None,
             direct: None,
         }
     }

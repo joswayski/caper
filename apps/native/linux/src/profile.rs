@@ -29,6 +29,8 @@ pub(super) struct CardState {
     pub invited: HashMap<String, &'static str>,
     /// An uncertain failed send retries with the same message id.
     pub retry_id: Option<String>,
+    /// KLIPY's share for the GIF on its way, sent once it is delivered.
+    pub share: Option<caper_client::klipy::Share>,
 }
 
 /// The open card's widgets.
@@ -45,6 +47,8 @@ pub(super) struct Card {
     close: gtk::Button,
     details: gtk::Box,
     composer: Option<(gtk::TextView, gtk::Button)>,
+    /// The composer's GIF button, shown while GIFs are on.
+    gif: Option<gtk::Button>,
     /// The identity row was built for this name and picture.
     built: std::cell::RefCell<Option<Profile>>,
 }
@@ -191,6 +195,21 @@ impl App {
             let empty = placeholder.clone();
             view.buffer()
                 .connect_changed(move |buffer| empty.set_visible(buffer.char_count() == 0));
+            // The channel composer's GIF button: a chosen GIF goes alone.
+            let gif: gtk::Button = crate::app::named("GtkButton", "Send a GIF");
+            let badge = gtk::Label::new(Some("GIF"));
+            badge.add_css_class("gif-badge");
+            badge.set_halign(gtk::Align::Center);
+            badge.set_valign(gtk::Align::Center);
+            gif.set_child(Some(&badge));
+            gif.set_tooltip_text(Some("Send a GIF"));
+            gif.set_valign(gtk::Align::End);
+            gif.add_css_class("flat");
+            gif.add_css_class("composer-tool");
+            gif.set_visible(false);
+            let app = self.clone();
+            gif.connect_clicked(move |button| app.toggle_profile_gifs(button.upcast_ref()));
+            line.append(&gif);
             let send: gtk::Button = crate::app::named("GtkButton", "Send message");
             send.set_child(Some(&self.images.icon_image(Icon::Send, "#b9bcbe", 18)));
             send.set_valign(gtk::Align::End);
@@ -214,7 +233,10 @@ impl App {
             view.add_controller(keys);
             let app = self.clone();
             send.connect_clicked(move |_| app.profile_send(false));
-            (view, send)
+            (view, send, gif)
+        });
+        let (composer, gif) = composer.map_or((None, None), |(view, send, gif)| {
+            (Some((view, send)), Some(gif))
         });
         popover.set_child(Some(&root));
         let app = Rc::downgrade(self);
@@ -250,6 +272,7 @@ impl App {
             close,
             details,
             composer: composer.clone(),
+            gif,
             built: std::cell::RefCell::default(),
         });
         self.render_profile();
@@ -380,6 +403,10 @@ impl App {
                 line.set_visible(can_message);
             }
         }
+        if let Some(gif) = &card.gif {
+            gif.set_visible(state.klipy.is_some());
+            gif.set_sensitive(!busy && open.retry_id.is_none() && state.token.is_some());
+        }
     }
 
     /// The card's avatar (a picture opens the viewer), name and @username.
@@ -470,6 +497,23 @@ impl App {
     /// Sends the card's draft to the person's DM (`open_only`: only opens
     /// it), creating the conversation when needed.
     fn profile_send(self: &Rc<Self>, open_only: bool) {
+        self.profile_deliver(open_only, None);
+    }
+
+    /// Sends `gif` on its own from the card to the person's DM.
+    pub(super) fn profile_send_gif(
+        self: &Rc<Self>,
+        gif: caper_client::klipy::Gif,
+        share: caper_client::klipy::Share,
+    ) {
+        self.profile_deliver(false, Some((gif, share)));
+    }
+
+    fn profile_deliver(
+        self: &Rc<Self>,
+        open_only: bool,
+        gif: Option<(caper_client::klipy::Gif, caper_client::klipy::Share)>,
+    ) {
         let text = self
             .profile
             .borrow()
@@ -505,7 +549,13 @@ impl App {
         let Some(username) = profile.username else {
             return;
         };
-        if !open_only && text.trim().is_empty() {
+        // A GIF waits for an uncertain send to be retried first.
+        if gif.is_some() && retry.is_some() {
+            return;
+        }
+        let (gif, share) = gif.map_or((None, None), |(gif, share)| (Some(gif), Some(share)));
+        let text = if gif.is_some() { String::new() } else { text };
+        if !open_only && gif.is_none() && text.trim().is_empty() {
             return;
         }
         if text.chars().count() > 4_000 {
@@ -519,6 +569,7 @@ impl App {
         let card = state.card.as_mut().expect("checked above");
         card.sending = true;
         card.error = None;
+        card.share = share;
         card.status = Some(
             if open_only {
                 "Opening…"
@@ -544,6 +595,7 @@ impl App {
                 retrying: false,
                 open_only,
                 voice_only: false,
+                gif,
                 direct: None,
             }),
         });

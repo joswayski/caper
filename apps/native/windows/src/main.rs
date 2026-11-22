@@ -2361,6 +2361,11 @@ impl App {
         {
             return r;
         }
+        if self.profile_gifs_open()
+            && let Some(r) = self.gifs_input(msg, wp, x, y, ctrl, shift)
+        {
+            return r;
+        }
         if self.profile.is_some()
             && let Some(r) = self.profile_input(msg, wp, x, y, ctrl, shift)
         {

@@ -4236,13 +4236,18 @@ impl App {
                 if let Some(card) = state.card.as_mut().filter(|card| card.person == person) {
                     card.sending = false;
                     card.status = None;
+                    let share = card.share.take();
                     match result {
                         Ok(direct) => {
+                            if let Some(share) = share {
+                                share.send();
+                            }
                             state.card = None;
                             state.open_created = Some(direct.id);
                         }
                         Err(error) => {
-                            if !send.open_only {
+                            // A GIF isn't retried as the card's next text.
+                            if !send.open_only && send.gif.is_none() {
                                 card.retry_id = error.uncertain.then_some(send.client_id);
                             }
                             card.error = Some(error.message);

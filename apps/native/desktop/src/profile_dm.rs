@@ -546,6 +546,7 @@ mod tests {
             retrying: false,
             open_only: false,
             voice_only: false,
+            gif: None,
             direct: None,
         }
     }
