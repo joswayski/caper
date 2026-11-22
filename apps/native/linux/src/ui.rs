@@ -1260,9 +1260,15 @@ impl Ui {
         crate::autoscroll::attach(&list.scroller, &list_overlay);
         list_overlay.add_overlay(&empty);
         list_overlay.add_overlay(&composer_lip());
-        // The typing band under the list keeps it 16px above the composer.
-        list_overlay.add_overlay(&list.jump.button);
-        conversation.append(&list_overlay);
+        // Jump to latest floats over the list and the typing band under it:
+        // 12px up from the band, which ends 4px above the composer.
+        let above_composer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        above_composer.append(&list_overlay);
+        let jump_overlay = gtk::Overlay::new();
+        jump_overlay.set_child(Some(&above_composer));
+        list.jump.button.set_margin_bottom(12);
+        jump_overlay.add_overlay(&list.jump.button);
+        conversation.append(&jump_overlay);
         let newer_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         newer_bar.add_css_class("newer-bar");
         newer_bar.set_halign(gtk::Align::Center);
@@ -1271,10 +1277,10 @@ impl Ui {
         let latest = gtk::Button::with_label("Back to latest messages");
         newer_bar.append(&load_newer);
         newer_bar.append(&latest);
-        conversation.append(&newer_bar);
+        above_composer.append(&newer_bar);
         let typing = label("", &["typing"]);
         typing.set_ellipsize(pango::EllipsizeMode::End);
-        conversation.append(&typing);
+        above_composer.append(&typing);
         let composer_error = label("", &["error", "composer-error"]);
         composer_error.set_wrap(true);
         conversation.append(&composer_error);
