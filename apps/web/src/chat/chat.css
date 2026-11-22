@@ -6477,6 +6477,10 @@ a.chat-draft-preview {
 .chat-profile-composer form:has(.chat-gif-tool) .chat-rich-input {
   padding-right: 118px;
 }
+/* GIF, emoji, microphone and send. */
+.chat-profile-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
+  padding-right: 150px;
+}
 @media (max-width: 760px), (pointer: coarse) {
   .chat-composer form:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 118px;
@@ -6489,7 +6493,7 @@ a.chat-draft-preview {
   :is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 134px;
   }
-  .chat-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
+  :is(.chat-composer, .chat-profile-composer) form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 178px;
   }
 }
