@@ -438,7 +438,12 @@ impl App {
             }
         };
         if let Some((key, image)) = result {
-            self.images.loaded(key, String::new(), Some(image));
+            self.images.loaded(
+                key,
+                String::new(),
+                Some(image),
+                caper_client::pictures::DISPLAY_EDGE,
+            );
         }
         self.render_profile_editor();
     }
@@ -555,6 +560,7 @@ impl App {
                 asset,
                 account.avatar_url.clone().unwrap_or_default(),
                 Some(image),
+                caper_client::pictures::DISPLAY_EDGE,
             );
         }
         let setup = self

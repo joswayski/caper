@@ -5,7 +5,8 @@
 //! Uploaded pictures are cached by asset id, never by URL (signed URLs
 //! re-sign daily), fetched and decoded off the main loop, and reported back
 //! through the host channel; until one is ready, or if it fails, callers show
-//! the person's mascot or initial.
+//! the person's mascot or initial. A picture is kept at the size the largest
+//! avatar showing it draws (`Pictures::wanted`), not the size it decodes at.
 
 use crate::host::Signal;
 use caper_client::Rgba;
@@ -21,6 +22,9 @@ const AVATAR_EDGE: u32 = 72;
 /// Icons are drawn at twice their display size, for HiDPI.
 const ICON_EDGE: u32 = 40;
 const MAX_FETCHES: usize = 4;
+/// The sizes uploaded pictures are kept at (`Pictures::wanted`), below
+/// `caper_client::pictures::DISPLAY_EDGE`.
+const PICTURE_EDGES: [u32; 2] = [48, 96];
 /// Twemoji sheets are 1024px squares of 64px cells.
 const SHEET_EDGE: usize = 1024;
 const EMOJI_EDGE: usize = 64;
@@ -157,13 +161,20 @@ impl Avatar {
 
 #[derive(Default)]
 struct Pictures {
-    ready: HashMap<String, gdk::Texture>,
+    /// Each loaded picture (an animation's first frame), and the edge it
+    /// was fetched for (`Pictures::wanted`).
+    ready: HashMap<String, (gdk::Texture, u32)>,
     /// Animated pictures' frames, beside their first frame in `ready`.
     animations: HashMap<String, Rc<AnimationFrames>>,
+    /// The largest avatar that has asked for each picture, in device pixels.
+    shown: HashMap<String, u32>,
     /// Asset ids being fetched, and the URL each last failed with (a
     /// re-signed URL tries again).
     loading: HashSet<String>,
     failed: HashMap<String, String>,
+    /// Pictures (asset id and URL) asked for while the fetches were busy,
+    /// the latest last: one starts as each fetch finishes.
+    waiting: Vec<(String, String)>,
 }
 
 pub struct Images {
@@ -286,11 +297,12 @@ impl Images {
         image
     }
 
-    /// The texture `avatar` shows now: its picture once loaded (starting
-    /// the load otherwise), else its mascot. `None` draws the initial.
-    pub fn avatar(&self, avatar: &Avatar) -> Option<gdk::Texture> {
+    /// The texture `avatar` shows now, `edge` device pixels square: its
+    /// picture once loaded (starting the load otherwise), else its mascot.
+    /// `None` draws the initial.
+    pub fn avatar(&self, avatar: &Avatar, edge: u32) -> Option<gdk::Texture> {
         if let Some((asset, url)) = &avatar.picture
-            && let Some(texture) = self.picture(asset, url)
+            && let Some(texture) = self.picture(asset, url, edge)
         {
             return Some(texture);
         }
@@ -318,21 +330,42 @@ impl Images {
         Some(texture)
     }
 
-    fn picture(&self, asset: &str, url: &str) -> Option<gdk::Texture> {
+    /// The picture for an avatar `edge` device pixels square. One kept for
+    /// smaller avatars shows meanwhile, and is fetched again at this size.
+    fn picture(&self, asset: &str, url: &str, edge: u32) -> Option<gdk::Texture> {
         let mut pictures = self.pictures.borrow_mut();
-        if let Some(texture) = pictures.ready.get(asset) {
-            return Some(texture.clone());
+        match pictures.shown.get_mut(asset) {
+            Some(shown) => *shown = edge.max(*shown),
+            None => {
+                pictures.shown.insert(asset.to_owned(), edge);
+            }
         }
+        let ready = pictures.ready.get(asset).cloned();
+        if pictures.outgrown(asset) {
+            self.fetch(&mut pictures, asset, url);
+        }
+        ready.map(|(texture, _)| texture)
+    }
+
+    /// Starts fetching `asset`, unless it is on its way or failed at this
+    /// URL; while the fetches are busy it waits its turn.
+    fn fetch(&self, pictures: &mut Pictures, asset: &str, url: &str) {
         if pictures.loading.contains(asset)
             || pictures
                 .failed
                 .get(asset)
                 .is_some_and(|failed| failed == url)
-            || pictures.loading.len() >= MAX_FETCHES
         {
-            return None;
+            return;
+        }
+        if pictures.loading.len() >= MAX_FETCHES {
+            // What was asked for last (the rows in view) goes first.
+            pictures.waiting.retain(|(waiting, _)| waiting != asset);
+            pictures.waiting.push((asset.to_owned(), url.to_owned()));
+            return;
         }
         pictures.loading.insert(asset.to_owned());
+        let edge = pictures.wanted(asset);
         let animate = motion();
         let (api, signals) = (self.api.clone(), self.signals.clone());
         let (asset, url) = (asset.to_owned(), url.to_owned());
@@ -341,18 +374,26 @@ impl Images {
                 .fetch_media(&url)
                 .ok()
                 .and_then(|bytes| caper_client::pictures::decode(&bytes, animate))
-                .filter(|frames| !frames.is_empty());
-            let _ = signals.try_send(Signal::Picture { asset, url, image });
+                .filter(|frames| !frames.is_empty())
+                .map(|frames| fit(frames, edge));
+            let _ = signals.try_send(Signal::Picture {
+                asset,
+                url,
+                image,
+                edge,
+            });
         });
-        None
     }
 
     /// A fetch finished: keep the picture, or remember the URL that failed.
+    /// `edge` is the size the fetch kept it at (`DISPLAY_EDGE` for a picture
+    /// this client just prepared, which is whole).
     pub fn loaded(
         &self,
         asset: String,
         url: String,
         frames: Option<caper_client::pictures::Frames>,
+        edge: u32,
     ) {
         let mut pictures = self.pictures.borrow_mut();
         pictures.loading.remove(&asset);
@@ -365,7 +406,9 @@ impl Images {
         match frames.filter(|frames| !frames.is_empty()) {
             Some(frames) => {
                 pictures.failed.remove(&asset);
-                pictures.ready.insert(asset.clone(), frames[0].0.clone());
+                pictures
+                    .ready
+                    .insert(asset.clone(), (frames[0].0.clone(), edge));
                 if frames.len() > 1 {
                     pictures.animations.insert(asset, Rc::new(frames));
                 } else {
@@ -374,6 +417,14 @@ impl Images {
             }
             None => {
                 pictures.failed.insert(asset, url);
+            }
+        }
+        // The fetch that finished makes room for one that waited.
+        while pictures.loading.len() < MAX_FETCHES
+            && let Some((asset, url)) = pictures.waiting.pop()
+        {
+            if pictures.outgrown(&asset) {
+                self.fetch(&mut pictures, &asset, &url);
             }
         }
     }
@@ -389,6 +440,8 @@ impl Images {
         let mut pictures = self.pictures.borrow_mut();
         pictures.ready.clear();
         pictures.animations.clear();
+        pictures.shown.clear();
+        pictures.waiting.clear();
         pictures.failed.clear();
     }
 }
@@ -504,6 +557,61 @@ pub fn motion() -> bool {
     gtk::Settings::default().is_none_or(|settings| settings.is_gtk_enable_animations())
 }
 
+impl Pictures {
+    /// The edge `asset` is kept at: the first of `PICTURE_EDGES` that covers
+    /// the largest avatar showing it. A picture stays decoded, an animation
+    /// in every frame, so one only rows show is not kept at the size a
+    /// profile editor draws it.
+    fn wanted(&self, asset: &str) -> u32 {
+        let shown = self.shown.get(asset).copied().unwrap_or(0);
+        PICTURE_EDGES
+            .into_iter()
+            .find(|edge| shown <= *edge)
+            .unwrap_or(caper_client::pictures::DISPLAY_EDGE)
+    }
+
+    /// Whether `asset` is missing, or kept smaller than an avatar now wants.
+    fn outgrown(&self, asset: &str) -> bool {
+        self.ready
+            .get(asset)
+            .is_none_or(|(_, kept)| *kept < self.wanted(asset))
+    }
+}
+
+/// A picture's frames at most `edge` pixels square.
+fn fit(frames: caper_client::pictures::Frames, edge: u32) -> caper_client::pictures::Frames {
+    frames
+        .into_iter()
+        .map(|(frame, delay)| {
+            let [width, height] = frame.size;
+            if width.max(height) <= edge as usize || frame.pixels.len() != width * height * 4 {
+                return (frame, delay);
+            }
+            let image = image::RgbaImage::from_raw(width as u32, height as u32, frame.pixels)
+                .expect("the frame holds its size in pixels");
+            let fitted = image::imageops::thumbnail(&image, edge, edge);
+            (Rgba::from_image(fitted), delay)
+        })
+        .collect()
+}
+
+/// The frame of `frames` (never empty) showing at `time`, a frame clock's
+/// microseconds. Every avatar shares that one timeline, as a browser plays
+/// one image: a picture moves in step wherever it shows, and all of them
+/// change in one redraw instead of one redraw each.
+fn frame_at<T>(frames: &[(T, Duration)], time: i64) -> usize {
+    let length = |delay: &Duration| delay.as_micros() as i64;
+    let total: i64 = frames.iter().map(|(_, delay)| length(delay)).sum();
+    let mut time = time.rem_euclid(total.max(1));
+    for (index, (_, delay)) in frames.iter().enumerate() {
+        if time < length(delay) {
+            return index;
+        }
+        time -= length(delay);
+    }
+    0
+}
+
 fn texture(image: &Rgba) -> Option<gdk::Texture> {
     let [width, height] = image.size;
     if width == 0 || height == 0 || image.pixels.len() != width * height * 4 {
@@ -528,6 +636,7 @@ fn texture(image: &Rgba) -> Option<gdk::Texture> {
 pub struct AvatarView {
     pub root: gtk::Overlay,
     picture: gtk::Image,
+    size: i32,
     /// The running animation, replaced whenever the avatar changes.
     ticking: Rc<Cell<Option<gtk::TickCallbackId>>>,
     initial: gtk::Label,
@@ -570,6 +679,7 @@ impl AvatarView {
         Self {
             root,
             picture,
+            size,
             ticking: Rc::default(),
             initial,
             dot,
@@ -580,24 +690,13 @@ impl AvatarView {
         if let Some(tick) = self.ticking.take() {
             tick.remove();
         }
-        if let Some(frames) = images.animation(avatar).filter(|_| motion()) {
-            let total: Duration = frames.iter().map(|(_, delay)| *delay).sum();
-            let total = total.as_micros().max(1) as i64;
-            let (start, shown) = (Cell::new(None::<i64>), Cell::new(usize::MAX));
+        let edge = (self.size * self.root.scale_factor()).max(0) as u32;
+        let texture = images.avatar(avatar, edge);
+        let animation = images.animation(avatar).filter(|_| motion());
+        if let Some(frames) = animation.clone() {
+            let shown = Cell::new(usize::MAX);
             let tick = self.picture.add_tick_callback(move |image, clock| {
-                let now = clock.frame_time();
-                let first = *start.get().get_or_insert(now);
-                start.set(Some(first));
-                let mut time = (now - first) % total;
-                let mut index = 0;
-                for (position, (_, delay)) in frames.iter().enumerate() {
-                    let length = delay.as_micros() as i64;
-                    if time < length {
-                        index = position;
-                        break;
-                    }
-                    time -= length;
-                }
+                let index = frame_at(frames.as_slice(), clock.frame_time());
                 if shown.replace(index) != index {
                     image.set_paintable(Some(&frames[index].0));
                 }
@@ -605,8 +704,15 @@ impl AvatarView {
             });
             self.ticking.set(Some(tick));
         }
-        match images.avatar(avatar) {
+        match texture {
             Some(texture) => {
+                // A row filled again keeps its animation's place instead of
+                // blinking back to the first frame.
+                let now = self.picture.frame_clock().map(|clock| clock.frame_time());
+                let texture = match (&animation, now) {
+                    (Some(frames), Some(now)) => frames[frame_at(frames.as_slice(), now)].0.clone(),
+                    _ => texture,
+                };
                 self.picture.set_paintable(Some(&texture));
                 self.picture.set_visible(true);
                 self.initial.set_visible(false);
@@ -637,5 +743,60 @@ impl AvatarView {
                 _ => "Offline",
             }));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frames(edge: usize, count: usize) -> caper_client::pictures::Frames {
+        let frame = || Rgba {
+            size: [edge, edge],
+            pixels: vec![255; edge * edge * 4],
+        };
+        (0..count)
+            .map(|_| (frame(), Duration::from_millis(100)))
+            .collect()
+    }
+
+    #[test]
+    fn pictures_are_kept_at_the_size_the_largest_avatar_draws() {
+        let mut pictures = Pictures::default();
+        assert_eq!(pictures.wanted("a"), 48, "nothing has asked yet");
+        pictures.shown.insert("a".into(), 34);
+        assert_eq!(pictures.wanted("a"), 48);
+        // A 34px row avatar on a 2x display, then a 96px editor on one.
+        pictures.shown.insert("a".into(), 68);
+        assert_eq!(pictures.wanted("a"), 96);
+        pictures.shown.insert("a".into(), 192);
+        assert_eq!(pictures.wanted("a"), caper_client::pictures::DISPLAY_EDGE);
+        assert!(pictures.outgrown("a"), "not loaded yet");
+
+        let fitted = fit(frames(128, 3), 48);
+        assert_eq!(fitted.len(), 3);
+        for (frame, delay) in &fitted {
+            assert_eq!(frame.size, [48, 48]);
+            assert_eq!(frame.pixels.len(), 48 * 48 * 4);
+            assert_eq!(*delay, Duration::from_millis(100));
+        }
+        let small = fit(frames(40, 2), 48);
+        assert!(
+            small.iter().all(|(frame, _)| frame.size == [40, 40]),
+            "never enlarged"
+        );
+    }
+
+    #[test]
+    fn avatars_share_one_animation_timeline() {
+        let millis = Duration::from_millis;
+        let frames = [((), millis(100)), ((), millis(50)), ((), millis(250))];
+        assert_eq!(frame_at(&frames, 0), 0);
+        assert_eq!(frame_at(&frames, 99_999), 0);
+        assert_eq!(frame_at(&frames, 100_000), 1);
+        assert_eq!(frame_at(&frames, 150_000), 2);
+        // The loop is 400 ms: the clock decides the frame, not when a view
+        // started showing it.
+        assert_eq!(frame_at(&frames, 7 * 400_000 + 120_000), 1);
     }
 }

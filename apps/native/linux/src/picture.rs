@@ -358,7 +358,12 @@ impl App {
                 Ok(changed) => {
                     // The uploaded frames show at once, before any fetch.
                     if let Some((asset, frames)) = changed.local {
-                        self.images.loaded(asset, String::new(), Some(frames));
+                        self.images.loaded(
+                            asset,
+                            String::new(),
+                            Some(frames),
+                            caper_client::pictures::DISPLAY_EDGE,
+                        );
                     }
                     match changed.applied {
                         Applied::Space(space) => {

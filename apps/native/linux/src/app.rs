@@ -906,8 +906,13 @@ pub fn start(
                     result,
                 } => app.images.media.loaded(generation, key, url, result),
                 Signal::RefreshMedia => app.refresh_media(),
-                Signal::Picture { asset, url, image } => {
-                    app.images.loaded(asset, url, image);
+                Signal::Picture {
+                    asset,
+                    url,
+                    image,
+                    edge,
+                } => {
+                    app.images.loaded(asset, url, image, edge);
                     app.state.borrow_mut().layout += 1;
                     app.render();
                 }
@@ -6124,7 +6129,8 @@ impl App {
                     icon.url.unwrap_or_default().to_owned(),
                 )),
             });
-            match icon.filter(|icon| self.images.avatar(icon).is_some()) {
+            let edge = (40 * button.scale_factor()).max(0) as u32;
+            match icon.filter(|icon| self.images.avatar(icon, edge).is_some()) {
                 Some(icon) => {
                     let view = crate::images::AvatarView::new(40, false);
                     view.root.add_css_class("space-icon");

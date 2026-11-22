@@ -17,6 +17,8 @@ pub enum Signal {
         asset: String,
         url: String,
         image: Option<caper_client::pictures::Frames>,
+        /// What an animation's frames were kept at (`Images::loaded`).
+        edge: u32,
     },
     /// Message media wants fresh signed URLs.
     RefreshMedia,
