@@ -1,8 +1,9 @@
 import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import DailyIconProvider from "../components/DailyIconProvider";
 import StatusPage from "../components/StatusPage";
 import { sidebarWidthScript } from "../pages/ChannelSidebar";
+import { applyTheme, loadSavedTheme, themeInitScript } from "../theme/themes";
 import "../index.css";
 
 export const Route = createRootRoute({
@@ -76,6 +77,9 @@ export const Route = createRootRoute({
 });
 
 function RootComponent() {
+  useEffect(() => {
+    applyTheme(loadSavedTheme());
+  }, []);
   return (
     <RootDocument>
       <Outlet />
@@ -98,7 +102,8 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
     <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
-        <style>{"html,body{background:#0b0b0c;color-scheme:dark}"}</style>
+        <style>{"html,body{background:var(--blackout,#0b0b0c)}"}</style>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <script dangerouslySetInnerHTML={{ __html: sidebarWidthScript }} />
       </head>
       <body>

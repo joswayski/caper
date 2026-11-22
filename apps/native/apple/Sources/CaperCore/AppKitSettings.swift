@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import ServiceManagement
+import UniformTypeIdentifiers
 
 /// One Settings window shares the shipping preferences and release history.
 /// The development host passes no login item or updater, so it never registers
@@ -36,12 +37,12 @@ import ServiceManagement
             previousContext = focusContext
         }
         if window == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 380),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 480),
                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = title
             window.identifier = AppKitWhatsNew.settingsWindowID
             window.isReleasedWhenClosed = false
-            window.appearance = NSAppearance(named: .darkAqua)
+            window.appearance = NSAppearance(named: CaperThemeStore.shared.active.isLight ? .aqua : .darkAqua)
             window.delegate = self
             let loginItem = loginItem ?? CaperLoginItem(available: false, status: { .notRegistered }, register: {}, unregister: {})
             window.contentViewController = AppKitSettingsController(whatsNew: model.whatsNew, loginItem: loginItem, updater: updater)
@@ -96,8 +97,17 @@ import ServiceManagement
     private let updater: AppUpdater?
     private let effects = CaperEffects.shared
     private let voiceMessages = VoiceMessageSettings.shared
+    private let themeStore = CaperThemeStore.shared
     private let observation = AppKitObservation()
 
+    private lazy var themeSelect = AppKitCaperSelect(items: ["Obsidian (Dark)", "Paper (Light)"]) { [weak self] idx in
+        guard let self else { return }
+        if idx == 0 { self.themeStore.selectPreset("obsidian"); self.themeStatus.stringValue = "" }
+        else if idx == 1 { self.themeStore.selectPreset("paper"); self.themeStatus.stringValue = "" }
+    }
+    private lazy var importTheme = AppKitKitButton("Import .capertheme.json") { [weak self] in self?.chooseThemeFile() }
+    private lazy var exportTheme = AppKitKitButton("Export theme") { [weak self] in self?.saveThemeFile() }
+    private let themeStatus = AppKitKit.label("", size: 12, color: AppKitKit.muted)
     private lazy var launch = AppKitKitSwitchRow(title: "Launch at login", detail: "Open Caper when you sign in to your computer.",
                                                  identifier: "launch-at-login") { [weak self] on in self?.loginItem.setEnabled(on) }
     private let startupNotes = AppKitKit.stack([], spacing: 8)
@@ -119,17 +129,21 @@ import ServiceManagement
     private var controls: DesktopUpdateControls { updater?.controls ?? DesktopUpdateControls() }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 380))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 480))
         root.wantsLayer = true
         root.layer?.backgroundColor = AppKitKit.surface.cgColor
         check.setAccessibilityIdentifier("check-for-updates")
         notes.setAccessibilityIdentifier("open-whats-new")
+        themeSelect.setAccessibilityIdentifier("appearance-theme-select")
+        themeSelect.setAccessibilityLabel("Theme")
         version.orientation = .horizontal; version.spacing = 4
         // Built once, so its "Copied" feedback and keyboard focus survive renders.
         version.addArrangedSubview(appKitVersionControl())
         func section(_ title: String, _ rows: [NSView]) -> NSStackView {
             AppKitKit.stack([AppKitKit.label(title, size: 12, weight: .bold, color: AppKitKit.muted)] + rows, spacing: 14)
         }
+        let themeButtons = NSStackView(views: [importTheme, exportTheme]); themeButtons.orientation = .horizontal; themeButtons.spacing = 8
+        let appearance = section("Appearance", [themeSelect, themeButtons, themeStatus])
         // Check for updates and What's new share the version's left edge. The
         // status line below shows only a check's result and is hidden while
         // empty, so an idle section ends at the buttons with no blank row.
@@ -137,6 +151,7 @@ import ServiceManagement
         let updates = section("Updates", [version, buttons, status])
         let content = AppKitKit.stack([
             AppKitKit.label("Settings", size: 20, weight: .bold),
+            appearance, AppKitKit.divider(),
             section("Startup", [launch, startupNotes]), AppKitKit.divider(),
             section("Sounds", [sounds]), AppKitKit.divider(),
             section("Voice messages", [sendOnStop]), AppKitKit.divider(),
@@ -146,7 +161,7 @@ import ServiceManagement
         for view in content.arrangedSubviews where !(view is NSStackView) && !(view is NSButton) && !(view is NSTextField) {
             AppKitKit.fillWidth(view, of: content)
         }
-        for row in [launch, sounds, sendOnStop] as [NSView] {
+        for row in [themeSelect, launch, sounds, sendOnStop] as [NSView] {
             if let stack = row.superview as? NSStackView { AppKitKit.fillWidth(row, of: stack) }
         }
         let scroll = appKitKitScroll(content, insets: NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24))
@@ -174,15 +189,59 @@ import ServiceManagement
     func refreshLoginItem() { loginItem.refresh() }
     @objc private func applicationBecameActive() { loginItem.refresh() }
 
+    private func chooseThemeFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a .capertheme.json file"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            try themeStore.importThemeJSON(text)
+            themeStatus.textColor = AppKitKit.muted
+            themeStatus.stringValue = "Applied \"\(themeStore.active.name)\"."
+        } catch {
+            themeStatus.textColor = AppKitKit.error
+            themeStatus.stringValue = error.localizedDescription
+        }
+        themeStatus.isHidden = themeStatus.stringValue.isEmpty
+    }
+
+    private func saveThemeFile() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(themeStore.active.id).capertheme.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try themeStore.exportCurrentJSON().write(to: url, atomically: true, encoding: .utf8)
+            themeStatus.textColor = AppKitKit.muted
+            themeStatus.stringValue = "Exported \(url.lastPathComponent)."
+        } catch {
+            themeStatus.textColor = AppKitKit.error
+            themeStatus.stringValue = error.localizedDescription
+        }
+        themeStatus.isHidden = themeStatus.stringValue.isEmpty
+    }
+
     /// Reads every observed value the window shows.
     private func snapshot() -> [AnyHashable] {
         let c = controls
         return [loginItem.registered, loginItem.available, loginItem.status == .requiresApproval, loginItem.error,
-                effects.soundsEnabled, voiceMessages.sendOnStop,
+                effects.soundsEnabled, voiceMessages.sendOnStop, themeStore.active.id, themeStore.active.name,
                 c.isChecking, c.review != nil, c.check != nil, c.lastSuccessfulCheck, c.installedVersion, c.sourceRevision]
     }
 
     private func render() {
+        view.layer?.backgroundColor = AppKitKit.surface.cgColor
+        if themeStore.isCustom {
+            themeSelect.items = ["Obsidian (Dark)", "Paper (Light)", "Custom: \(themeStore.active.name)"]
+            themeSelect.selectedIndex = 2
+        } else {
+            themeSelect.items = ["Obsidian (Dark)", "Paper (Light)"]
+            themeSelect.selectedIndex = themeStore.active.id == "paper" ? 1 : 0
+        }
+        themeStatus.isHidden = themeStatus.stringValue.isEmpty
         launch.isOn = loginItem.registered
         launch.isEnabled = loginItem.available
         startupNotes.arrangedSubviews.forEach { $0.removeFromSuperview() }

@@ -6,19 +6,22 @@ import SwiftUI
 /// Building blocks for the AppKit app's native dialogs, which replace the
 /// SwiftUI views it used to host. Colors come from CaperTheme's tokens.
 @MainActor enum AppKitKit {
-    static var surface: NSColor { NSColor(CaperTheme.surface) }
-    static var raised: NSColor { NSColor(CaperTheme.raised) }
-    static var composer: NSColor { NSColor(CaperTheme.composer) }
-    static var border: NSColor { NSColor(CaperTheme.border) }
-    static var text: NSColor { NSColor(CaperTheme.text) }
-    static var muted: NSColor { NSColor(CaperTheme.muted) }
-    static var error: NSColor { NSColor(CaperTheme.error) }
-    static var terracotta: NSColor { NSColor(CaperTheme.terracotta) }
-    static var terracottaBright: NSColor { NSColor(CaperTheme.terracottaBright) }
-    static var action: NSColor { NSColor(CaperTheme.action) }
-    static var actionHover: NSColor { NSColor(CaperTheme.actionHover) }
-    static var actionPress: NSColor { NSColor(CaperTheme.actionPress) }
-    static var onAction: NSColor { NSColor(CaperTheme.onAction) }
+    private static func themeColor(_ hex: String, fallback: Color) -> NSColor {
+        NSColor(CaperThemeStore.color(fromHex: hex) ?? fallback)
+    }
+    static var surface: NSColor { themeColor(CaperThemeStore.shared.active.surfaces.base, fallback: CaperTheme.surface) }
+    static var raised: NSColor { themeColor(CaperThemeStore.shared.active.surfaces.raised, fallback: CaperTheme.raised) }
+    static var composer: NSColor { themeColor(CaperThemeStore.shared.active.surfaces.composer, fallback: CaperTheme.composer) }
+    static var border: NSColor { themeColor(CaperThemeStore.shared.active.borders.default, fallback: CaperTheme.border) }
+    static var text: NSColor { themeColor(CaperThemeStore.shared.active.text.primary, fallback: CaperTheme.text) }
+    static var muted: NSColor { themeColor(CaperThemeStore.shared.active.text.muted, fallback: CaperTheme.muted) }
+    static var error: NSColor { themeColor(CaperThemeStore.shared.active.status.errorText, fallback: CaperTheme.error) }
+    static var terracotta: NSColor { themeColor(CaperThemeStore.shared.active.accent.primary, fallback: CaperTheme.terracotta) }
+    static var terracottaBright: NSColor { themeColor(CaperThemeStore.shared.active.accent.bright, fallback: CaperTheme.terracottaBright) }
+    static var action: NSColor { themeColor(CaperThemeStore.shared.active.action.primary, fallback: CaperTheme.action) }
+    static var actionHover: NSColor { themeColor(CaperThemeStore.shared.active.action.primaryHover, fallback: CaperTheme.actionHover) }
+    static var actionPress: NSColor { themeColor(CaperThemeStore.shared.active.action.primaryPress, fallback: CaperTheme.actionPress) }
+    static var onAction: NSColor { themeColor(CaperThemeStore.shared.active.action.onPrimary, fallback: CaperTheme.onAction) }
 
     static func font(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
         CaperFontLoader.register()

@@ -164,9 +164,97 @@ import kotlinx.coroutines.launch
     }
 }
 
-/** User settings: who can start a DM with you, the accounts you blocked, and how to delete your account. */
-@Composable internal fun PrivacySettingsDialog(state: AppUiState, viewModel: CaperViewModel, close: () -> Unit) = CaperDialog("Privacy", close) {
+/** User settings: appearance/themes, who can start a DM with you, the accounts you blocked, and how to delete your account. */
+@Composable internal fun PrivacySettingsDialog(state: AppUiState, viewModel: CaperViewModel, close: () -> Unit) = CaperDialog("Settings & Privacy", close) {
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val activeTheme = CaperThemeStore.active
+    var themeJson by remember { mutableStateOf("") }
+    var themeStatus by remember { mutableStateOf<String?>(null) }
+    var themeError by remember { mutableStateOf<String?>(null) }
+
+    SettingLabel("Appearance")
+    Text(
+        "Switch between Obsidian Dark and Paper Light, or paste a custom .capertheme.json theme.",
+        color = activeTheme.textMuted,
+        fontSize = 12.sp,
+    )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (activeTheme.id == "obsidian") {
+            Button(
+                { CaperThemeStore.selectPreset(context, "obsidian"); themeError = null; themeStatus = "Switched to Obsidian (Dark)." },
+                Modifier.weight(1f).heightIn(min = 44.dp),
+                shape = PillShape,
+                colors = primaryButtonColors(),
+            ) { Text("Obsidian", fontSize = 13.sp) }
+        } else {
+            OutlinedButton(
+                { CaperThemeStore.selectPreset(context, "obsidian"); themeError = null; themeStatus = "Switched to Obsidian (Dark)." },
+                Modifier.weight(1f).heightIn(min = 44.dp),
+                shape = PillShape,
+                border = BorderStroke(1.dp, activeTheme.border),
+                colors = neutralOutlinedButtonColors(),
+            ) { Text("Obsidian", fontSize = 13.sp) }
+        }
+        if (activeTheme.id == "paper") {
+            Button(
+                { CaperThemeStore.selectPreset(context, "paper"); themeError = null; themeStatus = "Switched to Paper (Light)." },
+                Modifier.weight(1f).heightIn(min = 44.dp),
+                shape = PillShape,
+                colors = primaryButtonColors(),
+            ) { Text("Paper", fontSize = 13.sp) }
+        } else {
+            OutlinedButton(
+                { CaperThemeStore.selectPreset(context, "paper"); themeError = null; themeStatus = "Switched to Paper (Light)." },
+                Modifier.weight(1f).heightIn(min = 44.dp),
+                shape = PillShape,
+                border = BorderStroke(1.dp, activeTheme.border),
+                colors = neutralOutlinedButtonColors(),
+            ) { Text("Paper", fontSize = 13.sp) }
+        }
+    }
+    OutlinedTextField(
+        value = themeJson,
+        onValueChange = { themeJson = it; themeError = null },
+        modifier = Modifier.fillMaxWidth(),
+        placeholder = { Text("Paste .capertheme.json…", fontSize = 12.sp) },
+        singleLine = true,
+        shape = MaterialTheme.shapes.small,
+    )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            {
+                val raw = themeJson.ifBlank { clipboard.getText()?.text.orEmpty() }
+                if (raw.isBlank()) {
+                    themeStatus = null; themeError = "Paste or copy a .capertheme.json first."
+                } else {
+                    CaperThemeStore.importThemeJson(context, raw)
+                        .onSuccess { themeError = null; themeStatus = "Applied \"${it.name}\"."; themeJson = "" }
+                        .onFailure { themeStatus = null; themeError = it.message ?: "Invalid theme JSON." }
+                }
+            },
+            Modifier.weight(1f).heightIn(min = 44.dp),
+            shape = MaterialTheme.shapes.small,
+            border = BorderStroke(1.dp, activeTheme.border),
+            colors = neutralOutlinedButtonColors(),
+        ) { Text("Apply JSON", fontSize = 12.sp) }
+        OutlinedButton(
+            {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(CaperThemeStore.exportCurrentJson()))
+                themeError = null
+                themeStatus = "Copied ${activeTheme.name} JSON."
+            },
+            Modifier.weight(1f).heightIn(min = 44.dp),
+            shape = MaterialTheme.shapes.small,
+            border = BorderStroke(1.dp, activeTheme.border),
+            colors = neutralOutlinedButtonColors(),
+        ) { Text("Copy JSON", fontSize = 12.sp) }
+    }
+    themeStatus?.let { Text(it, color = activeTheme.accentBright, fontSize = 12.sp) }
+    themeError?.let { Text(it, color = activeTheme.errorText, fontSize = 12.sp) }
+    HorizontalDivider(color = activeTheme.border)
+
     var setting by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var settingError by remember { mutableStateOf<String?>(null) }

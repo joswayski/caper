@@ -33,6 +33,7 @@ import ProfileForm, { type ProfileFormHandle } from "../account/ProfileForm";
 import { hostProfileEditor } from "../account/profile-editor";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
+import AppearanceSettings from "../theme/AppearanceSettings";
 import WhatsNew from "../updates/WhatsNew";
 import { getAccount, getRememberedAccount, logout, subscribeAccount, type Account } from "../account/client";
 import { withPicture } from "../account/pictures";
@@ -2393,6 +2394,7 @@ export default function Call({
               }}
             />
           )}
+          {profileOpen && account?.username && <AppearanceSettings />}
           {profileOpen && account?.username && <NotificationSettings />}
           {profileOpen && account?.username && <PrivacySettings />}
         </div>

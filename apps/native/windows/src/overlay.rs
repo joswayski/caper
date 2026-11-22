@@ -1569,9 +1569,25 @@ pub(crate) fn draw_button(
 ) -> Result<()> {
     let (fill, border, text) = tone.colors(state);
     let (x, y, w, h) = r;
+    let radius = match tone {
+        Tone::Primary => (h / 2.0).min(16.0),
+        _ => 9.0,
+    };
     let body = rect(x, y, x + w, y + h);
-    fill_round(dc, body, 7.0, &g.solid(fill));
-    stroke_round(dc, body, 7.0, &g.solid(border));
+    fill_round(dc, body, radius, &g.solid(fill));
+    // Tactile top specular rim highlight for non-disabled buttons.
+    if state != 0 && state != 3 {
+        let rim = rect(x + 1.0, y + 1.0, x + w - 1.0, y + h - 1.0);
+        let rim_alpha = match tone {
+            Tone::Primary => 0.36,
+            Tone::Danger => 0.24,
+            _ => 0.12,
+        };
+        let rim_brush =
+            unsafe { dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, rim_alpha), None)? };
+        stroke_round(dc, rim, (radius - 1.0).max(2.0), &rim_brush);
+    }
+    stroke_round(dc, body, radius, &g.solid(border));
     let l = layout(g, label, &g.formats.button, w)?;
     crate::text::draw(
         dc,

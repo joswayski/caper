@@ -119,6 +119,9 @@
   width: 100%;
   height: auto;
 }
+:root[data-appearance="light"] .wordmark > img:first-child {
+  filter: brightness(0.08);
+}
 /* Dot slot: (924, 108), 132px square in the original (20 17 1042 276) viewBox. */
 .wordmark .wordmark-character {
   position: absolute;
@@ -225,7 +228,7 @@
 .hero-copy > .hero-lede {
   max-width: 580px;
   margin: 26px 0 0;
-  color: #d1d3d4;
+  color: var(--text-message);
   font-size: clamp(1.12rem, 1.5vw, 1.3rem);
   font-weight: 600;
   line-height: 1.5;

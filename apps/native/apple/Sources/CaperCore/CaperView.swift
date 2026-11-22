@@ -75,10 +75,15 @@ public enum CaperTheme {
 #if os(iOS)
 @MainActor public struct CaperRootView: View {
     @State private var model: AppModel
+    @State private var themeStore = CaperThemeStore.shared
     @Environment(\.scenePhase) private var scenePhase
     public init(model: AppModel? = nil) { _model = State(initialValue: model ?? CaperRuntime.makeModel()) }
 
     public var body: some View {
+        let active = themeStore.active
+        let bgColor = CaperThemeStore.color(fromHex: active.surfaces.frame) ?? CaperTheme.blackout
+        let fgColor = CaperThemeStore.color(fromHex: active.text.primary) ?? CaperTheme.text
+        let tintColor = CaperThemeStore.color(fromHex: active.accent.bright) ?? CaperTheme.terracottaBright
         Group {
             switch model.phase {
             case .loading: LoadingView()
@@ -91,11 +96,11 @@ public enum CaperTheme {
                 else { WorkspaceView(model: model) }
             }
         }
-        .preferredColorScheme(.dark)
-        .foregroundStyle(CaperTheme.text)
-        .tint(CaperTheme.terracottaBright)
+        .preferredColorScheme(active.isLight ? .light : .dark)
+        .foregroundStyle(fgColor)
+        .tint(tintColor)
         .buttonStyle(CaperSecondaryButton())
-        .background(CaperTheme.blackout.ignoresSafeArea())
+        .background(bgColor.ignoresSafeArea())
         .modifier(WhatsNewPresentation(model: model))
         .onChange(of: scenePhase, initial: true) { _, phase in model.applicationActivityChanged(active: phase == .active) }
         .task {
@@ -8016,13 +8021,96 @@ struct BlockConfirmation: ViewModifier {
 private struct PrivacySheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
+    @State private var themeStore = CaperThemeStore.shared
+    @State private var themeStatus: String?
+    @State private var themeError: String?
     @State private var unblocking: Set<String> = []
     @State private var unblockError: String?
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: "Privacy", detail: "Message requests and blocked accounts.", closeLabel: "Close privacy settings", close: close)
+            SheetHeader(title: "Settings & Privacy", detail: "Appearance, message requests, and blocked accounts.", closeLabel: "Close privacy settings", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    Text("Appearance").font(CaperTheme.font(13, weight: .bold))
+                    Text("Switch between Obsidian Dark and Paper Light, or import a .capertheme.json theme.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        if themeStore.active.id == "obsidian" {
+                            Button("Obsidian (Dark)") {
+                                themeStore.selectPreset("obsidian")
+                                themeError = nil
+                                themeStatus = "Switched to Obsidian (Dark)."
+                            }
+                            .buttonStyle(CaperPrimaryButton())
+                        } else {
+                            Button("Obsidian (Dark)") {
+                                themeStore.selectPreset("obsidian")
+                                themeError = nil
+                                themeStatus = "Switched to Obsidian (Dark)."
+                            }
+                            .buttonStyle(CaperSecondaryButton())
+                        }
+                        if themeStore.active.id == "paper" {
+                            Button("Paper (Light)") {
+                                themeStore.selectPreset("paper")
+                                themeError = nil
+                                themeStatus = "Switched to Paper (Light)."
+                            }
+                            .buttonStyle(CaperPrimaryButton())
+                        } else {
+                            Button("Paper (Light)") {
+                                themeStore.selectPreset("paper")
+                                themeError = nil
+                                themeStatus = "Switched to Paper (Light)."
+                            }
+                            .buttonStyle(CaperSecondaryButton())
+                        }
+                    }
+                    HStack(spacing: 8) {
+                        Button("Import from Clipboard") {
+                            #if os(iOS)
+                            let raw = UIPasteboard.general.string ?? ""
+                            #elseif os(macOS)
+                            let raw = NSPasteboard.general.string(forType: .string) ?? ""
+                            #else
+                            let raw = ""
+                            #endif
+                            if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                themeStatus = nil
+                                themeError = "Clipboard is empty. Copy a .capertheme.json first."
+                            } else {
+                                do {
+                                    try themeStore.importThemeJSON(raw)
+                                    themeError = nil
+                                    themeStatus = "Applied \"\(themeStore.active.name)\"."
+                                } catch {
+                                    themeStatus = nil
+                                    themeError = error.localizedDescription
+                                }
+                            }
+                        }
+                        .buttonStyle(CaperSecondaryButton())
+                        Button("Copy Theme JSON") {
+                            let json = themeStore.exportCurrentJSON()
+                            #if os(iOS)
+                            UIPasteboard.general.string = json
+                            #elseif os(macOS)
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(json, forType: .string)
+                            #endif
+                            themeError = nil
+                            themeStatus = "Copied \(themeStore.active.name) theme JSON."
+                        }
+                        .buttonStyle(CaperSecondaryButton())
+                    }
+                    if let themeStatus {
+                        Text(themeStatus).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                    }
+                    if let themeError {
+                        Text(themeError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    }
+                    Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.vertical, 6)
                     Text("Who can start a DM with you").font(CaperTheme.font(13, weight: .bold))
                     VStack(spacing: 0) {
                         ForEach(DirectMessagePrivacy.allCases) { option in

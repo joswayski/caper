@@ -5,6 +5,7 @@ import { getInitialAccount } from "../account/server";
 import ProfileForm, { type ProfileFormHandle } from "../account/ProfileForm";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
+import AppearanceSettings from "../theme/AppearanceSettings";
 import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
 import { carryPending, signedInPath } from "../spaces/client";
@@ -83,6 +84,7 @@ function Profile() {
           onCancel={account.username ? () => void navigate({ to: "/spaces" }) : undefined}
           onSaved={() => navigate({ href: signedInPath({ username: "saved" }, window.location.search) })}
         />
+        {account.username && <AppearanceSettings />}
         {account.username && <NotificationSettings />}
         {account.username && <PrivacySettings />}
         <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 border-t border-border pt-3 text-[.85rem]">

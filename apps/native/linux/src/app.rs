@@ -577,6 +577,8 @@ pub struct App {
     restoring: Cell<bool>,
     /// The app stylesheet, reloaded at the interface zoom.
     style: gtk::CssProvider,
+    /// Dynamic theme token overrides (Obsidian Dark, Paper Light, or custom .capertheme.json).
+    theme_style: gtk::CssProvider,
     zoom: Cell<f64>,
     /// Hides "Zoom N%" when the latest change is two seconds old.
     zoom_shown: Cell<u64>,
@@ -717,11 +719,17 @@ pub fn start(
         settings.set_gtk_application_prefer_dark_theme(true);
     }
     let style = gtk::CssProvider::new();
+    let theme_style = gtk::CssProvider::new();
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
             &style,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &theme_style,
+            gtk::STYLE_PROVIDER_PRIORITY_USER,
         );
     }
     let (sender, receiver) = async_channel::unbounded();
@@ -741,6 +749,14 @@ pub fn start(
     prefs.follow_window(&ui.window);
     let zoom = crate::zoom::valid(prefs.get::<f64>("zoom").unwrap_or(1.0));
     style.load_from_data(&crate::zoom::scale_css(STYLE, zoom));
+    let active_theme = prefs
+        .get::<String>(caper_client::themes::THEME_PREF_KEY)
+        .and_then(|raw| caper_client::themes::parse_theme_preference(&raw).ok())
+        .unwrap_or_else(caper_client::themes::obsidian);
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(!active_theme.is_light());
+    }
+    theme_style.load_from_data(&active_theme.to_gtk_css());
     let repaint = sender.clone();
     let voice = caper_client::voice::Voice::new(
         api.base().clone(),
@@ -778,6 +794,7 @@ pub fn start(
         thread_follow: Cell::new(true),
         restoring: Cell::new(false),
         style,
+        theme_style,
         zoom: Cell::new(zoom),
         zoom_shown: Cell::new(0),
         settling: Cell::new(false),

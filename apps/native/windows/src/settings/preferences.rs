@@ -47,6 +47,11 @@ impl Preferences {
             .unwrap_or(false)
     }
 
+    pub fn theme_preference(&self) -> &str {
+        self.get(caper_client::themes::THEME_PREF_KEY)
+            .unwrap_or("obsidian")
+    }
+
     pub fn set(&mut self, key: &str, value: String) {
         if self.get(key) == Some(&value) {
             return;

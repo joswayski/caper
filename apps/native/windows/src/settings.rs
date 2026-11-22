@@ -139,6 +139,10 @@ pub enum SPart {
     FeedbackArchived,
     FeedbackOpen(usize),
     FeedbackArchive(usize),
+    ThemeObsidian,
+    ThemePaper,
+    ThemeImport,
+    ThemeExport,
 }
 
 impl SPart {
@@ -200,6 +204,10 @@ impl SPart {
             Self::FeedbackArchived => 54,
             Self::CopyVersion => 55,
             Self::Changes => 56,
+            Self::ThemeObsidian => 57,
+            Self::ThemePaper => 58,
+            Self::ThemeImport => 59,
+            Self::ThemeExport => 60,
             Self::FeedbackOpen(k) => 2_000_000 + 2 * k,
             Self::FeedbackArchive(k) => 2_000_001 + 2 * k,
             Self::ReleaseRevision(k) => 4000 + k,
@@ -263,6 +271,10 @@ impl SPart {
                 | Self::FeedbackArchived
                 | Self::FeedbackOpen(_)
                 | Self::FeedbackArchive(_)
+                | Self::ThemeObsidian
+                | Self::ThemePaper
+                | Self::ThemeImport
+                | Self::ThemeExport
         )
     }
 }
@@ -325,6 +337,8 @@ pub struct Snapshot {
     pub debug_enabled: bool,
     /// The version was just copied: it reads "Copied".
     pub version_copied: bool,
+    pub theme_id: String,
+    pub theme_status: Option<(String, bool)>,
 }
 
 /// What the inbox shows (`Live::inbox_snapshot`).
@@ -398,6 +412,7 @@ pub struct Settings {
     pub notice: String,
     /// The version reads "Copied" until `TIMER_VERSION_COPIED`.
     pub version_copied: bool,
+    pub theme_status: Option<(String, bool)>,
 }
 
 impl Settings {
@@ -420,6 +435,7 @@ impl Settings {
             startup_error,
             notice: String::new(),
             version_copied: false,
+            theme_status: None,
         }
     }
 
@@ -656,6 +672,57 @@ impl Builder<'_> {
     fn settings(&mut self, snap: &Snapshot) -> Result<()> {
         let b = self;
         let inner = b.inner;
+        b.text("Appearance", Style::Section)?;
+        b.y += 4.0;
+        b.text(
+            "Switch between Obsidian Dark and Paper Light, or import a .capertheme.json theme from your clipboard.",
+            Style::Detail,
+        )?;
+        b.y += 8.0;
+        let mut x = 0.0;
+        for (part, label) in [
+            (SPart::ThemeObsidian, "Obsidian (Dark)"),
+            (SPart::ThemePaper, "Paper (Light)"),
+        ] {
+            let w = b.width(label, Style::Label)? + 24.0;
+            b.items.push(Item {
+                part,
+                rect: (x, b.y, w, BUTTON_H),
+                text: label.into(),
+                style: Style::Label,
+                face: None,
+            });
+            x += w + 8.0;
+        }
+        b.y += BUTTON_H + 8.0;
+        let mut x = 0.0;
+        for (part, label) in [
+            (SPart::ThemeImport, "Import from clipboard"),
+            (SPart::ThemeExport, "Copy theme JSON"),
+        ] {
+            let w = b.width(label, Style::Label)? + 24.0;
+            b.items.push(Item {
+                part,
+                rect: (x, b.y, w, BUTTON_H),
+                text: label.into(),
+                style: Style::Label,
+                face: None,
+            });
+            x += w + 8.0;
+        }
+        b.y += BUTTON_H;
+        if let Some((msg, is_error)) = &snap.theme_status {
+            b.y += 6.0;
+            b.text(
+                msg,
+                if *is_error {
+                    Style::Error
+                } else {
+                    Style::Detail
+                },
+            )?;
+        }
+        b.separator();
         b.text("Startup", Style::Section)?;
         b.y += 6.0;
         b.switch_row(SPart::Launch)?;
@@ -1256,6 +1323,12 @@ impl Settings {
                 let (label, tone) = match part {
                     SPart::Sample(e) => (self.sample_label(e), Tone::Secondary),
                     SPart::MicTest => (item.text.as_str(), Tone::Primary),
+                    SPart::ThemeObsidian if self.snap.theme_id == "obsidian" => {
+                        (item.text.as_str(), Tone::Primary)
+                    }
+                    SPart::ThemePaper if self.snap.theme_id == "paper" => {
+                        (item.text.as_str(), Tone::Primary)
+                    }
                     _ => (item.text.as_str(), Tone::Secondary),
                 };
                 crate::overlay::draw_button(g, dc, label, r, tone, state)?;
@@ -1584,6 +1657,13 @@ impl App {
 
     fn settings_snapshot(&self) -> Snapshot {
         let s = self.settings.as_ref();
+        let active_theme = self
+            .live
+            .as_ref()
+            .and_then(|l| {
+                caper_client::themes::parse_theme_preference(l.preferences.theme_preference()).ok()
+            })
+            .unwrap_or_else(caper_client::themes::obsidian);
         let mut snap = Snapshot {
             launch: launch_allowed().then(|| s.is_some_and(|s| s.launch)),
             startup_error: s.and_then(|s| s.startup_error.clone()),
@@ -1595,6 +1675,8 @@ impl App {
             updates: crate::updates::Check::new(&self.updates),
             highlights: self.live.as_ref().map(|l| l.highlights.clone()),
             version_copied: s.is_some_and(|s| s.version_copied),
+            theme_id: active_theme.id,
+            theme_status: s.and_then(|s| s.theme_status.clone()),
             ..Snapshot::default()
         };
         if let Some(live) = self.live.as_ref().filter(|_| self.c.is_live()) {
@@ -1703,6 +1785,62 @@ impl App {
                 {
                     crate::open_link(&url);
                 }
+            }
+            SPart::ThemeObsidian => {
+                if let Some(live) = &mut self.live {
+                    live.preferences
+                        .set(caper_client::themes::THEME_PREF_KEY, "obsidian".into());
+                }
+                s.theme_status = Some(("Saved Obsidian (Dark) theme.".into(), false));
+            }
+            SPart::ThemePaper => {
+                if let Some(live) = &mut self.live {
+                    live.preferences
+                        .set(caper_client::themes::THEME_PREF_KEY, "paper".into());
+                }
+                s.theme_status = Some(("Saved Paper (Light) theme.".into(), false));
+            }
+            SPart::ThemeImport => {
+                let raw = String::from_utf16_lossy(&crate::get_clipboard(self.hwnd));
+                if raw.trim().is_empty() {
+                    s.theme_status = Some((
+                        "Clipboard is empty. Copy a .capertheme.json first.".into(),
+                        true,
+                    ));
+                } else {
+                    match caper_client::themes::parse_theme_preference(&raw) {
+                        Ok(doc) => {
+                            let stored = if doc.id == "obsidian" || doc.id == "paper" {
+                                doc.id.clone()
+                            } else {
+                                doc.to_pretty_json()
+                            };
+                            if let Some(live) = &mut self.live {
+                                live.preferences
+                                    .set(caper_client::themes::THEME_PREF_KEY, stored);
+                            }
+                            s.theme_status = Some((format!("Saved \"{}\".", doc.name), false));
+                        }
+                        Err(err) => {
+                            s.theme_status = Some((err, true));
+                        }
+                    }
+                }
+            }
+            SPart::ThemeExport => {
+                let doc = self
+                    .live
+                    .as_ref()
+                    .and_then(|l| {
+                        caper_client::themes::parse_theme_preference(
+                            l.preferences.theme_preference(),
+                        )
+                        .ok()
+                    })
+                    .unwrap_or_else(caper_client::themes::obsidian);
+                let json = doc.to_pretty_json();
+                crate::set_clipboard(self.hwnd, &crate::gfx::wide(&json));
+                s.theme_status = Some((format!("Copied {} theme JSON.", doc.name), false));
             }
             SPart::Sounds => {
                 if let Some(live) = &mut self.live {

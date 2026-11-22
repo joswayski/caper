@@ -2203,6 +2203,12 @@
   --live-call-border: #4b8a60;
   --live-ring: var(--voice-session-green);
 }
+:root[data-appearance="light"] :is(.live-now, .live-card) {
+  --live-card: #eef5e9;
+  --live-card-border: #c5dab8;
+  --live-call: #e2f0d9;
+  --live-call-border: #6f9948;
+}
 .live-now {
   flex-shrink: 0;
   display: grid;
@@ -2451,6 +2457,9 @@
   border-radius: var(--radius);
   background: #24342b;
 }
+:root[data-appearance="light"] .live-controls .voice-icon-button {
+  background: rgb(11 11 12 / 7%);
+}
 .live-controls .voice-icon-button.active {
   color: var(--error-text);
   background: rgb(var(--accent-bright-rgb) / 0.16);
@@ -2468,9 +2477,16 @@
     color: var(--text);
     background: #2c4033;
   }
+  :root[data-appearance="light"] .live-controls .voice-icon-button:not([aria-disabled="true"]):hover {
+    background: rgb(11 11 12 / 12%);
+  }
   .live-controls .voice-leave:hover {
     color: #ffb3a0;
     background: rgb(var(--accent-bright-rgb) / 0.26);
+  }
+  :root[data-appearance="light"] .live-controls .voice-leave:hover {
+    color: var(--danger-hover);
+    background: var(--danger-wash);
   }
 }
 .live-room-body {
