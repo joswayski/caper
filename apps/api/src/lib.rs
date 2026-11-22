@@ -54,6 +54,8 @@ const OP_LIMIT_PER_MINUTE: usize = 120;
 const MAX_CLEANUP_BACKLOG: usize = 512;
 const CLEANUP_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 const BODY_LIMIT: usize = 256 * 1024;
+/// The request span of a Kubernetes liveness or readiness probe.
+const PROBE_SPAN: &str = "http_probe";
 const RESERVATION: Duration = Duration::from_secs(30);
 
 pub mod accounts;
@@ -1200,11 +1202,24 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
                         .extensions()
                         .get::<axum::extract::MatchedPath>()
                         .map_or("unmatched", axum::extract::MatchedPath::as_str);
+                    if matches!(route, "/health" | "/readyz") {
+                        return tracing::info_span!(PROBE_SPAN, http_method = %request.method(),
+                            http_route = route, request_id = %Uuid::new_v4());
+                    }
                     tracing::info_span!("http_request", http_method = %request.method(),
                         http_route = route, request_id = %Uuid::new_v4())
                 })
                 .on_response(
-                    |response: &Response, latency: Duration, _span: &tracing::Span| {
+                    |response: &Response, latency: Duration, span: &tracing::Span| {
+                        // Kubernetes probes every pod every few seconds; only
+                        // a probe that fails says anything.
+                        if response.status().is_success()
+                            && span
+                                .metadata()
+                                .is_some_and(|span| span.name() == PROBE_SPAN)
+                        {
+                            return;
+                        }
                         tracing::info!(
                             event_name = "http_response",
                             status = response.status().as_u16(),

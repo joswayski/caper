@@ -3002,7 +3002,8 @@ local logging; errors never echo supplied values.
 
 Request logs contain `event_name=http_response`, status, numeric `duration_ms`
 (time to response headers), router-owned `http_route`, method, and a generated
-request ID. Resources identify `service.name=caper-api`, package version,
+request ID. Successful `/health` and `/readyz` probes are not logged; a probe
+that fails is. Resources identify `service.name=caper-api`, package version,
 environment and pod `HOSTNAME`. Only Caper events and Tower's HTTP failure events
 are exported; span attributes are limited to method, matched route and request
 ID. No headers, query strings, SDP, credentials, raw media, provider session

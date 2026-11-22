@@ -36,15 +36,44 @@ async fn http_logs_include_route_status_and_numeric_timing_but_not_request_secre
         .header("authorization", "Bearer SECRET_HEADER")
         .body(axum::body::Body::from("SECRET_BODY"))
         .unwrap();
-    let response = test_app(state).oneshot(request).await.unwrap();
+    let response = test_app(state.clone()).oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    // Kubernetes probes each pod every few seconds: only a failing probe is logged.
+    let probe = |path: &'static str| {
+        let app = test_app(state.clone());
+        async move {
+            let request = axum::http::Request::builder()
+                .uri(path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap().status()
+        }
+    };
+    assert_eq!(probe("/health").await, StatusCode::NO_CONTENT);
+    assert_eq!(probe("/readyz").await, StatusCode::NO_CONTENT);
+    state.begin_shutdown();
+    assert_eq!(probe("/readyz").await, StatusCode::SERVICE_UNAVAILABLE);
     let text = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
     assert!(!text.contains("SECRET"));
-    let event: Value = text
+    let responses: Vec<Value> = text
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .find(|value| value["fields"]["event_name"] == "http_response")
-        .unwrap_or_else(|| panic!("missing response event in {text:?}"));
+        .filter(|value| value["fields"]["event_name"] == "http_response")
+        .collect();
+    let logged: Vec<_> = responses
+        .iter()
+        .map(|event| {
+            (
+                event["span"]["http_route"].as_str().unwrap(),
+                &event["fields"]["status"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        logged,
+        [("/api/media/status", &json!(200)), ("/readyz", &json!(503))]
+    );
+    let event = &responses[0];
     assert_eq!(event["span"]["http_route"], "/api/media/status");
     assert_eq!(event["span"]["http_method"], "GET");
     assert!(event["span"]["request_id"].as_str().is_some());
