@@ -19,6 +19,9 @@ internal fun pinSequence(event: JsonObject, channelId: String): String =
 /** The fixed ID of the account-wide `profiles` subscription. */
 internal const val PROFILES_SUBSCRIPTION = "profiles"
 internal const val PROFILES_SUBSCRIBE = """{"type":"subscribe","id":"$PROFILES_SUBSCRIPTION","kind":"profiles"}"""
+/** The account's notification events, carried by [ProfileFeedClient]'s socket. */
+internal const val NOTIFICATIONS_SUBSCRIPTION = "notifications"
+internal const val NOTIFICATIONS_SUBSCRIBE = """{"type":"subscribe","id":"$NOTIFICATIONS_SUBSCRIPTION","kind":"notifications"}"""
 private val profileJson = Json { ignoreUnknownKeys = true }
 
 /**

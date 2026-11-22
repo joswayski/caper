@@ -30,7 +30,9 @@ class ProfileFeedTest {
         }
         val url get() = server.url("/").toString().trimEnd('/')
         fun socket() = opened.poll(5, TimeUnit.SECONDS) ?: throw AssertionError("socket did not open")
-        fun subscription() = Json.parseToJsonElement(frames.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("nothing sent"))
+        fun frame() = Json.parseToJsonElement(frames.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("nothing sent"))
+        /** The profiles subscription; the notifications one follows it on every socket. */
+        fun subscription() = frame().also { assertEquals(Json.parseToJsonElement(NOTIFICATIONS_SUBSCRIBE), frame()) }
     }
     private fun person(name: String) =
         """{"type":"event","id":"profiles","event":{"type":"profile.updated","person":{"id":"maya00000001","username":"maya","displayName":"$name","avatarId":3}}}"""
@@ -43,7 +45,7 @@ class ProfileFeedTest {
             feed.start()
             val socket = gateway.socket()
             assertEquals("Bearer account-secret", gateway.server.takeRequest(2, TimeUnit.SECONDS)!!.getHeader("Authorization"))
-            assertEquals("only the profiles kind, no chat subscription", Json.parseToJsonElement(PROFILES_SUBSCRIBE), gateway.subscription())
+            assertEquals("the profiles and notifications kinds, no chat subscription", Json.parseToJsonElement(PROFILES_SUBSCRIBE), gateway.subscription())
             socket.send("""{"type":"subscribed","id":"profiles"}""")
             socket.send(person("Maya B"))
             assertEquals("Maya B", (events.poll(2, TimeUnit.SECONDS) as ProfileEvent.Person).person.displayName)
@@ -95,6 +97,38 @@ class ProfileFeedTest {
             val socket = gateway.socket(); gateway.subscription()
             socket.send("""{"type":"error","id":"profiles","status":400,"error":"unknown subscription kind"}""")
             assertNull("no retry loop", gateway.opened.poll(1500, TimeUnit.MILLISECONDS))
+        } finally {
+            feed.close()
+            gateway.server.close()
+        }
+    }
+
+    @Test(timeout = 15000) fun `live notifications refresh and report when they stop`() {
+        val gateway = Gateway(2)
+        val live = ArrayBlockingQueue<Boolean>(8)
+        val notified = ArrayBlockingQueue<Unit>(4)
+        val feed = ProfileFeedClient(gateway.url, "account-secret", onProfile = {}, onNotification = { notified.add(Unit) }, onNotificationsLive = { live.add(it) })
+        try {
+            feed.start()
+            val socket = gateway.socket(); gateway.subscription()
+            socket.send("""{"type":"subscribed","id":"profiles"}""")
+            assertNull("profiles alone are not live notifications", live.poll(300, TimeUnit.MILLISECONDS))
+            socket.send("""{"type":"subscribed","id":"notifications"}""")
+            assertEquals(true, live.poll(2, TimeUnit.SECONDS))
+            socket.send("""{"type":"event","id":"notifications","event":{"type":"notification","kind":"direct.message"}}""")
+            assertNotNull(notified.poll(2, TimeUnit.SECONDS))
+
+            // A drop reports it at once (timer polls speed up), and the reconnected socket goes live again.
+            socket.close(1000, "restart")
+            assertEquals(false, live.poll(2, TimeUnit.SECONDS))
+            val again = gateway.socket(); gateway.subscription()
+            again.send("""{"type":"subscribed","id":"profiles"}""")
+            again.send("""{"type":"subscribed","id":"notifications"}""")
+            assertEquals(true, live.poll(2, TimeUnit.SECONDS))
+            // A gateway refusing the kind leaves notifications off but keeps the socket and its profiles.
+            again.send("""{"type":"error","id":"notifications","status":400,"error":"unknown subscription kind"}""")
+            assertEquals(false, live.poll(2, TimeUnit.SECONDS))
+            assertNull("no reconnect", gateway.opened.poll(500, TimeUnit.MILLISECONDS))
         } finally {
             feed.close()
             gateway.server.close()
