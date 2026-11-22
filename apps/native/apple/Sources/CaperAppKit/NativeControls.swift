@@ -27,24 +27,23 @@ import Observation
 class NativeView: NSView {
     override var isFlipped: Bool { true }
     private var backgroundColorProvider: () -> NSColor
-    private var themeObserver: NSObjectProtocol?
 
     init(_ color: @autoclosure @escaping () -> NSColor = .clear) {
         self.backgroundColorProvider = color
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = backgroundColorProvider().cgColor
-        themeObserver = NotificationCenter.default.addObserver(
-            forName: CaperThemeStore.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.applyTheme() }
-        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleThemeDidChange),
+            name: CaperThemeStore.didChangeNotification,
+            object: nil
+        )
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    isolated deinit {
-        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+
+    @objc private func handleThemeDidChange() {
+        applyTheme()
     }
 
     func applyTheme() {
