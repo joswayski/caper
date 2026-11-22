@@ -33,7 +33,7 @@ const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
 const contactEmail = "jose@caper.chat";
 const feedbackInviteUrl = "https://caper.chat/invite/uz3HFpD8jV";
-const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
+const rotatingWords = ["people", "friends", "teammates", "family", "group"];
 
 type HomeProps = {
   account: Account | null | undefined;
@@ -91,7 +91,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
               your <Rolodex words={rotatingWords} />
             </span>
           </h1>
-          <p className="hero-lede">Chat with anyone, about anything.</p>
+          <p className="hero-lede">Text and voice spaces for the people you actually talk to.</p>
           <div className="app-downloads">
             {download && platform === "android" && <AndroidBetaSteps groupUrl={download.url} />}
             <div className="download-actions">
@@ -142,6 +142,19 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
         ) : (
           <p className="latest-changes-empty">No recent changes to show.</p>
         )}
+        <footer className="mt-10 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border pt-6 text-xs text-content-muted">
+          <a href="/privacy" className="text-content-muted no-underline hover:text-content hover:underline">
+            Privacy
+          </a>
+          <a
+            href={desktopRelease}
+            target="_blank"
+            rel="noreferrer"
+            className="text-content-muted no-underline hover:text-content hover:underline"
+          >
+            All downloads
+          </a>
+        </footer>
       </section>
     </main>
   );
@@ -206,7 +219,7 @@ function FeedbackList() {
           {status === "copied"
             ? "Email address copied to clipboard."
             : status === "failed"
-              ? `Couldn’t copy. Email ${contactEmail}`
+              ? `Couldn’t copy. Email ${contactEmail}.`
               : ""}
         </span>
       </li>

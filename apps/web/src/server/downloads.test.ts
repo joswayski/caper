@@ -114,12 +114,12 @@ test("each homepage offers only its own platform: direct links except for the Li
 });
 
 test("the homepage join link skips the spaces loader until the visitor has a complete account", () => {
-  for (const [account, destination] of [
-    [null, "/login"],
-    [undefined, "/login"],
-    [{ id: "me", username: null, displayName: null }, "/profile"],
-    [{ id: "me", username: "river", displayName: null }, "/profile"],
-    [{ id: "me", username: "river", displayName: "River" }, "/spaces"],
+  for (const [account, destination, label] of [
+    [null, "/login", "Join Caper"],
+    [undefined, "/login", "Join Caper"],
+    [{ id: "me", username: null, displayName: null }, "/profile", "Finish setup"],
+    [{ id: "me", username: "river", displayName: null }, "/profile", "Finish setup"],
+    [{ id: "me", username: "river", displayName: "River" }, "/spaces", "Open Caper"],
   ] as const) {
     const router = createRouter({
       routeTree: createRootRoute(),
@@ -137,7 +137,7 @@ test("the homepage join link skips the spaces loader until the visitor has a com
         }),
       }),
     );
-    const join = markup.match(/<a\b[^>]*aria-label="Join Caper"[^>]*>/)?.[0];
+    const join = markup.match(new RegExp(`<a\\b[^>]*aria-label="${label}"[^>]*>`))?.[0];
     assert.ok(join);
     assert.ok(join.includes(`href="${destination}"`), join);
   }

@@ -223,7 +223,7 @@ function trackMenu(menu: HTMLDetailsElement) {
   menuObservers.set(menu, observer);
 }
 
-const INACCESSIBLE_DIRECT = "This conversation is not accessible.";
+const INACCESSIBLE_DIRECT = "You don’t have access to this conversation.";
 
 /** A conversation the feedback team visits without joining, at a report. */
 interface VisitTarget {
@@ -599,9 +599,7 @@ function CreateChannelDialog({
             setError(undefined);
           }}
         />
-        <p className="channel-name-guidance">
-          Channels are where conversations happen around a topic. Use a name that is easy to find and understand.
-        </p>
+        <p className="channel-name-guidance">Pick a short, clear name for this channel.</p>
         <ChannelPrivacy spaceName={space.space.name} checked={privateChannel} onChange={setPrivateChannel} />
         {error && (
           <p className="space-form-error" role="alert">
@@ -832,7 +830,7 @@ function MemberManager({
           void onAdd(username)
             .then(() => {
               setUsername("");
-              setSuccess(invitations ? "Invitation sent. They must accept before joining." : "Access granted.");
+              setSuccess(invitations ? "Invitation sent. They must accept before joining." : "Added to channel.");
             })
             .catch((reason) => setError(errorMessage(reason)))
             .finally(() => {
@@ -985,7 +983,7 @@ function ManageSpaceDialog({
       description={
         inviteOnly
           ? "Share a link or invite someone by username."
-          : "Only the owner can change this space and its membership."
+          : "Manage this space’s name, icon, invite links, and members."
       }
       onClose={onClose}
       width="wide"
@@ -1674,7 +1672,7 @@ function ChannelInvitationDialog({
         <LockKeyhole aria-hidden="true" />
         <h3>Join #{invitation.channel.name}?</h3>
         <p>
-          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to private
+          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to the private
           channel
           <strong> #{invitation.channel.name}</strong>.
         </p>
@@ -1730,8 +1728,8 @@ function LeaveChannelDialog({
           {channel.private && !owner
             ? "You’ll lose access and need another invitation to return."
             : owner && channel.private
-              ? "It will leave your sidebar. You keep owner access and can rejoin from Browse channels."
-              : "It will leave your sidebar. You can still preview it and rejoin from Browse channels."}{" "}
+              ? "It will be removed from your sidebar. You keep owner access and can rejoin from Browse channels."
+              : "It will be removed from your sidebar. You can still preview it and rejoin from Browse channels."}{" "}
           If you’re in its voice call, you’ll disconnect.
         </p>
         {error && (
@@ -3287,7 +3285,7 @@ export default function Spaces({
             </div>
           )}
           <h1>Name your space</h1>
-          <p>Choose something you will recognize easily. You can always change it later!</p>
+          <p>Pick a name you’ll recognize. You can always change it later.</p>
           <CreateSpaceForm
             disabled={!canCreateSpace}
             onCreated={(space) => {
@@ -3917,7 +3915,7 @@ export default function Spaces({
               <div>
                 <strong>Preview</strong>
                 <span>
-                  Join <strong>#{channel.name}</strong> to interact with people here
+                  Join <strong>#{channel.name}</strong> to send messages and join voice.
                 </span>
               </div>
               <button

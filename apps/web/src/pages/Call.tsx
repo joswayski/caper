@@ -1517,7 +1517,7 @@ export default function Call({
             ? `Connecting to #${label}…`
             : joinUnavailable
               ? available === false
-                ? "Joining is not available at this time."
+                ? "Voice isn’t available right now."
                 : "Checking voice availability…"
               : switching
                 ? `Leave your current voice channel and join #${label}`

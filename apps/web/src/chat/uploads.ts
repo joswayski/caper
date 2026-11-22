@@ -494,9 +494,9 @@ export const browserTransport: UploadTransport = {
       request.onload = () =>
         request.status >= 200 && request.status < 300
           ? resolve()
-          : reject(new UploadError("Storage refused the upload."));
+          : reject(new UploadError("Couldn’t upload this file. Try again."));
       request.onerror = () => reject(new UploadError("The upload was interrupted."));
-      request.onabort = () => reject(new DOMException("Upload cancelled.", "AbortError"));
+      request.onabort = () => reject(new DOMException("Upload canceled.", "AbortError"));
       signal.addEventListener("abort", () => request.abort(), { once: true });
       request.send(body);
     }),

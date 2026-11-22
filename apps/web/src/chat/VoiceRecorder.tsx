@@ -156,7 +156,7 @@ export function useVoiceRecorder({
       const text = await transcribeVoice(recording, abort.signal);
       if (abort.signal.aborted) return;
       const input = returnFocus?.current;
-      if (!text) setDictation({ recording, error: "No words heard." });
+      if (!text) setDictation({ recording, error: "Didn’t catch any speech." });
       else if (!input || !dictationInsert(input, text))
         setDictation({ recording, error: "Messages must be 4,000 characters or fewer." });
       else setDictation(undefined);
@@ -532,7 +532,7 @@ export function useVoiceRecorder({
       )}
       {dictation?.error && (
         <p className="chat-inline-error" role="alert">
-          Couldn't insert your words. {dictation.error}
+          Couldn’t transcribe that. {dictation.error}
           <button type="button" onClick={() => void insert(dictation.recording)}>
             Retry
           </button>
