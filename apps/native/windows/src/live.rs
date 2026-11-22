@@ -90,7 +90,9 @@ impl Host for WinHost {
     }
 }
 
-/// Ends the header's error for a send waiting to go again.
+/// Ends the header's error for a send waiting to go again: by itself soon
+/// (`caper_client::sends::AUTO_RETRY`), or once the connection returns.
+pub const RESEND_SOON: &str = "Your message will be sent again shortly.";
 pub const RESEND_NOTE: &str = "Your message will be sent again when the connection returns.";
 
 pub enum Update {
@@ -436,10 +438,13 @@ pub struct Live {
     pub klipy: Option<caper_client::klipy::Config>,
     klipy_checked: Option<std::time::Instant>,
     shares: HashMap<String, caper_client::klipy::Share>,
-    /// Message sends not yet confirmed, by client id, and whether the last
-    /// attempt failed with an unknown outcome (a network drop or 5xx): those
-    /// go again unchanged, same client message ID, when the gateway is live.
-    outgoing: std::cell::RefCell<HashMap<String, (core_worker::Outgoing, bool)>>,
+    /// Message sends not yet confirmed: one at a time per conversation, in
+    /// order, and sent again unchanged (same client message ID) after an
+    /// unknown outcome, by themselves while the gateway is live and at once
+    /// when it returns.
+    outgoing: std::cell::RefCell<caper_client::sends::Sends<core_worker::Outgoing>>,
+    /// The open conversation's gateway is connected.
+    gateway_online: bool,
     /// Your DMs as the server last listed them, your account (for your own
     /// DM), and the open DM while one is open instead of a channel.
     pub directs: Vec<core::DirectConversation>,
@@ -759,6 +764,7 @@ impl Live {
             klipy_checked: None,
             shares: HashMap::new(),
             outgoing: Default::default(),
+            gateway_online: false,
             directs: Vec::new(),
             account_id: None,
             account_name: String::new(),
@@ -2267,6 +2273,14 @@ impl Live {
 
     /// Navigation/logout cancel unfinished uploads, but never delete an asset
     /// whose send has already reached the server (including a lost response).
+    /// Leaving the conversation: results of sends in flight will not
+    /// arrive, so their outcome is unknown and they go again, with the sends
+    /// behind them, when you return and its gateway connects.
+    fn orphan_sends(&mut self) {
+        self.outgoing.borrow_mut().orphan();
+        self.gateway_online = false;
+    }
+
     fn discard_voice_sends(&mut self) {
         let mut ids = Vec::new();
         self.drafts.retain(|d| {
@@ -2599,29 +2613,53 @@ impl Live {
         self.dispatch(outgoing, chat_token.clone());
     }
 
-    /// Sends `outgoing`, keeping it until the server confirms it.
+    /// Sends `outgoing` once the sends before it in its conversation are
+    /// done, keeping it until the server confirms it. A send whose outcome
+    /// is unknown goes again first, as when the connection returns.
     fn dispatch(&self, outgoing: core_worker::Outgoing, chat_token: String) {
-        self.worker
-            .send(outgoing.command(self.generation, self.token.clone(), chat_token));
-        self.outgoing
-            .borrow_mut()
-            .insert(outgoing.client_id.clone(), (outgoing, false));
+        let mut sends = self.outgoing.borrow_mut();
+        let mut now = sends.resend(Some(&outgoing.channel));
+        now.extend(sends.add(outgoing));
+        for outgoing in now {
+            self.worker.send(outgoing.command(
+                self.generation,
+                self.token.clone(),
+                chat_token.clone(),
+            ));
+        }
+    }
+
+    /// Sends these requests in the open conversation.
+    fn send_all(&self, sends: Vec<core_worker::Outgoing>) {
+        let Some(chat_token) = &self.chat_token else {
+            return;
+        };
+        for outgoing in sends {
+            self.worker.send(outgoing.command(
+                self.generation,
+                self.token.clone(),
+                chat_token.clone(),
+            ));
+        }
     }
 
     /// Back online: each send whose outcome was unknown goes again unchanged.
     fn resend_unconfirmed(&self) {
-        let Some(chat_token) = &self.chat_token else {
+        let Some(channel) = &self.channel else {
             return;
         };
-        for (outgoing, unconfirmed) in self.outgoing.borrow_mut().values_mut() {
-            if *unconfirmed && self.channel.as_deref() == Some(outgoing.channel.as_str()) {
-                *unconfirmed = false;
-                self.worker.send(outgoing.command(
-                    self.generation,
-                    self.token.clone(),
-                    chat_token.clone(),
-                ));
-            }
+        let resend = self.outgoing.borrow_mut().resend(Some(channel));
+        self.send_all(resend);
+    }
+
+    /// Sends whose automatic retry is due go again; wakes for the next one.
+    fn retry_due(&self) {
+        // The window's timer rounds to whole milliseconds.
+        let now = Instant::now() + Duration::from_millis(15);
+        let due = self.outgoing.borrow_mut().due(self.gateway_online, now);
+        self.send_all(due);
+        if let Some(next) = self.outgoing.borrow().next_due() {
+            self.host.wake_after(next.saturating_duration_since(now));
         }
     }
 
@@ -4141,6 +4179,7 @@ impl Live {
                 // Fence late history/gateway responses and discard the departed
                 // conversation even when there is nothing else to navigate to.
                 self.discard_voice_sends();
+                self.orphan_sends();
                 self.generation += 1;
                 self.navigation += 1;
                 self.worker.send(Command::StopGateway);
@@ -4809,6 +4848,7 @@ impl Live {
         for event in events {
             self.handle(event, &mut out);
         }
+        self.retry_due();
         self.poll_voice_activity();
         if let Ok(mut r) = self.host.requests.lock() {
             r.draining = false;
@@ -4863,6 +4903,7 @@ impl Live {
                     // Events still in flight for the previous conversation
                     // (its gateway, sends) carry the old generation and drop.
                     self.discard_voice_sends();
+                    self.orphan_sends();
                     self.generation += 1;
                     let current = self.generation;
                     // A DM has no space of its own: the open space's
@@ -5226,19 +5267,23 @@ impl Live {
                     }
                     out.push(Update::Drafts);
                 }
-                let unknown = result.as_ref().is_err_and(|f| !f.rejected());
-                {
-                    let mut outgoing = self.outgoing.borrow_mut();
-                    match outgoing.get_mut(&client_id) {
-                        Some((_, unconfirmed)) if unknown => *unconfirmed = true,
-                        _ => {
-                            outgoing.remove(&client_id);
-                        }
-                    }
-                }
+                let settled = self.outgoing.borrow_mut().settle(
+                    &client_id,
+                    result.as_ref().map(|_| ()),
+                    self.gateway_online,
+                    Instant::now(),
+                );
+                let unconfirmed = settled.as_ref().is_some_and(|s| s.done.is_none());
+                // The conversation's next message goes now.
+                self.send_all(settled.and_then(|s| s.next).into_iter().collect());
                 match result {
-                    Err(f) if unknown && self.outgoing.borrow().contains_key(&client_id) => {
-                        out.push(Update::Failed(format!("{} {RESEND_NOTE}", f.message)));
+                    Err(f) if unconfirmed => {
+                        let note = if self.outgoing.borrow().next_due().is_some() {
+                            RESEND_SOON
+                        } else {
+                            RESEND_NOTE
+                        };
+                        out.push(Update::Failed(format!("{} {note}", f.message)));
                     }
                     Ok(m) => {
                         out.push(Update::SendConfirmed);
@@ -5625,6 +5670,7 @@ impl Live {
                 detail,
                 ..
             }) if generation == current => {
+                self.gateway_online = online;
                 if !online {
                     self.typing.clear();
                     out.push(Update::Typing);

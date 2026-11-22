@@ -1168,11 +1168,9 @@ impl App {
                     self.need = true;
                 }
                 live::Update::SendConfirmed => {
-                    if self
-                        .status
-                        .as_ref()
-                        .is_some_and(|(s, error)| *error && s.ends_with(live::RESEND_NOTE))
-                    {
+                    if self.status.as_ref().is_some_and(|(s, error)| {
+                        *error && (s.ends_with(live::RESEND_NOTE) || s.ends_with(live::RESEND_SOON))
+                    }) {
                         self.status = None;
                         self.dirty.header = true;
                         self.need = true;
