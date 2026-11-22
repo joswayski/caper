@@ -464,7 +464,7 @@ try {
     ".chat-pin-marker",
   ]);
   browser("hover", ".live-invite");
-  wait('getComputedStyle(document.querySelector(".live-invite")).backgroundColor === "rgb(182, 77, 50)"');
+  wait('getComputedStyle(document.querySelector(".live-invite")).backgroundColor === "rgb(85, 122, 56)"');
   browser("mouse", "move", "0", "0");
   browser("focus", ".sim-messages");
   browser("press", "Tab");

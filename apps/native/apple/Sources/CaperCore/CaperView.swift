@@ -9677,14 +9677,24 @@ struct PrimaryActionFill: ViewModifier {
             .overlay {
                 Capsule()
                     .strokeBorder(
-                        !enabled ? CaperTheme.borderSubtle : focused ? CaperTheme.terracottaBright : Color.white.opacity(0.5),
-                        lineWidth: focused && enabled ? 2 : 1
+                        !enabled
+                            ? AnyShapeStyle(CaperTheme.borderSubtle)
+                            : focused
+                                ? AnyShapeStyle(CaperTheme.terracottaBright)
+                                : AnyShapeStyle(LinearGradient(
+                                    colors: [Color.white.opacity(0.92), Color.black.opacity(0.24)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )),
+                        lineWidth: focused && enabled ? 2 : 1.25
                     )
                     .allowsHitTesting(false)
             }
-            .shadow(color: enabled ? Color.black.opacity(0.32) : .clear, radius: 6, y: 2)
-            .scaleEffect(pressed && enabled && !reduceMotion ? 0.97 : 1)
+            .shadow(color: enabled ? Color.black.opacity(hovered ? 0.44 : 0.36) : .clear, radius: hovered ? 10 : 7, y: pressed ? 1 : hovered ? 4 : 3)
+            .offset(y: !enabled || reduceMotion ? 0 : pressed ? 1 : hovered ? -1 : 0)
+            .scaleEffect(pressed && enabled && !reduceMotion ? 0.98 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: pressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)
             .focusEffectDisabled()
             .onHover { hovered = $0 }
             .modifier(ControlPointer())

@@ -9,7 +9,7 @@ export const fieldClass =
  * pending label never resizes it, and set aria-busy while its request runs.
  */
 export const primaryButtonClass =
-  "ml-auto flex w-fit items-center justify-center gap-4 rounded-full border border-white/55 bg-gradient-to-b from-[#faf9f6] to-[#eae8e1] px-6 py-3.5 font-bold text-on-action shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_2px_6px_rgba(0,0,0,0.38),0_6px_16px_rgba(0,0,0,0.24)] transition-[filter,transform,background-color,border-color] duration-150 enabled:hover:brightness-[1.04] enabled:active:scale-[0.97] motion-reduce:enabled:active:scale-100 disabled:border-border disabled:bg-surface-raised disabled:bg-none disabled:text-content-muted disabled:shadow-none aria-busy:cursor-wait focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4";
+  "ml-auto flex w-fit items-center justify-center gap-4 rounded-full border [border-color:var(--btn-primary-border)] [background:var(--btn-primary-bg)] px-6 py-3.5 font-bold text-on-action [box-shadow:var(--btn-primary-shadow)] transition-[filter,transform,box-shadow,background-color,border-color] duration-150 enabled:hover:-translate-y-px enabled:hover:brightness-[1.04] enabled:hover:[box-shadow:var(--btn-primary-shadow-hover)] enabled:active:translate-y-px enabled:active:scale-[0.985] enabled:active:[box-shadow:var(--btn-primary-shadow-active)] motion-reduce:enabled:hover:translate-y-0 motion-reduce:enabled:active:translate-y-0 motion-reduce:enabled:active:scale-100 disabled:border-border disabled:bg-surface-raised disabled:bg-none disabled:text-content-muted disabled:shadow-none aria-busy:cursor-wait focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4";
 
 export function Spinner() {
   return (

@@ -98,20 +98,27 @@ button.primary {
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: 999px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 1px 3px rgba(0, 0, 0, 0.35);
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.94),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.18),
+    0 2px 0 rgba(0, 0, 0, 0.44),
+    0 6px 16px rgba(0, 0, 0, 0.34);
   font-weight: 700;
   min-height: 40px;
 }
 
 button.primary:hover {
-  background-image: none;
-  background-color: @caper_action_hover;
+  background-image: linear-gradient(180deg, @caper_action_hover, @caper_action);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 1),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.15),
+    0 3px 0 rgba(0, 0, 0, 0.48),
+    0 8px 20px rgba(0, 0, 0, 0.4);
 }
 
 button.primary:active {
   background-image: none;
   background-color: @caper_action_press;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.22);
 }
 
 button.primary:disabled {
@@ -129,9 +136,12 @@ button.flat {
 button.destructive-action {
   background: @caper_danger;
   color: #ffffff;
-  border: none;
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
-  box-shadow: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.25),
+    0 2px 6px rgba(0, 0, 0, 0.3);
   font-weight: 700;
 }
 
@@ -147,14 +157,18 @@ window.caper.dialog .dialog-action-area button:not(.destructive-action) {
 }
 
 window.caper.dialog .dialog-action-area button {
-  border: 1px solid @caper_border;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
-  box-shadow: inset 0 1px 0 @caper_surface_rim;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.3),
+    0 2px 6px rgba(0, 0, 0, 0.28);
   min-height: 36px;
 }
 
 button.flat:hover {
   background: @caper_surface_hover;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
   color: @caper_text;
 }
 

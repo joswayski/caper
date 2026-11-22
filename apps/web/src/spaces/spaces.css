@@ -1471,20 +1471,30 @@ html[data-resizing-sections] * {
   min-width: 12.5rem;
   min-height: 54px;
   padding: 0 24px;
-  border: 1px solid rgb(255 255 255 / 55%);
+  border: 1px solid var(--btn-primary-border);
   border-radius: var(--radius-pill);
   color: var(--on-action);
-  background: linear-gradient(180deg, #faf9f6 0%, #eae8e1 100%);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 90%),
-    0 2px 6px rgb(0 0 0 / 38%),
-    0 6px 18px rgb(0 0 0 / 24%);
+  background: var(--btn-primary-bg);
+  box-shadow: var(--btn-primary-shadow);
   font-size: 1rem;
   font-weight: 700;
   cursor: pointer;
   transition:
     transform var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out),
     filter var(--motion-fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .spaces-empty .primary:hover:not(:disabled) {
+    filter: brightness(1.04);
+    box-shadow: var(--btn-primary-shadow-hover);
+    transform: translateY(-1px);
+  }
+}
+.spaces-empty .primary:active:not(:disabled) {
+  background: var(--action-press);
+  box-shadow: var(--btn-primary-shadow-active);
+  transform: translateY(1px) scale(0.985);
 }
 .spaces-empty .primary:disabled {
   cursor: not-allowed;
@@ -1959,14 +1969,12 @@ html[data-resizing-sections] * {
 .space-dialog :is(.primary, .secondary, .danger, .danger-outline),
 .member-add > button {
   min-height: 36px;
-  padding: 0 15px;
-  border: 1px solid var(--border);
+  padding: 0 16px;
+  border: 1px solid var(--btn-secondary-border);
   border-radius: var(--radius-pill);
   color: var(--text);
-  background: linear-gradient(180deg, #222227 0%, var(--surface-raised) 100%);
-  box-shadow:
-    inset 0 1px 0 var(--surface-rim),
-    0 1px 2px rgb(0 0 0 / 28%);
+  background: var(--btn-secondary-bg);
+  box-shadow: var(--btn-secondary-shadow);
   font: inherit;
   font-size: 0.78rem;
   font-weight: 700;
@@ -1974,16 +1982,39 @@ html[data-resizing-sections] * {
   transition:
     transform var(--motion-fast) var(--ease-out),
     filter var(--motion-fast) var(--ease-out),
-    background-color var(--motion-fast) var(--ease-out);
+    box-shadow var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .space-dialog :is(.secondary, .danger-outline):hover:not(:disabled),
+  .member-add > button:hover:not(:disabled) {
+    border-color: var(--btn-secondary-border-hover);
+    background: var(--btn-secondary-bg-hover);
+    box-shadow: var(--btn-secondary-shadow-hover);
+    transform: translateY(-1px);
+  }
+  .space-dialog .primary:hover:not(:disabled) {
+    filter: brightness(1.04);
+    box-shadow: var(--btn-primary-shadow-hover);
+    transform: translateY(-1px);
+  }
+}
+.space-dialog :is(.secondary, .danger-outline):active:not(:disabled),
+.member-add > button:active:not(:disabled) {
+  box-shadow: var(--btn-secondary-shadow-active);
+  transform: translateY(1px) scale(0.985);
 }
 .space-dialog .primary {
-  border-color: rgb(255 255 255 / 55%);
+  border-color: var(--btn-primary-border);
   color: var(--on-action);
-  background: linear-gradient(180deg, #faf9f6 0%, #eae8e1 100%);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 90%),
-    0 1px 2px rgb(0 0 0 / 42%),
-    0 4px 12px rgb(0 0 0 / 22%);
+  background: var(--btn-primary-bg);
+  box-shadow: var(--btn-primary-shadow);
+}
+.space-dialog .primary:active:not(:disabled) {
+  background: var(--action-press);
+  box-shadow: var(--btn-primary-shadow-active);
+  transform: translateY(1px) scale(0.985);
 }
 .space-dialog .danger {
   border-color: var(--danger);
@@ -3049,35 +3080,51 @@ html[data-resizing-sections] * {
 .account-shortcuts {
   display: grid;
   gap: 2px;
-  padding: 4px;
+  padding: 6px;
   border-bottom: 1px solid var(--border);
 }
 .account-shortcuts .notifications-entry,
+.account-shortcuts .feedback-section .channel-section-heading .feedback-section-title,
 .account-shortcuts .feedback-section .feedback-section-title {
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 9px 0 4px;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
   border-radius: var(--radius);
   color: var(--text-muted);
   font: inherit;
   font-size: 0.8rem;
   font-weight: 650;
   cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
-.account-shortcuts .notifications-entry svg {
-  flex: 0 0 30px;
-  width: 30px;
-  height: 17px;
+.account-shortcuts .notifications-entry svg,
+.account-shortcuts .feedback-section .feedback-section-title svg {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
 }
 @media (hover: hover) {
   .account-shortcuts .notifications-entry:hover,
+  .account-shortcuts .feedback-section .channel-section-heading .feedback-section-title:hover,
   .account-shortcuts .feedback-section .feedback-section-title:hover {
     color: var(--text);
-    background: var(--surface-composer);
+    border-color: var(--hover-pill-border);
+    background: var(--hover-pill-bg);
+    box-shadow: var(--hover-pill-shadow);
   }
 }
-.account-shortcuts .notifications-entry:focus-visible {
+.account-shortcuts .notifications-entry:focus-visible,
+.account-shortcuts .feedback-section .feedback-section-title:focus-visible {
   outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
 }
 .account-shortcuts .feedback-section {
   margin: 0;
@@ -3088,18 +3135,18 @@ html[data-resizing-sections] * {
 }
 .account-shortcuts .feedback-section .channel-section-heading {
   margin: 0;
-  min-height: 32px;
+  min-height: 34px;
 }
 /* A plain count like Notifications', rather than the sidebar's pill. */
 .account-shortcuts .feedback-waiting-count {
   position: absolute;
-  right: 9px;
+  right: 10px;
   margin: 0;
   padding: 0;
   background: none;
   color: var(--terracotta-bright);
   font-size: 0.8rem;
-  font-weight: 400;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
@@ -3110,6 +3157,7 @@ html[data-resizing-sections] * {
 }
 @media (max-width: 760px), (hover: none), (pointer: coarse) {
   .account-shortcuts .notifications-entry,
+  .account-shortcuts .feedback-section .channel-section-heading .feedback-section-title,
   .account-shortcuts .feedback-section .feedback-section-title {
     min-height: 44px;
   }
