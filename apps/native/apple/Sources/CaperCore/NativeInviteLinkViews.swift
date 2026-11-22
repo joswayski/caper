@@ -5,7 +5,7 @@ import AppKit
     private let state: NativeInviteLinks
     private let observation = AppKitObservation()
     private let primary = AppKitKit.stack([], spacing: 8), custom = AppKitKit.stack([], spacing: 10), links = AppKitKit.stack([], spacing: 8)
-    private let expiry = AppKitKitField(), uses = AppKitKitField(), unit = NSPopUpButton(), channel = NSPopUpButton()
+    private let expiry = AppKitKitField(), uses = AppKitKitField(), unit = AppKitCaperSelect(), channel = AppKitCaperSelect()
     private let expiryError = AppKitKit.label("", size: 12, color: AppKitKit.error), usesError = AppKitKit.label("", size: 12, color: AppKitKit.error), error = AppKitKit.label("", size: 12, color: AppKitKit.error)
     private var create: AppKitKitButton!
     private var started = false
@@ -24,9 +24,11 @@ import AppKit
             field.stringValue = value; field.placeholderString = placeholder; field.delegate = self
             field.setAccessibilityLabel(label); field.setAccessibilityIdentifier(id)
         }
-        unit.addItems(withTitles: InviteExpiryUnit.allCases.map(\.label)); unit.selectItem(at: InviteExpiryUnit.allCases.firstIndex(of: state.expiryUnit) ?? 0)
-        unit.target = self; unit.action = #selector(unitChanged); unit.setAccessibilityIdentifier("invite-link-expiry-unit"); unit.setAccessibilityLabel("Expiry unit")
-        channel.target = self; channel.action = #selector(channelChanged); channel.setAccessibilityLabel("Opens in")
+        unit.items = InviteExpiryUnit.allCases.map(\.label); unit.selectedIndex = InviteExpiryUnit.allCases.firstIndex(of: state.expiryUnit) ?? 0
+        unit.onSelect = { [weak self] idx in guard let self, InviteExpiryUnit.allCases.indices.contains(idx) else { return }; self.state.expiryUnit = InviteExpiryUnit.allCases[idx]; self.state.expiryError = nil }
+        unit.setAccessibilityIdentifier("invite-link-expiry-unit"); unit.setAccessibilityLabel("Expiry unit")
+        channel.onSelect = { [weak self] idx in guard let self else { return }; self.state.channelID = self.state.publicChannels.indices.contains(idx) ? self.state.publicChannels[idx].id : nil }
+        channel.setAccessibilityLabel("Opens in")
         create = AppKitKitButton("Create link") { [state] in state.create() }; create.setAccessibilityIdentifier("invite-link-create")
         expiryError.setAccessibilityIdentifier("invite-link-expiry-error"); usesError.setAccessibilityIdentifier("invite-link-max-uses-error")
         for row in [AppKitKit.label("Create a separate link", size: 14, weight: .bold), AppKitKit.label("Choose different limits or a landing channel. Existing links keep their settings.", size: 12, color: AppKitKit.muted),
@@ -49,14 +51,12 @@ import AppKit
         if notification.object as? NSTextField === expiry { state.expiryNumber = expiry.stringValue; state.expiryError = nil }
         else { state.maxUses = uses.stringValue; state.maxUsesError = nil }
     }
-    @objc private func unitChanged() { state.expiryUnit = InviteExpiryUnit.allCases[unit.indexOfSelectedItem]; state.expiryError = nil }
-    @objc private func channelChanged() { state.channelID = state.publicChannels.indices.contains(channel.indexOfSelectedItem) ? state.publicChannels[channel.indexOfSelectedItem].id : nil }
     private func render() {
         custom.isHidden = !state.expanded; expiry.isHidden = state.expiryUnit == .never
         [expiry, uses, unit, channel].forEach { $0.isEnabled = !state.busy }
         let channels = state.publicChannels, names = channels.isEmpty ? ["No public channels"] : channels.map { "#\($0.name)" }
-        if channel.itemTitles != names { channel.removeAllItems(); channel.addItems(withTitles: names) }
-        channel.selectItem(at: channels.firstIndex { $0.id == state.channelID } ?? 0); channel.isEnabled = !state.busy && !channels.isEmpty
+        if channel.items != names { channel.items = names }
+        channel.selectedIndex = channels.firstIndex { $0.id == state.channelID } ?? 0; channel.isEnabled = !state.busy && !channels.isEmpty
         create.title = state.pending == "create" ? "Creating…" : "Create link"; create.isEnabled = !state.busy
         expiryError.stringValue = state.expiryError ?? ""; expiryError.isHidden = state.expiryError == nil
         usesError.stringValue = state.maxUsesError ?? ""; usesError.isHidden = state.maxUsesError == nil

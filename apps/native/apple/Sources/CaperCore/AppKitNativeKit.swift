@@ -294,18 +294,41 @@ import SwiftUI
             .font: AppKitKit.font(size, weight: weight), .foregroundColor: color,
         ])
         layer?.backgroundColor = fill.cgColor
+        if kind == .primary {
+            layer?.cornerRadius = max(18, bounds.height / 2)
+        }
         if focused && isEnabled {
             layer?.borderColor = (kind == .primary ? AppKitKit.terracottaBright : AppKitKit.terracotta).cgColor
             layer?.borderWidth = 2
+        } else if kind == .primary && isEnabled {
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.62).cgColor
+            layer?.borderWidth = 1
+        } else if (kind == .secondary || kind == .destructive) && isEnabled {
+            layer?.borderColor = NSColor.white.withAlphaComponent(hovered ? 0.24 : 0.14).cgColor
+            layer?.borderWidth = 1
         } else {
             layer?.borderColor = stroke.cgColor
             layer?.borderWidth = stroke == .clear ? 0 : 1
         }
+        if (kind == .primary || kind == .secondary || kind == .destructive) && isEnabled {
+            layer?.shadowColor = NSColor.black.cgColor
+            layer?.shadowOpacity = pressed ? 0.18 : hovered ? 0.42 : 0.32
+            layer?.shadowOffset = NSSize(width: 0, height: pressed ? -1 : -3)
+            layer?.shadowRadius = hovered ? 8 : 5
+            layer?.masksToBounds = false
+        } else {
+            layer?.shadowOpacity = 0
+        }
         alphaValue = kind == .secondary && !isEnabled ? 0.45 : 1
         if kind == .secondary || kind == .destructive, hovered, isEnabled {
-            layer?.backgroundColor = fill.blended(withFraction: 0.06, of: .white)?.cgColor
+            layer?.backgroundColor = fill.blended(withFraction: 0.1, of: .white)?.cgColor
         }
         invalidateIntrinsicContentSize()
+    }
+
+    override func layout() {
+        super.layout()
+        if kind == .primary { layer?.cornerRadius = bounds.height / 2 }
     }
 
     override func updateTrackingAreas() {
@@ -621,6 +644,522 @@ final class AppKitKitFlippedView: NSView {
         }
         style()
     }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// Bespoke Caper tactile slider replacing stock macOS NSSlider: grooved track,
+/// botanical green active range, optional default-value tick + double-click reset,
+/// and a beveled circular chalk thumb with hover elevation.
+@MainActor public final class AppKitCaperSlider: NSControl {
+    public var minValue: Double = 0 { didSet { needsDisplay = true } }
+    public var maxValue: Double = 100 { didSet { needsDisplay = true } }
+    public var defaultValue: Double? = nil { didSet { needsDisplay = true } }
+    public var snapTolerance: Double = 4
+    public var onChange: ((Double) -> Void)?
+    private var _value: Double = 0
+    private var hovered = false
+    private var dragging = false
+    private var tracking: NSTrackingArea?
+
+    public var value: Double {
+        get { _value }
+        set {
+            let clamped = min(maxValue, max(minValue, newValue))
+            guard clamped != _value else { return }
+            _value = clamped
+            setAccessibilityValue("\(Int(clamped.rounded()))%")
+            needsDisplay = true
+        }
+    }
+
+    public init(value: Double = 100, minValue: Double = 0, maxValue: Double = 200, defaultValue: Double? = 100, onChange: ((Double) -> Void)? = nil) {
+        self.minValue = minValue
+        self.maxValue = maxValue
+        self.defaultValue = defaultValue
+        self._value = min(maxValue, max(minValue, value))
+        self.onChange = onChange
+        super.init(frame: .zero)
+        focusRingType = .none
+        setAccessibilityRole(.slider)
+        setAccessibilityValue("\(Int(self._value.rounded()))%")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    public override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 26) }
+    public override var isEnabled: Bool { didSet { needsDisplay = true } }
+    public override var acceptsFirstResponder: Bool { isEnabled }
+    public override var isFlipped: Bool { true }
+    private var focused: Bool { window?.firstResponder === self && window?.isKeyWindow == true }
+
+    private var trackRect: NSRect {
+        let inset: CGFloat = 10
+        let width = max(1, bounds.width - inset * 2)
+        return NSRect(x: inset, y: bounds.midY - 3, width: width, height: 6)
+    }
+
+    private func fraction(for val: Double) -> CGFloat {
+        guard maxValue > minValue else { return 0 }
+        return CGFloat(min(1, max(0, (val - minValue) / (maxValue - minValue))))
+    }
+
+    public override func draw(_ dirtyRect: NSRect) {
+        let track = trackRect
+        let r = track.height / 2
+        let opacity: CGFloat = isEnabled ? 1 : 0.45
+
+        // Recessed track background with hairline rim.
+        let trackPath = NSBezierPath(roundedRect: track, xRadius: r, yRadius: r)
+        AppKitKit.composer.withAlphaComponent(opacity).setFill()
+        trackPath.fill()
+        AppKitKit.border.withAlphaComponent(opacity).setStroke()
+        trackPath.lineWidth = 1
+        trackPath.stroke()
+
+        // Default-value notch under track.
+        if let def = defaultValue, def >= minValue && def <= maxValue {
+            let x = track.minX + track.width * fraction(for: def)
+            AppKitKit.muted.withAlphaComponent(0.55 * opacity).setFill()
+            NSRect(x: x - 1, y: track.maxY + 3, width: 2, height: 4).fill()
+        }
+
+        // Botanical green active range fill.
+        let frac = fraction(for: _value)
+        let fillW = max(track.height, track.width * frac)
+        if frac > 0 {
+            let fillRect = NSRect(x: track.minX, y: track.minY, width: min(track.width, fillW), height: track.height)
+            let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: r, yRadius: r)
+            AppKitKit.terracottaBright.withAlphaComponent(opacity).setFill()
+            fillPath.fill()
+        }
+
+        // Beveled circular thumb with drop shadow and specular top rim.
+        let thumbD: CGFloat = (dragging || hovered) && isEnabled ? 18 : 16
+        let cx = track.minX + track.width * frac
+        let thumbRect = NSRect(x: cx - thumbD / 2, y: bounds.midY - thumbD / 2, width: thumbD, height: thumbD)
+
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.45 * opacity)
+        shadow.shadowOffset = NSSize(width: 0, height: dragging ? -1 : -2)
+        shadow.shadowBlurRadius = dragging ? 4 : 6
+        shadow.set()
+        let thumbPath = NSBezierPath(ovalIn: thumbRect)
+        AppKitKit.action.withAlphaComponent(opacity).setFill()
+        thumbPath.fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        if let grad = NSGradient(starting: NSColor.white.withAlphaComponent(0.35 * opacity), ending: NSColor.black.withAlphaComponent(0.14 * opacity)) {
+            grad.draw(in: thumbPath, angle: 90)
+        }
+        (focused && isEnabled ? AppKitKit.terracottaBright : AppKitKit.terracotta.withAlphaComponent(0.75 * opacity)).setStroke()
+        thumbPath.lineWidth = focused && isEnabled ? 2 : 1.5
+        thumbPath.stroke()
+    }
+
+    private func valueForPoint(_ point: NSPoint, snap: Bool) -> Double {
+        let track = trackRect
+        let frac = Double(min(1, max(0, (point.x - track.minX) / max(1, track.width))))
+        var next = minValue + frac * (maxValue - minValue)
+        if snap, let def = defaultValue, abs(next - def) <= snapTolerance {
+            next = def
+        }
+        return next.rounded()
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        window?.makeFirstResponder(self)
+        if event.clickCount == 2, let def = defaultValue {
+            commit(def)
+            return
+        }
+        dragging = true
+        let pt = convert(event.locationInWindow, from: nil)
+        commit(valueForPoint(pt, snap: true))
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            let p = convert(next.locationInWindow, from: nil)
+            if next.type == .leftMouseUp {
+                dragging = false
+                needsDisplay = true
+                break
+            }
+            commit(valueForPoint(p, snap: true))
+        }
+    }
+
+    public override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123, 125: _ = step(-1)
+        case 124, 126: _ = step(1)
+        default: super.keyDown(with: event)
+        }
+    }
+
+    public override func accessibilityPerformIncrement() -> Bool { step(1) }
+    public override func accessibilityPerformDecrement() -> Bool { step(-1) }
+
+    private func step(_ delta: Double) -> Bool {
+        guard isEnabled else { return false }
+        commit(min(maxValue, max(minValue, _value + delta)))
+        return true
+    }
+
+    private func commit(_ next: Double) {
+        let clamped = min(maxValue, max(minValue, next))
+        _value = clamped
+        setAccessibilityValue("\(Int(clamped.rounded()))%")
+        needsDisplay = true
+        onChange?(clamped)
+    }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    public override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
+    public override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    public override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
+    public override func becomeFirstResponder() -> Bool { needsDisplay = true; return super.becomeFirstResponder() }
+    public override func resignFirstResponder() -> Bool { needsDisplay = true; return super.resignFirstResponder() }
+}
+
+/// Bespoke tactile Caper dropdown replacing stock macOS NSPopUpButton + NSMenu.
+/// Opens a custom borderless floating card with beveled option rows, hover
+/// highlights, and a botanical green checkmark on the selected item.
+@MainActor public final class AppKitCaperSelect: NSControl {
+    public var items: [String] = [] {
+        didSet {
+            if selectedIndex >= items.count { selectedIndex = max(0, items.count - 1) }
+            setAccessibilityValue(currentTitle)
+            needsDisplay = true
+        }
+    }
+    public var selectedIndex: Int = 0 {
+        didSet {
+            let clamped = items.isEmpty ? 0 : min(items.count - 1, max(0, selectedIndex))
+            if selectedIndex != clamped { selectedIndex = clamped; return }
+            setAccessibilityValue(currentTitle)
+            needsDisplay = true
+        }
+    }
+    public var onSelect: ((Int) -> Void)?
+    public var isOpen: Bool { popup != nil }
+    private var hovered = false
+    private var tracking: NSTrackingArea?
+    private var popup: AppKitSelectPopup?
+    private var currentTitle: String { items.indices.contains(selectedIndex) ? items[selectedIndex] : "" }
+
+    public init(items: [String] = [], selectedIndex: Int = 0, onSelect: ((Int) -> Void)? = nil) {
+        self.items = items
+        self.selectedIndex = selectedIndex
+        self.onSelect = onSelect
+        super.init(frame: .zero)
+        focusRingType = .none
+        setAccessibilityRole(.popUpButton)
+        setAccessibilityValue(currentTitle)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit { popup?.closePopup() }
+
+    public override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 34) }
+    public override var isEnabled: Bool { didSet { needsDisplay = true } }
+    public override var acceptsFirstResponder: Bool { isEnabled }
+    public override var isFlipped: Bool { true }
+    private var focused: Bool { window?.firstResponder === self && window?.isKeyWindow == true }
+
+    public override func draw(_ dirtyRect: NSRect) {
+        let opacity: CGFloat = isEnabled ? 1 : 0.45
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10)
+
+        let base = hovered || isOpen
+            ? (AppKitKit.raised.blended(withFraction: 0.1, of: .white) ?? AppKitKit.raised)
+            : AppKitKit.raised
+        base.withAlphaComponent(opacity).setFill()
+        path.fill()
+
+        // Top specular rim highlight for tactile depth.
+        if isEnabled {
+            let rim = NSBezierPath()
+            rim.move(to: NSPoint(x: rect.minX + 10, y: rect.minY + 1))
+            rim.line(to: NSPoint(x: rect.maxX - 10, y: rect.minY + 1))
+            NSColor.white.withAlphaComponent(hovered || isOpen ? 0.22 : 0.12).setStroke()
+            rim.lineWidth = 1
+            rim.stroke()
+        }
+
+        let borderColor = focused && isEnabled
+            ? AppKitKit.terracottaBright
+            : isOpen ? AppKitKit.terracotta : NSColor.white.withAlphaComponent(hovered ? 0.24 : 0.12)
+        borderColor.withAlphaComponent(opacity).setStroke()
+        path.lineWidth = focused && isEnabled ? 2 : 1
+        path.stroke()
+
+        // Selected label.
+        let style = NSMutableParagraphStyle(); style.lineBreakMode = .byTruncatingTail
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: AppKitKit.font(12.5, weight: .medium),
+            .foregroundColor: AppKitKit.text.withAlphaComponent(opacity),
+            .paragraphStyle: style,
+        ]
+        let label = NSAttributedString(string: currentTitle, attributes: attrs)
+        let labelH = label.size().height
+        label.draw(in: NSRect(x: 12, y: bounds.midY - labelH / 2, width: max(0, bounds.width - 36), height: labelH + 2))
+
+        // Crisp custom chevron.
+        let cx = bounds.maxX - 16, cy = bounds.midY
+        let chevron = NSBezierPath()
+        chevron.lineCapStyle = .round; chevron.lineJoinStyle = .round; chevron.lineWidth = 1.6
+        if isOpen {
+            chevron.move(to: NSPoint(x: cx - 4, y: cy + 2))
+            chevron.line(to: NSPoint(x: cx, y: cy - 2))
+            chevron.line(to: NSPoint(x: cx + 4, y: cy + 2))
+        } else {
+            chevron.move(to: NSPoint(x: cx - 4, y: cy - 2))
+            chevron.line(to: NSPoint(x: cx, y: cy + 2))
+            chevron.line(to: NSPoint(x: cx + 4, y: cy - 2))
+        }
+        (hovered || isOpen ? AppKitKit.text : AppKitKit.muted).withAlphaComponent(opacity).setStroke()
+        chevron.stroke()
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        guard isEnabled, !items.isEmpty else { return }
+        window?.makeFirstResponder(self)
+        if isOpen { closePopup() } else { openPopup() }
+    }
+
+    public override func keyDown(with event: NSEvent) {
+        guard isEnabled, !items.isEmpty else { super.keyDown(with: event); return }
+        switch event.keyCode {
+        case 49, 36, 76, 125: openPopup()
+        default: super.keyDown(with: event)
+        }
+    }
+
+    public func closePopup() {
+        popup?.closePopup()
+        popup = nil
+        needsDisplay = true
+    }
+
+    private func openPopup() {
+        guard let parentWindow = window, !items.isEmpty else { return }
+        closePopup()
+        let panel = AppKitSelectPopup(
+            anchor: self,
+            parentWindow: parentWindow,
+            items: items,
+            selectedIndex: selectedIndex,
+            onChoose: { [weak self] index in
+                guard let self else { return }
+                self.selectedIndex = index
+                self.closePopup()
+                self.onSelect?(index)
+            },
+            onDismiss: { [weak self] in
+                self?.popup = nil
+                self?.needsDisplay = true
+            }
+        )
+        popup = panel
+        needsDisplay = true
+        panel.show()
+    }
+
+    public override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { closePopup() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    public override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
+    public override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    public override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
+    public override func becomeFirstResponder() -> Bool { needsDisplay = true; return super.becomeFirstResponder() }
+    public override func resignFirstResponder() -> Bool { needsDisplay = true; return super.resignFirstResponder() }
+}
+
+@MainActor private final class AppKitSelectPopup: NSPanel {
+    private weak var anchor: NSView?
+    private weak var ownerWindow: NSWindow?
+    private let onDismiss: () -> Void
+    private var monitor: Any?
+    private var closed = false
+
+    init(anchor: NSView, parentWindow: NSWindow, items: [String], selectedIndex: Int,
+         onChoose: @escaping (Int) -> Void, onDismiss: @escaping () -> Void) {
+        self.anchor = anchor
+        self.ownerWindow = parentWindow
+        self.onDismiss = onDismiss
+
+        let rowH: CGFloat = 32
+        let pad: CGFloat = 6
+        let width = max(anchor.bounds.width, 220)
+        let maxH: CGFloat = 280
+        let contentH = CGFloat(items.count) * rowH + pad * 2
+        let height = min(maxH, contentH)
+
+        let anchorRect = anchor.convert(anchor.bounds, to: nil)
+        let screenRect = parentWindow.convertToScreen(anchorRect)
+        let screenFrame = parentWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        var originY = screenRect.minY - height - 4
+        if originY < screenFrame.minY + 8 { originY = screenRect.maxY + 4 }
+        let originX = min(max(screenFrame.minX + 8, screenRect.minX), screenFrame.maxX - width - 8)
+
+        super.init(contentRect: NSRect(x: originX, y: originY, width: width, height: height),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = .popUpMenu
+        collectionBehavior = [.transient, .ignoresCycle]
+        appearance = parentWindow.appearance
+
+        let card = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        card.wantsLayer = true
+        card.layer?.backgroundColor = AppKitKit.surface.cgColor
+        card.layer?.cornerRadius = 13
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        card.layer?.masksToBounds = true
+
+        let list = AppKitSelectListView(items: items, selectedIndex: selectedIndex, width: width - pad * 2, rowH: rowH, onChoose: onChoose)
+        let scroll = NSScrollView(frame: NSRect(x: pad, y: pad, width: width - pad * 2, height: height - pad * 2))
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = contentH > maxH
+        scroll.scrollerStyle = .overlay
+        scroll.documentView = list
+        card.addSubview(scroll)
+        contentView = card
+    }
+
+    func show() {
+        ownerWindow?.addChildWindow(self, ordered: .above)
+        orderFront(nil)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown && event.keyCode == 53 {
+                self.closePopup()
+                return nil
+            }
+            if event.type == .leftMouseDown || event.type == .rightMouseDown {
+                if event.window !== self {
+                    let ptInAnchor = self.anchor?.convert(event.locationInWindow, from: nil)
+                    let clickedAnchor = event.window === self.ownerWindow && (self.anchor?.bounds.contains(ptInAnchor ?? .zero) == true)
+                    self.closePopup()
+                    if clickedAnchor { return nil }
+                }
+            }
+            return event
+        }
+    }
+
+    func closePopup() {
+        guard !closed else { return }
+        closed = true
+        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        ownerWindow?.removeChildWindow(self)
+        orderOut(nil)
+        onDismiss()
+    }
+}
+
+@MainActor private final class AppKitSelectListView: NSView {
+    private let items: [String]
+    private let selectedIndex: Int
+    private let rowH: CGFloat
+    private let onChoose: (Int) -> Void
+    private var hoveredIndex: Int? = nil
+    private var tracking: NSTrackingArea?
+
+    init(items: [String], selectedIndex: Int, width: CGFloat, rowH: CGFloat, onChoose: @escaping (Int) -> Void) {
+        self.items = items
+        self.selectedIndex = selectedIndex
+        self.rowH = rowH
+        self.onChoose = onChoose
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: CGFloat(items.count) * rowH))
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        for (i, title) in items.enumerated() {
+            let row = NSRect(x: 0, y: CGFloat(i) * rowH, width: bounds.width, height: rowH)
+            let isSelected = i == selectedIndex
+            let isHovered = i == hoveredIndex
+            let pill = row.insetBy(dx: 0, dy: 1)
+            let path = NSBezierPath(roundedRect: pill, xRadius: 8, yRadius: 8)
+            if isHovered {
+                NSColor.white.withAlphaComponent(0.1).setFill()
+                path.fill()
+                NSColor.white.withAlphaComponent(0.14).setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            } else if isSelected {
+                AppKitKit.terracotta.withAlphaComponent(0.22).setFill()
+                path.fill()
+                AppKitKit.terracottaBright.withAlphaComponent(0.35).setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            }
+
+            if isSelected {
+                let check = NSBezierPath()
+                check.lineCapStyle = .round; check.lineJoinStyle = .round; check.lineWidth = 1.8
+                let x = pill.minX + 10, y = pill.midY
+                check.move(to: NSPoint(x: x, y: y))
+                check.line(to: NSPoint(x: x + 3.2, y: y + 3.2))
+                check.line(to: NSPoint(x: x + 9, y: y - 3.2))
+                AppKitKit.terracottaBright.setStroke()
+                check.stroke()
+            }
+
+            let style = NSMutableParagraphStyle(); style.lineBreakMode = .byTruncatingTail
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: AppKitKit.font(12.5, weight: isSelected ? .bold : .regular),
+                .foregroundColor: isSelected || isHovered ? AppKitKit.text : AppKitKit.text.withAlphaComponent(0.88),
+                .paragraphStyle: style,
+            ]
+            let attr = NSAttributedString(string: title, attributes: attrs)
+            let h = attr.size().height
+            attr.draw(in: NSRect(x: 28, y: pill.midY - h / 2, width: max(0, pill.width - 38), height: h + 2))
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let idx = Int(p.y / rowH)
+        let next = items.indices.contains(idx) ? idx : nil
+        if hoveredIndex != next { hoveredIndex = next; needsDisplay = true }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if hoveredIndex != nil { hoveredIndex = nil; needsDisplay = true }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let idx = Int(p.y / rowH)
+        if items.indices.contains(idx) { onChoose(idx) }
+    }
+
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
 #endif

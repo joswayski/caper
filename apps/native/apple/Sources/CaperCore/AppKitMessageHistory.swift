@@ -78,15 +78,16 @@ import AppKit
         }
         if versions.count > 1 {
             add(AppKitKit.divider())
-            let picker = NSPopUpButton(frame: .zero, pullsDown: false)
-            picker.setAccessibilityLabel("View previous versions")
-            picker.addItem(withTitle: "Choose an earlier version…"); picker.lastItem?.tag = 0
-            for version in versions.dropFirst() {
-                picker.addItem(withTitle: Self.label(version)); picker.lastItem?.tag = version.revision
+            let earlier = Array(versions.dropFirst())
+            let titles = ["Choose an earlier version…"] + earlier.map { Self.label($0) }
+            let tags = [0] + earlier.map(\.revision)
+            let picker = AppKitCaperSelect(items: titles, selectedIndex: tags.firstIndex(of: selected) ?? 0) { [weak self] idx in
+                guard let self, tags.indices.contains(idx) else { return }
+                self.selected = tags[idx]
+                self.render()
             }
-            picker.selectItem(withTag: selected)
-            picker.target = self; picker.action = #selector(choose(_:))
-            add(picker, fill: false)
+            picker.setAccessibilityLabel("View previous versions")
+            add(picker, fill: true)
             if let version = versions.first(where: { $0.revision == selected }) {
                 if let before = versions.first(where: { $0.revision == selected - 1 }) {
                     add(comparison(before: before, after: version, current: false))
@@ -119,11 +120,6 @@ import AppKit
             older.isEnabled = !loading
             add(older, fill: false)
         }
-    }
-
-    @objc private func choose(_ sender: NSPopUpButton) {
-        selected = sender.selectedTag()
-        render()
     }
 
     private static func label(_ version: MessageVersion) -> String {

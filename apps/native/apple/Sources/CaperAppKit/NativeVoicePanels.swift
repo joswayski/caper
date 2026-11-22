@@ -179,7 +179,9 @@ import CaperCore
     private let input: Bool
     private let observation = NativeObservation()
     private let title = NativeStyle.label("", size: 13, bold: true)
-    private let devices = NSPopUpButton(frame: .zero, pullsDown: false)
+    private lazy var devices = AppKitCaperSelect { [weak self] index in
+        self?.selectDevice(at: index)
+    }
     private let volume = NativeStyle.label("", size: 12)
     private let error = NativeStyle.label("", size: 11)
     private var deviceIDs: [String] = []
@@ -192,12 +194,10 @@ import CaperCore
     init(voice: VoiceClient, input: Bool) {
         self.voice = voice; self.input = input
         super.init(NSColor(CaperTheme.surface))
-        frame.size = NSSize(width: 280, height: 198)
+        frame.size = NSSize(width: 288, height: 204)
         [title, devices, volume, slider, error].forEach { addSubview($0) }
         title.stringValue = input ? "Microphone" : "Audio output"
         devices.setAccessibilityLabel(input ? "Microphone device" : "Output device")
-        devices.target = self; devices.action = #selector(selectDevice)
-        devices.font = NativeStyle.font(12)
         slider.setAccessibilityLabel(input ? "Input volume" : "Output volume")
         error.textColor = NSColor(CaperTheme.error); error.maximumNumberOfLines = 2
         observation.start { [weak self] in self?.render() }
@@ -212,67 +212,50 @@ import CaperCore
         let ids = [""] + routes.map(\.id), names = ["System default"] + routes.map(\.name)
         if ids != deviceIDs || names != deviceNames {
             deviceIDs = ids; deviceNames = names
-            devices.removeAllItems(); devices.addItems(withTitles: names)
+            devices.items = names
         }
         let selected = (input ? voice.selectedInputID : voice.selectedOutputID) ?? ""
-        devices.selectItem(at: ids.firstIndex(of: selected) ?? 0)
+        devices.selectedIndex = ids.firstIndex(of: selected) ?? 0
         slider.setValue(input ? voice.inputGain : voice.outputGain)
         volume.stringValue = "\(input ? "Input" : "Output") volume · \(slider.integerValue)%"
     }
-    @objc private func selectDevice() {
-        guard deviceIDs.indices.contains(devices.indexOfSelectedItem) else { return }
-        let id = deviceIDs[devices.indexOfSelectedItem]
+    private func selectDevice(at index: Int) {
+        guard deviceIDs.indices.contains(index) else { return }
+        let id = deviceIDs[index]
         let changed = input ? voice.selectInput(id) : voice.selectOutput(id)
         error.stringValue = changed ? "" : "Could not switch devices. Check system audio settings."
         render()
     }
     override func layout() {
         super.layout()
-        title.frame = NSRect(x: 16, y: 16, width: 248, height: 22)
-        devices.frame = NSRect(x: 16, y: 48, width: 248, height: 28)
-        volume.frame = NSRect(x: 16, y: 88, width: 248, height: 20)
-        slider.frame = NSRect(x: 16, y: 112, width: 248, height: 28)
-        error.frame = NSRect(x: 16, y: 150, width: 248, height: 36)
+        title.frame = NSRect(x: 16, y: 16, width: bounds.width - 32, height: 22)
+        devices.frame = NSRect(x: 16, y: 46, width: bounds.width - 32, height: 34)
+        volume.frame = NSRect(x: 16, y: 92, width: bounds.width - 32, height: 20)
+        slider.frame = NSRect(x: 16, y: 116, width: bounds.width - 32, height: 28)
+        error.frame = NSRect(x: 16, y: 152, width: bounds.width - 32, height: 36)
     }
 }
 
-/// Native keyboard/AX adjustments remain one percent; only pointer dragging
-/// snaps near the shared 100% default. Double-click restores that default.
-@MainActor private final class NativeVoiceSlider: NSSlider {
-    private let changed: (Int) -> Void
+/// Bespoke Caper voice gain slider wrapping AppKitCaperSlider with 100% haptic snap.
+@MainActor private final class NativeVoiceSlider: NSView {
+    private let control: AppKitCaperSlider
+    var isEnabled: Bool {
+        get { control.isEnabled }
+        set { control.isEnabled = newValue }
+    }
+    var integerValue: Int { Int(control.value.rounded()) }
+
     init(changed: @escaping (Int) -> Void) {
-        self.changed = changed
+        control = AppKitCaperSlider(value: 100, minValue: 0, maxValue: 200, defaultValue: 100) { next in
+            let value = Int(next.rounded())
+            changed(value)
+            VoicePresentation.sliderFeedback(Double(value))
+        }
         super.init(frame: .zero)
-        minValue = 0; maxValue = 200; isContinuous = true
-        target = self; action = #selector(adjusted)
+        addSubview(control)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func setValue(_ value: Int) { integerValue = value; setAccessibilityValue("\(value)%") }
-    override var acceptsFirstResponder: Bool { isEnabled }
-    override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 123, 125: _ = step(-1)
-        case 124, 126: _ = step(1)
-        default: super.keyDown(with: event)
-        }
-    }
-    override func accessibilityPerformIncrement() -> Bool { step(1) }
-    override func accessibilityPerformDecrement() -> Bool { step(-1) }
-    private func step(_ delta: Int) -> Bool {
-        guard isEnabled else { return false }
-        let value = min(Int(maxValue), max(Int(minValue), integerValue + delta))
-        setValue(value); changed(value); VoicePresentation.sliderFeedback(Double(value))
-        return true
-    }
-    @objc private func adjusted() {
-        let pointer = NSApp.currentEvent?.type == .leftMouseDragged
-        let value = pointer && abs(doubleValue - 100) <= 4 ? 100 : Int(doubleValue.rounded())
-        setValue(value); changed(value); VoicePresentation.sliderFeedback(Double(value))
-    }
-    override func mouseDown(with event: NSEvent) {
-        guard isEnabled else { return }
-        window?.makeFirstResponder(self)
-        if event.clickCount == 2 { setValue(100); changed(100); VoicePresentation.sliderFeedback(100) }
-        else { super.mouseDown(with: event) }
-    }
+    override func layout() { super.layout(); control.frame = bounds }
+    func setValue(_ value: Int) { control.value = Double(value) }
+    override func setAccessibilityLabel(_ label: String?) { control.setAccessibilityLabel(label) }
 }

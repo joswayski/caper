@@ -65,9 +65,9 @@ import AppKit
     private let state: NativeAudioTest
     private lazy var input = AppKitKitButton("") { [weak self] in self?.choose(input: true) }
     private lazy var output = AppKitKitButton("") { [weak self] in self?.choose(input: false) }
-    private let inputGain = NSSlider(value: 100, minValue: 0, maxValue: 200, target: nil, action: nil)
-    private let outputGain = NSSlider(value: 100, minValue: 0, maxValue: 200, target: nil, action: nil)
-    private let strength = NSSlider(value: 25, minValue: 0, maxValue: 100, target: nil, action: nil)
+    private let inputGain = AppKitCaperSlider(value: 100, minValue: 0, maxValue: 200, defaultValue: 100)
+    private let outputGain = AppKitCaperSlider(value: 100, minValue: 0, maxValue: 200, defaultValue: 100)
+    private let strength = AppKitCaperSlider(value: 25, minValue: 0, maxValue: 100, defaultValue: 25)
     private let inputLabel = AppKitKit.label("", size: 12), outputLabel = AppKitKit.label("", size: 12), strengthLabel = AppKitKit.label("", size: 12)
     private let status = AppKitKit.label("", size: 12, color: AppKitKit.error), elapsed = AppKitKit.label("", size: 12)
     private var record: AppKitKitButton!, speaker: AppKitKitButton!, natural: AppKitKitButton!, enhanced: AppKitKitButton!, stopPlayback: AppKitKitButton!
@@ -83,8 +83,17 @@ import AppKit
         header.close.setAccessibilityIdentifier("close-audio-preferences")
         subviews.compactMap { $0 as? NSScrollView }.first?.setAccessibilityIdentifier("audio-preferences-controls")
         input.setAccessibilityIdentifier("audio-input-device"); output.setAccessibilityIdentifier("audio-output-device")
-        for (slider, label, tag) in [(inputGain, "Test microphone volume", 0), (outputGain, "Test speaker volume", 1), (strength, "Voice processing", 2)] {
-            slider.tag = tag; slider.target = self; slider.action = #selector(gainChanged(_:)); slider.isContinuous = true; slider.setAccessibilityLabel(label)
+        inputGain.setAccessibilityLabel("Test microphone volume")
+        inputGain.onChange = { [weak self] next in
+            let v = Int(next.rounded()); self?.state.voice.setInputGain(v); CaperEffects.shared.slider(Double(v) / 200)
+        }
+        outputGain.setAccessibilityLabel("Test speaker volume")
+        outputGain.onChange = { [weak self] next in
+            let v = Int(next.rounded()); self?.state.voice.setOutputGain(v); CaperEffects.shared.slider(Double(v) / 200)
+        }
+        strength.setAccessibilityLabel("Voice processing")
+        strength.onChange = { [weak self] next in
+            let v = Int(next.rounded()); self?.state.voice.setVoiceProcessingStrength(v); CaperEffects.shared.slider(Double(v) / 100)
         }
         speaker = AppKitKitButton("Test speakers") { [state] in state.speaker.toggle(voice: voice) }; speaker.setAccessibilityIdentifier("speaker-test")
         record = AppKitKitButton("Test microphone", kind: .primary) { [state] in state.record() }; record.setAccessibilityIdentifier("local-mic-test")
@@ -125,7 +134,7 @@ import AppKit
             button.setAccessibilityLabel(label); button.setAccessibilityValue(button.title); button.setAccessibilityHelp("Opens device choices")
         }
         input.isEnabled = !mic.recording && !state.preparing
-        inputGain.integerValue = voice.inputGain; outputGain.integerValue = voice.outputGain; strength.integerValue = voice.voiceProcessingStrength
+        inputGain.value = Double(voice.inputGain); outputGain.value = Double(voice.outputGain); strength.value = Double(voice.voiceProcessingStrength)
         inputLabel.stringValue = "Microphone volume · \(voice.inputGain)%"; outputLabel.stringValue = "Speaker volume · \(voice.outputGain)%"
         strengthLabel.stringValue = "Voice enhancement · \(voice.voiceProcessingStrength)%"; strength.isEnabled = !mic.recording
         speaker.title = state.speaker.playing ? "Stop speaker test" : "Test speakers"; speaker.setAccessibilityValue(state.speaker.playing ? "Playing" : "")
@@ -144,11 +153,6 @@ import AppKit
         meter.tick(state, bounds: meterView.bounds, active: NSColor(CaperTheme.green).cgColor, idle: AppKitKit.border.cgColor)
         meterView.setAccessibilityLabel(state.microphone.recording ? "Received microphone level" : "Microphone level inactive")
         if showDiagnostics { diagnostics.stringValue = "Local diagnostics only. Nothing is uploaded.\n\(state.voice.noiseSuppressionStatus)\n\(NativeAudioReport.processing(state.voice))" }
-    }
-    @objc private func gainChanged(_ slider: NSSlider) {
-        let value = Int(slider.doubleValue.rounded())
-        if slider.tag == 0 { state.voice.setInputGain(value) } else if slider.tag == 1 { state.voice.setOutputGain(value) } else { state.voice.setVoiceProcessingStrength(value) }
-        CaperEffects.shared.slider(Double(value) / slider.maxValue)
     }
     private func choose(input: Bool) {
         guard picker == nil else { return }
