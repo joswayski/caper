@@ -330,7 +330,7 @@ import UniformTypeIdentifiers
 
     private func setDraftAppearance(_ appearance: String) {
         guard draftTheme.appearance != appearance else { return }
-        let base = appearance == "light" ? CaperThemeCatalog.paper : CaperThemeCatalog.obsidian
+        let base = appearance == "light" ? CaperThemeDocument.paper : CaperThemeDocument.obsidian
         let keepAccent = draftTheme.accent
         let keepBrand = draftTheme.brand
         let keepID = (draftTheme.id == "obsidian" || draftTheme.id == "paper") ? "custom-draft" : draftTheme.id
