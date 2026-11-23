@@ -32,6 +32,8 @@ import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -985,21 +987,24 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
     val still = reducedMotion()
     val lockDistance = with(LocalDensity.current) { VoiceMessages.LOCK_DP.dp.toPx() }
     Row(
-        modifier.background(SurfaceComposer, MaterialTheme.shapes.small).border(1.dp, Border, MaterialTheme.shapes.small)
-            .padding(start = 2.dp, end = 6.dp),
+        modifier.background(SurfaceComposer, RoundedCornerShape(20.dp)).border(1.dp, Border, RoundedCornerShape(20.dp))
+            .padding(start = 2.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         IconButton({ state.discard(haptic = true) }, Modifier.size(44.dp).alpha(if (state.holding) 0f else 1f), enabled = !state.holding) {
             Icon(painterResource(R.drawable.lucide_trash_2), if (state.dictating) "Discard dictation" else "Discard voice message", Modifier.size(18.dp), tint = TextMuted)
         }
-        Box(Modifier.size(10.dp).background(TerracottaBright, CircleShape))
+        // The live dot breathes while recording; steady without animations.
+        val breath = if (still) 1f else rememberInfiniteTransition(label = "dot")
+            .animateFloat(1f, 0.35f, infiniteRepeatable(tween(900, easing = EaseInOut), RepeatMode.Reverse), label = "breathe").value
+        Box(Modifier.size(8.dp).alpha(breath).background(TerracottaBright, CircleShape))
         Text(
             VoiceMessages.clock(state.elapsedMs), Modifier.semantics { contentDescription = "Recording, ${VoiceMessages.clock(state.elapsedMs)}" },
             color = Text, fontSize = 14.sp, fontWeight = FontWeight.Medium, style = TabularNumbers,
         )
         LiveBars(state, still, Modifier.weight(1f).height(28.dp))
         if (state.holding) Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-            Box(Modifier.size(36.dp).background(Terracotta, MaterialTheme.shapes.small), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(36.dp).background(Terracotta, CircleShape), contentAlignment = Alignment.Center) {
                 Icon(painterResource(R.drawable.lucide_mic), null, Modifier.size(18.dp), tint = Text)
             }
             LockHint((-state.lift / lockDistance).coerceIn(0f, 1f), Modifier.align(Alignment.BottomCenter)
@@ -1007,10 +1012,10 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
                 .wrapContentHeight(Alignment.Bottom, unbounded = true).offset(y = (-56).dp))
         } else {
             if (state.dictating) OutlinedButton(
-                { state.stop(asVoice = true) }, Modifier.height(40.dp), enabled = state.noteBlocked == null,
-                shape = MaterialTheme.shapes.small, border = androidx.compose.foundation.BorderStroke(1.dp, Border),
-                contentPadding = PaddingValues(horizontal = 10.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Text, disabledContentColor = TextMuted),
+                { state.stop(asVoice = true) }, Modifier.height(36.dp), enabled = state.noteBlocked == null,
+                shape = CircleShape, border = androidx.compose.foundation.BorderStroke(1.dp, Border),
+                contentPadding = PaddingValues(start = 10.dp, end = 12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceRaised, contentColor = Text, disabledContentColor = TextMuted),
             ) {
                 Icon(painterResource(R.drawable.lucide_audio_lines), null, Modifier.size(14.dp))
                 Spacer(Modifier.width(6.dp))
@@ -1021,7 +1026,7 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
     }
 }
 
-/** The hands-free Stop: terracotta, with a ring that grows and fades from it every second. */
+/** The hands-free Done or Stop: a chalk circle with obsidian ink, and a botanical ring that grows and fades from it every second. */
 @Composable private fun LiveStopButton(still: Boolean, done: Boolean = false, stop: () -> Unit) {
     val pulse = if (still) 1f else {
         val transition = rememberInfiniteTransition(label = "live")
@@ -1031,23 +1036,23 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
         stop, Modifier.size(40.dp).drawBehind {
             if (still) return@drawBehind
             val grow = 7.dp.toPx() * pulse
-            drawRoundRect(
-                TerracottaBright.copy(alpha = 0.55f * (1 - pulse)), Offset(-grow, -grow), Size(size.width + 2 * grow, size.height + 2 * grow),
-                CornerRadius(8.dp.toPx() + grow), style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()),
+            drawCircle(
+                TerracottaBright.copy(alpha = 0.55f * (1 - pulse)), size.minDimension / 2 + grow,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()),
             )
-        }.semantics { contentDescription = if (done) VoiceMessages.DONE_LABEL else "Stop recording" }, shape = MaterialTheme.shapes.small,
-        colors = IconButtonDefaults.filledIconButtonColors(containerColor = TerracottaBright, contentColor = Text),
+        }.semantics { contentDescription = if (done) VoiceMessages.DONE_LABEL else "Stop recording" }, shape = CircleShape,
+        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Action, contentColor = OnAction),
     ) {
         if (done) Icon(painterResource(R.drawable.lucide_check), null, Modifier.size(18.dp))
-        else Box(Modifier.size(12.dp).background(Text, RoundedCornerShape(2.dp)))
+        else Box(Modifier.size(11.dp).background(OnAction, RoundedCornerShape(2.5.dp)))
     }
 }
 
 /** Above a held mic: a lock with an arrow under it; sliding up lifts the lock and fades the arrow. */
 @Composable private fun LockHint(progress: Float, modifier: Modifier) {
     Column(
-        modifier.background(SurfaceRaised, MaterialTheme.shapes.small).border(1.dp, Border, MaterialTheme.shapes.small)
-            .width(32.dp).padding(vertical = 10.dp),
+        modifier.background(SurfaceRaised, CircleShape).border(1.dp, Border, CircleShape)
+            .width(34.dp).padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(14.dp).offset(y = (-6 * progress).dp), tint = Text)
@@ -1126,28 +1131,48 @@ private fun mixRgb(from: Color, to: Color, t: Float, alpha: Float) = Color(
  * Above the composer: while holding, what release does; otherwise a short hint or the
  * permission error. Hands-free recording explains itself in the bar.
  */
+@kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun VoiceRecordingNotice(state: VoiceRecorderState) {
     val sendOnStop = VoicePreferences.sendOnStop(LocalContext.current)
     state.dictation?.let { dictation ->
-        val small = Modifier.height(32.dp)
-        val padding = PaddingValues(horizontal = 10.dp)
         val border = androidx.compose.foundation.BorderStroke(1.dp, Border)
-        val colors = ButtonDefaults.outlinedButtonColors(contentColor = Text)
-        @Composable fun Action(label: String, onClick: () -> Unit) =
-            OutlinedButton(onClick, small, shape = MaterialTheme.shapes.small, border = border, contentPadding = padding, colors = colors) {
-                Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        // Keeping the recording is the chalk primary; Retry and Cancel stay neutral capsules.
+        @Composable fun Pill(label: String, icon: Int? = null, primary: Boolean = false, onClick: () -> Unit) =
+            OutlinedButton(
+                onClick, Modifier.height(40.dp), shape = CircleShape, border = if (primary) null else border,
+                contentPadding = PaddingValues(start = if (icon == null) 14.dp else 12.dp, end = 14.dp),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = if (primary) Action else SurfaceComposer, contentColor = if (primary) OnAction else Text),
+            ) {
+                if (icon != null) { Icon(painterResource(icon), null, Modifier.size(14.dp)); Spacer(Modifier.width(6.dp)) }
+                Text(label, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
-        Column(Modifier.fillMaxWidth().padding(bottom = 6.dp).semantics { liveRegion = LiveRegionMode.Polite }) {
-            if (dictation.error == null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CircularProgressIndicator(Modifier.size(14.dp), color = TextMuted, strokeWidth = 2.dp)
-                Text(VoiceMessages.TRANSCRIBING, Modifier.weight(1f), color = TextMuted, fontSize = 12.sp)
-                Action("Cancel") { state.dropDictation() }
+        Column(
+            Modifier.fillMaxWidth().padding(bottom = 8.dp).background(SurfaceRaised, RoundedCornerShape(16.dp))
+                .border(1.dp, Border, RoundedCornerShape(16.dp)).padding(12.dp)
+                .semantics(mergeDescendants = false) { liveRegion = LiveRegionMode.Polite },
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (dictation.error == null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CircularProgressIndicator(Modifier.size(16.dp), color = TextMuted, strokeWidth = 2.dp)
+                Text(VoiceMessages.TRANSCRIBING, Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
+                Pill("Cancel") { state.dropDictation() }
             } else {
-                Text("Couldn’t insert your words. ${dictation.error}", color = ErrorText, fontSize = 12.sp)
-                Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Action("Retry") { state.transcribe(dictation.recording) }
-                    if (state.noteBlocked == null) Action(if (sendOnStop) "Send as voice note" else "Keep as voice note") { state.keepDictationAsVoice() }
-                    Action("Discard") { state.dropDictation() }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.size(30.dp).background(ErrorText.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
+                        Text("!", color = ErrorText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
+                        Text("Couldn’t insert your words", color = Text, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(dictation.error, color = TextMuted, fontSize = 12.sp)
+                    }
+                }
+                // Wraps on a narrow phone or at large text sizes instead of clipping.
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state.noteBlocked == null) Pill(if (sendOnStop) "Send as voice note" else "Keep as voice note", R.drawable.lucide_audio_lines, primary = true) { state.keepDictationAsVoice() }
+                    Pill("Retry", R.drawable.lucide_rotate_ccw) { state.transcribe(dictation.recording) }
+                    IconButton({ state.dropDictation() }, Modifier.size(40.dp).border(1.dp, Border, CircleShape)) {
+                        Icon(painterResource(R.drawable.lucide_trash_2), "Discard", Modifier.size(16.dp), tint = TextMuted)
+                    }
                 }
             }
         }

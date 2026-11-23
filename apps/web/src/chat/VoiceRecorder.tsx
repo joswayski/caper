@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { AudioLines, Check, ChevronUp, LockKeyhole, Mic, Square, Trash2 } from "lucide-react";
+import { AudioLines, Check, ChevronUp, CircleAlert, LockKeyhole, Mic, RotateCcw, Square, Trash2 } from "lucide-react";
 import { callAudio } from "../media/call-audio.ts";
 import type { ComposerInput } from "./MentionTextarea.tsx";
 import {
@@ -525,11 +525,12 @@ export function useVoiceRecorder({
         </p>
       )}
       {dictation && !dictation.error && (
-        <p className="chat-voice-status" role="status">
+        <div className="chat-voice-card" role="status">
           <span className="chat-spinner" aria-hidden="true" />
-          Transcribing…
+          <span className="chat-voice-card-text">Transcribing…</span>
           <button
             type="button"
+            className="chat-voice-pill"
             onClick={() => {
               transcribing.current?.abort();
               setDictation(undefined);
@@ -537,29 +538,47 @@ export function useVoiceRecorder({
           >
             Cancel
           </button>
-        </p>
+        </div>
       )}
       {dictation?.error && (
-        <p className="chat-inline-error" role="alert">
-          Couldn’t transcribe that. {dictation.error}
-          <button type="button" onClick={() => void insert(dictation.recording)}>
-            Retry
-          </button>
-          {!voiceBlocked && (
+        <div className="chat-voice-card" data-error={true} role="alert">
+          <span className="chat-voice-card-badge" aria-hidden="true">
+            <CircleAlert size={16} />
+          </span>
+          <span className="chat-voice-card-text">
+            <strong>Couldn’t transcribe that</strong>
+            <span>{dictation.error}</span>
+          </span>
+          <span className="chat-voice-card-actions">
+            {!voiceBlocked && (
+              <button
+                type="button"
+                className="chat-voice-pill"
+                data-primary={true}
+                onClick={() => {
+                  setDictation(undefined);
+                  onRecorded.current?.(dictation.recording);
+                }}
+              >
+                <AudioLines size={14} aria-hidden="true" />
+                {voice?.sendOnStop ? "Send as voice note" : "Keep as voice note"}
+              </button>
+            )}
+            <button type="button" className="chat-voice-pill" onClick={() => void insert(dictation.recording)}>
+              <RotateCcw size={14} aria-hidden="true" />
+              Retry
+            </button>
             <button
               type="button"
-              onClick={() => {
-                setDictation(undefined);
-                onRecorded.current?.(dictation.recording);
-              }}
+              className="chat-voice-card-discard"
+              aria-label="Discard"
+              title="Discard"
+              onClick={() => setDictation(undefined)}
             >
-              {voice?.sendOnStop ? "Send as voice note" : "Keep as voice note"}
+              <Trash2 size={16} aria-hidden="true" />
             </button>
-          )}
-          <button type="button" onClick={() => setDictation(undefined)}>
-            Discard
-          </button>
-        </p>
+          </span>
+        </div>
       )}
       {hint && !error && (
         <p className="chat-voice-status" role="status">

@@ -6386,7 +6386,7 @@ a.chat-draft-preview {
   padding: 10px 0 8px;
   translate: -50% 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-pill);
   color: var(--text);
   background: var(--surface-raised);
   pointer-events: none;
@@ -6414,9 +6414,9 @@ a.chat-draft-preview {
   gap: 10px;
   min-width: 0;
   min-height: 42px;
-  padding: 4px 5px 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 4px 4px 4px 4px;
+  border: 1px solid var(--composer-border);
+  border-radius: var(--radius-composer);
   color: var(--text);
   background: var(--surface-composer);
   animation: caper-fade-in var(--motion-fast) var(--ease-out);
@@ -6441,18 +6441,19 @@ a.chat-draft-preview {
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
 }
 .chat-voice-recorder .chat-voice-discard {
   color: var(--text-muted);
   background: transparent;
 }
-/* Stop is terracotta while live and pulses once a second. */
+/* Done (dictating) or Stop: a chalk circle with obsidian ink, the primary
+   action, with a botanical ring that grows and fades from it every second. */
 .chat-voice-recorder .chat-voice-stop {
   margin-left: auto;
-  color: var(--text);
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
 }
 .chat-voice-recorder .chat-voice-stop:not(:disabled) {
   animation: chat-voice-live 1s var(--ease-out) infinite;
@@ -6471,7 +6472,7 @@ a.chat-draft-preview {
     background: var(--surface-hover);
   }
   .chat-voice-recorder .chat-voice-stop:hover:not(:disabled) {
-    background: var(--terracotta-bright);
+    background: var(--action-hover);
   }
 }
 /* Dictating: keep this recording as a voice message instead of inserting text. */
@@ -6482,13 +6483,13 @@ a.chat-draft-preview {
   gap: 6px;
   height: 32px;
   margin-left: auto;
-  padding: 0 10px;
+  padding: 0 12px 0 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-pill);
   color: var(--text);
-  background: transparent;
+  background: var(--surface-raised);
   font: inherit;
-  font-size: 0.75rem;
+  font-size: 0.78rem;
   font-weight: 700;
   white-space: nowrap;
   cursor: pointer;
@@ -6507,7 +6508,7 @@ a.chat-draft-preview {
 }
 @media (pointer: coarse) {
   .chat-voice-recorder .chat-voice-as-note {
-    height: 40px;
+    height: 36px;
   }
 }
 .chat-voice-recorder .chat-voice-stop:disabled {
@@ -6520,13 +6521,14 @@ a.chat-draft-preview {
   outline-offset: -2px;
 }
 .chat-voice-recorder .chat-voice-stop:focus-visible {
-  outline-color: var(--text);
+  outline-color: var(--accent-bright);
+  outline-offset: 2px;
 }
 @media (pointer: coarse) {
   .chat-voice-recorder .chat-voice-discard,
   .chat-voice-recorder .chat-voice-stop {
-    width: 40px;
-    height: 40px;
+    width: 38px;
+    height: 38px;
   }
 }
 .chat-voice-dot {
@@ -6536,14 +6538,18 @@ a.chat-draft-preview {
   border-radius: 50%;
   background: var(--text-muted);
 }
+/* The live dot breathes while the microphone records (steady with reduced motion). */
 .chat-voice-dot[data-live] {
   background: var(--terracotta-bright);
+  animation: chat-voice-breathe 1.8s ease-in-out infinite;
 }
 .chat-voice-elapsed {
   flex: none;
   min-width: 3.4em;
+  margin-left: -3px;
   color: var(--text);
-  font-size: 0.8rem;
+  font-size: 0.875rem;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 /* The live meter, drawn on a canvas: a new bar every 75 ms scrolling right to
@@ -6563,7 +6569,7 @@ a.chat-draft-preview {
   overflow: hidden;
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-pill);
   color: var(--text);
   background: var(--surface-raised);
   font-size: 0.75rem;
@@ -6580,6 +6586,120 @@ a.chat-draft-preview {
   color: var(--text-muted);
   font-size: 0.72rem;
   line-height: 1.4;
+}
+/* A dictation that is transcribing, or failed with its audio kept: one raised
+   card above the composer. Keeping the recording is the chalk primary. */
+.chat-voice-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 10px;
+  margin: 0 0 10px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  animation: chat-voice-card-in var(--motion-base) var(--ease-out);
+}
+@keyframes chat-voice-card-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+.chat-voice-card-text {
+  display: grid;
+  flex: 1 1 0;
+  gap: 1px;
+  min-width: 0;
+}
+.chat-voice-card-text strong {
+  color: var(--text);
+  font-weight: 700;
+}
+.chat-voice-card-badge {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-pill);
+  color: var(--error-text);
+  background: color-mix(in srgb, var(--error-text) 14%, transparent);
+}
+.chat-voice-card-actions {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.chat-voice-pill,
+.chat-voice-card-discard {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  background: var(--surface-hover);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-voice-pill:has(svg) {
+  padding-left: 11px;
+}
+.chat-voice-pill[data-primary] {
+  border-color: transparent;
+  color: var(--on-action);
+  background: var(--action);
+}
+.chat-voice-card-discard {
+  width: 34px;
+  margin-left: auto;
+  padding: 0;
+  color: var(--text-muted);
+}
+@media (hover: hover) {
+  .chat-voice-pill:hover,
+  .chat-voice-card-discard:hover {
+    color: var(--text);
+    background: rgb(255 255 255 / 9%);
+  }
+  .chat-voice-pill[data-primary]:hover {
+    color: var(--on-action);
+    background: var(--action-hover);
+  }
+}
+.chat-voice-pill:active {
+  background: rgb(255 255 255 / 12%);
+}
+.chat-voice-pill[data-primary]:active {
+  background: var(--action-press);
+}
+.chat-voice-pill:focus-visible,
+.chat-voice-card-discard:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+@media (pointer: coarse) {
+  .chat-voice-pill,
+  .chat-voice-card-discard {
+    height: 40px;
+  }
+  .chat-voice-card-discard {
+    width: 40px;
+  }
 }
 
 /* The player: an eggshell play button, the waveform and the time. */
@@ -6792,6 +6912,8 @@ a.chat-draft-preview {
   .chat-voice-recorder,
   .chat-voice-transcript[data-arrive],
   .chat-voice-recorder .chat-voice-stop:not(:disabled),
+  .chat-voice-dot[data-live],
+  .chat-voice-card,
   .chat-voice-lock {
     animation: none;
   }
