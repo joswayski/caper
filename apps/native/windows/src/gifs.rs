@@ -1042,7 +1042,7 @@ impl App {
         let s = self.scale;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         let Some(p) = &self.gifs else {
-            return self.gifs_p.offset(-10_000.0, 0.0);
+            return self.gifs_p.hide();
         };
         let g = &self.g;
         self.gifs_p.ensure(g, px(W), px(H))?;

@@ -619,8 +619,14 @@ impl App {
         }
         let s = self.scale;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
-        self.narrow_p.ensure(&self.g, px(self.w), px(self.h))?;
-        self.narrow_p.offset(0.0, 0.0)?;
+        // Usually none of these shows in the wide layout: then there is no
+        // window-sized surface, and drawing it below does nothing.
+        if self.browsing() || self.inline_voice_error() || self.strip_shown() {
+            self.narrow_p.ensure(&self.g, px(self.w), px(self.h))?;
+            self.narrow_p.offset(0.0, 0.0)?;
+        } else {
+            self.narrow_p.hide()?;
+        }
         self.narrow_p.draw(s, |dc| {
             unsafe {
                 dc.Clear(Some(&gfx::color(0, 0.0)));
@@ -757,7 +763,7 @@ impl App {
             Ok(())
         })?;
         if !self.narrow.menu && self.narrow_rect(Part::CloseMembers).is_none() {
-            return self.narrow_menu_p.offset(-100_000.0, 0.0);
+            return self.narrow_menu_p.hide();
         }
         self.narrow_menu_p.ensure(&self.g, px(self.w), px(self.h))?;
         self.narrow_menu_p.offset(0.0, 0.0)?;

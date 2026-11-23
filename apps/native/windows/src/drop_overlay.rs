@@ -208,7 +208,7 @@ impl App {
             .and_then(|o| self.drop_target_at(o.point));
         let Some((root, (x, y, w, h))) = target else {
             self.close_drop();
-            return self.drop_p.offset(-10_000.0, 0.0);
+            return self.drop_p.hide();
         };
         let Some(open) = &self.drop_overlay else {
             return Ok(());

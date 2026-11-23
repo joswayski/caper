@@ -1119,10 +1119,10 @@ impl App {
             return Ok(());
         }
         let (Some(v), Some(card)) = (self.profile_view(), self.profile.as_ref()) else {
-            return self.profile_p.offset(-100_000.0, 0.0);
+            return self.profile_p.hide();
         };
         let Some(geo) = self.profile_geometry(&v) else {
-            return self.profile_p.offset(-100_000.0, 0.0);
+            return self.profile_p.hide();
         };
         let s = self.scale;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;

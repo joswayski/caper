@@ -1236,7 +1236,7 @@ impl App {
                     self.picker_p.offset((p.x * s).round(), (p.y * s).round())?;
                     self.picker_p.draw(s, |dc| p.draw(g, dc))?;
                 }
-                None => self.picker_p.offset(-10_000.0, 0.0)?,
+                None => self.picker_p.hide()?,
             }
         }
         if std::mem::take(&mut self.dirty.reply) {

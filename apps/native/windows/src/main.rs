@@ -271,9 +271,9 @@ impl Panel {
         }
     }
 
-    /// Moves a closed panel off-screen and frees its surface, so a
-    /// window-sized overlay (dialog, viewer, Settings, Pins) holds no GPU
-    /// memory while closed; the next `ensure` makes a new one.
+    /// Moves a closed panel off-screen and frees its surface, so an overlay
+    /// (dialog, viewer, Settings, Pins, pickers, cards, the thread pane)
+    /// holds no GPU memory while closed; the next `ensure` makes a new one.
     fn hide(&mut self) -> Result<()> {
         self.offset(-100_000.0, 0.0)?;
         if self.surface.take().is_some() {
@@ -3716,7 +3716,7 @@ impl App {
                 Ok(())
             })?;
         } else {
-            self.members_backdrop.offset(-100_000.0, 0.0)?;
+            self.members_backdrop.hide()?;
         }
         let bw = lw - 36.0;
         self.box_h = self.box_height(bw)?;

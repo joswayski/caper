@@ -2367,8 +2367,8 @@ impl App {
         let s = self.scale;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         if self.thread.is_none() {
-            self.thread_p.offset(-10_000.0, 0.0)?;
-            self.thread_box_p.offset(-10_000.0, 0.0)?;
+            self.thread_p.hide()?;
+            self.thread_box_p.hide()?;
             return Ok(());
         }
         let bar = self.thread_bar();
