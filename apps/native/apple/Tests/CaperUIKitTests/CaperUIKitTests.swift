@@ -974,14 +974,14 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(card.waitForExistence(timeout: 10), "Tapping a pill opens the card")
         XCTAssertTrue(app.buttons["mention-card-message"].waitForExistence(timeout: 5), "Maya's card offers Message")
         screenshot("uikit-mention-card")
-        app.swipeDown(velocity: .fast)
+        app.buttons["mention-card-close"].tap()
         XCTAssertTrue(card.waitForNonExistence(timeout: 10))
 
         // The author's avatar on the newest unbroken row.
         let latest = row(Self.latest)
         latest.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 34, dy: 26)).tap()
         XCTAssertTrue(card.waitForExistence(timeout: 10), "The author's avatar opens their card")
-        app.swipeDown(velocity: .fast)
+        app.buttons["mention-card-close"].tap()
         XCTAssertTrue(card.waitForNonExistence(timeout: 10))
 
         app.buttons["channel-title-menu"].tap()
