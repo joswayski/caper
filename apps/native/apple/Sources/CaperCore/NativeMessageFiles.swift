@@ -7,8 +7,6 @@ import SwiftUI
 /// A realized file owns its decoded preview and player. Hidden spoilers display
 /// only blurred stills and never start playback; viewers share the reveal set.
 @MainActor private final class NativeFileMedia {
-    /// One Core Image context for every spoiler: each is costly to create.
-    private static let blur = CIContext()
     let image = CALayer()
     let video = AVPlayerLayer()
     var changed: (() -> Void)?
@@ -78,9 +76,9 @@ import SwiftUI
                 // Blur pixels before assigning them; no layer transition can
                 // expose the decoded still while the spoiler is hidden.
                 if let preview {
-                    let input = CIImage(cgImage: preview)
-                    image.contents = Self.blur.createCGImage(input.clampedToExtent().applyingFilter("CIGaussianBlur",
-                        parameters: [kCIInputRadiusKey: 32]), from: input.extent)
+                    let blurred = await SpoilerBlur.blurred(preview, id: attachment.id)
+                    guard !Task.isCancelled else { return }
+                    image.contents = blurred
                 }
                 changed?(); return
             }
@@ -147,6 +145,27 @@ import SwiftUI
         animation.keyTimes = frames.durations.map { duration in defer { elapsed += duration }; return NSNumber(value: elapsed / total) } + [1]
         animation.duration = total; animation.repeatCount = .infinity; animation.calculationMode = .discrete
         image.add(animation, forKey: "frames")
+    }
+}
+
+/// Hidden spoilers' blurred stills, rendered off the main thread with one
+/// shared Core Image context and kept by attachment, so a tile that scrolls
+/// back into view shows the same pixels without blurring again.
+private enum SpoilerBlur {
+    private static let context = CIContext()
+    nonisolated(unsafe) private static let cache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>(); cache.totalCostLimit = 64 << 20; return cache
+    }()
+
+    static func blurred(_ still: CGImage, id: String) async -> CGImage? {
+        if let cached = cache.object(forKey: id as NSString) { return cached }
+        let rendered = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+            let input = CIImage(cgImage: still)
+            return context.createCGImage(input.clampedToExtent().applyingFilter("CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: 32]), from: input.extent)
+        }.value
+        if let rendered { cache.setObject(rendered, forKey: id as NSString, cost: rendered.bytesPerRow * rendered.height) }
+        return rendered
     }
 }
 
