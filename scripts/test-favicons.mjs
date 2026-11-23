@@ -11,10 +11,10 @@ assert.ok(["localhost", "127.0.0.1"].includes(origin.hostname));
 const artifacts = process.argv[3] && resolve(process.argv[3]);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
 const expected = [
-  { rel: "icon", type: "image/png", sizes: "32x32", href: "/icons/caper-main-v3-32.png" },
-  { rel: "icon", type: "image/png", sizes: "192x192", href: "/icons/caper-main-v3-192.png" },
-  { rel: "icon", type: "image/svg+xml", sizes: "any", href: "/caper-face.svg?v=3" },
-  { rel: "apple-touch-icon", type: null, sizes: "180x180", href: "/icons/caper-main-v3-180.png" },
+  { rel: "icon", type: "image/png", sizes: "32x32", href: "/icons/caper-main-v4-32.png" },
+  { rel: "icon", type: "image/png", sizes: "192x192", href: "/icons/caper-main-v4-192.png" },
+  { rel: "icon", type: "image/svg+xml", sizes: "any", href: "/caper-face.svg?v=4" },
+  { rel: "apple-touch-icon", type: null, sizes: "180x180", href: "/icons/caper-main-v4-180.png" },
 ];
 for (const route of ["/", "/login", "/spaces"]) {
   const response = await fetch(new URL(route, origin));
@@ -37,11 +37,11 @@ const manifest = await manifestResponse.json();
 assert.equal(manifest.display, "browser");
 assert.deepEqual(
   manifest.icons,
-  [192, 512].map((size) => ({ src: `/icons/caper-main-v3-${size}.png`, sizes: `${size}x${size}`, type: "image/png" })),
+  [192, 512].map((size) => ({ src: `/icons/caper-main-v4-${size}.png`, sizes: `${size}x${size}`, type: "image/png" })),
 );
 for (const { href, type, sizes } of [
   ...expected,
-  { href: "/icons/caper-main-v3-512.png", type: "image/png", sizes: "512x512" },
+  { href: "/icons/caper-main-v4-512.png", type: "image/png", sizes: "512x512" },
 ]) {
   const response = await fetch(new URL(href, origin));
   assert.equal(response.status, 200, href);
@@ -111,7 +111,7 @@ const waitForWordmark = () =>
   browser(
     "wait",
     "--fn",
-    `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === '/caper-face.svg?v=3' && image.complete && image.naturalWidth > 0 && getComputedStyle(image).visibility === 'visible' && getComputedStyle(image).opacity === '1')`,
+    `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === '/caper-face.svg?v=4' && image.complete && image.naturalWidth > 0 && getComputedStyle(image).visibility === 'visible' && getComputedStyle(image).opacity === '1')`,
   );
 const waitForIcon = (index, previousPNG = "") => {
   browser(
@@ -179,7 +179,7 @@ try {
       }
     }
     const apple = document.querySelector('link[rel="apple-touch-icon"]');
-    if (apple.getAttribute('href') !== '/icons/caper-main-v3-180.png') throw Error('Installed icon rotated');
+    if (apple.getAttribute('href') !== '/icons/caper-main-v4-180.png') throw Error('Installed icon rotated');
     const image = new Image(); image.src = apple.href; await image.decode();
     const canvas = document.createElement('canvas'); canvas.width = canvas.height = 32;
     const ctx = canvas.getContext('2d'); ctx.drawImage(image,0,0,32,32);
@@ -215,7 +215,7 @@ try {
       "eval",
       `(() => {
       const stage = document.createElement('section'); stage.id = 'favicon-review';
-      stage.innerHTML = '<style>#favicon-review{position:fixed;inset:0;z-index:99999;overflow:auto;background:#0c0d0f;color:#f3f4f5;padding:24px;font:14px "Inrond 40",sans-serif}#favicon-review h1{font-size:22px;margin:0 0 8px}#favicon-review p{margin:0 0 20px;color:#adb2b5}.icon-panels{display:grid;grid-template-columns:1fr 1fr;gap:16px}.icon-panel{padding:16px;border:1px solid #34383b;border-radius:8px}.icon-panel h2{font-size:14px;margin:0 0 16px}.icon-row{display:flex;align-items:center;gap:16px;margin:16px 0;padding:12px}.icon-label{width:32px}.light{background:#f3f4f5;color:#151719}.fixed-icon{margin-top:24px}.fixed-icon img{width:90px;height:90px;box-sizing:content-box;border:12px solid #f3f4f5}@media(max-width:600px){.icon-panels{grid-template-columns:1fr}}</style><h1>Caper · daily rotating avatars</h1><p>Clock-controlled browser test · rendered assets, not OS chrome</p><div class="icon-panels"></div><div class="fixed-icon"><p>Unsupported / installed surfaces · original mascot stays fixed</p><img src="/icons/caper-main-v3-180.png" alt="Original green Caper icon"></div>';
+      stage.innerHTML = '<style>#favicon-review{position:fixed;inset:0;z-index:99999;overflow:auto;background:#0c0d0f;color:#f3f4f5;padding:24px;font:14px "Inrond 40",sans-serif}#favicon-review h1{font-size:22px;margin:0 0 8px}#favicon-review p{margin:0 0 20px;color:#adb2b5}.icon-panels{display:grid;grid-template-columns:1fr 1fr;gap:16px}.icon-panel{padding:16px;border:1px solid #34383b;border-radius:8px}.icon-panel h2{font-size:14px;margin:0 0 16px}.icon-row{display:flex;align-items:center;gap:16px;margin:16px 0;padding:12px}.icon-label{width:32px}.light{background:#f3f4f5;color:#151719}.fixed-icon{margin-top:24px}.fixed-icon img{width:90px;height:90px;box-sizing:content-box;border:12px solid #f3f4f5}@media(max-width:600px){.icon-panels{grid-template-columns:1fr}}</style><h1>Caper · daily rotating avatars</h1><p>Clock-controlled browser test · rendered assets, not OS chrome</p><div class="icon-panels"></div><div class="fixed-icon"><p>Unsupported / installed surfaces · original mascot stays fixed</p><img src="/icons/caper-main-v4-180.png" alt="Original green Caper icon"></div>';
       for (const [i,sample] of ${JSON.stringify([today, tomorrow])}.entries()) {
         const panel = document.createElement('div'); panel.className = 'icon-panel';
         panel.innerHTML = '<h2>Day '+(i+1)+' · avatar '+(i===0?'799':'0')+'</h2>';
@@ -269,7 +269,7 @@ try {
   waitForWordmark();
   assert.equal(
     evaluate(`document.querySelector('#caper-favicon-svg').getAttribute('href')`),
-    "/caper-face.svg?v=3",
+    "/caper-face.svg?v=4",
     "Explicitly mocked standalone launch keeps original identity",
   );
   browser("open", `${origin}login?blocked-storage-test=1`);

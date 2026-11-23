@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -38,7 +39,7 @@ import chat.caper.android.ui.*
 import kotlinx.coroutines.delay
 
 /** A modal inbox keeps the underlying chat draft and voice call mounted. */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable internal fun ActivityInboxEntry(viewModel: CaperViewModel, modifier: Modifier = Modifier.padding(horizontal = 16.dp), onOpened: () -> Unit) {
     val inbox by viewModel.activityInbox.collectAsState()
     val state by viewModel.state.collectAsState()
@@ -67,114 +68,125 @@ import kotlinx.coroutines.delay
         viewModel.loadActivity(poll = loaded.loading || loaded.items.isNotEmpty())
         while (true) { delay(15_000); if (!viewModel.activityInbox.value.loading) viewModel.loadActivity(poll = true) }
     }
-    Dialog({ if (picking.isEmpty() && reacting == null) shown = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxWidth().fillMaxHeight(0.94f).padding(12.dp).widthIn(max = 620.dp),
-            color = SurfaceConversation, shape = MaterialTheme.shapes.medium) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    val closable = picking.isEmpty() && reacting == null
+    val body: @Composable (Modifier) -> Unit = { bodyModifier ->
+        Column(bodyModifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Notifications", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Text)
+                TextButton({ shown = false }, enabled = picking.isEmpty() && reacting == null) { Text("Done") }
+            }
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ActivityFilter.entries.forEach { filter ->
+                    FilterChip(inbox.filter == filter, { viewModel.filterActivity(filter, inbox.unreadOnly) },
+                        label = { Text(filter.label) })
+                }
+            }
+            Row(Modifier.toggleable(inbox.unreadOnly, role = Role.Switch) {
+                viewModel.filterActivity(inbox.filter, it)
+            }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.width(40.dp).height(48.dp), contentAlignment = Alignment.Center) {
+                    Switch(inbox.unreadOnly, null, Modifier.wrapContentSize(unbounded = true).scale(0.75f),
+                        colors = caperSwitchColors())
+                }
+                Text("Unread only", color = Text)
+                Text("(${inbox.unreadCount})", color = TextMuted)
+            }
+            inbox.error?.let {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Notifications", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Text)
-                    TextButton({ shown = false }, enabled = picking.isEmpty() && reacting == null) { Text("Done") }
+                    Text(it, Modifier.weight(1f), color = ErrorText, fontSize = 13.sp)
+                    TextButton({ viewModel.loadActivity(poll = true) }, enabled = !inbox.loading) { Text("Retry") }
                 }
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ActivityFilter.entries.forEach { filter ->
-                        FilterChip(inbox.filter == filter, { viewModel.filterActivity(filter, inbox.unreadOnly) },
-                            label = { Text(filter.label) })
-                    }
-                }
-                Row(Modifier.toggleable(inbox.unreadOnly, role = Role.Switch) {
-                    viewModel.filterActivity(inbox.filter, it)
-                }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.width(40.dp).height(48.dp), contentAlignment = Alignment.Center) {
-                        Switch(inbox.unreadOnly, null, Modifier.wrapContentSize(unbounded = true).scale(0.75f),
-                            colors = caperSwitchColors())
-                    }
-                    Text("Unread only", color = Text)
-                    Text("(${inbox.unreadCount})", color = TextMuted)
-                }
-                inbox.error?.let {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(it, Modifier.weight(1f), color = ErrorText, fontSize = 13.sp)
-                        TextButton({ viewModel.loadActivity(poll = true) }, enabled = !inbox.loading) { Text("Retry") }
-                    }
-                }
-                if (inbox.loading && inbox.visibleItems.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (!inbox.loading && inbox.visibleItems.isEmpty() && inbox.error == null && inbox.cursor == null) Column(
-                    Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Icon(painterResource(R.drawable.lucide_bell), null, tint = TextMuted)
-                    Text(if (inbox.unreadOnly) "You’re all caught up" else "No notifications here yet", color = Text, fontWeight = FontWeight.Bold)
-                    Text(if (inbox.unreadOnly) "No unread notifications in this view." else "Messages, mentions, replies and reactions will appear here.",
-                        color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                }
-                // The previous filter's rows stay put until the new page replaces them: dimmed after a beat
-                // (fast replies swap without a flash) and inert. Leaving the stale state is instant.
-                val still = reducedMotion()
-                val dim by animateFloatAsState(if (inbox.stale) 0.5f else 1f, when {
-                    !inbox.stale -> snap()
-                    still -> snap(150)
-                    else -> tween(MOTION_FAST, 150, EaseOut)
-                }, label = "stale")
-                LazyColumn(Modifier.weight(1f).graphicsLayer { alpha = dim }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(inbox.visibleItems, key = { it.id }) { item ->
-                        Column(Modifier.fillMaxWidth().background(SurfaceRaised, MaterialTheme.shapes.small).padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Avatar(item.actorName, 28.dp, avatarId = item.avatarId)
-                                Spacer(Modifier.width(10.dp))
-                                Text("${if (item.unread) "● " else ""}${item.actorName}",
-                                    Modifier.weight(1f).clickable(enabled = !inbox.stale && inbox.opening != item.id, role = Role.Button) {
-                                        viewModel.readActivity(item, open = true) { shown = false; onOpened() }
-                                    // The dot is unread state (web: aria-label "Unread"), not a glyph to read out.
-                                    }.semantics { contentDescription = item.actorName; if (item.unread) stateDescription = "Unread" }, fontWeight = if (item.unread) FontWeight.Bold else FontWeight.Medium, color = Text, fontSize = 13.sp)
-                                Text(feedbackAge(item.createdAt), color = TextMuted, fontSize = 11.sp)
-                                if (item.unread) IconButton({ viewModel.readActivity(item) }, enabled = !inbox.stale) {
-                                    Icon(painterResource(R.drawable.lucide_check), "Mark notification from ${item.actorName} read", Modifier.size(16.dp), tint = TextMuted)
+            }
+            if (inbox.loading && inbox.visibleItems.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (!inbox.loading && inbox.visibleItems.isEmpty() && inbox.error == null && inbox.cursor == null) Column(
+                Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(painterResource(R.drawable.lucide_bell), null, tint = TextMuted)
+                Text(if (inbox.unreadOnly) "You’re all caught up" else "No notifications here yet", color = Text, fontWeight = FontWeight.Bold)
+                Text(if (inbox.unreadOnly) "No unread notifications in this view." else "Messages, mentions, replies and reactions will appear here.",
+                    color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            }
+            // The previous filter's rows stay put until the new page replaces them: dimmed after a beat
+            // (fast replies swap without a flash) and inert. Leaving the stale state is instant.
+            val still = reducedMotion()
+            val dim by animateFloatAsState(if (inbox.stale) 0.5f else 1f, when {
+                !inbox.stale -> snap()
+                still -> snap(150)
+                else -> tween(MOTION_FAST, 150, EaseOut)
+            }, label = "stale")
+            LazyColumn(Modifier.weight(1f).graphicsLayer { alpha = dim }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(inbox.visibleItems, key = { it.id }) { item ->
+                    Column(Modifier.fillMaxWidth().background(SurfaceRaised, MaterialTheme.shapes.small).padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(item.actorName, 28.dp, avatarId = item.avatarId)
+                            Spacer(Modifier.width(10.dp))
+                            Text("${if (item.unread) "● " else ""}${item.actorName}",
+                                Modifier.weight(1f).clickable(enabled = !inbox.stale && inbox.opening != item.id, role = Role.Button) {
+                                    viewModel.readActivity(item, open = true) { shown = false; onOpened() }
+                                // The dot is unread state (web: aria-label "Unread"), not a glyph to read out.
+                                }.semantics { contentDescription = item.actorName; if (item.unread) stateDescription = "Unread" }, fontWeight = if (item.unread) FontWeight.Bold else FontWeight.Medium, color = Text, fontSize = 13.sp)
+                            Text(feedbackAge(item.createdAt), color = TextMuted, fontSize = 11.sp)
+                            if (item.unread) IconButton({ viewModel.readActivity(item) }, enabled = !inbox.stale) {
+                                Icon(painterResource(R.drawable.lucide_check), "Mark notification from ${item.actorName} read", Modifier.size(16.dp), tint = TextMuted)
+                            }
+                        }
+                        Column(Modifier.fillMaxWidth().clickable(enabled = !inbox.stale && inbox.opening != item.id, role = Role.Button) {
+                            viewModel.readActivity(item, open = true) { shown = false; onOpened() }
+                        }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            val description = when (item.kind) {
+                                "reaction" -> "Reacted ${item.emoji.orEmpty()} to your message"
+                                "direct.request" -> "Wants to send you messages"
+                                "space.invitation" -> "Invited you to a space"
+                                "channel.invitation" -> "Invited you to a private channel"
+                                else -> null
+                            }
+                            description?.let { Text(it, color = TextMuted, fontSize = 12.sp) }
+                            Text(item.body, color = Text, fontSize = 13.sp, maxLines = 3)
+                            Text(activityLocation(item), color = TextMuted, fontSize = 12.sp)
+                        }
+                        val direct = state.directConversations.firstOrNull { it.id == item.conversationId }
+                        val writable = item.canReply && direct?.incoming != true && direct?.blocked != true && direct?.peer?.id !in state.blockedIds
+                        val saving = item.id in inbox.reacting
+                        if (writable) FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TextButton({ viewModel.toggleActivityReply(item) }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale) { Text(if (item.id in inbox.expanded) "Close reply" else "Reply", color = TextMuted) }
+                            // After you react, the message's reactions show; yours toggle off with a tap (web).
+                            inbox.reactions[item.id].orEmpty().forEach { reaction ->
+                                val mine = own != null && own in reaction.authorIds
+                                Box(Modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
+                                    ReactionChip(reaction, mine, canReact = !inbox.stale && !saving,
+                                        toggle = { viewModel.reactToActivity(item, reaction.emoji, !mine) }, showReactors = {})
                                 }
                             }
-                            Column(Modifier.fillMaxWidth().clickable(enabled = !inbox.stale && inbox.opening != item.id, role = Role.Button) {
-                                viewModel.readActivity(item, open = true) { shown = false; onOpened() }
-                            }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                val description = when (item.kind) {
-                                    "reaction" -> "Reacted ${item.emoji.orEmpty()} to your message"
-                                    "direct.request" -> "Wants to send you messages"
-                                    "space.invitation" -> "Invited you to a space"
-                                    "channel.invitation" -> "Invited you to a private channel"
-                                    else -> null
-                                }
-                                description?.let { Text(it, color = TextMuted, fontSize = 12.sp) }
-                                Text(item.body, color = Text, fontSize = 13.sp, maxLines = 3)
-                                Text(activityLocation(item), color = TextMuted, fontSize = 12.sp)
-                            }
-                            val direct = state.directConversations.firstOrNull { it.id == item.conversationId }
-                            val writable = item.canReply && direct?.incoming != true && direct?.blocked != true && direct?.peer?.id !in state.blockedIds
-                            val saving = item.id in inbox.reacting
-                            if (writable) FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                TextButton({ viewModel.toggleActivityReply(item) }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale) { Text(if (item.id in inbox.expanded) "Close reply" else "Reply", color = TextMuted) }
-                                // After you react, the message's reactions show; yours toggle off with a tap (web).
-                                inbox.reactions[item.id].orEmpty().forEach { reaction ->
-                                    val mine = own != null && own in reaction.authorIds
-                                    Box(Modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
-                                        ReactionChip(reaction, mine, canReact = !inbox.stale && !saving,
-                                            toggle = { viewModel.reactToActivity(item, reaction.emoji, !mine) }, showReactors = {})
-                                    }
-                                }
-                                TextButton({ reacting = item }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale && !saving) { Text("React", color = TextMuted) }
-                            }
-                            inbox.statuses[item.id]?.let {
-                                Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp)
-                            }
-                            if (item.id in inbox.expanded) key(item.draftKey, epoch) {
-                                Column(Modifier.entrance(MOTION_FAST, dy = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(item.replyLabel, color = TextMuted, fontSize = 12.sp)
-                                    ActivityReplyComposer(viewModel, item, writable) { picking = if (it) picking + item.id else picking - item.id }
-                                }
+                            TextButton({ reacting = item }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale && !saving) { Text("React", color = TextMuted) }
+                        }
+                        inbox.statuses[item.id]?.let {
+                            Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp)
+                        }
+                        if (item.id in inbox.expanded) key(item.draftKey, epoch) {
+                            Column(Modifier.entrance(MOTION_FAST, dy = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(item.replyLabel, color = TextMuted, fontSize = 12.sp)
+                                ActivityReplyComposer(viewModel, item, writable) { picking = if (it) picking + item.id else picking - item.id }
                             }
                         }
                     }
-                    if (inbox.cursor != null) item {
-                        TextButton({ viewModel.loadActivity(more = true) }, enabled = !inbox.loading) { Text("Load more") }
-                    }
+                }
+                if (inbox.cursor != null) item {
+                    TextButton({ viewModel.loadActivity(more = true) }, enabled = !inbox.loading) { Text("Load more") }
                 }
             }
+        }
+    }
+    if (LocalConfiguration.current.screenWidthDp <= 760) {
+        // Phones: a bottom sheet over the conversation, as web and iPhone, not a full-screen page.
+        val canClose by rememberUpdatedState(closable)
+        val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { it != SheetValue.Hidden || canClose })
+        ModalBottomSheet({ if (canClose) shown = false }, sheetState = sheet, containerColor = SurfaceConversation, contentColor = Text) {
+            body(Modifier.fillMaxHeight(0.76f).padding(start = 16.dp, end = 16.dp, bottom = 16.dp))
+        }
+    } else Dialog({ if (closable) shown = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxWidth().fillMaxHeight(0.94f).padding(12.dp).widthIn(max = 620.dp),
+            color = SurfaceConversation, shape = MaterialTheme.shapes.medium) {
+            body(Modifier.padding(16.dp))
         }
     }
     reacting?.let { item ->

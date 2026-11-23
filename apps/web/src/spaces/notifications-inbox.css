@@ -359,14 +359,15 @@
   html:has(.notifications-inbox) {
     scrollbar-gutter: auto;
   }
+  /* A bottom sheet over the conversation on phones, not a full-screen page. */
   .space-dialog:has(.notifications-inbox) {
     width: 100vw;
     max-width: none;
-    height: 100dvh;
-    max-height: 100dvh;
-    margin: 0;
-    border-radius: 0;
-    border: 0;
+    height: min(76dvh, 680px);
+    max-height: 76dvh;
+    margin: auto 0 0;
+    border-width: 1px 0 0;
+    border-radius: 16px 16px 0 0;
   }
   .notifications-inbox {
     padding: 0 16px max(24px, env(safe-area-inset-bottom));

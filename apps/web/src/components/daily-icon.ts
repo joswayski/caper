@@ -5,7 +5,7 @@ export interface DailyIcon {
 
 /** Transparent branding artwork; profile avatars keep their circular backgrounds. */
 export function dailyIconUrl(index: number | null): string {
-  return index === null ? "/caper-face.svg?v=3" : `/images/branding/v1/${index}.svg`;
+  return index === null ? "/caper-face.svg?v=4" : `/images/branding/v1/${index}.svg`;
 }
 
 /** Installation-local choice; saved profile avatars are unrelated. */

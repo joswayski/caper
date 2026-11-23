@@ -293,9 +293,11 @@ private final class WeakController {
     public static func inbox(model: AppModel) -> UIViewController {
         let host = UIKitActivityInbox(model: model)
         UIKitHosting.sheet(host, background: CaperTheme.surface)
-        // SwiftUI's default sheet: full height, no grabber.
-        host.sheetPresentationController?.detents = [.large()]
-        host.sheetPresentationController?.prefersGrabberVisible = false
+        // A bottom sheet over the conversation, as web's phone layout: three
+        // quarters of the screen, dragged up for full height or down to close.
+        let sheet = UISheetPresentationController.Detent.custom(identifier: .init("caper.inbox")) { $0.maximumDetentValue * 0.76 }
+        host.sheetPresentationController?.detents = [sheet, .large()]
+        host.sheetPresentationController?.prefersGrabberVisible = true
         return host
     }
 }

@@ -17,7 +17,7 @@ test("wordmark exports preserve the original lettering and omit the static dot",
 });
 
 test("daily branding removes only the background from all 800 avatars without changing character paths", () => {
-  assert.equal(dailyIconUrl(null), "/caper-face.svg?v=3");
+  assert.equal(dailyIconUrl(null), "/caper-face.svg?v=4");
   for (let id = 0; id < 800; id++) {
     assert.equal(dailyIconUrl(id), `/images/branding/v1/${id}.svg`);
     const original = readFileSync(new URL(`../../public/images/avatars/v3/${id}.svg`, import.meta.url), "utf8");

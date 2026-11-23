@@ -34,7 +34,7 @@ for (const size of [32, 180, 192, 512]) {
     ],
     { input: raster },
   );
-  files.set(`${output}caper-main-v3-${size}.png`, png);
+  files.set(`${output}caper-main-v4-${size}.png`, png);
 }
 
 // Share the same 8-bit RGBA rasters across Windows, Linux, macOS, iOS and Android.

@@ -130,6 +130,12 @@
 ) {
   animation: caper-sheet-in var(--motion-slow) var(--ease-out);
 }
+/* The notifications inbox is a bottom sheet on phones. */
+@media (max-width: 600px) {
+  .space-dialog[open]:has(.notifications-inbox) {
+    animation: caper-sheet-in var(--motion-slow) var(--ease-out);
+  }
+}
 
 /* The thread opens beside the conversation (or over it on phones). */
 .chat-thread-panel {
@@ -196,7 +202,8 @@
   .chat-message-arrive,
   .chat-empty-caper,
   .status-page-caper,
-  .chat-drafts li {
+  .chat-drafts li,
+  .space-dialog[open]:has(.notifications-inbox) {
     animation: none;
   }
   .chat-drafts progress::-webkit-progress-value {

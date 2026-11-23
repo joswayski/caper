@@ -288,6 +288,8 @@ export default function NotificationsInbox({
       description="Messages, replies, reactions, and invitations—all in one place."
       onClose={onClose}
       closeDisabled={composerBusy}
+      // A tap outside closes it, as with any sheet, unless a reply is open there.
+      dismissOnBackdrop={!composerBusy && !expanded}
       width="wide"
     >
       <div className="notifications-inbox">
