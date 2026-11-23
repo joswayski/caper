@@ -1030,18 +1030,14 @@ impl Composer {
                 }
                 let (caret, anchor) = self.shown_ends();
                 let (a, b) = (caret.min(anchor), caret.max(anchor));
+                // Every line of a long selection, however many there are.
                 if b > a && self.comp.is_empty() {
-                    let mut buf = [DWRITE_HIT_TEST_METRICS::default(); 16];
-                    let mut n = 0u32;
-                    if l.HitTestTextRange(a as u32, (b - a) as u32, ox, oy, Some(&mut buf), &mut n)
-                        .is_ok()
-                    {
-                        for m in &buf[..(n as usize).min(16)] {
-                            dc.FillRectangle(
-                                &rect(m.left, m.top, m.left + m.width, m.top + m.height),
-                                &g.brushes.selection,
-                            );
-                        }
+                    for m in gfx::range_rects(l, a as u32, (b - a) as u32) {
+                        let (x, y) = (ox + m.left, oy + m.top);
+                        dc.FillRectangle(
+                            &rect(x, y, x + m.width, y + m.height),
+                            &g.brushes.selection,
+                        );
                     }
                 }
                 crate::text::draw(dc, l, ox, oy, &g.brushes.text);
