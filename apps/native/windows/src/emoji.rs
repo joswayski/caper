@@ -66,6 +66,8 @@ struct Atlas {
 
 const PAGE: u32 = 1024;
 const PER_PAGE: u32 = (PAGE / CELL) * (PAGE / CELL);
+/// 4 MiB of GPU memory per page: 512 emoji in all, several pickers' worth.
+const MAX_PAGES: u32 = 8;
 
 thread_local! {
     static ATLAS: RefCell<Option<Atlas>> = const { RefCell::new(None) };
@@ -165,6 +167,14 @@ impl Atlas {
 
     fn decode_into(&mut self, dc: &ID2D1DeviceContext, entry: &Entry) -> Option<(usize, u32, u32)> {
         let px = decode_cell(&self.wic, entry)?;
+        // Browsing the whole picker would otherwise keep every emoji (about
+        // 230 MiB): past the cap, start over with the ones drawn from now on.
+        // Draws already issued hold their own reference to a dropped page.
+        if self.next == MAX_PAGES * PER_PAGE {
+            self.pages.clear();
+            self.cells.clear();
+            self.next = 0;
+        }
         let (page, i) = ((self.next / PER_PAGE) as usize, self.next % PER_PAGE);
         if page == self.pages.len() {
             let props = D2D1_BITMAP_PROPERTIES1 {
