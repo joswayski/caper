@@ -878,6 +878,9 @@ public final class ComposerTextView: NSTextView {
     }
     /// The Edit menu's formatting items show which styles the selection has.
     public override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        // A plain-text view disables Paste for image or file-only clipboards.
+        if menuItem.action == #selector(paste(_:)), isEditable, pasteAttachments != nil,
+           NativeAttachmentPaste.hasAttachments { return true }
         guard let item = MessageFormattingAction.all.first(where: { Self.formatSelector($0.style) == menuItem.action }) else {
             return super.validateMenuItem(menuItem)
         }

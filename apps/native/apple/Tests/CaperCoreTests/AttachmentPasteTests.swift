@@ -55,9 +55,7 @@ import AppKit
     func testPDFBytesAreStaged() throws {
         let pdf = Data("%PDF-1.7\n%%EOF".utf8)
         try withPasteboard([(.pdf, pdf)]) {
-            #if os(iOS)
             XCTAssertTrue(NativeAttachmentPaste.hasAttachments)
-            #endif
             let files = try NativeAttachmentPaste.stage()
             defer { files.forEach { AttachmentStaging.remove($0.url) } }
             XCTAssertEqual(files.count, 1)
@@ -98,10 +96,26 @@ import AppKit
         for (type, value) in [(UTType.utf8PlainText, "hello"), (.html, "<b>hello</b>"), (.url, "https://example.com")] {
             try withPasteboard([(type, Data(value.utf8))]) {
                 XCTAssertTrue(try NativeAttachmentPaste.stage().isEmpty)
-                #if os(iOS)
                 XCTAssertFalse(NativeAttachmentPaste.hasAttachments)
-                #endif
             }
         }
     }
+
+    #if os(macOS)
+    /// A plain-text NSTextView disables Paste without readable text, so the
+    /// menu item (and Command-V) never reached the attachment handler.
+    func testComposerEnablesPasteForImageOnlyClipboard() throws {
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9S8AAAAASUVORK5CYII=")!
+        let composer = ComposerTextView()
+        composer.isRichText = false
+        let item = NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        try withPasteboard([(.png, png)]) {
+            XCTAssertFalse(composer.validateMenuItem(item), "no attachment handler: AppKit's own rule")
+            composer.pasteAttachments = { true }
+            XCTAssertTrue(composer.validateMenuItem(item))
+            composer.isEditable = false
+            XCTAssertFalse(composer.validateMenuItem(item))
+        }
+    }
+    #endif
 }

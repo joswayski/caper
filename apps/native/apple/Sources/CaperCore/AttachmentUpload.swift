@@ -81,6 +81,12 @@ public enum AttachmentStaging {
             $0 == UTType.fileURL.identifier || attachmentType($0) != nil
         }
     }
+    #elseif os(macOS)
+    static var hasAttachments: Bool {
+        (NSPasteboard.general.pasteboardItems ?? []).contains { item in
+            item.types.contains { $0 == .fileURL || attachmentType($0.rawValue) != nil }
+        }
+    }
     #endif
 
     private static func attachmentType(_ identifier: String) -> UTType? {
