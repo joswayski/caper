@@ -1211,7 +1211,9 @@ final class AccountPanelRow: UIControl {
         accessibilityLabel = text
         accessibilityHint = hint
         accessibilityIdentifier = identifier
-        addAction(UIAction { [weak self] _ in self?.action() }, for: .primaryActionTriggered)
+        // A plain UIControl never sends .primaryActionTriggered (only UIButton and
+        // friends do), so a tap would highlight the row and do nothing.
+        addAction(UIAction { [weak self] _ in self?.action() }, for: .touchUpInside)
         addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(hover(_:))))
         refresh()
     }
