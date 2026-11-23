@@ -312,10 +312,12 @@ impl ThemeDocument {
                    background-image: linear-gradient(180deg, @caper_action_hover, @caper_action);\n\
                  }\n\
                  .composer {\n\
-                   box-shadow: 0 0 0 4px rgba(17, 17, 20, 0.035), 0 0 0 5px rgba(17, 17, 20, 0.12);\n\
+                   border-color: rgba(11, 11, 12, 0.14);\n\
+                   box-shadow: 0 0 0 4px rgba(17, 17, 20, 0.025), 0 0 0 5px rgba(17, 17, 20, 0.09);\n\
                  }\n\
                  .composer:focus-within {\n\
-                   box-shadow: 0 0 0 4px rgba(17, 17, 20, 0.035), 0 0 0 5px alpha(@caper_terracotta, 0.35);\n\
+                   border-color: alpha(@caper_terracotta, 0.62);\n\
+                   box-shadow: 0 0 0 4px rgba(17, 17, 20, 0.025), 0 0 0 5px rgba(17, 17, 20, 0.09);\n\
                  }\n",
             );
         }

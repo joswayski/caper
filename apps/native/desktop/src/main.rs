@@ -85,7 +85,7 @@ const SIDEBAR: Color32 = Color32::from_rgb(15, 15, 17);
 /// channel's own members in the member list.
 const SIDEBAR_RAISED: Color32 = Color32::from_rgb(28, 28, 32);
 const CONVERSATION: Color32 = Color32::from_rgb(19, 19, 22);
-const COMPOSER: Color32 = Color32::from_rgb(29, 29, 34);
+const COMPOSER: Color32 = Color32::from_rgb(34, 34, 40);
 /// Web's `--surface-hover`: a neutral wash that reads on every dark surface.
 const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const BORDER: Color32 = Color32::from_rgb(41, 41, 47);

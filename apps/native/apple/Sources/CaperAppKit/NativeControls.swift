@@ -77,6 +77,8 @@ class NativeView: NSView {
     static var voiceOff: NSColor { CaperThemeStore.voiceOffColor }
     static var hoverWash: NSColor { CaperThemeStore.hoverWashColor }
     static var surfaceRim: NSColor { CaperThemeStore.surfaceRimColor }
+    static var composerBorder: NSColor { CaperThemeStore.composerBorderColor }
+    static var composerFocusBorder: NSColor { CaperThemeStore.composerFocusBorderColor }
     static var composerOuterBg: NSColor { CaperThemeStore.composerOuterBgColor }
     static var composerOuterBorder: NSColor { CaperThemeStore.composerOuterBorderColor }
     /// A subtle olive (caper green mixed into the border) that replaces a panel's

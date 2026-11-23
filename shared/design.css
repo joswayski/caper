@@ -5,7 +5,7 @@
   --surface-raised: #1b1b1f;
   --surface-sidebar: #0f0f11;
   --surface-conversation: #131316;
-  --surface-composer: #1d1d22;
+  --surface-composer: #222228;
   --surface-hover: rgb(255 255 255 / 6%);
   --border: rgb(255 255 255 / 9%);
   --border-solid: #29292f;
@@ -104,8 +104,10 @@
   --motion-fast: 140ms;
   --motion-base: 200ms;
   --motion-slow: 260ms;
-  --composer-shell-bg: rgb(255 255 255 / 3%);
-  --composer-shell-border: rgb(255 255 255 / 9%);
+  --composer-border: rgb(255 255 255 / 13%);
+  --composer-focus-border: color-mix(in srgb, var(--accent) 48%, #3a3a42);
+  --composer-shell-bg: rgb(255 255 255 / 2.5%);
+  --composer-shell-border: rgb(255 255 255 / 7%);
   --font-sans: "Figtree", system-ui, "Segoe UI", sans-serif;
   --font-display: "Bricolage Grotesque", "Figtree", system-ui, sans-serif;
   font-family: var(--font-sans);
@@ -152,8 +154,10 @@
   --hover-pill-border: rgb(22 22 26 / 11%);
   --hover-pill-shadow: inset 0 1px 0 rgb(255 255 255 / 80%), 0 1px 2px rgb(22 22 26 / 7%);
   --composer-shadow: inset 0 1px 0 rgb(255 255 255 / 95%), 0 2px 8px rgb(22 22 26 / 7%);
-  --composer-shell-bg: rgb(11 11 12 / 3%);
-  --composer-shell-border: rgb(11 11 12 / 11%);
+  --composer-border: rgb(11 11 12 / 14%);
+  --composer-focus-border: color-mix(in srgb, var(--accent) 45%, #d0d0d8);
+  --composer-shell-bg: rgb(11 11 12 / 2.5%);
+  --composer-shell-border: rgb(11 11 12 / 9%);
 }
 
 * {

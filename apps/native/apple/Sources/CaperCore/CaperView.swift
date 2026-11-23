@@ -20,7 +20,7 @@ public enum CaperTheme {
     /// channel's own members in the member list.
     public static let sidebarRaised = Color(red: 28/255, green: 28/255, blue: 32/255)
     public static let conversation = Color(red: 19/255, green: 19/255, blue: 22/255)
-    public static let composer = Color(red: 29/255, green: 29/255, blue: 34/255)
+    public static let composer = Color(red: 34/255, green: 34/255, blue: 40/255)
     /// 3% white over the conversation: the reply draft card above the composer.
     public static let replyDraft = Color(red: 26/255, green: 26/255, blue: 30/255)
     public static let border = Color(red: 41/255, green: 41/255, blue: 47/255)

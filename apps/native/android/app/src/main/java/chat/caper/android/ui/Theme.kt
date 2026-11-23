@@ -48,7 +48,7 @@ val SurfaceSidebar = Color(0xFF0F0F11)
 /** Web's --surface-hover (6% white) over the sidebar, opaque: a private channel's own members in the member list. */
 val SurfaceSidebarRaised = Color(0xFF1C1C20)
 val SurfaceConversation = Color(0xFF131316)
-val SurfaceComposer = Color(0xFF1D1D22)
+val SurfaceComposer = Color(0xFF222228)
 val SurfaceRaised = Color(0xFF1B1B1F)
 val TextMuted = Color(0xFF9A99A2)
 val MessageText = Color(0xFFE6E5E0)
@@ -133,7 +133,7 @@ object CaperThemeStore {
         blackout = Color(0xFFEFEFF2),
         surface = Color(0xFFF7F7F9),
         surfaceRaised = Color(0xFFF5F5F8),
-        surfaceComposer = Color(0xFFF6F6F9),
+        surfaceComposer = Color(0xFFF2F2F6),
         border = Color(0xFFDCDCE2),
         text = Color(0xFF111114),
         textMuted = Color(0xFF666672),

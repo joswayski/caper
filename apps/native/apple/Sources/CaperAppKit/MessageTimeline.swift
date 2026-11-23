@@ -419,7 +419,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     let body = MessageTextView()
     private let author = NativeStyle.label("", size: 13, bold: true)
     private let timestamp = NativeStyle.label("", size: 10)
-    private let avatar = NSImageView()
+    private let avatar = NativeAvatar()
     var openAuthor: ((ChatAuthor, NSView) -> Void)?
     var messageMenu: ((ChatMessage, NSView) -> NSMenu?)?
     var messageAction: ((ChatMessage, MessageAction, NSView) -> Void)?
@@ -557,8 +557,6 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         body.layoutManager?.usesFontLeading = false
         body.linkTextAttributes = [.foregroundColor: NativeStyle.link, .cursor: NSCursor.pointingHand]
         timestamp.textColor = NativeStyle.muted
-        avatar.wantsLayer = true; avatar.layer?.cornerRadius = 10; avatar.layer?.masksToBounds = true
-        avatar.setAccessibilityElement(false)
         authorAction.layer?.backgroundColor = NSColor.clear.cgColor
         avatarAction.layer?.backgroundColor = NSColor.clear.cgColor
         authorAction.profileFeedback = true; avatarAction.profileFeedback = true
@@ -729,9 +727,11 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         body.configureMentions(message.isDeleted ? [] : message.content.mentions)
         body.setAccessibilityIdentifier("message-\(message.id)")
         if NSMaxRange(range) <= body.string.utf16.count { body.setSelectedRange(range) }
-        if let id = CaperAvatar.index(for: message.author.avatarId) {
-            avatar.image = Bundle(for: AppModel.self).image(forResource: "caper-avatar-\(id)")
-        } else { avatar.image = nil }
+        avatar.update(
+            name: message.author.name,
+            avatarId: message.author.avatarId,
+            picture: grouped ? nil : message.author.avatarPicture
+        )
         let previousReactions = reactions
         reactions = (message.isDeleted ? [] : message.reactions ?? []).map { reaction in
             let id = "reaction-\(message.id)-\(reaction.emoji)"
@@ -825,6 +825,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         setAccessibilityHelp(nil)
         body.isHidden = true; body.string = ""
         authorAction.isHidden = true; avatarAction.isHidden = true
+        avatar.update(name: "", avatarId: nil, picture: nil)
         controls.isHidden = true; edited.isHidden = true
         reactionFailure.isHidden = true; retryReaction.isHidden = true; dismissReaction.isHidden = true
         pinnedBy.isHidden = true; pinFailure.isHidden = true; retryPin.isHidden = true; dismissPin.isHidden = true

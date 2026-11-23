@@ -6,7 +6,7 @@
 @define-color caper_surface_raised #1b1b1f;
 @define-color caper_surface_sidebar #0f0f11;
 @define-color caper_surface_conversation #131316;
-@define-color caper_surface_composer #1d1d22;
+@define-color caper_surface_composer #222228;
 @define-color caper_surface_hover rgba(255, 255, 255, 0.06);
 @define-color caper_border rgba(255, 255, 255, 0.09);
 @define-color caper_border_solid #29292f;
@@ -985,20 +985,20 @@ button.send:not(:disabled) {
    framed input while keeping the focus accent crisp. */
 .composer {
   background: @caper_surface_composer;
-  border: 1px solid @caper_border;
+  border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 11px;
-  margin: 6px 20px 18px;
+  margin: 2px 20px 18px;
   padding: 5px 8px 5px 6px;
   box-shadow:
-    0 0 0 4px rgba(255, 255, 255, 0.03),
-    0 0 0 5px rgba(255, 255, 255, 0.09);
+    0 0 0 4px rgba(255, 255, 255, 0.025),
+    0 0 0 5px rgba(255, 255, 255, 0.07);
 }
 
 .composer:focus-within {
-  border-color: @caper_terracotta;
+  border-color: alpha(@caper_terracotta, 0.72);
   box-shadow:
-    0 0 0 4px rgba(255, 255, 255, 0.03),
-    0 0 0 5px alpha(@caper_terracotta, 0.34);
+    0 0 0 4px rgba(255, 255, 255, 0.025),
+    0 0 0 5px rgba(255, 255, 255, 0.07);
 }
 
 .composer textview,

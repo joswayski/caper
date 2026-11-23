@@ -696,25 +696,27 @@ import CaperCore
         }
         let recordingHeight: CGFloat = center - 40 < 300 ? 126 : 42
         voiceComposer.bar.frame = NSRect(x: fieldX, y: fieldBottom - recordingHeight, width: fieldWidth, height: recordingHeight)
-        let composerTop = composerField.isHidden && !voiceComposer.bar.isHidden ? voiceComposer.bar.frame.minY : composerField.frame.minY
+        let composerTop = composerField.isHidden && !voiceComposer.bar.isHidden ? voiceComposer.bar.frame.minY : composerShell.frame.minY
         let attachmentHeight = attachmentTray?.height(for: max(1, center - 40)) ?? 0
         let trayHeight = min(attachmentHeight, max(80, height * 0.3))
         let quoteHeight = replyDraft?.height(for: max(1, center - 40)) ?? 0
         // The link card sits on the composer and ends with its own 8pt gap; the tray stacks above it.
         let linkHeight = linkPreview?.height(for: max(1, center - 40)) ?? 0
         linkPreview?.frame = NSRect(x: 20, y: composerTop - linkHeight, width: center - 40, height: linkHeight)
-        attachmentScroll.frame = NSRect(x: 20, y: composerTop - linkHeight - 8 - trayHeight, width: center - 40, height: trayHeight)
+        let aboveLink = composerTop - linkHeight
+        let trayGap: CGFloat = trayHeight > 0 ? 8 : 0
+        attachmentScroll.frame = NSRect(x: 20, y: aboveLink - trayGap - trayHeight, width: center - 40, height: trayHeight)
         attachmentTray?.frame = NSRect(x: 0, y: 0, width: center - 40, height: attachmentHeight)
-        let quoteBottom = attachmentScroll.frame.minY - (trayHeight > 0 ? 8 : 0)
+        let quoteBottom = trayHeight > 0 ? attachmentScroll.frame.minY - 8 : aboveLink
         replyDraft?.frame = NSRect(x: 20, y: quoteBottom - quoteHeight, width: center - 40, height: quoteHeight)
         let recoveryHeight: CGFloat = editRejected.isHidden ? 0 : 34
-        // A channel's typing row is 16pt with 4pt under it, as web; a thread, or a row
-        // holding Retry, keeps the 24pt row.
+        // A channel's typing row sits snugly over the composer (16pt + 2pt breathing room);
+        // a thread, or a row holding Retry, keeps a 22pt row.
         let roomyStatus = inThread || !retry.isHidden
-        let statusHeight: CGFloat = roomyStatus ? 24 : 16
-        let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - (roomyStatus ? 30 : 20) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
+        let statusHeight: CGFloat = roomyStatus ? 22 : 16
+        let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - (roomyStatus ? 24 : 18) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
         let top: CGFloat = newer.isHidden && latest.isHidden ? 48 : 88
-        timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - 6 - top))
+        timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - top))
         lip.frame = NSRect(x: 0, y: max(top, timeline.frame.maxY - 8), width: center, height: min(8, timeline.frame.height))
         let historyWidth = max(0, (center - 48) / 2)
         newer.frame = NSRect(x: 20, y: 52, width: min(150, historyWidth), height: 28)
@@ -1228,10 +1230,8 @@ import CaperCore
         suggestions.update(nil)
     }
     private func applyComposerChrome() {
-        composerField.layer?.borderColor = (composerFocused ? NativeStyle.accentBright : NativeStyle.border).cgColor
-        composerShell.layer?.borderColor = (composerFocused
-            ? NativeStyle.accentBright.withAlphaComponent(0.32)
-            : NativeStyle.composerOuterBorder).cgColor
+        composerField.layer?.borderColor = (composerFocused ? NativeStyle.composerFocusBorder : NativeStyle.composerBorder).cgColor
+        composerShell.layer?.borderColor = NativeStyle.composerOuterBorder.cgColor
         composerShell.layer?.backgroundColor = NativeStyle.composerOuterBg.cgColor
         composerField.layer?.backgroundColor = NativeStyle.composer.cgColor
         composer.backgroundColor = NativeStyle.composer

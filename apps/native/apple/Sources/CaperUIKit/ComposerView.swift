@@ -162,7 +162,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
         height = textView.heightAnchor.constraint(equalToConstant: 42)
         NSLayoutConstraint.activate([
-            accessories.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            accessories.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             accessories.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             accessories.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
             suggestions.topAnchor.constraint(equalTo: accessories.bottomAnchor),

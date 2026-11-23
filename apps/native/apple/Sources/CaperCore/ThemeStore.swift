@@ -97,7 +97,7 @@ public struct CaperThemeDocument: Codable, Equatable, Sendable {
         appearance: "dark",
         surfaces: .init(
             frame: "#0b0b0c", base: "#121214", sidebar: "#0f0f11", sidebarRaised: "#1c1c20",
-            conversation: "#131316", raised: "#1b1b1f", composer: "#1d1d22", replyDraft: "#17171b",
+            conversation: "#131316", raised: "#1b1b1f", composer: "#222228", replyDraft: "#17171b",
             hover: "rgb(255 255 255 / 6%)", hoverAlpha: 0.06
         ),
         borders: .init(default: "#29292f", translucent: "rgb(255 255 255 / 9%)", subtle: "rgb(255 255 255 / 6%)", rim: "rgb(255 255 255 / 8%)"),
@@ -120,7 +120,7 @@ public struct CaperThemeDocument: Codable, Equatable, Sendable {
         appearance: "light",
         surfaces: .init(
             frame: "#efeff2", base: "#f7f7f9", sidebar: "#efeff2", sidebarRaised: "#e5e5ea",
-            conversation: "#ffffff", raised: "#f5f5f8", composer: "#f6f6f9", replyDraft: "#f2f2f6",
+            conversation: "#ffffff", raised: "#f5f5f8", composer: "#f2f2f6", replyDraft: "#f2f2f6",
             hover: "rgb(11 11 12 / 5%)", hoverAlpha: 0.05
         ),
         borders: .init(default: "#dcdce2", translucent: "rgb(11 11 12 / 9%)", subtle: "rgb(11 11 12 / 6%)", rim: "rgb(255 255 255 / 85%)"),
@@ -347,7 +347,7 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
     public nonisolated static let sidebarRaisedColor = dynamicNSColor(\.surfaces.sidebarRaised, fallback: NSColor(srgbRed: 28/255, green: 28/255, blue: 32/255, alpha: 1))
     public nonisolated static let conversationColor = dynamicNSColor(\.surfaces.conversation, fallback: NSColor(srgbRed: 19/255, green: 19/255, blue: 22/255, alpha: 1))
     public nonisolated static let raisedColor = dynamicNSColor(\.surfaces.raised, fallback: NSColor(srgbRed: 27/255, green: 27/255, blue: 31/255, alpha: 1))
-    public nonisolated static let composerColor = dynamicNSColor(\.surfaces.composer, fallback: NSColor(srgbRed: 29/255, green: 29/255, blue: 34/255, alpha: 1))
+    public nonisolated static let composerColor = dynamicNSColor(\.surfaces.composer, fallback: NSColor(srgbRed: 34/255, green: 34/255, blue: 40/255, alpha: 1))
     public nonisolated static let replyDraftColor = dynamicNSColor(\.surfaces.replyDraft, fallback: NSColor(srgbRed: 23/255, green: 23/255, blue: 27/255, alpha: 1))
     public nonisolated static let borderColor = dynamicNSColor(\.borders.default, fallback: NSColor(srgbRed: 41/255, green: 41/255, blue: 47/255, alpha: 1))
     public nonisolated static let textColor = dynamicNSColor(\.text.primary, fallback: NSColor(srgbRed: 244/255, green: 243/255, blue: 239/255, alpha: 1))
@@ -375,13 +375,24 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
         doc.isLight ? NSColor.white.withAlphaComponent(0.9)
                     : NSColor.white.withAlphaComponent(0.11)
     }
+    public nonisolated static let composerBorderColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.14)
+                    : NSColor.white.withAlphaComponent(0.13)
+    }
+    public nonisolated static let composerFocusBorderColor = dynamicNSColor { doc in
+        let accent = nsColor(fromHex: doc.accent.primary) ?? NSColor(srgbRed: 85/255, green: 122/255, blue: 56/255, alpha: 1)
+        let neutral = doc.isLight
+            ? NSColor(srgbRed: 208/255, green: 208/255, blue: 216/255, alpha: 1)
+            : NSColor(srgbRed: 58/255, green: 58/255, blue: 66/255, alpha: 1)
+        return neutral.blended(withFraction: doc.isLight ? 0.45 : 0.48, of: accent) ?? accent.withAlphaComponent(0.6)
+    }
     public nonisolated static let composerOuterBgColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.035)
-                    : NSColor.white.withAlphaComponent(0.03)
+        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.025)
+                    : NSColor.white.withAlphaComponent(0.025)
     }
     public nonisolated static let composerOuterBorderColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.11)
-                    : NSColor.white.withAlphaComponent(0.09)
+        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.09)
+                    : NSColor.white.withAlphaComponent(0.07)
     }
     public nonisolated static let callFillColor = dynamicNSColor { doc in
         doc.isLight ? NSColor(srgbRed: 226/255, green: 240/255, blue: 217/255, alpha: 1)

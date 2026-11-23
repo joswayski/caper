@@ -2072,7 +2072,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
             // Keep the composer inset from the timeline and the panel edge.
-            else if (joined) Column(Modifier.composerLip().padding(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 16.dp)) { OwnRecomposeScope {
+            else if (joined) Column(Modifier.composerLip().padding(start = 18.dp, end = 18.dp, top = 2.dp, bottom = 16.dp)) { OwnRecomposeScope {
                 TypingLine(state.typingAuthors)
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
                 state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
@@ -2314,7 +2314,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 
 /** The channel and thread composers' field: the composer surface, terracotta while focused. */
 @Composable internal fun composerFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border,
+    focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta.copy(alpha = 0.72f), unfocusedBorderColor = Border,
 )
 
 /** Web's `.chat-counter`: shown from 3,000 characters, toned toward the 4,000 limit. */

@@ -30,9 +30,15 @@ import AppKit
         saved.setAccessibilityElement(false); initial.setAccessibilityElement(false)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(motionChanged),
             name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(themeChanged),
+            name: CaperThemeStore.didChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    deinit { loading?.cancel(); NSWorkspace.shared.notificationCenter.removeObserver(self) }
+    deinit {
+        loading?.cancel()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
+    }
 
     public func update(_ member: Member) {
         update(name: member.displayName, avatarId: member.avatarId, picture: member.avatarPicture)
@@ -100,6 +106,7 @@ import AppKit
     }
 
     @objc private func motionChanged() { showPicture() }
+    @objc private func themeChanged() { showPicture() }
     private func showPicture() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         pictureLayer.removeAnimation(forKey: "frames")
@@ -107,6 +114,7 @@ import AppKit
         pictureLayer.isHidden = frames?.images.first == nil
         saved.isHidden = !pictureLayer.isHidden
         initial.isHidden = !pictureLayer.isHidden || saved.image != nil
+        layer?.backgroundColor = (pictureLayer.isHidden && saved.image != nil ? NSColor.clear : AppKitKit.raised).cgColor
         layer?.cornerRadius = corner ?? (pictureLayer.isHidden ? bounds.width / 2 : ProfilePicturePolicy.cornerRadius(side: bounds.width))
         if let frames, frames.animated, window != nil, !CaperAccessibility.reduceMotion {
             let total = frames.durations.reduce(0, +)
