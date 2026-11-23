@@ -287,6 +287,7 @@ pub fn watch(
             let mut proven = false;
             let result = (|| {
                 let mut connection = Connection::open(&url, Some(&token), &stop)?;
+                connection.poll(true)?;
                 while !stop.load(Ordering::Relaxed) {
                     let Some(frame) = connection.read(&activity)? else {
                         continue;

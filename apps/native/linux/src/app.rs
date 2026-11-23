@@ -650,6 +650,9 @@ pub struct App {
     voice_ticking: Cell<bool>,
     rendered_toggles: Cell<Option<(bool, bool)>>,
     rendered_card: RefCell<String>,
+    /// Your call's avatars (card and sidebar roster), whose speaking ring
+    /// `render_voice` toggles in place: the avatar, its person and muted.
+    speaking_rings: RefCell<Vec<(gtk::Widget, String, bool)>>,
     voice_timer: RefCell<Option<gtk::Label>>,
     audio: RefCell<Option<audio::AudioDialog>>,
     /// The sidebar's live room timers and their session starts.
@@ -800,6 +803,7 @@ pub fn start(
         voice_ticking: Cell::new(false),
         rendered_toggles: Cell::new(None),
         rendered_card: RefCell::default(),
+        speaking_rings: RefCell::default(),
         voice_timer: RefCell::default(),
         audio: RefCell::default(),
         room_timers: RefCell::default(),
@@ -942,6 +946,7 @@ pub fn start(
     app.ui.window.present();
     app.worker.send(Command::Restore { generation: 0 });
     glib::spawn_future_local(async move {
+        let pictures_pending = Rc::new(Cell::new(false));
         while let Ok(signal) = receiver.recv().await {
             match signal {
                 Signal::Wake => app.receive(),
@@ -961,8 +966,17 @@ pub fn start(
                     edge,
                 } => {
                     app.images.loaded(asset, url, image, edge);
-                    app.state.borrow_mut().layout += 1;
-                    app.render();
+                    // Pictures arrive in bursts (a space's avatars): one
+                    // sidebar rebuild after the burst, not one per picture.
+                    if !pictures_pending.replace(true) {
+                        let app = app.clone();
+                        let pending = pictures_pending.clone();
+                        glib::idle_add_local_once(move || {
+                            pending.set(false);
+                            app.state.borrow_mut().layout += 1;
+                            app.render();
+                        });
+                    }
                 }
             }
         }

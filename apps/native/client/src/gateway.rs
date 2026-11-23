@@ -370,6 +370,9 @@ fn connect_once(
                 Err(_) => retry_at = Instant::now() + Duration::from_millis(250),
             }
         }
+        active
+            .connection
+            .poll(!migrating && candidate.is_none() && opening.is_none())?;
         for replacement in [false, true] {
             let stream = if replacement {
                 let Some(stream) = &mut candidate else {

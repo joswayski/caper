@@ -485,6 +485,7 @@ impl App {
             if window.is_active()
                 && let Some(app) = weak.upgrade()
             {
+                app.load_voice_activity();
                 app.refresh_membership();
             }
         });
@@ -1352,7 +1353,9 @@ impl App {
             let Some(app) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            app.load_voice_activity();
+            if app.ui.window.is_active() {
+                app.load_voice_activity();
+            }
             if app
                 .state
                 .try_borrow()
@@ -1363,7 +1366,11 @@ impl App {
                 }
                 return glib::ControlFlow::Break;
             }
-            app.refresh_membership();
+            // Regaining focus refreshes both; an unfocused window needn't
+            // poll the API every 15 seconds.
+            if app.ui.window.is_active() {
+                app.refresh_membership();
+            }
             glib::ControlFlow::Continue
         });
     }

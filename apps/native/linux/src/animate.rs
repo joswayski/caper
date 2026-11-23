@@ -106,7 +106,7 @@ impl Player {
 
 /// Whether `widget` is on screen: drawable, in a window that is not
 /// minimized.
-fn visible(widget: &gtk::Widget) -> bool {
+pub fn visible(widget: &gtk::Widget) -> bool {
     widget.is_drawable()
         && !widget
             .native()

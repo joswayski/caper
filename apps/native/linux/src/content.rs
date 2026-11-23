@@ -389,7 +389,7 @@ fn inline_video(
             };
             let animate =
                 gtk::Settings::default().is_none_or(|settings| settings.is_gtk_enable_animations());
-            if animate && in_view(&holder) {
+            if animate && in_view(&holder) && crate::animate::visible(holder.upcast_ref()) {
                 play();
             } else {
                 poster();

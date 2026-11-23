@@ -715,8 +715,15 @@ impl App {
                 &person.avatar_url,
             ),
         );
-        if own && voice.speaking(&person.id, person.muted, Instant::now()) {
-            avatar.root.add_css_class("speaking");
+        if own {
+            if voice.speaking(&person.id, person.muted, Instant::now()) {
+                avatar.root.add_css_class("speaking");
+            }
+            self.speaking_rings.borrow_mut().push((
+                avatar.root.clone().upcast(),
+                person.id.clone(),
+                person.muted,
+            ));
         }
         row.append(&avatar.root);
         let name = label(&person.name, &["small"]);
@@ -867,16 +874,27 @@ impl App {
             people
                 .iter()
                 .map(|person| format!(
-                    "{}:{}:{}:{}:{:?}",
-                    person.id,
-                    person.muted,
-                    person.deafened,
-                    voice.speaking(&person.id, person.muted, now),
-                    person.avatar_asset
+                    "{}:{}:{}:{:?}",
+                    person.id, person.muted, person.deafened, person.avatar_asset
                 ))
                 .collect::<Vec<_>>()
                 .join(",")
         );
+        // Speaking flips several times a second: toggle the rings already
+        // shown instead of rebuilding the card and the sidebar's roster.
+        self.speaking_rings
+            .borrow_mut()
+            .retain(|(avatar, id, muted)| {
+                if avatar.root().is_none() {
+                    return false;
+                }
+                if voice.speaking(id, *muted, now) {
+                    avatar.add_css_class("speaking");
+                } else {
+                    avatar.remove_css_class("speaking");
+                }
+                true
+            });
         drop(voice);
         drop(state);
         if let Some(label) = self.voice_timer.borrow().as_ref() {

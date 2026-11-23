@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 use tungstenite::{Message, client::IntoClientRequest, stream::MaybeTlsStream};
 
 const POLL: Duration = Duration::from_millis(200);
+/// A lone socket's read timeout: it only bounds how late a heartbeat or a stop
+/// is noticed, so an idle app needn't wake five times a second per socket.
+pub(crate) const IDLE_POLL: Duration = Duration::from_secs(1);
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const WATCHDOG: Duration = Duration::from_secs(30);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(5);
@@ -106,6 +109,7 @@ pub(crate) struct Connection {
     pub opened: Instant,
     last_server: Instant,
     last_heartbeat: Instant,
+    poll: Duration,
 }
 
 impl Connection {
@@ -144,7 +148,20 @@ impl Connection {
             opened,
             last_server: Instant::now(),
             last_heartbeat: Instant::now(),
+            poll: POLL,
         })
+    }
+
+    /// How long a read waits for a frame: [`IDLE_POLL`] while this is the
+    /// only socket, `POLL` while a replacement is caught up beside it.
+    pub fn poll(&mut self, alone: bool) -> Result<(), Failure> {
+        let poll = if alone { IDLE_POLL } else { POLL };
+        if self.poll != poll {
+            set_timeout(self.socket.get_mut(), poll)
+                .map_err(|_| Failure::Retry("could not configure gateway".into()))?;
+            self.poll = poll;
+        }
+        Ok(())
     }
 
     pub fn send(&mut self, frame: Value) -> Result<(), Failure> {
@@ -328,6 +345,9 @@ fn connect_once(
                 Err(_) => retry_at = Instant::now() + Duration::from_millis(250),
             }
         }
+        active
+            .connection
+            .poll(!migrating && candidate.is_none() && opening.is_none())?;
         for replacement in [false, true] {
             let stream = if replacement {
                 let Some(stream) = &mut candidate else {
