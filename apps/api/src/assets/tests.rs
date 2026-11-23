@@ -2192,14 +2192,21 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         ),
         (StatusCode::BAD_REQUEST, Some("picture_type"))
     );
-    assert_eq!(
-        code(
-            create_as(&owner, picture("avatar", "image/png", 1024 * 1024 + 1, 10))
-                .await
-                .unwrap_err()
-        ),
-        (StatusCode::PAYLOAD_TOO_LARGE, Some("picture_too_large"))
-    );
+    // Still-only JPEGs stop at 1 MB; types that may animate allow 5 MB.
+    for (content_type, size) in [
+        ("image/jpeg", crate::pictures::STILL_MAX_BYTES + 1),
+        ("image/png", crate::pictures::ANIMATED_MAX_BYTES + 1),
+    ] {
+        assert_eq!(
+            code(
+                create_as(&owner, picture("avatar", content_type, size as usize, 10))
+                    .await
+                    .unwrap_err()
+            ),
+            (StatusCode::PAYLOAD_TOO_LARGE, Some("picture_too_large")),
+            "{content_type}"
+        );
+    }
     assert_eq!(
         create_as(&owner, picture("avatar", "image/gif", 100, 1025))
             .await
