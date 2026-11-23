@@ -85,6 +85,13 @@ public final class AppModel {
         (activityItems + activityExpanded.values.filter { expanded in !activityItems.contains { $0.id == expanded.id } })
             .sorted { $0.createdAt > $1.createdAt }
     }
+    /// One row per run of related notifications; see `ActivityGroup`.
+    var activityVisibleGroups: [ActivityGroup] { ActivityGroup.grouping(activityVisibleItems) }
+    /// Reply and React act on the group's newest item, except that a reply
+    /// already open stays on the item it started on as newer ones join the group.
+    func activityReplyTarget(_ group: ActivityGroup) -> ActivityItem {
+        group.items.first { activityExpanded[$0.id] != nil } ?? group.newest
+    }
 
     func canReplyToActivity(_ item: ActivityItem) -> Bool {
         guard item.canReply else { return false }
@@ -233,23 +240,28 @@ public final class AppModel {
 
     /// Optimistic: the row and count change at once and go back if the save fails,
     /// so the rest of the inbox never waits on (or disables for) the request.
-    func readActivity(_ item: ActivityItem) async -> Bool {
+    /// A group is marked read with one request carrying all of its IDs.
+    func readActivity(_ group: ActivityGroup) async -> Bool {
         guard account != nil else { return false }
         let attempt = generation
         activityError = nil
         activityRequest += 1; activityLoading = false; unreadRevision += 1
         activityReads += 1
         defer { if generation == attempt { activityReads -= 1 } }
-        let index = activityItems.firstIndex { $0.id == item.id }
-        let wasUnread = index.map { activityItems[$0].unread } ?? item.unread
-        if wasUnread {
-            if let index { activityItems[index].unread = false }
-            activityExpanded[item.id]?.unread = false
-            if activityUnreadOnly { activityItems.removeAll { $0.id == item.id } }
-            activityUnread = max(0, activityUnread - 1); updateApplicationBadge(activityUnread)
+        let before = activityItems
+        var indexes: [String: Int] = [:]
+        for (index, row) in before.enumerated() where indexes[row.id] == nil { indexes[row.id] = index }
+        // The current rows decide what is unread; a pinned row not loaded keeps its own flag.
+        let reading = group.items.filter { item in indexes[item.id].map { before[$0].unread } ?? item.unread }
+        let ids = Set(reading.map(\.id))
+        if !reading.isEmpty {
+            for index in activityItems.indices where ids.contains(activityItems[index].id) { activityItems[index].unread = false }
+            for id in ids { activityExpanded[id]?.unread = false }
+            if activityUnreadOnly { activityItems.removeAll { ids.contains($0.id) } }
+            activityUnread = max(0, activityUnread - reading.count); updateApplicationBadge(activityUnread)
         }
         do {
-            let result = try await api.readActivity(ids: [item.id])
+            let result = try await api.readActivity(ids: group.ids)
             guard generation == attempt else { return false }
             unreadRevision += 1
             // With several reads in flight, only the last reply's count includes them all.
@@ -257,24 +269,31 @@ public final class AppModel {
             return true
         } catch {
             guard generation == attempt else { return false }
-            if wasUnread {
-                if let current = activityItems.firstIndex(where: { $0.id == item.id }) { activityItems[current].unread = true }
-                else if let index { var restored = item; restored.unread = true; activityItems.insert(restored, at: min(index, activityItems.count)) }
-                activityExpanded[item.id]?.unread = true
-                activityUnread += 1; updateApplicationBadge(activityUnread)
+            if !reading.isEmpty {
+                for index in activityItems.indices where ids.contains(activityItems[index].id) { activityItems[index].unread = true }
+                // Removed rows go back where they were, in their original order.
+                for index in reading.compactMap({ indexes[$0.id] }).sorted() where !activityItems.contains(where: { $0.id == before[index].id }) {
+                    var restored = before[index]; restored.unread = true
+                    activityItems.insert(restored, at: min(index, activityItems.count))
+                }
+                for id in ids { activityExpanded[id]?.unread = true }
+                activityUnread += reading.count; updateApplicationBadge(activityUnread)
             }
             activityError = FriendlyError.message(for: error)
             return false
         }
     }
 
-    func openActivity(_ item: ActivityItem) async -> Bool {
+    /// Marks the whole group read and opens its oldest item, so the
+    /// conversation lands where the run starts.
+    func openActivity(_ group: ActivityGroup) async -> Bool {
+        let item = group.oldest
         guard let route = item.route else { activityError = "This notification is no longer available."; return false }
         guard activityOpening == nil else { return false }
         let attempt = generation; let navigation = navigationGeneration
-        activityOpening = item.id
+        activityOpening = group.id
         defer { if generation == attempt { activityOpening = nil } }
-        guard await readActivity(item), activityShown, generation == attempt, navigationGeneration == navigation else { return false }
+        guard await readActivity(group), activityShown, generation == attempt, navigationGeneration == navigation else { return false }
         error = nil; navigationError = nil
         await open(route)
         guard generation == attempt else { return false }

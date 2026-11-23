@@ -11,7 +11,7 @@
 use super::{App, State, clear};
 use crate::images::Icon;
 use crate::ui::label;
-use caper_client::activity::{Filter, Item};
+use caper_client::activity::{Filter, Group, Item};
 use caper_client::model::DirectStatus;
 use caper_client::worker::Command;
 use gtk::{gdk, glib, prelude::*};
@@ -61,7 +61,7 @@ pub(super) struct InboxWindow {
 /// What the rows show, so they redraw only when it changes.
 #[derive(PartialEq)]
 struct Shown {
-    rows: Vec<(String, bool, bool, bool, bool, String)>,
+    rows: Vec<(Vec<String>, bool, bool, bool, bool, String)>,
     replies: Vec<(String, bool, Option<String>, Option<String>)>,
     files: Vec<(String, u64, bool, bool, String)>,
     stale: bool,
@@ -88,19 +88,6 @@ impl State {
             count @ 1..=99 => count.to_string(),
             _ => "99+".into(),
         }
-    }
-}
-
-fn description(item: &Item) -> Option<String> {
-    match item.kind.as_str() {
-        "reaction" => Some(format!(
-            "Reacted {} to your message",
-            item.emoji.as_deref().unwrap_or_default()
-        )),
-        "direct.request" => Some("Wants to send you messages".into()),
-        "space.invitation" => Some("Invited you to a space".into()),
-        "channel.invitation" => Some("Invited you to a private channel".into()),
-        _ => None,
     }
 }
 
@@ -440,7 +427,8 @@ impl App {
             .inspect(|line| line.set_visible(inbox.error.is_some()));
         open.retry
             .set_sensitive(!inbox.loading && inbox.reads.is_empty());
-        let visible = inbox.visible_items();
+        // One row per group of neighbouring notifications.
+        let visible = inbox.visible_groups();
         let status = if inbox.loading && visible.is_empty() {
             "Loading notifications…"
         } else if !inbox.loading && visible.is_empty() && inbox.error.is_none() {
@@ -456,19 +444,21 @@ impl App {
         let shown = Shown {
             rows: visible
                 .iter()
-                .map(|item| {
+                .map(|group| {
+                    let item = group.newest();
                     (
-                        item.id.clone(),
+                        group.ids().into_iter().map(str::to_owned).collect(),
                         item.unread,
                         inbox.expanded.contains_key(&item.id),
                         state.inbox_writable(item),
-                        inbox.opening.as_ref() == Some(&item.id),
+                        inbox.opening.as_deref() == Some(group.id()),
                         caper_client::feedback::relative_time(&item.created_at, now),
                     )
                 })
                 .collect(),
             replies: visible
                 .iter()
+                .map(Group::newest)
                 .filter(|item| inbox.expanded.contains_key(&item.id))
                 .map(|item| {
                     let key = item.draft_key();
@@ -524,8 +514,8 @@ impl App {
                 }
             });
         }
-        for item in &visible {
-            let row = self.inbox_row(&state, item, &mut open.composers);
+        for group in &visible {
+            let row = self.inbox_row(&state, group, &mut open.composers);
             open.list.append(&row);
         }
         open.shown = Some(shown);
@@ -534,18 +524,21 @@ impl App {
         }
     }
 
+    /// A group's row: it shows, replies to and reacts to the newest item;
+    /// opening or its check reads the whole group.
     fn inbox_row(
         self: &Rc<Self>,
         state: &State,
-        item: &Item,
+        group: &Group,
         composers: &mut HashMap<String, (gtk::Overlay, gtk::TextView)>,
     ) -> gtk::Box {
         let inbox = &state.inbox;
-        let opening = inbox.opening.as_ref() == Some(&item.id);
+        let item = group.newest();
+        let opening = inbox.opening.as_deref() == Some(group.id());
         let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
         row.add_css_class("inbox-row");
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let title = format!("{}{}", if item.unread { "● " } else { "" }, item.actor_name);
+        let title = format!("{}{}", if item.unread { "● " } else { "" }, group.names());
         let open: gtk::Button = super::named("GtkButton", &title);
         let name = label(&title, &["author"]);
         name.set_xalign(0.0);
@@ -565,14 +558,11 @@ impl App {
         );
         top.append(&when);
         if item.unread {
-            let check: gtk::Button = super::named(
-                "GtkButton",
-                &format!("Mark notification from {} read", item.actor_name),
-            );
+            let check: gtk::Button = super::named("GtkButton", &group.mark_label());
             check.set_child(Some(&self.images.icon_image(Icon::Check, "#b9bcbe", 16)));
             check.set_tooltip_text(Some("Mark read"));
             check.add_css_class("flat");
-            let (app, target) = (Rc::downgrade(self), item.clone());
+            let (app, target) = (Rc::downgrade(self), group.items.clone());
             check.connect_clicked(move |_| {
                 if let Some(app) = app.upgrade() {
                     let app = app.clone();
@@ -583,7 +573,7 @@ impl App {
             top.append(&check);
         }
         row.append(&top);
-        if let Some(text) = description(item) {
+        if let Some(text) = group.summary() {
             let line = label(&text, &["muted", "small"]);
             line.set_xalign(0.0);
             line.set_wrap(true);
@@ -600,7 +590,7 @@ impl App {
         body.set_sensitive(!opening);
         row.append(&body);
         for button in [&open, &body] {
-            let (app, target) = (Rc::downgrade(self), item.clone());
+            let (app, target) = (Rc::downgrade(self), group.items.clone());
             button.connect_clicked(move |_| {
                 if let Some(app) = app.upgrade() {
                     let app = app.clone();
@@ -609,11 +599,7 @@ impl App {
                 }
             });
         }
-        let place = [item.space_name.as_deref(), item.channel_name.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let place = item.place();
         if !place.is_empty() {
             let line = label(&place, &["muted", "small"]);
             line.set_xalign(0.0);
@@ -968,9 +954,10 @@ impl App {
         });
     }
 
-    /// Marks `item` read; `open` also goes where it came from once the
-    /// read succeeds. Only one open is in flight at a time.
-    fn read_inbox_item(self: &Rc<Self>, item: Item, open: bool) {
+    /// Marks a row's group (`items`, newest first) read in one request;
+    /// `open` also goes to its oldest once the read succeeds. Only one open
+    /// is in flight at a time.
+    fn read_inbox_item(self: &Rc<Self>, items: Vec<Item>, open: bool) {
         {
             let mut state = self.state.borrow_mut();
             let Some(token) = state.token.clone() else {
@@ -985,27 +972,31 @@ impl App {
                 state.inbox.request += 1;
                 state.inbox.loading = false;
             }
+            let Some(newest) = items.first() else {
+                return;
+            };
             if open {
-                state.inbox.opening = Some(item.id.clone());
+                state.inbox.opening = Some(newest.id.clone());
             }
             state.inbox.error = None;
-            state.inbox.mark_read(&item);
+            state.inbox.mark_read(&items);
             self.worker.send(Command::ReadActivity {
                 epoch: state.epoch,
                 navigation: state.navigation,
                 token,
-                item,
+                items,
                 open,
             });
         }
         self.render_inbox();
     }
 
-    /// `ActivityRead`: a successful open closes the inbox and goes there.
+    /// `ActivityRead`: a successful open closes the inbox and goes to the
+    /// group's oldest item, where its run starts.
     pub(super) fn inbox_read(
         self: &Rc<Self>,
         navigation: u64,
-        item: Item,
+        items: Vec<Item>,
         open: bool,
         result: Result<caper_client::activity::Read, String>,
     ) {
@@ -1014,14 +1005,14 @@ impl App {
             if open {
                 state.inbox.opening = None;
             }
-            let read = state.inbox.read_finished(&item, result);
+            let read = state.inbox.read_finished(&items, result);
             if read {
                 self.refresh_unread(&mut state);
             }
             read && open && navigation == state.navigation && state.inbox.shown
         };
-        if go {
-            self.open_inbox_item(item);
+        if go && let Some(oldest) = items.last() {
+            self.open_inbox_item(oldest.clone());
         }
         self.render_inbox();
     }

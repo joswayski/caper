@@ -23,6 +23,18 @@ pub struct Item {
 }
 
 impl Item {
+    /// Where it happened. A direct message has no space, and its channel
+    /// name is only the internal "direct".
+    pub fn place(&self) -> String {
+        match self.space_name.as_deref().filter(|name| !name.is_empty()) {
+            None => "Direct message".into(),
+            Some(space) => [Some(space), self.channel_name.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" \u{b7} "),
+        }
+    }
     pub fn channel(&self) -> Option<&str> {
         self.conversation_id
             .as_deref()
@@ -84,6 +96,126 @@ impl Item {
             }
         }
         Ok(self.channel().unwrap().to_owned())
+    }
+}
+
+/// The most notifications one row (and one read request) carries.
+pub const GROUP_MAX: usize = 100;
+
+/// Notifications shown as one inbox row: neighbours in the same
+/// conversation and thread (or reactions to one message) with the same
+/// read state. Newest first, never empty.
+#[derive(Clone, Debug)]
+pub struct Group {
+    pub items: Vec<Item>,
+}
+
+/// What a notification groups by; `None` never groups.
+fn group_key(item: &Item) -> Option<(&str, &str, &str, bool)> {
+    match item.kind.as_str() {
+        "message" | "reply" | "mention" => Some((
+            item.kind.as_str(),
+            item.channel().unwrap_or_default(),
+            item.thread_root_id.as_deref().unwrap_or_default(),
+            item.unread,
+        )),
+        "reaction" => Some((
+            "reaction",
+            item.message_id.as_deref().unwrap_or_default(),
+            "",
+            item.unread,
+        )),
+        _ => None,
+    }
+}
+
+/// Groups `items` (newest first) without reordering them: an item joins
+/// the group right before it when both share a key and it has room.
+pub fn group(items: Vec<Item>) -> Vec<Group> {
+    let mut groups: Vec<Group> = Vec::new();
+    for item in items {
+        if let Some(last) = groups.last_mut()
+            && last.items.len() < GROUP_MAX
+            && group_key(&item).is_some_and(|key| group_key(last.newest()) == Some(key))
+        {
+            last.items.push(item);
+        } else {
+            groups.push(Group { items: vec![item] });
+        }
+    }
+    groups
+}
+
+impl Group {
+    pub fn newest(&self) -> &Item {
+        &self.items[0]
+    }
+    /// Where opening the row lands, so the conversation starts at the run.
+    pub fn oldest(&self) -> &Item {
+        &self.items[self.items.len() - 1]
+    }
+    /// The row's stable identity: the newest item's ID.
+    pub fn id(&self) -> &str {
+        &self.newest().id
+    }
+    pub fn ids(&self) -> Vec<&str> {
+        self.items.iter().map(|item| item.id.as_str()).collect()
+    }
+    pub fn unread(&self) -> bool {
+        self.newest().unread
+    }
+    /// "A", "A and B", or "A and N others", newest actor first.
+    pub fn names(&self) -> String {
+        let mut names: Vec<&str> = Vec::new();
+        for item in &self.items {
+            if !names.contains(&item.actor_name.as_str()) {
+                names.push(&item.actor_name);
+            }
+        }
+        match names.len() {
+            0 | 1 => self.newest().actor_name.clone(),
+            2 => format!("{} and {}", names[0], names[1]),
+            count => format!("{} and {} others", names[0], count - 1),
+        }
+    }
+    /// What happened, in the place of a row's description.
+    pub fn summary(&self) -> Option<String> {
+        let item = self.newest();
+        let count = self.items.len();
+        if count == 1 {
+            return match item.kind.as_str() {
+                "reaction" => Some(format!(
+                    "Reacted {} to your message",
+                    item.emoji.as_deref().unwrap_or_default()
+                )),
+                "direct.request" => Some("Wants to send you messages".into()),
+                "space.invitation" => Some("Invited you to a space".into()),
+                "channel.invitation" => Some("Invited you to a private channel".into()),
+                _ => None,
+            };
+        }
+        match item.kind.as_str() {
+            "message" => Some(format!("{count} messages")),
+            "reply" => Some(format!("{count} replies")),
+            "mention" => Some(format!("Mentioned you {count} times")),
+            "reaction" => {
+                let mut emojis: Vec<&str> = Vec::new();
+                for emoji in self.items.iter().filter_map(|item| item.emoji.as_deref()) {
+                    if !emoji.is_empty() && !emojis.contains(&emoji) {
+                        emojis.push(emoji);
+                    }
+                }
+                Some(format!("Reacted {} to your message", emojis.join(" ")))
+            }
+            _ => None,
+        }
+    }
+    /// The mark-read control's accessible label.
+    pub fn mark_label(&self) -> String {
+        match self.items.len() {
+            1 => format!("Mark notification from {} read", self.newest().actor_name),
+            count => format!("Mark {count} notifications from {} read", self.names()),
+        }
     }
 }
 
@@ -241,6 +373,10 @@ impl Inbox {
         items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         items
     }
+    /// The visible rows as the inbox shows them: runs of neighbours grouped.
+    pub fn visible_groups(&self) -> Vec<Group> {
+        group(self.visible_items())
+    }
     /// Whether rows are loaded or on their way: opening the inbox then
     /// refreshes them in place instead of reloading behind them.
     pub fn ready(&self) -> bool {
@@ -339,28 +475,42 @@ impl Inbox {
             self.items.retain(|row| row.id != id);
         }
     }
-    /// Marks an unread row read at once; `read_finished` keeps or reverts it.
-    pub fn mark_read(&mut self, item: &Item) {
-        if !item.unread {
+    /// Marks `items` (a row's group) read at once; `read_finished` keeps or
+    /// reverts them. The count drops by the unread ones.
+    pub fn mark_read(&mut self, items: &[Item]) {
+        let unread = items.iter().filter(|item| item.unread).collect::<Vec<_>>();
+        if unread.is_empty() {
             return;
         }
         self.forget();
-        let index = self.items.iter().position(|row| row.id == item.id);
-        self.reads.push((item.id.clone(), index));
-        self.set_read(&item.id);
-        self.unread_count = self.unread_count.saturating_sub(1);
+        // Every position is taken before any row leaves, so a failure puts
+        // them back where they were.
+        for item in &unread {
+            let index = self.items.iter().position(|row| row.id == item.id);
+            self.reads.push((item.id.clone(), index));
+        }
+        for item in &unread {
+            self.set_read(&item.id);
+        }
+        self.unread_count = self.unread_count.saturating_sub(unread.len() as u64);
     }
-    /// `item` is the row as it was when acted on. Returns whether the read succeeded.
-    pub fn read_finished(&mut self, item: &Item, result: Result<Read, String>) -> bool {
+    /// `items` are the rows as they were when acted on, all sent in one read.
+    /// Returns whether the read succeeded.
+    pub fn read_finished(&mut self, items: &[Item], result: Result<Read, String>) -> bool {
         self.forget();
-        let pending = item
-            .unread
-            .then(|| self.reads.iter().position(|(id, _)| *id == item.id))
-            .flatten()
-            .map(|at| self.reads.remove(at).1);
+        let mut pending = items
+            .iter()
+            .filter(|item| item.unread)
+            .filter_map(|item| {
+                let at = self.reads.iter().position(|(id, _)| *id == item.id)?;
+                Some((item, self.reads.remove(at).1))
+            })
+            .collect::<Vec<_>>();
         match result {
             Ok(read) => {
-                self.set_read(&item.id);
+                for item in items {
+                    self.set_read(&item.id);
+                }
                 // With several reads in flight, only the last reply's count includes them all.
                 if self.reads.is_empty() {
                     self.unread_count = read.unread_count;
@@ -368,17 +518,20 @@ impl Inbox {
                 true
             }
             Err(error) => {
-                if let Some(index) = pending {
+                // In list order, so each goes back to its own place.
+                pending.sort_by_key(|(_, index)| *index);
+                for (item, index) in &pending {
                     if let Some(row) = self.items.iter_mut().find(|row| row.id == item.id) {
                         row.unread = true;
                     } else if let Some(index) = index {
-                        self.items.insert(index.min(self.items.len()), item.clone());
+                        self.items
+                            .insert((*index).min(self.items.len()), (*item).clone());
                     }
                     if let Some(row) = self.expanded.get_mut(&item.id) {
                         row.unread = true;
                     }
-                    self.unread_count += 1;
                 }
+                self.unread_count += pending.len() as u64;
                 self.error = Some(error);
                 false
             }
@@ -477,6 +630,11 @@ mod tests {
     fn reply_targets_exclude_invitations_and_keep_drafting_rows_out_of_pagination() {
         let mut row = item("opaque:/id");
         assert!(row.can_reply());
+        row.channel_name = Some("direct".into());
+        assert_eq!(row.place(), "Direct message");
+        row.space_name = Some("Studio".into());
+        row.channel_name = Some("ideas".into());
+        assert_eq!(row.place(), "Studio \u{b7} ideas");
         assert_eq!(row.quote_id(), row.message_id.as_deref());
         let key = row.draft_key();
         row.thread_root_id = Some("root".into());
@@ -639,7 +797,7 @@ mod tests {
 
         // A read changes every filter: windows are dropped, so All loads again.
         let thread = inbox.items[0].clone();
-        inbox.mark_read(&thread);
+        inbox.mark_read(&[thread]);
         inbox.filter = Filter::All;
         assert!(inbox.switched());
     }
@@ -696,8 +854,8 @@ mod tests {
             ..Default::default()
         };
         let (b, c) = (item("b"), item("c"));
-        inbox.mark_read(&b);
-        inbox.mark_read(&c);
+        inbox.mark_read(std::slice::from_ref(&b));
+        inbox.mark_read(std::slice::from_ref(&c));
         let ids = |inbox: &Inbox| {
             inbox
                 .items
@@ -708,16 +866,185 @@ mod tests {
         assert_eq!(ids(&inbox), ["a"]);
         assert_eq!(inbox.unread_count, 3);
         assert!(!inbox.due(), "polling waits for reads in flight");
-        assert!(!inbox.read_finished(&b, Err("offline".into())));
+        assert!(!inbox.read_finished(std::slice::from_ref(&b), Err("offline".into())));
         assert_eq!(ids(&inbox), ["a", "b"]);
         assert!(inbox.items[1].unread);
         assert_eq!(inbox.unread_count, 4);
         assert_eq!(inbox.error.as_deref(), Some("offline"));
-        assert!(inbox.read_finished(&c, Ok(Read { unread_count: 2 })));
+        assert!(inbox.read_finished(std::slice::from_ref(&c), Ok(Read { unread_count: 2 })));
         assert!(inbox.reads.is_empty() && inbox.due());
         assert_eq!(
             inbox.unread_count, 2,
             "the last read takes the server count"
+        );
+    }
+
+    fn note(id: &str, kind: &str, actor: &str, extra: serde_json::Value) -> Item {
+        let mut value = serde_json::json!({
+            "id": id, "kind": kind, "actorName": actor, "body": id,
+            "createdAt": "2026-11-04T12:00:00Z", "unread": true,
+            "channelId": "channel00001", "messageId": format!("message-{id}")
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn shape(groups: &[Group]) -> Vec<Vec<&str>> {
+        groups.iter().map(Group::ids).collect()
+    }
+
+    #[test]
+    fn only_neighbours_in_one_conversation_thread_and_read_state_group() {
+        let none = serde_json::json!({});
+        let thread = serde_json::json!({"threadRootId": "root1"});
+        let other = serde_json::json!({"channelId": "channel00002"});
+        let dm = serde_json::json!({"conversationId": "dm0000000001", "channelId": "channel00001"});
+        let mut read = note("r", "message", "Ann", serde_json::json!({}));
+        read.unread = false;
+        let groups = group(vec![
+            note("a", "message", "Ann", none.clone()),
+            note("b", "message", "Bo", none.clone()),
+            note("c", "message", "Ann", none.clone()),
+            // A thread in the same channel is its own run.
+            note("t1", "message", "Ann", thread.clone()),
+            note("t2", "message", "Bo", thread),
+            // Not adjacent to a..c: never merged back into them.
+            note("d", "message", "Ann", none.clone()),
+            note("o", "message", "Ann", other),
+            note("e", "message", "Ann", none.clone()),
+            read,
+            note("f", "message", "Ann", none.clone()),
+            // Same channel, different kind; then a DM keyed by its conversation.
+            note("m", "mention", "Ann", none.clone()),
+            note("x", "message", "Ann", dm.clone()),
+            note("y", "message", "Ann", dm),
+        ]);
+        assert_eq!(
+            shape(&groups),
+            [
+                vec!["a", "b", "c"],
+                vec!["t1", "t2"],
+                vec!["d"],
+                vec!["o"],
+                vec!["e"],
+                vec!["r"],
+                vec!["f"],
+                vec!["m"],
+                vec!["x", "y"],
+            ]
+        );
+        let run = &groups[0];
+        assert_eq!((run.id(), run.oldest().id.as_str()), ("a", "c"));
+        assert_eq!(run.names(), "Ann and Bo");
+        assert_eq!(run.summary().as_deref(), Some("3 messages"));
+        assert_eq!(
+            run.mark_label(),
+            "Mark 3 notifications from Ann and Bo read"
+        );
+        assert_eq!(groups[2].summary(), None, "a single message reads as today");
+        assert_eq!(groups[2].mark_label(), "Mark notification from Ann read");
+    }
+
+    #[test]
+    fn reactions_group_by_message_and_invitations_never_group() {
+        let on =
+            |message: &str, emoji: &str| serde_json::json!({"messageId": message, "emoji": emoji});
+        let groups = group(vec![
+            note("a", "reaction", "Ann", on("m1", "🎉")),
+            note("b", "reaction", "Bo", on("m1", "👍")),
+            note("c", "reaction", "Cy", on("m1", "🎉")),
+            note("d", "reaction", "Di", on("m1", "❤️")),
+            note("e", "reaction", "Ann", on("m2", "👍")),
+            note("i1", "space.invitation", "Ann", serde_json::json!({})),
+            note("i2", "space.invitation", "Ann", serde_json::json!({})),
+            note("q1", "direct.request", "Ann", serde_json::json!({})),
+            note("q2", "direct.request", "Ann", serde_json::json!({})),
+            note("r1", "reply", "Ann", serde_json::json!({})),
+            note("r2", "reply", "Ann", serde_json::json!({})),
+        ]);
+        assert_eq!(
+            shape(&groups),
+            [
+                vec!["a", "b", "c", "d"],
+                vec!["e"],
+                vec!["i1"],
+                vec!["i2"],
+                vec!["q1"],
+                vec!["q2"],
+                vec!["r1", "r2"],
+            ]
+        );
+        assert_eq!(groups[0].names(), "Ann and 3 others");
+        assert_eq!(
+            groups[0].summary().as_deref(),
+            Some("Reacted 🎉 👍 ❤️ to your message")
+        );
+        assert_eq!(
+            groups[1].summary().as_deref(),
+            Some("Reacted 👍 to your message")
+        );
+        assert_eq!(groups[6].names(), "Ann", "one distinct name");
+        assert_eq!(groups[6].summary().as_deref(), Some("2 replies"));
+    }
+
+    #[test]
+    fn a_group_holds_at_most_a_hundred_items() {
+        let items = (0..GROUP_MAX + 1)
+            .map(|k| note(&k.to_string(), "mention", "Ann", serde_json::json!({})))
+            .collect();
+        let groups = group(items);
+        assert_eq!(
+            groups.iter().map(|g| g.items.len()).collect::<Vec<_>>(),
+            [100, 1]
+        );
+        assert_eq!(
+            groups[0].summary().as_deref(),
+            Some("Mentioned you 100 times")
+        );
+    }
+
+    #[test]
+    fn a_group_read_is_one_optimistic_read_and_a_failure_restores_every_row() {
+        let none = serde_json::json!({});
+        let rows = vec![
+            note("x", "mention", "Ann", none.clone()),
+            note("a", "message", "Ann", none.clone()),
+            note("b", "message", "Bo", none.clone()),
+            note("c", "message", "Cy", none.clone()),
+            note("z", "mention", "Ann", none),
+        ];
+        let mut inbox = Inbox {
+            shown: true,
+            items: rows.clone(),
+            unread_count: 9,
+            ..Default::default()
+        };
+        let run = inbox.visible_groups().remove(1);
+        assert_eq!(run.ids(), ["a", "b", "c"]);
+        inbox.mark_read(&run.items);
+        assert_eq!(ids(&inbox), ["x", "z"]);
+        assert_eq!(inbox.unread_count, 6);
+        assert_eq!(inbox.reads.len(), 3);
+        assert!(!inbox.read_finished(&run.items, Err("offline".into())));
+        assert_eq!(ids(&inbox), ["x", "a", "b", "c", "z"]);
+        assert!(inbox.items.iter().all(|row| row.unread));
+        assert_eq!(inbox.unread_count, 9);
+        assert!(inbox.reads.is_empty());
+
+        // With every row shown, they turn read in place and the server count wins.
+        inbox.unread_only = false;
+        inbox.mark_read(&run.items);
+        assert_eq!(ids(&inbox), ["x", "a", "b", "c", "z"]);
+        assert_eq!(inbox.unread_count, 6);
+        assert!(inbox.read_finished(&run.items, Ok(Read { unread_count: 5 })));
+        assert_eq!(inbox.unread_count, 5);
+        assert_eq!(
+            shape(&inbox.visible_groups()),
+            [vec!["x"], vec!["a", "b", "c"], vec!["z"]],
+            "read rows group apart from unread neighbours"
         );
     }
 }

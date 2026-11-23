@@ -4086,11 +4086,11 @@ impl App {
                 Event::ActivityRead {
                     epoch,
                     navigation,
-                    item,
+                    items,
                     open,
                     result,
                 } if epoch == self.state.borrow().epoch => {
-                    self.inbox_read(navigation, item, open, result)
+                    self.inbox_read(navigation, items, open, result)
                 }
                 _ => {}
             }

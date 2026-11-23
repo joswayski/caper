@@ -407,6 +407,7 @@ targets:
       - Tests/CaperCoreTests/AttachmentEditTests.swift
       - Tests/CaperCoreTests/AttachmentTests.swift
       - Tests/CaperCoreTests/MessageGroupingTests.swift
+      - Tests/CaperCoreTests/ActivityGroupTests.swift
       - Tests/CaperCoreTests/MessageArrivalsTests.swift
       - Tests/CaperCoreTests/CodeResendTests.swift
       - Tests/CaperCoreTests/MediaViewerTests.swift

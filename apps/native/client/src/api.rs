@@ -290,13 +290,18 @@ impl Api {
         Ok(page)
     }
 
-    pub fn read_activity(&self, token: &str, id: &str) -> Result<crate::activity::Read, ApiError> {
+    /// Marks notifications read in one request (a row's group: 1 to 100 IDs).
+    pub fn read_activity(
+        &self,
+        token: &str,
+        ids: &[&str],
+    ) -> Result<crate::activity::Read, ApiError> {
         self.request(
             Method::POST,
             "api/notifications/inbox/read",
             Some(token),
             None,
-            Some(json!({"ids": [id]})),
+            Some(json!({"ids": ids})),
         )
     }
 

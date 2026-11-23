@@ -3574,13 +3574,14 @@ impl Live {
     }
 
     /// Opens (`open`) or marks read the inbox's shown row `k`, as egui:
-    /// the row reads at once, and opening waits for the read. Reading
-    /// never accepts an invitation.
+    /// the row's whole group reads at once in one request, and opening
+    /// waits for the read, then opens its oldest item. Reading never
+    /// accepts an invitation.
     pub fn activity_action(&mut self, k: usize, open: bool) {
         let Some(token) = self.token.clone() else {
             return;
         };
-        let Some(item) = self.activity.visible_items().into_iter().nth(k) else {
+        let Some(group) = self.activity.visible_groups().into_iter().nth(k) else {
             return;
         };
         if open && self.activity.opening.is_some() {
@@ -3594,15 +3595,15 @@ impl Live {
             self.activity.loading = false;
         }
         if open {
-            self.activity.opening = Some(item.id.clone());
+            self.activity.opening = Some(group.id().to_owned());
         }
         self.activity.error = None;
-        self.activity.mark_read(&item);
+        self.activity.mark_read(&group.items);
         self.worker.send(Command::ReadActivity {
             epoch: self.account_epoch,
             navigation: self.navigation,
             token,
-            item,
+            items: group.items,
             open,
         });
     }
@@ -4710,30 +4711,21 @@ impl Live {
                 .unwrap_or(0),
             unread_only: a.unread_only,
             unread_count: a.unread_count,
+            // One row per group of neighbouring notifications, shown as
+            // its newest.
             rows: a
-                .visible_items()
+                .visible_groups()
                 .iter()
-                .map(|item| crate::settings::InboxRow {
-                    actor: item.actor_name.clone(),
+                .map(|group| (group, group.newest()))
+                .map(|(group, item)| crate::settings::InboxRow {
+                    actor: group.names(),
+                    mark: group.mark_label(),
                     unread: item.unread,
-                    opening: a.opening.as_ref() == Some(&item.id),
+                    opening: a.opening.as_deref() == Some(group.id()),
                     time: caper_client::feedback::relative_time(&item.created_at, now),
-                    description: match item.kind.as_str() {
-                        "reaction" => Some(format!(
-                            "Reacted {} to your message",
-                            item.emoji.as_deref().unwrap_or_default()
-                        )),
-                        "direct.request" => Some("Wants to send you messages".into()),
-                        "space.invitation" => Some("Invited you to a space".into()),
-                        "channel.invitation" => Some("Invited you to a private channel".into()),
-                        _ => None,
-                    },
+                    description: group.summary(),
                     body: item.body.clone(),
-                    place: [item.space_name.as_deref(), item.channel_name.as_deref()]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join(" \u{b7} "),
+                    place: item.place(),
                 })
                 .collect(),
             loading: a.loading,
@@ -6058,17 +6050,22 @@ impl Live {
             Event::ActivityRead {
                 epoch,
                 navigation,
-                item,
+                mut items,
                 open,
                 result,
             } if epoch == self.account_epoch => {
                 if open {
                     self.activity.opening = None;
                 }
-                if self.activity.read_finished(&item, result) {
+                if self.activity.read_finished(&items, result) {
                     self.refresh_unread();
-                    if open && navigation == self.navigation && self.activity.shown {
-                        self.open_activity_item(item, out);
+                    // A group opens at its oldest, where the run starts.
+                    if open
+                        && navigation == self.navigation
+                        && self.activity.shown
+                        && let Some(oldest) = items.pop()
+                    {
+                        self.open_activity_item(oldest, out);
                     }
                 }
                 out.push(Update::Inbox);

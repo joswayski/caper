@@ -43,3 +43,62 @@ internal data class ActivityInboxState(
 ) {
     val visibleItems: List<ActivityItem> get() = (items + expanded.values.filter { pinned -> items.none { it.id == pinned.id } }).sortedByDescending { it.createdAt }
 }
+
+/** The server's limit for one read request, and so the largest group. */
+internal const val ACTIVITY_GROUP_MAX = 100
+
+/** A run of neighbouring inbox items shown as one row (newest first); see [groupActivity]. */
+internal data class ActivityGroup(val items: List<ActivityItem>) {
+    init { require(items.isNotEmpty()) }
+    val newest: ActivityItem get() = items.first()
+    /** Opening the row lands here, where the run starts. */
+    val oldest: ActivityItem get() = items.last()
+    /** Stable identity (list key, expanded state): the newest item's ID. */
+    val id: String get() = newest.id
+    val ids: List<String> get() = items.map { it.id }
+    val unread: Boolean get() = items.any { it.unread }
+    /** "A", "A and B", or "A and N others", by distinct actor name, newest actor first. */
+    val nameLine: String get() {
+        val names = items.map { it.actorName }.distinct()
+        return when (names.size) {
+            1 -> names[0]
+            2 -> "${names[0]} and ${names[1]}"
+            else -> "${names[0]} and ${names.size - 1} others"
+        }
+    }
+    /** The line in place of the description; a single item keeps today's description (none for messages). */
+    val summary: String? get() = if (items.size == 1) when (newest.kind) {
+        "reaction" -> "Reacted ${newest.emoji.orEmpty()} to your message"
+        "direct.request" -> "Wants to send you messages"
+        "space.invitation" -> "Invited you to a space"
+        "channel.invitation" -> "Invited you to a private channel"
+        else -> null
+    } else when (newest.kind) {
+        "message" -> "${items.size} messages"
+        "reply" -> "${items.size} replies"
+        "mention" -> "Mentioned you ${items.size} times"
+        "reaction" -> "Reacted ${items.mapNotNull { it.emoji?.takeIf(String::isNotEmpty) }.distinct().joinToString(" ")} to your message"
+        else -> null
+    }
+}
+
+/** Items with the same key may share a row; null never groups. */
+internal fun activityGroupKey(item: ActivityItem): String? = when (item.kind) {
+    "message", "reply", "mention" -> listOf(item.kind, item.conversationId ?: item.channelId.orEmpty(), item.threadRootId.orEmpty(), item.unread.toString())
+    "reaction" -> listOf("reaction", item.messageId.orEmpty(), item.unread.toString())
+    else -> null
+}?.joinToString("") { "${it.length}:$it" }
+
+/** Merges each item into the group right before it when keys match and that group has room; the order never changes. */
+internal fun groupActivity(items: List<ActivityItem>): List<ActivityGroup> {
+    val groups = mutableListOf<MutableList<ActivityItem>>()
+    var previous: String? = null
+    for (item in items) {
+        val key = activityGroupKey(item)
+        val last = groups.lastOrNull()
+        if (key != null && key == previous && last != null && last.size < ACTIVITY_GROUP_MAX) last += item
+        else groups += mutableListOf(item)
+        previous = key
+    }
+    return groups.map { ActivityGroup(it) }
+}

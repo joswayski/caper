@@ -28,11 +28,12 @@ pub enum Command {
         through: Option<crate::activity::Item>,
         more: bool,
     },
+    /// Marks a row's group read in one request; `open` then opens its oldest.
     ReadActivity {
         epoch: u64,
         navigation: u64,
         token: String,
-        item: crate::activity::Item,
+        items: Vec<crate::activity::Item>,
         open: bool,
     },
     AvatarHistory {
@@ -678,7 +679,7 @@ pub enum Event {
     ActivityRead {
         epoch: u64,
         navigation: u64,
-        item: crate::activity::Item,
+        items: Vec<crate::activity::Item>,
         open: bool,
         result: Result<crate::activity::Read, String>,
     },
@@ -1976,16 +1977,20 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
             epoch,
             navigation,
             token,
-            item,
+            items,
             open,
         } => {
+            let ids = items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>();
             let result = api
-                .read_activity(&token, &item.id)
+                .read_activity(&token, &ids)
                 .map_err(|error| error.to_string());
             Event::ActivityRead {
                 epoch,
                 navigation,
-                item,
+                items,
                 open,
                 result,
             }
@@ -3258,18 +3263,21 @@ mod tests {
         assert!(
             matches!(receiver.recv().unwrap(), super::Event::ActivityLoaded { epoch: 4, request: 8, more: true, result: Ok(page) } if page.unread_count == 7)
         );
-        let item = serde_json::from_value(serde_json::json!({
+        let item: crate::activity::Item = serde_json::from_value(serde_json::json!({
             "id": "opaque:/item+1", "kind": "space.invitation", "actorName": "Test",
             "body": "Invitation", "createdAt": "now", "unread": true, "spaceId": "space0000001"
         }))
         .unwrap();
+        // A grouped row's IDs all go in the one request.
+        let mut second = item.clone();
+        second.id = "opaque:/item+2".into();
         super::execute(
             &api,
             super::Command::ReadActivity {
                 epoch: 4,
                 navigation: 3,
                 token: "account".into(),
-                item,
+                items: vec![item, second],
                 open: false,
             },
             &sender,
@@ -3281,7 +3289,7 @@ mod tests {
         worker.join().unwrap();
         assert_eq!(
             bodies.lock().unwrap().as_slice(),
-            [r#"{"ids":["opaque:/item+1"]}"#]
+            [r#"{"ids":["opaque:/item+1","opaque:/item+2"]}"#]
         );
     }
 

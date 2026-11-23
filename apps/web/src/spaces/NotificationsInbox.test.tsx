@@ -199,7 +199,8 @@ test("automatic updates revalidate older pages without gaps, even when the oldes
     spaceName: null,
     channelId: null,
     channelName: null,
-    conversationId: "direct000001",
+    // A conversation each, so these rows stay apart rather than group.
+    conversationId: `direct00000${id}`,
     messageId: `message0000${id}`,
     threadRootId: null,
     emoji: null,
@@ -398,7 +399,8 @@ test("filter changes keep rows in place and reads apply before the server answer
     spaceName: null,
     channelId: null,
     channelName: null,
-    conversationId: "direct000001",
+    // A conversation each, so these rows stay apart rather than group.
+    conversationId: `direct00000${id}`,
     messageId: `message0000${id}`,
     threadRootId: null,
     emoji: null,
@@ -506,6 +508,146 @@ test("an inbox loaded ahead opens on its rows and refreshes them only once they 
     expect(container.textContent).toContain("Loaded before you looked");
     expect(container.textContent).not.toContain("Loading notifications");
     expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  }
+});
+
+test("neighbouring notifications about one conversation group; a group reads in one request and opens its oldest", async () => {
+  const make = (id: string, at: number, patch: Partial<InboxItem> = {}): InboxItem => ({
+    id,
+    kind: "message",
+    actorId: "actor0000001",
+    actorName: "Sam",
+    avatarId: null,
+    body: `Body ${id}`,
+    createdAt: new Date(Date.UTC(2026, 10, 4, 12, 0, at)).toISOString(),
+    unread: true,
+    spaceId: null,
+    spaceName: null,
+    channelId: null,
+    channelName: null,
+    conversationId: "direct000001",
+    messageId: `message-${id}`,
+    threadRootId: null,
+    emoji: null,
+    ...patch,
+  });
+  const channel = { spaceId: "space0000001", spaceName: "Studio", channelId: "channel00001", channelName: "ideas" };
+  let rows: InboxItem[] = [
+    make("m:9", 9),
+    make("m:8", 8, { actorName: "Ana" }),
+    make("m:7", 7),
+    // Same channel, different threads: never one row.
+    make("t:6", 6, { ...channel, conversationId: null, kind: "reply", threadRootId: "root-a" }),
+    make("t:5", 5, { ...channel, conversationId: null, kind: "reply", threadRootId: "root-b" }),
+    // The first conversation again, but not next to its other rows.
+    make("m:4", 4),
+    make("r:3", 3, { ...channel, conversationId: null, kind: "reaction", emoji: "🎉", messageId: "mine" }),
+    make("r:2", 2, {
+      ...channel,
+      conversationId: null,
+      kind: "reaction",
+      emoji: "👍",
+      messageId: "mine",
+      actorName: "Kai",
+    }),
+    make("r:1", 1, {
+      ...channel,
+      conversationId: null,
+      kind: "reaction",
+      emoji: "🎉",
+      messageId: "mine",
+      actorName: "Lee",
+    }),
+    make("s:0", 0, { kind: "space.invitation", ...channel, channelId: null, channelName: null, conversationId: null }),
+  ];
+  let failRead = true;
+  const posts: string[][] = [];
+  let opened: InboxItem | undefined;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (init?.method === "POST") {
+      const { ids } = JSON.parse(String(init.body)) as { ids: string[] };
+      posts.push(ids);
+      if (failRead) return Response.json({ error: "Couldn’t save. Try again." }, { status: 503 });
+      rows = rows.map((row) => (ids.includes(row.id) ? { ...row, unread: false } : row));
+      return Response.json({ unreadCount: rows.filter((row) => row.unread).length });
+    }
+    const unreadOnly = new URL(String(input), "http://localhost").searchParams.get("unread") === "true";
+    return Response.json({
+      items: rows.filter((row) => !unreadOnly || row.unread),
+      nextCursor: null,
+      unreadCount: rows.filter((row) => row.unread).length,
+    });
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const rendered = () =>
+    Array.from(container.querySelectorAll(".inbox-list > li"), (row) =>
+      [
+        row.querySelector(".inbox-line strong")?.textContent,
+        row.querySelector(".inbox-description")?.textContent,
+        row.querySelector(".inbox-preview")?.textContent,
+      ].join(" | "),
+    );
+  const click = async (element: HTMLElement) => act(async () => element.click());
+  try {
+    await act(async () =>
+      root.render(
+        <NotificationsInbox
+          accountId="self00000001"
+          onClose={() => {}}
+          onCount={() => {}}
+          onOpen={(item) => {
+            opened = item;
+          }}
+        />,
+      ),
+    );
+    expect(rendered()).toEqual([
+      "Sam and Ana | 3 messages | Body m:9",
+      "Sam |  | Body t:6",
+      "Sam |  | Body t:5",
+      "Sam |  | Body m:4",
+      "Sam and 2 others | Reacted 🎉 👍 to your message | Body r:3",
+      "Sam | Invited you to a space | Body s:0",
+    ]);
+    expect(container.querySelector(".inbox-toolbar")?.textContent).toContain("(10)");
+
+    const markFirst = () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Mark 3 notifications from Sam and Ana read"]')!;
+    await click(markFirst());
+    expect(posts).toEqual([["m:9", "m:8", "m:7"]]);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t save");
+    expect(rendered()[0]).toBe("Sam and Ana | 3 messages | Body m:9");
+    expect(container.querySelector(".inbox-toolbar")?.textContent).toContain("(10)");
+
+    failRead = false;
+    await click(container.querySelectorAll<HTMLButtonElement>(".inbox-open")[4]);
+    expect(posts.at(-1)).toEqual(["r:3", "r:2", "r:1"]);
+    expect(opened?.id).toBe("r:1");
+    await click(markFirst());
+    expect(posts.at(-1)).toEqual(["m:9", "m:8", "m:7"]);
+    expect(rendered()).toEqual([
+      "Sam |  | Body t:6",
+      "Sam |  | Body t:5",
+      "Sam |  | Body m:4",
+      "Sam | Invited you to a space | Body s:0",
+    ]);
+    expect(container.querySelector(".inbox-toolbar")?.textContent).toContain("(4)");
+
+    // Read and unread rows of one conversation stay apart.
+    rows = rows.map((row) => (row.id === "m:8" ? { ...row, unread: true } : row));
+    await click(container.querySelector<HTMLInputElement>('[role="switch"]')!);
+    expect(rendered().slice(0, 4)).toEqual([
+      "Sam |  | Body m:9",
+      "Ana |  | Body m:8",
+      "Sam |  | Body m:7",
+      "Sam |  | Body t:6",
+    ]);
   } finally {
     await act(async () => root.unmount());
     container.remove();

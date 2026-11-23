@@ -353,7 +353,10 @@ pub struct InboxSnap {
 /// One notification as the inbox shows it.
 #[derive(Clone, PartialEq, Debug)]
 pub struct InboxRow {
+    /// Its group's names: "A", "A and B" or "A and N others".
     pub actor: String,
+    /// The check's accessible label.
+    pub mark: String,
     pub unread: bool,
     /// Its open is in flight: only it is disabled.
     pub opening: bool,
@@ -936,11 +939,10 @@ impl Builder<'_> {
             });
             self.texts += 1;
             if row.unread {
-                let text = format!("Mark notification from {} read", row.actor);
                 self.push(
                     SPart::MarkRead(k),
                     (self.inner - 28.0, top + (line - 28.0) / 2.0, 28.0, 28.0),
-                    &text,
+                    &row.mark,
                 );
             }
             self.y = top + line;

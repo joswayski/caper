@@ -35,6 +35,7 @@ import androidx.compose.ui.window.DialogProperties
 import chat.caper.android.data.ActivityFilter
 import chat.caper.android.data.ActivityItem
 import chat.caper.android.data.feedbackAge
+import chat.caper.android.data.groupActivity
 import chat.caper.android.ui.*
 import kotlinx.coroutines.delay
 
@@ -115,32 +116,31 @@ import kotlinx.coroutines.delay
                 else -> tween(MOTION_FAST, 150, EaseOut)
             }, label = "stale")
             LazyColumn(Modifier.weight(1f).graphicsLayer { alpha = dim }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(inbox.visibleItems, key = { it.id }) { item ->
+                // Neighbouring notifications from one conversation, thread or reacted message share a row.
+                items(groupActivity(inbox.visibleItems), key = { it.id }) { group ->
+                    // Avatar, preview, location, time, Reply and React belong to the newest item.
+                    val item = group.newest
+                    val name = group.nameLine
                     Column(Modifier.fillMaxWidth().background(SurfaceRaised, MaterialTheme.shapes.small).padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Avatar(item.actorName, 28.dp, avatarId = item.avatarId)
                             Spacer(Modifier.width(10.dp))
-                            Text("${if (item.unread) "● " else ""}${item.actorName}",
-                                Modifier.weight(1f).clickable(enabled = !inbox.stale && inbox.opening != item.id, role = Role.Button) {
-                                    viewModel.readActivity(item, open = true) { shown = false; onOpened() }
+                            Text("${if (group.unread) "● " else ""}$name",
+                                Modifier.weight(1f).clickable(enabled = !inbox.stale && inbox.opening != group.id, role = Role.Button) {
+                                    viewModel.readActivity(group, open = true) { shown = false; onOpened() }
                                 // The dot is unread state (web: aria-label "Unread"), not a glyph to read out.
-                                }.semantics { contentDescription = item.actorName; if (item.unread) stateDescription = "Unread" }, fontWeight = if (item.unread) FontWeight.Bold else FontWeight.Medium, color = Text, fontSize = 13.sp)
+                                }.semantics { contentDescription = name; if (group.unread) stateDescription = "Unread" }, fontWeight = if (group.unread) FontWeight.Bold else FontWeight.Medium, color = Text, fontSize = 13.sp)
                             Text(feedbackAge(item.createdAt), color = TextMuted, fontSize = 11.sp)
-                            if (item.unread) IconButton({ viewModel.readActivity(item) }, enabled = !inbox.stale) {
-                                Icon(painterResource(R.drawable.lucide_check), "Mark notification from ${item.actorName} read", Modifier.size(16.dp), tint = TextMuted)
+                            if (group.unread) IconButton({ viewModel.readActivity(group) }, enabled = !inbox.stale) {
+                                Icon(painterResource(R.drawable.lucide_check),
+                                    if (group.items.size == 1) "Mark notification from $name read" else "Mark ${group.items.size} notifications from $name read",
+                                    Modifier.size(16.dp), tint = TextMuted)
                             }
                         }
-                        Column(Modifier.fillMaxWidth().clickable(enabled = !inbox.stale && inbox.opening != item.id, role = Role.Button) {
-                            viewModel.readActivity(item, open = true) { shown = false; onOpened() }
+                        Column(Modifier.fillMaxWidth().clickable(enabled = !inbox.stale && inbox.opening != group.id, role = Role.Button) {
+                            viewModel.readActivity(group, open = true) { shown = false; onOpened() }
                         }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            val description = when (item.kind) {
-                                "reaction" -> "Reacted ${item.emoji.orEmpty()} to your message"
-                                "direct.request" -> "Wants to send you messages"
-                                "space.invitation" -> "Invited you to a space"
-                                "channel.invitation" -> "Invited you to a private channel"
-                                else -> null
-                            }
-                            description?.let { Text(it, color = TextMuted, fontSize = 12.sp) }
+                            group.summary?.let { Text(it, color = TextMuted, fontSize = 12.sp) }
                             Text(item.body, color = Text, fontSize = 13.sp, maxLines = 3)
                             Text(activityLocation(item), color = TextMuted, fontSize = 12.sp)
                         }

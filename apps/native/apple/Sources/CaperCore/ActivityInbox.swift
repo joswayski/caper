@@ -41,13 +41,88 @@ struct ActivityItem: Decodable, Identifiable, Sendable {
         default: nil
         }
     }
-    var location: String { [spaceName, channelName].compactMap { $0 }.joined(separator: " · ") }
+    /// A direct message has no space; its channel name is only the internal "direct".
+    var location: String {
+        guard let spaceName, !spaceName.isEmpty else { return "Direct message" }
+        return [spaceName, channelName].compactMap { $0 }.joined(separator: " · ")
+    }
     var route: NotificationRoute? {
         if kind == "space.invitation", let spaceId { return .invitation(spaceID: spaceId, channelID: nil) }
         if kind == "channel.invitation", let spaceId, let channelId { return .invitation(spaceID: spaceId, channelID: channelId) }
         if let conversationId { return .direct(conversationID: conversationId) }
         if let spaceId, let channelId { return .channel(spaceID: spaceId, channelID: channelId) }
         return nil
+    }
+}
+
+/// Neighbouring notifications about the same conversation (or reactions to the
+/// same message) show as one row, newest first; invitations and requests always
+/// stand alone. Every client groups by the same rule; the inbox API stays per
+/// notification. `items` is never empty.
+struct ActivityGroup: Identifiable, Sendable {
+    let items: [ActivityItem]
+
+    var newest: ActivityItem { items[0] }
+    var oldest: ActivityItem { items[items.count - 1] }
+    /// The row's stable identity: list key, accessibility identifiers, expanded state.
+    var id: String { newest.id }
+    var ids: [String] { items.map(\.id) }
+    /// Grouped items share their unread state (it is part of the key).
+    var unread: Bool { newest.unread }
+
+    /// The newest actor first, then "A and B" or "A and N others".
+    var names: String {
+        var seen = Set<String>()
+        let distinct = items.map(\.actorName).filter { seen.insert($0).inserted }
+        switch distinct.count {
+        case 1: return distinct[0]
+        case 2: return "\(distinct[0]) and \(distinct[1])"
+        default: return "\(distinct[0]) and \(distinct.count - 1) others"
+        }
+    }
+
+    /// Shown in place of the description.
+    var summary: String? {
+        guard items.count > 1 else { return newest.description }
+        switch newest.kind {
+        case "message": return "\(items.count) messages"
+        case "reply": return "\(items.count) replies"
+        case "mention": return "Mentioned you \(items.count) times"
+        default:
+            var seen = Set<String>()
+            let emojis = items.map { $0.emoji ?? "" }.filter { seen.insert($0).inserted }
+            return "Reacted \(emojis.joined(separator: " ")) to your message"
+        }
+    }
+
+    var readLabel: String {
+        items.count > 1 ? "Mark \(items.count) notifications from \(names) read" : "Mark notification from \(names) read"
+    }
+
+    /// Nil for kinds that never group.
+    static func key(_ item: ActivityItem) -> [String]? {
+        switch item.kind {
+        case "reaction":
+            return ["reaction", item.messageId ?? "", item.unread ? "unread" : "read"]
+        case "message", "reply", "mention":
+            return [item.kind, item.conversationId ?? item.channelId ?? "", item.threadRootId ?? "", item.unread ? "unread" : "read"]
+        default:
+            return nil
+        }
+    }
+
+    /// Only neighbours merge, so the list keeps its order. One read request
+    /// takes at most 100 IDs, so neither does a group.
+    static func grouping(_ items: [ActivityItem]) -> [ActivityGroup] {
+        var groups: [[ActivityItem]] = []
+        for item in items {
+            if let itemKey = key(item), let last = groups.last, last.count < 100, key(last[0]) == itemKey {
+                groups[groups.count - 1].append(item)
+            } else {
+                groups.append([item])
+            }
+        }
+        return groups.map { ActivityGroup(items: $0) }
     }
 }
 
@@ -139,57 +214,59 @@ struct ActivityInboxView: View {
                     if !model.activityLoading && model.activityVisibleItems.isEmpty && model.activityError == nil {
                         Text("No notifications match these filters.").foregroundStyle(CaperTheme.muted).padding(.vertical, 24)
                     }
-                    ForEach(model.activityVisibleItems) { item in
+                    ForEach(model.activityVisibleGroups) { group in
+                        let item = group.newest
+                        let target = model.activityReplyTarget(group)
                         VStack(alignment: .leading, spacing: 6) {
                             ZStack(alignment: .topTrailing) {
                                 Button {
-                                    Task { if await model.openActivity(item) { closeInbox() } }
+                                    Task { if await model.openActivity(group) { closeInbox() } }
                                 } label: {
                                     VStack(alignment: .leading, spacing: 5) {
-                                        Text("\(item.unread ? "● " : "")\(item.actorName)")
-                                            .font(CaperTheme.font(13, weight: item.unread ? .bold : .medium))
+                                        Text("\(group.unread ? "● " : "")\(group.names)")
+                                            .font(CaperTheme.font(13, weight: group.unread ? .bold : .medium))
                                             .padding(.trailing, 110).frame(minHeight: actionSize, alignment: .leading)
-                                        if let description = item.description { Text(description).foregroundStyle(CaperTheme.muted) }
+                                        if let summary = group.summary { Text(summary).foregroundStyle(CaperTheme.muted) }
                                         Text(item.body).lineLimit(3)
                                         Text(item.location).foregroundStyle(CaperTheme.muted)
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                }.buttonStyle(.plain).disabled(model.activityOpening == item.id)
-                                    .accessibilityIdentifier("activity-open-\(item.id)")
+                                }.buttonStyle(.plain).disabled(model.activityOpening == group.id)
+                                    .accessibilityIdentifier("activity-open-\(group.id)")
                                 HStack(spacing: 6) {
                                     Text(FeedbackInbox.relativeTime(item.createdAt)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                                    if item.unread {
-                                        Button { Task { _ = await model.readActivity(item) } } label: {
+                                    if group.unread {
+                                        Button { Task { _ = await model.readActivity(group) } } label: {
                                             Image(systemName: "checkmark").frame(width: actionSize, height: actionSize).contentShape(Rectangle())
                                         }.buttonStyle(.plain)
-                                            .accessibilityLabel("Mark notification from \(item.actorName) read")
+                                            .accessibilityLabel(group.readLabel)
                                             .help("Mark read without opening")
-                                            .accessibilityIdentifier("activity-read-\(item.id)")
+                                            .accessibilityIdentifier("activity-read-\(group.id)")
                                     }
                                 }.frame(minHeight: actionSize)
                             }
-                            if model.canReplyToActivity(item) {
+                            if model.canReplyToActivity(target) {
                                 HStack(spacing: 16) {
                                     Button {
-                                        if model.activityExpanded[item.id] != nil { model.activityExpanded[item.id] = nil }
-                                        else { model.activityExpanded[item.id] = item }
+                                        if model.activityExpanded[target.id] != nil { model.activityExpanded[target.id] = nil }
+                                        else { model.activityExpanded[target.id] = target }
                                     } label: {
-                                        Text(model.activityExpanded[item.id] == nil ? "Reply" : "Close reply")
+                                        Text(model.activityExpanded[target.id] == nil ? "Reply" : "Close reply")
                                             .frame(minWidth: 44, minHeight: actionSize).contentShape(Rectangle())
-                                    }.accessibilityIdentifier("activity-reply-\(item.id)")
-                                    Button { reactionItem = item } label: {
+                                    }.accessibilityIdentifier("activity-reply-\(group.id)")
+                                    Button { reactionItem = target } label: {
                                         Text("React").frame(minWidth: 44, minHeight: actionSize).contentShape(Rectangle())
-                                    }.accessibilityIdentifier("activity-react-\(item.id)")
+                                    }.accessibilityIdentifier("activity-react-\(group.id)")
                                 }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
                             }
-                            if model.activityExpanded[item.id] != nil {
+                            if model.activityExpanded[target.id] != nil {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text(item.replyLabel).foregroundStyle(CaperTheme.muted)
-                                    MentionCardView(model: model, activity: item)
+                                    Text(target.replyLabel).foregroundStyle(CaperTheme.muted)
+                                    MentionCardView(model: model, activity: target)
                                 }.modifier(Entrance.anchored)
                             }
                             Divider()
                         }.accessibilityElement(children: .contain)
-                            .accessibilityIdentifier("activity-row-\(item.id)")
+                            .accessibilityIdentifier("activity-row-\(group.id)")
                     }
                     if model.activityCursor != nil {
                         Button("Load more") { Task { await model.loadActivity(reset: false) } }.disabled(model.activityLoading)

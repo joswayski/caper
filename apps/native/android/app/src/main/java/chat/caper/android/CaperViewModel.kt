@@ -151,35 +151,44 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Marks [item] read at once and puts it back if the save fails; [open] then navigates to it. */
-    internal fun readActivity(item: ActivityItem, open: Boolean = false, onOpened: () -> Unit = {}) {
+    /**
+     * Marks every item in [group] read at once with one request and puts them all back if the save fails;
+     * [open] then navigates to the group's oldest item, where the run starts.
+     */
+    internal fun readActivity(group: ActivityGroup, open: Boolean = false, onOpened: () -> Unit = {}) {
         val token = accountToken ?: return
         val start = activityMutable.value
         // Stale rows are inert, and one open runs at a time.
         if (start.stale || open && start.opening != null) return
         val epoch = accountGeneration; val navigation = generation; val opening = conversationOpeningRevision
         ++activityRequest; ++unreadRevision
-        val index = start.items.indexOfFirst { it.id == item.id }
-        val unread = (start.items.firstOrNull { it.id == item.id } ?: start.expanded[item.id] ?: item).unread
-        val counted = unread && start.unreadCount > 0
+        val item = group.oldest
+        val rows = group.items.map { row -> start.items.firstOrNull { it.id == row.id } ?: start.expanded[row.id] ?: row }
+        val unreadIds = rows.filter { it.unread }.map { it.id }.toSet()
+        val unread = unreadIds.isNotEmpty()
+        // Where each row sat, so a failed save puts it back in place (ascending, so earlier rows land first).
+        val positions = rows.map { row -> start.items.indexOfFirst { it.id == row.id } to row }
+            .filter { it.first >= 0 }.sortedBy { it.first }
+        val counted = minOf(unreadIds.size, start.unreadCount.coerceAtLeast(0))
         fun ActivityInboxState.withUnread(value: Boolean) = copy(
-            expanded = expanded.mapValues { (_, row) -> if (row.id == item.id) row.copy(unread = value) else row },
-            items = items.map { if (it.id == item.id) it.copy(unread = value) else it }.filter { !unreadOnly || it.unread })
+            expanded = expanded.mapValues { (_, row) -> if (row.id in unreadIds) row.copy(unread = value) else row },
+            items = items.map { if (it.id in unreadIds) it.copy(unread = value) else it }.filter { !unreadOnly || it.unread })
         activityMutable.value = (if (unread) start.withUnread(false) else start).copy(
-            unreadCount = start.unreadCount - if (counted) 1 else 0, busy = start.busy + 1,
-            opening = if (open) item.id else start.opening, loading = false, error = null)
+            unreadCount = start.unreadCount - counted, busy = start.busy + 1,
+            opening = if (open) group.id else start.opening, loading = false, error = null)
         viewModelScope.launch {
             try {
                 if (unread) {
-                    val result = try { api.readActivity(token, listOf(item.id)) }
+                    val result = try { api.readActivity(token, group.ids) }
                     catch (error: CancellationException) { throw error }
                     catch (error: Throwable) {
                         if (epoch == accountGeneration) {
                             val now = activityMutable.value
                             val same = now.filter == start.filter && now.unreadOnly == start.unreadOnly
-                            val rows = if (!same || index < 0 || now.items.any { it.id == item.id }) now.items
-                                else now.items.toMutableList().apply { add(index.coerceAtMost(size), item) }
-                            activityMutable.value = now.copy(items = rows, unreadCount = now.unreadCount + if (counted) 1 else 0).withUnread(true)
+                            val restored = if (!same) now.items else now.items.toMutableList().apply {
+                                positions.forEach { (index, row) -> if (none { it.id == row.id }) add(index.coerceAtMost(size), row) }
+                            }
+                            activityMutable.value = now.copy(items = restored, unreadCount = now.unreadCount + counted).withUnread(true)
                         }
                         throw error
                     }

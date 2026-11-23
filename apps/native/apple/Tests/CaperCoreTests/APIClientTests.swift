@@ -224,16 +224,44 @@ final class APIClientTests: XCTestCase {
             XCTAssertEqual(body, ["ids": ["kept"]])
             return (200, Data(#"{"unreadCount":3}"#.utf8))
         }
-        let success = await model.readActivity(model.activityItems[1])
+        let success = await model.readActivity(ActivityGroup(items: [model.activityItems[1]]))
         XCTAssertTrue(success)
         XCTAssertEqual(model.activityItems.map(\.unread), [true, false, true, true])
         XCTAssertEqual(model.activityUnread, 3)
         MockURLProtocol.handler = { _ in (503, Data(#"{"error":"Offline"}"#.utf8)) }
-        let failed = await model.readActivity(model.activityItems[0])
+        let failed = await model.readActivity(ActivityGroup(items: [model.activityItems[0]]))
         XCTAssertFalse(failed)
         XCTAssertEqual(model.activityItems.map(\.unread), [true, false, true, true], "A failed read puts the row back")
         XCTAssertEqual(model.activityUnread, 3)
         XCTAssertNotNil(model.activityError)
+
+        // A group is one request with all of its IDs; the count drops by its unread items.
+        var posts = 0
+        MockURLProtocol.handler = { request in
+            posts += 1
+            let body = try JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: [String]]
+            XCTAssertEqual(body, ["ids": ["displaced", "past"]])
+            return (200, Data(#"{"unreadCount":1}"#.utf8))
+        }
+        let grouped = await model.readActivity(ActivityGroup(items: Array(model.activityItems[2...3])))
+        XCTAssertTrue(grouped)
+        XCTAssertEqual(posts, 1)
+        XCTAssertEqual(model.activityItems.map(\.unread), [true, false, false, false])
+        XCTAssertEqual(model.activityUnread, 1)
+        // A failed group read restores every removed row in place, and only the unread ones count.
+        model.activityUnreadOnly = true
+        MockURLProtocol.handler = { request in
+            posts += 1
+            let body = try JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: [String]]
+            XCTAssertEqual(body, ["ids": ["new", "kept"]])
+            return (503, Data(#"{"error":"Offline"}"#.utf8))
+        }
+        let failedGroup = await model.readActivity(ActivityGroup(items: Array(model.activityItems[0...1])))
+        XCTAssertFalse(failedGroup)
+        XCTAssertEqual(posts, 2)
+        XCTAssertEqual(model.activityItems.map(\.id), ["new", "kept", "displaced", "past"])
+        XCTAssertEqual(model.activityItems.map(\.unread), [true, false, false, false])
+        XCTAssertEqual(model.activityUnread, 1)
     }
 
     func testDirectRecipientLookupReturnsPersonWithoutCreatingConversation() async throws {

@@ -22,6 +22,49 @@ type InboxPage = Awaited<ReturnType<typeof listInbox>>;
 export type PreloadedInbox = InboxPage & { loadedAt: number };
 const freshness = 15_000;
 
+/** Neighbouring rows about the same conversation (or reactions to the same message)
+ * show as one, newest first; invitations and requests always stand alone. Every
+ * client groups by the same rule, and the inbox API stays per notification. */
+function groupKey(item: InboxItem) {
+  if (item.kind === "reaction") return `reaction:${item.messageId}:${item.unread}`;
+  if (item.kind !== "message" && item.kind !== "reply" && item.kind !== "mention") return undefined;
+  return [item.kind, item.conversationId ?? item.channelId, item.threadRootId ?? "", item.unread].join(":");
+}
+
+function groupItems(items: InboxItem[]) {
+  const groups: InboxItem[][] = [];
+  for (const item of items) {
+    const previous = groups.at(-1);
+    const key = groupKey(item);
+    // One read request takes at most 100 IDs.
+    if (previous && key && key === groupKey(previous[0]) && previous.length < 100) previous.push(item);
+    else groups.push([item]);
+  }
+  return groups;
+}
+
+function actorNames(group: InboxItem[]) {
+  const names = [...new Set(group.map((item) => item.actorName))];
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names[0]} and ${names.length - 1} others`;
+}
+
+function summary(group: InboxItem[]) {
+  const [item] = group;
+  if (group.length === 1) return description(item);
+  switch (item.kind) {
+    case "message":
+      return `${group.length} messages`;
+    case "reply":
+      return `${group.length} replies`;
+    case "mention":
+      return `Mentioned you ${group.length} times`;
+    default:
+      return `Reacted ${[...new Set(group.map((row) => row.emoji ?? ""))].join(" ")} to your message`;
+  }
+}
+
 function description(item: InboxItem) {
   switch (item.kind) {
     case "reaction":
@@ -219,11 +262,13 @@ export default function NotificationsInbox({
 
   // Marking read updates the row and count at once and puts them back if the save fails,
   // so the rest of the list never waits on (or dims for) the request.
-  async function act(item: InboxItem, open: boolean) {
+  // A group is marked read in one request; opening it lands on its oldest notification,
+  // where the run starts.
+  async function act(group: InboxItem[], open: boolean) {
     if (open) {
       if (opening.current) return;
       opening.current = true;
-      setSaving(item.id);
+      setSaving(group[0].id);
     }
     busy.current++;
     cache.current.clear();
@@ -232,38 +277,40 @@ export default function NotificationsInbox({
     revision.current++;
     fetching.current = false;
     setLoading(false);
-    const index = loadedItems.current.findIndex((row) => row.id === item.id);
+    const reading = group.filter((item) => item.unread);
+    const ids = new Set(reading.map((item) => item.id));
+    const indexes = new Map(loadedItems.current.map((row, index) => [row.id, index]));
     const update = (rows: InboxItem[]) => {
       loadedItems.current = rows;
       setItems(rows);
     };
     try {
-      if (item.unread) {
+      if (reading.length) {
         update(
           unread
-            ? loadedItems.current.filter((row) => row.id !== item.id)
-            : loadedItems.current.map((row) => (row.id === item.id ? { ...row, unread: false } : row)),
+            ? loadedItems.current.filter((row) => !ids.has(row.id))
+            : loadedItems.current.map((row) => (ids.has(row.id) ? { ...row, unread: false } : row)),
         );
-        if (countRef.current) updateCount(countRef.current - 1);
+        if (countRef.current !== undefined) updateCount(Math.max(0, countRef.current - reading.length));
         try {
-          const result = await readInbox([item.id]);
+          const result = await readInbox([...ids]);
           // With several reads in flight, only the last reply's count includes them all.
           if (mounted.current && busy.current === 1) updateCount(result.unreadCount);
         } catch (reason) {
           if (!mounted.current) return;
-          const rows = loadedItems.current;
-          update(
-            rows.some((row) => row.id === item.id)
-              ? rows.map((row) => (row.id === item.id ? { ...row, unread: true } : row))
-              : index < 0
-                ? rows
-                : [...rows.slice(0, index), item, ...rows.slice(index)],
-          );
-          if (countRef.current !== undefined) updateCount(countRef.current + 1);
+          const rows = loadedItems.current.map((row) => (ids.has(row.id) ? { ...row, unread: true } : row));
+          // Put removed rows back where they were, in their original order.
+          for (const item of [...reading].sort((a, b) => (indexes.get(a.id) ?? 0) - (indexes.get(b.id) ?? 0))) {
+            const index = indexes.get(item.id);
+            if (index !== undefined && !rows.some((row) => row.id === item.id))
+              rows.splice(Math.min(index, rows.length), 0, item);
+          }
+          update(rows);
+          if (countRef.current !== undefined) updateCount(countRef.current + reading.length);
           throw reason;
         }
       }
-      if (open && mounted.current) await onOpen(item);
+      if (open && mounted.current) await onOpen(group.at(-1)!);
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "That notification couldn’t open.");
     } finally {
@@ -348,62 +395,73 @@ export default function NotificationsInbox({
             data-stale={stale || undefined}
             inert={stale}
           >
-            {visibleItems.map((item) => (
-              <li key={item.id} data-unread={item.unread || undefined}>
-                <button
-                  type="button"
-                  className="inbox-open"
-                  disabled={saving === item.id || composerBusy}
-                  onClick={() => void act(item, true)}
-                >
-                  <span className="inbox-avatar">
-                    <Avatar name={item.actorName} person={{ id: item.actorId, avatarId: item.avatarId }} />
-                  </span>
-                  <span className="inbox-content">
-                    <span className="inbox-line">
-                      <strong>{item.actorName}</strong>
-                      {item.unread && <span className="inbox-dot" aria-label="Unread" />}
+            {groupItems(visibleItems).map((group) => {
+              const [item] = group;
+              const names = actorNames(group);
+              const detail = summary(group);
+              // A reply being drafted stays on the row it started on as newer notifications join it.
+              const target = group.find((row) => row.id === expanded?.id) ?? item;
+              return (
+                <li key={item.id} data-unread={item.unread || undefined}>
+                  <button
+                    type="button"
+                    className="inbox-open"
+                    disabled={saving === item.id || composerBusy}
+                    onClick={() => void act(group, true)}
+                  >
+                    <span className="inbox-avatar">
+                      <Avatar name={item.actorName} person={{ id: item.actorId, avatarId: item.avatarId }} />
                     </span>
-                    {description(item) && <span className="inbox-description">{description(item)}</span>}
-                    {item.body && <span className="inbox-preview">{item.body}</span>}
-                    <small>
-                      {item.spaceName
-                        ? `${item.channelName ? `#${item.channelName} · ` : ""}${item.spaceName}`
-                        : "Direct message"}
-                    </small>
-                  </span>
-                </button>
-                <div className="inbox-meta">
-                  <time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>
-                    {new Date(item.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                  </time>
-                  {item.unread && (
-                    <Tooltip content="Mark read without opening">
-                      <button
-                        type="button"
-                        className="inbox-read"
-                        aria-label={`Mark notification from ${item.actorName} read`}
-                        onClick={() => void act(item, false)}
-                      >
-                        <Check aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                  )}
-                </div>
-                {item.messageId &&
-                  (item.channelId || item.conversationId) &&
-                  ["message", "mention", "reply", "reaction"].includes(item.kind) && (
-                    <NotificationActions
-                      accountId={accountId}
-                      item={item}
-                      expanded={expanded?.id === item.id}
-                      disabled={composerBusy}
-                      onExpand={() => setExpanded(expanded?.id === item.id ? undefined : item)}
-                      onStateChange={composerState}
-                    />
-                  )}
-              </li>
-            ))}
+                    <span className="inbox-content">
+                      <span className="inbox-line">
+                        <strong>{names}</strong>
+                        {item.unread && <span className="inbox-dot" aria-label="Unread" />}
+                      </span>
+                      {detail && <span className="inbox-description">{detail}</span>}
+                      {item.body && <span className="inbox-preview">{item.body}</span>}
+                      <small>
+                        {item.spaceName
+                          ? `${item.channelName ? `#${item.channelName} · ` : ""}${item.spaceName}`
+                          : "Direct message"}
+                      </small>
+                    </span>
+                  </button>
+                  <div className="inbox-meta">
+                    <time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>
+                      {new Date(item.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                    </time>
+                    {item.unread && (
+                      <Tooltip content="Mark read without opening">
+                        <button
+                          type="button"
+                          className="inbox-read"
+                          aria-label={
+                            group.length > 1
+                              ? `Mark ${group.length} notifications from ${names} read`
+                              : `Mark notification from ${names} read`
+                          }
+                          onClick={() => void act(group, false)}
+                        >
+                          <Check aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    )}
+                  </div>
+                  {target.messageId &&
+                    (target.channelId || target.conversationId) &&
+                    ["message", "mention", "reply", "reaction"].includes(target.kind) && (
+                      <NotificationActions
+                        accountId={accountId}
+                        item={target}
+                        expanded={expanded?.id === target.id}
+                        disabled={composerBusy}
+                        onExpand={() => setExpanded(expanded?.id === target.id ? undefined : target)}
+                        onStateChange={composerState}
+                      />
+                    )}
+                </li>
+              );
+            })}
           </ul>
           {loading && !visibleItems.length && (
             <p className="inbox-status" role="status">

@@ -118,22 +118,22 @@ import AppKit
         unreadLabel.stringValue = "Unread only (\(model.activityUnread))"
         error.stringValue = model.activityError ?? ""; error.isHidden = model.activityError == nil
         retry.isHidden = model.activityError == nil; retry.isEnabled = !model.activityLoading
-        let items = model.activityVisibleItems
-        status.stringValue = items.isEmpty ? model.activityLoading ? "Loading notifications…"
+        let groups = model.activityVisibleGroups
+        status.stringValue = groups.isEmpty ? model.activityLoading ? "Loading notifications…"
             : model.activityError == nil ? "No notifications match these filters." : "" : ""
         status.isHidden = status.stringValue.isEmpty
-        let ids = Set(items.map(\.id))
+        let ids = Set(groups.map(\.id))
         for id in cards.keys.filter({ !ids.contains($0) }) { cards.removeValue(forKey: id)?.removeFromSuperview() }
-        for (index, item) in items.enumerated() {
+        for (index, group) in groups.enumerated() {
             let card: AppKitActivityRow
-            if let previous = cards[item.id] { card = previous }
+            if let previous = cards[group.id] { card = previous }
             else {
-                card = AppKitActivityRow(model: model, item: item, close: close,
+                card = AppKitActivityRow(model: model, group: group, close: close,
                     react: { [weak self] item, anchor in self?.react(item, from: anchor) })
-                cards[item.id] = card; rows.insertArrangedSubview(card, at: index); AppKitKit.fillWidth(card, of: rows)
+                cards[group.id] = card; rows.insertArrangedSubview(card, at: index); AppKitKit.fillWidth(card, of: rows)
             }
             if rows.arrangedSubviews[index] !== card { rows.removeArrangedSubview(card); rows.insertArrangedSubview(card, at: index) }
-            card.update(item)
+            card.update(group)
         }
         rows.alphaValue = model.activityStale ? 0.5 : 1
         more.isHidden = model.activityCursor == nil; more.isEnabled = !model.activityLoading
@@ -156,7 +156,7 @@ import AppKit
 
 @MainActor private final class AppKitActivityRow: NSStackView {
     private let model: AppModel
-    private var item: ActivityItem
+    private var group: ActivityGroup
     private var open: AppKitActivityOpenButton!
     private var read: AppKitKitButton!
     private var reply: AppKitKitButton!
@@ -165,58 +165,61 @@ import AppKit
     private let replyBody = AppKitKit.stack([], spacing: 8)
     private var replyHost: AppKitQuickComposer?
 
-    init(model: AppModel, item: ActivityItem, close: @escaping () -> Void,
+    /// Identifiers stay keyed by the newest item: the inbox keys rows by it.
+    init(model: AppModel, group: ActivityGroup, close: @escaping () -> Void,
          react: @escaping (ActivityItem, NSView) -> Void) {
-        self.model = model; self.item = item
+        self.model = model; self.group = group
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 6
         translatesAutoresizingMaskIntoConstraints = false
-        setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityIdentifier("activity-row-\(item.id)")
+        setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityIdentifier("activity-row-\(group.id)")
         open = AppKitActivityOpenButton { [weak self] in
             guard let self, !self.model.activityStale else { return }
-            Task { if await model.openActivity(self.item) { close() } }
+            Task { if await model.openActivity(self.group) { close() } }
         }
-        open.setAccessibilityIdentifier("activity-open-\(item.id)")
+        open.setAccessibilityIdentifier("activity-open-\(group.id)")
         read = AppKitKitButton("✓", kind: .plain) { [weak self] in
             guard let self, !self.model.activityStale else { return }
-            Task { _ = await model.readActivity(self.item) }
+            Task { _ = await model.readActivity(self.group) }
         }
-        read.setAccessibilityIdentifier("activity-read-\(item.id)")
+        read.setAccessibilityIdentifier("activity-read-\(group.id)")
         reply = AppKitKitButton("Reply", kind: .plain) { [weak self] in
             guard let self, !self.model.activityStale else { return }
-            model.activityExpanded[self.item.id] = model.activityExpanded[self.item.id] == nil ? self.item : nil
+            let target = model.activityReplyTarget(self.group)
+            model.activityExpanded[target.id] = model.activityExpanded[target.id] == nil ? target : nil
         }
-        reply.setAccessibilityIdentifier("activity-reply-\(item.id)")
+        reply.setAccessibilityIdentifier("activity-reply-\(group.id)")
         reactButton = AppKitKitButton("React", kind: .plain) { [weak self] in
             guard let self, !self.model.activityStale else { return }
-            react(self.item, self.reactButton)
+            react(model.activityReplyTarget(self.group), self.reactButton)
         }
-        reactButton.setAccessibilityIdentifier("activity-react-\(item.id)")
+        reactButton.setAccessibilityIdentifier("activity-react-\(group.id)")
         let actions = NSStackView(views: [reply, reactButton, time, read]); actions.orientation = .horizontal; actions.spacing = 12
         for view in [open, actions, replyBody, AppKitKit.divider()] as [NSView] { addArrangedSubview(view) }
         for view in [open, replyBody] as [NSView] { AppKitKit.fillWidth(view, of: self) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(_ item: ActivityItem) {
-        self.item = item
-        open.update(item)
-        open.isEnabled = !model.activityStale && model.activityOpening != item.id
-        read.isHidden = !item.unread; read.isEnabled = !model.activityStale
-        read.setAccessibilityLabel("Mark notification from \(item.actorName) read")
+    func update(_ group: ActivityGroup) {
+        self.group = group
+        let item = group.newest, target = model.activityReplyTarget(group)
+        open.update(group)
+        open.isEnabled = !model.activityStale && model.activityOpening != group.id
+        read.isHidden = !group.unread; read.isEnabled = !model.activityStale
+        read.setAccessibilityLabel(group.readLabel)
         time.stringValue = FeedbackInbox.relativeTime(item.createdAt)
-        let canReply = model.canReplyToActivity(item)
+        let canReply = model.canReplyToActivity(target)
         reply.isHidden = !canReply; reactButton.isHidden = !canReply
         reply.isEnabled = !model.activityStale; reactButton.isEnabled = !model.activityStale
-        let expanded = model.activityExpanded[item.id] != nil
+        let expanded = model.activityExpanded[target.id] != nil
         reply.title = expanded ? "Close reply" : "Reply"
         // Retain the editor even across stale/fresh changes; only its permission
         // changes, never its identity or first responder.
         if expanded {
             if replyHost == nil {
-                let person = MentionCardPerson(id: item.actorId, username: item.actorName, displayName: nil, avatarId: item.avatarId, isSelf: false)
-                let host = AppKitQuickComposer(state: NativeQuickDraft(model: model, person: person, activity: item, close: {}))
-                let label = AppKitKit.label(item.replyLabel, size: 13, color: AppKitKit.muted)
+                let person = MentionCardPerson(id: target.actorId, username: target.actorName, displayName: nil, avatarId: target.avatarId, isSelf: false)
+                let host = AppKitQuickComposer(state: NativeQuickDraft(model: model, person: person, activity: target, close: {}))
+                let label = AppKitKit.label(target.replyLabel, size: 13, color: AppKitKit.muted)
                 replyBody.addArrangedSubview(label); replyBody.addArrangedSubview(host)
                 AppKitKit.fillWidth(label, of: replyBody); AppKitKit.fillWidth(host, of: replyBody)
                 replyHost = host
@@ -269,13 +272,14 @@ import AppKit
     }
     override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.5 } }
     @objc private func open() { handler() }
-    func update(_ item: ActivityItem) {
-        actor.stringValue = "\(item.unread ? "● " : "")\(item.actorName)"
-        actor.font = AppKitKit.font(13, weight: item.unread ? .bold : .medium)
-        summary.stringValue = item.description ?? ""; summary.isHidden = item.description == nil
+    func update(_ group: ActivityGroup) {
+        let item = group.newest, description = group.summary
+        actor.stringValue = "\(group.unread ? "● " : "")\(group.names)"
+        actor.font = AppKitKit.font(13, weight: group.unread ? .bold : .medium)
+        summary.stringValue = description ?? ""; summary.isHidden = description == nil
         preview.stringValue = item.body; location.stringValue = item.location
         location.isHidden = item.location.isEmpty
-        setAccessibilityLabel([actor.stringValue, item.description, item.body, item.location].compactMap { $0 }.joined(separator: "\n"))
+        setAccessibilityLabel([actor.stringValue, description, item.body, item.location].compactMap { $0 }.joined(separator: "\n"))
     }
 }
 #elseif os(iOS)
@@ -494,27 +498,27 @@ import Observation
         unread.isOn = model.activityUnreadOnly
         error.text = model.activityError; failures.isHidden = model.activityError == nil
         retry.isEnabled = !model.activityLoading
-        let items = model.activityVisibleItems
+        let groups = model.activityVisibleGroups
         // A first load with nothing to show yet stays blank instead of spinning;
         // rows loaded ahead are already here.
-        empty.isHidden = !items.isEmpty || model.activityLoading || model.activityError != nil
+        empty.isHidden = !groups.isEmpty || model.activityLoading || model.activityError != nil
         emptyTitle.text = model.activityUnreadOnly && model.activityFilter == .all ? "You’re all caught up" : "Nothing here"
         emptyDetail.text = "No notifications match these filters."
-        let ids = Set(items.map(\.id))
+        let ids = Set(groups.map(\.id))
         for id in cards.keys.filter({ !ids.contains($0) }) {
             guard let card = cards.removeValue(forKey: id) else { continue }
             card.removeReply(); card.removeFromSuperview()
         }
-        for (index, item) in items.enumerated() {
+        for (index, group) in groups.enumerated() {
             let card: UIKitActivityRow
-            if let previous = cards[item.id] { card = previous }
+            if let previous = cards[group.id] { card = previous }
             else {
-                card = UIKitActivityRow(model: model, item: item, parent: self,
+                card = UIKitActivityRow(model: model, group: group, parent: self,
                     close: { [weak self] in self?.finish() }, react: { [weak self] item in self?.react(item) })
-                cards[item.id] = card; rows.insertArrangedSubview(card, at: index)
+                cards[group.id] = card; rows.insertArrangedSubview(card, at: index)
             }
             if rows.arrangedSubviews[index] !== card { rows.removeArrangedSubview(card); rows.insertArrangedSubview(card, at: index) }
-            card.update(item, last: index == items.count - 1)
+            card.update(group, last: index == groups.count - 1)
         }
         rows.alpha = model.activityStale ? 0.5 : 1; rows.isUserInteractionEnabled = !model.activityStale
         more.isHidden = model.activityCursor == nil; more.isEnabled = !model.activityLoading
@@ -528,10 +532,11 @@ import Observation
     }
 }
 
-/// One notification: who, what, where and when, then its quiet actions.
+/// One notification (or a run of related ones): who, what, where and when,
+/// then its quiet actions.
 @MainActor private final class UIKitActivityRow: UIStackView {
     private let model: AppModel
-    private var item: ActivityItem
+    private var group: ActivityGroup
     private weak var parent: UIViewController?
     private var open: UIKitActivityOpenButton!
     private var read: UIButton!
@@ -544,30 +549,32 @@ import Observation
     /// Avatar width plus its gap: actions and replies line up with the text.
     static let indent: CGFloat = 48
 
-    init(model: AppModel, item: ActivityItem, parent: UIViewController, close: @escaping () -> Void,
+    /// Identifiers stay keyed by the newest item: the inbox keys rows by it.
+    init(model: AppModel, group: ActivityGroup, parent: UIViewController, close: @escaping () -> Void,
          react: @escaping (ActivityItem) -> Void) {
-        self.model = model; self.item = item; self.parent = parent
+        self.model = model; self.group = group; self.parent = parent
         super.init(frame: .zero)
-        axis = .vertical; spacing = 0; accessibilityIdentifier = "activity-row-\(item.id)"
+        axis = .vertical; spacing = 0; accessibilityIdentifier = "activity-row-\(group.id)"
         open = UIKitActivityOpenButton { [weak self] in
             guard let self, !self.model.activityStale else { return }
-            Task { if await model.openActivity(self.item) { close() } }
+            Task { if await model.openActivity(self.group) { close() } }
         }
-        open.accessibilityIdentifier = "activity-open-\(item.id)"
+        open.accessibilityIdentifier = "activity-open-\(group.id)"
         read = UIKitInboxStyle.action("Mark read", symbol: "checkmark") { [weak self] in
             guard let self, !self.model.activityStale else { return }
-            Task { _ = await model.readActivity(self.item) }
+            Task { _ = await model.readActivity(self.group) }
         }
-        read.accessibilityIdentifier = "activity-read-\(item.id)"
+        read.accessibilityIdentifier = "activity-read-\(group.id)"
         reply = UIKitInboxStyle.action("Reply", symbol: "arrowshape.turn.up.left") { [weak self] in
             guard let self, !self.model.activityStale else { return }
-            model.activityExpanded[self.item.id] = model.activityExpanded[self.item.id] == nil ? self.item : nil
+            let target = model.activityReplyTarget(self.group)
+            model.activityExpanded[target.id] = model.activityExpanded[target.id] == nil ? target : nil
         }
-        reply.accessibilityIdentifier = "activity-reply-\(item.id)"
+        reply.accessibilityIdentifier = "activity-reply-\(group.id)"
         reactButton = UIKitInboxStyle.action("React", symbol: "face.smiling") { [weak self] in
-            guard let self, !self.model.activityStale else { return }; react(self.item)
+            guard let self, !self.model.activityStale else { return }; react(model.activityReplyTarget(self.group))
         }
-        reactButton.accessibilityIdentifier = "activity-react-\(item.id)"
+        reactButton.accessibilityIdentifier = "activity-react-\(group.id)"
         actions = UIStackView(arrangedSubviews: [reply, reactButton, UIView(), read]); actions.spacing = 20; actions.alignment = .center
         // At accessibility text sizes the actions stack so each keeps whole words.
         func fit(_ actions: UIStackView) {
@@ -588,16 +595,17 @@ import Observation
     }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(_ item: ActivityItem, last: Bool) {
-        self.item = item
-        open.update(item)
-        open.isEnabled = !model.activityStale && model.activityOpening != item.id
-        read.isHidden = !item.unread; read.isEnabled = !model.activityStale
-        read.accessibilityLabel = "Mark notification from \(item.actorName) read"
+    func update(_ group: ActivityGroup, last: Bool) {
+        self.group = group
+        let item = model.activityReplyTarget(group)
+        open.update(group)
+        open.isEnabled = !model.activityStale && model.activityOpening != group.id
+        read.isHidden = !group.unread; read.isEnabled = !model.activityStale
+        read.accessibilityLabel = group.readLabel
         let canReply = model.canReplyToActivity(item)
         reply.isHidden = !canReply; reactButton.isHidden = !canReply
         reply.isEnabled = !model.activityStale; reactButton.isEnabled = !model.activityStale
-        actions.isHidden = !canReply && !item.unread
+        actions.isHidden = !canReply && !group.unread
         let expanded = model.activityExpanded[item.id] != nil
         reply.configuration?.title = expanded ? "Close reply" : "Reply"
         reply.configuration?.baseForegroundColor = UIColor(expanded ? CaperTheme.terracottaBright : CaperTheme.muted)
@@ -659,17 +667,18 @@ import Observation
     override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric) }
     override var isHighlighted: Bool { didSet { alpha = isHighlighted ? 0.7 : isEnabled ? 1 : 0.5 } }
     override var isEnabled: Bool { didSet { alpha = isEnabled ? 1 : 0.5 } }
-    func update(_ item: ActivityItem) {
+    func update(_ group: ActivityGroup) {
+        let item = group.newest, description = group.summary
         avatar.show(name: item.actorName, avatarID: item.avatarId)
-        actor.text = item.actorName
-        actor.textColor = UIColor(item.unread ? CaperTheme.text : CaperTheme.muted)
-        dot.isHidden = !item.unread
+        actor.text = group.names
+        actor.textColor = UIColor(group.unread ? CaperTheme.text : CaperTheme.muted)
+        dot.isHidden = !group.unread
         time.text = FeedbackInbox.relativeTime(item.createdAt)
-        summary.text = item.description; summary.isHidden = item.description == nil
+        summary.text = description; summary.isHidden = description == nil
         preview.text = item.body; preview.isHidden = item.body.isEmpty
-        preview.textColor = UIColor(item.unread ? CaperTheme.text : CaperTheme.muted)
+        preview.textColor = UIColor(group.unread ? CaperTheme.text : CaperTheme.muted)
         location.text = item.location; location.isHidden = item.location.isEmpty
-        accessibilityLabel = [item.unread ? "Unread" : nil, item.actorName, item.description, item.body, item.location, time.text]
+        accessibilityLabel = [group.unread ? "Unread" : nil, group.names, description, item.body, item.location, time.text]
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 }
