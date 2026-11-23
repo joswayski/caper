@@ -244,7 +244,11 @@ pub fn insert(text: &str, token: &Token, emoji: &str) -> Option<(String, usize)>
     })
 }
 
-/// Sheet `page` of the bundled Twemoji: 1024px PNG, 64px cells at each
+/// Pixel width/height of each emoji cell and each 16×16 sprite sheet.
+pub const CELL_EDGE: u32 = 128;
+pub const SHEET_EDGE: u32 = CELL_EDGE * 16;
+
+/// Sheet `page` of the bundled Twemoji: 2048px PNG, 128px cells at each
 /// entry's `x`/`y`.
 pub fn sheet(page: usize) -> &'static [u8] {
     match page {
@@ -457,5 +461,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["1f44d", "1f600", "2764", "1f389", "1f680", "1f440"]
         );
+    }
+
+    #[test]
+    fn bundled_sheets_match_catalog_geometry() {
+        for page in 0..15 {
+            let png = sheet(page);
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "sheet-{page} PNG header");
+            let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+            let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+            assert_eq!((width, height), (SHEET_EDGE, SHEET_EDGE), "sheet-{page}");
+            assert_eq!(png[24], 8, "sheet-{page} 8-bit depth");
+            assert_eq!(png[25], 6, "sheet-{page} RGBA color type");
+        }
+        for entry in catalog() {
+            assert_eq!(entry.x % CELL_EDGE, 0, "{}", entry.id);
+            assert_eq!(entry.y % CELL_EDGE, 0, "{}", entry.id);
+            assert!(entry.x + CELL_EDGE <= SHEET_EDGE, "{}", entry.id);
+            assert!(entry.y + CELL_EDGE <= SHEET_EDGE, "{}", entry.id);
+        }
     }
 }

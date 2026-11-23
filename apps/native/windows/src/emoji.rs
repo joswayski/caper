@@ -16,7 +16,7 @@ use windows::core::*;
 
 pub use caper_client::emoji::{CATEGORIES, Entry, find, picker_choices};
 
-pub const CELL: u32 = 64;
+pub const CELL: u32 = caper_client::emoji::CELL_EDGE;
 
 const SHEETS: [&[u8]; 15] = [
     include_bytes!("../../../../shared/emoji/sheet-0.png"),
@@ -55,8 +55,8 @@ pub fn inline(text: &str) -> Vec<(Range<usize>, &'static Entry)> {
 }
 
 /// Emoji artwork in use, copied cell by cell out of the sheets into small
-/// atlas pages on the GPU: a whole sheet (4 MiB decoded) is never kept, only
-/// the 64 px cells that were drawn.
+/// atlas pages on the GPU: a whole sheet (16 MiB decoded) is never kept, only
+/// the 128 px cells that were drawn.
 struct Atlas {
     wic: IWICImagingFactory,
     pages: Vec<ID2D1Bitmap1>,
@@ -64,7 +64,7 @@ struct Atlas {
     next: u32,
 }
 
-const PAGE: u32 = 512;
+const PAGE: u32 = 1024;
 const PER_PAGE: u32 = (PAGE / CELL) * (PAGE / CELL);
 
 thread_local! {

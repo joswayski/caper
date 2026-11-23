@@ -8,6 +8,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -18,8 +19,9 @@ import kotlinx.serialization.json.Json
 )
 
 internal object EmojiArtwork {
+    private const val CELL_EDGE = 128
     private val crops = LruCache<String, Bitmap>(192)
-    private val pages = LruCache<Int, Bitmap>(4)
+    private val pages = LruCache<Int, Bitmap>(1)
     private var catalog: List<EmojiEntry>? = null
     private var names: Map<String, String>? = null
     /** The catalog by ID, built once; the first entry wins, as a scan would find it. */
@@ -64,7 +66,7 @@ internal object EmojiArtwork {
         val sheet = pages.get(entry.sheet) ?: context.assets.open("sheet-${entry.sheet}.png").use {
             BitmapFactory.decodeStream(it)
         }.also { pages.put(entry.sheet, it) }
-        return Bitmap.createBitmap(sheet, entry.x, entry.y, 64, 64).also {
+        return Bitmap.createBitmap(sheet, entry.x, entry.y, CELL_EDGE, CELL_EDGE).also {
             crops.put(id, it)
         }
     }
@@ -91,5 +93,5 @@ private fun withoutVariationSelectors(emoji: String) = emoji.replace("\uFE0F", "
 @Composable internal fun EmojiImage(emoji: String, description: String?, modifier: Modifier = Modifier) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val bitmap = remember(emoji) { EmojiArtwork.bitmap(context, emoji)?.asImageBitmap() }
-    if (bitmap != null) Image(bitmap, description, modifier)
+    if (bitmap != null) Image(bitmap, description, modifier, filterQuality = FilterQuality.High)
 }

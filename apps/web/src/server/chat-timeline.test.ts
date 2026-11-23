@@ -337,14 +337,39 @@ test("country flags prefer typeable country names and retain their original alia
 });
 
 test("bundled native emoji names and aliases match on Android, Apple and desktop", () => {
-  const shared = readFileSync(new URL("../../../../shared/emoji/catalog.json", import.meta.url), "utf8");
-  const apple = readFileSync(
-    new URL("../../../native/apple/Sources/CaperCore/EmojiAssets/catalog.json", import.meta.url),
-    "utf8",
-  );
+  const sharedDir = new URL("../../../../shared/emoji/", import.meta.url);
+  const appleDir = new URL("../../../native/apple/Sources/CaperCore/EmojiAssets/", import.meta.url);
+  const shared = readFileSync(new URL("catalog.json", sharedDir), "utf8");
+  const apple = readFileSync(new URL("catalog.json", appleDir), "utf8");
   assert.equal(apple, shared);
-  const entries: { id: string; name: string; keywords: string; selectable: boolean; emoji: string }[] =
-    JSON.parse(shared);
+  assert.equal(
+    readFileSync(new URL("NOTICE.txt", appleDir), "utf8"),
+    readFileSync(new URL("NOTICE.txt", sharedDir), "utf8"),
+  );
+  for (let sheet = 0; sheet < 15; sheet++) {
+    const sharedPng = readFileSync(new URL(`sheet-${sheet}.png`, sharedDir));
+    const applePng = readFileSync(new URL(`sheet-${sheet}.png`, appleDir));
+    assert.ok(sharedPng.equals(applePng), `sheet-${sheet}.png must match Apple bundle`);
+    assert.equal(sharedPng.readUInt32BE(16), 2048, `sheet-${sheet}.png width`);
+    assert.equal(sharedPng.readUInt32BE(20), 2048, `sheet-${sheet}.png height`);
+    assert.equal(sharedPng[24], 8, `sheet-${sheet}.png 8-bit depth`);
+    assert.equal(sharedPng[25], 6, `sheet-${sheet}.png RGBA`);
+  }
+  const entries: {
+    id: string;
+    name: string;
+    keywords: string;
+    selectable: boolean;
+    emoji: string;
+    sheet: number;
+    x: number;
+    y: number;
+  }[] = JSON.parse(shared);
+  assert.ok(
+    entries.every(
+      (entry) => entry.x % 128 === 0 && entry.y % 128 === 0 && entry.x + 128 <= 2048 && entry.y + 128 <= 2048,
+    ),
+  );
   assert.ok(entries.filter((entry) => entry.selectable).every((entry) => !/[\s_]/.test(entry.name)));
   const grinning = entries.find((entry) => entry.id === "1f600")!;
   assert.equal(grinning.name, "grinning-face");

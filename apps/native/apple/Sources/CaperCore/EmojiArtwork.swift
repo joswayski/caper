@@ -108,47 +108,72 @@ enum EmojiArtwork {
             ?? bundle.url(forResource: name, withExtension: ext)
     }
 
+    static let cellEdge = 128
+
     private final class EmojiImageCache: @unchecked Sendable {
         static let shared = EmojiImageCache()
-        /// Each emoji is its own 64 px bitmap (16 KB): a `cropping(to:)` image
-        /// would keep its whole decoded 1024 px sheet (4 MB) alive. Only the
-        /// last sheet used stays decoded, for runs of emoji from one sheet.
-        private let cache: NSCache<NSString, CGImageBox> = { let cache = NSCache<NSString, CGImageBox>(); cache.countLimit = 1_024; return cache }()
-        private var sheet: (index: Int, image: CGImage, pixels: CFData)?
+        /// Each emoji is its own 128 px bitmap (64 KiB): a `cropping(to:)` image
+        /// would keep its whole decoded 2048 px sheet (16 MiB) alive. Only the
+        /// last sheet used stays decoded in an evictable cache for runs of emoji
+        /// from one sheet.
+        private let cache: NSCache<NSString, CGImageBox> = {
+            let cache = NSCache<NSString, CGImageBox>()
+            cache.countLimit = 512
+            cache.totalCostLimit = 16 * 1024 * 1024
+            return cache
+        }()
+        private let sheetCache: NSCache<NSNumber, SheetBox> = {
+            let cache = NSCache<NSNumber, SheetBox>()
+            cache.countLimit = 1
+            return cache
+        }()
         private let lock = NSLock()
 
         func image(for entry: EmojiCatalogEntry) -> CGImage? {
             if let cached = cache.object(forKey: entry.id as NSString)?.image { return cached }
             lock.lock(); defer { lock.unlock() }
             if let cached = cache.object(forKey: entry.id as NSString)?.image { return cached }
-            if sheet?.index != entry.sheet {
-                sheet = nil
+            let key = NSNumber(value: entry.sheet)
+            let sheet: SheetBox
+            if let existing = sheetCache.object(forKey: key) {
+                sheet = existing
+            } else {
+                sheetCache.removeAllObjects()
                 guard let url = EmojiArtwork.resourceURL(name: "sheet-\(entry.sheet)", extension: "png"),
                       let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                       let loaded = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
                       let pixels = loaded.dataProvider?.data else { return nil }
-                sheet = (entry.sheet, loaded, pixels)
+                let decoded = SheetBox(image: loaded, pixels: pixels)
+                sheetCache.setObject(decoded, forKey: key)
+                sheet = decoded
             }
-            guard let (_, image, pixels) = sheet, let base = CFDataGetBytePtr(pixels) else { return nil }
+            let image = sheet.image
+            guard let base = CFDataGetBytePtr(sheet.pixels) else { return nil }
             // The catalog contains CGImage pixel coordinates, not grid indices.
             // Copy that block's decoded bytes, in the sheet's own format.
-            let bytesPerPixel = image.bitsPerPixel / 8, rowBytes = 64 * bytesPerPixel
-            guard entry.x + 64 <= image.width, entry.y + 64 <= image.height else { return nil }
-            var block = Data(count: rowBytes * 64)
+            let edge = EmojiArtwork.cellEdge
+            let bytesPerPixel = image.bitsPerPixel / 8, rowBytes = edge * bytesPerPixel
+            guard entry.x + edge <= image.width, entry.y + edge <= image.height else { return nil }
+            var block = Data(count: rowBytes * edge)
             block.withUnsafeMutableBytes { out in
-                for row in 0..<64 {
+                for row in 0..<edge {
                     memcpy(out.baseAddress! + row * rowBytes, base + (entry.y + row) * image.bytesPerRow + entry.x * bytesPerPixel, rowBytes)
                 }
             }
             guard let provider = CGDataProvider(data: block as CFData),
-                  let emoji = CGImage(width: 64, height: 64, bitsPerComponent: image.bitsPerComponent, bitsPerPixel: image.bitsPerPixel,
+                  let emoji = CGImage(width: edge, height: edge, bitsPerComponent: image.bitsPerComponent, bitsPerPixel: image.bitsPerPixel,
                                       bytesPerRow: rowBytes, space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(), bitmapInfo: image.bitmapInfo,
                                       provider: provider, decode: nil, shouldInterpolate: image.shouldInterpolate, intent: image.renderingIntent) else { return nil }
-            cache.setObject(CGImageBox(emoji), forKey: entry.id as NSString)
+            cache.setObject(CGImageBox(emoji), forKey: entry.id as NSString, cost: block.count)
             return emoji
         }
     }
 
+    private final class SheetBox {
+        let image: CGImage
+        let pixels: CFData
+        init(image: CGImage, pixels: CFData) { self.image = image; self.pixels = pixels }
+    }
     private final class CGImageBox { let image: CGImage; init(_ image: CGImage) { self.image = image } }
 }
 

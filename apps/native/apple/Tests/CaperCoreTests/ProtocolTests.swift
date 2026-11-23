@@ -598,18 +598,18 @@ final class ProtocolTests: XCTestCase {
 
     func testEmojiArtworkCropsPixelCoordinatesAtAsymmetricPosition() {
         let entry = EmojiArtwork.entry(for: "👍")
-        XCTAssertEqual(entry?.x, 64)
-        XCTAssertEqual(entry?.y, 128)
+        XCTAssertEqual(entry?.x, 128)
+        XCTAssertEqual(entry?.y, 256)
         guard let entry, let image = EmojiArtwork.image(for: entry) else {
             return XCTFail("Expected bundled thumbs-up artwork")
         }
-        XCTAssertEqual(image.width, 64)
-        XCTAssertEqual(image.height, 64)
-        var pixels = [UInt8](repeating: 0, count: 64 * 64 * 4)
+        XCTAssertEqual(image.width, 128)
+        XCTAssertEqual(image.height, 128)
+        var pixels = [UInt8](repeating: 0, count: 128 * 128 * 4)
         pixels.withUnsafeMutableBytes { bytes in
-            let context = CGContext(data: bytes.baseAddress, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 64 * 4,
+            let context = CGContext(data: bytes.baseAddress, width: 128, height: 128, bitsPerComponent: 8, bytesPerRow: 128 * 4,
                                     space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            context?.draw(image, in: CGRect(x: 0, y: 0, width: 64, height: 64))
+            context?.draw(image, in: CGRect(x: 0, y: 0, width: 128, height: 128))
         }
         XCTAssertTrue(stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] != 0 }, "crop must contain visible pixels")
     }

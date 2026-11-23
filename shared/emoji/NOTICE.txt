@@ -8,10 +8,10 @@ packaged by @twemoji/svg 15.0.0. These PNG sprite sheets are rasterized from
 the SVGs, arranged without changing the designs. Picker names and keywords
 come from emoji-picker-react (MIT), whose license is included alongside this notice.
 
-Regenerate with npm ci, ImageMagick 7, and node scripts/native-emoji.mjs.
+Regenerate with npm ci, librsvg (rsvg-convert), and node scripts/native-emoji.mjs.
 catalog.json is an array of entries: id (Twemoji filename without extension),
 emoji, name, keywords, category, selectable, sheet, x, y. x/y are pixel offsets
-within sheet-N.png. Every cell is 64×64 pixels; sheets are 1024×1024 pixels.
+within sheet-N.png. Every cell is 128×128 pixels; sheets are 2048×2048 pixels.
 Only selectable entries appear in the picker; other entries render variants.
 To map Unicode to id, use unpadded lowercase hexadecimal codepoints joined
 by hyphens, removing FE0F unless the sequence contains U+200D (ZWJ).

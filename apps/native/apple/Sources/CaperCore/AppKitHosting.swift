@@ -640,8 +640,7 @@ private final class AppKitPointerPassthroughView: NSView {
         setAccessibilityIdentifier("reaction-tooltip")
         let art: NSView
         if let entry = EmojiArtwork.entry(for: emoji), let image = EmojiArtwork.image(for: entry) {
-            // The artwork is 64 pixels: 32 points is its sharpest size on
-            // a Retina display. Larger, it is scaled up and looks blurry.
+            // The artwork is 128 pixels, so 32 points stays crisp on Retina displays.
             let view = NSImageView(image: NSImage(cgImage: image, size: NSSize(width: 32, height: 32)))
             view.imageScaling = .scaleProportionallyDown
             view.translatesAutoresizingMaskIntoConstraints = false

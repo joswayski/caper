@@ -104,8 +104,6 @@ Twemoji graphics © Twitter, Inc. and other contributors, licensed under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 Sources: https://github.com/twitter/twemoji and https://github.com/jdecked/twemoji.
 The incoming-envelope illustration is Twemoji 15.0.0 from `@twemoji/svg` 15.0.0,
-rasterized into a sprite and cropped without changing its pixels (sheet 6,
-x=832, y=832, 64×64) from
-[Caper's published emoji assets](https://github.com/joswayski/caper/commit/54910cbf71cb84b8e1419972b837ec6723f68757).
+rasterized directly from `1f4e8.svg` as a 64×64 RGBA PNG with `rsvg-convert`.
 Desktop embeds the canonical `apps/web/public/images/invitation/1f4e8.png`
 directly; it does not rely on a system emoji font.

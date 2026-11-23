@@ -1951,7 +1951,8 @@ selected one.
 
 Native clients have the same eight categories and search behavior, using bundled
 raster sprite sheets generated from the same artwork with
-`node scripts/native-emoji.mjs` (needs npm dependencies and ImageMagick 7). Android
+`node scripts/native-emoji.mjs` (needs npm dependencies and librsvg/`rsvg-convert`,
+producing 2048×2048 sheets of 128×128 vector-rasterized cells). Android
 and Rust read `shared/emoji`; SwiftPM needs a generated copy inside its target,
 checked byte-for-byte by CI, including licenses. Rust desktop's fixed 40px cells
 fill the picker width and match the virtual scroller's row height.

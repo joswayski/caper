@@ -244,7 +244,8 @@ impl Textures {
                 context.load_texture(
                     format!("emoji-sheet-{page}"),
                     egui::ColorImage::from_rgba_unmultiplied(dimensions, decoded.as_raw()),
-                    egui::TextureOptions::LINEAR,
+                    egui::TextureOptions::LINEAR
+                        .with_mipmap_mode(Some(egui::TextureFilter::Linear)),
                 )
             })
             .clone()
@@ -276,11 +277,12 @@ impl Textures {
     }
 
     fn uv(entry: &Entry) -> egui::Rect {
+        let sheet = SHEET_EDGE as f32;
         egui::Rect::from_min_max(
-            egui::pos2(entry.x as f32 / 1024.0, entry.y as f32 / 1024.0),
+            egui::pos2(entry.x as f32 / sheet, entry.y as f32 / sheet),
             egui::pos2(
-                (entry.x + 64) as f32 / 1024.0,
-                (entry.y + 64) as f32 / 1024.0,
+                (entry.x + CELL_EDGE) as f32 / sheet,
+                (entry.y + CELL_EDGE) as f32 / sheet,
             ),
         )
     }

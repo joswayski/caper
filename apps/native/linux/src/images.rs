@@ -25,11 +25,11 @@ const MAX_FETCHES: usize = 4;
 /// The sizes uploaded pictures are kept at (`Pictures::wanted`), below
 /// `caper_client::pictures::DISPLAY_EDGE`.
 const PICTURE_EDGES: [u32; 2] = [48, 96];
-/// Twemoji sheets are 1024px squares of 64px cells.
-const SHEET_EDGE: usize = 1024;
-const EMOJI_EDGE: usize = 64;
+/// Twemoji sheets are 2048px squares of 128px cells.
+const SHEET_EDGE: usize = caper_client::emoji::SHEET_EDGE as usize;
+const EMOJI_EDGE: usize = caper_client::emoji::CELL_EDGE as usize;
 /// Emoji cells kept before the ones nothing shows are dropped.
-const EMOJI_KEPT: usize = 256;
+const EMOJI_KEPT: usize = 128;
 
 /// The Lucide icons the client draws (`desktop/resources/icons`, white
 /// strokes recoloured per use).
@@ -190,10 +190,10 @@ pub struct Images {
     mascots: RefCell<HashMap<u16, gdk::Texture>>,
     pictures: RefCell<Pictures>,
     /// The Twemoji sheet decoded last (`caper_client::emoji::sheet`), by its
-    /// index. A decoded sheet is 4 MiB, so only one stays: runs of emoji
+    /// index. A decoded sheet is 16 MiB, so only one stays: runs of emoji
     /// (a picker category, a message's reactions) mostly share theirs.
     emoji_sheet: RefCell<Option<(usize, Vec<u8>)>>,
-    /// Each emoji's 64px cell by catalog id, and the count past which cells
+    /// Each emoji's 128px cell by catalog id, and the count past which cells
     /// nothing shows are dropped (`EMOJI_KEPT` at first).
     emoji: RefCell<HashMap<String, gdk::Texture>>,
     emoji_trim: Cell<usize>,
@@ -277,7 +277,7 @@ impl Images {
         let texture = straight_texture(EMOJI_EDGE, EMOJI_EDGE, cell, gdk::MemoryFormat::B8g8r8a8);
         let mut cells = self.emoji.borrow_mut();
         cells.insert(entry.id.clone(), texture.clone());
-        // A browsed picker leaves thousands of cells behind (16 KiB each).
+        // A browsed picker leaves thousands of cells behind (64 KiB each).
         // Past the mark, keep only those a widget still shows; when most
         // are showing, the mark moves up rather than trimming every time.
         if cells.len() > self.emoji_trim.get() {
