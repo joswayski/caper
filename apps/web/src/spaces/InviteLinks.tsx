@@ -556,7 +556,7 @@ export function JoinInviteLinkForm({
             </span>
           )}
         </div>
-        <button type="submit" disabled={disabled || pending || !value.trim()}>
+        <button type="submit" disabled={disabled || pending || !inviteCode(value)}>
           {pending ? "Joining…" : "Join"}
         </button>
       </div>

@@ -75,10 +75,42 @@
     box-shadow var(--motion-fast) var(--ease-out),
     transform var(--motion-fast) var(--ease-spring);
 }
+/* The selected space keeps a chalk pill at the rail's edge; hover grows a
+   short muted one. Either takes the unread dot's place. */
+.space-rail-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 4px;
+  height: 20px;
+  margin-top: -10px;
+  border-radius: 0 3px 3px 0;
+  background: var(--text-muted);
+  opacity: 0;
+  transform: scaleY(0.5);
+  pointer-events: none;
+}
+.space-rail-item[data-active="true"]::before {
+  background: var(--text);
+  opacity: 1;
+  transform: none;
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.space-rail-item[data-active="true"] .space-unread {
+  opacity: 0;
+}
 /* Hover lifts the tile with an offset neutral halo that upgrades seamlessly
    into the botanical green selection ring on click — works cleanly on both
-   monograms and bright custom icons, with no jumping edge bar. */
+   monograms and bright custom icons. */
 @media (hover: hover) {
+  .space-rail-item:not([data-active="true"]):has(button:hover)::before {
+    opacity: 1;
+    transition: opacity var(--motion-fast) var(--ease-out);
+  }
+  .space-rail-item:not([data-active="true"]):has(button:hover) .space-unread {
+    opacity: 0;
+  }
   .space-rail-item:not([data-active="true"]) button:hover {
     color: var(--text);
     background: var(--surface-raised);
@@ -106,6 +138,9 @@
     animation: none !important;
     transition: none !important;
     transform: none !important;
+  }
+  .space-rail-item::before {
+    transition: none !important;
   }
 }
 /* New messages: a small dot in the rail margin, beside the tile. */
