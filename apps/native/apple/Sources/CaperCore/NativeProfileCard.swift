@@ -382,6 +382,8 @@ import Observation
             if composer == nil {
                 let host = UIKitQuickComposer(state: NativeQuickDraft(model: model, person: person, close: { [weak self] in self?.dismiss(animated: true) }))
                 addChild(host); body.addArrangedSubview(host.view); host.didMove(toParent: self); composer = host
+                // A growing draft lays out only inside the scroll view, so remeasure the sheet here.
+                host.heightChanged = { [weak self] in self?.view.setNeedsLayout() }
             }
             composer?.state.enabled = state.pending == nil
         } else if let composer {

@@ -286,7 +286,11 @@ import UIKit
     private var active = true
     private var startTask: Task<Void, Never>?
     private var presenting = false
+    /// The draft or staged files changed height: a sheet sized to the
+    /// composer measures again.
+    var heightChanged: (() -> Void)?
     init(state: NativeQuickDraft) { self.state = state; super.init(nibName: nil, bundle: nil) }
+    private func resized() { view.invalidateIntrinsicContentSize(); heightChanged?() }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { startTask?.cancel(); state.stop() }
     override func loadView() {
@@ -294,7 +298,7 @@ import UIKit
         editor = NativeDialogComposer(text: Binding(get: { [state] in state.draft.text }, set: { [state] in if state.editable { state.draft.text = $0 } }),
             placeholder: state.placeholder, identifier: "mention-card-composer", height: 42, controller: state.autocomplete,
             submit: state.send, pasteAttachments: state.paste, highlightSource: state.highlight, grows: true)
-        editor.heightChanged = { [weak self] in self?.view.invalidateIntrinsicContentSize() }
+        editor.heightChanged = { [weak self] in self?.resized() }
         files = UIKitStagedFiles { [state] in NativeStagedFile.quick(state) }
         voice = UIKitVoiceControls(session: session, kind: .microphone)
         recordingBar = UIKitVoiceControls(session: session, kind: .bar); voiceNotice = UIKitVoiceControls(session: session, kind: .notice)
@@ -315,7 +319,7 @@ import UIKit
         [attach!, emoji!, gif!, voice!, send!].forEach { $0.setContentHuggingPriority(.required, for: .horizontal) }
         row.setCustomSpacing(8, after: voice)
         [incoming, files!, editor!, recordingBar!, row, voiceNotice!, voiceRetry, status].forEach { body.addArrangedSubview($0) }
-        files.heightChanged = { [weak self] in self?.view.invalidateIntrinsicContentSize() }
+        files.heightChanged = { [weak self] in self?.resized() }
         status.accessibilityIdentifier = "mention-card-error"
     }
     override func viewDidLoad() { super.viewDidLoad(); startTask = Task { [state] in await state.start() }; observe() }
