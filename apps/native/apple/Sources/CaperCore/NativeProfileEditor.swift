@@ -84,7 +84,13 @@ private final class NonInteractiveLabel: NSTextField {
     private let avatar = AppKitAvatar()
     private let prepared = NSImageView()
     private let sign = AppKitKit.image("caper-change-me", size: 112)
-    private var picture: AppKitKitButton!
+    private var picture: AppKitPictureButton!
+    private let badge = NSView()
+    private let pencil: NSImageView = {
+        let view = AppKitKit.image("caper-pencil", size: 15)
+        view.image?.isTemplate = true
+        return view
+    }()
     private var regenerate: AppKitKitButton!
     private var save: AppKitKitButton!
     private var data: Data?
@@ -98,12 +104,24 @@ private final class NonInteractiveLabel: NSTextField {
         prepared.imageScaling = .scaleProportionallyUpOrDown; prepared.wantsLayer = true; prepared.layer?.masksToBounds = true
         prepared.layer?.cornerRadius = ProfilePicturePolicy.cornerRadius(side: 112)
         prepared.layer?.backgroundColor = AppKitKit.raised.cgColor
-        picture = AppKitKitButton("Change profile picture") { [weak self] in self?.showPictureMenu() }
+        // The whole picture is the control, with a pencil badge overhanging its
+        // corner, as on web; the badge sits inside the control's 118pt square.
+        picture = AppKitPictureButton { [weak self] in self?.showPictureMenu() }
+        picture.setAccessibilityLabel("Change profile picture"); picture.toolTip = "Change profile picture"
         picture.setAccessibilityIdentifier("change-profile-picture")
+        badge.wantsLayer = true; badge.layer?.cornerRadius = 8; badge.layer?.borderWidth = 3
+        badge.translatesAutoresizingMaskIntoConstraints = false; pencil.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(pencil); picture.addSubview(art); picture.addSubview(badge)
+        NSLayoutConstraint.activate([
+            picture.widthAnchor.constraint(equalToConstant: 118), picture.heightAnchor.constraint(equalToConstant: 118),
+            art.leadingAnchor.constraint(equalTo: picture.leadingAnchor), art.topAnchor.constraint(equalTo: picture.topAnchor),
+            badge.widthAnchor.constraint(equalToConstant: 34), badge.heightAnchor.constraint(equalToConstant: 34),
+            badge.trailingAnchor.constraint(equalTo: picture.trailingAnchor), badge.bottomAnchor.constraint(equalTo: picture.bottomAnchor),
+            pencil.centerXAnchor.constraint(equalTo: badge.centerXAnchor), pencil.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+        ])
         regenerate = AppKitKitButton("Regenerate avatar") { [state] in if !state.busy { state.draft?.regenerate() } }
         regenerate.setAccessibilityIdentifier("regenerate-avatar"); regenerate.toolTip = "Generate a new random avatar"
-        let controls = AppKitKit.stack([picture, regenerate], spacing: 8)
-        let pictures = NSStackView(views: [art, controls]); pictures.spacing = 16
+        let pictures = AppKitKit.stack([picture, regenerate], spacing: 12)
         for (field, title) in [(username, "Username"), (displayName, "Display name")] {
             field.delegate = self; field.setAccessibilityLabel(title)
         }
@@ -122,9 +140,13 @@ private final class NonInteractiveLabel: NSTextField {
         actions.orientation = .horizontal
         actions.alignment = .centerY
         actions.spacing = 12
-        setRows([pictures, AppKitKit.divider(), Self.heading("Username"), username,
-            Self.note("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores."),
-            Self.heading("Display name"), displayName, hint, error, actions])
+        // Each field reads label, field, then its muted hint, tight together; a wider gap separates the groups.
+        let usernameHeading = Self.heading("Username"), displayHeading = Self.heading("Display name")
+        let usernameHint = Self.note("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.")
+        setRows([pictures, usernameHeading, username, usernameHint, displayHeading, displayName, hint, error, actions])
+        body.setCustomSpacing(24, after: pictures)
+        for view in [usernameHeading, username, displayHeading, displayName] { body.setCustomSpacing(8, after: view) }
+        body.setCustomSpacing(22, after: usernameHint)
         preferHeight(620); registerForDraggedTypes([.fileURL]); render()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -155,6 +177,9 @@ private final class NonInteractiveLabel: NSTextField {
         error.stringValue = state.error ?? (state.pictureBusy ? "Preparing picture…" : ""); error.isHidden = error.stringValue.isEmpty
         unsaved.isHidden = !draft.hasChanges; save.isEnabled = state.canSave; save.title = state.saving ? "Saving…" : "Save profile"
         header.close.isEnabled = !state.saving; picture.isEnabled = !state.busy; regenerate.isEnabled = !state.busy; regenerate.isHidden = state.hasPicture
+        badge.layer?.borderColor = AppKitKit.surface.cgColor
+        badge.layer?.backgroundColor = (state.busy ? AppKitKit.border : AppKitKit.action).cgColor
+        pencil.contentTintColor = state.busy ? AppKitKit.muted : AppKitKit.onAction
         avatar.update(name: draft.displayName.isEmpty ? draft.username : draft.displayName, avatarId: draft.avatarId, picture: draft.avatarPicture)
         sign.isHidden = state.hasPicture || CaperAvatar.index(for: draft.avatarId) == nil
         if data != draft.preparedPicture?.data { data = draft.preparedPicture?.data; prepared.image = data.flatMap(NSImage.init(data:)) }
@@ -182,6 +207,43 @@ private final class NonInteractiveLabel: NSTextField {
         guard !state.busy, let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], let url = urls.first else { return false }
         state.choose { try await Task.detached { try PictureFile.read(url) }.value }; return true
     }
+}
+
+/// Edit profile's picture control: the picture with its pencil badge, which
+/// opens the picture menu on click, Space or Return, and VoiceOver's press.
+@MainActor final class AppKitPictureButton: NSControl {
+    private let handler: () -> Void
+    init(action: @escaping () -> Void) {
+        handler = action
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false; wantsLayer = true
+        focusRingType = .exterior
+        setAccessibilityElement(true); setAccessibilityRole(.button)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var isEnabled: Bool { didSet { window?.invalidateCursorRects(for: self) } }
+    override var acceptsFirstResponder: Bool { isEnabled && KeyboardTabOrder.keyboardFocusAllowed }
+    override var canBecomeKeyView: Bool { acceptsFirstResponder && !isHiddenOrHasHiddenAncestor && window != nil }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() {
+        // The picture fills the top-leading 112pt of this unflipped 118pt square.
+        let radius = ProfilePicturePolicy.cornerRadius(side: 112)
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 6, width: 112, height: 112), xRadius: radius, yRadius: radius).fill()
+    }
+    private func fire() { if isEnabled { handler() } }
+    /// Clicks on the picture and badge land here, not on the views drawing them.
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+    override func accessibilityChildren() -> [Any]? { [] }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { fire() }
+    }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 48 { KeyboardTabOrder.step(in: window, forward: !event.modifierFlags.contains(.shift), from: self) }
+        else if [" ", "\r"].contains(event.charactersIgnoringModifiers) { fire() } else { super.keyDown(with: event) }
+    }
+    override func accessibilityPerformPress() -> Bool { fire(); return isEnabled }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
 }
 
 /// One picture in the Previous pictures grid: the whole thumbnail selects it,
@@ -352,7 +414,10 @@ struct NativeProfileForm: UIViewControllerRepresentable {
     private let avatar = UIKitAvatar(side: 112)
     private let prepared = UIImageView()
     private let sign = UIImageView(image: UIImage(named: "caper-change-me", in: caperResourceBundle, compatibleWith: nil))
-    private var picture: UIButton!
+    /// The whole picture is the control, with a pencil badge on its corner, as on web.
+    private let picture = UIButton(type: .custom)
+    private let badge = UIView()
+    private let pencil = UIImageView(image: UIKitVoiceControls.icon("pencil", size: 15))
     private var regenerate: UIButton!
     private var save: UIButton!
     private var data: Data?
@@ -370,10 +435,28 @@ struct NativeProfileForm: UIViewControllerRepresentable {
         NSLayoutConstraint.activate([avatar.leadingAnchor.constraint(equalTo: art.leadingAnchor), avatar.topAnchor.constraint(equalTo: art.topAnchor)])
         for child in [prepared, sign] { child.frame = CGRect(x: 0, y: 0, width: 112, height: 112); child.contentMode = .scaleAspectFit; art.addSubview(child) }
         prepared.clipsToBounds = true; prepared.layer.cornerRadius = ProfilePicturePolicy.cornerRadius(side: 112)
-        picture = Self.button("Change profile picture") {}; picture.showsMenuAsPrimaryAction = true; picture.accessibilityIdentifier = "change-profile-picture"
+        art.isUserInteractionEnabled = false
+        badge.layer.cornerRadius = 8; badge.layer.cornerCurve = .continuous
+        badge.layer.borderWidth = 3; badge.layer.borderColor = UIColor(CaperTheme.raised).cgColor
+        badge.isUserInteractionEnabled = false
+        pencil.contentMode = .center
+        for child in [art, badge, pencil] { child.translatesAutoresizingMaskIntoConstraints = false }
+        badge.addSubview(pencil); picture.addSubview(art); picture.addSubview(badge)
+        picture.translatesAutoresizingMaskIntoConstraints = false
+        picture.showsMenuAsPrimaryAction = true
+        picture.accessibilityLabel = "Change profile picture"; picture.accessibilityIdentifier = "change-profile-picture"
+        // The badge overhangs the picture's corner by 6pt, inside the button so it stays tappable.
+        NSLayoutConstraint.activate([
+            art.leadingAnchor.constraint(equalTo: picture.leadingAnchor), art.topAnchor.constraint(equalTo: picture.topAnchor),
+            picture.trailingAnchor.constraint(equalTo: art.trailingAnchor, constant: 6),
+            picture.bottomAnchor.constraint(equalTo: art.bottomAnchor, constant: 6),
+            badge.widthAnchor.constraint(equalToConstant: 34), badge.heightAnchor.constraint(equalToConstant: 34),
+            badge.trailingAnchor.constraint(equalTo: picture.trailingAnchor), badge.bottomAnchor.constraint(equalTo: picture.bottomAnchor),
+            pencil.centerXAnchor.constraint(equalTo: badge.centerXAnchor), pencil.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+        ])
         regenerate = Self.button("Regenerate avatar") { [state] in if !state.busy { state.draft?.regenerate() } }; regenerate.accessibilityIdentifier = "regenerate-avatar"
-        let controls = UIStackView(arrangedSubviews: [picture, regenerate]); controls.axis = .vertical; controls.spacing = 8
-        let pictures = UIStackView(arrangedSubviews: [art, controls]); pictures.spacing = 12; pictures.alignment = .center
+        regenerate.configuration?.image = UIKitVoiceControls.icon("rotate-ccw", size: 16); regenerate.configuration?.imagePadding = 8
+        let pictures = UIStackView(arrangedSubviews: [picture, regenerate]); pictures.axis = .vertical; pictures.spacing = 12; pictures.alignment = .leading
         for (field, label) in [(username, "Username"), (displayName, "Display name")] {
             field.borderStyle = .roundedRect; field.delegate = self; field.accessibilityLabel = label
             field.font = UIFont(name: "Figtree-Regular", size: 14); field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
@@ -390,8 +473,14 @@ struct NativeProfileForm: UIViewControllerRepresentable {
         let actions = UIStackView(arrangedSubviews: [spacer, unsaved, save])
         actions.alignment = .center
         actions.spacing = 12
-        [pictures, Self.label("Username", bold: true), username, Self.label("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores."),
-         Self.label("Display name", bold: true), displayName, hint, error, actions].forEach { body.addArrangedSubview($0) }
+        // Each field reads label, field, then its muted hint, tight together; a wider gap separates the groups.
+        let usernameLabel = Self.label("Username", bold: true), displayLabel = Self.label("Display name", bold: true)
+        let usernameHint = Self.label("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.")
+        usernameHint.textColor = UIColor(CaperTheme.muted)
+        [pictures, usernameLabel, username, usernameHint, displayLabel, displayName, hint, error, actions].forEach { body.addArrangedSubview($0) }
+        body.setCustomSpacing(24, after: pictures)
+        for view in [usernameLabel, username, displayLabel, displayName] { body.setCustomSpacing(8, after: view) }
+        body.setCustomSpacing(22, after: usernameHint)
         observe()
     }
     @objc private func changed() {
@@ -411,6 +500,8 @@ struct NativeProfileForm: UIViewControllerRepresentable {
         error.text = state.error ?? (state.pictureBusy ? "Preparing picture…" : nil); error.isHidden = error.text == nil
         unsaved.isHidden = !draft.hasChanges; save.isEnabled = state.canSave; save.configuration?.title = state.saving ? "Saving…" : "Save profile"
         picture.isEnabled = !state.busy; regenerate.isEnabled = !state.busy; regenerate.isHidden = state.hasPicture
+        badge.backgroundColor = UIColor(state.busy ? CaperTheme.border : CaperTheme.action)
+        pencil.tintColor = UIColor(state.busy ? CaperTheme.muted : CaperTheme.onAction)
         avatar.show(name: draft.displayName.isEmpty ? draft.username : draft.displayName, avatarID: draft.avatarId, picture: draft.avatarPicture)
         sign.isHidden = state.hasPicture || CaperAvatar.index(for: draft.avatarId) == nil
         prepared.backgroundColor = UIColor(CaperTheme.raised)
