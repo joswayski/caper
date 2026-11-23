@@ -1238,12 +1238,16 @@ impl App {
                     result,
                 } => self.versions_loaded(request, &message, result),
                 live::Update::Presence(online) => {
-                    self.c.presence = true;
+                    // A snapshot that changes nobody's dot redraws nothing.
+                    let mut changed = !std::mem::replace(&mut self.c.presence, true);
                     for (person, id) in self.c.members.iter_mut().zip(&self.ids.members) {
-                        person.online = online.contains(id);
+                        let now = online.contains(id);
+                        changed |= std::mem::replace(&mut person.online, now) != now;
                     }
-                    self.dirty.members = true;
-                    self.need = true;
+                    if changed {
+                        self.dirty.members = true;
+                        self.need = true;
+                    }
                 }
                 live::Update::Connection(state) => {
                     if self.status.as_ref().is_none_or(|(_, error)| !error) {
@@ -3763,15 +3767,17 @@ impl App {
         self.sidebar.offset((RAIL_W * s).round(), 0.0)?;
         self.dirty.header |= self.header.ensure(&self.g, px(lw), px(HEADER_H))?;
         self.header.offset((lx * s).round(), 0.0)?;
-        self.dirty.members |= self.members.ensure(&self.g, px(mw), px(self.members_h()))?;
-        // A DM has no member list: the column steps aside.
+        // A DM, a hidden list or the narrow layout's closed sheet has no
+        // member list: the column frees its surface, so presence updates
+        // draw nothing until it shows again.
         if self.members_w() > 0.0 {
+            self.dirty.members |= self.members.ensure(&self.g, px(mw), px(self.members_h()))?;
             self.members.offset(
                 (self.members_x() * s).round(),
                 (self.members_y() * s).round(),
             )?;
         } else {
-            self.members.offset(-10_000.0, 0.0)?;
+            self.members.hide()?;
         }
         if self.is_narrow() && self.members_w() > 0.0 {
             self.members_backdrop
