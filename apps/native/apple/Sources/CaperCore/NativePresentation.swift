@@ -40,6 +40,10 @@ public enum NativePresentation {
         MessageGrouping.isGrouped(message, after: previous, inThread: inThread)
     }
 
+    public static func grouped(_ pending: PendingMessage, author: ChatAuthor?, after previous: ChatMessage?, inThread: Bool = false) -> Bool {
+        MessageGrouping.isGrouped(pending, author: author, after: previous, inThread: inThread)
+    }
+
     public static func time(_ value: String, includingDate: Bool = false) -> String {
         guard let date = ChatTimestamp.date(value) else { return "" }
         return date.formatted(date: includingDate ? .abbreviated : .omitted, time: .shortened)

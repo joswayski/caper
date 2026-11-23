@@ -2961,7 +2961,7 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
             do {
                 val elapsed = withFrameNanos { it } - start
                 if (displacement.remaining == 0f) break
-                displacement.remaining = 1f - EaseOut.transform((elapsed / (MOTION_SLOW * 1_000_000f)).coerceIn(0f, 1f))
+                displacement.remaining = 1f - EaseOut.transform((elapsed / (MOTION_BASE * 1_000_000f)).coerceIn(0f, 1f))
             } while (displacement.remaining > 0f)
         }
     }

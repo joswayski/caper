@@ -357,7 +357,19 @@ import CaperCore
         }
         timeline.makeAttachments = { [weak self] message in self?.media.messageAttachments(message) }
         timeline.makeReply = { [weak self] message in self?.media.replyContext(message) }
-        timeline.makePending = { [weak self] pending in self?.media.pendingMessage(pending) }
+        timeline.makePendingAttachments = { [weak self] pending in self?.media.pendingAttachments(pending) }
+        timeline.makePendingReply = { [weak self] pending in self?.media.pendingReply(pending) }
+        timeline.pendingAction = { [weak self] pending, action in
+            guard let self, self.model.chat.pendingMessage?.id == pending.id else { return }
+            switch action {
+            case .retry:
+                Task { await self.model.chat.send(inThread: pending.threadRootId != nil, retryPending: true) }
+            case .edit:
+                _ = self.model.chat.discardRejected(edit: true)
+            case .dismiss:
+                _ = self.model.chat.discardRejected()
+            }
+        }
         timeline.visibleMessagesChanged = { [weak self] ids in
             guard let self, self.inThread, self.visibleReplyIDs != ids else { return }
             self.visibleReplyIDs = ids
@@ -420,9 +432,19 @@ import CaperCore
             self.timeline.newMessagesID = self.inThread ? nil : self.model.channelNewMessagesDividerID()
             // A jump or a detached window keeps Load newer/Back to latest instead.
             self.timeline.live = !(self.inThread ? chat.threadHasNewer : chat.hasNewer) && chat.focusedMessageID == nil
+            let pending = chat.pendingMessage.flatMap { $0.threadRootId == root ? $0 : nil }
+            let pendingError = pending != nil ? chat.error : nil
+            let sendRejected = pending != nil && chat.sendRejected
+            let sendUploadFailed = pending != nil && chat.sendUploadFailed
+            // Read the draft only for a rejected send, so typing does not rebuild rows.
+            let canEditPending = !(sendRejected && pendingError != nil) || (self.inThread
+                ? chat.threadDraft.isEmpty && chat.threadAttachmentDrafts.isEmpty
+                : chat.draft.isEmpty && chat.attachmentDrafts.isEmpty)
             self.timeline.update(visible, conversationID: identity,
                 viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs,
-                pending: chat.pendingMessage.flatMap { $0.threadRootId == root ? $0 : nil },
+                pending: pending, pendingAuthor: pending != nil ? chat.currentAuthor : nil,
+                pendingError: pendingError, sendRejected: sendRejected,
+                sendUploadFailed: sendUploadFailed, canEditPending: canEditPending,
                 canInteract: chat.canInteract, reactionErrors: chat.reactionErrors, pinErrors: chat.pinErrors, pendingPins: chat.pendingPins)
             if let id = chat.focusedMessageID, self.focusedRevision != chat.focusRevision || self.focusedConversation != identity,
                visible.contains(where: { $0.id == id }) {

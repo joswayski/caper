@@ -74,7 +74,7 @@ struct TimelineArrivalMotion: ViewModifier {
     }
 
     private func offset(at date: Date) -> CGFloat {
-        let progress = min(1, max(0, date.timeIntervalSince(started) / CaperMotion.slow))
+        let progress = min(1, max(0, date.timeIntervalSince(started) / CaperMotion.base))
         let curve = UnitCurve.bezier(startControlPoint: UnitPoint(x: 0.16, y: 1), endControlPoint: UnitPoint(x: 0.3, y: 1))
         return compensation * (1 - curve.value(at: progress))
     }
@@ -97,13 +97,13 @@ struct TimelineArrivalMotion: ViewModifier {
                 }
                 let now = Date()
                 if old.revision != sample.revision { arrived = now }
-                guard now.timeIntervalSince(arrived) < CaperMotion.slow, old.top != sample.top else { return }
+                guard now.timeIntervalSince(arrived) < CaperMotion.base, old.top != sample.top else { return }
                 compensation = offset(at: now) + old.top - sample.top
                 started = now
             }
             .task(id: started) {
                 guard compensation != 0 else { return }
-                do { try await Task.sleep(for: .seconds(CaperMotion.slow)) }
+                do { try await Task.sleep(for: .seconds(CaperMotion.base)) }
                 catch { return }
                 compensation = 0
             }
@@ -163,6 +163,6 @@ extension Entrance {
     /// A message sent or received at the live end settles into place
     /// (`MessageArrivals` decides which rows count).
     static func message(_ arriving: Bool) -> Entrance {
-        Entrance(arriving, offset: CGSize(width: 0, height: 6), animation: CaperMotion.easeOut(CaperMotion.slow))
+        Entrance(arriving, offset: CGSize(width: 0, height: 10), animation: CaperMotion.easeOut(CaperMotion.base))
     }
 }

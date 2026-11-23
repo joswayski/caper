@@ -19,7 +19,7 @@ export function useTimelineMotion(
     if (!scroller || !live) return;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)");
     const tokens = getComputedStyle(scroller);
-    const duration = parseFloat(tokens.getPropertyValue("--motion-slow")) || 260;
+    const duration = parseFloat(tokens.getPropertyValue("--motion-base")) || 200;
     const easing = tokens.getPropertyValue("--ease-out").trim() || "cubic-bezier(0.16, 1, 0.3, 1)";
     let positions = new Map<string, number>();
     const seen = new Set<string>();

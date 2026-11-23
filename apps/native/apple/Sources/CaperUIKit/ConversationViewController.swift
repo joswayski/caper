@@ -89,6 +89,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private var live = false
     private var followingTail = true
     private var arriving: Set<String> = []
+    private var tailScrollAnimator: UIViewPropertyAnimator?
     private var contentSizeObservation: NSKeyValueObservation?
     private let timelineObserver = ModelObserver()
     private let typingObserver = ModelObserver()
@@ -925,12 +926,38 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     private func scrollToTail(animated: Bool) {
         followingTail = true
+        tailScrollAnimator?.stopAnimation(true)
+        tailScrollAnimator = nil
         collection.layoutIfNeeded()
-        collection.setContentOffset(CGPoint(x: 0, y: tailOffset), animated: animated)
+        let target = tailOffset
+        guard animated, abs(collection.contentOffset.y - target) > 0.5 else {
+            collection.setContentOffset(CGPoint(x: 0, y: target), animated: false)
+            return
+        }
+        let distance = abs(target - collection.contentOffset.y)
+        if distance > collection.bounds.height * 1.5 {
+            collection.setContentOffset(CGPoint(x: 0, y: target), animated: true)
+            return
+        }
+        let animator = UIViewPropertyAnimator(duration: 0.18, timingParameters: UIKitStyle.easeOut)
+        animator.addAnimations { [weak self] in
+            self?.collection.contentOffset = CGPoint(x: 0, y: target)
+        }
+        animator.addCompletion { [weak self] _ in
+            self?.tailScrollAnimator = nil
+            self?.pinTailIfFollowing()
+        }
+        tailScrollAnimator = animator
+        animator.startAnimation()
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        tailScrollAnimator?.stopAnimation(true)
+        tailScrollAnimator = nil
     }
 
     private func pinTailIfFollowing() {
-        guard followingTail, !collection.isTracking, !collection.isDecelerating else { return }
+        guard followingTail, tailScrollAnimator == nil, !collection.isTracking, !collection.isDecelerating else { return }
         let target = tailOffset
         if abs(collection.contentOffset.y - target) > 0.5 { collection.contentOffset.y = target }
     }
@@ -1222,7 +1249,14 @@ enum TimelineRows {
             previous = message
         }
         if let pending, built.rows[pending.id] == nil {
-            let groupedPending = previous.map { $0.author.id == author?.id && NativePresentation.sameDay($0.createdAt, pending.createdAt) } ?? false
+            if dayReference.map({ !NativePresentation.sameDay($0.createdAt, pending.createdAt) }) ?? true,
+               let label = NativePresentation.dayLabel(pending.createdAt) {
+                let key = "day-\(pending.id)"
+                built.days[key] = label
+                built.items.append(.day(key))
+                previous = nil
+            }
+            let groupedPending = NativePresentation.grouped(pending, author: author, after: previous, inThread: inThread)
             if let last = previous, groupedPending { built.rows[last.clientMessageId]?.continued = true }
             // Read the draft only for a rejected send, so typing doesn't rebuild rows.
             let canEdit = !(rejected && error != nil) || chat.map {

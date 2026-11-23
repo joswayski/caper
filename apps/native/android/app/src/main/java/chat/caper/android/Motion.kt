@@ -1,5 +1,8 @@
 package chat.caper.android
 
+import android.graphics.RenderEffect as AndroidRenderEffect
+import android.graphics.Shader
+import android.os.Build
 import android.provider.Settings
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
@@ -15,6 +18,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
@@ -87,11 +91,19 @@ internal fun Modifier.displacementViewport(motion: TimelineDisplacement): Modifi
 }
 
 /**
- * Fades this in once, on first composition, from [dx]/[dy] away and [scale], easing out over
- * [durationMillis]. [elapsedMillis] resumes an entrance already under way (a pending send's row
- * replaced by its confirmed one). Only drawing changes, never layout; nothing animates on the way out.
+ * Fades this in once, on first composition, from [dx]/[dy] away, [scale], and optional vertical
+ * motion blur, easing out over [durationMillis]. [elapsedMillis] resumes an entrance already
+ * under way (a pending send's row replaced by its confirmed one). Only drawing changes, never
+ * layout; nothing animates on the way out.
  */
-@Composable internal fun Modifier.entrance(durationMillis: Int, dx: Dp = 0.dp, dy: Dp = 0.dp, scale: Float = 1f, elapsedMillis: Long = 0): Modifier {
+@Composable internal fun Modifier.entrance(
+    durationMillis: Int,
+    dx: Dp = 0.dp,
+    dy: Dp = 0.dp,
+    scale: Float = 1f,
+    verticalBlur: Dp = 0.dp,
+    elapsedMillis: Long = 0,
+): Modifier {
     val still = reducedMotion()
     val progress = remember { Animatable(if (still) 1f else (elapsedMillis.toFloat() / durationMillis).coerceIn(0f, 1f)) }
     val animates = remember { progress.value < 1f }
@@ -106,11 +118,19 @@ internal fun Modifier.displacementViewport(motion: TimelineDisplacement): Modifi
         translationX = dx.toPx() * (1f - eased)
         translationY = dy.toPx() * (1f - eased)
         if (scale != 1f) { scaleX = scale + (1f - scale) * eased; scaleY = scaleX }
+        if (verticalBlur > 0.dp && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val radius = verticalBlur.toPx() * (1f - eased)
+            renderEffect = if (radius >= 0.1f) {
+                AndroidRenderEffect.createBlurEffect(0f, radius, Shader.TileMode.CLAMP).asComposeRenderEffect()
+            } else {
+                null
+            }
+        }
     }
 }
 
-/** A message that [arrivals] saw arrive at the live end settles 6dp up into place (web's `.chat-message-arrive`). */
+/** A message that [arrivals] saw arrive at the live end rises 10dp up into place with a brief vertical motion blur. */
 @Composable internal fun Modifier.arrival(arrivals: Arrivals, clientMessageId: String): Modifier {
     val elapsed = remember(clientMessageId) { arrivals.elapsed(clientMessageId) } ?: return this
-    return entrance(MOTION_SLOW, dy = 6.dp, elapsedMillis = elapsed)
+    return entrance(MOTION_BASE, dy = 10.dp, verticalBlur = 2.5.dp, elapsedMillis = elapsed)
 }

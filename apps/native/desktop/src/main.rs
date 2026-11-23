@@ -70,7 +70,7 @@ use worker::{
 };
 
 /// Arriving messages settle up from this far below (web's `caper-message-in`).
-const ARRIVE_OFFSET: egui::Vec2 = egui::vec2(0.0, 6.0);
+const ARRIVE_OFFSET: egui::Vec2 = egui::vec2(0.0, 10.0);
 /// Longest the loading page waits for the first conversation at launch.
 const RESTORE_LIMIT: Duration = Duration::from_secs(5);
 /// Settings' version reads "Copied" this long after a copy.
@@ -18429,7 +18429,7 @@ impl CaperApp {
         let now = context.input(|input| input.time);
         self.arrivals
             .arrived(client_message_id, now)
-            .map_or(1.0, |start| motion::progress(context, start, motion::SLOW))
+            .map_or(1.0, |start| motion::progress(context, start, motion::BASE))
     }
 
     fn pinned_by_viewer(&self, message: &model::Message) -> bool {

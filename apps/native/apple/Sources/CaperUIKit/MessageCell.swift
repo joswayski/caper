@@ -846,9 +846,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     func arrive() {
         guard !UIKitStyle.reduceMotion else { return }
         self.alpha = 0
-        self.transform = CGAffineTransform(translationX: 0, y: 8)
+        self.transform = CGAffineTransform(translationX: 0, y: 10)
         let target = state?.pending == true && state?.pendingError == nil ? 0.6 : 1
-        let animator = UIViewPropertyAnimator(duration: UIKitStyle.motionFast, timingParameters: UIKitStyle.easeOut)
+        let animator = UIViewPropertyAnimator(duration: 0.18, timingParameters: UIKitStyle.easeOut)
         animator.addAnimations { [weak self] in
             self?.alpha = target
             self?.transform = .identity

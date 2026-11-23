@@ -28,6 +28,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private var revealed: Set<String> = []
     private var shownRoot: String?
     private var followingTail = true
+    private var arriving: Set<String> = []
+    private var tailScrollAnimator: UIViewPropertyAnimator?
     /// Nil until the first render, so a thread opened on a focused reply centres it.
     private var lastFocusRevision: Int?
     private let observer = ModelObserver()
@@ -369,17 +371,21 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         let reload = changed.filter { if case let .row(id) = $0 { nextRows[id]?.remeasures(from: rows[id]) == true } else { false } }
         snapshot.reloadItems(reload)
         snapshot.reconfigureItems(changed.filter { !reload.contains($0) })
+        let appended: Set<String> = !switched && followingTail && !chat.threadHasNewer && !firstLoad
+            ? Set(items.compactMap(\.rowID).filter { rows[$0] == nil }) : []
         rows = nextRows
         days = nextDays
         runs = built.runs
         shownRoot = rootID
-        if switched { followingTail = true; jumpCount = 0 }
+        if switched { followingTail = true; jumpCount = 0; arriving.removeAll() }
         else if !followingTail, !chat.threadHasNewer {
             jumpCount += JumpToLatest.arrivals(replies, previousIDs: shownReplyIDs, viewerID: viewer)
         }
+        arriving.formUnion(appended)
         shownReplyIDs = Set(replies.map(\.id))
         if target != nil { followingTail = false }
         let follow = followingTail
+        let animateTail = !switched && !appended.isEmpty && !UIKitStyle.reduceMotion
         let targetItem = target.map { Item.row($0.clientMessageId) }
         dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
             guard let self else { return }
@@ -391,10 +397,23 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             }
             defer { self.refreshJump() }
             guard follow else { return }
+            self.tailScrollAnimator?.stopAnimation(true)
+            self.tailScrollAnimator = nil
             self.collection.layoutIfNeeded()
-            let bottom = max(-self.collection.adjustedContentInset.top,
-                             self.collection.contentSize.height + self.collection.adjustedContentInset.bottom - self.collection.bounds.height)
-            self.collection.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+            let bottom = self.tailOffset
+            guard animateTail, abs(self.collection.contentOffset.y - bottom) > 0.5 else {
+                self.collection.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+                return
+            }
+            let animator = UIViewPropertyAnimator(duration: 0.18, timingParameters: UIKitStyle.easeOut)
+            animator.addAnimations { [weak self] in
+                self?.collection.contentOffset = CGPoint(x: 0, y: bottom)
+            }
+            animator.addCompletion { [weak self] _ in
+                self?.tailScrollAnimator = nil
+            }
+            self.tailScrollAnimator = animator
+            animator.startAnimation()
         }
         // Marks the thread read; only when what's visible changes, never per render.
         let visible = "\(rootID):\(replies.last?.seq ?? "")"
@@ -488,6 +507,16 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         // Rows measured on the way down move the end; settle on it.
         guard followingTail else { return }
         collection.setContentOffset(CGPoint(x: 0, y: tailOffset), animated: false)
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        tailScrollAnimator?.stopAnimation(true)
+        tailScrollAnimator = nil
+    }
+
+    func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        guard case let .row(id) = dataSource.itemIdentifier(for: indexPath), arriving.remove(id) != nil else { return }
+        (cell as? MessageCell)?.arrive()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {

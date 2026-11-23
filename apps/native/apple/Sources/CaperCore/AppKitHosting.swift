@@ -769,6 +769,20 @@ private final class AppKitPointerPassthroughView: NSView {
         content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }; return surface
     }
 
+    public func pendingAttachments(_ pending: PendingMessage) -> AppKitAttachmentSurface? {
+        guard !pending.attachments.isEmpty || pending.gif != nil || !pending.embeds.isEmpty else { return nil }
+        let content = AppKitPendingExtras(pending) { [weak self] in self?.showViewer($0) }
+        let surface = AppKitAttachmentSurface(native: content)
+        content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }; return surface
+    }
+
+    public func pendingReply(_ pending: PendingMessage) -> AppKitAttachmentSurface? {
+        guard let reference = pending.replyTo else { return nil }
+        let content = AppKitReplyContext(reference: reference, motionKey: pending.id, chat: model.chat)
+        let surface = AppKitAttachmentSurface(native: content)
+        content.heightChanged = { [weak surface] in DispatchQueue.main.async { surface?.heightChanged?() } }; return surface
+    }
+
     /// Keep the shipping quote's thumbnails, blocked/deleted states, expansion
     /// and reduced-motion behavior without hosting either conversation list.
     public func replyContext(_ message: ChatMessage) -> AppKitAttachmentSurface? {

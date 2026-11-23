@@ -32,6 +32,14 @@ enum MessageGrouping {
                        calendar: calendar)
     }
 
+    static func isGrouped(_ pending: PendingMessage, author: ChatAuthor?, after previous: ChatMessage?, inThread: Bool,
+                          calendar: Calendar = .current) -> Bool {
+        guard let previous, pending.replyTo == nil, inThread || pending.threadRootId == nil else { return false }
+        return follows(authorID: author?.id, at: ChatTimestamp.date(pending.createdAt),
+                       previousAuthorID: previous.author.id, previousDate: ChatTimestamp.date(previous.createdAt),
+                       calendar: calendar)
+    }
+
     /// One list's rows, then the pending message shown after them, if any
     /// (it counts with its author's id). A collapsed blocked run is a
     /// placeholder row: nothing groups across it. A revealed run's messages

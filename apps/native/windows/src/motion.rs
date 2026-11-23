@@ -209,7 +209,7 @@ impl Arrivals {
     pub fn progress(&self, id: &str) -> f32 {
         self.0
             .get(id)
-            .map_or(1.0, |at| ease(at.elapsed().as_secs_f64() / SLOW) as f32)
+            .map_or(1.0, |at| ease(at.elapsed().as_secs_f64() / BASE) as f32)
     }
 
     pub fn active(&self) -> bool {
@@ -220,7 +220,7 @@ impl Arrivals {
     pub fn tick(&mut self, enabled: bool) -> Vec<String> {
         let ids = self.0.keys().cloned().collect();
         self.0
-            .retain(|_, at| enabled && at.elapsed().as_secs_f64() < SLOW);
+            .retain(|_, at| enabled && at.elapsed().as_secs_f64() < BASE);
         ids
     }
 }
@@ -246,7 +246,7 @@ pub fn row(
             },
             None,
         );
-        let result = draw(6.0 * (1.0 - progress));
+        let result = draw(10.0 * (1.0 - progress));
         dc.PopLayer();
         result
     }

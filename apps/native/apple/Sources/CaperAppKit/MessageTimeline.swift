@@ -1,17 +1,30 @@
 import AppKit
 import CaperCore
+import CoreImage
+import QuartzCore
 
 enum MessageAction { case reaction(String), reactors(String), addReaction, retryReaction, dismissReaction, pin, retryPin, dismissPin, history, reply, replyInThread, openThread }
+enum PendingAction { case retry, edit, dismiss }
 
 /// A scroll document with only realized native text views. Unlike NSTableView,
 /// it never manufactures an AX row for every message in the loaded history.
 @MainActor final class MessageTimeline: NSScrollView {
     private let document = NativeView(NativeStyle.conversation)
     private var geometry = NativeTimelineLayout()
+    private let arrivals = MessageArrivals()
     private var messages: [ChatMessage] = []
     private var entries: [TimelineEntry] = []
     private var pending: PendingMessage?
-    private var rowIDs: [String] { entries.map(key) + (pending.map { ["pending-\($0.id)"] } ?? []) }
+    private var pendingAuthor: ChatAuthor?
+    private var pendingError: String?
+    private var sendRejected = false
+    private var sendUploadFailed = false
+    private var canEditPending = true
+    private var activePending: PendingMessage? {
+        guard let pending, !entries.contains(where: { key($0) == pending.id }) else { return nil }
+        return pending
+    }
+    private var rowIDs: [String] { entries.map(key) + (activePending.map { [$0.id] } ?? []) }
     private var blocked: Set<String> = []
     private var revealed: Set<String> = []
     private var rows: [String: MessageCell] = [:]
@@ -51,7 +64,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     var typeToCompose: ((NSEvent) -> Bool)?
     var makeAttachments: ((ChatMessage) -> AppKitAttachmentSurface?)?
     var makeReply: ((ChatMessage) -> AppKitAttachmentSurface?)?
-    var makePending: ((PendingMessage) -> AppKitAttachmentSurface?)?
+    var makePendingAttachments: ((PendingMessage) -> AppKitAttachmentSurface?)?
+    var makePendingReply: ((PendingMessage) -> AppKitAttachmentSurface?)?
+    var pendingAction: ((PendingMessage, PendingAction) -> Void)?
     var messageMenu: ((ChatMessage, NSView) -> NSMenu?)?
     var messageAction: ((ChatMessage, MessageAction, NSView) -> Void)?
     var hoverReaction: ((ChatMessage, String, Bool, NSView) -> Void)?
@@ -86,14 +101,33 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         needsDisplay = true
     }
 
-    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = [], pending: PendingMessage? = nil, canInteract: Bool = false, reactionErrors: [String: String] = [:], pinErrors: [String: String] = [:], pendingPins: Set<String> = []) {
+    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = [],
+                pending: PendingMessage? = nil, pendingAuthor: ChatAuthor? = nil, pendingError: String? = nil,
+                sendRejected: Bool = false, sendUploadFailed: Bool = false, canEditPending: Bool = true,
+                canInteract: Bool = false, reactionErrors: [String: String] = [:], pinErrors: [String: String] = [:], pendingPins: Set<String> = []) {
         let changedConversation = self.conversationID != conversationID
         let anchor = geometry.anchor(at: contentView.bounds.minY)
         let anchorTextTop = anchor.flatMap { rows[$0.id]?.textTop }
+        let motionEnabled = !changedConversation && live && followEnd && !CaperAccessibility.reduceMotion
+        var previousVisualY: [String: CGFloat] = [:]
+        if motionEnabled {
+            let scrollY = contentView.bounds.minY
+            for (id, row) in rows {
+                let translationY = (row.layer?.presentation()?.value(forKeyPath: "transform.translation.y") as? NSNumber)
+                    .map { CGFloat($0.doubleValue) } ?? 0
+                previousVisualY[id] = row.frame.minY - scrollY + translationY
+            }
+        }
         if changedConversation { revealed = [] }
         let next = BlockedMessages.entries(messages, blocked: blocked, viewerID: viewerID, revealed: revealed).flatMap { entry -> [TimelineEntry] in
             if case let .blocked(run) = entry, run.revealed { return [entry] + run.messages.map(TimelineEntry.message) }
             return [entry]
+        }
+        let oldActivePending = activePending
+        let oldPendingAuthor = self.pendingAuthor
+        let oldEntriesEmpty = entries.isEmpty
+        let nextActivePending: PendingMessage? = pending.flatMap { item in
+            next.contains(where: { key($0) == item.id }) ? nil : item
         }
         // Other people's messages that arrive at the live end while the reader
         // is up in the history count on Jump to latest.
@@ -106,25 +140,42 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             guard let oldIndex = previous[id] else { invalid.insert(id); continue }
             let oldPredecessor = oldIndex > 0 ? entries[oldIndex - 1] : nil
             let predecessor = index > 0 ? next[index - 1] : nil
-            // Deleting or inserting a predecessor can change grouping even
-            // when this message itself has not changed.
+            let messageID: String? = if case .message(let m) = entry { m.id } else { nil }
+            let errorsChanged = messageID.map {
+                self.reactionErrors[$0] != reactionErrors[$0]
+                    || self.pinErrors[$0] != pinErrors[$0]
+                    || self.pendingPins.contains($0) != pendingPins.contains($0)
+            } ?? false
+            // Deleting or inserting a predecessor (or pending send) can change
+            // grouping even when this message itself has not changed.
             if entries[oldIndex] != entry || oldPredecessor != predecessor
-                || continues(at: oldIndex, in: entries) != continues(at: index, in: next) || self.reactionErrors[id] != reactionErrors[id]
-                || self.pinErrors[id] != pinErrors[id] || self.pendingPins.contains(id) != pendingPins.contains(id)
-                || self.canInteract != canInteract { invalid.insert(id) }
+                || continues(at: oldIndex, in: entries, pending: oldActivePending, author: oldPendingAuthor)
+                    != continues(at: index, in: next, pending: nextActivePending, author: pendingAuthor)
+                || errorsChanged || self.canInteract != canInteract { invalid.insert(id) }
         }
         if shownNewMessagesID != newMessagesID {
             // The divider's row gains or loses its line and header, and the row
             // above it its hairline of padding.
             for (id, list) in [(shownNewMessagesID, entries), (newMessagesID, next)] {
-                guard let id, let index = list.firstIndex(where: { key($0) == id }) else { continue }
-                invalid.insert(id)
+                guard let id, let index = list.firstIndex(where: { if case .message(let m) = $0 { return m.id == id }; return false }) else { continue }
+                invalid.insert(key(list[index]))
                 if index > 0 { invalid.insert(key(list[index - 1])) }
             }
             shownNewMessagesID = newMessagesID
         }
-        if self.pending != pending, let pending { invalid.insert("pending-\(pending.id)") }
+        if let nextActivePending,
+           oldActivePending != nextActivePending || self.pendingAuthor != pendingAuthor
+            || self.pendingError != pendingError || self.sendRejected != sendRejected
+            || self.sendUploadFailed != sendUploadFailed || self.canEditPending != canEditPending
+            || entries.last != next.last {
+            invalid.insert(nextActivePending.id)
+        }
         self.pending = pending
+        self.pendingAuthor = pendingAuthor
+        self.pendingError = pendingError
+        self.sendRejected = sendRejected
+        self.sendUploadFailed = sendUploadFailed
+        self.canEditPending = canEditPending
         self.messages = messages
         entries = next
         self.blocked = blocked
@@ -144,12 +195,29 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             focusedID = nil
             pendingFocus = nil
             selection.removeAll()
-            rows.values.forEach { $0.removeFromSuperview() }
+            rows.values.forEach { $0.cancelArrivalMotion(); $0.removeFromSuperview() }
             rows.removeAll()
         }
-        geometry.replace(ids: rowIDs, width: contentSize.width, invalidating: invalid)
+        let ids = rowIDs
+        arrivals.observe("timeline", key: conversationID ?? "", ids: ids, live: live && followEnd)
+        geometry.replace(ids: ids, width: contentSize.width, invalidating: invalid)
         realize(anchor: changedConversation ? nil : anchor, anchorTextTop: anchorTextTop)
-        let currentIDs = Set(rowIDs)
+        if motionEnabled {
+            var incoming = Set(rows.keys.filter { arrivals.claim($0) })
+            if oldEntriesEmpty, let p = nextActivePending, oldActivePending?.id != p.id, rows[p.id] != nil {
+                incoming.insert(p.id)
+            }
+            if !incoming.isEmpty {
+                let scrollY = contentView.bounds.minY
+                for id in incoming { rows[id]?.animateArrival() }
+                for (id, row) in rows where !incoming.contains(id) {
+                    guard let oldY = previousVisualY[id] else { continue }
+                    let delta = oldY - (row.frame.minY - scrollY)
+                    if abs(delta) > 0.5 { row.animateGlide(fromOffsetY: delta) }
+                }
+            }
+        }
+        let currentIDs = Set(ids)
         selection = selection.filter { currentIDs.contains($0.key) }
     }
 
@@ -163,8 +231,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         focusedID = id
         revealed.insert(id)
         update(messages, conversationID: conversationID, viewerID: viewerID, blocked: blocked,
-            pending: pending, canInteract: canInteract, reactionErrors: reactionErrors, pinErrors: pinErrors, pendingPins: pendingPins)
-        guard let index = rowIDs.firstIndex(of: id) else { return false }
+            pending: pending, pendingAuthor: pendingAuthor, pendingError: pendingError,
+            sendRejected: sendRejected, sendUploadFailed: sendUploadFailed, canEditPending: canEditPending,
+            canInteract: canInteract, reactionErrors: reactionErrors, pinErrors: pinErrors, pendingPins: pendingPins)
+        guard let index = entries.firstIndex(where: { if case .message(let m) = $0 { return m.id == id }; return false }) else { return false }
         realize(anchor: geometry.anchor(at: geometry.origin(of: index)))
         let offset = max(0, geometry.origin(of: index) - max(0, (contentSize.height - geometry.height(at: index)) / 2))
         realize(anchor: geometry.anchor(at: offset))
@@ -182,6 +252,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     /// Jump to latest: scrolls to the newest message (instantly with Reduce
     /// Motion or from many screens away), then follows new ones again.
     func jumpToLatest() {
+        rows.values.forEach { $0.cancelArrivalMotion() }
         let viewport = contentSize.height
         let start = contentView.bounds.minY
         guard JumpToLatest.animates(distanceFromEnd: geometry.contentHeight - contentView.bounds.maxY, viewport: viewport,
@@ -226,18 +297,23 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
 
     /// The row after `index` groups under it, so this row keeps only a
     /// hairline of padding below (web's `chat-message-continued`).
-    private func continues(at index: Int, in list: [TimelineEntry]) -> Bool {
-        guard index + 1 < list.count, case .message(let message) = list[index], case .message(let next) = list[index + 1],
-              next.id != newMessagesID, !BlockedMessages.isHidden(next, blocked: blocked, viewerID: viewerID) else { return false }
-        // The root is not a predecessor of its first reply.
-        return NativePresentation.grouped(next, after: inThread && message.threadRootId == nil ? nil : message, inThread: inThread)
+    private func continues(at index: Int, in list: [TimelineEntry], pending: PendingMessage?, author: ChatAuthor?) -> Bool {
+        guard index < list.count, case .message(let message) = list[index] else { return false }
+        let prior = inThread && message.threadRootId == nil ? nil : message
+        if index + 1 < list.count {
+            guard case .message(let next) = list[index + 1],
+                  next.id != newMessagesID, !BlockedMessages.isHidden(next, blocked: blocked, viewerID: viewerID) else { return false }
+            return NativePresentation.grouped(next, after: prior, inThread: inThread)
+        }
+        guard let pending, !BlockedMessages.isHidden(message, blocked: blocked, viewerID: viewerID) else { return false }
+        return NativePresentation.grouped(pending, author: author, after: prior, inThread: inThread)
     }
 
-    /// A revealed run keeps its header alongside its messages; their native
-    /// identities must be distinct even though SwiftUI nests them in one row.
+    /// Stable row identity: clientMessageId keeps a pending send and its
+    /// confirmed server message on the exact same cell, with zero layout shift.
     private func key(_ entry: TimelineEntry) -> String {
         switch entry {
-        case .message(let message): message.id
+        case .message(let message): message.clientMessageId.isEmpty ? message.id : message.clientMessageId
         case .blocked(let run): run.id
         }
     }
@@ -262,8 +338,11 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
 
     override func scrollWheel(with event: NSEvent) {
-        // The reader's own scrolling takes over from a jump in progress.
-        if jumpAnimation != nil, event.scrollingDeltaY != 0 { stopJumpAnimation() }
+        // The reader's own scrolling takes over from any jump or arrival glide.
+        if event.scrollingDeltaY != 0 {
+            if jumpAnimation != nil { stopJumpAnimation() }
+            rows.values.forEach { $0.cancelArrivalMotion() }
+        }
         super.scrollWheel(with: event)
         // A short page may not move the clip view at all. An upward gesture
         // must still reach history, without fetching every page on first paint.
@@ -311,6 +390,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             let retained = Set(needed.map { ids[$0] })
             for id in Array(rows.keys) where !retained.contains(id) {
                 guard let row = rows.removeValue(forKey: id) else { continue }
+                row.cancelArrivalMotion()
                 if row.body.selectedRange().length > 0 { selection[id] = (row.body.string, row.body.selectedRange()) }
                 row.removeFromSuperview()
             }
@@ -343,16 +423,17 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         rows.values.forEach { $0.refreshHover() }
         // These are real, selectable NSTextViews/buttons, not label-only mirrors.
         document.setAccessibilityChildren(needed.compactMap { rows[ids[$0]] })
-        let visible = Set(needed.filter {
-            let bottom = geometry.origin(of: $0) + geometry.height(at: $0)
-            return bottom > contentView.bounds.minY && bottom <= contentView.bounds.maxY + 1
-        }.map { ids[$0] })
+        let visible = Set(needed.compactMap { index -> String? in
+            guard index < entries.count, case .message(let message) = entries[index] else { return nil }
+            let bottom = geometry.origin(of: index) + geometry.height(at: index)
+            return bottom > contentView.bounds.minY && bottom <= contentView.bounds.maxY + 1 ? message.id : nil
+        })
         visibleMessagesChanged?(visible)
         refreshJump()
     }
 
     private func cell(at index: Int) -> MessageCell {
-        let id = index < entries.count ? key(entries[index]) : "pending-\(pending!.id)"
+        let id = index < entries.count ? key(entries[index]) : activePending!.id
         let row: MessageCell
         if let existing = rows[id] { row = existing }
         else {
@@ -362,6 +443,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             row.body.typeToCompose = { [weak self] event in self?.typeToCompose?(event) ?? false }
             row.makeAttachments = { [weak self] in self?.makeAttachments?($0) }
             row.makeReply = { [weak self] in self?.makeReply?($0) }
+            row.makePendingAttachments = { [weak self] in self?.makePendingAttachments?($0) }
+            row.makePendingReply = { [weak self] in self?.makePendingReply?($0) }
+            row.pendingAction = { [weak self] pending, action in self?.pendingAction?(pending, action) }
             row.messageMenu = { [weak self] message, view in self?.messageMenu?(message, view) }
             row.messageAction = { [weak self] message, action, view in self?.messageAction?(message, action, view) }
             row.hoverReaction = { [weak self] message, emoji, entered, view in self?.hoverReaction?(message, emoji, entered, view) }
@@ -374,8 +458,17 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             rows[id] = row
             document.addSubview(row)
         }
-        if index == entries.count, let pending {
-            row.configure(pending, make: makePending)
+        if index == entries.count, let pending = activePending {
+            let previous = entries.last
+            let day = previous.map { NativePresentation.sameDay($0.lastCreatedAt, pending.createdAt) } == true
+                ? nil : NativePresentation.dayLabel(pending.createdAt)
+            let predecessor: ChatMessage? = if case .message(let prior) = previous { prior } else { nil }
+            let prior = inThread && predecessor?.threadRootId == nil ? nil : predecessor
+            let grouped = NativePresentation.grouped(pending, author: pendingAuthor, after: prior, inThread: inThread)
+            row.configure(pending, author: pendingAuthor, grouped: grouped, day: day, error: pendingError,
+                rejected: sendRejected, uploadFailed: sendUploadFailed, canEdit: canEditPending)
+            row.layer?.borderColor = NativeStyle.accent.cgColor
+            row.layer?.borderWidth = 0
             return row
         }
         let entry = entries[index]
@@ -384,6 +477,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         // it using the same text anchor as an author-header grouping change.
         let day = previous.map { NativePresentation.sameDay($0.lastCreatedAt, entry.firstCreatedAt) } == true
             ? nil : NativePresentation.dayLabel(entry.firstCreatedAt)
+        var focused = false
         switch entry {
         case .message(let message):
             let predecessor: ChatMessage? = if case .message(let prior) = previous { prior } else { nil }
@@ -391,8 +485,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             // The root is not a predecessor of its first reply.
             let prior = inThread && predecessor?.threadRootId == nil ? nil : predecessor
             let newMessages = message.id == newMessagesID && !revealedBlocked
+            focused = focusedID != nil && message.id == focusedID
             row.configure(message, grouped: !newMessages && NativePresentation.grouped(message, after: prior, inThread: inThread),
-                continued: continues(at: index, in: entries), day: revealedBlocked ? nil : day, newMessages: newMessages,
+                continued: continues(at: index, in: entries, pending: activePending, author: pendingAuthor), day: revealedBlocked ? nil : day, newMessages: newMessages,
                 viewerID: viewerID, revealedBlocked: revealedBlocked, canInteract: canInteract, inThread: inThread,
                 reactionError: reactionErrors[message.id], pinError: pinErrors[message.id], pinPending: pendingPins.contains(message.id), react: react)
         case .blocked(let run):
@@ -401,12 +496,14 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
                 self.revealed = BlockedMessages.toggling(run, in: self.revealed)
                 self.followEnd = false
                 self.update(self.messages, conversationID: self.conversationID, viewerID: self.viewerID, blocked: self.blocked,
-                    pending: self.pending, canInteract: self.canInteract, reactionErrors: self.reactionErrors,
+                    pending: self.pending, pendingAuthor: self.pendingAuthor, pendingError: self.pendingError,
+                    sendRejected: self.sendRejected, sendUploadFailed: self.sendUploadFailed, canEditPending: self.canEditPending,
+                    canInteract: self.canInteract, reactionErrors: self.reactionErrors,
                     pinErrors: self.pinErrors, pendingPins: self.pendingPins)
             }
         }
         row.layer?.borderColor = NativeStyle.accent.cgColor
-        row.layer?.borderWidth = id == focusedID ? 1 : 0
+        row.layer?.borderWidth = focused ? 1 : 0
         if let saved = selection.removeValue(forKey: id), saved.text == row.body.string,
            NSMaxRange(saved.range) <= row.body.string.utf16.count {
             row.body.setSelectedRange(saved.range)
@@ -415,14 +512,62 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
 }
 
+@MainActor private final class MessageBadge: NativeView {
+    private let label: NSTextField
+    private let isAdmin: Bool
+
+    init(_ text: String, admin: Bool, accessibilityLabel: String) {
+        self.isAdmin = admin
+        self.label = NativeStyle.label(text, size: 9, bold: true)
+        super.init()
+        layer?.cornerRadius = 4
+        layer?.borderWidth = 1
+        label.alignment = .center
+        label.setAccessibilityElement(false)
+        addSubview(label)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(accessibilityLabel)
+        setAccessibilityValue(accessibilityLabel)
+        applyTheme()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var preferredWidth: CGFloat { ceil(label.cell?.cellSize.width ?? 32) + 10 }
+
+    override func applyTheme() {
+        super.applyTheme()
+        if isAdmin {
+            label.textColor = NativeStyle.pinGold
+            layer?.backgroundColor = NativeStyle.pinGold.withAlphaComponent(0.1).cgColor
+            layer?.borderColor = NativeStyle.pinGold.withAlphaComponent(0.55).cgColor
+        } else {
+            label.textColor = NativeStyle.muted
+            layer?.backgroundColor = NSColor.clear.cgColor
+            layer?.borderColor = NativeStyle.border.cgColor
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        label.frame = NSRect(x: 0, y: 1, width: bounds.width, height: max(0, bounds.height - 2))
+    }
+}
+
 @MainActor final class MessageCell: NativeView {
     let body = MessageTextView()
     private let author = NativeStyle.label("", size: 13, bold: true)
+    private let adminBadge = MessageBadge("ADMIN", admin: true, accessibilityLabel: "Admin")
+    private let guestBadge = MessageBadge("GUEST", admin: false, accessibilityLabel: "Guest")
     private let timestamp = NativeStyle.label("", size: 10)
     private let avatar = NativeAvatar()
+    private var showsAdmin = false
+    private var showsGuest = false
+    private var arrivalGeneration = 0
     var openAuthor: ((ChatAuthor, NSView) -> Void)?
     var messageMenu: ((ChatMessage, NSView) -> NSMenu?)?
     var messageAction: ((ChatMessage, MessageAction, NSView) -> Void)?
+    var pendingAction: ((PendingMessage, PendingAction) -> Void)?
     var hoverReaction: ((ChatMessage, String, Bool, NSView) -> Void)?
     private let controls = MessageActionBar()
     private var tracking: NSTrackingArea?
@@ -455,6 +600,19 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         guard let self, let message = self.message else { return }
         self.messageAction?(message, .dismissPin, self)
     }
+    private let pendingFailure = NativeStyle.label("", size: 11)
+    private lazy var retrySend = NativeButton("Retry send") { [weak self] in
+        guard let self, let pending = self.pending else { return }
+        self.pendingAction?(pending, .retry)
+    }
+    private lazy var editPending = NativeButton("Edit") { [weak self] in
+        guard let self, let pending = self.pending else { return }
+        self.pendingAction?(pending, .edit)
+    }
+    private lazy var dismissPending = NativeButton("Dismiss") { [weak self] in
+        guard let self, let pending = self.pending else { return }
+        self.pendingAction?(pending, .dismiss)
+    }
     private var pinPending = false
     private var layoutWidth: CGFloat = 0
     private var compact: Bool { layoutWidth < 260 }
@@ -462,7 +620,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     private var stackedRecovery: Bool { layoutWidth - textInset - 20 < 132 }
     private var reactionFailureHeight: CGFloat { reactionFailure.isHidden ? 0 : stackedRecovery ? 94 : 66 }
     private var pinFailureHeight: CGFloat { pinFailure.isHidden ? 0 : stackedRecovery ? 94 : 66 }
-    private var failureHeight: CGFloat { reactionFailureHeight + pinFailureHeight }
+    private var pendingFailureHeight: CGFloat { pendingFailure.isHidden ? 0 : stackedRecovery ? 94 : 66 }
+    private var failureHeight: CGFloat { reactionFailureHeight + pinFailureHeight + pendingFailureHeight }
     private lazy var authorAction: NativeButton = NativeButton("") { [weak self] in
         guard let self, let message = self.message, !message.author.isGuest else { return }
         self.openAuthor?(message.author, self.authorAction)
@@ -473,8 +632,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
     private var attachments: AppKitAttachmentSurface?
     var makeAttachments: ((ChatMessage) -> AppKitAttachmentSurface?)?
+    var makePendingAttachments: ((PendingMessage) -> AppKitAttachmentSurface?)?
     private var quote: AppKitAttachmentSurface?
     var makeReply: ((ChatMessage) -> AppKitAttachmentSurface?)?
+    var makePendingReply: ((PendingMessage) -> AppKitAttachmentSurface?)?
     private var quoteHeight: CGFloat = 0
     private lazy var thread = NativeButton("") { [weak self] in
         guard let self, let message = self.message else { return }
@@ -503,6 +664,11 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     /// Spoiler groups the reader revealed in this row (not persisted).
     private var revealedSpoilers = Set<Int>()
     private var pending: PendingMessage?
+    private var pendingAuthor: ChatAuthor?
+    private var pendingErrorText: String?
+    private var pendingRejected = false
+    private var pendingUploadFailed = false
+    private var pendingCanEdit = true
     private var grouped = false
     /// The next row groups under this one.
     private var continued = false
@@ -512,7 +678,6 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     /// The dividers above the message: its day, then the unread line.
     private var dividerHeight: CGFloat { dayHeight + unreadHeight }
     var textTop: CGFloat {
-        guard pending == nil else { return 0 }
         // A grouped row sits right under its author's previous one, as on
         // web; its hover actions float over the row's top edge.
         return dividerHeight + pinHeight + quoteHeight + (grouped ? 2 : compact ? 52 : 32)
@@ -556,6 +721,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         body.isVerticallyResizable = false
         body.layoutManager?.usesFontLeading = false
         body.linkTextAttributes = [.foregroundColor: NativeStyle.link, .cursor: NSCursor.pointingHand]
+        adminBadge.isHidden = true
+        guestBadge.isHidden = true
         timestamp.textColor = NativeStyle.muted
         authorAction.layer?.backgroundColor = NSColor.clear.cgColor
         avatarAction.layer?.backgroundColor = NSColor.clear.cgColor
@@ -576,11 +743,15 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         }
         pinFailure.textColor = NativeStyle.error
         pinFailure.maximumNumberOfLines = 2; pinFailure.lineBreakMode = .byWordWrapping
+        pendingFailure.textColor = NativeStyle.error
+        pendingFailure.maximumNumberOfLines = 2; pendingFailure.lineBreakMode = .byWordWrapping
+        for item in [pendingFailure, retrySend, editPending, dismissPending] { item.isHidden = true }
         thread.isHidden = true; thread.alignment = .left
         thread.font = NativeStyle.font(11, bold: true); thread.contentTintColor = NativeStyle.accent
         thread.layer?.backgroundColor = NSColor.clear.cgColor
-        [body, author, timestamp, avatar, day, unread, authorAction, avatarAction, blockedToggle, edited, controls,
-            reactionFailure, retryReaction, dismissReaction, pinnedBy, pinFailure, retryPin, dismissPin, thread].forEach { addSubview($0) }
+        [body, author, adminBadge, guestBadge, timestamp, avatar, day, unread, authorAction, avatarAction, blockedToggle, edited, controls,
+            reactionFailure, retryReaction, dismissReaction, pinnedBy, pinFailure, retryPin, dismissPin,
+            pendingFailure, retrySend, editPending, dismissPending, thread].forEach { addSubview($0) }
         controls.action = { [weak self] action, anchor in
             guard let self, let message = self.message else { return }
             self.messageAction?(message, action, anchor)
@@ -602,6 +773,87 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// A newly sent or received row fades in and rises smoothly from below with
+    /// a brief vertical motion blur, easing out quickly without shifting layout.
+    func animateArrival() {
+        guard !CaperAccessibility.reduceMotion, let layer else { return }
+        arrivalGeneration += 1
+        let gen = arrivalGeneration
+        let duration: CFTimeInterval = 0.18
+        let timing = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+
+        layer.removeAnimation(forKey: "caperArrivalOpacity")
+        layer.removeAnimation(forKey: "caperArrivalRise")
+        layer.removeAnimation(forKey: "caperArrivalBlur")
+
+        let blur = CIFilter(name: "CIMotionBlur")
+        if let blur {
+            blur.name = "caperSendBlur"
+            blur.setValue(0.0, forKey: "inputRadius")
+            blur.setValue(Double.pi / 2, forKey: "inputAngle")
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layerUsesCoreImageFilters = true
+            layer.filters = [blur]
+            CATransaction.commit()
+        }
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.arrivalGeneration == gen else { return }
+                self.layer?.filters = nil
+                self.layerUsesCoreImageFilters = false
+            }
+        }
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.0
+        fade.toValue = 1.0
+        fade.duration = duration
+        fade.timingFunction = timing
+        layer.add(fade, forKey: "caperArrivalOpacity")
+
+        let rise = CABasicAnimation(keyPath: "transform.translation.y")
+        rise.fromValue = 12.0
+        rise.toValue = 0.0
+        rise.duration = duration
+        rise.timingFunction = timing
+        layer.add(rise, forKey: "caperArrivalRise")
+
+        if blur != nil {
+            let blurAnim = CABasicAnimation(keyPath: "filters.caperSendBlur.inputRadius")
+            blurAnim.fromValue = 3.5
+            blurAnim.toValue = 0.0
+            blurAnim.duration = duration
+            blurAnim.timingFunction = timing
+            layer.add(blurAnim, forKey: "caperArrivalBlur")
+        }
+
+        CATransaction.commit()
+    }
+
+    /// Carries an existing row smoothly up from its previous on-screen position
+    /// as a new message arrives beneath it.
+    func animateGlide(fromOffsetY delta: CGFloat) {
+        guard !CaperAccessibility.reduceMotion, let layer else { return }
+        let glide = CABasicAnimation(keyPath: "transform.translation.y")
+        glide.fromValue = delta
+        glide.toValue = 0.0
+        glide.duration = 0.18
+        glide.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+        layer.add(glide, forKey: "caperArrivalRise")
+    }
+
+    func cancelArrivalMotion() {
+        arrivalGeneration += 1
+        layer?.removeAnimation(forKey: "caperArrivalOpacity")
+        layer?.removeAnimation(forKey: "caperArrivalRise")
+        layer?.removeAnimation(forKey: "caperArrivalBlur")
+        layer?.filters = nil
+        layerUsesCoreImageFilters = false
+    }
+
     override func applyTheme() {
         super.applyTheme()
         dayLeading.backgroundColor = NativeStyle.border.cgColor
@@ -610,6 +862,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         unreadTrailing.backgroundColor = NativeStyle.accent.cgColor
         mentionBar.backgroundColor = NativeStyle.accent.cgColor
         blockedBar.backgroundColor = NativeStyle.border.cgColor
+        adminBadge.applyTheme()
+        guestBadge.applyTheme()
         body.linkTextAttributes = [.foregroundColor: NativeStyle.link, .cursor: NSCursor.pointingHand]
         if let message {
             body.textStorage?.setAttributedString(bodyText(message))
@@ -619,34 +873,103 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
                 button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : NativeStyle.surface).cgColor
                 button.layer?.borderColor = (selected ? NativeStyle.accent : NativeStyle.border).cgColor
             }
+        } else if let pending {
+            body.textStorage?.setAttributedString(bodyText(pending))
+            layer?.backgroundColor = NSColor.clear.cgColor
         } else if let blockedRun {
             layer?.backgroundColor = blockedRun.revealed ? NativeStyle.surface.cgColor : NSColor.clear.cgColor
         }
         body.needsDisplay = true
     }
 
-    func configure(_ pending: PendingMessage, make: ((PendingMessage) -> AppKitAttachmentSurface?)?) {
-        guard self.pending != pending else { return }
-        self.pending = pending
-        // Pending commands have a separate identity from server messages;
-        // this cell is never reused as a confirmed or blocked row.
-        subviews.forEach { $0.isHidden = true }
-        [mentionTint, mentionBar, blockedBar, dayLeading, dayTrailing, unreadLeading, unreadTrailing].forEach { $0.isHidden = true }
-        attachments?.removeFromSuperview()
-        attachments = make?(pending)
-        if let attachments {
-            attachments.heightChanged = { [weak self] in self?.heightChanged?() }
-            addSubview(attachments)
+    func configure(_ pending: PendingMessage, author: ChatAuthor?, grouped: Bool, day: String?, error: String?, rejected: Bool, uploadFailed: Bool, canEdit: Bool) {
+        guard self.pending != pending || self.pendingAuthor != author || self.grouped != grouped
+            || self.day.stringValue != (day ?? "") || self.pendingErrorText != error
+            || self.pendingRejected != rejected || self.pendingUploadFailed != uploadFailed
+            || self.pendingCanEdit != canEdit || self.message != nil || self.blockedRun != nil else { return }
+        if self.pending?.replyTo != pending.replyTo || self.message != nil {
+            quote?.removeFromSuperview()
+            quote = makePendingReply?(pending)
+            if let quote {
+                quote.heightChanged = { [weak self] in self?.heightChanged?() }
+                addSubview(quote, positioned: .below, relativeTo: controls)
+            }
         }
-        setAccessibilityIdentifier("pending-row-\(pending.id)")
+        if self.pending?.attachments != pending.attachments || self.pending?.gif != pending.gif
+            || self.pending?.embeds != pending.embeds || self.message != nil {
+            attachments?.removeFromSuperview()
+            attachments = makePendingAttachments?(pending)
+            if let attachments {
+                attachments.heightChanged = { [weak self] in self?.heightChanged?() }
+                addSubview(attachments, positioned: .below, relativeTo: controls)
+            }
+        }
+        self.pending = pending
+        self.pendingAuthor = author
+        self.pendingErrorText = error
+        self.pendingRejected = rejected
+        self.pendingUploadFailed = uploadFailed
+        self.pendingCanEdit = canEdit
+        self.message = nil
+        self.blockedRun = nil
+        self.revealedBlocked = false
+        self.grouped = grouped
+        self.continued = false
+        self.showsAdmin = author?.isAdmin == true
+        self.showsGuest = author?.isGuest == true
+        blockedToggle.isHidden = true
+        body.isHidden = false
+        controls.isHidden = true
+        edited.isHidden = true
+        thread.isHidden = true
+        pinnedBy.isHidden = true
+        for item in [reactionFailure, retryReaction, dismissReaction, pinFailure, retryPin, dismissPin] { item.isHidden = true }
+        reactions.forEach { $0.removeFromSuperview() }; reactions = []
+        self.day.stringValue = day ?? ""
+        self.day.isHidden = day == nil
+        self.day.setAccessibilityIdentifier("date-\(pending.id)")
+        unread.isHidden = true
+        setAccessibilityIdentifier("pending-message-\(pending.id)")
+        setAccessibilityHelp(nil)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        layer?.backgroundColor = NSColor.clear.cgColor
+        blockedBar.isHidden = true
+        mentionTint.isHidden = true
+        mentionBar.isHidden = true
+        CATransaction.commit()
+        self.author.stringValue = author?.name ?? "Guest"
+        self.author.setAccessibilityElement(true)
+        authorAction.isHidden = true
+        avatarAction.isHidden = true
+        adminBadge.isHidden = grouped || !showsAdmin
+        guestBadge.isHidden = grouped || !showsGuest
+        timestamp.stringValue = error == nil ? "Sending…" : ""
+        body.textStorage?.setAttributedString(bodyText(pending))
+        body.configureMentions([])
+        body.setAccessibilityIdentifier("pending-text-\(pending.id)")
+        avatar.update(
+            name: author?.name ?? "Guest",
+            avatarId: author?.avatarId,
+            picture: grouped ? nil : author?.avatarPicture
+        )
+        pendingFailure.isHidden = error == nil
+        pendingFailure.stringValue = error.map { uploadFailed ? $0 : "\(rejected ? "Not sent." : "Not confirmed yet.") \($0)" } ?? ""
+        retrySend.title = uploadFailed ? "Retry" : "Retry send"
+        retrySend.isHidden = error == nil || rejected
+        editPending.isHidden = error == nil || !rejected || pending.gif != nil
+        editPending.isEnabled = canEdit
+        editPending.toolTip = canEdit ? nil : "Clear your current draft to edit this message."
+        dismissPending.isHidden = error == nil || !rejected
+        needsLayout = true
     }
 
     func configure(_ message: ChatMessage, grouped: Bool, continued: Bool = false, day: String?, newMessages: Bool = false, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, inPins: Bool = false, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
-        guard self.message != message || self.grouped != grouped || self.continued != continued || self.day.stringValue != (day ?? "") || unread.isHidden == newMessages || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
+        let wasPending = self.pending != nil
+        guard wasPending || self.message != message || self.grouped != grouped || self.continued != continued || self.day.stringValue != (day ?? "") || unread.isHidden == newMessages || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
         let range = body.selectedRange()
         // Another message, or edited text, hides its spoilers again.
         if self.message?.id != message.id || self.message?.content.text != message.content.text { revealedSpoilers = [] }
-        if self.message?.replyTo != message.replyTo || self.message?.isDeleted != message.isDeleted {
+        if wasPending || self.message?.replyTo != message.replyTo || self.message?.isDeleted != message.isDeleted {
             quote?.removeFromSuperview()
             quote = makeReply?(message)
             if let quote {
@@ -654,8 +977,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
                 addSubview(quote, positioned: .below, relativeTo: controls)
             }
         }
-        if self.message?.content.attachments != message.content.attachments || self.message?.content.gif != message.content.gif
-            || self.message?.forward != message.forward || self.message?.isDeleted != message.isDeleted {
+        if wasPending || self.message?.content.attachments != message.content.attachments || self.message?.content.gif != message.content.gif
+            || self.message?.content.embeds != message.content.embeds || self.message?.forward != message.forward || self.message?.isDeleted != message.isDeleted {
             attachments?.removeFromSuperview()
             attachments = makeAttachments?(message)
             if let attachments {
@@ -663,9 +986,18 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
                 addSubview(attachments, positioned: .below, relativeTo: controls)
             }
         }
+        self.pending = nil
+        self.pendingAuthor = nil
+        self.pendingErrorText = nil
+        self.pendingRejected = false
+        self.pendingUploadFailed = false
+        self.pendingCanEdit = true
+        for item in [pendingFailure, retrySend, editPending, dismissPending] { item.isHidden = true }
         self.message = message; self.grouped = grouped; self.continued = continued; self.viewerID = viewerID
         self.canInteract = canInteract
         self.pinPending = pinPending
+        self.showsAdmin = message.author.isAdmin
+        self.showsGuest = message.author.isGuest
         blockedRun = nil; self.revealedBlocked = revealedBlocked
         blockedToggle.isHidden = true; body.isHidden = false
         setAccessibilityIdentifier("message-row-\(message.id)")
@@ -722,6 +1054,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         avatarAction.setAccessibilityLabel("Open profile for \(message.author.name)")
         avatarAction.setAccessibilityIdentifier("profile-avatar-\(message.id)")
         avatarAction.isHidden = authorAction.isHidden
+        adminBadge.isHidden = grouped || !showsAdmin
+        guestBadge.isHidden = grouped || !showsGuest
         timestamp.stringValue = NativePresentation.time(message.createdAt, includingDate: inPins)
         body.textStorage?.setAttributedString(bodyText(message))
         body.configureMentions(message.isDeleted ? [] : message.content.mentions)
@@ -778,6 +1112,23 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         !message.isDeleted && message.forward == nil && (message.revision ?? 1) > 1 && !message.content.text.isEmpty
     }
 
+    /// Pending text uses the exact same 20pt pitch and formatting metrics as
+    /// confirmed messages so server confirmation causes zero vertical shift.
+    private func bodyText(_ pending: PendingMessage) -> NSAttributedString {
+        let text = NSMutableAttributedString(attributedString: NativePresentation.messageText(pending.text, mentions: []))
+        text.addAttribute(.foregroundColor, value: NativeStyle.muted, range: NSRange(location: 0, length: text.length))
+        var styles: [(NSRange, NSParagraphStyle?)] = []
+        text.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            styles.append((range, value as? NSParagraphStyle))
+        }
+        for (range, style) in styles {
+            let paragraph = (style?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            paragraph.minimumLineHeight = 20; paragraph.maximumLineHeight = 20
+            text.addAttribute(.paragraphStyle, value: paragraph, range: range)
+        }
+        return text
+    }
+
     /// The message's text: spoilers the reader has not revealed stay hidden.
     private func bodyText(_ message: ChatMessage) -> NSAttributedString {
         let text = NSMutableAttributedString(attributedString: NativePresentation.messageText(
@@ -816,8 +1167,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
 
     func configure(_ run: BlockedRun, day: String?, toggle: @escaping () -> Void) {
         toggleBlocked = toggle
-        guard blockedRun != run || self.day.stringValue != (day ?? "") else { return }
-        blockedRun = run; message = nil; grouped = true; continued = false
+        guard blockedRun != run || self.day.stringValue != (day ?? "") || pending != nil else { return }
+        blockedRun = run; message = nil; pending = nil; pendingAuthor = nil; pendingErrorText = nil
+        grouped = true; continued = false; showsAdmin = false; showsGuest = false
         self.day.stringValue = day ?? ""; self.day.isHidden = day == nil
         self.day.setAccessibilityIdentifier("date-\(run.id)")
         unread.isHidden = true
@@ -825,10 +1177,12 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         setAccessibilityHelp(nil)
         body.isHidden = true; body.string = ""
         authorAction.isHidden = true; avatarAction.isHidden = true
+        adminBadge.isHidden = true; guestBadge.isHidden = true
         avatar.update(name: "", avatarId: nil, picture: nil)
         controls.isHidden = true; edited.isHidden = true
         reactionFailure.isHidden = true; retryReaction.isHidden = true; dismissReaction.isHidden = true
         pinnedBy.isHidden = true; pinFailure.isHidden = true; retryPin.isHidden = true; dismissPin.isHidden = true
+        pendingFailure.isHidden = true; retrySend.isHidden = true; editPending.isHidden = true; dismissPending.isHidden = true
         reactions.forEach { $0.removeFromSuperview() }; reactions = []
         attachments?.removeFromSuperview(); attachments = nil; attachmentHeight = 0
         quote?.removeFromSuperview(); quote = nil; quoteHeight = 0
@@ -846,7 +1200,6 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
 
     func measuredHeight(width: CGFloat) -> CGFloat {
         layoutWidth = width
-        if pending != nil { return attachments?.height(for: width) ?? 0 }
         if blockedRun != nil { return dayHeight + 48 }
         let textWidth = max(40, width - textInset - 20)
         body.textContainer?.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
@@ -859,6 +1212,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         let textHeight = body.string.isEmpty && attachments != nil ? 0
             : max(20, max(coreTextHeight, ceil(nativeHeight))) + (editedFrame(width: textWidth)?.ownLine == true ? 18 : 0)
         let height = textTop + textHeight + attachmentHeight + reactionHeight + failureHeight + threadHeight + bottomPadding
+        guard pending == nil else { return height }
         let controlsWidth = min(controls.preferredWidth, max(30, width - 30))
         // A wrapped hover bar must not steal the next grouped row's hit area.
         return controlsWidth < controls.preferredWidth
@@ -879,7 +1233,6 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
 
     override func layout() {
         super.layout()
-        if pending != nil { attachments?.frame = bounds; return }
         let dayInset = dayHeight, inset = dividerHeight
         let dayWidth = min(ceil(day.cell?.cellSize.width ?? 0), max(0, bounds.width - 36))
         day.frame = NSRect(x: (bounds.width - dayWidth) / 2, y: 8, width: dayWidth, height: max(0, dayInset - 16))
@@ -899,6 +1252,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         blockedBar.frame = NSRect(x: 0, y: inset, width: 2, height: max(0, bounds.height - inset))
         CATransaction.commit()
         avatar.isHidden = grouped; author.isHidden = grouped; timestamp.isHidden = grouped
+        adminBadge.isHidden = grouped || !showsAdmin
+        guestBadge.isHidden = grouped || !showsGuest
         if blockedRun != nil {
             blockedToggle.frame = NSRect(x: 18, y: inset + 4, width: bounds.width - 36, height: 36)
             return
@@ -910,14 +1265,27 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         avatar.frame = NSRect(x: 20, y: messageTop + 10, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.
-        // The time stays beside the name at every width, as on web and the
-        // desktop clients; a long name gives way and ends in "…".
-        let timeWidth = min(ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width), max(0, bounds.width - 95))
-        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - timeWidth - 7))
+        // Badges and time stay beside the name at every width, as on web and
+        // the desktop clients; a long name gives way and ends in "…".
+        let timeWidth = timestamp.stringValue.isEmpty ? 0
+            : min(ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width), max(0, bounds.width - 95))
+        let adminWidth: CGFloat = adminBadge.isHidden ? 0 : adminBadge.preferredWidth + 6
+        let guestWidth: CGFloat = guestBadge.isHidden ? 0 : guestBadge.preferredWidth + 6
+        let trailingWidth = adminWidth + guestWidth + (timeWidth > 0 ? timeWidth + 7 : 0)
+        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - trailingWidth))
         // A label's cell draws its text 2 points in; the body has no inset.
         // Start the name 2 points early so it lines up with the message.
         author.frame = NSRect(x: 66, y: messageTop + 10, width: authorWidth, height: 20)
-        timestamp.frame = NSRect(x: author.frame.maxX + 7, y: messageTop + 13, width: timeWidth, height: 17)
+        var headerX = author.frame.maxX
+        if !adminBadge.isHidden {
+            adminBadge.frame = NSRect(x: headerX + 6, y: messageTop + 12, width: adminBadge.preferredWidth, height: 15)
+            headerX = adminBadge.frame.maxX
+        }
+        if !guestBadge.isHidden {
+            guestBadge.frame = NSRect(x: headerX + 6, y: messageTop + 12, width: guestBadge.preferredWidth, height: 15)
+            headerX = guestBadge.frame.maxX
+        }
+        timestamp.frame = NSRect(x: headerX + 7, y: messageTop + 13, width: timeWidth, height: 17)
         // The hover wash and focus ring get room around the name, which
         // otherwise touches their left edge.
         authorAction.frame = author.frame.insetBy(dx: -4, dy: -1)
@@ -940,6 +1308,15 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         pinFailure.frame = NSRect(x: textInset, y: reactionFailure.frame.minY + reactionFailureHeight, width: textWidth, height: 30)
         retryPin.frame = NSRect(x: textInset, y: pinFailure.frame.maxY + 4, width: 58, height: 24)
         dismissPin.frame = NSRect(x: stackedRecovery ? textInset : textInset + 64, y: retryPin.frame.minY + (stackedRecovery ? 28 : 0), width: 68, height: 24)
+        pendingFailure.frame = NSRect(x: textInset, y: pinFailure.frame.minY + pinFailureHeight, width: textWidth, height: 30)
+        let retryWidth = max(58, ceil(retrySend.cell?.cellSize.width ?? 76) + 12)
+        retrySend.frame = NSRect(x: textInset, y: pendingFailure.frame.maxY + 4, width: retryWidth, height: 24)
+        let editOriginX = retrySend.isHidden ? textInset : (stackedRecovery ? textInset : retrySend.frame.maxX + 6)
+        let editOriginY = retrySend.isHidden ? pendingFailure.frame.maxY + 4 : retrySend.frame.minY + (stackedRecovery ? 28 : 0)
+        editPending.frame = NSRect(x: editOriginX, y: editOriginY, width: 54, height: 24)
+        let dismissOriginX = editPending.isHidden ? textInset : (stackedRecovery ? textInset : editPending.frame.maxX + 6)
+        let dismissOriginY = editPending.isHidden ? editOriginY : editPending.frame.minY + (stackedRecovery ? 28 : 0)
+        dismissPending.frame = NSRect(x: dismissOriginX, y: dismissOriginY, width: 68, height: 24)
     }
 
     /// The (edited) button follows the last word as on web, in body

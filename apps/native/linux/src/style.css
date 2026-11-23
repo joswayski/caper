@@ -2831,7 +2831,13 @@ label.message-quote {
 @keyframes caper-message-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(10px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: none;
   }
 }
 
@@ -2872,7 +2878,7 @@ label.message-quote {
 
 /* A message sent or received while watching the live end. */
 .message.arriving {
-  animation: caper-message-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: caper-message-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Menus, cards and suggestions: their contents rise inside the popover. */

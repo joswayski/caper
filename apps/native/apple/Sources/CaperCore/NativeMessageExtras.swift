@@ -53,6 +53,31 @@ import AppKit
     private func append(_ view: NSView) { addArrangedSubview(view); AppKitKit.fillWidth(view, of: self) }
 }
 
+@MainActor final class AppKitPendingExtras: NSStackView {
+    var heightChanged: (() -> Void)?
+    init(_ pending: PendingMessage, show: @escaping (MediaViewerRequest) -> Void) {
+        super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 8
+        if !pending.attachments.isEmpty {
+            let files = AppKitMessageFiles(chat: nil, show: show)
+            files.update(pending.attachments)
+            files.alphaValue = 0.7
+            addArrangedSubview(files); AppKitKit.fillWidth(files, of: self)
+            files.heightChanged = { [weak self] in self?.heightChanged?() }
+        }
+        if let gif = pending.gif {
+            let view = AppKitMessageGIF(gif, show: show)
+            view.alphaValue = 0.7
+            addArrangedSubview(view); AppKitKit.fillWidth(view, of: self)
+        }
+        if !pending.embeds.isEmpty {
+            let embeds = AppKitMessageEmbeds()
+            embeds.update(pending.embeds)
+            addArrangedSubview(embeds); AppKitKit.fillWidth(embeds, of: self)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
 @MainActor final class AppKitPendingRow: NSStackView {
     var heightChanged: (() -> Void)?
     private let pending: PendingMessage
@@ -74,8 +99,9 @@ import AppKit
         avatar.update(name: chat.currentAuthor?.name ?? "Guest", avatarId: chat.currentAuthor?.avatarId, picture: chat.currentAuthor?.avatarPicture)
         NSLayoutConstraint.activate([avatar.widthAnchor.constraint(equalToConstant: 34), avatar.heightAnchor.constraint(equalToConstant: 34)])
         let author = chat.currentAuthor
-        let name = AppKitKit.label((author?.name ?? "Guest") + (author?.isAdmin == true ? " · ADMIN" : "") + (author?.isGuest == true ? " · GUEST" : ""), size: 13, weight: .bold)
+        let name = AppKitKit.label((author?.name ?? "Guest") + (author?.isAdmin == true ? " · ADMIN" : "") + (author?.isGuest == true ? " · GUEST" : ""), size: 13, weight: .bold, wraps: false)
         let words = AppKitKit.stack([name], spacing: 4)
+        AppKitKit.fillWidth(name, of: words)
         if !pending.text.isEmpty { let text = AppKitKit.label(pending.text, size: 14, color: AppKitKit.muted); words.addArrangedSubview(text); AppKitKit.fillWidth(text, of: words) }
         if !pending.attachments.isEmpty {
             let files = AppKitMessageFiles(chat: nil, show: show); files.update(pending.attachments); files.alphaValue = 0.7
@@ -89,6 +115,7 @@ import AppKit
         [retry!, edit!, dismiss!].forEach(actions.addArrangedSubview); actions.spacing = 12
         words.addArrangedSubview(error); AppKitKit.fillWidth(error, of: words); words.addArrangedSubview(actions)
         let row = NSStackView(views: [avatar, words]); row.orientation = .horizontal; row.alignment = .top; row.spacing = 10
+        words.widthAnchor.constraint(equalTo: row.widthAnchor, constant: -44).isActive = true
         addArrangedSubview(row); AppKitKit.fillWidth(row, of: self); setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityIdentifier("pending-message-\(pending.id)")
         render()
     }
