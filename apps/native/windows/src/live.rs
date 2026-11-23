@@ -5652,8 +5652,10 @@ impl Live {
                 root,
                 enabled,
             } if generation == self.account_epoch => {
-                self.availability.insert(root, enabled);
-                out.push(Update::Voice);
+                // An unchanged answer redraws nothing.
+                if self.availability.insert(root, enabled) != Some(enabled) {
+                    out.push(Update::Voice);
+                }
             }
             Event::VoiceChecked {
                 request,

@@ -2640,6 +2640,7 @@ impl App {
                 if wp.0 != SIZE_MINIMIZED as usize {
                     self.resume_caret();
                     self.resume_gifs();
+                    self.arm_call_timer();
                 }
                 // Nothing was drawn while minimized; GIFs resume with this frame.
                 self.need = true;
@@ -2681,8 +2682,15 @@ impl App {
                 }
                 tips::TIMER_TIP => self.tip_tick(),
                 web_player::TIMER_WEB_PLAYER => self.need = true,
-                // Speaking rings, their release and the call's running time.
-                call::TIMER_CALL => self.call_tick(),
+                // Speaking rings, their release and the call's running time;
+                // a minimized window stops the step until it is restored.
+                call::TIMER_CALL => {
+                    if unsafe { IsIconic(self.hwnd).as_bool() } {
+                        self.arm_call_timer();
+                    } else {
+                        self.call_tick();
+                    }
+                }
                 settings::TIMER_INBOX => self.inbox_tick(),
                 settings::TIMER_VERSION_COPIED => self.version_copied_tick(),
                 TIMER_TYPING => self.typing_tick(),

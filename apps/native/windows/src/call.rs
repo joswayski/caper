@@ -954,15 +954,21 @@ impl App {
         self.dirty.header = true;
         self.events |= EV_ROWS;
         self.need = true;
+        self.arm_call_timer();
+        self.audio_changed();
+    }
+
+    /// The call's levels and clock tick only while a call is under way and
+    /// the window is not minimized; restoring the window re-arms it.
+    pub fn arm_call_timer(&self) {
         let calling = self.live.as_ref().is_some_and(|l| l.in_voice());
         unsafe {
-            if calling {
+            if calling && !IsIconic(self.hwnd).as_bool() {
                 SetTimer(Some(self.hwnd), TIMER_CALL, 80, None);
             } else {
                 let _ = KillTimer(Some(self.hwnd), TIMER_CALL);
             }
         }
-        self.audio_changed();
     }
 
     /// The 80 ms step: the sidebar redraws only when the card's clock or
