@@ -80,15 +80,16 @@ public enum ProfilePicturePolicy {
     /// Display decoding: at most 300 frames and 16 MiB of frame pixels per
     /// picture (fewer than inline attachments' 600 frames and 32 MiB); an
     /// animation over either shows one still. Pictures on screen stay findable
-    /// while shown, so the cache only keeps recently scrolled-away ones: 96 MiB
+    /// while shown, so the cache only keeps recently scrolled-away ones: 48 MiB
     /// on a Mac window, 32 MiB (about a dozen animated or 400 still pictures)
-    /// on an iPhone screen.
+    /// on an iPhone screen. An evicted picture decodes again from the file
+    /// cache below, off the main thread, without downloading.
     static let maxAnimationFrames = 300
     static let maxAnimationBytes = 16 * 1_024 * 1_024
     #if os(iOS)
     static let cacheBytes = 32 * 1_024 * 1_024
     #else
-    static let cacheBytes = 96 * 1_024 * 1_024
+    static let cacheBytes = 48 * 1_024 * 1_024
     #endif
     static let cacheCount = 400
     /// Downloaded files kept so an evicted or resized picture (an animation's
@@ -203,12 +204,14 @@ public enum ProfilePicturePolicy {
     public static func cornerRadius(side: CGFloat) -> CGFloat { side * 0.3 }
 
     /// Pixels to decode a picture shown `points` wide: the screen's pixels
-    /// (at most 3×), rounded up to a 64-pixel step so nearby avatar sizes
-    /// share one decoded copy, and at most 256.
+    /// (at most 3×), rounded up to a 32-pixel step so nearby avatar sizes
+    /// share one decoded copy, at least 64 and at most 256. A 64-pixel step
+    /// decoded the Mac's 72-pixel message avatars at 128, 1.8× the memory
+    /// per frame of 96.
     public static func displayPixelSize(points: CGFloat, scale: CGFloat) -> Int {
         let pixels = Double(points) * Double(min(max(scale, 1), 3))
         guard pixels.isFinite, pixels > 0 else { return 64 }
-        return Int(min(256, max(64, (pixels / 64).rounded(.up) * 64)))
+        return Int(min(256, max(64, (pixels / 32).rounded(.up) * 32)))
     }
 
     /// The longest edge to decode so a `width` × `height` picture still
