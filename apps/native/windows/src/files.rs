@@ -873,17 +873,27 @@ impl App {
     }
 
     /// After drawing rows: when the next GIF frame is due, and a quick poll
-    /// while loads wait to start or URLs to refresh.
+    /// while loads wait to start or URLs to refresh. A strip knows only its
+    /// own rows, so rows other strips armed stay armed, and the timer wakes
+    /// for whichever frame is due first.
     pub fn media_drawn(&mut self, next: Option<Duration>, animated: Vec<usize>, busy: bool) {
         unsafe {
             if let Some(next) = next {
-                self.gif_rows = animated;
-                SetTimer(
-                    Some(self.hwnd),
-                    crate::TIMER_MEDIA,
-                    next.as_millis().clamp(10, u32::MAX as u128) as u32,
-                    None,
-                );
+                for row in animated {
+                    if !self.gif_rows.contains(&row) {
+                        self.gif_rows.push(row);
+                    }
+                }
+                let due = Instant::now() + next;
+                if self.gif_due.is_none_or(|d| due < d) {
+                    self.gif_due = Some(due);
+                    SetTimer(
+                        Some(self.hwnd),
+                        crate::TIMER_MEDIA,
+                        next.as_millis().clamp(10, u32::MAX as u128) as u32,
+                        None,
+                    );
+                }
             }
             if busy {
                 SetTimer(Some(self.hwnd), crate::TIMER_LIVE, 100, None);
@@ -895,10 +905,11 @@ impl App {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), crate::TIMER_MEDIA);
         }
+        self.gif_due = None;
+        // A new frame changes no row's accessible content.
         let rows = std::mem::take(&mut self.gif_rows);
         if !rows.is_empty() {
             self.redraw.extend(rows);
-            self.events |= crate::EV_ROWS;
             self.need = true;
         }
     }

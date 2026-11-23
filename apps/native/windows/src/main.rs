@@ -433,6 +433,8 @@ pub struct App {
     redraw: Vec<usize>,
     /// Rows whose GIFs play, redrawn when their next frame is due.
     gif_rows: Vec<usize>,
+    /// When the first of their frames is due, while the timer waits.
+    gif_due: Option<Instant>,
     /// The voice message playing or paused.
     playback: playback::Playback,
     dirty: Dirty,
@@ -832,6 +834,7 @@ impl App {
                 autoscroll_p,
                 redraw: Vec::new(),
                 gif_rows: Vec::new(),
+                gif_due: None,
                 playback: playback::Playback::default(),
                 dirty: Dirty::all(),
                 need: true,
