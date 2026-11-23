@@ -179,7 +179,7 @@ class ChangelogTests(unittest.TestCase):
             "Nothing new for iPhone in this build. Recent changes:\nNewer: Body.\nOld: Body.",
         )
         self.assertEqual(
-            release_notes.notes("android", sha, [], "Tray menu", windows, 62, earlier),
+            release_notes.notes("android", sha, [], "Tray menu", windows, 67, earlier),
             "Nothing new for Android in this build. Recent changes:\nNewer: Body.",
         )
 
