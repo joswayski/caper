@@ -151,7 +151,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
                     .selectable(active, role = Role.RadioButton) {
                         if (select != null) select(route.id) else VoiceCallService.selectRoute(context, route.id)
                         picking = false
-                    }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    }.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(painterResource(audioRouteIcon(route.type)), null, Modifier.size(20.dp), tint = TextMuted)
                     Text(route.name, Modifier.weight(1f), fontSize = 13.sp)
                     RadioButton(active, onClick = null)

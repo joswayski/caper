@@ -347,7 +347,7 @@ import kotlinx.coroutines.launch
             }
             ComposerSendButton(
                 send,
-                Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else sendLabel },
+                Modifier.padding(bottom = 8.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else sendLabel },
                 enabled = writable && draft.canSend,
             )
         }

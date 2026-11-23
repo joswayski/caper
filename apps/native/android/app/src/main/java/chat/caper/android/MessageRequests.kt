@@ -225,7 +225,7 @@ import kotlinx.coroutines.launch
                         catch (error: Throwable) { setting = previous; settingError = friendlyError(error, "Couldn’t save this setting.") }
                         finally { saving = false }
                     }
-                },
+                }.padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 RadioButton(setting == value, null, enabled = setting != null)

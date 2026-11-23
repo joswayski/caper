@@ -192,7 +192,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
             Row(
                 Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).selectable(selected == value, enabled = enabled, role = Role.RadioButton) {
                     if (selected != value) choose(value)
-                },
+                }.padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 RadioButton(selected == value, null, enabled = enabled)
@@ -262,7 +262,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
                 pushRequestEpoch = viewModel.accountEpoch
                 pushPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             } else enablePush()
-        },
+        }.padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("Notifications on this phone", Modifier.weight(1f), fontSize = 13.sp)

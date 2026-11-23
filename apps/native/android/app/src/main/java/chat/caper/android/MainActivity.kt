@@ -463,7 +463,7 @@ internal data class VoiceJoinIntent(
     }
 
     when (val shown = overlay) {
-        Overlay.CreateSpace -> CreateSpaceDialog(state.busy, state.error, viewModel::clearError, { overlay = null }) { viewModel.createSpace(it) { overlay = null } }
+        Overlay.CreateSpace -> CreateSpaceDialog(state.busy, state.error, viewModel::clearError, viewModel, { overlay = null }) { viewModel.createSpace(it) { overlay = null } }
         Overlay.JoinInvite -> if (state.account != null) JoinInviteDialog(state.busy, viewModel) { overlay = null }
         // Keyed by the opening, so another link starts over even while this one is shown.
         is Overlay.OpenedInviteLink -> if (state.account != null) key(shown.request.id) {
@@ -777,14 +777,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 // New messages: a small dot in the rail margin, beside the tile.
-                // Hovering another space grows a pill there instead, as web's rail;
-                // it eases in and leaves at once.
+                // The selected space, and a hovered one, show a pill at the rail's edge
+                // instead, centred on the tile; it eases in and leaves at once.
                 val lifted = hovered && !selected
+                val pill = selected || lifted
                 Box(Modifier.width(6.dp), contentAlignment = Alignment.CenterStart) {
-                    androidx.compose.animation.AnimatedVisibility(lifted, enter = fadeIn(tween(140)) + expandVertically(tween(140), expandFrom = Alignment.CenterVertically), exit = ExitTransition.None) {
+                    androidx.compose.animation.AnimatedVisibility(pill, enter = fadeIn(tween(140)) + expandVertically(tween(140), expandFrom = Alignment.CenterVertically), exit = ExitTransition.None) {
                         Box(Modifier.size(4.dp, 20.dp).background(Text, RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp)))
                     }
-                    if (!lifted) androidx.compose.animation.AnimatedVisibility(unread, Modifier.align(Alignment.Center), enter = fadeIn(tween(200)) + slideInHorizontally(tween(200)) { -it }, exit = ExitTransition.None) {
+                    if (!pill) androidx.compose.animation.AnimatedVisibility(unread, Modifier.align(Alignment.Center), enter = fadeIn(tween(200)) + slideInHorizontally(tween(200)) { -it }, exit = ExitTransition.None) {
                         Box(Modifier.size(6.dp).background(Text, CircleShape))
                     }
                 }
@@ -911,8 +912,12 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     if (selected) this.selected = true
                     listOfNotNull("Private".takeIf { channel.private }, "Muted".takeIf { channelMuted }).joinToString(", ").takeIf { it.isNotEmpty() }?.let { stateDescription = it }
                 }, verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
-                Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // In a 26dp column like the DM avatars', so a selected or pressed row's wash is about as wide
+                // beside the icon as above and below it, and channel names share the DM names' left edge.
+                Box(Modifier.width(26.dp), contentAlignment = Alignment.Center) {
+                    Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
+                }
+                Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (unread) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
                 if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
                 // A live room's row ends with a waveform and its count, your call's with its status and timer.
@@ -1209,7 +1214,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 ) { HorizontalDivider(Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Border) }
                 Column(Modifier.weight(1f - clampedShare).verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(6.dp))
-                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                // The heading starts on the avatars' left edge (row 16dp + inset 9dp + avatar margin 3dp).
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 28.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Direct messages", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     IconButton({ show(Overlay.StartDirect) }) { Icon(painterResource(R.drawable.lucide_plus), "New direct message", tint = TextMuted) }
                 }
@@ -1278,10 +1284,11 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         NotificationSaveError(state.notificationErrors[directKey(direct.id)], Modifier.padding(horizontal = 25.dp)) { viewModel.dismissNotificationError(directKey(direct.id)) }
                     }
                 }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable(role = Role.Button) {
+                // Laid out like a DM row: the + centred in the 26dp avatar column, the label on the names' edge.
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small).clickable(role = Role.Button) {
                     show(Overlay.StartDirect)
                 }.padding(horizontal = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted)
+                    Box(Modifier.width(26.dp), contentAlignment = Alignment.Center) { Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted) }
                     Spacer(Modifier.width(9.dp))
                     Text("New message", Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
                 }
@@ -1363,9 +1370,10 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
 @Composable private fun MemberRow(member: Member, presence: String?, presenceLive: Boolean, quiet: Boolean, ring: Color, open: (Member) -> Unit) {
     val offline = presence == "offline"
     val opacity = if (offline) 0.6f else 1f
-    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+    // 8dp on every side of the 30dp avatar, so a pressed row's highlight is even around it.
+    Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
         .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { open(member) }
-        .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        .padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.alpha(opacity)) {
             Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl)
             PresenceDot(presence, presenceLive, ring, Modifier.align(Alignment.BottomEnd))
@@ -1417,9 +1425,11 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
         if (detail.space.demo) Text("General is open to everyone. People in voice appear in the channel sidebar.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else if (state.presenceLoading) Text("Loading members…", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
-        else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+        else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
+            // The same space above and below every label: rows have 8dp around their avatars,
+            // and the list's 8dp top inset stands in for that above the first label.
             @Composable fun GroupLabel(title: String, count: Int, primary: Boolean) {
-                Row(Modifier.padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 2.dp).semantics { heading() },
+                Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp).semantics { heading() },
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(title, color = if (primary) Text else TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(count.toString(), color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
@@ -1456,7 +1466,7 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
             } else {
                 presenceSections(shown, quiet = false, ring = SurfaceSidebar)
             }
-            if (shown.isEmpty()) item { Text("No matching members.", color = TextMuted, fontSize = 11.sp) }
+            if (shown.isEmpty()) item { Text("No matching members.", Modifier.padding(8.dp), color = TextMuted, fontSize = 11.sp) }
         }
     }
     profile?.let { card ->
@@ -1859,7 +1869,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                     below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } })
                             }
                             ComposerSendButton(
-                                sendReply, Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
+                                sendReply, Modifier.padding(bottom = 8.dp).size(48.dp).semantics { contentDescription = "Send reply" },
                                 enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true && (draft.text.isNotBlank() || files.isNotEmpty()),
                             )
                         }
@@ -2091,8 +2101,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
             if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
-            // Keep the composer inset from the timeline and the panel edge.
-            else if (joined) Column(Modifier.composerLip().padding(start = 18.dp, end = 18.dp, top = 2.dp, bottom = 16.dp)) { OwnRecomposeScope {
+            // Keep the composer inset from the timeline and the panel edge: the typing line's 16dp
+            // above the field matches the 16dp below it (and the account bar's bottom inset).
+            else if (joined) Column(Modifier.composerLip().padding(start = 18.dp, end = 18.dp, bottom = 16.dp)) { OwnRecomposeScope {
                 TypingLine(state.typingAuthors)
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
                 state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
@@ -2195,8 +2206,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             }
                             ComposerSendButton(
                                 { sendDraft() },
-                                // Centred on a one-line field (56dp), and near the bottom as the field grows.
-                                Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null,
+                                // Centred on a one-line field (56dp in the 4dp trough), and near the bottom as the field grows.
+                                Modifier.padding(bottom = 8.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null,
                             )
                         }
                         if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
@@ -4459,21 +4470,33 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable private fun CreateSpaceDialog(busy: Boolean, serverError: String?, clearError: () -> Unit, close: () -> Unit, create: (String) -> Unit) {
+@Composable private fun CreateSpaceDialog(busy: Boolean, serverError: String?, clearError: () -> Unit, viewModel: CaperViewModel, close: () -> Unit, create: (String) -> Unit) {
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     // The app-wide error is this dialog's once it has submitted; editing clears it.
     var submitted by remember { mutableStateOf(false) }
-    CaperDialog("Create a space", close, busy = busy) {
-        val field = remember { FocusRequester() }
-        LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
-        // Web validates on submit and says why (spaces/client.ts spaceNameError).
-        fun submit() { spaceNameError(name)?.let { error = it } ?: run { submitted = true; create(spaceName(name)) } }
-        OutlinedTextField(name, { name = it.codePointTake(80); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") },
-            modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (!busy) submit() }))
-        (error ?: serverError?.takeIf { submitted })?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
-        DialogActions(close, "Create space", busy, pendingLabel = "Creating…") { submit() }
+    // "Join with invite link" takes this dialog's place in the same window, so nothing flashes between them.
+    var joining by remember { mutableStateOf(false) }
+    val join = remember { JoinInviteState(null) }
+    CaperDialog(if (joining) join.title else "Create a space", close, busy = busy || (joining && join.checking)) {
+        if (joining) JoinInviteContent(join, busy, viewModel, focus = true, close) else {
+            val field = remember { FocusRequester() }
+            LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
+            // Web validates on submit and says why (spaces/client.ts spaceNameError).
+            fun submit() { spaceNameError(name)?.let { error = it } ?: run { submitted = true; create(spaceName(name)) } }
+            OutlinedTextField(name, { name = it.codePointTake(80); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") },
+                modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (!busy) submit() }))
+            (error ?: serverError?.takeIf { submitted })?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+            DialogActions(close, "Create space", busy, pendingLabel = "Creating…") { submit() }
+            // Web's "Have an invite link?" beneath Create a space, like Discord's Join a Server.
+            HorizontalDivider(color = Border)
+            SelectionContainer { Text("Have an invite link?", color = TextMuted, fontSize = 12.sp) }
+            OutlinedButton({ if (submitted && serverError != null) clearError(); joining = true }, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = !busy,
+                shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                Icon(painterResource(R.drawable.lucide_link), null, Modifier.size(16.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Text("Join with invite link", color = Text)
+            }
+        }
     }
 }
 
@@ -4717,7 +4740,7 @@ internal fun counterTone(count: Int): Color = when {
 internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
     draft.isBlank() || draft == rejectedText
 
-@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).toggleable(value, role = Role.Switch) { CaperEffects.toggle(it); changed(it) }, verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
+@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).toggleable(value, role = Role.Switch) { CaperEffects.toggle(it); changed(it) }.padding(horizontal = 12.dp), verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
     Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, null, Modifier.minimumInteractiveComponentSize(), colors = caperSwitchColors())
 }
 

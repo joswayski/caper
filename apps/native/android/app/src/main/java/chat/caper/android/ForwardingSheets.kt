@@ -129,7 +129,9 @@ import java.util.UUID
             val terms = search.trim().split(Regex("\\s+")).map { it.removePrefix("#") }
             val visible = destinations?.filter { destination -> terms.all { "${destination.spaceName} ${destination.name}".contains(it, ignoreCase = true) } }
             visible?.forEach { destination ->
-                Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).toggleable(value = destination.id in selected, enabled = pending == null, role = Role.Checkbox, onValueChange = { checked -> selected = if (checked) selected + destination.id else selected - destination.id }).padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).toggleable(value = destination.id in selected, enabled = pending == null, role = Role.Checkbox, onValueChange = { checked -> selected = if (checked) selected + destination.id else selected - destination.id })
+                    // The search field's 16dp text inset on both sides (the checkbox draws 2dp inside its own box).
+                    .padding(start = 16.dp, end = 14.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("${if (destination.direct) "" else "# "}${destination.name}", fontWeight = FontWeight.Bold)
                         Text(destination.spaceName, color = TextMuted, fontSize = 11.sp)

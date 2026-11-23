@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -283,72 +284,86 @@ import kotlinx.coroutines.delay
     }
 }
 
+/** "Join with invite link"'s state, kept by whichever dialog shows the form. */
+internal class JoinInviteState(opened: InviteLinkRequest?) {
+    var input by mutableStateOf(opened?.url.orEmpty())
+    var error by mutableStateOf<String?>(null)
+    var checking by mutableStateOf(false)
+    var code by mutableStateOf<String?>(null)
+    var preview by mutableStateOf<InvitePreview?>(null)
+    /** A previewed link is titled with its space, as on web's invite page. */
+    val title get() = preview?.space?.name ?: "Join with invite link"
+    fun submit(viewModel: CaperViewModel) {
+        val parsed = inviteCode(input)
+        if (parsed == null) { error = INVALID_INVITE_LINK; return }
+        error = null; checking = true
+        viewModel.previewInvite(parsed, { code = parsed; preview = it; checking = false }) { error = it; checking = false }
+    }
+}
+
 /**
  * "Join with invite link": a pasted link (any host), `caper.chat/invite/<code>` or a bare code,
  * previewed before joining. Joining opens the space at the link's channel. A link [opened] from
  * another app starts filled in and loads its preview at once, as if Continue was pressed.
  */
 @Composable internal fun JoinInviteDialog(busy: Boolean, viewModel: CaperViewModel, opened: InviteLinkRequest? = null, close: () -> Unit) {
-    var input by remember { mutableStateOf(opened?.url.orEmpty()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var checking by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf<String?>(null) }
-    var preview by remember { mutableStateOf<InvitePreview?>(null) }
-    fun submit() {
-        val parsed = inviteCode(input)
-        if (parsed == null) { error = INVALID_INVITE_LINK; return }
-        error = null; checking = true
-        viewModel.previewInvite(parsed, { code = parsed; preview = it; checking = false }) { error = it; checking = false }
-    }
-    LaunchedEffect(Unit) { if (opened != null) submit() }
-    // A previewed link is titled with its space, as on web's invite page.
-    CaperDialog(preview?.space?.name ?: "Join with invite link", close, busy = busy || checking) {
-        val shown = preview
-        val shownCode = code
-        if (shown == null || shownCode == null) {
-            val field = remember { FocusRequester() }
-            // An opened link is already loading; the keyboard would only cover its preview.
-            LaunchedEffect(Unit) { if (opened == null) runCatching { field.requestFocus() } }
-            Text("Paste it below to join!", color = TextMuted, fontSize = 12.sp)
-            OutlinedTextField(input, { input = it; error = null }, placeholder = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("it looks like", color = TextMuted.copy(alpha = 0.65f), fontSize = 12.sp)
-                    Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(12.dp), tint = TextMuted.copy(alpha = 0.65f))
-                    Text("caper.chat/invite/AbCdE12345", color = TextMuted.copy(alpha = 0.65f), fontSize = 12.sp, maxLines = 1)
-                }
-            },
-                modifier = Modifier.fillMaxWidth().focusRequester(field).semantics { contentDescription = "Invite link" }, singleLine = true, readOnly = checking,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(onGo = { if (!checking && input.isNotBlank()) submit() }))
-            error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(close, enabled = !checking, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
-                Button({ submit() }, enabled = !checking && input.isNotBlank(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Continue", "Checking…", checking) }
+    val join = remember { JoinInviteState(opened) }
+    LaunchedEffect(Unit) { if (opened != null) join.submit(viewModel) }
+    CaperDialog(join.title, close, busy = busy || join.checking) { JoinInviteContent(join, busy, viewModel, focus = opened == null, close) }
+}
+
+/** The form, then the previewed invite with Join; [CaperDialog]'s body, also shown in place of Create a space's. */
+@Composable internal fun ColumnScope.JoinInviteContent(join: JoinInviteState, busy: Boolean, viewModel: CaperViewModel, focus: Boolean, close: () -> Unit) {
+    val shown = join.preview
+    val shownCode = join.code
+    val checking = join.checking
+    if (shown == null || shownCode == null) {
+        val field = remember { FocusRequester() }
+        // An opened link is already loading; the keyboard would only cover its preview.
+        LaunchedEffect(Unit) { if (focus) runCatching { field.requestFocus() } }
+        // Continue waits for something the shared parser reads as an invite (shared/invites/invite-cases.json).
+        val valid = remember(join.input) { inviteCode(join.input) != null }
+        SelectionContainer { Text("Paste it below to join!", color = TextMuted, fontSize = 12.sp) }
+        OutlinedTextField(join.input, { join.input = it; join.error = null }, placeholder = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("it looks like", color = TextMuted.copy(alpha = 0.65f), fontSize = 12.sp)
+                Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(12.dp), tint = TextMuted.copy(alpha = 0.65f))
+                Text("caper.chat/invite/AbCdE12345", color = TextMuted.copy(alpha = 0.65f), fontSize = 12.sp, maxLines = 1)
             }
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(shown.inviter.displayName, 28.dp, avatarId = shown.inviter.avatarId,
-                    avatarAsset = shown.inviter.avatarAsset, avatarUrl = shown.inviter.avatarUrl)
-                Spacer(Modifier.width(10.dp))
-                val strong = SpanStyle(color = Text, fontWeight = FontWeight.Bold)
+        },
+            modifier = Modifier.fillMaxWidth().focusRequester(field).semantics { contentDescription = "Invite link" }, singleLine = true, readOnly = checking,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = { if (!checking && valid) join.submit(viewModel) }))
+        join.error?.let { SelectionContainer { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) } }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(close, enabled = !checking, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+            Button({ join.submit(viewModel) }, enabled = !checking && valid, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Continue", "Checking…", checking) }
+        }
+    } else {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Avatar(shown.inviter.displayName, 28.dp, avatarId = shown.inviter.avatarId,
+                avatarAsset = shown.inviter.avatarAsset, avatarUrl = shown.inviter.avatarUrl)
+            Spacer(Modifier.width(10.dp))
+            val strong = SpanStyle(color = Text, fontWeight = FontWeight.Bold)
+            SelectionContainer(Modifier.weight(1f, fill = false)) {
                 Text(buildAnnotatedString {
                     withStyle(strong) { append(shown.inviter.displayName) }
                     append(" invited you")
                     shown.channel?.let { append(" to "); withStyle(strong) { append("#${it.name}") } }
                     append(".")
-                }, Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 13.sp)
-                if (shown.inviter.admin) {
-                    Spacer(Modifier.width(6.dp))
-                    AdminBadge()
-                }
+                }, color = TextMuted, fontSize = 13.sp)
             }
-            Text(inviteMembersLine(shown.memberCount, shown.alreadyMember), color = TextMuted, fontSize = 12.sp)
-            error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
-                Button({ error = null; viewModel.joinInvite(shownCode, close) { error = it } }, enabled = !busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
-                    PendingLabel(if (shown.alreadyMember) "Open space" else "Join space", if (shown.alreadyMember) "Opening…" else "Joining…", busy)
-                }
+            if (shown.inviter.admin) {
+                Spacer(Modifier.width(6.dp))
+                AdminBadge()
+            }
+        }
+        SelectionContainer { Text(inviteMembersLine(shown.memberCount, shown.alreadyMember), color = TextMuted, fontSize = 12.sp) }
+        join.error?.let { SelectionContainer { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) } }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+            Button({ join.error = null; viewModel.joinInvite(shownCode, close) { join.error = it } }, enabled = !busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
+                PendingLabel(if (shown.alreadyMember) "Open space" else "Join space", if (shown.alreadyMember) "Opening…" else "Joining…", busy)
             }
         }
     }
