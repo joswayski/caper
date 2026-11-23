@@ -551,9 +551,12 @@ pub struct App {
     thread_box_p: Panel,
     drop_overlay: Option<drop_overlay::Open>,
     drop_p: Panel,
-    /// The caret stopped blinking while the window was minimized; it
-    /// resumes when the window is restored.
+    /// The caret stopped blinking: the window is minimized or lost the
+    /// keyboard, or input paused for the caret timeout. Input, focus or a
+    /// restore starts it again.
     caret_paused: bool,
+    /// The last key, click or focus, which the caret timeout counts from.
+    caret_input: Instant,
     quit: bool,
 }
 
@@ -911,6 +914,7 @@ impl App {
                 drop_overlay: None,
                 drop_p,
                 caret_paused: false,
+                caret_input: Instant::now(),
                 quit: false,
             })
         }
@@ -1881,6 +1885,68 @@ impl App {
         Some(&mut self.composer).filter(|c| c.focused)
     }
 
+    /// Redraws the panel holding the focused field, for its caret.
+    fn caret_dirty(&mut self) {
+        if self.dialog.is_some() || self.attachment_editor.is_some() {
+            self.dirty.overlay = true;
+        } else if self.signin.is_some() {
+            self.dirty.signin = true;
+        } else if self.profile.as_ref().is_some_and(|c| c.field.focused) {
+            self.dirty.profile = true;
+        } else if self.picker.as_ref().is_some_and(|p| p.search.focused) {
+            self.dirty.picker = true;
+        } else if self.gifs.as_ref().is_some_and(|p| p.search.focused) {
+            self.dirty.gifs = true;
+        } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
+            self.dirty.thread_box = true;
+        } else if self.member_search.as_ref().is_some_and(|s| s.field.focused) {
+            self.dirty.members = true;
+        } else {
+            self.dirty.composer = true;
+        }
+        self.need = true;
+    }
+
+    /// Blinks the focused field's caret. Like Windows' own edit controls,
+    /// it hides while the window is in the background or minimized, and
+    /// rests, shown, once input pauses for the system's caret timeout; the
+    /// timer stops either way until input, focus or a restore.
+    fn caret_tick(&mut self, focus_lost: bool) {
+        let away =
+            focus_lost || unsafe { IsIconic(self.hwnd).as_bool() || GetFocus() != self.hwnd };
+        let rested = caret_timeout().is_some_and(|t| self.caret_input.elapsed() >= t);
+        if away || rested {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_CARET);
+            }
+            self.caret_paused = true;
+        }
+        if let Some(f) = self.focused_field_mut() {
+            let on = if away { false } else { rested || !f.caret_on };
+            if f.caret_on != on {
+                f.caret_on = on;
+                self.caret_dirty();
+            }
+        }
+    }
+
+    /// After input or focus: the caret timeout starts over, and a paused
+    /// caret shows and blinks again.
+    fn resume_caret(&mut self) {
+        self.caret_input = Instant::now();
+        if !std::mem::take(&mut self.caret_paused) {
+            return;
+        }
+        let hwnd = self.hwnd;
+        if let Some(f) = self.focused_field_mut() {
+            f.caret_on = true;
+            unsafe {
+                SetTimer(Some(hwnd), TIMER_CARET, GetCaretBlinkTime(), None);
+            }
+            self.caret_dirty();
+        }
+    }
+
     /// After an edit or caret move in the focused field.
     fn field_changed(&mut self, text: bool) {
         if self.attachment_editor.is_some() {
@@ -2395,6 +2461,19 @@ impl App {
         {
             live.active();
         }
+        if matches!(
+            msg,
+            WM_KEYDOWN
+                | WM_SYSKEYDOWN
+                | WM_CHAR
+                | WM_LBUTTONDOWN
+                | WM_RBUTTONDOWN
+                | WM_MBUTTONDOWN
+                | WM_IME_COMPOSITION
+                | WM_SETFOCUS
+        ) {
+            self.resume_caret();
+        }
         if let Some(r) = self.autoscroll_input(msg, wp, x, y) {
             return Some(r);
         }
@@ -2538,14 +2617,8 @@ impl App {
             WM_SIZE => {
                 let (pw, ph) = ((lp.0 & 0xffff) as f32, ((lp.0 >> 16) & 0xffff) as f32);
                 self.resized(pw, ph);
-                if wp.0 != SIZE_MINIMIZED as usize && std::mem::take(&mut self.caret_paused) {
-                    let hwnd = self.hwnd;
-                    if let Some(f) = self.focused_field_mut() {
-                        f.caret_on = true;
-                        unsafe {
-                            SetTimer(Some(hwnd), TIMER_CARET, GetCaretBlinkTime(), None);
-                        }
-                    }
+                if wp.0 != SIZE_MINIMIZED as usize {
+                    self.resume_caret();
                 }
                 // Nothing was drawn while minimized; GIFs resume with this frame.
                 self.need = true;
@@ -2557,32 +2630,7 @@ impl App {
                     let _ = KillTimer(Some(self.hwnd), TIMER_LIVE);
                     let _ = PostMessageW(Some(self.hwnd), live::WM_LIVE, WPARAM(0), LPARAM(0));
                 },
-                // Nobody sees a minimized caret blink: stop until restored.
-                TIMER_CARET if unsafe { IsIconic(self.hwnd) }.as_bool() => unsafe {
-                    let _ = KillTimer(Some(self.hwnd), TIMER_CARET);
-                    self.caret_paused = true;
-                },
-                TIMER_CARET => {
-                    if let Some(f) = self.focused_field_mut() {
-                        f.caret_on = !f.caret_on;
-                    }
-                    if self.dialog.is_some() || self.attachment_editor.is_some() {
-                        self.dirty.overlay = true;
-                    } else if self.signin.is_some() {
-                        self.dirty.signin = true;
-                    } else if self.profile.as_ref().is_some_and(|c| c.field.focused) {
-                        self.dirty.profile = true;
-                    } else if self.gifs.as_ref().is_some_and(|p| p.search.focused) {
-                        self.dirty.gifs = true;
-                    } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
-                        self.dirty.thread_box = true;
-                    } else if self.member_search.as_ref().is_some_and(|s| s.field.focused) {
-                        self.dirty.members = true;
-                    } else {
-                        self.dirty.composer = true;
-                    }
-                    self.need = true;
-                }
+                TIMER_CARET => self.caret_tick(false),
                 TIMER_CARD => self.show_card(),
                 TIMER_ZOOM => {
                     unsafe {
@@ -2991,6 +3039,7 @@ impl App {
                 if let Some(f) = self.focused_field_mut() {
                     f.end();
                 }
+                self.caret_tick(true);
                 return None;
             }
             _ => return None,
@@ -4873,6 +4922,22 @@ impl App {
         self.bench.log_frame(started.elapsed());
         Ok(())
     }
+}
+
+/// How long a caret blinks after input before it rests: Windows' caret
+/// timeout (5 s unless changed). `None` blinks for as long as it has focus.
+fn caret_timeout() -> Option<std::time::Duration> {
+    let mut ms = 0u32;
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETCARETTIMEOUT,
+            0,
+            Some((&raw mut ms).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .ok()?;
+    (ms > 0).then(|| std::time::Duration::from_millis(ms.into()))
 }
 
 /// The composer's lip, `LIP_H` tall from `y` and `w` wide: black at 14%
