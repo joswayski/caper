@@ -808,40 +808,45 @@ fn bmp(dib: &[u8]) -> Option<Vec<u8>> {
 /// What a paste attaches: copied files, else a copied picture saved as a
 /// PNG the draft keeps (egui's "Pasted image.png"). Empty for text.
 pub(crate) fn clipboard_files(hwnd: HWND) -> Vec<(PathBuf, Option<Arc<Scratch>>)> {
-    unsafe {
+    // Only copies while the clipboard is open: other apps wait for it, so a
+    // large picture's PNG encoding happens after it closes.
+    let (files, png, dib) = unsafe {
         if OpenClipboard(Some(hwnd)).is_err() {
             return Vec::new();
         }
-        let files = if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_ok() {
-            GetClipboardData(CF_HDROP.0 as u32)
+        let copied = if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_ok() {
+            let files = GetClipboardData(CF_HDROP.0 as u32)
                 .map(|h| drop_files(HDROP(h.0)))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|p| (p, None))
-                .collect()
+                .unwrap_or_default();
+            (files, None, None)
         } else {
-            let png = RegisterClipboardFormatW(w!("PNG"));
-            let picture = clipboard_bytes(png).or_else(|| {
-                let image = image::load_from_memory_with_format(
-                    &bmp(&clipboard_bytes(CF_DIB.0 as u32)?)?,
-                    image::ImageFormat::Bmp,
-                )
-                .ok()?;
-                let mut out = std::io::Cursor::new(Vec::new());
-                image.write_to(&mut out, image::ImageFormat::Png).ok()?;
-                Some(out.into_inner())
-            });
-            picture
-                .and_then(|bytes| {
-                    let scratch = Arc::new(Scratch::new("png"));
-                    std::fs::write(scratch.path(), bytes).ok()?;
-                    Some(vec![(scratch.path().to_path_buf(), Some(scratch))])
-                })
-                .unwrap_or_default()
+            let png = clipboard_bytes(RegisterClipboardFormatW(w!("PNG")));
+            let dib = png
+                .is_none()
+                .then(|| clipboard_bytes(CF_DIB.0 as u32))
+                .flatten();
+            (Vec::new(), png, dib)
         };
         let _ = CloseClipboard();
-        files
+        copied
+    };
+    if !files.is_empty() {
+        return files.into_iter().map(|p| (p, None)).collect();
     }
+    let picture = png.or_else(|| {
+        let image =
+            image::load_from_memory_with_format(&bmp(&dib?)?, image::ImageFormat::Bmp).ok()?;
+        let mut out = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut out, image::ImageFormat::Png).ok()?;
+        Some(out.into_inner())
+    });
+    picture
+        .and_then(|bytes| {
+            let scratch = Arc::new(Scratch::new("png"));
+            std::fs::write(scratch.path(), bytes).ok()?;
+            Some(vec![(scratch.path().to_path_buf(), Some(scratch))])
+        })
+        .unwrap_or_default()
 }
 
 impl App {
