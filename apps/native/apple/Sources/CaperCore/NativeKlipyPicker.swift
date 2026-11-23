@@ -566,7 +566,7 @@ import WebKit
     private let isSticker: Bool
     private let picture: NativeKlipyImage
     private let borderLayer = CALayer()
-    private var hovered = false
+    private var pointerHovered = false
 
     init(item: KlipyResult, pick: @escaping () -> Void) {
         self.isSticker = item.gif.kind == .sticker
@@ -588,13 +588,13 @@ import WebKit
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func handleHover(_ gesture: UIHoverGestureRecognizer) {
         let next = gesture.state == .began || gesture.state == .changed
-        guard hovered != next else { return }
-        hovered = next; applyStyle()
+        guard pointerHovered != next else { return }
+        pointerHovered = next; applyStyle()
     }
     private func applyStyle() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        backgroundColor = isSticker ? (hovered ? UIColor(CaperTheme.raised).withAlphaComponent(0.55) : .clear) : UIColor(CaperTheme.raised)
-        if hovered {
+        backgroundColor = isSticker ? (pointerHovered ? UIColor(CaperTheme.raised).withAlphaComponent(0.55) : .clear) : UIColor(CaperTheme.raised)
+        if pointerHovered {
             borderLayer.borderColor = UIColor(CaperTheme.terracottaBright).cgColor
             borderLayer.borderWidth = 2
         } else if !isSticker {
