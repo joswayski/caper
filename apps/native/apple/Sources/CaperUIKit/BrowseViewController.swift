@@ -1196,6 +1196,9 @@ final class AccountPanelRow: UIControl {
         addSubview(stack)
         NSLayoutConstraint.activate([
             heightAnchor.constraint(greaterThanOrEqualToConstant: 36),
+            // Preferred 36pt, so the account bar keeps its height and the card
+            // above takes the rest; larger text still grows it.
+            heightAnchor.constraint(equalToConstant: 36).withPriority(.defaultHigh),
             icon.widthAnchor.constraint(equalToConstant: 24),
             count.heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
