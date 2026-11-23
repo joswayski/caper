@@ -22,7 +22,7 @@ import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
 import { ReplyDraft } from "./Replies.tsx";
 import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
-import { useTimelineMotion } from "./useTimelineMotion.ts";
+import { motionMs, useTimelineMotion } from "./useTimelineMotion.ts";
 import { useVoiceRecorder } from "./VoiceRecorder.tsx";
 
 const DEFAULT_WIDTH = 340;
@@ -143,7 +143,7 @@ export default function ThreadPanel({
     const style = getComputedStyle(element);
     const target = commit ? `${element.offsetWidth}px` : "0px";
     const animation = element.animate([{ translate: element.style.translate || "0px" }, { translate: target }], {
-      duration: parseFloat(style.getPropertyValue("--motion-fast")),
+      duration: motionMs(style, "--motion-fast", 140),
       easing: style.getPropertyValue("--ease-out").trim(),
     });
     element.style.translate = target;

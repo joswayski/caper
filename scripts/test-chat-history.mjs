@@ -312,7 +312,8 @@ function quietTimeline(layout) {
         left: input.left - composer.left, right: composer.right - input.right };
     })()`);
     assert.ok(spacing.above >= 12, `${layout}: keep breathing room above the input: ${JSON.stringify(spacing)}`);
-    assert.ok(spacing.below >= 16, `${layout}: keep the form inset from the panel bottom`);
+    // The shared --workspace-bottom-inset (14px) below the form.
+    assert.ok(spacing.below >= 14, `${layout}: keep the form inset from the panel bottom: ${JSON.stringify(spacing)}`);
     assert.ok(spacing.left >= 14 && spacing.right >= 14, `${layout}: keep both side insets`);
   };
   composerSpacing();
@@ -357,7 +358,12 @@ function quietTimeline(layout) {
   browser("fill", "#chat-message", "TEST FIXTURE draft");
   settle();
   const height = evaluate('document.querySelector("#chat-message").offsetHeight');
-  browser("fill", "#chat-message", "TEST FIXTURE taller draft\nSecond line\nThird line\nFourth line");
+  // The rich composer takes line breaks as Shift+Enter, not filled newlines.
+  browser("fill", "#chat-message", "TEST FIXTURE taller draft");
+  for (const line of ["Second line", "Third line", "Fourth line"]) {
+    browser("press", "Shift+Enter");
+    browser("keyboard", "type", line);
+  }
   settle();
   assert.ok(evaluate('document.querySelector("#chat-message").offsetHeight') > height);
   composerSpacing();
@@ -536,7 +542,11 @@ function reactionTimeline(layout) {
   evaluate('chatHistoryFixture.react("👍", false); chatHistoryFixture.holdReaction = true');
   wait(`!document.querySelector('${row} .chat-reaction')`);
   browser("click", `${row} .chat-message-actions-trigger`);
-  browser("find", "role", "button", "click", "--name", "React with 👍", "--exact");
+  // Touch sheets list quick reactions; pointer menus leave them on the row's toolbar.
+  const sheetReaction = '.chat-message-actions [aria-label="React with 👍"]';
+  const inSheet = evaluate(`!!document.querySelector('${sheetReaction}')`);
+  if (!inSheet) browser("press", "Escape");
+  browser("click", inSheet ? sheetReaction : `${row} .chat-quick-reaction[aria-label="React with 👍"]`);
   wait('typeof chatHistoryFixture.releaseReaction === "function"');
   settle();
   assert.ok(
@@ -627,10 +637,12 @@ try {
       browser("focus", ".chat-scroller");
       browser("press", "End");
       settle();
-      // The typing slot and composer have fixed insets outside the timeline.
+      // The typing slot and composer have fixed insets outside the timeline;
+      // only the list's fixed tail spacer may sit below the newest message.
       const gap = evaluate(`(() => {
         const last = [...document.querySelectorAll('.chat-scroller .chat-message')].at(-1);
-        return document.querySelector('.chat-scroller').getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
+        const tail = document.querySelector('.chat-scroller .chat-list-tail')?.getBoundingClientRect().height ?? 0;
+        return document.querySelector('.chat-scroller').getBoundingClientRect().bottom - last.getBoundingClientRect().bottom - tail;
       })()`);
       assert.ok(Math.abs(gap) < 1, `${layout} at ${resizedHeight}px: ${gap}px of empty space below newest message`);
     }

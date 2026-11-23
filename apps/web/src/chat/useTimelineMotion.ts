@@ -1,6 +1,15 @@
 import { useCallback, useLayoutEffect, useRef, type RefObject } from "react";
 import { ARRIVAL_MS } from "./arrivals.ts";
 
+/** A `--motion-*` token in milliseconds. Production CSS minification serializes
+ * `200ms` as `.2s`, so the unit must be read, not assumed. */
+export function motionMs(style: CSSStyleDeclaration, token: string, fallback: number): number {
+  const value = style.getPropertyValue(token).trim();
+  const amount = parseFloat(value);
+  if (!Number.isFinite(amount)) return fallback;
+  return value.endsWith("ms") ? amount : value.endsWith("s") ? amount * 1000 : fallback;
+}
+
 /** Keep live-end layout corrections instant, but carry the painted rows from
  * their previous positions. This also covers short, bottom-aligned histories,
  * where scrollTop never changes. User scrolling and history loads stay instant.
@@ -19,7 +28,7 @@ export function useTimelineMotion(
     if (!scroller || !live) return;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)");
     const tokens = getComputedStyle(scroller);
-    const duration = parseFloat(tokens.getPropertyValue("--motion-base")) || 200;
+    const duration = motionMs(tokens, "--motion-base", 200);
     const easing = tokens.getPropertyValue("--ease-out").trim() || "cubic-bezier(0.16, 1, 0.3, 1)";
     let positions = new Map<string, number>();
     const seen = new Set<string>();

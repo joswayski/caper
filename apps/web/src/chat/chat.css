@@ -148,9 +148,10 @@
   gap: 16px;
   height: var(--chat-header-height);
   padding: 8px 18px;
+  /* No backdrop-filter: the timeline sits below the header, never behind it,
+     so a blur would change no pixels. It would cost a compositing layer and
+     trap the title menu and alerts beneath the timeline in its stacking context. */
   background: var(--header-glass-bg);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  backdrop-filter: blur(18px) saturate(150%);
   border-bottom: 1px solid var(--border-subtle);
 }
 .chat-heading h2 {
@@ -5082,9 +5083,8 @@ a.chat-draft-preview {
   gap: 10px;
   height: var(--chat-header-height);
   padding: 8px 18px;
+  /* As .chat-heading: nothing scrolls behind it, so no backdrop-filter. */
   background: var(--header-glass-bg);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  backdrop-filter: blur(18px) saturate(150%);
   border-bottom: 1px solid var(--border-subtle);
 }
 .chat-thread-heading > div {

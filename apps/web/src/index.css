@@ -30,6 +30,13 @@
   --radius-control: var(--radius);
 }
 
+/* Tailwind's theme layer outranks design.css's base layer, so its default
+   --ease-out would replace Caper's decelerating curve everywhere. No utility
+   uses Tailwind's easing scale. */
+@theme {
+  --ease-*: initial;
+}
+
 @layer base {
   html {
     /* Keep centered headers still when moving between scrollable home and fitted Spaces. */
