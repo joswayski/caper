@@ -94,7 +94,11 @@ fn compared(
         label: Some(version_label(if side == 0 { before } else { after })),
         text,
         marks,
-        tone: if side == 0 { TERRACOTTA } else { CAPER },
+        tone: if side == 0 {
+            crate::theme::terracotta()
+        } else {
+            crate::theme::caper()
+        },
     }
 }
 
@@ -165,7 +169,7 @@ impl Dialog {
             label: None,
             text: v.content.text.clone(),
             marks: Vec::new(),
-            tone: TEXT,
+            tone: crate::theme::text(),
         };
         match k {
             0 | 1 if list.len() > 1 => Some(compared(&list[1], &list[0], k, true)),
@@ -368,13 +372,16 @@ impl Dialog {
                 Part::Version(k) => {
                     let selected = self.version_selected(*k);
                     let (fill, border) = if selected {
-                        (0x39231E, TERRACOTTA)
+                        (crate::theme::accent_surface(), crate::theme::terracotta())
                     } else if self.pressed == Some(*part) && self.hover == Some(*part) {
-                        (0x39231E, TERRACOTTA_BRIGHT)
+                        (
+                            crate::theme::accent_surface(),
+                            crate::theme::terracotta_bright(),
+                        )
                     } else if self.hover == Some(*part) {
-                        (BORDER, TEXT_MUTED)
+                        (crate::theme::border(), crate::theme::text_muted())
                     } else {
-                        (SURFACE_RAISED, BORDER)
+                        (crate::theme::surface_raised(), crate::theme::border())
                     };
                     let body = rect(x, y, x + w, y + h);
                     fill_round(dc, body, 7.0, &g.solid(fill));
@@ -436,7 +443,7 @@ fn draw_column(g: &Gfx, dc: &ID2D1DeviceContext, c: &Column, x: f32, y: f32, w: 
     ty += 4.0;
     let bh = height(text) + 2.0 * BOX_PAD;
     let body = rect(x, ty, x + w, ty + bh);
-    fill_round(dc, body, RADIUS, &g.solid(SURFACE_RAISED));
+    fill_round(dc, body, RADIUS, &g.solid(crate::theme::surface_raised()));
     stroke_round(dc, body, RADIUS, &g.brushes.border);
     let (ox, oy) = (x + BOX_PAD, ty + BOX_PAD);
     if !c.marks.is_empty() {

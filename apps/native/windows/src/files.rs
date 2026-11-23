@@ -466,7 +466,7 @@ fn badge(g: &Gfx, dc: &ID2D1DeviceContext, b: D2D_RECT_F) -> Result<()> {
         dc,
         Icon::EyeOff,
         rect(cx - 33.0, y - 7.0, cx - 19.0, y + 7.0),
-        TEXT,
+        crate::theme::text(),
         1.0,
     );
     let l = line(g, "Spoiler", &g.formats.file_name, 1e6)?;
@@ -508,7 +508,7 @@ fn hide_button(g: &Gfx, dc: &ID2D1DeviceContext, bounds: D2D_RECT_F) -> Result<(
         dc,
         Icon::EyeOff,
         rect(x, cy - 7.0, x + 14.0, cy + 7.0),
-        TEXT,
+        crate::theme::text(),
         1.0,
     );
     crate::text::draw(
@@ -690,7 +690,7 @@ fn tile(
                 dc,
                 Icon::Play,
                 rect(cx - 8.5, cy - 10.0, cx + 11.5, cy + 10.0),
-                TEXT,
+                crate::theme::text(),
                 1.0,
             );
         }
@@ -796,7 +796,11 @@ fn card(
             dc,
             Icon::FileText,
             rect(r.left + 13.0, r.top + 16.0, r.left + 33.0, r.top + 36.0),
-            if failed { ERROR } else { TEXT_MUTED },
+            if failed {
+                crate::theme::error()
+            } else {
+                crate::theme::text_muted()
+            },
             1.0,
         );
     }

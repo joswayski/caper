@@ -12,7 +12,6 @@
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::overlay::Rect;
-use crate::theme::*;
 use crate::{App, EV_SCREEN};
 use caper_client::uploads::{Body, Prepared};
 use caper_client::voice_note::{self, LiveMeter, Recorder, RecorderEvent};
@@ -123,7 +122,8 @@ pub(crate) fn live_levels(
         let t = ((v - e0) / (e1 - e0)).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     };
-    let brush = unsafe { dc.CreateSolidColorBrush(&gfx::color(TEXT_MUTED, 1.0), None)? };
+    let brush =
+        unsafe { dc.CreateSolidColorBrush(&gfx::color(crate::theme::text_muted(), 1.0), None)? };
     unsafe { dc.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED) };
     let mid = r.top + height / 2.0;
     for (age, level) in std::iter::once(&pending)
@@ -633,7 +633,7 @@ impl App {
         };
         unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
         let body = rect(0.5, 0.5, bw - 0.5, BAR_H - 0.5);
-        fill_round(dc, body, 8.0, &g.solid(SURFACE_COMPOSER));
+        fill_round(dc, body, 8.0, &g.solid(crate::theme::surface_composer()));
         stroke_round(dc, body, 8.0, &g.brushes.border);
         let parts = self.rec_layout(bw);
         let at = |p: RPart| parts.iter().find(|(q, _)| *q == p).map(|(_, r)| *r);
@@ -658,9 +658,9 @@ impl App {
                         Icon::Trash,
                         rect(d.left + 5.0, d.top + 5.0, d.right - 5.0, d.bottom - 5.0),
                         if self.rec_hover == Some(RPart::Discard) {
-                            TEXT
+                            crate::theme::text()
                         } else {
-                            TEXT_MUTED
+                            crate::theme::text_muted()
                         },
                         1.0,
                     );
@@ -671,7 +671,11 @@ impl App {
                     radiusX: 4.5,
                     radiusY: 4.5,
                 };
-                let color = if live { TERRACOTTA_BRIGHT } else { TEXT_MUTED };
+                let color = if live {
+                    crate::theme::terracotta_bright()
+                } else {
+                    crate::theme::text_muted()
+                };
                 unsafe { dc.FillEllipse(&dot, &g.solid(color)) };
                 let timer = voice_note::duration_label(r.elapsed().as_millis() as u64);
                 let t = g.layout(&gfx::wide(&timer), &g.formats.menu_title, 1e6)?;
@@ -723,9 +727,9 @@ impl App {
                     let s = state(RPart::Done);
                     if s > 0 {
                         let fill = if s == 2 {
-                            TERRACOTTA
+                            crate::theme::terracotta()
                         } else {
-                            TERRACOTTA_BRIGHT
+                            crate::theme::terracotta_bright()
                         };
                         fill_round(dc, d, 8.0, &g.solid(fill));
                     }
@@ -734,7 +738,11 @@ impl App {
                         dc,
                         Icon::Check,
                         rect(d.left + k, d.top + k, d.right - k, d.bottom - k),
-                        TEXT,
+                        if s > 0 {
+                            0xFFFFFF
+                        } else {
+                            crate::theme::text()
+                        },
                         if s > 0 { 1.0 } else { 0.5 },
                     );
                 }

@@ -376,7 +376,11 @@ pub fn draw(g: &Gfx, dc: &ID2D1DeviceContext, a: &App, x0: f32) -> Result<()> {
             dc,
             Icon::Search,
             icon,
-            if lit { TEXT } else { TEXT_MUTED },
+            if lit {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
             1.0,
         );
     }
@@ -417,7 +421,11 @@ pub fn draw(g: &Gfx, dc: &ID2D1DeviceContext, a: &App, x0: f32) -> Result<()> {
             dc,
             Icon::Close,
             icon,
-            if lit { TEXT } else { TEXT_MUTED },
+            if lit {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
             1.0,
         );
     }

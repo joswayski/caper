@@ -4,7 +4,6 @@
 //! with the API's resend limits and attempt counts.
 use crate::composer::Composer;
 use crate::gfx::{Gfx, fill_round, rect, stroke_round, wide};
-use crate::theme::*;
 use caper_client::sign_in::{MAX_RESENDS, clean_sign_in_code, resend_countdown, resend_wait};
 use std::time::{Duration, Instant};
 use windows::Win32::Graphics::Direct2D::Common::*;
@@ -113,6 +112,10 @@ impl SignIn {
             failure: None,
             wordmark: None,
         }
+    }
+
+    pub fn clear_wordmark(&mut self) {
+        self.wordmark = None;
     }
 
     pub fn field(&self) -> &Composer {
@@ -365,7 +368,7 @@ impl SignIn {
     /// hit rectangles.
     pub fn draw(&mut self, g: &Gfx, dc: &ID2D1DeviceContext, w: f32, h: f32) -> Result<()> {
         unsafe {
-            dc.Clear(Some(&crate::gfx::color(BLACKOUT, 1.0)));
+            dc.Clear(Some(&crate::gfx::color(crate::theme::blackout(), 1.0)));
         }
         if self.wordmark.is_none() {
             self.wordmark = Some(g.wordmark(WORDMARK.0, WORDMARK.1)?);
@@ -570,9 +573,9 @@ impl SignIn {
         let focused = self.field().focused;
         let hovered = self.hover == Some(Part::Field);
         let stroke = if focused {
-            g.solid(TERRACOTTA)
+            g.solid(crate::theme::terracotta())
         } else if hovered && enabled {
-            g.solid(TERRACOTTA_BRIGHT)
+            g.solid(crate::theme::terracotta_bright())
         } else {
             g.brushes.border.clone()
         };
@@ -640,14 +643,15 @@ impl SignIn {
     }
 
     fn draw_action(&self, g: &Gfx, dc: &ID2D1DeviceContext, r: Rect, enabled: bool) -> Result<()> {
+        let p = crate::theme::palette();
         let (fill, border, label) = if !enabled {
-            (SURFACE_RAISED, BORDER, TEXT_MUTED)
+            (p.surface_raised, p.border, p.text_muted)
         } else if self.pressed == Some(Part::Primary) && self.hover == Some(Part::Primary) {
-            (ACTION_PRESS, ACTION_PRESS, BLACKOUT)
+            (p.action_press, p.action_press, p.on_action)
         } else if self.hover == Some(Part::Primary) {
-            (ACTION_HOVER, ACTION_HOVER, BLACKOUT)
+            (p.action_hover, p.action_hover, p.on_action)
         } else {
-            (ACTION, ACTION, BLACKOUT)
+            (p.action, p.action, p.on_action)
         };
         let (x, y, w, h) = r;
         let label_brush = g.solid(label);
@@ -680,7 +684,9 @@ impl SignIn {
         part: Part,
     ) -> Result<()> {
         let brush = if !enabled {
-            unsafe { dc.CreateSolidColorBrush(&crate::gfx::color(TEXT_MUTED, 0.5), None)? }
+            unsafe {
+                dc.CreateSolidColorBrush(&crate::gfx::color(crate::theme::text_muted(), 0.5), None)?
+            }
         } else if self.hover == Some(part) {
             g.brushes.text.clone()
         } else {

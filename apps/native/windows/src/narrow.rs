@@ -529,7 +529,7 @@ impl App {
                 x + 32.0,
                 y + (h + 20.0) / 2.0,
             ),
-            TEXT,
+            crate::theme::text(),
             if self.narrow_enabled(p) { 1.0 } else { 0.4 },
         );
         if let Some(label) = label {
@@ -606,7 +606,7 @@ impl App {
                 dc,
                 Icon::ChevronDown,
                 rect(x + w - 28.0, y + 14.0, x + w - 12.0, y + 30.0),
-                TEXT_MUTED,
+                crate::theme::text_muted(),
                 1.0,
             );
         }
@@ -636,7 +636,7 @@ impl App {
                 unsafe {
                     dc.FillRectangle(
                         &rect(0.0, HEADER_H, self.w, HEADER_H + STRIP_H),
-                        &self.g.solid(0x19201B),
+                        &self.g.solid(crate::theme::accent_surface()),
                     );
                 }
                 let (label, detail, icon) = match self.voice_card() {
@@ -661,7 +661,7 @@ impl App {
                     dc,
                     Icon::AudioLines,
                     rect(12.0, HEADER_H + 18.0, 32.0, HEADER_H + 38.0),
-                    TEXT_MUTED,
+                    crate::theme::text_muted(),
                     1.0,
                 );
                 self.narrow_label(
@@ -723,7 +723,7 @@ impl App {
                 if calling {
                     self.narrow_button(dc, Part::VoiceAction, icon, None)?;
                 } else if let Some((x, y, w, h)) = self.narrow_rect(Part::VoiceAction) {
-                    let action = self.g.solid(ACTION);
+                    let action = self.g.solid(crate::theme::action());
                     fill_round(
                         dc,
                         rect(x, y, x + w, y + h),
@@ -742,7 +742,7 @@ impl App {
                         &l,
                         x + (w - gfx::metrics(&l).width) / 2.0,
                         y + (h - gfx::metrics(&l).height) / 2.0,
-                        &self.g.brushes.blackout,
+                        &self.g.brushes.on_action,
                     );
                     if self.narrow.focus == Some(Part::VoiceAction) {
                         stroke_round(

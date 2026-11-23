@@ -8,7 +8,6 @@ use crate::composer::LINE;
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::overlay::{CARD_PAD, Dialog, Kind, Part};
-use crate::theme::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::Result;
@@ -203,16 +202,20 @@ impl Dialog {
                         dc,
                         Icon::Close,
                         rect(x + 8.0, y + 8.0, x + w - 8.0, y + h - 8.0),
-                        if lit { TEXT } else { TEXT_MUTED },
+                        if lit {
+                            crate::theme::text()
+                        } else {
+                            crate::theme::text_muted()
+                        },
                         1.0,
                     );
                 }
                 Part::Field => {
                     let body = rect(x, y, x + w, y + h);
                     let stroke = if self.field.focused {
-                        g.solid(TERRACOTTA)
+                        g.solid(crate::theme::terracotta())
                     } else if self.hover == Some(Part::Field) {
-                        g.solid(TERRACOTTA_BRIGHT)
+                        g.solid(crate::theme::terracotta_bright())
                     } else {
                         g.brushes.border.clone()
                     };
@@ -302,7 +305,11 @@ impl Dialog {
                     dc,
                     Icon::Settings,
                     rect(mx + 8.0, my + 8.0, mx + mw - 8.0, my + mh - 8.0),
-                    if lit { TEXT } else { TEXT_MUTED },
+                    if lit {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    },
                     1.0,
                 );
             }

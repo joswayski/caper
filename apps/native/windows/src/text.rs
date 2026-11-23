@@ -257,7 +257,7 @@ unsafe fn draw_color_run(dc: &ID2D1DeviceContext, x: f32, y: f32, run: &DWRITE_G
                 }
                 .cast::<ID2D1DeviceContext7>()?;
                 let brush =
-                    unsafe { rdc.CreateSolidColorBrush(&color(crate::theme::TEXT, 1.0), None)? };
+                    unsafe { rdc.CreateSolidColorBrush(&color(crate::theme::text(), 1.0), None)? };
                 Ok(ColorGlyphs {
                     dc: rdc,
                     brush,

@@ -167,11 +167,11 @@ pub fn draw_bar(g: &Gfx, dc: &ID2D1DeviceContext, key: &BarKey, x: f32, y: f32) 
                     }
                 }
                 let (color, alpha) = if !t.enabled {
-                    (TEXT_MUTED, 0.5)
+                    (crate::theme::text_muted(), 0.5)
                 } else if open || hovered {
-                    (TEXT, 1.0)
+                    (crate::theme::text(), 1.0)
                 } else {
-                    (TEXT_MUTED, 1.0)
+                    (crate::theme::text_muted(), 1.0)
                 };
                 let i = rect(r.left + 5.0, r.top + 5.0, r.right - 5.0, r.bottom - 5.0);
                 icons::draw(dc, tool.icon(), i, color, alpha);
@@ -381,7 +381,11 @@ impl Picker {
                 dc,
                 Icon::Close,
                 rect(cx + 5.0, cy + 5.0, cx + cw - 5.0, cy + ch - 5.0),
-                if close_hover { TEXT } else { TEXT_MUTED },
+                if close_hover {
+                    crate::theme::text()
+                } else {
+                    crate::theme::text_muted()
+                },
                 1.0,
             );
             for (k, (_, _, icon)) in CATEGORIES.iter().enumerate() {
@@ -537,7 +541,7 @@ impl ReplyBar {
             dc,
             rect(x + 3.0, y + 1.0, x + w - 1.0, y + h - 1.0),
             7.0,
-            &g.solid(0x20282A),
+            &g.solid(crate::theme::surface_raised()),
         );
         crate::text::draw(dc, &self.name, x + 10.0, y + 8.0, &g.brushes.muted);
         if let Some(t) = &self.text {
@@ -557,7 +561,11 @@ impl ReplyBar {
             dc,
             Icon::Close,
             rect(cx + 14.0, cy + 14.0, cx + 30.0, cy + 30.0),
-            if self.cancel_hover { TEXT } else { TEXT_MUTED },
+            if self.cancel_hover {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
             1.0,
         );
     }

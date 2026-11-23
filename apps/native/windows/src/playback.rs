@@ -9,7 +9,6 @@
 use crate::files::File;
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
-use crate::theme::*;
 use crate::{App, EV_ROWS};
 use caper_client::media_proxy::MediaProxy;
 use caper_client::model::{Attachment, AttachmentStatus, TranscriptView};
@@ -233,7 +232,7 @@ pub fn draw(
         radiusX: 16.0,
         radiusY: 16.0,
     };
-    unsafe { dc.FillEllipse(&disc, &g.solid(ACTION)) };
+    unsafe { dc.FillEllipse(&disc, &g.solid(crate::theme::action())) };
     let nudge = if playing { 0.0 } else { 1.0 };
     icons::draw(
         dc,
@@ -244,7 +243,7 @@ pub fn draw(
             play.right - 9.0 + nudge,
             play.bottom - 9.0,
         ),
-        BLACKOUT,
+        crate::theme::on_action(),
         1.0,
     );
     // Idle shows the length; started, what remains.
@@ -338,7 +337,8 @@ pub fn waveform(
     let count = (((width + WAVE_PITCH - WAVE_BAR) / WAVE_PITCH).floor() as usize).max(1);
     let levels = voice_note::bars(peaks, count);
     let split = r.left + width * played.clamp(0.0, 1.0);
-    let rest = unsafe { dc.CreateSolidColorBrush(&gfx::color(TEXT_MUTED, 0.45), None)? };
+    let rest =
+        unsafe { dc.CreateSolidColorBrush(&gfx::color(crate::theme::text_muted(), 0.45), None)? };
     for (k, level) in levels.iter().enumerate() {
         let x = r.left + k as f32 * WAVE_PITCH;
         // Never shorter than its own width: silence reads as dots.

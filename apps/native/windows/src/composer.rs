@@ -1127,19 +1127,32 @@ impl Composer {
         placeholder: &str,
     ) -> Result<()> {
         unsafe {
-            dc.Clear(Some(&gfx::color(crate::theme::SURFACE_CONVERSATION, 1.0)));
-            // Recessed dark outer trough + top-lit inner composer surface.
+            let light = crate::theme::is_light();
+            dc.Clear(Some(&gfx::color(crate::theme::surface_conversation(), 1.0)));
+            // Recessed outer trough + top-lit inner composer surface.
             let outer_r = rect(0.5, 0.5, w - 0.5, h - 0.5);
             let inner_r = rect(4.5, 4.5, w - 4.5, h - 4.5);
             let inner_radius = 20.0_f32.min((h - 9.0) * 0.5).max(crate::theme::RADIUS);
             let outer_radius = inner_radius + 4.0;
-            let outer_fill = dc.CreateSolidColorBrush(&gfx::color(0x000000, 0.42), None)?;
+            let outer_fill = if light {
+                dc.CreateSolidColorBrush(&gfx::color(0x0F172A, 0.045), None)?
+            } else {
+                dc.CreateSolidColorBrush(&gfx::color(0x000000, 0.42), None)?
+            };
             fill_round(dc, outer_r, outer_radius, &outer_fill);
-            let outer_border = dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.055), None)?;
+            let outer_border = if light {
+                dc.CreateSolidColorBrush(&gfx::color(0x0F172A, 0.08), None)?
+            } else {
+                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.055), None)?
+            };
             crate::gfx::stroke_round(dc, outer_r, outer_radius, &outer_border);
 
             fill_round(dc, inner_r, inner_radius, &g.brushes.composer);
-            let top_rim = dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.08), None)?;
+            let top_rim = if light {
+                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.9), None)?
+            } else {
+                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.08), None)?
+            };
             crate::gfx::stroke_round(
                 dc,
                 rect(
@@ -1152,7 +1165,12 @@ impl Composer {
                 &top_rim,
             );
             let inner_border = if self.focused {
-                dc.CreateSolidColorBrush(&gfx::color(crate::theme::TERRACOTTA_BRIGHT, 0.58), None)?
+                dc.CreateSolidColorBrush(
+                    &gfx::color(crate::theme::terracotta_bright(), 0.58),
+                    None,
+                )?
+            } else if light {
+                dc.CreateSolidColorBrush(&gfx::color(0x0F172A, 0.1), None)?
             } else {
                 dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.075), None)?
             };
@@ -1188,9 +1206,9 @@ impl Composer {
                         style.icon(),
                         rect(x + inset, y + inset, x + w - inset, y + h - inset),
                         if pressed {
-                            crate::theme::TEXT
+                            crate::theme::text()
                         } else {
-                            crate::theme::TEXT_MUTED
+                            crate::theme::text_muted()
                         },
                         1.0,
                     );

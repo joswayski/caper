@@ -129,7 +129,7 @@ pub fn draw(
             );
         }
     }
-    let shade = files::alpha(dc, BLACKOUT, 0.88)?;
+    let shade = files::alpha(dc, 0x090A0C, 0.88)?;
     gfx::fill_round(
         dc,
         rect(r.left, r.bottom - 48.0, r.right, r.bottom),
@@ -154,7 +154,7 @@ pub fn draw(
                     dc,
                     icon,
                     rect(x + 6.0, y + 6.0, x + w - 6.0, y + h - 6.0),
-                    TEXT,
+                    0xFFFFFF,
                     1.0,
                 );
             }

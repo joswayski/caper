@@ -56,6 +56,8 @@ pub struct Brushes {
     pub selection: ID2D1SolidColorBrush,
     pub eggshell: ID2D1SolidColorBrush,
     pub blackout: ID2D1SolidColorBrush,
+    /// Label/icon ink on `eggshell` primary actions (`action.onPrimary`).
+    pub on_action: ID2D1SolidColorBrush,
     /// Field placeholders: muted text at 65%.
     pub hint: ID2D1SolidColorBrush,
     pub error: ID2D1SolidColorBrush,
@@ -220,35 +222,37 @@ impl Gfx {
             let fonts = dwrite.CreateFontCollectionFromFontSet(&builder.CreateFontSet()?)?;
             let wic: IWICImagingFactory =
                 CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+            let p = theme::palette();
             let brush = |c: u32, a: f32| dc.CreateSolidColorBrush(&color(c, a), None);
             let brushes = Brushes {
-                text: brush(theme::TEXT, 1.0)?,
-                muted: brush(theme::TEXT_MUTED, 1.0)?,
-                border: brush(theme::BORDER, 1.0)?,
-                raised: brush(theme::SURFACE_RAISED, 1.0)?,
-                composer: brush(theme::SURFACE_COMPOSER, 1.0)?,
-                hover: brush(theme::HOVER.0, theme::HOVER.1)?,
-                terracotta: brush(theme::TERRACOTTA, 1.0)?,
-                selected: brush(theme::TERRACOTTA, 0.3)?,
-                focused: brush(theme::TERRACOTTA, 35.0 / 255.0)?,
-                mention: brush(theme::TERRACOTTA, 0.24)?,
-                caper: brush(theme::CAPER, 1.0)?,
-                link: brush(theme::LINK, 1.0)?,
-                link_bg: brush(theme::LINK, 0.1)?,
+                text: brush(p.text, 1.0)?,
+                muted: brush(p.text_muted, 1.0)?,
+                border: brush(p.border, 1.0)?,
+                raised: brush(p.surface_raised, 1.0)?,
+                composer: brush(p.surface_composer, 1.0)?,
+                hover: brush(p.hover.0, p.hover.1)?,
+                terracotta: brush(p.terracotta, 1.0)?,
+                selected: brush(p.terracotta, 0.3)?,
+                focused: brush(p.terracotta, 35.0 / 255.0)?,
+                mention: brush(p.terracotta, 0.24)?,
+                caper: brush(p.caper, 1.0)?,
+                link: brush(p.link, 1.0)?,
+                link_bg: brush(p.link, 0.1)?,
                 selection: brush(theme::SELECTION.0, theme::SELECTION.1)?,
-                eggshell: brush(theme::ACTION, 1.0)?,
-                blackout: brush(theme::BLACKOUT, 1.0)?,
-                hint: brush(theme::TEXT_MUTED, 0.65)?,
-                error: brush(theme::ERROR, 1.0)?,
-                pressed: brush(theme::ACCENT_SURFACE, 1.0)?,
-                own: brush(theme::ACCENT_SOFT_TEXT, 1.0)?,
-                surface: brush(theme::SURFACE, 1.0)?,
-                border_soft: brush(theme::BORDER, 0.7)?,
-                quote_wash: brush(theme::TEXT, 0.07)?,
-                quote_edge: brush(theme::TEXT, 0.18)?,
-                terracotta_bright: brush(theme::TERRACOTTA_BRIGHT, 1.0)?,
+                eggshell: brush(p.action, 1.0)?,
+                blackout: brush(p.blackout, 1.0)?,
+                on_action: brush(p.on_action, 1.0)?,
+                hint: brush(p.text_muted, 0.65)?,
+                error: brush(p.error, 1.0)?,
+                pressed: brush(p.accent_surface, 1.0)?,
+                own: brush(p.accent_soft_text, 1.0)?,
+                surface: brush(p.surface, 1.0)?,
+                border_soft: brush(p.border, 0.7)?,
+                quote_wash: brush(p.text, 0.07)?,
+                quote_edge: brush(p.text, 0.18)?,
+                terracotta_bright: brush(p.terracotta_bright, 1.0)?,
                 hidden: {
-                    let b = brush(theme::TEXT, 1.0)?;
+                    let b = brush(p.text, 1.0)?;
                     b.SetOpacity(0.0);
                     b
                 },
@@ -421,8 +425,17 @@ impl Gfx {
 
     /// The wordmark as an SVG document scaled to `w`×`h` DIPs.
     pub fn wordmark(&self, w: f32, h: f32) -> Result<ID2D1SvgDocument> {
+        let bytes: std::borrow::Cow<'_, [u8]> = if theme::is_light() {
+            std::borrow::Cow::Owned(
+                String::from_utf8_lossy(WORDMARK)
+                    .replace("#f3f4f5", "#111217")
+                    .into_bytes(),
+            )
+        } else {
+            std::borrow::Cow::Borrowed(WORDMARK)
+        };
         unsafe {
-            let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(WORDMARK))
+            let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(&bytes))
                 .ok_or_else(|| Error::from(E_OUTOFMEMORY))?;
             let dc: ID2D1DeviceContext5 = self.dc.cast()?;
             dc.CreateSvgDocument(
@@ -433,6 +446,49 @@ impl Gfx {
                 },
             )
         }
+    }
+
+    /// Recolors every shared brush in place for the active `theme::palette()`,
+    /// so existing DirectWrite layouts holding these brushes update immediately.
+    pub fn apply_theme(&self) {
+        let p = theme::palette();
+        unsafe {
+            let set = |b: &ID2D1SolidColorBrush, c: u32, a: f32| {
+                b.SetColor(&color(c, a));
+            };
+            set(&self.brushes.text, p.text, 1.0);
+            set(&self.brushes.muted, p.text_muted, 1.0);
+            set(&self.brushes.border, p.border, 1.0);
+            set(&self.brushes.raised, p.surface_raised, 1.0);
+            set(&self.brushes.composer, p.surface_composer, 1.0);
+            set(&self.brushes.hover, p.hover.0, p.hover.1);
+            set(&self.brushes.terracotta, p.terracotta, 1.0);
+            set(&self.brushes.selected, p.terracotta, 0.3);
+            set(&self.brushes.focused, p.terracotta, 35.0 / 255.0);
+            set(&self.brushes.mention, p.terracotta, 0.24);
+            set(&self.brushes.caper, p.caper, 1.0);
+            set(&self.brushes.link, p.link, 1.0);
+            set(&self.brushes.link_bg, p.link, 0.1);
+            set(
+                &self.brushes.selection,
+                theme::SELECTION.0,
+                theme::SELECTION.1,
+            );
+            set(&self.brushes.eggshell, p.action, 1.0);
+            set(&self.brushes.blackout, p.blackout, 1.0);
+            set(&self.brushes.on_action, p.on_action, 1.0);
+            set(&self.brushes.hint, p.text_muted, 0.65);
+            set(&self.brushes.error, p.error, 1.0);
+            set(&self.brushes.pressed, p.accent_surface, 1.0);
+            set(&self.brushes.own, p.accent_soft_text, 1.0);
+            set(&self.brushes.surface, p.surface, 1.0);
+            set(&self.brushes.border_soft, p.border, 0.7);
+            set(&self.brushes.quote_wash, p.text, 0.07);
+            set(&self.brushes.quote_edge, p.text, 0.18);
+            set(&self.brushes.terracotta_bright, p.terracotta_bright, 1.0);
+            set(&self.brushes.hidden, p.text, 1.0);
+        }
+        self.solids.borrow_mut().clear();
     }
 
     /// An opaque brush of colour c, created once.

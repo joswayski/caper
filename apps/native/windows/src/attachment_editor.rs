@@ -587,7 +587,7 @@ impl Editor {
 
     pub fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, w: f32) -> Result<()> {
         unsafe {
-            dc.Clear(Some(&gfx::color(crate::theme::BLACKOUT, 1.0)));
+            dc.Clear(Some(&gfx::color(crate::theme::blackout(), 1.0)));
         }
         for (p, r) in &self.controls {
             if *p == Part::Canvas {
@@ -669,7 +669,7 @@ impl Editor {
                 );
             }
             let brush = if *p == Part::Done && self.enabled(*p) {
-                &g.brushes.blackout
+                &g.brushes.on_action
             } else if passive || self.enabled(*p) {
                 &g.brushes.text
             } else {

@@ -6,7 +6,6 @@ use crate::composer::Composer;
 use crate::gfx::{self, Gfx, rect};
 use crate::icons::{self, Icon};
 use crate::overlay::{DIRECT_FIELD_H, Dialog, FIELD_PAD_X, Kind, Part, Rect};
-use crate::theme::*;
 use caper_client::names;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::core::Result;
@@ -151,7 +150,7 @@ impl Dialog {
             dc,
             if self.private { Icon::Lock } else { Icon::Hash },
             rect(l, t, l + 16.0, t + 16.0),
-            TEXT_MUTED,
+            crate::theme::text_muted(),
             1.0,
         );
     }
@@ -183,7 +182,7 @@ impl Dialog {
                     dc,
                     Icon::Lock,
                     rect(x, cy - 8.0, x + 16.0, cy + 8.0),
-                    TEXT_MUTED,
+                    crate::theme::text_muted(),
                     1.0,
                 );
                 let l = g.layout(&gfx::wide("Private channel"), &g.formats.dialog_note, w)?;

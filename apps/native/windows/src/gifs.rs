@@ -433,7 +433,11 @@ impl Picker {
                 dc,
                 Icon::Close,
                 rect(cx + 5.0, cy + 5.0, cx + cw - 5.0, cy + ch - 5.0),
-                if close_hover { TEXT } else { TEXT_MUTED },
+                if close_hover {
+                    crate::theme::text()
+                } else {
+                    crate::theme::text_muted()
+                },
                 1.0,
             );
             for (k, (kind, name)) in KINDS.iter().enumerate() {

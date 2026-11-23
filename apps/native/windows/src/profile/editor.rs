@@ -578,13 +578,13 @@ impl Dialog {
                     };
                     let l = layout(g, &label, format, if action { w - 16.0 } else { w })?;
                     let brush = if primary {
-                        g.solid(BLACKOUT)
+                        g.solid(crate::theme::on_action())
                     } else if matches!(p, Part::Error | Part::Line(5)) {
-                        g.solid(ERROR)
+                        g.solid(crate::theme::error())
                     } else if action && !enabled {
-                        g.solid(TEXT_MUTED)
+                        g.solid(crate::theme::text_muted())
                     } else {
-                        g.solid(TEXT)
+                        g.solid(crate::theme::text())
                     };
                     crate::text::draw(
                         dc,

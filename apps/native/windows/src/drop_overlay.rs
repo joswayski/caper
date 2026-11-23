@@ -256,13 +256,16 @@ impl App {
         self.drop_p
             .offset((x * scale).round(), (y * scale).round())?;
         self.drop_p.draw(scale, |dc| unsafe {
-            dc.Clear(Some(&gfx::color(BLACKOUT, 0.82 * pose.fade as f32)));
+            let (scrim, _) = crate::theme::scrim();
+            let fade = if crate::theme::is_light() { 0.48 } else { 0.82 };
+            dc.Clear(Some(&gfx::color(scrim, fade * pose.fade as f32)));
             let opacity = pose.card_opacity as f32;
-            let brush = dc.CreateSolidColorBrush(&gfx::color(0x151719, opacity), None)?;
+            let brush =
+                dc.CreateSolidColorBrush(&gfx::color(crate::theme::surface(), opacity), None)?;
             gfx::fill_round(dc, gfx::rect(cx, cy, cx + cw, cy + ch), 8.0, &brush);
-            brush.SetColor(&gfx::color(BORDER, opacity));
+            brush.SetColor(&gfx::color(crate::theme::border(), opacity));
             gfx::stroke_round(dc, gfx::rect(cx, cy, cx + cw, cy + ch), 8.0, &brush);
-            brush.SetColor(&gfx::color(TERRACOTTA, opacity));
+            brush.SetColor(&gfx::color(crate::theme::terracotta(), opacity));
             let dashed = dc.GetFactory()?.CreateStrokeStyle(
                 &D2D1_STROKE_STYLE_PROPERTIES {
                     dashStyle: D2D1_DASH_STYLE_DASH,
@@ -327,9 +330,9 @@ impl App {
                 p.turn,
                 p.opacity,
             );
-            brush.SetColor(&gfx::color(TEXT, opacity));
+            brush.SetColor(&gfx::color(crate::theme::text(), opacity));
             crate::text::draw(dc, &heading, cx + 24.0, sy + 142.0, &brush);
-            brush.SetColor(&gfx::color(TEXT_MUTED, opacity));
+            brush.SetColor(&gfx::color(crate::theme::text_muted(), opacity));
             crate::text::draw(dc, &detail, cx + 24.0, sy + 142.0 + hh + 6.0, &brush);
             Ok(())
         })

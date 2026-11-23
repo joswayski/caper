@@ -422,11 +422,11 @@ impl App {
             PPart::Gif => {
                 let open = self.profile_gifs_open();
                 let color = if !enabled {
-                    BORDER
+                    crate::theme::border()
                 } else if hover || open {
-                    TEXT
+                    crate::theme::text()
                 } else {
-                    TEXT_MUTED
+                    crate::theme::text_muted()
                 };
                 return crate::uploads::gif_button(g, dc, rect(x, y, x + w, y + h), color);
             }
@@ -473,7 +473,11 @@ impl App {
                         &note,
                         x + 4.0,
                         y + 20.0,
-                        &g.solid(if failed { ERROR } else { TEXT_MUTED }),
+                        &g.solid(if failed {
+                            crate::theme::error()
+                        } else {
+                            crate::theme::text_muted()
+                        }),
                     );
                     unsafe {
                         dc.PopAxisAlignedClip();
@@ -520,7 +524,11 @@ impl App {
                 x + (w + 18.0) / 2.0,
                 y + (h + 18.0) / 2.0,
             ),
-            if hover { TEXT } else { TEXT_MUTED },
+            if hover {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
             if enabled { 1.0 } else { 0.4 },
         );
         Ok(())

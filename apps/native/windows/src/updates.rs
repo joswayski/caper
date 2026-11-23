@@ -242,9 +242,9 @@ impl Dialog {
             let (a, b) = ((a >> shift) & 0xff, (b >> shift) & 0xff);
             ((a as f32 + (b as f32 - a as f32) * mix).round() as u32) << shift
         };
-        let c = lerp(TEXT_MUTED, ACTION_HOVER, 16)
-            | lerp(TEXT_MUTED, ACTION_HOVER, 8)
-            | lerp(TEXT_MUTED, ACTION_HOVER, 0);
+        let c = lerp(crate::theme::text_muted(), crate::theme::action_hover(), 16)
+            | lerp(crate::theme::text_muted(), crate::theme::action_hover(), 8)
+            | lerp(crate::theme::text_muted(), crate::theme::action_hover(), 0);
         let alpha = 0.72 + 0.28 * mix;
         let l = g.layout(&crate::gfx::wide(&label), &g.formats.dialog_note, 1e6)?;
         unsafe {
@@ -420,7 +420,7 @@ impl App {
         };
         let x = x - RAIL_W;
         let r = rect(x, y, x + w, y + h);
-        fill_round(dc, r, RADIUS, &g.solid(SURFACE_RAISED));
+        fill_round(dc, r, RADIUS, &g.solid(crate::theme::surface_raised()));
         if self.update_dock_hover {
             fill_round(dc, r, RADIUS, &g.brushes.hover);
         }

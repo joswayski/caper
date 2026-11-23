@@ -412,7 +412,11 @@ pub fn draw(
             dc,
             crate::icons::Icon::Plus,
             i,
-            if on { TEXT } else { TEXT_MUTED },
+            if on {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
             1.0,
         );
     }
@@ -443,7 +447,7 @@ pub fn draw(
                 dc,
                 crate::icons::Icon::More,
                 rect(b.left + 4.0, b.top + 4.0, b.right - 4.0, b.bottom - 4.0),
-                TEXT,
+                crate::theme::text(),
                 1.0,
             );
             right = b.left - 4.0;
@@ -467,7 +471,7 @@ pub fn draw(
                 dc,
                 crate::icons::Icon::BellOff,
                 rect(right - 14.0, cy - 7.0, right, cy + 7.0),
-                TEXT_MUTED,
+                crate::theme::text_muted(),
                 1.0,
             );
             right -= 20.0;
@@ -551,7 +555,11 @@ pub fn draw_inbox(
             crate::icons::Icon::Bell
         },
         rect(r.left + 10.0, cy - 7.5, r.left + 25.0, cy + 7.5),
-        if on { TEXT } else { TEXT_MUTED },
+        if on {
+            crate::theme::text()
+        } else {
+            crate::theme::text_muted()
+        },
         1.0,
     );
     let mut right = r.right - 8.0;
@@ -1407,7 +1415,7 @@ impl App {
                         dc,
                         crate::icons::Icon::Check,
                         rect(x + 8.0, y + h / 2.0 - 7.0, x + 22.0, y + h / 2.0 + 7.0),
-                        TEXT,
+                        crate::theme::text(),
                         if live { 1.0 } else { 0.5 },
                     );
                 }

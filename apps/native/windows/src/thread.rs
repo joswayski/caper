@@ -433,7 +433,7 @@ impl Pane {
     ) -> Result<()> {
         let w = self.width;
         unsafe {
-            dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
+            dc.Clear(Some(&gfx::color(crate::theme::surface_conversation(), 1.0)));
             // egui's panel separator on the leading edge.
             dc.FillRectangle(&rect(0.0, 0.0, 1.0, h), &g.brushes.border);
             dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, w, HEADER_H), &g.brushes.border);
@@ -454,7 +454,11 @@ impl Pane {
                 Icon::Close
             },
             rect(cx + 9.0, cy + 9.0, cx + cw - 9.0, cy + ch - 9.0),
-            if lit { TEXT } else { TEXT_MUTED },
+            if lit {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
             1.0,
         );
         // The history, clipped under the heading.
@@ -511,7 +515,7 @@ impl Pane {
                 dc,
                 Icon::Check,
                 rect(b.left + 2.0, b.top + 2.0, b.right - 2.0, b.bottom - 2.0),
-                TEXT,
+                crate::theme::text(),
                 1.0,
             );
         }
@@ -536,17 +540,17 @@ impl Pane {
             };
             let (fill, ring) = unsafe {
                 (
-                    dc.CreateSolidColorBrush(&gfx::color(TEXT, wash), None)?,
-                    dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.24), None)?,
+                    dc.CreateSolidColorBrush(&gfx::color(crate::theme::text(), wash), None)?,
+                    dc.CreateSolidColorBrush(&gfx::color(crate::theme::text(), 0.24), None)?,
                 )
             };
             fill_round(dc, r, 8.0, &fill);
             stroke_round(dc, r, 8.0, &ring);
         }
         let (color, alpha) = if enabled {
-            (TEXT, 1.0)
+            (crate::theme::text(), 1.0)
         } else {
-            (TEXT_MUTED, 0.5)
+            (crate::theme::text_muted(), 0.5)
         };
         icons::draw(
             dc,
@@ -2467,7 +2471,11 @@ impl App {
                     if t.hover == Some(Part::Gif) {
                         fill_round(dc, r, 6.0, &g.brushes.hover);
                     }
-                    let color = if lit { TEXT } else { TEXT_MUTED };
+                    let color = if lit {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    };
                     crate::uploads::gif_button(g, dc, r, color)?;
                 }
                 let (x, y, w, h) = emoji_local(t.width);
@@ -2479,7 +2487,11 @@ impl App {
                     dc,
                     Icon::Smile,
                     rect(x + 6.0, y + 6.0, x + w - 6.0, y + h - 6.0),
-                    if emoji { TEXT } else { TEXT_MUTED },
+                    if emoji {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    },
                     1.0,
                 );
                 if let Some(embed) = &card {

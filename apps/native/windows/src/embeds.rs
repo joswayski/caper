@@ -496,18 +496,18 @@ fn badge(g: &Gfx, dc: &ID2D1DeviceContext, r: D2D_RECT_F, b: Badge) -> Result<()
                 dc,
                 Icon::Play,
                 rect(cx - 8.5, cy - 10.0, cx + 11.5, cy + 10.0),
-                TEXT,
+                0xFFFFFF,
                 1.0,
             );
         }
         Badge::Player => {
             // Web's eggshell 52px Play.
-            circle(26.0, &alpha(dc, ACTION, 1.0)?.cast()?);
+            circle(26.0, &alpha(dc, crate::theme::action(), 1.0)?.cast()?);
             icons::draw(
                 dc,
                 Icon::Play,
                 rect(cx - 9.5, cy - 11.0, cx + 12.5, cy + 11.0),
-                BLACKOUT,
+                crate::theme::on_action(),
                 1.0,
             );
         }
@@ -528,7 +528,7 @@ fn picture(
     } else {
         6.0
     };
-    fill_round(dc, r, radius, &g.solid(SURFACE_RAISED));
+    fill_round(dc, r, radius, &g.solid(crate::theme::surface_raised()));
     if let (Some(c), Some(source)) = (ctx, &p.source)
         && matches!(c.media.image(&p.key, Some(source)), ImageState::Ready(_))
         && let Some(bmp) = c.media.texture(&p.key)

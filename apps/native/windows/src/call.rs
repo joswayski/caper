@@ -27,12 +27,35 @@ const PERSON_H: f32 = 42.0;
 const AUDIO_H: f32 = 104.0;
 const PAGE_H: f32 = 26.0;
 const ERROR_H: f32 = 60.0;
-/// egui's live call card and its colours.
-const LIVE_CARD: u32 = 0x22382C;
-const LIVE_CARD_BORDER: u32 = 0x4B8A60;
 const VOICE_AMBER: u32 = 0xD9AB5C;
 /// egui's Leave tone.
 const LEAVE: u32 = 0x8C2F25;
+
+fn live_card() -> u32 {
+    if crate::theme::is_light() {
+        0xE5F2E9
+    } else {
+        0x22382C
+    }
+}
+
+fn live_card_border() -> u32 {
+    if crate::theme::is_light() {
+        0x7DB88E
+    } else {
+        0x4B8A60
+    }
+}
+
+fn call_button_fill(hover: bool) -> u32 {
+    if crate::theme::is_light() {
+        if hover { 0xC3E0C9 } else { 0xD5EAD9 }
+    } else if hover {
+        0x2E4A3A
+    } else {
+        0x1B2E24
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VPart {
@@ -149,7 +172,7 @@ pub fn face(
             } else {
                 size / 2.0 + 2.0
             },
-            &g.solid(VOICE_GREEN),
+            &g.solid(crate::theme::voice_green()),
         );
     }
     Ok(())
@@ -324,7 +347,7 @@ impl App {
                 dc,
                 &format!("+{}", people.len() - count),
                 (right - extra + 2.0, cy - 10.0, extra - 2.0, 20.0),
-                TEXT_MUTED,
+                crate::theme::text_muted(),
             )?;
         }
         Ok(left - 8.0)
@@ -358,7 +381,7 @@ impl App {
             dc,
             if self.call_ui.open { "Hide" } else { "People" },
             (fx, y, w - (fx - x), h),
-            TEXT,
+            crate::theme::text(),
         )?;
         if !self.call_ui.open {
             return Ok(());
@@ -387,7 +410,11 @@ impl App {
                 dc,
                 &name,
                 (x + 40.0, y + 2.0, w - 78.0, 20.0),
-                if speaking { TEXT } else { TEXT_MUTED },
+                if speaking {
+                    crate::theme::text()
+                } else {
+                    crate::theme::text_muted()
+                },
             )?;
             let playback = live.voice.playback(&p.id);
             let status = if !own && playback.muted {
@@ -406,14 +433,18 @@ impl App {
                 dc,
                 status,
                 (x + 40.0, y + 22.0, w - 78.0, 16.0),
-                TEXT_MUTED,
+                crate::theme::text_muted(),
             )?;
             if !own {
                 icons::draw(
                     dc,
                     Icon::Volume,
                     rect(x + w - 26.0, y + 13.0, x + w - 10.0, y + 29.0),
-                    if selected { TEXT } else { TEXT_MUTED },
+                    if selected {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    },
                     1.0,
                 );
             }
@@ -425,7 +456,11 @@ impl App {
                     dc,
                     title,
                     (x + 8.0, y, w - 16.0, h),
-                    if self.voice_enabled(p) { TEXT } else { BORDER },
+                    if self.voice_enabled(p) {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::border()
+                    },
                 )?;
             }
         }
@@ -435,13 +470,13 @@ impl App {
                     .iter()
                     .find(|p| Some(p.id.as_str()) == self.call_audio())
                     .map_or("", |p| p.name.as_str());
-                label(g, dc, name, (x, y, w - 44.0, 20.0), TEXT)?;
+                label(g, dc, name, (x, y, w - 44.0, 20.0), crate::theme::text())?;
                 label(
                     g,
                     dc,
                     &format!("{}%", playback.gain_percent),
                     (x + w - 40.0, y, 40.0, 20.0),
-                    TEXT,
+                    crate::theme::text(),
                 )?;
                 let left = x + 8.0;
                 let knob = left + (w - 16.0) * f32::from(playback.gain_percent) / 200.0;
@@ -475,13 +510,19 @@ impl App {
                         &g.brushes.text,
                     );
                 }
-                label(g, dc, "Mute for me", (x + 24.0, y, w - 24.0, h), TEXT)?;
+                label(
+                    g,
+                    dc,
+                    "Mute for me",
+                    (x + 24.0, y, w - 24.0, h),
+                    crate::theme::text(),
+                )?;
                 label(
                     g,
                     dc,
                     "Only changes what you hear.",
                     (x, y + h, w, 18.0),
-                    TEXT_MUTED,
+                    crate::theme::text_muted(),
                 )?;
             }
         }
@@ -977,14 +1018,18 @@ impl App {
                         dc,
                         Icon::Close,
                         rect(bx + 6.0, by + 6.0, bx + bw - 6.0, by + bh - 6.0),
-                        if on { TEXT } else { TEXT_MUTED },
+                        if on {
+                            crate::theme::text()
+                        } else {
+                            crate::theme::text_muted()
+                        },
                         1.0,
                     );
                 }
             }
             Card::Call(call) => {
-                fill_round(dc, r, 10.0, &g.solid(LIVE_CARD));
-                stroke_round(dc, r, 10.0, &g.solid(LIVE_CARD_BORDER));
+                fill_round(dc, r, 10.0, &g.solid(live_card()));
+                stroke_round(dc, r, 10.0, &g.solid(live_card_border()));
                 let Some((tx, ty, tw, _)) = local(VPart::Status) else {
                     return Ok(());
                 };
@@ -993,13 +1038,13 @@ impl App {
                     dc,
                     Icon::AudioLines,
                     rect(tx, ty + 2.0, tx + 16.0, ty + 18.0),
-                    VOICE_GREEN,
+                    crate::theme::voice_green(),
                     1.0,
                 );
                 let (state, tone) = match (call.status, &call.timer) {
                     (Some(s), _) => (s.to_owned(), VOICE_AMBER),
-                    (None, Some(t)) => (t.clone(), VOICE_GREEN),
-                    (None, None) => (String::new(), VOICE_GREEN),
+                    (None, Some(t)) => (t.clone(), crate::theme::voice_green()),
+                    (None, None) => (String::new(), crate::theme::voice_green()),
                 };
                 let sl = g.layout(&gfx::wide(&state), &g.formats.direct_note, 1e6)?;
                 let sw = gfx::metrics(&sl).widthIncludingTrailingWhitespace;
@@ -1046,30 +1091,37 @@ impl App {
                     let hover = self.voice_hover == Some(p);
                     // A toggle that is on shows terracotta, as egui's.
                     let fill = if on {
-                        g.solid(TERRACOTTA)
-                    } else if hover {
-                        g.solid(0x2E4A3A)
+                        g.solid(crate::theme::terracotta())
                     } else {
-                        g.solid(0x1B2E24)
+                        g.solid(call_button_fill(hover))
                     };
                     fill_round(dc, b, 8.0, &fill);
                     icons::draw(
                         dc,
                         icon,
                         rect(bx + 8.0, by + 8.0, bx + bw - 8.0, by + bh - 8.0),
-                        TEXT,
+                        if on { 0xFFFFFF } else { crate::theme::text() },
                         1.0,
                     );
                 }
                 if let Some((bx, by, bw, bh)) = local(VPart::Leave) {
                     let b = rect(bx, by, bx + bw, by + bh);
                     let hover = self.voice_hover == Some(VPart::Leave);
-                    fill_round(dc, b, 8.0, &g.solid(if hover { TERRACOTTA } else { LEAVE }));
+                    fill_round(
+                        dc,
+                        b,
+                        8.0,
+                        &g.solid(if hover {
+                            crate::theme::terracotta()
+                        } else {
+                            LEAVE
+                        }),
+                    );
                     icons::draw(
                         dc,
                         Icon::PhoneOff,
                         rect(bx + 10.0, by + 8.0, bx + 26.0, by + 24.0),
-                        TEXT,
+                        0xFFFFFF,
                         1.0,
                     );
                     let label = if call.joining { "Cancel" } else { "Leave" };
@@ -1080,7 +1132,7 @@ impl App {
                         &l,
                         bx + 32.0,
                         by + (bh - m.height) / 2.0,
-                        &g.brushes.text,
+                        &g.solid(0xFFFFFF),
                     );
                 }
             }

@@ -1012,7 +1012,11 @@ impl Dialog {
                     dc,
                     Icon::Close,
                     rect(x + 8.0, y + 8.0, x + w - 8.0, y + h - 8.0),
-                    if lit { TEXT } else { TEXT_MUTED },
+                    if lit {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    },
                     1.0,
                 );
             }
@@ -1094,7 +1098,11 @@ impl Dialog {
                     dc,
                     Icon::ChevronDown,
                     rect(cx - 8.0, cy - 8.0, cx + 8.0, cy + 8.0),
-                    if enabled { BLACKOUT } else { TEXT_MUTED },
+                    if enabled {
+                        crate::theme::on_action()
+                    } else {
+                        crate::theme::text_muted()
+                    },
                     1.0,
                 );
             }

@@ -699,7 +699,7 @@ impl Viewer {
     /// Draws the backdrop, top bar, arrows and video controls.
     fn draw_chrome(&self, g: &Gfx, dc: &ID2D1DeviceContext) -> Result<()> {
         unsafe {
-            dc.Clear(Some(&gfx::color(BLACKOUT, 1.0)));
+            dc.Clear(Some(&gfx::color(crate::theme::blackout(), 1.0)));
         }
         for (p, r) in &self.controls {
             let hot = self.hover == Some(*p) && self.enabled(*p);
@@ -737,16 +737,35 @@ impl Viewer {
                     let primary = *p == Part::Open;
                     let (fill, label_brush) = if primary {
                         (
-                            alpha_brush(dc, if hot { ACTION_HOVER } else { ACTION }, 1.0)?,
-                            &g.brushes.blackout,
+                            alpha_brush(
+                                dc,
+                                if hot {
+                                    crate::theme::action_hover()
+                                } else {
+                                    crate::theme::action()
+                                },
+                                1.0,
+                            )?,
+                            &g.brushes.on_action,
                         )
                     } else if self.enabled(*p) {
                         (
-                            alpha_brush(dc, if hot { SURFACE_RAISED } else { 0x151719 }, 1.0)?,
+                            alpha_brush(
+                                dc,
+                                if hot {
+                                    crate::theme::surface_raised()
+                                } else {
+                                    crate::theme::surface()
+                                },
+                                1.0,
+                            )?,
                             &g.brushes.text,
                         )
                     } else {
-                        (alpha_brush(dc, 0x151719, 1.0)?, &g.brushes.muted)
+                        (
+                            alpha_brush(dc, crate::theme::surface(), 1.0)?,
+                            &g.brushes.muted,
+                        )
                     };
                     fill_round(dc, *r, RADIUS, &fill);
                     if !primary {
@@ -758,7 +777,11 @@ impl Viewer {
                         Part::Link => Icon::Link,
                         _ => Icon::Copy,
                     };
-                    let color = if primary { BLACKOUT } else { TEXT };
+                    let color = if primary {
+                        crate::theme::on_action()
+                    } else {
+                        crate::theme::text()
+                    };
                     let cy = (r.top + r.bottom) / 2.0;
                     icons::draw(
                         dc,
@@ -812,7 +835,7 @@ impl Viewer {
                         dc,
                         icon,
                         rect(cx - 10.0, cy - 10.0, cx + 10.0, cy + 10.0),
-                        TEXT,
+                        0xFFFFFF,
                         if enabled { 1.0 } else { 0.24 },
                     );
                     if ring {
@@ -1947,7 +1970,7 @@ impl App {
                         dc,
                         Icon::Play,
                         rect(c.0 - 11.0, c.1 - 13.0, c.0 + 15.0, c.1 + 13.0),
-                        TEXT,
+                        0xFFFFFF,
                         1.0,
                     );
                 }

@@ -326,7 +326,7 @@ fn corner(g: &Gfx, dc: &ID2D1DeviceContext, cx: f32, cy: f32) -> Result<()> {
         radiusY: CORNER_R,
     };
     unsafe {
-        dc.FillEllipse(&e, &alpha(dc, BLACKOUT, 199.0 / 255.0)?);
+        dc.FillEllipse(&e, &alpha(dc, crate::theme::blackout(), 199.0 / 255.0)?);
         dc.DrawEllipse(&e, &g.brushes.border, 1.0, None);
     }
     Ok(())
@@ -339,7 +339,7 @@ fn ring(dc: &ID2D1DeviceContext, cx: f32, cy: f32, progress: Progress) -> Result
         Progress::Known(f) => f.clamp(0.0, 1.0),
         Progress::Unknown => 0.25,
     };
-    let brush = dc_brush(dc, ACTION)?;
+    let brush = dc_brush(dc, crate::theme::action())?;
     let steps = (48.0 * fraction).ceil() as usize;
     let point = |t: f32| {
         let a = t * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
@@ -392,7 +392,7 @@ fn chip(
         radiusX: 14.0,
         radiusY: 14.0,
     };
-    unsafe { dc.FillEllipse(&disc, &g.solid(ACTION)) };
+    unsafe { dc.FillEllipse(&disc, &g.solid(crate::theme::action())) };
     let nudge = if playing { 0.0 } else { 1.0 };
     icons::draw(
         dc,
@@ -403,7 +403,7 @@ fn chip(
             p.right - 8.0 + nudge,
             p.bottom - 8.0,
         ),
-        BLACKOUT,
+        crate::theme::on_action(),
         1.0,
     );
     let r = chip_remove(t);
@@ -414,7 +414,7 @@ fn chip(
             (r.left + r.right) / 2.0,
             (r.top + r.bottom) / 2.0,
             14.0,
-            TEXT_MUTED,
+            crate::theme::text_muted(),
         );
     }
     let duration = prepared.duration_ms.unwrap_or(0);
@@ -489,7 +489,14 @@ pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Resul
     } else if let Some(b) = &d.bitmap {
         cover(dc, b, t, RADIUS)?;
     } else if u.kind != AttachmentKind::Video {
-        centered_icon(dc, Icon::FileText, cx, cy - 8.0, 24.0, TEXT_MUTED);
+        centered_icon(
+            dc,
+            Icon::FileText,
+            cx,
+            cy - 8.0,
+            24.0,
+            crate::theme::text_muted(),
+        );
         let l = line(
             g,
             &drafts::kind_label(&u.name),
@@ -510,7 +517,7 @@ pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Resul
     if u.error.is_none() && (u.spoiler || u.kind == AttachmentKind::Video) {
         corner(g, dc, cx, cy)?;
         let icon = if u.spoiler { Icon::EyeOff } else { Icon::Play };
-        centered_icon(dc, icon, cx, cy, 12.0, TEXT);
+        centered_icon(dc, icon, cx, cy, 12.0, crate::theme::text());
     }
     let edge = if u.error.is_some() {
         &g.brushes.error
@@ -526,7 +533,7 @@ pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Resul
         let m = gfx::metrics(&l);
         let w = 14.0 + 5.0 + m.widthIncludingTrailingWhitespace;
         let x = (r.left + r.right - w) / 2.0;
-        centered_icon(dc, Icon::Retry, x + 7.0, cy, 14.0, TEXT);
+        centered_icon(dc, Icon::Retry, x + 7.0, cy, 14.0, crate::theme::text());
         crate::text::draw(dc, &l, x + 19.0, cy - m.height / 2.0, &g.brushes.text);
     }
     // Remove top-right with the upload's ring; the spoiler toggle
@@ -536,7 +543,7 @@ pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Resul
         t.top + CORNER_INSET + CORNER_R,
     );
     corner(g, dc, rx, ry)?;
-    centered_icon(dc, Icon::Close, rx, ry, 12.0, TEXT);
+    centered_icon(dc, Icon::Close, rx, ry, 12.0, crate::theme::text());
     if u.attachment.is_none() && u.error.is_none() {
         ring(dc, rx, ry, u.status().1)?;
     }
@@ -546,7 +553,7 @@ pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Resul
     );
     corner(g, dc, sx, sy)?;
     let icon = if u.spoiler { Icon::Eye } else { Icon::EyeOff };
-    centered_icon(dc, icon, sx, sy, 12.0, TEXT);
+    centered_icon(dc, icon, sx, sy, 12.0, crate::theme::text());
     Ok(())
 }
 
@@ -585,11 +592,11 @@ pub fn draw(
         (m.top + m.bottom) / 2.0,
         16.0,
         if mic_hover {
-            TEXT
+            crate::theme::text()
         } else if recordable {
-            TEXT_MUTED
+            crate::theme::text_muted()
         } else {
-            BORDER
+            crate::theme::border()
         },
     );
     let e = emoji_rect(top, bw);
@@ -604,9 +611,9 @@ pub fn draw(
         (e.top + e.bottom) / 2.0,
         16.0,
         if emoji || emoji_hover {
-            TEXT
+            crate::theme::text()
         } else {
-            TEXT_MUTED
+            crate::theme::text_muted()
         },
     );
     if let Some((bw, open)) = gif {
@@ -615,7 +622,16 @@ pub fn draw(
         if gif_hover {
             fill_round(dc, r, 6.0, &g.brushes.hover);
         }
-        gif_button(g, dc, r, if open || gif_hover { TEXT } else { TEXT_MUTED })?;
+        gif_button(
+            g,
+            dc,
+            r,
+            if open || gif_hover {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
+        )?;
     }
     for (d, t) in drafts.iter().zip(tiles) {
         match d.upload.voice() {
@@ -644,11 +660,11 @@ pub fn draw(
     }
     let (cx, cy) = ((a.left + a.right) / 2.0, (a.top + a.bottom) / 2.0);
     let color = if attach_hover {
-        TEXT
+        crate::theme::text()
     } else if can_attach {
-        TEXT_MUTED
+        crate::theme::text_muted()
     } else {
-        BORDER
+        crate::theme::border()
     };
     centered_icon(dc, Icon::Plus, cx, cy, 18.0, color);
     Ok(())

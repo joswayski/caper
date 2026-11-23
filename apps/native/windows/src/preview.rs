@@ -8,7 +8,6 @@
 use crate::files::{alpha, cover, line};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
-use crate::theme::*;
 use crate::{App, EV_SCREEN};
 use caper_client::embeds::{heading, key};
 use caper_client::media::ImageState;
@@ -81,12 +80,17 @@ pub fn draw(
     card: D2D_RECT_F,
     remove_hover: bool,
 ) -> Result<()> {
-    fill_round(dc, card, 8.0, &g.solid(SURFACE_RAISED));
+    fill_round(dc, card, 8.0, &g.solid(crate::theme::surface_raised()));
     stroke_round(dc, card, 8.0, &g.brushes.border);
     let mut x = card.left + 8.0;
     if image(embed).is_some() {
         let t = rect(x, card.top + 8.0, x + THUMB, card.top + 8.0 + THUMB);
-        fill_round(dc, t, 6.0, &alpha(dc, SURFACE_COMPOSER, 1.0)?);
+        fill_round(
+            dc,
+            t,
+            6.0,
+            &alpha(dc, crate::theme::surface_composer(), 1.0)?,
+        );
         if let Some(b) = thumb {
             cover(dc, b, t, 6.0)?;
         }
@@ -129,13 +133,17 @@ pub fn draw(
         y += gfx::metrics(&l).height + 2.0;
     }
     let r = remove_rect(card);
-    fill_round(dc, r, 8.0, &g.solid(SURFACE_RAISED));
+    fill_round(dc, r, 8.0, &g.solid(crate::theme::surface_raised()));
     stroke_round(dc, r, 8.0, &g.brushes.border);
     icons::draw(
         dc,
         Icon::Close,
         rect(r.left + 6.0, r.top + 6.0, r.right - 6.0, r.bottom - 6.0),
-        if remove_hover { TEXT } else { TEXT_MUTED },
+        if remove_hover {
+            crate::theme::text()
+        } else {
+            crate::theme::text_muted()
+        },
         1.0,
     );
     Ok(())

@@ -3,7 +3,6 @@
 //! summary ("You, Alex and Maya reacted with :fire:"). Names load on demand
 //! through the shared reactor cache; until they arrive the summary counts.
 use crate::gfx::{self, fill_round, rect, stroke_round};
-use crate::theme::SURFACE_RAISED;
 use crate::{App, TIMER_CARD, emoji, list};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
@@ -195,7 +194,7 @@ impl App {
         self.card_p.draw(s, |dc| unsafe {
             dc.Clear(None);
             let r = rect(0.5, 0.5, card.w - 0.5, card.h - 0.5);
-            fill_round(dc, r, 8.0, &g.solid(SURFACE_RAISED));
+            fill_round(dc, r, 8.0, &g.solid(crate::theme::surface_raised()));
             stroke_round(dc, r, 8.0, &g.brushes.border);
             let e = rect(PAD, PAD, PAD + EMOJI, PAD + EMOJI);
             match emoji::find(&card.emoji) {

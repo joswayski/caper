@@ -1188,7 +1188,7 @@ impl App {
             }
             if let (Some((y, _)), Some(e)) = (geo.error, &v.error) {
                 let l = layout(g, e, &g.formats.error, inner)?;
-                crate::text::draw(dc, &l, cx + PAD, y, &g.solid(ERROR));
+                crate::text::draw(dc, &l, cx + PAD, y, &g.solid(crate::theme::error()));
             }
             if let Some(y) = geo.divider {
                 dc.FillRectangle(
@@ -1199,7 +1199,11 @@ impl App {
             for &(part, (x, y, pw, ph), on) in &enabled {
                 let hover = (card.hover == Some(part) || card.key_focus == Some(part)) && on;
                 let r = rect(x, y, x + pw, y + ph);
-                let tint = if on { TEXT } else { TEXT_MUTED };
+                let tint = if on {
+                    crate::theme::text()
+                } else {
+                    crate::theme::text_muted()
+                };
                 let alpha = if on { 1.0 } else { 0.5 };
                 match part {
                     PPart::Picture | PPart::Invite | PPart::Block => {}
@@ -1216,7 +1220,11 @@ impl App {
                             dc,
                             i,
                             rect(x + 6.0, y + 6.0, x + pw - 6.0, y + ph - 6.0),
-                            if hover { TEXT } else { TEXT_MUTED },
+                            if hover {
+                                crate::theme::text()
+                            } else {
+                                crate::theme::text_muted()
+                            },
                             alpha,
                         );
                     }
@@ -1278,13 +1286,19 @@ impl App {
                                 dc,
                                 r,
                                 7.0,
-                                &dc.CreateSolidColorBrush(&crate::gfx::color(TEXT, wash), None)?,
+                                &dc.CreateSolidColorBrush(
+                                    &crate::gfx::color(crate::theme::text(), wash),
+                                    None,
+                                )?,
                             );
                             stroke_round(
                                 dc,
                                 r,
                                 7.0,
-                                &dc.CreateSolidColorBrush(&crate::gfx::color(TEXT, 0.24), None)?,
+                                &dc.CreateSolidColorBrush(
+                                    &crate::gfx::color(crate::theme::text(), 0.24),
+                                    None,
+                                )?,
                             );
                         }
                         let retry = self.profile_draft().is_some_and(|d| d.retry.is_some());
@@ -1300,7 +1314,11 @@ impl App {
                                 x + pw - 8.0 + dx,
                                 y + ph - 8.0 + dy,
                             ),
-                            if on { TEXT } else { TEXT_MUTED },
+                            if on {
+                                crate::theme::text()
+                            } else {
+                                crate::theme::text_muted()
+                            },
                             if on { 1.0 } else { 0.6 },
                         );
                     }
@@ -1320,7 +1338,7 @@ impl App {
                         fill_round(dc, rect(x, y, x + pw, y + ph), 4.0, &g.brushes.border);
                     }
                     let l = layout(g, &v.part_name(part), &g.formats.menu_item, pw - 16.0)?;
-                    let brush = g.solid(TEXT);
+                    let brush = g.solid(crate::theme::text());
                     brush.SetOpacity(if on { 1.0 } else { 0.5 });
                     crate::text::draw(dc, &l, x + 8.0, y + (ph - height(&l)) / 2.0, &brush);
                 }

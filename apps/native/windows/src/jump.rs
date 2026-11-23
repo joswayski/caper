@@ -111,8 +111,12 @@ fn paint(g: &gfx::Gfx, dc: &ID2D1DeviceContext, t: &Toast, look: Drawn) -> Resul
         dc.Clear(Some(&D2D1_COLOR_F::default()));
     }
     let (x, y) = (MARGIN, MARGIN);
+    let shade_alpha = if crate::theme::is_light() { 0.14 } else { 0.35 };
     let shade = unsafe {
-        dc.CreateSolidColorBrush(&gfx::color(0x000000, 0.35 / f32::from(SHADOW_LAYERS)), None)?
+        dc.CreateSolidColorBrush(
+            &gfx::color(0x000000, shade_alpha / f32::from(SHADOW_LAYERS)),
+            None,
+        )?
     };
     for k in (1..=SHADOW_LAYERS).rev() {
         let s = f32::from(k) * (MARGIN - SHADOW_Y) / f32::from(SHADOW_LAYERS);
@@ -133,10 +137,14 @@ fn paint(g: &gfx::Gfx, dc: &ID2D1DeviceContext, t: &Toast, look: Drawn) -> Resul
     );
     let (lx, ly, ..) = t.label_at();
     text::draw(dc, &t.label, x + lx, y + ly, &g.brushes.text);
-    // The primary button: chalk with an obsidian label, brighter on hover.
+    // The primary button: action fill with on_action label, brighter on hover.
     let (bx, by, bw, bh) = t.button_at();
     let b = gfx::rect(x + bx, y + by, x + bx + bw, y + by + bh);
-    let fill = g.solid(if hover { ACTION_HOVER } else { ACTION });
+    let fill = g.solid(if hover {
+        crate::theme::action_hover()
+    } else {
+        crate::theme::action()
+    });
     gfx::fill_round(dc, b, RADIUS, &fill);
     let th = gfx::metrics(&t.button).height;
     text::draw(
@@ -144,7 +152,7 @@ fn paint(g: &gfx::Gfx, dc: &ID2D1DeviceContext, t: &Toast, look: Drawn) -> Resul
         &t.button,
         b.left + BUTTON_PAD,
         b.top + (bh - th) / 2.0,
-        &g.brushes.blackout,
+        &g.brushes.on_action,
     );
     if kb {
         let ring = gfx::rect(b.left - 3.0, b.top - 3.0, b.right + 3.0, b.bottom + 3.0);

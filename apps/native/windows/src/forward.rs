@@ -669,7 +669,7 @@ impl Dialog {
                                 x + (w + 17.0) / 2.0,
                                 y + 26.5,
                             ),
-                            TEXT,
+                            crate::theme::text(),
                             1.0,
                         );
                         return Ok(());
@@ -755,13 +755,13 @@ impl Dialog {
                         },
                     )?;
                     let brush = if primary {
-                        g.solid(BLACKOUT)
+                        g.solid(crate::theme::on_action())
                     } else if p == Part::Error {
-                        g.solid(ERROR)
+                        g.solid(crate::theme::error())
                     } else if action && enabled {
-                        g.solid(TEXT)
+                        g.solid(crate::theme::text())
                     } else {
-                        g.solid(TEXT_MUTED)
+                        g.solid(crate::theme::text_muted())
                     };
                     crate::text::draw(
                         dc,
@@ -779,7 +779,13 @@ impl Dialog {
                         );
                         stroke_round(dc, cb, 4.0, &g.brushes.border);
                         if self.forward_checked(p) {
-                            crate::icons::draw(dc, crate::icons::Icon::Check, cb, TEXT, 1.0);
+                            crate::icons::draw(
+                                dc,
+                                crate::icons::Icon::Check,
+                                cb,
+                                crate::theme::text(),
+                                1.0,
+                            );
                         }
                     }
                     Ok(())

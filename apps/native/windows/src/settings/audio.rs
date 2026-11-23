@@ -10,7 +10,6 @@
 use super::{Builder, Item, Page, SPart, Settings, Style, launch_allowed};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::overlay::Rect;
-use crate::theme::*;
 use crate::{App, EV_FOCUS, EV_SCREEN, text};
 use caper_client::voice::{MicrophoneState, Preferences, Voice, VoiceOperation};
 use std::time::Instant;
@@ -308,7 +307,7 @@ impl Builder<'_> {
         self.y += h + 12.0;
         self.frames.push((
             (-12.0, box_top, self.inner + 24.0, self.y - box_top),
-            BORDER,
+            crate::theme::border(),
         ));
         self.y += 18.0;
         // Test microphone, the input level beside it.
@@ -367,7 +366,11 @@ impl Builder<'_> {
         let tallest = cards.iter().map(|c| c.2).fold(0.0, f32::max);
         let latest = s.mic != Mic::Processing;
         for (k, (x, y, h)) in cards.into_iter().enumerate() {
-            let border = if k == 1 && latest { LATEST } else { BORDER };
+            let border = if k == 1 && latest {
+                LATEST
+            } else {
+                crate::theme::border()
+            };
             let h = if side { tallest } else { h };
             self.frames.push(((x, y, w, h), border));
             self.y = self.y.max(y + h);
@@ -481,7 +484,7 @@ impl Settings {
         let v = g.layout(&gfx::wide(&shown), &g.formats.dialog_note, 1e6)?;
         let vw = gfx::metrics(&v).widthIncludingTrailingWhitespace;
         let accent = if item.part == SPart::Enhancement && enabled {
-            g.solid(TERRACOTTA_BRIGHT)
+            g.solid(crate::theme::terracotta_bright())
         } else {
             g.brushes.muted.clone()
         };
@@ -496,7 +499,11 @@ impl Settings {
             &g.brushes.border,
         );
         let at = left + span * f32::from(value) / f32::from(max);
-        let fill = if enabled { TERRACOTTA } else { TEXT_MUTED };
+        let fill = if enabled {
+            crate::theme::terracotta()
+        } else {
+            crate::theme::text_muted()
+        };
         fill_round(dc, rect(left, cy - 2.0, at, cy + 2.0), 2.0, &g.solid(fill));
         // The default's mark, where the knob is drawn to.
         let hx = left + span * f32::from(home) / f32::from(max);
@@ -510,9 +517,21 @@ impl Settings {
                 radiusX: 8.0,
                 radiusY: 8.0,
             };
-            dc.FillEllipse(&knob, &g.solid(if enabled { TEXT } else { TEXT_MUTED }));
+            dc.FillEllipse(
+                &knob,
+                &g.solid(if enabled {
+                    0xFFFFFF
+                } else {
+                    crate::theme::text_muted()
+                }),
+            );
             if lit {
-                dc.DrawEllipse(&knob, &g.solid(TERRACOTTA_BRIGHT), 2.0, None);
+                dc.DrawEllipse(
+                    &knob,
+                    &g.solid(crate::theme::terracotta_bright()),
+                    2.0,
+                    None,
+                );
             }
         }
         Ok(())
@@ -534,12 +553,18 @@ impl Settings {
         let mid = top + (h - 18.0) / 2.0;
         let active = a.mic == Mic::Recording;
         let step = w / a.meter.len().max(1) as f32;
-        let brush = unsafe { dc.CreateSolidColorBrush(&gfx::color(BORDER, 1.0), None)? };
+        let brush =
+            unsafe { dc.CreateSolidColorBrush(&gfx::color(crate::theme::border(), 1.0), None)? };
         for (k, &level) in a.meter.iter().enumerate() {
             let cx = x + step * (k as f32 + 0.5);
             let fade = ((cx - x) / (w * 0.65)).min(1.0);
             let dots = ((3.0 + f32::from(level) * 4.0) / 4.0).ceil() as usize;
-            unsafe { brush.SetColor(&gfx::color(if active { LIT } else { BORDER }, fade)) };
+            unsafe {
+                brush.SetColor(&gfx::color(
+                    if active { LIT } else { crate::theme::border() },
+                    fade,
+                ))
+            };
             for d in 0..dots {
                 let offset = (d as f32 - (dots as f32 - 1.0) / 2.0) * 4.0;
                 let e = D2D1_ELLIPSE {
@@ -560,7 +585,7 @@ impl Settings {
         for &(r, border) in &self.frames {
             let (x, y, w, h) = self.client(r);
             let r = rect(x, y, x + w, y + h);
-            fill_round(dc, r, 8.0, &g.solid(BLACKOUT));
+            fill_round(dc, r, 8.0, &g.solid(crate::theme::blackout()));
             stroke_round(dc, r, 8.0, &g.solid(border));
         }
     }

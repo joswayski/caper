@@ -979,7 +979,8 @@ impl Settings {
     /// Draws the scrim and the card over a `w` × `h` window.
     pub fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext) -> Result<()> {
         unsafe {
-            dc.Clear(Some(&gfx::color(BLACKOUT, 0.6)));
+            let (scrim, scrim_alpha) = crate::theme::scrim();
+            dc.Clear(Some(&gfx::color(scrim, scrim_alpha)));
             let (cx, cy, cw, ch) = self.card;
             let card = rect(cx, cy, cx + cw, cy + ch);
             fill_round(dc, card, RADIUS, &g.brushes.surface);
@@ -1012,7 +1013,11 @@ impl Settings {
                     dc,
                     Icon::Close,
                     rect(x + 5.0, y + 5.0, x + w - 5.0, y + h - 5.0),
-                    if on { TEXT } else { TEXT_MUTED },
+                    if on {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    },
                     1.0,
                 );
             }
@@ -1039,7 +1044,8 @@ impl Settings {
                 && stale
             {
                 let top = self.client(first.rect).1.max(by);
-                let veil = dc.CreateSolidColorBrush(&gfx::color(0x151719, 0.5), None)?;
+                let veil =
+                    dc.CreateSolidColorBrush(&gfx::color(crate::theme::surface(), 0.55), None)?;
                 dc.FillRectangle(&rect(bx, top, bx + bw, by + bh), &veil);
             }
             dc.PopAxisAlignedClip();
@@ -1191,7 +1197,11 @@ impl Settings {
                     dc,
                     Icon::Check,
                     rect(x + 6.0, y + 6.0, x + w - 6.0, y + h - 6.0),
-                    if hover { TEXT } else { TEXT_MUTED },
+                    if hover {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    },
                     1.0,
                 );
             }
@@ -1204,11 +1214,11 @@ impl Settings {
             | SPart::Output(_) => {
                 let (mx, my) = (x + 8.0, y + h / 2.0);
                 let ring = if !enabled {
-                    BORDER
+                    crate::theme::border()
                 } else if on || hover {
-                    TERRACOTTA_BRIGHT
+                    crate::theme::terracotta_bright()
                 } else {
-                    TEXT_MUTED
+                    crate::theme::text_muted()
                 };
                 if item.part.is_radio() {
                     let e = D2D1_ELLIPSE {
@@ -1223,17 +1233,19 @@ impl Settings {
                             radiusY: 4.0,
                             ..e
                         };
-                        unsafe { dc.FillEllipse(&dot, &g.solid(TERRACOTTA_BRIGHT)) };
+                        unsafe {
+                            dc.FillEllipse(&dot, &g.solid(crate::theme::terracotta_bright()))
+                        };
                     }
                 } else {
                     let b = rect(mx - 8.0, my - 8.0, mx + 8.0, my + 8.0);
                     if on {
-                        fill_round(dc, b, 4.0, &g.solid(TERRACOTTA));
+                        fill_round(dc, b, 4.0, &g.solid(crate::theme::terracotta()));
                         icons::draw(
                             dc,
                             Icon::Check,
                             rect(b.left + 2.0, b.top + 2.0, b.right - 2.0, b.bottom - 2.0),
-                            TEXT,
+                            0xFFFFFF,
                             1.0,
                         );
                     } else {
@@ -1357,25 +1369,34 @@ fn draw_theme_card(
 
     let card = rect(x, y, x + w, y + h);
     let fill = if pressed {
-        SURFACE_COMPOSER
+        crate::theme::surface_composer()
     } else if hover {
-        0x212126
+        if crate::theme::is_light() {
+            0xEAECF1
+        } else {
+            0x212126
+        }
     } else {
-        SURFACE_RAISED
+        crate::theme::surface_raised()
     };
     fill_round(dc, card, 13.0, &g.solid(fill));
     if selected {
         let halo = rect(x - 1.5, y - 1.5, x + w + 1.5, y + h + 1.5);
-        let halo_brush =
-            unsafe { dc.CreateSolidColorBrush(&gfx::color(TERRACOTTA_BRIGHT, 0.28), None)? };
+        let halo_brush = unsafe {
+            dc.CreateSolidColorBrush(&gfx::color(crate::theme::terracotta_bright(), 0.28), None)?
+        };
         stroke_round(dc, halo, 14.5, &halo_brush);
     }
     let border = if selected {
-        TERRACOTTA_BRIGHT
+        crate::theme::terracotta_bright()
     } else if hover {
-        0x3F3F48
+        if crate::theme::is_light() {
+            0xB8BDC9
+        } else {
+            0x3F3F48
+        }
     } else {
-        BORDER
+        crate::theme::border()
     };
     stroke_round(dc, card, 13.0, &g.solid(border));
 
@@ -1493,13 +1514,13 @@ pub(crate) fn switch(
 ) {
     let track = rect(x, y, x + 40.0, y + 22.0);
     let fill = match (enabled, on) {
-        (false, _) => SURFACE_RAISED,
-        (true, true) => TERRACOTTA,
-        (true, false) => BORDER,
+        (false, _) => crate::theme::surface_raised(),
+        (true, true) => crate::theme::terracotta(),
+        (true, false) => crate::theme::border(),
     };
     fill_round(dc, track, 11.0, &g.solid(fill));
     if hover {
-        stroke_round(dc, track, 11.0, &g.solid(TERRACOTTA_BRIGHT));
+        stroke_round(dc, track, 11.0, &g.solid(crate::theme::terracotta_bright()));
     }
     let e = D2D1_ELLIPSE {
         point: windows_numerics::Vector2 {
@@ -1509,7 +1530,11 @@ pub(crate) fn switch(
         radiusX: 8.0,
         radiusY: 8.0,
     };
-    let knob = if enabled { TEXT } else { TEXT_MUTED };
+    let knob = if enabled {
+        0xFFFFFF
+    } else {
+        crate::theme::text_muted()
+    };
     unsafe { dc.FillEllipse(&e, &g.solid(knob)) };
 }
 
@@ -1799,11 +1824,10 @@ impl App {
 
     fn settings_snapshot(&self) -> Snapshot {
         let s = self.settings.as_ref();
-        let active_theme = match self.live.as_ref().and_then(|l| {
-            caper_client::themes::parse_theme_preference(l.preferences.theme_preference()).ok()
-        }) {
-            Some(doc) if doc.id == "paper" || doc.is_light() => caper_client::themes::paper(),
-            _ => caper_client::themes::obsidian(),
+        let active_theme = if crate::theme::is_light() {
+            caper_client::themes::paper()
+        } else {
+            caper_client::themes::obsidian()
         };
         let mut snap = Snapshot {
             launch: launch_allowed().then(|| s.is_some_and(|s| s.launch)),
@@ -1931,12 +1955,18 @@ impl App {
                     live.preferences
                         .set(caper_client::themes::THEME_PREF_KEY, "obsidian".into());
                 }
+                self.apply_theme(false);
+                self.settings_changed();
+                return;
             }
             SPart::ThemePaper => {
                 if let Some(live) = &mut self.live {
                     live.preferences
                         .set(caper_client::themes::THEME_PREF_KEY, "paper".into());
                 }
+                self.apply_theme(true);
+                self.settings_changed();
+                return;
             }
             SPart::Sounds => {
                 if let Some(live) = &mut self.live {
@@ -2394,7 +2424,10 @@ impl App {
             self.sidebar_w()
         };
         unsafe {
-            dc.FillRectangle(&rect(0.0, card_top, width, h), &g.solid(SURFACE_SIDEBAR));
+            dc.FillRectangle(
+                &rect(0.0, card_top, width, h),
+                &g.solid(crate::theme::surface_sidebar()),
+            );
         }
         let card = rect(12.0, card_top, width - 12.0, top + FOOT_CARD_H);
         fill_round(dc, card, RADIUS, &g.brushes.raised);
@@ -2447,7 +2480,11 @@ impl App {
             dc,
             Icon::Settings,
             rect(gx + 5.0, gy + 5.0, gx + gw - 5.0, gy + gh - 5.0),
-            if lit { TEXT } else { TEXT_MUTED },
+            if lit {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
             1.0,
         );
         Ok(())

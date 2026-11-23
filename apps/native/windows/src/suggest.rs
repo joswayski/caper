@@ -23,8 +23,6 @@ use windows::core::Result;
 const ROW_H: f32 = 44.0;
 const PAD: f32 = 4.0;
 const EMOJI_W: f32 = 260.0;
-/// The highlighted row, as in the people lists.
-const SELECTED: u32 = 0x43241E;
 
 /// Which composer the popup belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -416,13 +414,13 @@ impl App {
         self.suggest_p.draw(scale, |dc| unsafe {
             dc.Clear(Some(&D2D1_COLOR_F::default()));
             let body = rect(0.5, 0.5, pw - 0.5, ph - 0.5);
-            fill_round(dc, body, RADIUS, &g.solid(SURFACE_COMPOSER));
+            fill_round(dc, body, RADIUS, &g.solid(crate::theme::surface_composer()));
             stroke_round(dc, body, RADIUS, &g.brushes.border);
             for (k, (choice, &(rx, ry, rw, rh))) in s.choices.iter().zip(&rows).enumerate() {
                 let (x, y) = (rx - px, ry - py);
                 let r = rect(x, y, x + rw, y + rh);
                 if k == s.selected {
-                    fill_round(dc, r, 6.0, &g.solid(SELECTED));
+                    fill_round(dc, r, 6.0, &g.solid(crate::theme::accent_surface()));
                 }
                 let icon = rect(x + 8.0, y + 10.0, x + 32.0, y + 34.0);
                 match choice {

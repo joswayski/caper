@@ -34,7 +34,6 @@ const EMPTY_HEAD: &str = "No pinned messages.";
 const EMPTY_NOTE: &str = "Messages you pin will appear here.";
 const GO_LABEL: &str = "Go to message";
 /// egui's tints: your pins in terracotta, others' in a faint yellow.
-const MINE: (u32, f32) = (TERRACOTTA, 31.0 / 255.0);
 const OTHERS: (u32, f32) = (0xE4C76A, 15.0 / 255.0);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -280,7 +279,8 @@ impl Pins {
         let (cx, cy, cw, ch) = self.card;
         let (bx, by, bw, bh) = self.body;
         unsafe {
-            dc.Clear(Some(&gfx::color(BLACKOUT, 0.6)));
+            let (scrim, scrim_alpha) = crate::theme::scrim();
+            dc.Clear(Some(&gfx::color(scrim, scrim_alpha)));
             let card = rect(cx, cy, cx + cw, cy + ch);
             fill_round(dc, card, RADIUS, &g.brushes.surface);
             stroke_round(dc, card, RADIUS, &g.brushes.border);
@@ -305,7 +305,11 @@ impl Pins {
                     dc,
                     Icon::Close,
                     rect(x + 5.0, y + 5.0, x + w - 5.0, y + h - 5.0),
-                    if on { TEXT } else { TEXT_MUTED },
+                    if on {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    },
                     1.0,
                 );
             }
@@ -336,7 +340,9 @@ impl Pins {
             text::draw(dc, &note, bx + (bw - nm.width) / 2.0, ny, &g.brushes.muted);
             return Ok(());
         }
-        let mine = unsafe { dc.CreateSolidColorBrush(&gfx::color(MINE.0, MINE.1), None)? };
+        let mine = unsafe {
+            dc.CreateSolidColorBrush(&gfx::color(crate::theme::terracotta(), 31.0 / 255.0), None)?
+        };
         let others = unsafe { dc.CreateSolidColorBrush(&gfx::color(OTHERS.0, OTHERS.1), None)? };
         for k in 0..self.c.messages.len() {
             if !self.shown(Part::Card(k)) {
@@ -405,7 +411,7 @@ impl Pins {
             dc,
             Icon::ArrowRight,
             rect(x + 10.0, icon_y, x + 24.0, icon_y + 14.0),
-            TEXT,
+            crate::theme::text(),
             1.0,
         );
         let label = g.layout(&gfx::wide(GO_LABEL), &g.formats.quote_meta, 1e6)?;

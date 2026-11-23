@@ -670,6 +670,20 @@ pub fn spoiler_key(start: u32) -> String {
 }
 
 fn syntax_color(token: u8) -> u32 {
+    if crate::theme::is_light() {
+        return match token {
+            1 => 0x7C3AED, // Keyword
+            2 => 0x2F6F28, // String
+            3 => 0x6B7280, // Comment
+            4 => 0xB45309, // Number
+            5 => 0x0369A1, // Type
+            6 => 0x1D4ED8, // Function
+            7 => 0x92400E, // Attribute
+            8 => 0x15803D, // Addition
+            9 => 0xBE123C, // Deletion
+            _ => crate::theme::text(),
+        };
+    }
     match token {
         1 => 0xC695FF, // Keyword
         2 => 0x87BC5C, // String
@@ -680,7 +694,7 @@ fn syntax_color(token: u8) -> u32 {
         7 => 0xE5C07B, // Attribute
         8 => 0x4ADE80, // Addition
         9 => 0xFF7182, // Deletion
-        _ => crate::theme::TEXT,
+        _ => crate::theme::text(),
     }
 }
 
@@ -1839,7 +1853,7 @@ fn draw_content(
                     dc,
                     crate::icons::Icon::SmilePlus,
                     i,
-                    crate::theme::TEXT_MUTED,
+                    crate::theme::text_muted(),
                     1.0,
                 );
                 continue;
@@ -2123,7 +2137,7 @@ fn reply_string(g: &Gfx, dc: &ID2D1DeviceContext, source: (f32, f32), target: (f
             return;
         }
         if let Ok(brush) =
-            dc.CreateSolidColorBrush(&gfx::color(crate::theme::TEXT_MUTED, 0.75), None)
+            dc.CreateSolidColorBrush(&gfx::color(crate::theme::text_muted(), 0.75), None)
         {
             dc.DrawGeometry(&path, &brush, 1.1, None);
         }
@@ -2133,7 +2147,7 @@ fn reply_string(g: &Gfx, dc: &ID2D1DeviceContext, source: (f32, f32), target: (f
             dc,
             crate::icons::Icon::ReplySocket,
             rect(x - 14.0, y - 8.0, x + 2.0, y + 8.0),
-            0xffffff,
+            crate::theme::text(),
             1.0,
         );
     }

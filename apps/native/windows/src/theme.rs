@@ -1,6 +1,9 @@
 //! Caper's shared design tokens (`shared/design.css`) and the conversation
 //! screen's geometry, in DIPs.
 
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 // BEGIN GENERATED THEME TOKENS
 pub const BLACKOUT: u32 = 0x090A0C;
 pub const SURFACE: u32 = 0x111216;
@@ -30,6 +33,204 @@ pub const VOICE_GREEN: u32 = 0x4CC970;
 pub const HOVER: (u32, f32) = (0xFFFFFF, 0.05);
 // END GENERATED THEME TOKENS
 pub const SELECTION: (u32, f32) = (0x3A6EA5, 0.55);
+
+/// Active color tokens for the current appearance (`Obsidian` dark or `Paper` light).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Palette {
+    pub blackout: u32,
+    pub surface: u32,
+    pub surface_raised: u32,
+    pub surface_sidebar: u32,
+    pub surface_conversation: u32,
+    pub surface_composer: u32,
+    pub border: u32,
+    pub text: u32,
+    pub text_muted: u32,
+    pub link: u32,
+    pub terracotta: u32,
+    pub terracotta_bright: u32,
+    pub accent_surface: u32,
+    pub accent_soft_text: u32,
+    pub error: u32,
+    pub action: u32,
+    pub action_hover: u32,
+    pub action_press: u32,
+    pub on_action: u32,
+    pub caper: u32,
+    pub voice_green: u32,
+    pub hover: (u32, f32),
+    pub scrim: (u32, f32),
+}
+
+impl Palette {
+    pub const OBSIDIAN_DEFAULTS: Self = Self {
+        blackout: BLACKOUT,
+        surface: SURFACE,
+        surface_raised: SURFACE_RAISED,
+        surface_sidebar: SURFACE_SIDEBAR,
+        surface_conversation: SURFACE_CONVERSATION,
+        surface_composer: SURFACE_COMPOSER,
+        border: BORDER,
+        text: TEXT,
+        text_muted: TEXT_MUTED,
+        link: LINK,
+        terracotta: TERRACOTTA,
+        terracotta_bright: TERRACOTTA_BRIGHT,
+        accent_surface: ACCENT_SURFACE,
+        accent_soft_text: ACCENT_SOFT_TEXT,
+        error: ERROR,
+        action: ACTION,
+        action_hover: ACTION_HOVER,
+        action_press: ACTION_PRESS,
+        on_action: BLACKOUT,
+        caper: CAPER,
+        voice_green: VOICE_GREEN,
+        hover: HOVER,
+        scrim: (0x090A0C, 0.6),
+    };
+
+    pub fn from_doc(doc: &caper_client::themes::ThemeDocument) -> Self {
+        let hex = |s: &str, fallback: u32| caper_client::themes::parse_hex(s).unwrap_or(fallback);
+        let d = Self::OBSIDIAN_DEFAULTS;
+        let light = doc.is_light();
+        Self {
+            blackout: hex(&doc.surfaces.frame, d.blackout),
+            surface: hex(&doc.surfaces.base, d.surface),
+            surface_raised: hex(&doc.surfaces.raised, d.surface_raised),
+            surface_sidebar: hex(&doc.surfaces.sidebar, d.surface_sidebar),
+            surface_conversation: hex(&doc.surfaces.conversation, d.surface_conversation),
+            surface_composer: hex(&doc.surfaces.composer, d.surface_composer),
+            border: hex(&doc.borders.default, d.border),
+            text: hex(&doc.text.primary, d.text),
+            text_muted: hex(&doc.text.muted, d.text_muted),
+            link: hex(&doc.text.link, d.link),
+            terracotta: hex(&doc.accent.primary, d.terracotta),
+            terracotta_bright: hex(&doc.accent.bright, d.terracotta_bright),
+            accent_surface: hex(&doc.accent.surface, d.accent_surface),
+            accent_soft_text: hex(&doc.accent.soft_text, d.accent_soft_text),
+            error: hex(&doc.status.error_text, d.error),
+            action: hex(&doc.action.primary, d.action),
+            action_hover: hex(&doc.action.primary_hover, d.action_hover),
+            action_press: hex(&doc.action.primary_press, d.action_press),
+            on_action: hex(&doc.action.on_primary, d.on_action),
+            caper: hex(&doc.brand.caper, d.caper),
+            voice_green: hex(&doc.status.voice, d.voice_green),
+            hover: (
+                if light { 0x0F172A } else { 0xFFFFFF },
+                doc.surfaces.hover_alpha,
+            ),
+            scrim: if light {
+                (0x090A0C, 0.36)
+            } else {
+                (0x090A0C, 0.6)
+            },
+        }
+    }
+}
+
+static LIGHT: AtomicBool = AtomicBool::new(false);
+static OBSIDIAN: LazyLock<Palette> =
+    LazyLock::new(|| Palette::from_doc(&caper_client::themes::obsidian()));
+static PAPER: LazyLock<Palette> =
+    LazyLock::new(|| Palette::from_doc(&caper_client::themes::paper()));
+
+/// Normalizes a persisted `theme-v1` preference to `true` for Paper (light)
+/// and `false` for Obsidian (dark).
+pub fn is_light_preference(raw: &str) -> bool {
+    matches!(
+        caper_client::themes::parse_theme_preference(raw).ok(),
+        Some(doc) if doc.id == "paper" || doc.is_light()
+    )
+}
+
+pub fn set_light(light: bool) {
+    LIGHT.store(light, Ordering::Relaxed);
+}
+
+pub fn is_light() -> bool {
+    LIGHT.load(Ordering::Relaxed)
+}
+
+pub fn palette() -> Palette {
+    if is_light() { *PAPER } else { *OBSIDIAN }
+}
+
+pub fn blackout() -> u32 {
+    palette().blackout
+}
+
+pub fn surface() -> u32 {
+    palette().surface
+}
+
+pub fn surface_raised() -> u32 {
+    palette().surface_raised
+}
+
+pub fn surface_sidebar() -> u32 {
+    palette().surface_sidebar
+}
+
+pub fn surface_conversation() -> u32 {
+    palette().surface_conversation
+}
+
+pub fn surface_composer() -> u32 {
+    palette().surface_composer
+}
+
+pub fn border() -> u32 {
+    palette().border
+}
+
+pub fn text() -> u32 {
+    palette().text
+}
+
+pub fn text_muted() -> u32 {
+    palette().text_muted
+}
+
+pub fn terracotta() -> u32 {
+    palette().terracotta
+}
+
+pub fn terracotta_bright() -> u32 {
+    palette().terracotta_bright
+}
+
+pub fn accent_surface() -> u32 {
+    palette().accent_surface
+}
+
+pub fn error() -> u32 {
+    palette().error
+}
+
+pub fn action() -> u32 {
+    palette().action
+}
+
+pub fn action_hover() -> u32 {
+    palette().action_hover
+}
+
+pub fn on_action() -> u32 {
+    palette().on_action
+}
+
+pub fn caper() -> u32 {
+    palette().caper
+}
+
+pub fn voice_green() -> u32 {
+    palette().voice_green
+}
+
+pub fn scrim() -> (u32, f32) {
+    palette().scrim
+}
+
 pub const RADIUS: f32 = 10.0;
 #[allow(dead_code)]
 pub const RADIUS_CARD: f32 = 13.0;
@@ -54,3 +255,36 @@ pub const MEMBER_H: f32 = 41.0;
 pub const RAIL_ITEM: f32 = 40.0;
 pub const RAIL_PITCH: f32 = 47.0;
 pub const RAIL_TOP: f32 = 12.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn obsidian_doc_matches_generated_defaults() {
+        assert_eq!(
+            Palette::from_doc(&caper_client::themes::obsidian()),
+            Palette::OBSIDIAN_DEFAULTS
+        );
+    }
+
+    #[test]
+    fn paper_doc_produces_light_palette() {
+        let p = Palette::from_doc(&caper_client::themes::paper());
+        assert_eq!(p.blackout, 0xECEEF2);
+        assert_eq!(p.surface_conversation, 0xFFFFFF);
+        assert_eq!(p.surface_sidebar, 0xF1F2F6);
+        assert_eq!(p.text, 0x111217);
+        assert_eq!(p.action, 0x111217);
+        assert_eq!(p.on_action, 0xFFFFFF);
+        assert_eq!(p.hover.0, 0x0F172A);
+    }
+
+    #[test]
+    fn preference_normalization_recognizes_paper_and_obsidian() {
+        assert!(is_light_preference("paper"));
+        assert!(!is_light_preference("obsidian"));
+        assert!(!is_light_preference(""));
+        assert!(!is_light_preference("invalid-theme"));
+    }
+}

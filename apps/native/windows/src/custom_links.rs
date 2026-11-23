@@ -485,9 +485,9 @@ impl Dialog {
         };
         let border = |focused: bool| {
             if focused {
-                g.solid(TERRACOTTA)
+                g.solid(crate::theme::terracotta())
             } else if lit {
-                g.solid(TERRACOTTA_BRIGHT)
+                g.solid(crate::theme::terracotta_bright())
             } else {
                 g.brushes.border.clone()
             }
@@ -504,7 +504,7 @@ impl Dialog {
                 text::draw(dc, &l, x + 12.0, y + (h - height(&l)) / 2.0, color);
                 let (cx, cy) = (x + w - 20.0, y + h / 2.0);
                 let r = rect(cx - 7.0, cy - 7.0, cx + 7.0, cy + 7.0);
-                icons::draw(dc, Icon::ChevronDown, r, TEXT_MUTED, 1.0);
+                icons::draw(dc, Icon::ChevronDown, r, crate::theme::text_muted(), 1.0);
             }
             Part::Number(k) => {
                 let f = &ip.numbers[k as usize];
@@ -580,7 +580,7 @@ impl Dialog {
                     dc,
                     Icon::ChevronDown,
                     rect(cx - 7.0, cy - 7.0, cx + 7.0, cy + 7.0),
-                    TEXT_MUTED,
+                    crate::theme::text_muted(),
                     if enabled { 1.0 } else { 0.5 },
                 );
             }
@@ -596,7 +596,7 @@ impl Dialog {
                         dc,
                         Icon::Check,
                         rect(x + 8.0, y + h / 2.0 - 7.0, x + 22.0, y + h / 2.0 + 7.0),
-                        TEXT,
+                        crate::theme::text(),
                         1.0,
                     );
                 }

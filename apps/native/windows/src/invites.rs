@@ -287,7 +287,11 @@ pub fn draw_rail(
         dc,
         Icon::Plus,
         rect(c.0 - 9.0, c.1 - 9.0, c.0 + 9.0, c.1 + 9.0),
-        if lit { TEXT } else { TEXT_MUTED },
+        if lit {
+            crate::theme::text()
+        } else {
+            crate::theme::text_muted()
+        },
         if create { 1.0 } else { 0.4 },
     );
     let (x, y, w, h) = App::space_rect(first + names.len() + 1);
@@ -309,7 +313,11 @@ pub fn draw_rail(
         dc,
         Icon::Link,
         rect(c.0 - 9.0, c.1 - 9.0, c.0 + 9.0, c.1 + 9.0),
-        if lit { TEXT } else { TEXT_MUTED },
+        if lit {
+            crate::theme::text()
+        } else {
+            crate::theme::text_muted()
+        },
         1.0,
     );
     Ok(())
@@ -339,7 +347,11 @@ pub fn draw_channel_plus(
         dc,
         Icon::Plus,
         rect(b.left + 6.0, b.top + 6.0, b.right - 6.0, b.bottom - 6.0),
-        if lit { TEXT } else { TEXT_MUTED },
+        if lit {
+            crate::theme::text()
+        } else {
+            crate::theme::text_muted()
+        },
         if enabled { 1.0 } else { 0.4 },
     );
 }
@@ -371,7 +383,7 @@ pub fn draw_sidebar(
             dc,
             Icon::Lock,
             rect(24.0, cy - 7.0, 38.0, cy + 7.0),
-            TEXT_MUTED,
+            crate::theme::text_muted(),
             1.0,
         );
         let right = r.right - 8.0 - iw - 8.0;

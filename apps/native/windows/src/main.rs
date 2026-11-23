@@ -89,7 +89,9 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
-use windows::Win32::Graphics::Dwm::DwmFlush;
+use windows::Win32::Graphics::Dwm::{
+    DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmFlush, DwmSetWindowAttribute,
+};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -553,8 +555,69 @@ pub struct App {
     quit: bool,
 }
 
+/// Syncs the Win32 title bar's dark/light chrome and caption color with the active theme.
+fn apply_window_theme(hwnd: HWND) {
+    let dark = BOOL::from(!theme::is_light());
+    let rgb = theme::blackout();
+    // Win32 COLORREF is 0x00BBGGRR.
+    let caption = ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            (&raw const dark).cast(),
+            std::mem::size_of::<BOOL>() as u32,
+        );
+        // Windows 11 tints the title bar to match the frame surface; Windows 10 ignores this attribute.
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            (&raw const caption).cast(),
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
 impl App {
+    /// Switches the live palette between Obsidian (dark) and Paper (light),
+    /// recolors shared Direct2D brushes and the Win32 title bar, invalidates
+    /// cached message rows and surfaces, and schedules a full repaint.
+    pub fn apply_theme(&mut self, light: bool) {
+        theme::set_light(light);
+        self.g.apply_theme();
+        apply_window_theme(self.hwnd);
+        if let Ok(solid) = self.g.surface(1, 1) {
+            let _ = gfx::draw(&solid, 1.0, |dc| {
+                unsafe { dc.Clear(Some(&gfx::color(theme::surface_conversation(), 1.0))) };
+                Ok(())
+            });
+            unsafe {
+                let _ = self.background.SetContent(&solid);
+            }
+        }
+        self.rows.trim(0..0);
+        if let Some(t) = &mut self.thread {
+            t.rows.trim(0..0);
+            for i in 0..t.rows.len() {
+                let _ = t.rows.ensure(&self.g, &t.c, i);
+            }
+        }
+        if let Some(s) = &mut self.signin {
+            s.clear_wordmark();
+        }
+        self.drawn = None;
+        self.empty_drawn = None;
+        self.jump_drawn = None;
+        self.thread_jump_drawn = None;
+        self.bar_drawn = None;
+        self.redraw_head = true;
+        self.redraw_foot = true;
+        self.dirty = Dirty::all();
+        self.need = true;
+    }
+
     fn new(hwnd: HWND, g: Gfx, c: Conversation, bench: Bench) -> Result<Self> {
+        apply_window_theme(hwnd);
         unsafe {
             // Below child windows: the link preview player shows above it.
             let target = g.dcomp.CreateTargetForHwnd(hwnd, false)?;
@@ -565,7 +628,7 @@ impl App {
             let background = g.visual()?;
             let solid = g.surface(1, 1)?;
             gfx::draw(&solid, 1.0, |dc| {
-                dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
+                dc.Clear(Some(&gfx::color(theme::surface_conversation(), 1.0)));
                 Ok(())
             })?;
             background.SetContent(&solid)?;
@@ -3804,7 +3867,7 @@ impl App {
             ..files::Ctx::new(&mut l.media, &mut tex)
         });
         let result = gfx::draw_local(&self.vs, r, s, |dc| unsafe {
-            dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
+            dc.Clear(Some(&gfx::color(theme::surface_conversation(), 1.0)));
             if let Some((y, state)) = head {
                 list::draw_head(g, dc, state, lw, y, head_hover)?;
             }
@@ -4065,7 +4128,7 @@ impl App {
         if d.rail {
             let hover = self.hover_space;
             self.rail.draw(s, |dc| unsafe {
-                dc.Clear(Some(&gfx::color(BLACKOUT, 1.0)));
+                dc.Clear(Some(&gfx::color(theme::blackout(), 1.0)));
                 for (i, space) in c.spaces.iter().enumerate() {
                     let (x, y, w, h) = Self::space_rect(i);
                     let r = rect(x, y, x + w, y + h);
@@ -4097,7 +4160,7 @@ impl App {
                             dc,
                             rect(r.left - 3.0, r.top - 3.0, r.right + 3.0, r.bottom + 3.0),
                             15.5,
-                            &dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.26), None)?,
+                            &dc.CreateSolidColorBrush(&gfx::color(theme::text(), 0.26), None)?,
                         );
                     }
                     // egui's initial: a whole grapheme, an emoji as Twemoji.
@@ -4118,7 +4181,10 @@ impl App {
                                 dc,
                                 r,
                                 13.0,
-                                &dc.CreateSolidColorBrush(&gfx::color(BLACKOUT, 0.5), None)?,
+                                &dc.CreateSolidColorBrush(
+                                    &gfx::color(theme::blackout(), 0.5),
+                                    None,
+                                )?,
                             );
                         }
                         text::draw(
@@ -4126,15 +4192,15 @@ impl App {
                             &l,
                             r.left,
                             r.top,
-                            &dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.5), None)?,
+                            &dc.CreateSolidColorBrush(&gfx::color(theme::text(), 0.5), None)?,
                         );
                         let b = rect(r.left - 6.0, r.top - 6.0, r.left + 12.0, r.top + 12.0);
-                        fill_round(dc, b, 9.0, &g.solid(BLACKOUT));
+                        fill_round(dc, b, 9.0, &g.solid(theme::blackout()));
                         icons::draw(
                             dc,
                             icons::Icon::BellOff,
                             rect(b.left + 3.0, b.top + 3.0, b.right - 3.0, b.bottom - 3.0),
-                            TEXT_MUTED,
+                            theme::text_muted(),
                             1.0,
                         );
                     } else {
@@ -4150,14 +4216,14 @@ impl App {
                                 dc,
                                 rect(b.left + 2.0, b.top + 2.0, b.right - 2.0, b.bottom - 2.0),
                                 7.0,
-                                &g.solid(VOICE_GREEN),
+                                &g.solid(theme::voice_green()),
                             );
                         }
                         icons::draw(
                             dc,
                             icons::Icon::Volume,
                             rect(b.left + 3.0, b.top + 3.0, b.right - 3.0, b.bottom - 3.0),
-                            TEXT,
+                            if connected { 0xFFFFFF } else { theme::text() },
                             1.0,
                         );
                     }
@@ -4188,12 +4254,12 @@ impl App {
                             r.right + 3.0,
                             r.bottom + 3.0,
                         );
-                        fill_round(dc, b, 10.0, &g.solid(BLACKOUT));
+                        fill_round(dc, b, 10.0, &g.solid(theme::blackout()));
                         let inner = rect(b.left + 2.0, b.top + 2.0, b.right - 2.0, b.bottom - 2.0);
                         fill_round(dc, inner, 8.0, &g.brushes.terracotta);
                         n.SetMaxWidth(inner.right - inner.left)?;
                         n.SetMaxHeight(inner.bottom - inner.top)?;
-                        text::draw(dc, &n, inner.left, inner.top, &g.brushes.text);
+                        text::draw(dc, &n, inner.left, inner.top, &g.solid(0xFFFFFF));
                     }
                 }
                 if let Some(names) = &rail_invites {
@@ -4237,7 +4303,7 @@ impl App {
                 .side_focus
                 .filter(|_| self.side_ring && !self.is_narrow());
             self.sidebar.draw(s, |dc| unsafe {
-                dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
+                dc.Clear(Some(&gfx::color(theme::surface_sidebar(), 1.0)));
                 if self.panes.focus == Some(panes::Pane::Sidebar) {
                     dc.FillRectangle(&rect(sw - 2.0, 0.0, sw, self.h), &g.brushes.terracotta);
                 }
@@ -4251,7 +4317,7 @@ impl App {
                         dc,
                         icons::Icon::ChevronDown,
                         rect(b.left + 6.0, b.top + 6.0, b.right - 6.0, b.bottom - 6.0),
-                        TEXT_MUTED,
+                        theme::text_muted(),
                         1.0,
                     );
                     if muted {
@@ -4259,14 +4325,15 @@ impl App {
                             dc,
                             icons::Icon::BellOff,
                             rect(b.left - 20.0, 20.0, b.left - 6.0, 34.0),
-                            TEXT_MUTED,
+                            theme::text_muted(),
                             1.0,
                         );
                     }
                 }
                 // egui halves a muted row's colours.
-                let dim_text = dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.5), None)?;
-                let dim_muted = dc.CreateSolidColorBrush(&gfx::color(TEXT_MUTED, 0.5), None)?;
+                let dim_text = dc.CreateSolidColorBrush(&gfx::color(theme::text(), 0.5), None)?;
+                let dim_muted =
+                    dc.CreateSolidColorBrush(&gfx::color(theme::text_muted(), 0.5), None)?;
                 let title = c.spaces.get(c.space).map_or("Caper", |s| s.name.as_str());
                 let t = g.layout(&gfx::wide(title), &g.formats.space, 10_000.0)?;
                 emoji::apply(&t, title, 17.0, 1.0)?;
@@ -4310,7 +4377,7 @@ impl App {
                             dc,
                             icons::Icon::More,
                             rect(b.left + 4.0, b.top + 4.0, b.right - 4.0, b.bottom - 4.0),
-                            TEXT,
+                            theme::text(),
                             1.0,
                         );
                         right = b.left - 4.0;
@@ -4326,11 +4393,11 @@ impl App {
                             icons::Icon::Headphones,
                             rect(b.left + 4.0, b.top + 4.0, b.right - 4.0, b.bottom - 4.0),
                             if !enabled {
-                                BORDER
+                                theme::border()
                             } else if on {
-                                VOICE_GREEN
+                                theme::voice_green()
                             } else {
-                                TEXT_MUTED
+                                theme::text_muted()
                             },
                             1.0,
                         );
@@ -4352,7 +4419,7 @@ impl App {
                             dc,
                             icons::Icon::BellOff,
                             rect(right - 14.0, cy - 7.0, right, cy + 7.0),
-                            TEXT_MUTED,
+                            theme::text_muted(),
                             0.5,
                         );
                         right -= 20.0;
@@ -4461,7 +4528,7 @@ impl App {
                 - if pins.is_some() { 34.0 } else { 0.0 })
             .max(40.0);
             self.header.draw(s, |dc| unsafe {
-                dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
+                dc.Clear(Some(&gfx::color(theme::surface_conversation(), 1.0)));
                 if self.is_narrow() {
                     self.draw_narrow_header(dc)?;
                     dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, lw, HEADER_H), &g.brushes.border);
@@ -4494,7 +4561,11 @@ impl App {
                         fill_round(dc, r, 6.0, &g.brushes.hover);
                     }
                     let icon = rect(r.left + 5.0, r.top + 5.0, r.right - 5.0, r.bottom - 5.0);
-                    let color = if active || hover { TEXT } else { TEXT_MUTED };
+                    let color = if active || hover {
+                        theme::text()
+                    } else {
+                        theme::text_muted()
+                    };
                     icons::draw(dc, icons::Icon::Users, icon, color, 1.0);
                 }
                 if let Some((r, lit)) = pins {
@@ -4502,7 +4573,11 @@ impl App {
                         fill_round(dc, r, 6.0, &g.brushes.hover);
                     }
                     let icon = rect(r.left + 5.0, r.top + 5.0, r.right - 5.0, r.bottom - 5.0);
-                    let color = if lit { TEXT } else { TEXT_MUTED };
+                    let color = if lit {
+                        theme::text()
+                    } else {
+                        theme::text_muted()
+                    };
                     icons::draw(dc, icons::Icon::Pin, icon, color, 1.0);
                 }
                 dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, lw, HEADER_H), &g.brushes.border);
@@ -4525,7 +4600,7 @@ impl App {
                     dc,
                     rect(0.0, 0.0, mw, self.members_h()),
                     if self.is_narrow() { 16.0 } else { 0.0 },
-                    &g.solid(SURFACE_SIDEBAR),
+                    &g.solid(theme::surface_sidebar()),
                 );
                 dc.FillRectangle(&rect(0.0, 0.0, 1.0, 100_000.0), &g.brushes.border);
                 if self.panes.focus == Some(panes::Pane::Members) {
@@ -4772,9 +4847,10 @@ pub fn draw_lip(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32) {
         let Ok(brush) = dc.CreateSolidColorBrush(&gfx::color(0x000000, 1.0), None) else {
             return;
         };
+        let max_opacity = if theme::is_light() { 0.06 } else { 0.14 };
         for i in 0..STEPS {
             // Strip i runs from the top; its opacity is taken at its middle.
-            let opacity = 0.14 * (i as f32 + 0.5) / STEPS as f32;
+            let opacity = max_opacity * (i as f32 + 0.5) / STEPS as f32;
             brush.SetOpacity(opacity);
             let top = y + i as f32 * step;
             dc.FillRectangle(&rect(x, top, x + w, top + step), &brush);
@@ -4991,7 +5067,7 @@ fn draw_typing(
         if names.is_empty() {
             return Ok(());
         }
-        let brush = g.solid(TEXT_MUTED);
+        let brush = g.solid(theme::text_muted());
         for i in 0..3 {
             let (rise, opacity) = lift.map_or((0.0, 1.0), |l| (3.0 * l[i], 0.45 + 0.55 * l[i]));
             brush.SetOpacity(opacity);
@@ -5140,8 +5216,12 @@ fn main() -> Result<()> {
         }
         with_app(|a| {
             a.live = live::start(hwnd);
-            if let Some(live) = &a.live {
+            let light = a.live.as_ref().is_some_and(|live| {
                 a.panes.restore(&live.preferences);
+                theme::is_light_preference(live.preferences.theme_preference())
+            });
+            if light != theme::is_light() {
+                a.apply_theme(light);
             }
             if a.live.is_some() {
                 // Restoring the stored session; the sign-in form follows if there is none.

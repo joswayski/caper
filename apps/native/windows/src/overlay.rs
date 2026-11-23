@@ -129,8 +129,6 @@ const MENU_HEAD: f32 = 30.0 + 4.0;
 const ITEM_H: f32 = 36.0;
 /// An image menu's copy status, a muted line under the items.
 const STATUS_H: f32 = 28.0;
-/// Danger items (Delete message), as in the egui client.
-const DANGER: u32 = 0xFF8C9A;
 
 /// The actions menu of message `row`, at (x, y) in client DIPs.
 pub struct Menu {
@@ -261,7 +259,11 @@ impl Menu {
                 dc,
                 Icon::Close,
                 rect(cx + 3.0, cy + 3.0, cx + cw - 3.0, cy + ch - 3.0),
-                if self.close_hover { TEXT } else { TEXT_MUTED },
+                if self.close_hover {
+                    crate::theme::text()
+                } else {
+                    crate::theme::text_muted()
+                },
                 1.0,
             );
             for (k, item) in self.items.iter().enumerate() {
@@ -271,9 +273,9 @@ impl Menu {
                     fill_round(dc, rect(ix, iy, ix + iw, iy + ih), 4.0, &g.brushes.border);
                 }
                 let (color, alpha) = match item {
-                    _ if !item.enabled() => (TEXT, 0.5),
-                    Item::Delete => (DANGER, 1.0),
-                    _ => (TEXT, 1.0),
+                    _ if !item.enabled() => (crate::theme::text(), 0.5),
+                    Item::Delete => (crate::theme::error(), 1.0),
+                    _ => (crate::theme::text(), 1.0),
                 };
                 let cy = iy + ih / 2.0;
                 icons::draw(
@@ -513,7 +515,6 @@ const FIELD_LINES: f32 = 6.0;
 pub(crate) const DIRECT_FIELD_H: f32 = 42.0;
 /// A suggested person's row, and the highlighted row's fill (egui's).
 const SUGGEST_H: f32 = 44.0;
-const SUGGEST_SELECTED: u32 = 0x43241E;
 
 /// What a Leave dialog leaves: a space, or one of its channels; its name,
 /// and whether leaving loses access (a private channel you don't own).
@@ -1438,9 +1439,9 @@ impl Dialog {
     ) -> Result<()> {
         let body = rect(x, y, x + pw, y + ph);
         let stroke = if self.field.focused {
-            g.solid(TERRACOTTA)
+            g.solid(crate::theme::terracotta())
         } else if self.hover == Some(Part::Field) {
-            g.solid(TERRACOTTA_BRIGHT)
+            g.solid(crate::theme::terracotta_bright())
         } else {
             g.brushes.border.clone()
         };
@@ -1485,7 +1486,7 @@ impl Dialog {
         };
         let r = rect(x, y, x + w, y + h);
         if self.selected == k {
-            fill_round(dc, r, 6.0, &g.solid(SUGGEST_SELECTED));
+            fill_round(dc, r, 6.0, &g.solid(crate::theme::accent_surface()));
         } else if self.hover == Some(Part::Suggest(k)) {
             fill_round(dc, r, 6.0, &g.brushes.hover);
         }
@@ -1579,9 +1580,21 @@ pub(crate) fn draw_button(
     if state != 0 && state != 3 {
         let rim = rect(x + 1.0, y + 1.0, x + w - 1.0, y + h - 1.0);
         let rim_alpha = match tone {
-            Tone::Primary => 0.36,
+            Tone::Primary => {
+                if crate::theme::is_light() {
+                    0.16
+                } else {
+                    0.36
+                }
+            }
             Tone::Danger => 0.24,
-            _ => 0.12,
+            _ => {
+                if crate::theme::is_light() {
+                    0.75
+                } else {
+                    0.12
+                }
+            }
         };
         let rim_brush =
             unsafe { dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, rim_alpha), None)? };
@@ -1613,24 +1626,32 @@ pub(crate) enum Tone {
 impl Tone {
     /// `state`: 0 disabled, 1 rest, 2 hover, 3 pressed.
     fn colors(self, state: u8) -> (u32, u32, u32) {
+        let p = crate::theme::palette();
         if state == 0 {
             // Disabled steps back to neutral chrome.
-            return (SURFACE_RAISED, BORDER, TEXT_MUTED);
+            return (p.surface_raised, p.border, p.text_muted);
         }
+        let light = crate::theme::is_light();
         match (self, state) {
-            (Self::Primary, 1) => (ACTION, ACTION, BLACKOUT),
-            (Self::Primary, 2) => (ACTION_HOVER, ACTION_HOVER, BLACKOUT),
-            (Self::Primary, _) => (ACTION_PRESS, ACTION_PRESS, BLACKOUT),
-            (Self::Secondary, 1) => (SURFACE_RAISED, BORDER, TEXT),
-            (Self::Secondary, 2) => (BORDER, TEXT_MUTED, TEXT),
-            (Self::Secondary, _) => (crate::theme::ACCENT_SURFACE, TERRACOTTA_BRIGHT, TEXT),
+            (Self::Primary, 1) => (p.action, p.action, p.on_action),
+            (Self::Primary, 2) => (p.action_hover, p.action_hover, p.on_action),
+            (Self::Primary, _) => (p.action_press, p.action_press, p.on_action),
+            (Self::Secondary, 1) => (p.surface_raised, p.border, p.text),
+            (Self::Secondary, 2) => (p.border, p.text_muted, p.text),
+            (Self::Secondary, _) => (p.accent_surface, p.terracotta_bright, p.text),
             (Self::Danger, 1) => (0xB93646, 0xB93646, 0xFFFFFF),
             (Self::Danger, 2) => (0xD44355, 0xD44355, 0xFFFFFF),
             (Self::Danger, _) => (0xA02E3C, 0xFF8C9A, 0xFFFFFF),
             // `--danger-wash` over the card on hover.
-            (Self::DangerOutline, 1) => (0x151719, 0xB93646, ERROR),
-            (Self::DangerOutline, 2) => (0x2F1C20, 0xD44355, ERROR),
-            (Self::DangerOutline, _) => (0x3C1E24, 0xFF8C9A, ERROR),
+            (Self::DangerOutline, 1) => {
+                (if light { p.surface } else { 0x151719 }, 0xB93646, p.error)
+            }
+            (Self::DangerOutline, 2) => {
+                (if light { 0xFCEBED } else { 0x2F1C20 }, 0xD44355, p.error)
+            }
+            (Self::DangerOutline, _) => {
+                (if light { 0xF9D7DC } else { 0x3C1E24 }, 0xFF8C9A, p.error)
+            }
         }
     }
 }
@@ -2729,7 +2750,8 @@ impl App {
                 self.dialog_p.offset(0.0, 0.0)?;
                 self.dialog_p.draw(s, |dc| {
                     unsafe {
-                        dc.Clear(Some(&gfx::color(BLACKOUT, 0.6)));
+                        let (scrim, scrim_alpha) = crate::theme::scrim();
+                        dc.Clear(Some(&gfx::color(scrim, scrim_alpha)));
                     }
                     Ok(())
                 })?;
