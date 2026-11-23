@@ -460,7 +460,9 @@ public actor Gateway {
     private func scheduleReconnect(replacement: Bool) {
         guard reconnectTask == nil, !stopped, !subscriptions.isEmpty || !commands.isEmpty else { return }
         attempts += 1
-        let delay = min(pow(2, Double(min(attempts, 5))) * 0.25, 5)
+        // Web's backoff: up to 5 seconds, ±25% so clients a deploy dropped
+        // together do not all come back in the same instant.
+        let delay = min(pow(2, Double(min(attempts, 5))) * 0.25, 5) * Double.random(in: 0.75...1.25)
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay)); guard !Task.isCancelled, let self else { return }
             await self.reconnect(replacement: replacement)
