@@ -160,6 +160,13 @@ import Observation
         picture.frame = CGRect(x: bounds.midX + offset.width - size.width * state.scale / 2,
             y: bounds.midY + offset.height - size.height * state.scale / 2, width: size.width * state.scale, height: size.height * state.scale)
     }
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.invalidateCursorRects(for: self)
+    }
     override func cancelOperation(_ sender: Any?) { state.finish() }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 123 { step?(-1) } else if event.keyCode == 124 { step?(1) } else { super.keyDown(with: event) }

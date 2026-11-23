@@ -97,6 +97,7 @@ private final class NonInteractiveLabel: NSTextField {
         for child in [avatar, prepared, sign] { child.frame = CGRect(x: 0, y: 0, width: 112, height: 112); art.addSubview(child) }
         prepared.imageScaling = .scaleProportionallyUpOrDown; prepared.wantsLayer = true; prepared.layer?.masksToBounds = true
         prepared.layer?.cornerRadius = ProfilePicturePolicy.cornerRadius(side: 112)
+        prepared.layer?.backgroundColor = AppKitKit.raised.cgColor
         picture = AppKitKitButton("Change profile picture") { [weak self] in self?.showPictureMenu() }
         picture.setAccessibilityIdentifier("change-profile-picture")
         regenerate = AppKitKitButton("Regenerate avatar") { [state] in if !state.busy { state.draft?.regenerate() } }
@@ -157,7 +158,8 @@ private final class NonInteractiveLabel: NSTextField {
         avatar.update(name: draft.displayName.isEmpty ? draft.username : draft.displayName, avatarId: draft.avatarId, picture: draft.avatarPicture)
         sign.isHidden = state.hasPicture || CaperAvatar.index(for: draft.avatarId) == nil
         if data != draft.preparedPicture?.data { data = draft.preparedPicture?.data; prepared.image = data.flatMap(NSImage.init(data:)) }
-        prepared.animates = !CaperAccessibility.reduceMotion; prepared.isHidden = data == nil
+        prepared.layer?.backgroundColor = AppKitKit.raised.cgColor
+        prepared.animates = !CaperAccessibility.reduceMotion; prepared.isHidden = data == nil; avatar.isHidden = data != nil
     }
     private func showPictureMenu() {
         guard !state.busy else { return }
@@ -307,7 +309,8 @@ struct NativeProfileForm: UIViewControllerRepresentable {
         picture.isEnabled = !state.busy; regenerate.isEnabled = !state.busy; regenerate.isHidden = state.hasPicture
         avatar.show(name: draft.displayName.isEmpty ? draft.username : draft.displayName, avatarID: draft.avatarId, picture: draft.avatarPicture)
         sign.isHidden = state.hasPicture || CaperAvatar.index(for: draft.avatarId) == nil
-        prepared.isHidden = draft.preparedPicture == nil
+        prepared.backgroundColor = UIColor(CaperTheme.raised)
+        prepared.isHidden = draft.preparedPicture == nil; avatar.isHidden = draft.preparedPicture != nil
         if data != draft.preparedPicture?.data {
             data = draft.preparedPicture?.data; decoding?.cancel(); prepared.image = nil
             if let data { decoding = Task { [weak self] in

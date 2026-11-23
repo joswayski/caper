@@ -60,6 +60,13 @@ extension AppKitDialogContent { var initialFocus: NSView? { nil } }
         guard !card.frame.contains(convert(event.locationInWindow, from: nil)) else { return }
         if !content.dismissDisabled { requestClose() }
     }
+    override func rightMouseDown(with event: NSEvent) {}
+    override func otherMouseDown(with event: NSEvent) {}
+    override func resetCursorRects() {
+        // Override workspace cursor rects behind the modal while letting
+        // interactive controls inside `card` install their own cursor rects.
+        addCursorRect(bounds, cursor: .arrow)
+    }
     override func layout() {
         let offset = max(16, bounds.height * 0.1)
         top?.constant = offset
@@ -69,7 +76,8 @@ extension AppKitDialogContent { var initialFocus: NSView? { nil } }
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil else { return }
+        guard let window else { return }
+        window.invalidateCursorRects(for: self)
         guard !CaperAccessibility.reduceMotion else { alphaValue = 1; return }
         alphaValue = 0
         NSAnimationContext.runAnimationGroup { context in

@@ -288,10 +288,12 @@ import SwiftUI
         state.closed = true
         observation.stop()
         self.state = nil
-        (host.parent?.view as? AppKitWorkspaceContainer)?.dialogView = nil
+        let container = host.parent?.view as? AppKitWorkspaceContainer
+        container?.dialogView = nil
         host.view.removeFromSuperview()
         host.removeFromParent()
         self.host = nil
+        if let container { window?.invalidateCursorRects(for: container) }
         switch item {
         case .activity: model.activityShown = false
         case .forward(let message):
