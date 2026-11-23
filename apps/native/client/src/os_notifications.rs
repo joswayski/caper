@@ -145,6 +145,38 @@ impl Lifetime {
     pub fn ended(&self) -> bool {
         self.stopped.load(Ordering::Relaxed) || self.retracted.load(Ordering::Relaxed)
     }
+
+    /// Resolves once this lifetime ends or `done` holds, or after `limit`.
+    /// A shown notification waits here for as long as it stays up (up to a
+    /// day), so it sleeps until [`wake`] instead of polling on a timer.
+    async fn until(&self, limit: Duration, done: impl Fn() -> bool) {
+        let _ = tokio::time::timeout(limit, async {
+            loop {
+                // Registered before the check, so a wake in between is kept.
+                let woken = WAKE.notified();
+                tokio::pin!(woken);
+                woken.as_mut().enable();
+                if self.ended() || done() {
+                    return;
+                }
+                woken.await;
+            }
+        })
+        .await;
+    }
+}
+
+/// The longest a shown notification stays removable.
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+const SHOWN_FOR: Duration = Duration::from_secs(86_400);
+
+/// Shared by every shown notification; each rechecks its own state.
+static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Sends waiting notifications ([`Lifetime::until`]) to recheck after a
+/// lifetime ended or a notification was clicked or dismissed.
+fn wake() {
+    WAKE.notify_waiters();
 }
 
 /// How long a retracted id is remembered, so an original arriving after its
@@ -184,6 +216,7 @@ impl Retractions {
         self.forget(now);
         if let Some(flag) = self.shown.remove(message).and_then(|flag| flag.upgrade()) {
             flag.store(true, Ordering::Relaxed);
+            wake();
         }
         if !self.recent.iter().any(|(old, _)| old == message) {
             self.recent.push_back((message.to_owned(), now));
@@ -208,6 +241,7 @@ pub struct Control {
 impl Control {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+        wake();
     }
     pub fn activity(&self) {
         if let Ok(mut time) = self.activity.lock() {
@@ -509,12 +543,7 @@ fn platform_show(
             _ = handle.wait_for_action_async(|action| {
                 if action.is_default_action() && !lifetime.ended() { clicked(); }
             }) => {},
-            _ = async {
-                let start = Instant::now();
-                while !lifetime.ended() && start.elapsed() < Duration::from_secs(86_400) {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            } => {},
+            () = lifetime.until(SHOWN_FOR, || false) => {},
         }
         handle.close_async().await;
         Ok(())
@@ -573,6 +602,7 @@ fn platform_show(
     let cancelled = lifetime.clone();
     let manager = ToastManager::new(APP_ID).on_activated(None, move |_| {
         done.store(true, Ordering::Relaxed);
+        wake();
         if !cancelled.ended() {
             clicked();
         }
@@ -580,14 +610,12 @@ fn platform_show(
     manager.show(&toast).map_err(|_| {
         "Couldn’t show desktop notification. Check Windows notification settings.".to_owned()
     })?;
-    let start = Instant::now();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .map_err(|_| "Couldn’t prepare desktop notifications.".to_owned())?
+        .block_on(lifetime.until(SHOWN_FOR, || activated.load(Ordering::Relaxed)));
     // Removing the toast also clears it from Action Center.
-    while !lifetime.ended()
-        && !activated.load(Ordering::Relaxed)
-        && start.elapsed() < Duration::from_secs(86_400)
-    {
-        std::thread::sleep(Duration::from_millis(200));
-    }
     let _ = manager.remove_grouped_tag(GROUP, &tag);
     Ok(())
 }
@@ -764,6 +792,39 @@ mod tests {
         assert_eq!(retractions.shown.len(), 2);
         stopped.store(true, Ordering::Relaxed);
         assert!(invitation.ended() && other.ended(), "logout ends them all");
+    }
+
+    #[test]
+    fn shown_notifications_wake_when_retracted_or_the_feed_stops() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let control = Control {
+            stop: stop.clone(),
+            activity: Arc::new(Mutex::new(Instant::now())),
+        };
+        let mut retractions = Retractions::default();
+        let now = Instant::now();
+        let message = |id: &str| alert(json!({"messageId": id}));
+        // Each waits the way a shown notification does, on its own thread.
+        let wait = |lifetime: Lifetime| {
+            let (finished, done) = mpsc::channel();
+            thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_time()
+                    .build()
+                    .unwrap()
+                    .block_on(lifetime.until(Duration::from_secs(60), || false));
+                finished.send(()).unwrap();
+            });
+            done
+        };
+        let shown = wait(retractions.lifetime(&message("msg000000000001"), &stop, now));
+        let other = wait(retractions.lifetime(&message("msg000000000002"), &stop, now));
+        assert!(shown.recv_timeout(Duration::from_millis(300)).is_err());
+        retractions.retract("msg000000000001", now);
+        shown.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(other.recv_timeout(Duration::from_millis(300)).is_err());
+        control.stop();
+        other.recv_timeout(Duration::from_secs(5)).unwrap();
     }
 
     #[test]
