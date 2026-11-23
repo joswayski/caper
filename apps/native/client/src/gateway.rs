@@ -15,6 +15,9 @@ use std::time::{Duration, Instant};
 
 /// How long a connection waits for its first member presence snapshot.
 const PRESENCE_DEADLINE: Duration = Duration::from_secs(10);
+/// Most frames a catching-up replacement reads in a row before the old
+/// connection is read again.
+const CATCHUP_BURST: usize = 32;
 
 #[derive(Clone, Debug)]
 pub struct MediaChannel {
@@ -376,31 +379,43 @@ fn connect_once(
             } else {
                 &mut active
             };
-            let result = (|| {
-                if replacement && stream.connection.opened.elapsed() >= CATCHUP_DEADLINE {
-                    return Err(Failure::Retry("replacement did not catch up".into()));
+            // A replacement catching up reads every frame it has queued, not
+            // one per turn behind the old socket's blocking read: that held
+            // catch-up to about five frames a second, near CATCHUP_DEADLINE
+            // with many media channels. Bounded so the old one keeps flowing.
+            let mut result = Ok(None);
+            for _ in 0..if replacement { CATCHUP_BURST } else { 1 } {
+                result = (|| {
+                    if replacement && stream.connection.opened.elapsed() >= CATCHUP_DEADLINE {
+                        return Err(Failure::Retry("replacement did not catch up".into()));
+                    }
+                    let Some(value) = stream.connection.read(activity)? else {
+                        return Ok(None);
+                    };
+                    receive_frame(
+                        stream,
+                        replacement,
+                        value,
+                        &subscription,
+                        presence_subscription.as_deref(),
+                        generation,
+                        channel,
+                        cursor,
+                        presence,
+                        media.epoch,
+                        &mut media_subscriptions,
+                        events,
+                    )
+                    .map(Some)
+                })();
+                match result {
+                    Ok(Some(true)) => migrating = true,
+                    Ok(Some(false)) => {}
+                    _ => break,
                 }
-                let Some(value) = stream.connection.read(activity)? else {
-                    return Ok(false);
-                };
-                receive_frame(
-                    stream,
-                    replacement,
-                    value,
-                    &subscription,
-                    presence_subscription.as_deref(),
-                    generation,
-                    channel,
-                    cursor,
-                    presence,
-                    media.epoch,
-                    &mut media_subscriptions,
-                    events,
-                )
-            })();
+            }
             match result {
-                Ok(true) => migrating = true,
-                Ok(false) => {}
+                Ok(_) => {}
                 Err(_) if replacement => {
                     if let Some(mut failed) = candidate.take() {
                         failed.connection.close();
@@ -509,7 +524,7 @@ fn receive_frame(
             let event = &value["event"];
             match event["type"].as_str() {
                 Some("message.created") => {
-                    let message: Message = serde_json::from_value(event["message"].clone())
+                    let message: Message = serde::Deserialize::deserialize(&event["message"])
                         .map_err(|_| {
                             Failure::Retry("The gateway returned an invalid message.".into())
                         })?;
@@ -546,7 +561,7 @@ fn receive_frame(
                 }
                 Some("message.reactions") => {
                     let update: ReactionUpdate =
-                        serde_json::from_value(event.clone()).map_err(|_| {
+                        serde::Deserialize::deserialize(event).map_err(|_| {
                             Failure::Retry("The gateway returned invalid reactions.".into())
                         })?;
                     if update.channel_id != channel
@@ -589,7 +604,7 @@ fn receive_frame(
                 }
                 Some("message.attachments") => {
                     let update: AttachmentUpdate =
-                        serde_json::from_value(event.clone()).map_err(|_| {
+                        serde::Deserialize::deserialize(event).map_err(|_| {
                             Failure::Retry("The gateway returned invalid attachments.".into())
                         })?;
                     if update.channel_id != channel
@@ -663,7 +678,7 @@ fn receive_frame(
                 }
                 Some("message.pin") => {
                     let update: PinUpdate =
-                        serde_json::from_value(event.clone()).map_err(|_| {
+                        serde::Deserialize::deserialize(event).map_err(|_| {
                             Failure::Retry("The gateway returned an invalid pin.".into())
                         })?;
                     if update.channel_id != channel
@@ -700,7 +715,7 @@ fn receive_frame(
                     });
                 }
                 Some("message.forward") => {
-                    let update: ForwardUpdate = serde_json::from_value(event.clone())
+                    let update: ForwardUpdate = serde::Deserialize::deserialize(event)
                         .map_err(|_| Failure::Retry("Invalid forward event.".into()))?;
                     if update.channel_id != channel
                         || update.kind != "message.forward"
@@ -739,7 +754,7 @@ fn receive_frame(
                 }
                 Some("message.edited") => {
                     let update: EditUpdate =
-                        serde_json::from_value(event.clone()).map_err(|_| {
+                        serde::Deserialize::deserialize(event).map_err(|_| {
                             Failure::Retry("The gateway returned an invalid edit.".into())
                         })?;
                     if update.schema_version != 1
@@ -803,7 +818,7 @@ fn receive_frame(
                     if replacement {
                         return Ok(false);
                     }
-                    let author: Author = serde_json::from_value(event["author"].clone())
+                    let author: Author = serde::Deserialize::deserialize(&event["author"])
                         .map_err(|_| Failure::Retry("Invalid typing author.".into()))?;
                     let revision = event["revision"]
                         .as_str()
@@ -833,7 +848,7 @@ fn receive_frame(
             if event["type"] == "snapshot"
                 && let Some((space, _)) = presence
             {
-                let members: Vec<Presence> = serde_json::from_value(event["members"].clone())
+                let members: Vec<Presence> = serde::Deserialize::deserialize(&event["members"])
                     .map_err(|_| Failure::Retry("Invalid member presence.".into()))?;
                 if replacement {
                     stream.presence = Some(members);
@@ -867,7 +882,7 @@ fn receive_frame(
             if previous.is_some_and(|old| revision <= old) {
                 return Ok(false);
             }
-            let participants = serde_json::from_value(event["participants"].clone())
+            let participants = serde::Deserialize::deserialize(&event["participants"])
                 .map_err(|_| Failure::Retry("Invalid voice roster.".into()))?;
             *previous = Some(revision);
             let _ = events.send(GatewayEvent::VoiceRoster {
@@ -1306,6 +1321,73 @@ mod tests {
         assert_eq!(cards[0].embeds.len(), 1, "malformed cards are skipped");
         control.stop();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn a_quiet_old_socket_does_not_hold_back_a_replacement_catching_up() {
+        type Socket = tungstenite::WebSocket<std::net::TcpStream>;
+        fn send(socket: &mut Socket, frame: Value) {
+            socket
+                .send(WsMessage::Text(frame.to_string().into()))
+                .unwrap();
+        }
+        fn accept(listener: &TcpListener) -> (Socket, String) {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            send(&mut socket, json!({"type":"hello"}));
+            let frame: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            let id = frame["id"].as_str().unwrap().to_owned();
+            send(&mut socket, json!({"type":"subscribed", "id":id}));
+            (socket, id)
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (advance, advanced) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut old, id) = accept(&listener);
+            send(
+                &mut old,
+                json!({"type":"event", "id":id, "event":{"type":"ready", "cursor":"1"}}),
+            );
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            send(&mut old, json!({"type":"migrating"}));
+            let (mut replacement, _) = accept(&listener);
+            // The old socket stays quiet. Reading one frame per turn behind
+            // its 200 ms read took about 8 s for these 40.
+            let started = Instant::now();
+            for _ in 0..40 {
+                send(&mut replacement, json!({"type":"heartbeat"}));
+            }
+            send(
+                &mut replacement,
+                json!({"type":"event", "id":id, "event":{"type":"ready", "cursor":"1"}}),
+            );
+            assert!(matches!(old.read(), Ok(WsMessage::Close(_))));
+            started.elapsed()
+        });
+        let (events, incoming) = mpsc::channel();
+        let control = spawn(
+            &url::Url::parse(&format!("http://{address}")).unwrap(),
+            None,
+            1,
+            "text".into(),
+            "1".into(),
+            None,
+            MediaWatch::default(),
+            events,
+        );
+        while !matches!(
+            incoming.recv_timeout(Duration::from_secs(5)).unwrap(),
+            GatewayEvent::Status { online: true, .. }
+        ) {}
+        advance.send(()).unwrap();
+        let handoff = server.join().unwrap();
+        control.stop();
+        assert!(handoff < Duration::from_secs(3), "handoff took {handoff:?}");
     }
 
     #[test]

@@ -1098,7 +1098,10 @@ fn transfer<T>(
                         && error.code.as_deref() != Some("upload_incomplete") =>
                 {
                     match delays.next() {
-                        Some(delay) => std::thread::sleep(*delay),
+                        // Cancelling ends the wait; the loop reports it.
+                        Some(delay) => {
+                            let _ = pause(*delay, &cancel);
+                        }
                         None => return Err(error),
                     }
                 }

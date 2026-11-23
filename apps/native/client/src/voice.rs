@@ -433,6 +433,9 @@ impl Voice {
             let mut roster_ready = false;
             let timing = session.join_timing();
             let mut roster_at = None;
+            // The last roster polled, so a poll that finds what it found
+            // before (the usual case) neither sends nor repaints.
+            let mut polled: Option<Snapshot> = None;
             let mut next_snapshot = Instant::now();
             let mut next_diagnostics = Instant::now();
             let mut activity = VoiceActivity::default();
@@ -503,7 +506,12 @@ impl Voice {
                         Ok(snapshot) => {
                             roster_ready = true;
                             roster_at.get_or_insert_with(Instant::now);
-                            report(&events, &repaint, Report::Roster(generation, snapshot))
+                            // Without a revision the UI can't order it against
+                            // gateway snapshots, so it always goes.
+                            if snapshot.revision.is_none() || polled.as_ref() != Some(&snapshot) {
+                                polled = Some(snapshot.clone());
+                                report(&events, &repaint, Report::Roster(generation, snapshot));
+                            }
                         }
                         Err(error) => {
                             if error.terminal() {

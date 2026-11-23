@@ -356,10 +356,10 @@ fn connect_once(
                         }
                     }
                     Some("event") if value["id"] == subscription => {
-                        let snapshot: Snapshot = serde_json::from_value(value["event"].clone())
+                        let snapshot: Snapshot = serde::Deserialize::deserialize(&value["event"])
                             .map_err(|_| {
-                                Failure::Retry("voice gateway returned invalid state".into())
-                            })?;
+                            Failure::Retry("voice gateway returned invalid state".into())
+                        })?;
                         let revision = snapshot
                             .revision
                             .ok_or_else(|| Failure::Retry("missing voice revision".into()))?;

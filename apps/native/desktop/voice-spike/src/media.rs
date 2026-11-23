@@ -120,14 +120,14 @@ struct TurnResponse {
     turn: TurnGeneration,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Track {
     pub id: String,
     pub kind: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Participant {
     pub id: String,
@@ -144,7 +144,7 @@ pub struct Participant {
     pub tracks: Vec<Track>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Snapshot {
     pub participants: Vec<Participant>,
     #[serde(default)]

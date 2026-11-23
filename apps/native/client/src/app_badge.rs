@@ -11,6 +11,17 @@ struct State {
     token: Option<String>,
     revision: u64,
     stopped: bool,
+    /// The count last shown, so a 15 s poll that finds no change wakes
+    /// nothing and leaves the title, launcher and taskbar badge alone.
+    shown: Option<u64>,
+}
+
+impl State {
+    fn show(&mut self, host: &impl Host, count: u64) {
+        if self.shown.replace(count) != Some(count) {
+            publish(host, count);
+        }
+    }
 }
 
 pub struct Badge<H: Host> {
@@ -42,11 +53,11 @@ impl<H: Host> Badge<H> {
                     match result {
                         Ok(unread) => {
                             if let Some(count) = unread.badge_count {
-                                publish(&repaint, count);
+                                state.show(&repaint, count);
                             }
                         }
                         Err(error) if error.status == Some(reqwest::StatusCode::UNAUTHORIZED) => {
-                            publish(&repaint, 0);
+                            state.show(&repaint, 0);
                         }
                         Err(_) => {} // Keep the last known count during an outage.
                     }
@@ -63,7 +74,7 @@ impl<H: Host> Badge<H> {
         let mut state = self.shared.0.lock().unwrap();
         state.revision = state.revision.wrapping_add(1);
         state.token = token;
-        publish(&self.host, 0);
+        state.show(&self.host, 0);
         self.shared.1.notify_one();
     }
 
@@ -79,7 +90,7 @@ impl<H: Host> Drop for Badge<H> {
         let mut state = self.shared.0.lock().unwrap();
         state.stopped = true;
         state.revision = state.revision.wrapping_add(1);
-        publish(&self.host, 0);
+        state.show(&self.host, 0);
         self.shared.1.notify_one();
     }
 }
@@ -128,13 +139,20 @@ fn platform(count: u64) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "windows")]
 fn platform(count: u64) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::OnceLock;
     use windows::{
         Data::Xml::Dom::XmlDocument,
         UI::Notifications::{BadgeNotification, BadgeUpdateManager},
         core::HSTRING,
     };
     const APP_ID: &str = "chat.caper.desktop";
-    winrt_toast_reborn::register(APP_ID, "Caper", None)?;
+    // Registering writes the app's AppUserModelId keys under HKCU; once per
+    // process is enough (a failure is retried on the next change).
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    if REGISTERED.get().is_none() {
+        winrt_toast_reborn::register(APP_ID, "Caper", None)?;
+        let _ = REGISTERED.set(());
+    }
     let updater =
         BadgeUpdateManager::CreateBadgeUpdaterForApplicationWithId(&HSTRING::from(APP_ID))?;
     if count == 0 {

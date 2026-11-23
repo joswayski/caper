@@ -680,7 +680,7 @@ pub struct Spaces {
     pub limits: Option<SpaceLimits>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SpaceLimits {
     pub owned_spaces: usize,
@@ -2298,9 +2298,9 @@ impl Timeline {
             return Err("invalid attachment update".into());
         }
         if let Some(message) = self
-            .messages
-            .values_mut()
-            .find(|item| item.id == update.message_id)
+            .ids
+            .get(&update.message_id)
+            .and_then(|seq| self.messages.get_mut(seq))
         {
             if message.channel_id != update.channel_id {
                 return Err("attachment update is for another channel".into());
@@ -2750,11 +2750,11 @@ impl Timeline {
         }
         self.forward_updates
             .insert(message.id.clone(), snapshot.clone());
-        for visible in self
-            .messages
-            .values_mut()
-            .chain(self.pinned.values_mut())
-            .filter(|m| m.id == message.id)
+        let loaded = self.ids.get(&message.id).copied();
+        for visible in loaded
+            .and_then(|seq| self.messages.get_mut(&seq))
+            .into_iter()
+            .chain(self.pinned.values_mut().filter(|m| m.id == message.id))
         {
             overlay_forward(visible, &snapshot);
         }
