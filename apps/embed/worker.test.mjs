@@ -21,7 +21,7 @@ function serve(routes) {
     seen.push({ url, init });
     const match = Object.entries(routes).find(([prefix]) => url.startsWith(prefix));
     if (!match) return new Response("not found", { status: 404 });
-    const response = typeof match[1] === "function" ? match[1](url, init) : match[1];
+    const response = await (typeof match[1] === "function" ? match[1](url, init) : match[1]);
     // A fresh, untee'd body each time, like a real network response.
     const body = response.body ? await response.clone().arrayBuffer() : null;
     return new Response(body, { status: response.status, headers: response.headers });
@@ -125,22 +125,43 @@ test("generic pages become a title, description and large image card", async () 
   });
 });
 
-test("sites refusing Caperbot get one retry that also says like Discordbot", async () => {
+test("sites refusing Caperbot are asked again as other crawlers and a browser, first card winning", async () => {
   const seen = serve({
     "https://picky.example/": (url, init) =>
-      init.headers["user-agent"].includes("Discordbot")
+      init.headers["user-agent"].startsWith("Slackbot")
         ? html('<head><meta property="og:title" content="Let in"></head>')
         : new Response("no", { status: 403 }),
+    "https://gone.example/": new Response("missing", { status: 404 }),
   });
   const embed = await unfurl(new URL("https://picky.example/"));
   assert.equal(embed.blocks[0].text, "Let in");
-  assert.deepEqual(
-    seen.map((request) => request.init.headers["user-agent"]),
-    [
-      "Mozilla/5.0 (compatible; Caperbot/1.0; +https://caper.chat)",
-      "Mozilla/5.0 (compatible; Caperbot/1.0; +https://caper.chat; like Discordbot)",
-    ],
-  );
+  const agents = seen.map((request) => request.init.headers["user-agent"]);
+  assert.equal(agents[0], "Mozilla/5.0 (compatible; Caperbot/1.0; +https://caper.chat)");
+  assert.equal(agents.length, 5);
+  assert.ok(agents.includes("Mozilla/5.0 (compatible; Caperbot/1.0; +https://caper.chat; like Discordbot)"));
+  assert.ok(seen.some((request) => request.init.headers["sec-fetch-mode"] === "navigate"));
+
+  // A missing page is not asked about again.
+  seen.length = 0;
+  assert.equal(await unfurl(new URL("https://gone.example/")), null);
+  assert.equal(seen.length, 1);
+});
+
+test("a page slow to answer Caperbot is asked again in parallel", async () => {
+  vi.useFakeTimers();
+  try {
+    serve({
+      "https://slow.example/": (url, init) =>
+        init.headers["user-agent"].includes("Chrome")
+          ? html('<head><meta property="og:title" content="Quick for browsers"></head>')
+          : new Promise(() => {}),
+    });
+    const pending = unfurl(new URL("https://slow.example/"));
+    await vi.advanceTimersByTimeAsync(2500);
+    assert.equal((await pending).blocks[0].text, "Quick for browsers");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("Wikipedia articles take their title and lead from the summary API, image from the page", async () => {

@@ -21,7 +21,7 @@ import {
   title,
 } from "./blocks.mjs";
 import { decodeEntities, parseHead } from "./meta.mjs";
-import { contentType, discard, readText, safeFetch, USER_AGENT } from "./safe-fetch.mjs";
+import { contentType, discard, FetchRefused, readText, safeFetch, USER_AGENT } from "./safe-fetch.mjs";
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
@@ -397,55 +397,89 @@ export function genericBlocks(page, html) {
   return { siteName: clean(first("og:site_name", "application-name"), LIMITS.name), blocks };
 }
 
-// Many sites serve preview tags only to crawlers they know by name; those
-// refusing Caperbot get one retry that also says "like Discordbot" (as
-// Telegram's "TelegramBot (like TwitterBot)"). Not the first try: bot shields
-// that check Discord's addresses refuse a claim from anywhere else.
-const REFUSED = new Set([202, 401, 403, 429]);
-const KNOWN_CRAWLER_UA = USER_AGENT.replace(")", "; like Discordbot)");
+// Many sites serve preview tags only to crawlers or browsers they recognise.
+// Caperbot asks first; if the site refuses it or has not answered within
+// FALLBACK_AFTER_MS, these ask in parallel and the first card wins. A
+// Discordbot claim is never the first try, because bot shields that check
+// Discord's addresses refuse it from anywhere else.
+const FALLBACK_AFTER_MS = 2500;
+const FALLBACK_TIMEOUT_MS = 4000;
+const FALLBACK_HEADERS = [
+  { "user-agent": USER_AGENT.replace(")", "; like Discordbot)") },
+  { "user-agent": "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)" },
+  { "user-agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)" },
+  {
+    "user-agent": BROWSER_UA,
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+    "sec-ch-ua": '"Chromium";v="132", "Google Chrome";v="132", "Not_A Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "sec-fetch-user": "?1",
+    "upgrade-insecure-requests": "1",
+  },
+];
 
-export async function generic(url) {
-  const meta = onDomain(hostOf(url), META_DOMAINS);
-  // The retry's shorter timeout keeps both inside the API's 12 s wait.
-  const request = (userAgent, timeout) =>
-    safeFetch(url.href, {
-      timeout,
-      headers: {
-        "user-agent": userAgent,
-        accept: "text/html,application/xhtml+xml;q=0.9,image/*;q=0.8,video/*;q=0.5,*/*;q=0.1",
-        "accept-language": "en-US,en;q=0.8",
-      },
-    });
-  let { response, url: page } = await request(meta ? "facebookexternalhit/1.1" : USER_AGENT);
-  if (!meta && REFUSED.has(response.status)) {
-    discard(response);
-    ({ response, url: page } = await request(KNOWN_CRAWLER_UA, 4000));
-  }
-  if (!response.ok) {
-    discard(response);
-    return null;
-  }
+// The head holds the preview tags, unless it has no og/twitter title; then
+// they may be in the body, so keep reading (up to the limit).
+function headDone(html) {
+  const end = html.search(/<\/head\s*>/i);
+  return end >= 0 && /<meta\b[^>]*["'\s](?:og|twitter):title["'\s]/i.test(html.slice(0, end));
+}
+
+// One fetch of the page; resolves to its card or rejects.
+async function load(url, headers, timeout) {
+  const { response, url: page } = await safeFetch(url.href, {
+    timeout,
+    headers: {
+      accept: "text/html,application/xhtml+xml;q=0.9,image/*;q=0.8,video/*;q=0.5,*/*;q=0.1",
+      "accept-language": "en-US,en;q=0.8",
+      ...headers,
+    },
+  });
   const type = contentType(response);
   const where = site(url, hostOf(url));
-  if (IMAGE_TYPES.has(type) || (VIDEO_TYPES.has(type) && page.protocol === "https:")) {
+  if (response.ok && (IMAGE_TYPES.has(type) || (VIDEO_TYPES.has(type) && page.protocol === "https:"))) {
     discard(response);
     return embed(url.href, where, [
       IMAGE_TYPES.has(type) ? images([{ url: page.href }]) : { type: "video", url: page.href },
     ]);
   }
-  if (!HTML_TYPES.has(type)) {
+  if (!response.ok || !HTML_TYPES.has(type)) {
     discard(response);
-    return null;
+    // Gone, or not a page: asking again as someone else will not help.
+    throw Object.assign(new Error(`no page (${response.status})`), {
+      final: response.ok || response.status === 404 || response.status === 410,
+    });
   }
-  // The head holds the preview tags, unless it has no og/twitter title; then
-  // they may be in the body, so keep reading (up to the limit).
-  const headDone = (html) => {
-    const end = html.search(/<\/head\s*>/i);
-    return end >= 0 && /<meta\b[^>]*["'\s](?:og|twitter):title["'\s]/i.test(html.slice(0, end));
-  };
   const result = genericBlocks(page, await readText(response, HTML_LIMIT, headDone));
-  if (!result) return null;
+  if (!result) throw new Error("no preview tags");
   return embed(url.href, { name: result.siteName ?? where.domain, domain: where.domain }, result.blocks);
+}
+
+export async function generic(url) {
+  // Meta's sites answer only their own crawler, and answer it reliably.
+  if (onDomain(hostOf(url), META_DOMAINS)) {
+    return load(url, { "user-agent": "facebookexternalhit/1.1" }).catch(() => null);
+  }
+  const first = load(url, { "user-agent": USER_AGENT });
+  let timer;
+  const waited = await Promise.race([
+    first.then(
+      (card) => ({ card }),
+      (error) => ({ final: error.final || error instanceof FetchRefused }),
+    ),
+    new Promise((resolve) => (timer = setTimeout(() => resolve(null), FALLBACK_AFTER_MS))),
+  ]);
+  clearTimeout(timer);
+  if (waited?.card) return waited.card;
+  if (waited?.final) return null;
+  const tries = FALLBACK_HEADERS.map((headers) => load(url, headers, FALLBACK_TIMEOUT_MS));
+  // Caperbot, still answering slowly, may yet win too.
+  return Promise.any(waited ? tries : [first, ...tries]).catch(() => null);
 }
 
 // Instagram's tags repeat the caption in the title and description; turn them

@@ -2698,11 +2698,13 @@ Site readers (`apps/embed/sites.mjs`):
 | Wikipedia | the REST page summary for title and lead; the page's `og:image` | title, lead, image |
 | everything else | OpenGraph / Twitter Card / `<title>`, including OpenGraph/Twitter tags a page writes into `<body>` | site, title, description, image or direct video |
 
-Pages are fetched as `Caperbot/1.0`. A site answering 202, 401, 403 or 429 gets
-one retry whose user agent adds `like Discordbot` (as Telegram's `TelegramBot
-(like TwitterBot)`), since many sites serve preview tags only to crawlers they
-recognise by name. Discordbot is not the first try because bot shields that
-verify Discord's addresses refuse the claim from anywhere else.
+Pages are fetched as `Caperbot/1.0`. Many sites serve preview tags only to
+crawlers or browsers they recognise, so when a site refuses Caperbot or has not
+answered within 2.5 s, the Worker asks again in parallel as Caperbot "like
+Discordbot", as Slackbot, as Facebook's crawler and with a desktop Chrome's
+headers, and takes the first card. A missing page (404/410) or a non-page answer
+is not asked about again. The Discordbot claim is never the first try because
+bot shields that verify Discord's addresses refuse it from anywhere else.
 
 X, TikTok and Instagram use undocumented endpoints that change without notice
 (Instagram's `doc_id` is retired from time to time), so
