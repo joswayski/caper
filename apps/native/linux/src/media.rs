@@ -24,6 +24,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 const MAX_FETCHES: usize = 4;
+/// Decoded pixels kept for pictures nothing shows, the least recently used
+/// released first (the shared core's media keeps 200 textures and 128 MiB
+/// of GIF frames). A shown picture holds its own textures, so this never
+/// blanks one; a picture bound again after its release downloads again.
+const KEPT_BYTES: usize = 128 * 1024 * 1024;
 /// The viewer's full-size stills.
 const FULL_EDGE: u32 = 4_096;
 /// Viewer keys: the attachment id after this prefix.
@@ -38,14 +43,23 @@ pub type Revealed = HashMap<String, HashSet<String>>;
 
 enum Entry {
     Loading,
-    Ready(Rc<Frames>),
-    Failed { url: String, awaiting_refresh: bool },
+    /// `used` orders releases: the last bind or lookup.
+    Ready {
+        frames: Rc<Frames>,
+        used: u64,
+    },
+    Failed {
+        url: String,
+        awaiting_refresh: bool,
+    },
 }
 
 pub struct Media {
     api: Api,
     signals: async_channel::Sender<Signal>,
     entries: RefCell<HashMap<String, Entry>>,
+    /// Counts binds and lookups for `Entry::Ready::used`.
+    uses: Cell<u64>,
     /// Pictures waiting for their key.
     waiters: RefCell<HashMap<String, Vec<glib::WeakRef<gtk::Picture>>>>,
     fresh: RefCell<BTreeMap<String, FreshUrl>>,
@@ -82,6 +96,7 @@ impl Media {
             api,
             signals,
             entries: RefCell::default(),
+            uses: Cell::new(0),
             waiters: RefCell::default(),
             fresh: RefCell::default(),
             refresher: RefCell::default(),
@@ -174,8 +189,11 @@ impl Media {
 
     /// The loaded frames for `key`, starting its load when needed.
     fn frames(&self, key: &str, url: &str) -> Option<Rc<Frames>> {
-        match self.entries.borrow().get(key) {
-            Some(Entry::Ready(frames)) => return Some(frames.clone()),
+        match self.entries.borrow_mut().get_mut(key) {
+            Some(Entry::Ready { frames, used }) => {
+                *used = self.next_use();
+                return Some(frames.clone());
+            }
             Some(Entry::Loading) => return None,
             Some(Entry::Failed {
                 url: failed,
@@ -235,16 +253,63 @@ impl Media {
 
     /// Your own upload's local copy, so its message needs no download.
     pub fn insert_local(&self, key: &str, image: &Rgba) {
-        if matches!(self.entries.borrow().get(key), Some(Entry::Ready(_))) {
+        if matches!(self.entries.borrow().get(key), Some(Entry::Ready { .. })) {
             return;
         }
         if let Some(texture) = texture(image) {
-            let frames = Rc::new(vec![(texture, Duration::ZERO)]);
-            self.entries
-                .borrow_mut()
-                .insert(key.to_owned(), Entry::Ready(frames.clone()));
+            let frames = self.ready(key, vec![(texture, Duration::ZERO)]);
             self.wake(key, &frames);
         }
+    }
+
+    fn next_use(&self) -> u64 {
+        self.uses.set(self.uses.get() + 1);
+        self.uses.get()
+    }
+
+    /// Keeps `frames` for `key`, then releases the least recently used
+    /// pictures nothing shows past [`KEPT_BYTES`].
+    fn ready(&self, key: &str, frames: Frames) -> Rc<Frames> {
+        let frames = Rc::new(frames);
+        let used = self.next_use();
+        let mut entries = self.entries.borrow_mut();
+        entries.insert(
+            key.to_owned(),
+            Entry::Ready {
+                frames: frames.clone(),
+                used,
+            },
+        );
+        // A picture holds the textures it shows; an animation also holds
+        // its frames (as `frames` here does for the new entry).
+        let mut idle: Vec<(u64, usize, String)> = entries
+            .iter()
+            .filter_map(|(key, entry)| match entry {
+                Entry::Ready { frames, used }
+                    if Rc::strong_count(frames) == 1
+                        && frames.iter().all(|(texture, _)| texture.ref_count() == 1) =>
+                {
+                    let bytes = frames
+                        .iter()
+                        .map(|(texture, _)| {
+                            texture.width() as usize * texture.height() as usize * 4
+                        })
+                        .sum();
+                    Some((*used, bytes, key.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut kept: usize = idle.iter().map(|(_, bytes, _)| bytes).sum();
+        idle.sort_unstable();
+        for (_, bytes, key) in idle {
+            if kept <= KEPT_BYTES {
+                break;
+            }
+            entries.remove(&key);
+            kept -= bytes;
+        }
+        frames
     }
 
     fn wake(&self, key: &str, frames: &Rc<Frames>) {
@@ -312,10 +377,7 @@ impl Media {
         });
         match frames {
             Some(frames) if !frames.is_empty() => {
-                let frames = Rc::new(frames);
-                self.entries
-                    .borrow_mut()
-                    .insert(key.clone(), Entry::Ready(frames.clone()));
+                let frames = self.ready(&key, frames);
                 self.wake(&key, &frames);
             }
             _ => {
@@ -493,6 +555,43 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn releases_least_recently_used_pictures_nothing_shows_past_the_budget() {
+        let (sender, _) = async_channel::unbounded();
+        let media = Media::new(Api::new("http://127.0.0.1:9").unwrap(), sender);
+        let url = "http://127.0.0.1:9/image?exp=4102444800";
+        // 4 MiB each: the budget keeps 32 that nothing shows.
+        let insert = |key: usize| {
+            let image = Rgba {
+                size: [1024, 1024],
+                pixels: vec![0; 1024 * 1024 * 4],
+            };
+            media.insert_local(&key.to_string(), &image);
+        };
+        let kept = |key: usize| {
+            matches!(
+                media.entries.borrow().get(&key.to_string()),
+                Some(Entry::Ready { .. })
+            )
+        };
+        for key in 0..32 {
+            insert(key);
+        }
+        // Shown (a picture holds its texture), and recently looked up.
+        let shown = media.first_frame("2", url).unwrap().unwrap();
+        assert!(media.first_frame("0", url).unwrap().is_some());
+        for key in 32..41 {
+            insert(key);
+        }
+        assert!(kept(0), "looked up after 1, 3…8, so released after them");
+        assert!(kept(2), "a shown picture is never released");
+        for key in [1, 3, 8] {
+            assert!(!kept(key), "{key} was least recently used");
+        }
+        assert!((9..41).all(kept));
+        drop(shown);
+    }
 
     #[test]
     fn expired_clipboard_url_reports_refresh_failure_and_allows_immediate_retry() {
