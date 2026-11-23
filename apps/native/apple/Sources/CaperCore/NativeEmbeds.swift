@@ -36,7 +36,6 @@ private enum NativeEmbedSource {
     private var web: WKWebView?
     private let navigation = EmbedPlayerNavigation()
     private var userPaused = false, active = false, playing = false
-    private var lastWidth: CGFloat = 0
     #if os(macOS)
     private let button = AppKitMediaHitTarget()
     private let playerView = AVPlayerView()
@@ -61,6 +60,14 @@ private enum NativeEmbedSource {
         picture.contentsGravity = .resizeAspectFill; picture.masksToBounds = true; animation.videoGravity = .resizeAspectFill
         addSubview(button); navigation.openURL = OpenURLAction { url in nativeOpenEmbed(url); return .handled }
         updateButton()
+        // Height follows the width the layout gives (capped at the media's own
+        // size), so a cell measuring itself at any width gets the right height.
+        // Below required, so explicit sizes (thumbnails, gallery rows) win.
+        let ratio = 1 / source.size.aspectRatio
+        let fitted = heightAnchor.constraint(equalTo: widthAnchor, multiplier: ratio); fitted.priority = .defaultHigh
+        let byWidth = heightAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: ratio); byWidth.priority = .init(999)
+        let cap = heightAnchor.constraint(lessThanOrEqualToConstant: source.size.width * ratio); cap.priority = .init(999)
+        NSLayoutConstraint.activate([fitted, byWidth, cap])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit {
@@ -79,9 +86,6 @@ private enum NativeEmbedSource {
     override func didMoveToWindow() { super.didMoveToWindow(); attachmentChanged(window != nil) }
     override func layoutSubviews() { super.layoutSubviews(); layoutMedia() }
     #endif
-    override var intrinsicContentSize: CGSize {
-        CGSize(width: -1, height: min(max(1, bounds.width), source.size.width) / source.size.aspectRatio)
-    }
     private func attachmentChanged(_ attached: Bool) {
         active = attached
         if !attached {
@@ -183,7 +187,6 @@ private enum NativeEmbedSource {
         if playerController.isViewLoaded { playerController.view.frame = frame }
         #endif
         CATransaction.commit()
-        if lastWidth != bounds.width { lastWidth = bounds.width; invalidateIntrinsicContentSize() }
     }
 }
 

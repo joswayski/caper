@@ -30,15 +30,19 @@ function attributes(tag) {
 
 // Returns { meta: Map<lowercased property/name, first value>, title, oembed }.
 // Repeated og:image tags keep their order in meta.get("og:image:all").
+// Some sites (YouTube channels, several Google pages) write their OpenGraph
+// and Twitter tags into <body>; those count too, after the head's own tags.
 export function parseHead(html) {
-  const head = html.slice(0, Math.max(html.search(/<\/head\s*>/i), 0) || html.length);
+  const end = html.search(/<\/head\s*>/i);
+  const head = end < 0 ? html : html.slice(0, end);
   const meta = new Map();
   const images = [];
-  for (const [tag] of head.matchAll(/<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
+  for (const { 0: tag, index } of html.matchAll(/<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
     const attrs = attributes(tag.slice(5, -1));
     const key = (attrs.property ?? attrs.name ?? attrs.itemprop ?? "").toLowerCase();
     const value = attrs.content;
     if (!key || value === undefined) continue;
+    if (end >= 0 && index > end && !/^(og|twitter):/.test(key)) continue;
     if (key === "og:image" || key === "og:image:url" || key === "og:image:secure_url") images.push(value);
     if (!meta.has(key)) meta.set(key, value);
   }

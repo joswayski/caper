@@ -329,6 +329,30 @@ async function readTwitch(url) {
   ]);
 }
 
+// Wikipedia. Its pages carry og:title and og:image but no description, so the
+// article's lead comes from the REST summary; the page's own og:image stays,
+// being sized for previews.
+
+const WIKIPEDIA_ARTICLE = /^\/wiki\/([^/?#]+)$/;
+
+export function wikipediaSummaryUrl(url) {
+  const title = WIKIPEDIA_ARTICLE.exec(url.pathname)?.[1];
+  if (!title || !/^[a-z-]+(\.m)?\.wikipedia\.org$/.test(url.hostname)) return null;
+  return `https://${url.hostname.replace(".m.", ".")}/api/rest_v1/page/summary/${title}`;
+}
+
+async function readWikipedia(url) {
+  const summaryUrl = wikipediaSummaryUrl(url);
+  if (!summaryUrl) return null;
+  const [summary, page] = await Promise.all([json(summaryUrl).catch(() => null), generic(url).catch(() => null)]);
+  if (!summary?.title || !summary.extract) return page;
+  return embed(url.href, site(url, "Wikipedia"), [
+    title(summary.title, url.href),
+    text(summary.extract, LIMITS.description),
+    page?.blocks.find((block) => block.type === "images"),
+  ]);
+}
+
 // Everything else: the page's own OpenGraph / Twitter Card / <title> tags.
 
 // Meta's sites only serve preview tags to the crawler they know.
@@ -373,15 +397,30 @@ export function genericBlocks(page, html) {
   return { siteName: clean(first("og:site_name", "application-name"), LIMITS.name), blocks };
 }
 
+// Many sites serve preview tags only to crawlers they know by name; those
+// refusing Caperbot get one retry that also says "like Discordbot" (as
+// Telegram's "TelegramBot (like TwitterBot)"). Not the first try: bot shields
+// that check Discord's addresses refuse a claim from anywhere else.
+const REFUSED = new Set([202, 401, 403, 429]);
+const KNOWN_CRAWLER_UA = USER_AGENT.replace(")", "; like Discordbot)");
+
 export async function generic(url) {
   const meta = onDomain(hostOf(url), META_DOMAINS);
-  const { response, url: page } = await safeFetch(url.href, {
-    headers: {
-      "user-agent": meta ? "facebookexternalhit/1.1" : USER_AGENT,
-      accept: "text/html,application/xhtml+xml;q=0.9,image/*;q=0.8,video/*;q=0.5,*/*;q=0.1",
-      "accept-language": "en-US,en;q=0.8",
-    },
-  });
+  // The retry's shorter timeout keeps both inside the API's 12 s wait.
+  const request = (userAgent, timeout) =>
+    safeFetch(url.href, {
+      timeout,
+      headers: {
+        "user-agent": userAgent,
+        accept: "text/html,application/xhtml+xml;q=0.9,image/*;q=0.8,video/*;q=0.5,*/*;q=0.1",
+        "accept-language": "en-US,en;q=0.8",
+      },
+    });
+  let { response, url: page } = await request(meta ? "facebookexternalhit/1.1" : USER_AGENT);
+  if (!meta && REFUSED.has(response.status)) {
+    discard(response);
+    ({ response, url: page } = await request(KNOWN_CRAWLER_UA, 4000));
+  }
   if (!response.ok) {
     discard(response);
     return null;
@@ -398,7 +437,13 @@ export async function generic(url) {
     discard(response);
     return null;
   }
-  const result = genericBlocks(page, await readText(response, HTML_LIMIT, "</head>"));
+  // The head holds the preview tags, unless it has no og/twitter title; then
+  // they may be in the body, so keep reading (up to the limit).
+  const headDone = (html) => {
+    const end = html.search(/<\/head\s*>/i);
+    return end >= 0 && /<meta\b[^>]*["'\s](?:og|twitter):title["'\s]/i.test(html.slice(0, end));
+  };
+  const result = genericBlocks(page, await readText(response, HTML_LIMIT, headDone));
   if (!result) return null;
   return embed(url.href, { name: result.siteName ?? where.domain, domain: where.domain }, result.blocks);
 }
@@ -570,6 +615,7 @@ const READERS = [
   { domains: ["vimeo.com"], read: readVimeo },
   { domains: ["twitch.tv"], read: readTwitch },
   { domains: ["instagram.com"], read: readInstagram },
+  { domains: ["wikipedia.org"], read: readWikipedia },
 ];
 
 // Never throws: a site that fails or refuses simply gets no preview.

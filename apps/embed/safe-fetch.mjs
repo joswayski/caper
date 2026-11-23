@@ -65,8 +65,8 @@ export async function safeFetch(value, { headers = {}, timeout = TIMEOUT_MS } = 
   }
 }
 
-// Reads at most `limit` bytes of text, stopping early once `until` appears
-// (for HTML, the end of <head>, which holds every tag a preview needs).
+// Reads at most `limit` bytes of text, stopping early once `until(text)`
+// returns true.
 export async function readText(response, limit, until) {
   if (!response.body) return "";
   const reader = response.body.getReader();
@@ -79,7 +79,7 @@ export async function readText(response, limit, until) {
       if (done) break;
       bytes += value.byteLength;
       text += decoder.decode(value, { stream: true });
-      if (until && text.includes(until)) break;
+      if (until?.(text)) break;
     }
   } finally {
     reader.cancel().catch(() => {});

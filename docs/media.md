@@ -2695,7 +2695,14 @@ Site readers (`apps/embed/sites.mjs`):
 | Twitch | page tags | title, `player` (clip, VOD or channel) |
 | Instagram (posts, reels, carousels) | the logged-out query Instagram's own web app makes for a post, unofficial; page tags as Meta's crawler if refused | author, caption, video or photos (re-resolved on each view), likes and comments |
 | Facebook, Threads | page tags as Meta's crawler | title, description, image |
-| everything else | OpenGraph / Twitter Card / `<title>` | site, title, description, image or direct video |
+| Wikipedia | the REST page summary for title and lead; the page's `og:image` | title, lead, image |
+| everything else | OpenGraph / Twitter Card / `<title>`, including OpenGraph/Twitter tags a page writes into `<body>` | site, title, description, image or direct video |
+
+Pages are fetched as `Caperbot/1.0`. A site answering 202, 401, 403 or 429 gets
+one retry whose user agent adds `like Discordbot` (as Telegram's `TelegramBot
+(like TwitterBot)`), since many sites serve preview tags only to crawlers they
+recognise by name. Discordbot is not the first try because bot shields that
+verify Discord's addresses refuse the claim from anywhere else.
 
 X, TikTok and Instagram use undocumented endpoints that change without notice
 (Instagram's `doc_id` is retired from time to time), so

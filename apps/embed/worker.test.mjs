@@ -91,9 +91,12 @@ test("head parsing decodes entities and keeps every og:image in order", () => {
     <meta content='second > first' name="description">
     <meta property="og:site_name" content="Cats > Dogs">
     <meta property="og:image" content="/one.png"><meta property="og:image" content="https://cdn.example/two.png">
-    </head><body><meta property="og:title" content="ignored"></body>`);
+    </head><body><meta property="og:title" content="ignored"><meta property="og:description" content="from body">
+    <meta itemprop="description" content="someone's review"></body>`);
   assert.equal(title, "Fish & Chips");
   assert.equal(meta.get("og:title"), 'It\'s "here" 🐟');
+  // Body tags fill only missing og/twitter keys (YouTube channels put theirs there).
+  assert.equal(meta.get("og:description"), "from body");
   assert.equal(meta.get("description"), "second > first");
   assert.equal(meta.get("og:site_name"), "Cats > Dogs");
   assert.deepEqual(meta.get("og:image:all"), ["/one.png", "https://cdn.example/two.png"]);
@@ -118,6 +121,47 @@ test("generic pages become a title, description and large image card", async () 
       { type: "title", text: "A headline", url: "https://www.news.example/story" },
       { type: "text", text: "What happened, briefly." },
       { type: "images", items: [{ url: "https://www.news.example/lead.jpg", width: 1200, height: 630 }] },
+    ],
+  });
+});
+
+test("sites refusing Caperbot get one retry that also says like Discordbot", async () => {
+  const seen = serve({
+    "https://picky.example/": (url, init) =>
+      init.headers["user-agent"].includes("Discordbot")
+        ? html('<head><meta property="og:title" content="Let in"></head>')
+        : new Response("no", { status: 403 }),
+  });
+  const embed = await unfurl(new URL("https://picky.example/"));
+  assert.equal(embed.blocks[0].text, "Let in");
+  assert.deepEqual(
+    seen.map((request) => request.init.headers["user-agent"]),
+    [
+      "Mozilla/5.0 (compatible; Caperbot/1.0; +https://caper.chat)",
+      "Mozilla/5.0 (compatible; Caperbot/1.0; +https://caper.chat; like Discordbot)",
+    ],
+  );
+});
+
+test("Wikipedia articles take their title and lead from the summary API, image from the page", async () => {
+  const seen = serve({
+    "https://en.wikipedia.org/api/rest_v1/page/summary/Capybara": jsonResponse(
+      JSON.stringify({ title: "Capybara", extract: "The capybara is the largest living rodent." }),
+    ),
+    "https://en.m.wikipedia.org/wiki/Capybara": html(`<head><meta property="og:title" content="Capybara - Wikipedia">
+      <meta property="og:image" content="https://upload.example/capybara.jpg">
+      <meta property="og:image:width" content="1200"><meta property="og:image:height" content="800"></head>`),
+  });
+  const embed = await unfurl(new URL("https://en.m.wikipedia.org/wiki/Capybara"));
+  assert.ok(seen.some((request) => request.url === "https://en.wikipedia.org/api/rest_v1/page/summary/Capybara"));
+  assert.deepEqual(embed, {
+    version: 1,
+    url: "https://en.m.wikipedia.org/wiki/Capybara",
+    site: { name: "Wikipedia", domain: "en.m.wikipedia.org" },
+    blocks: [
+      { type: "title", text: "Capybara", url: "https://en.m.wikipedia.org/wiki/Capybara" },
+      { type: "text", text: "The capybara is the largest living rodent." },
+      { type: "images", items: [{ url: "https://upload.example/capybara.jpg", width: 1200, height: 800 }] },
     ],
   });
 });

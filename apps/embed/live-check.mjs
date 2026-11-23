@@ -30,7 +30,9 @@ const CASES = [
   { url: "https://vimeo.com/1084537", expect: ["title", "player"] },
   { url: "https://www.twitch.tv/twitch", expect: ["player"] },
   { url: "https://www.theverge.com/", expect: ["title"] },
-  { url: "https://en.wikipedia.org/wiki/Capers", expect: ["title"] },
+  { url: "https://en.wikipedia.org/wiki/Capers", expect: ["title", "text", "images"] },
+  { url: "https://www.youtube.com/@YouTube", expect: ["title", "images"] },
+  { url: "https://www.reddit.com/r/rust/", expect: ["title"] },
   { url: "https://www.instagram.com/p/BsOGulcndj-/", expect: ["author", "images"] },
   { url: "https://www.instagram.com/p/DaQanvRgP-q/", expect: ["author", "video"] },
 ];
