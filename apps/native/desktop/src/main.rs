@@ -109,6 +109,55 @@ const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(230, 229, 224);
 // END GENERATED THEME TOKENS
 
+/// Paints the recessed dark outer trough, quiet outer hairline, inner border,
+/// and subtle top specular shine around a composer frame.
+fn paint_composer_chrome(painter: &egui::Painter, rect: egui::Rect, focused: bool) {
+    let outer_well = Color32::from_rgba_unmultiplied(0, 0, 0, 102);
+    let outer_rim = Color32::from_rgba_unmultiplied(255, 255, 255, 11);
+    let inner_border = if focused {
+        Color32::from_rgb(71, 89, 61)
+    } else {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 19)
+    };
+    let top_shine = Color32::from_rgba_unmultiplied(255, 255, 255, 34);
+    let bottom_shade = Color32::from_rgba_unmultiplied(0, 0, 0, 107);
+    painter.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(4.0, outer_well),
+        egui::StrokeKind::Outside,
+    );
+    painter.rect_stroke(
+        rect.expand(4.0),
+        12.0,
+        Stroke::new(1.0, outer_rim),
+        egui::StrokeKind::Outside,
+    );
+    painter.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, inner_border),
+        egui::StrokeKind::Inside,
+    );
+    let inset = 8.0_f32.min(rect.width() / 2.0);
+    if rect.width() > inset * 2.0 && rect.height() > 4.0 {
+        painter.line_segment(
+            [
+                egui::pos2(rect.left() + inset, rect.top() + 1.5),
+                egui::pos2(rect.right() - inset, rect.top() + 1.5),
+            ],
+            Stroke::new(1.0, top_shine),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(rect.left() + inset, rect.bottom() - 1.5),
+                egui::pos2(rect.right() - inset, rect.bottom() - 1.5),
+            ],
+            Stroke::new(1.0, bottom_shade),
+        );
+    }
+}
+
 #[derive(Clone, Copy)]
 enum NavigationSlide {
     Browse(bool),
@@ -16934,7 +16983,7 @@ impl CaperApp {
                     editor
                 }).inner;
                 let mut output = editor.inner;
-                ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0_f32, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
+                paint_composer_chrome(ui.painter(), editor.response.rect, output.response.has_focus());
                 let text = draft.0.clone();
                 if pick.is_some() { self.pick_files(ui.ctx(), Some(root.clone())); }
                 if record { self.start_voice_recording(ui.ctx(), Some(root.clone())); self.dictate_recording(); }
@@ -17561,12 +17610,7 @@ impl CaperApp {
                         self.draft = value;
                     }
                     let response = &output.response;
-                    ui.painter().rect_stroke(
-                        editor.response.rect,
-                        8.0,
-                        Stroke::new(1.0_f32, if response.has_focus() { TERRACOTTA } else { BORDER }),
-                        egui::StrokeKind::Inside,
-                    );
+                    paint_composer_chrome(ui.painter(), editor.response.rect, response.has_focus());
                     if self.draft != before {
                         self.typing_edited = Instant::now();
                     }
@@ -22948,18 +22992,10 @@ impl CaperApp {
                 .inner
             });
         let mut output = shell.inner;
-        ui.painter().rect_stroke(
+        paint_composer_chrome(
+            ui.painter(),
             shell.response.rect,
-            8.0,
-            Stroke::new(
-                1.0_f32,
-                if output.response.has_focus() {
-                    TERRACOTTA
-                } else {
-                    BORDER
-                },
-            ),
-            egui::StrokeKind::Inside,
+            output.response.has_focus(),
         );
         if focus {
             output.response.request_focus();

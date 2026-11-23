@@ -99,11 +99,11 @@ import CaperCore
     private var announcedTyping = ""
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
-    /// Outer recessed bezel creating an Antigravity-style secondary border around the composer card.
-    private let composerShell = NativeView(NativeStyle.composerOuterBg)
-    /// Web's message field: one bordered box holding attach, the editor, and
+    /// Outer recessed bezel creating an Antigravity-style darker trough around the composer card.
+    private let composerShell = AppKitComposerShell()
+    /// Web's message field: one top-lit bordered box holding attach, the editor, and
     /// the GIF, emoji, microphone and send tools.
-    private let composerField = NativeView(NativeStyle.composer)
+    private let composerField = AppKitComposerField()
     private var composerFocused = false
     private var laidOutEditorHeight: CGFloat = 0
     private let attachmentScroll = NSScrollView()
@@ -297,7 +297,8 @@ import CaperCore
         composer.font = NativeStyle.font(14)
         composer.textColor = NativeStyle.text
         composer.insertionPointColor = NativeStyle.text
-        composer.backgroundColor = NativeStyle.composer
+        composer.drawsBackground = false
+        composer.backgroundColor = .clear
         composer.isRichText = false
         composer.allowsUndo = true
         composer.attachmentDropDestination = stage
@@ -333,10 +334,6 @@ import CaperCore
         composerScroll.hasVerticalScroller = true
         composerScroll.autohidesScrollers = true
         composerScroll.drawsBackground = false
-        composerShell.layer?.cornerRadius = 15
-        composerShell.layer?.borderWidth = 1
-        composerField.layer?.cornerRadius = 11
-        composerField.layer?.borderWidth = 1
         applyComposerChrome()
         NotificationCenter.default.addObserver(
             self,
@@ -1263,11 +1260,10 @@ import CaperCore
         suggestions.update(nil)
     }
     private func applyComposerChrome() {
-        composerField.layer?.borderColor = (composerFocused ? NativeStyle.composerFocusBorder : NativeStyle.composerBorder).cgColor
-        composerShell.layer?.borderColor = NativeStyle.composerOuterBorder.cgColor
-        composerShell.layer?.backgroundColor = NativeStyle.composerOuterBg.cgColor
-        composerField.layer?.backgroundColor = NativeStyle.composer.cgColor
-        composer.backgroundColor = NativeStyle.composer
+        composerShell.applyTheme()
+        composerField.applyTheme(focused: composerFocused)
+        composer.drawsBackground = false
+        composer.backgroundColor = .clear
         composer.textColor = NativeStyle.text
         composer.insertionPointColor = NativeStyle.text
     }
@@ -1287,6 +1283,126 @@ import CaperCore
             guard dialogs.messageContext == context, !inThread || model.chat.threadRootID == root else { return }
             await model.chat.send(inThread: inThread)
         }
+    }
+}
+
+/// Recessed dark outer trough around the composer card, slightly deeper toward
+/// the bottom edge to ground the elevated input field inside it.
+private final class AppKitComposerShell: NSView {
+    private let depth = CAGradientLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        layer?.borderWidth = 1
+        layer?.masksToBounds = true
+        // Unflipped: (0.5, 1) is the top edge and (0.5, 0) is the bottom edge.
+        depth.startPoint = CGPoint(x: 0.5, y: 1)
+        depth.endPoint = CGPoint(x: 0.5, y: 0)
+        layer?.addSublayer(depth)
+        setAccessibilityElement(false)
+        applyTheme()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        depth.frame = bounds
+        CATransaction.commit()
+    }
+
+    func applyTheme() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        depth.colors = [NativeStyle.composerOuterBg.cgColor, NativeStyle.composerOuterDepth.cgColor]
+        layer?.borderColor = NativeStyle.composerOuterBorder.cgColor
+        CATransaction.commit()
+    }
+}
+
+/// Elevated inner composer surface with a delicate overhead top specular rim,
+/// soft top sheen, and subtle bottom inner shade matching web's composer depth.
+private final class AppKitComposerField: NSView {
+    private let sheen = CAGradientLayer()
+    private let topRim = CAGradientLayer()
+    private let topRimMask = CAShapeLayer()
+    private let bottomShade = CAGradientLayer()
+    private let bottomShadeMask = CAShapeLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 11
+        layer?.borderWidth = 1
+        layer?.masksToBounds = true
+        // Unflipped: (0.5, 1) is top and (0.5, 0) is bottom.
+        sheen.startPoint = CGPoint(x: 0.5, y: 1)
+        sheen.endPoint = CGPoint(x: 0.5, y: 0)
+        sheen.locations = [0, 0.28]
+        layer?.addSublayer(sheen)
+
+        topRim.startPoint = CGPoint(x: 0.5, y: 1)
+        topRim.endPoint = CGPoint(x: 0.5, y: 0)
+        topRim.locations = [0, 0.26]
+        topRimMask.fillColor = nil
+        topRimMask.strokeColor = NSColor.black.cgColor
+        topRimMask.lineWidth = 1
+        topRim.mask = topRimMask
+        layer?.addSublayer(topRim)
+
+        bottomShade.startPoint = CGPoint(x: 0.5, y: 0)
+        bottomShade.endPoint = CGPoint(x: 0.5, y: 1)
+        bottomShade.locations = [0, 0.2]
+        bottomShadeMask.fillColor = nil
+        bottomShadeMask.strokeColor = NSColor.black.cgColor
+        bottomShadeMask.lineWidth = 1
+        bottomShade.mask = bottomShadeMask
+        layer?.addSublayer(bottomShade)
+
+        setAccessibilityElement(false)
+        applyTheme(focused: false)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        sheen.frame = bounds
+        topRim.frame = bounds
+        topRimMask.frame = bounds
+        bottomShade.frame = bounds
+        bottomShadeMask.frame = bounds
+        let inset = bounds.insetBy(dx: 1.5, dy: 1.5)
+        if inset.width > 0, inset.height > 0 {
+            let radius = min(9.5, inset.width / 2, inset.height / 2)
+            let path = CGPath(roundedRect: inset, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            topRimMask.path = path
+            bottomShadeMask.path = path
+        } else {
+            topRimMask.path = nil
+            bottomShadeMask.path = nil
+        }
+        CATransaction.commit()
+    }
+
+    func applyTheme(focused: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.backgroundColor = NativeStyle.composer.cgColor
+        layer?.borderColor = (focused ? NativeStyle.composerFocusBorder : NativeStyle.composerBorder).cgColor
+        let topSheen = NativeStyle.composerTopSheen
+        sheen.colors = [topSheen.cgColor, topSheen.withAlphaComponent(0).cgColor]
+        let topShine = NativeStyle.composerTopShine
+        topRim.colors = [topShine.cgColor, topShine.withAlphaComponent(0).cgColor]
+        let shade = NativeStyle.composerBottomShade
+        bottomShade.colors = [shade.cgColor, shade.withAlphaComponent(0).cgColor]
+        CATransaction.commit()
     }
 }
 

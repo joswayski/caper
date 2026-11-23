@@ -78,8 +78,12 @@ class NativeView: NSView {
     static var hoverWash: NSColor { CaperThemeStore.hoverWashColor }
     static var surfaceRim: NSColor { CaperThemeStore.surfaceRimColor }
     static var composerBorder: NSColor { CaperThemeStore.composerBorderColor }
+    static var composerTopShine: NSColor { CaperThemeStore.composerTopShineColor }
+    static var composerTopSheen: NSColor { CaperThemeStore.composerTopSheenColor }
+    static var composerBottomShade: NSColor { CaperThemeStore.composerBottomShadeColor }
     static var composerFocusBorder: NSColor { CaperThemeStore.composerFocusBorderColor }
     static var composerOuterBg: NSColor { CaperThemeStore.composerOuterBgColor }
+    static var composerOuterDepth: NSColor { CaperThemeStore.composerOuterDepthColor }
     static var composerOuterBorder: NSColor { CaperThemeStore.composerOuterBorderColor }
     /// A subtle olive (caper green mixed into the border) that replaces a panel's
     /// divider while its resize handle is dragged or keyboard-focused.

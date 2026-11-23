@@ -3994,11 +3994,7 @@ private struct ChatView: View {
             }
             ComposerEmbedPreview(chat: chat)
         }
-        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 11))
-        .overlay(RoundedRectangle(cornerRadius: 11).stroke(CaperTheme.border, lineWidth: 1))
-        .padding(3)
-        .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(CaperTheme.border.opacity(0.65), lineWidth: 1))
+        .modifier(ComposerBezelModifier())
     }
     /// Its own property: inline in `channelBody` it pushed that expression past
     /// the Swift type checker's time limit.
@@ -4890,9 +4886,7 @@ private struct NativeThreadView: View {
                         ComposerEmbedPreview(chat: chat, inThread: true)
                     }
                         .task(id: chat.draftPreviewLink(inThread: true)) { await chat.loadComposerLinkPreview(inThread: true) }
-                        // Clipped too: the fill's square corners showed outside the rounded border.
-                        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                        .modifier(ComposerBezelModifier())
                     sendReplyButton
                 }
                 .modifier(VoiceLockLayer())
@@ -7374,6 +7368,56 @@ struct ComposerLip: View {
             .offset(y: -8)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+    }
+}
+
+/// Recessed dark outer trough and top-lit inner composer card, matching web and AppKit.
+struct ComposerBezelModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    CaperTheme.composer
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.035), .clear],
+                        startPoint: .top,
+                        endPoint: UnitPoint(x: 0.5, y: 0.28)
+                    )
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .overlay(
+                RoundedRectangle(cornerRadius: 11)
+                    .strokeBorder(Color.white.opacity(0.075), lineWidth: 1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .inset(by: 1)
+                    .strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: Color.white.opacity(0.14), location: 0),
+                                .init(color: Color.white.opacity(0), location: 0.26),
+                                .init(color: Color.black.opacity(0), location: 0.8),
+                                .init(color: Color.black.opacity(0.42), location: 1),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: Color.black.opacity(0.45), radius: 2, y: 1)
+            .padding(3)
+            .background(
+                LinearGradient(
+                    colors: [Color.black.opacity(0.40), Color.black.opacity(0.50)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                in: RoundedRectangle(cornerRadius: 14)
+            )
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.055), lineWidth: 1))
     }
 }
 

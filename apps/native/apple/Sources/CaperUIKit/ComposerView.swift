@@ -31,7 +31,14 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// The conversation the shown draft belongs to: another one never continues the typing style.
     private var conversation: String?
     private let placeholder = UIKitStyle.label(size: 14, color: UIKitStyle.muted)
+    private let fieldShell = UIView()
+    private let shellDepth = CAGradientLayer()
     private let field = UIView()
+    private let fieldSheen = CAGradientLayer()
+    private let fieldTopRim = CAGradientLayer()
+    private let fieldTopRimMask = CAShapeLayer()
+    private let fieldBottomShade = CAGradientLayer()
+    private let fieldBottomShadeMask = CAShapeLayer()
     private let fieldRow = UIStackView()
     private lazy var attach = IconButton(icon: "plus", label: "Attach files", size: 18, side: 42) { [weak self] in self?.attachTapped?() }
     private lazy var emoji = IconButton(icon: "smile", label: "Emojis, GIFs and stickers", size: 18, side: 42) { [weak self] in self?.emojiTapped?() }
@@ -64,13 +71,63 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         super.init(frame: .zero)
         _ = SoftwareKeyboard.observer
         translatesAutoresizingMaskIntoConstraints = false
+        fieldShell.translatesAutoresizingMaskIntoConstraints = false
+        fieldShell.isUserInteractionEnabled = false
+        fieldShell.layer.cornerRadius = 14
+        fieldShell.layer.cornerCurve = .continuous
+        fieldShell.layer.borderWidth = 1
+        fieldShell.layer.borderColor = UIColor.white.withAlphaComponent(0.055).cgColor
+        fieldShell.clipsToBounds = true
+        shellDepth.colors = [
+            UIColor.black.withAlphaComponent(0.40).cgColor,
+            UIColor.black.withAlphaComponent(0.50).cgColor,
+        ]
+        shellDepth.startPoint = CGPoint(x: 0.5, y: 0)
+        shellDepth.endPoint = CGPoint(x: 0.5, y: 1)
+        fieldShell.layer.addSublayer(shellDepth)
+        addSubview(fieldShell)
+
         field.translatesAutoresizingMaskIntoConstraints = false
         field.backgroundColor = UIKitStyle.composer
-        field.layer.cornerRadius = 8
+        field.layer.cornerRadius = 11
         field.layer.cornerCurve = .continuous
         field.layer.borderWidth = 1
-        field.layer.borderColor = UIKitStyle.border.cgColor
+        field.layer.borderColor = UIColor.white.withAlphaComponent(0.075).cgColor
         field.clipsToBounds = true
+        fieldSheen.colors = [
+            UIColor.white.withAlphaComponent(0.035).cgColor,
+            UIColor.white.withAlphaComponent(0).cgColor,
+        ]
+        fieldSheen.startPoint = CGPoint(x: 0.5, y: 0)
+        fieldSheen.endPoint = CGPoint(x: 0.5, y: 1)
+        fieldSheen.locations = [0, 0.28]
+        field.layer.addSublayer(fieldSheen)
+
+        fieldTopRim.colors = [
+            UIColor.white.withAlphaComponent(0.14).cgColor,
+            UIColor.white.withAlphaComponent(0).cgColor,
+        ]
+        fieldTopRim.startPoint = CGPoint(x: 0.5, y: 0)
+        fieldTopRim.endPoint = CGPoint(x: 0.5, y: 1)
+        fieldTopRim.locations = [0, 0.26]
+        fieldTopRimMask.fillColor = nil
+        fieldTopRimMask.strokeColor = UIColor.black.cgColor
+        fieldTopRimMask.lineWidth = 1
+        fieldTopRim.mask = fieldTopRimMask
+        field.layer.addSublayer(fieldTopRim)
+
+        fieldBottomShade.colors = [
+            UIColor.black.withAlphaComponent(0.42).cgColor,
+            UIColor.black.withAlphaComponent(0).cgColor,
+        ]
+        fieldBottomShade.startPoint = CGPoint(x: 0.5, y: 1)
+        fieldBottomShade.endPoint = CGPoint(x: 0.5, y: 0)
+        fieldBottomShade.locations = [0, 0.2]
+        fieldBottomShadeMask.fillColor = nil
+        fieldBottomShadeMask.strokeColor = UIColor.black.cgColor
+        fieldBottomShadeMask.lineWidth = 1
+        fieldBottomShade.mask = fieldBottomShadeMask
+        field.layer.addSublayer(fieldBottomShade)
         addSubview(field)
 
         textView.translatesAutoresizingMaskIntoConstraints = false
@@ -168,7 +225,11 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             suggestions.topAnchor.constraint(equalTo: accessories.bottomAnchor),
             suggestions.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             suggestions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            field.topAnchor.constraint(equalTo: suggestions.bottomAnchor),
+            fieldShell.topAnchor.constraint(equalTo: field.topAnchor, constant: -3),
+            fieldShell.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: -3),
+            fieldShell.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: 3),
+            fieldShell.bottomAnchor.constraint(equalTo: field.bottomAnchor, constant: 3),
+            field.topAnchor.constraint(equalTo: suggestions.bottomAnchor, constant: 3),
             field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             send.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
             send.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
@@ -505,6 +566,26 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shellDepth.frame = fieldShell.bounds
+        let b = field.bounds
+        fieldSheen.frame = b
+        fieldTopRim.frame = b
+        fieldTopRimMask.frame = b
+        fieldBottomShade.frame = b
+        fieldBottomShadeMask.frame = b
+        let inset = b.insetBy(dx: 1.5, dy: 1.5)
+        if inset.width > 0, inset.height > 0 {
+            let radius = min(9.5, inset.width / 2, inset.height / 2)
+            let path = UIBezierPath(roundedRect: inset, cornerRadius: radius).cgPath
+            fieldTopRimMask.path = path
+            fieldBottomShadeMask.path = path
+        } else {
+            fieldTopRimMask.path = nil
+            fieldBottomShadeMask.path = nil
+        }
+        CATransaction.commit()
         refresh()
     }
 

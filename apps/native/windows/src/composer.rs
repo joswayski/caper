@@ -19,10 +19,12 @@
 use crate::gfx::{self, Gfx, fill_round, rect};
 use crate::icons::{self, Icon};
 use caper_client::formatting::{self, normalized_selection, projection, source_runs};
+use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::core::*;
+use windows_numerics::Vector2;
 
 pub const PAD: f32 = 12.0;
 pub const LINE: f32 = 15.0 * 1.35;
@@ -1092,31 +1094,153 @@ impl Composer {
     ) -> Result<()> {
         unsafe {
             dc.Clear(Some(&gfx::color(crate::theme::SURFACE_CONVERSATION, 1.0)));
-            // Antigravity-style recessed outer shell + crisp inner composer frame.
-            fill_round(
+            // Recessed dark outer trough + top-lit inner composer surface.
+            let outer_r = rect(0.5, 0.5, w - 0.5, h - 0.5);
+            let outer_radius = crate::theme::RADIUS + 3.0;
+            let outer_stops = [
+                D2D1_GRADIENT_STOP {
+                    position: 0.0,
+                    color: gfx::color(0x000000, 0.40),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 1.0,
+                    color: gfx::color(0x000000, 0.50),
+                },
+            ];
+            let outer_coll = ID2D1RenderTarget::CreateGradientStopCollection(
                 dc,
-                rect(0.5, 0.5, w - 0.5, h - 0.5),
-                crate::theme::RADIUS + 2.0,
-                &g.brushes.hover,
+                &outer_stops,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            )?;
+            let outer_fill = dc.CreateLinearGradientBrush(
+                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: Vector2 {
+                        X: 0.0,
+                        Y: outer_r.top,
+                    },
+                    endPoint: Vector2 {
+                        X: 0.0,
+                        Y: outer_r.bottom,
+                    },
+                },
+                None,
+                &outer_coll,
+            )?;
+            dc.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: outer_r,
+                    radiusX: outer_radius,
+                    radiusY: outer_radius,
+                },
+                &outer_fill,
             );
-            crate::gfx::stroke_round(
+            let outer_border = dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.055), None)?;
+            crate::gfx::stroke_round(dc, outer_r, outer_radius, &outer_border);
+
+            let inner_r = rect(3.5, 3.5, w - 3.5, h - 3.5);
+            let inner_radius = crate::theme::RADIUS;
+            fill_round(dc, inner_r, inner_radius, &g.brushes.composer);
+
+            let sheen_stops = [
+                D2D1_GRADIENT_STOP {
+                    position: 0.0,
+                    color: gfx::color(0xFFFFFF, 0.035),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 0.28,
+                    color: gfx::color(0xFFFFFF, 0.0),
+                },
+            ];
+            let sheen_coll = ID2D1RenderTarget::CreateGradientStopCollection(
                 dc,
-                rect(0.5, 0.5, w - 0.5, h - 0.5),
-                crate::theme::RADIUS + 2.0,
-                &g.brushes.border,
+                &sheen_stops,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            )?;
+            let sheen = dc.CreateLinearGradientBrush(
+                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: Vector2 {
+                        X: 0.0,
+                        Y: inner_r.top,
+                    },
+                    endPoint: Vector2 {
+                        X: 0.0,
+                        Y: inner_r.bottom,
+                    },
+                },
+                None,
+                &sheen_coll,
+            )?;
+            dc.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: inner_r,
+                    radiusX: inner_radius,
+                    radiusY: inner_radius,
+                },
+                &sheen,
             );
-            fill_round(
+
+            let rim_stops = [
+                D2D1_GRADIENT_STOP {
+                    position: 0.0,
+                    color: gfx::color(0xFFFFFF, 0.14),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 0.26,
+                    color: gfx::color(0xFFFFFF, 0.0),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 0.80,
+                    color: gfx::color(0x000000, 0.0),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 1.0,
+                    color: gfx::color(0x000000, 0.42),
+                },
+            ];
+            let rim_coll = ID2D1RenderTarget::CreateGradientStopCollection(
                 dc,
-                rect(3.0, 3.0, w - 3.0, h - 3.0),
-                crate::theme::RADIUS,
-                &g.brushes.composer,
+                &rim_stops,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            )?;
+            let rim = dc.CreateLinearGradientBrush(
+                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: Vector2 {
+                        X: 0.0,
+                        Y: inner_r.top + 1.0,
+                    },
+                    endPoint: Vector2 {
+                        X: 0.0,
+                        Y: inner_r.bottom - 1.0,
+                    },
+                },
+                None,
+                &rim_coll,
+            )?;
+            dc.DrawRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: rect(
+                        inner_r.left + 1.5,
+                        inner_r.top + 1.5,
+                        inner_r.right - 1.5,
+                        inner_r.bottom - 1.5,
+                    ),
+                    radiusX: (inner_radius - 1.0).max(0.0),
+                    radiusY: (inner_radius - 1.0).max(0.0),
+                },
+                &rim,
+                1.0,
+                None,
             );
-            crate::gfx::stroke_round(
-                dc,
-                rect(3.0, 3.0, w - 3.0, h - 3.0),
-                crate::theme::RADIUS,
-                &g.brushes.border,
-            );
+
+            let inner_border = if self.focused {
+                dc.CreateSolidColorBrush(&gfx::color(0x47593D, 1.0), None)?
+            } else {
+                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.075), None)?
+            };
+            crate::gfx::stroke_round(dc, inner_r, inner_radius, &inner_border);
             // The selection's toolbar, as web's: one group of buttons with a
             // gap before Quote; a pressed button (the selection has
             // its style) is lit.

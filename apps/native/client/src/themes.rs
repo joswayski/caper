@@ -312,12 +312,13 @@ impl ThemeDocument {
                    background-image: linear-gradient(180deg, @caper_action_hover, @caper_action);\n\
                  }\n\
                  .composer {\n\
-                   border-color: rgba(11, 11, 12, 0.14);\n\
-                   box-shadow: 0 0 0 4px rgba(17, 17, 20, 0.025), 0 0 0 5px rgba(17, 17, 20, 0.09);\n\
+                   background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.65) 0%, rgba(255, 255, 255, 0) 28%);\n\
+                   border-color: rgba(11, 11, 12, 0.12);\n\
+                   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96), 0 1px 2px rgba(22, 22, 26, 0.09), 0 0 0 4px rgba(11, 11, 12, 0.06), 0 0 0 5px rgba(11, 11, 12, 0.11), 0 2px 8px rgba(22, 22, 26, 0.06);\n\
                  }\n\
                  .composer:focus-within {\n\
                    border-color: alpha(@caper_terracotta, 0.62);\n\
-                   box-shadow: 0 0 0 4px rgba(17, 17, 20, 0.025), 0 0 0 5px rgba(17, 17, 20, 0.09);\n\
+                   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96), 0 1px 2px rgba(22, 22, 26, 0.09), 0 0 0 4px rgba(11, 11, 12, 0.06), 0 0 0 5px rgba(11, 11, 12, 0.11), 0 2px 8px rgba(22, 22, 26, 0.06);\n\
                  }\n",
             );
         }

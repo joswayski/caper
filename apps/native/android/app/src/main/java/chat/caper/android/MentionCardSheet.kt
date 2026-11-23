@@ -310,39 +310,41 @@ import kotlinx.coroutines.launch
     VoiceRecordingNotice(recorder)
     Box(Modifier.voiceRecordingKeys(recorder)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-            EmojiTextField(
-                field, { value ->
-                    val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
-                        val limitedText = value.text.substring(0, value.text.offsetByCodePoints(0, 4000))
-                        value.copy(text = limitedText, selection = TextRange(value.selection.start.coerceAtMost(limitedText.length), value.selection.end.coerceAtMost(limitedText.length)), composition = null)
-                    }
-                    field = limited; text(limited.text)
-                }, Modifier.weight(1f).attachmentPaste(editable && uploadsEnabled, add), placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
-                keyboardAttachment = keyboardAttachment.takeIf { editable && uploadsEnabled },
-                visualTransformation = MentionVisualTransformation(MentionSource(listOf(MentionCandidate(username, username)), specials = false, feedback = true)),
-                leadingIcon = {
-                    AttachButton(
-                        when {
-                            !uploadsEnabled -> "File uploads are unavailable"
-                            draft.files.size >= chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS} files."
-                            !editable -> "Sending…"
-                            else -> null
-                        }, add, interaction = { filePicker = it; pickerInteraction(it || emojiPicker) }, paste = paste,
-                        drawer = AttachDrawerHost(draft.files, remove, canSend = writable && draft.canSend, send = send),
-                    )
-                },
-                trailingIcon = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        EmojiInsertButton(editable, interaction = { emojiPicker = it; pickerInteraction(it || filePicker) },
-                            load = loadMedia, mediaAvailable = mediaAvailable, sendMedia = sendMedia) { emoji ->
-                            if (editable) insertEmojiAtSelection(field, emoji)?.let { field = it; text(it.text) }
+            ComposerShell(Modifier.weight(1f)) {
+                EmojiTextField(
+                    field, { value ->
+                        val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
+                            val limitedText = value.text.substring(0, value.text.offsetByCodePoints(0, 4000))
+                            value.copy(text = limitedText, selection = TextRange(value.selection.start.coerceAtMost(limitedText.length), value.selection.end.coerceAtMost(limitedText.length)), composition = null)
                         }
-                        if (uploadsEnabled && recordVoice != null) VoiceRecordButton(recorder, editable, voiceBlocked)
-                    }
-                },
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                enabled = editable, colors = composerFieldColors(),
-            )
+                        field = limited; text(limited.text)
+                    }, Modifier.fillMaxWidth().attachmentPaste(editable && uploadsEnabled, add), placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
+                    keyboardAttachment = keyboardAttachment.takeIf { editable && uploadsEnabled },
+                    visualTransformation = MentionVisualTransformation(MentionSource(listOf(MentionCandidate(username, username)), specials = false, feedback = true)),
+                    leadingIcon = {
+                        AttachButton(
+                            when {
+                                !uploadsEnabled -> "File uploads are unavailable"
+                                draft.files.size >= chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS} files."
+                                !editable -> "Sending…"
+                                else -> null
+                            }, add, interaction = { filePicker = it; pickerInteraction(it || emojiPicker) }, paste = paste,
+                            drawer = AttachDrawerHost(draft.files, remove, canSend = writable && draft.canSend, send = send),
+                        )
+                    },
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            EmojiInsertButton(editable, interaction = { emojiPicker = it; pickerInteraction(it || filePicker) },
+                                load = loadMedia, mediaAvailable = mediaAvailable, sendMedia = sendMedia) { emoji ->
+                                if (editable) insertEmojiAtSelection(field, emoji)?.let { field = it; text(it.text) }
+                            }
+                            if (uploadsEnabled && recordVoice != null) VoiceRecordButton(recorder, editable, voiceBlocked)
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    enabled = editable, colors = composerFieldColors(),
+                )
+            }
             ComposerSendButton(
                 send,
                 Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else sendLabel },

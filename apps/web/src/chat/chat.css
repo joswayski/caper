@@ -2410,12 +2410,12 @@ button.chat-mention-card-avatar {
   border-radius: var(--radius-composer);
   color: var(--text);
   background-color: var(--surface-composer);
-  background-image: linear-gradient(180deg, var(--surface-rim) 0%, transparent 100%);
+  background-image: linear-gradient(180deg, var(--composer-top-sheen) 0%, transparent 28%);
   box-shadow:
-    inset 0 1px 0 var(--surface-rim),
+    var(--composer-shadow),
     0 0 0 4px var(--composer-shell-bg),
     0 0 0 5px var(--composer-shell-border),
-    var(--composer-shadow);
+    var(--composer-outer-shadow);
   font: inherit;
   font-size: 0.875rem;
   line-height: 1.45;
@@ -2429,10 +2429,10 @@ button.chat-mention-card-avatar {
 :is(.chat-composer, .chat-profile-composer) .chat-rich-input:focus {
   border-color: var(--composer-focus-border);
   box-shadow:
-    inset 0 1px 0 var(--surface-rim),
+    var(--composer-shadow),
     0 0 0 4px var(--composer-shell-bg),
     0 0 0 5px var(--composer-shell-border),
-    var(--composer-shadow);
+    var(--composer-outer-shadow);
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.chat-composer, .chat-profile-composer) .chat-rich-input,
@@ -6064,7 +6064,7 @@ a.chat-draft-preview {
   grid-row: 2;
   margin-top: -7px;
   padding: 0 8px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--composer-border);
   border-top: 0;
   border-radius: 0 0 8px 8px;
   background: var(--surface-composer);
@@ -6080,7 +6080,7 @@ a.chat-draft-preview {
   padding-bottom: 11px;
 }
 .chat-composer form:has(.chat-rich-input:focus) > .chat-composer-preview {
-  border-color: var(--terracotta);
+  border-color: var(--composer-focus-border);
 }
 /* A thread's form starts with its "Also send to" row and has a wider gap. */
 .chat-thread-composer .chat-composer-preview {
