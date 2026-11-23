@@ -57,6 +57,9 @@ struct WhatsNewDisplay: Identifiable {
     }
 
     var hasSnapshot: Bool { history.snapshot != nil }
+    /// Nothing left for the automatic presenter to load or show: the notes
+    /// loaded and are all read, or a development build has none to load.
+    var settled: Bool { !WhatsNewSnapshot.validRevision(revision) || (hasSnapshot && history.unread.isEmpty) }
     func open() {
         presentation = WhatsNewDisplay(sequence: history.snapshot?.sequence, releases: hasSnapshot ? history.retained : nil, automatic: false)
         Task { await refresh() }

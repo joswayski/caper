@@ -10,10 +10,7 @@ import Observation
     private var timer: Timer?
     private var refresh: Task<Void, Never>?
     private var refreshGeneration = 0
-    private var speaking: Task<Void, Never>?
-    private var phase: VoiceClient.Phase?
-    private var participants: [String] = []
-    private var announced = false
+    private lazy var effects = NativeVoiceCallEffects(voice: model.voice)
     private var wasReady = false
     private var wasActive = false
     private var lastRefresh: Date?
@@ -35,11 +32,11 @@ import Observation
             center.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
             center.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
             refreshGeneration += 1
-            timer?.invalidate(); timer = nil; refresh?.cancel(); refresh = nil; speaking?.cancel(); speaking = nil
-            model.voice.clearSpeaking(); sheet?.dismiss(animated: false); sheet = nil
+            timer?.invalidate(); timer = nil; refresh?.cancel(); refresh = nil
+            effects.stop(); sheet?.dismiss(animated: false); sheet = nil
         }
     }
-    isolated deinit { timer?.invalidate(); refresh?.cancel(); speaking?.cancel() }
+    isolated deinit { timer?.invalidate(); refresh?.cancel() }
     @objc private func becameActive() {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tick() } }
@@ -56,31 +53,8 @@ import Observation
             let ready = model.phase == .ready
             if ready && !wasReady { CaperRuntime.showWhatsNewPreview(model) }
             wasReady = ready
-            syncEffects(); sync()
+            effects.sync(); sync()
         } onChange: { [weak self] in Task { @MainActor in self?.observe(token) } }
-    }
-    private func syncEffects() {
-        let voice = model.voice
-        let next = voice.participants.map(\.id)
-        if next != participants, voice.phase == .connected,
-           let me = participants.first(where: { voice.isSelf(participantID: $0) }), next.contains(me) {
-            let before = Set(participants).subtracting([me]), after = Set(next).subtracting([me])
-            if !before.subtracting(after).isEmpty { CaperEffects.shared.play(.leave) }
-            else if !after.subtracting(before).isEmpty { CaperEffects.shared.play(.join) }
-        }
-        participants = next
-        guard phase != voice.phase else { return }
-        phase = voice.phase; speaking?.cancel(); speaking = nil
-        if voice.phase == .idle || voice.phase == .failed || voice.phase == .joining { announced = false }
-        if voice.phase == .connected {
-            if !announced { announced = true; CaperEffects.shared.play(.join) }
-            speaking = Task { [weak voice] in
-                while !Task.isCancelled, let voice, voice.phase == .connected {
-                    await voice.sampleSpeaking()
-                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                }
-            }
-        } else { voice.clearSpeaking() }
     }
     private func tick() {
         let active = view.window?.windowScene?.activationState == .foregroundActive && model.phase == .ready

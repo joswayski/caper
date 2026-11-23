@@ -485,6 +485,8 @@ import ServiceManagement
     private let model: AppModel
     private let observation = AppKitObservation()
     private let readiness = AppKitObservation()
+    private let voiceEffects = AppKitObservation()
+    private lazy var effects = NativeVoiceCallEffects(voice: model.voice)
     private var sheet: AppKitWhatsNewSheet?
     private weak var owner: NSWindow?
     private var dismissMonitor: Any?
@@ -505,17 +507,26 @@ import ServiceManagement
         observation.start(reading: { [model] in (model.whatsNew.presentation?.id, model.whatsNew.settingsOpen) }) { [weak self] _ in
             self?.sync()
         }
+        // The call's chimes and speaking rings; nothing samples while no
+        // Caper window shows (minimized, covered or on another Space).
+        voiceEffects.start(reading: { [effects] in effects.sync() }, apply: { _ in })
+        NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged),
+            name: NSApplication.didChangeOcclusionStateNotification, object: nil)
+        occlusionChanged()
         var wasReady = false
         readiness.start(reading: { [model] in model.phase == .ready }) { [model] isReady in
             if isReady && !wasReady { CaperRuntime.showWhatsNewPreview(model) }
             wasReady = isReady
         }
-        // tick() does nothing while another app is active, so neither does the timer.
+        // tick() does nothing while another app is active, so neither does the
+        // timer, and it stops once the notes are loaded and read.
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didResignActiveNotification, object: nil)
         activityChanged()
     }
+
+    @objc private func occlusionChanged() { effects.sampling = NSApp.occlusionState.contains(.visible) }
 
     @objc private func activityChanged() {
         if NSApp.isActive, timer == nil {
@@ -541,6 +552,9 @@ import ServiceManagement
         guard live else { return }
         if !wasLive { lastRefresh = nil }
         let notes = model.whatsNew
+        // Until Caper is next activated: no more ticks (two a second) once
+        // there is nothing to load or present.
+        if notes.settled { timer?.invalidate(); timer = nil; return }
         if !notes.hasSnapshot, !refreshing, lastRefresh.map({ Date().timeIntervalSince($0) >= 60 }) ?? true {
             refreshing = true; lastRefresh = Date()
             Task { [weak self] in

@@ -113,3 +113,55 @@ import AVFoundation
         }
     }
 }
+
+/// The call's speaking rings and chimes for the native roots (UIKit and
+/// AppKit), which call `sync()` inside their observation of the model: it
+/// samples who is speaking ten times a second while connected, and chimes
+/// on connecting and when someone else joins or leaves the call you are in.
+@MainActor final class NativeVoiceCallEffects {
+    private let voice: VoiceClient
+    private var phase: VoiceClient.Phase?
+    private var participants: [String] = []
+    private var announced = false
+    private var speaking: Task<Void, Never>?
+    /// False while nothing on screen shows the rings: the call keeps its
+    /// chimes but stops sampling statistics until it is true again.
+    var sampling = true {
+        didSet { if sampling != oldValue { restartSampling() } }
+    }
+
+    init(voice: VoiceClient) { self.voice = voice }
+    isolated deinit { speaking?.cancel() }
+
+    func sync() {
+        let next = voice.participants.map(\.id)
+        if next != participants, voice.phase == .connected,
+           let me = participants.first(where: { voice.isSelf(participantID: $0) }), next.contains(me) {
+            let before = Set(participants).subtracting([me]), after = Set(next).subtracting([me])
+            if !before.subtracting(after).isEmpty { CaperEffects.shared.play(.leave) }
+            else if !after.subtracting(before).isEmpty { CaperEffects.shared.play(.join) }
+        }
+        participants = next
+        guard phase != voice.phase else { return }
+        phase = voice.phase
+        if voice.phase == .idle || voice.phase == .failed || voice.phase == .joining { announced = false }
+        // Decoded ahead, so the connect chime is not late enough to be skipped.
+        if voice.phase == .joining { CaperEffects.shared.preload() }
+        if voice.phase == .connected, !announced { announced = true; CaperEffects.shared.play(.join) }
+        restartSampling()
+    }
+
+    /// The root went away: stop sampling, and sample afresh if it comes back.
+    func stop() { speaking?.cancel(); speaking = nil; phase = nil; voice.clearSpeaking() }
+
+    private func restartSampling() {
+        speaking?.cancel(); speaking = nil
+        guard sampling, voice.phase == .connected else { voice.clearSpeaking(); return }
+        speaking = Task { [weak voice] in
+            while !Task.isCancelled, let voice, voice.phase == .connected {
+                await voice.sampleSpeaking()
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
+        }
+    }
+}
