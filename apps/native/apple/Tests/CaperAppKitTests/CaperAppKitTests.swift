@@ -2026,7 +2026,10 @@ import XCTest
         XCTAssertEqual(seedBody.value as? String, seedText)
         let newer = app.buttons["load-newer-replies"]
         XCTAssertTrue(newer.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["thread-jump-to-latest"].exists, "A detached thread window shows the viewing older messages toast")
         capture("quoted original thread reply with newer page available", app: app)
+        // Load newer sits after the window's last reply.
+        timeline.scroll(byDeltaX: 0, deltaY: -10000)
         newer.click()
         XCTAssertTrue(newer.waitForNonExistence(timeout: 10))
         timeline.scroll(byDeltaX: 0, deltaY: -10000)

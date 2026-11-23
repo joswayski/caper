@@ -1,15 +1,22 @@
 import Foundation
 
-/// "Jump to latest": a floating button over a timeline's bottom trailing
-/// corner while the reader is more than half a screen above the newest
-/// loaded message of a history that reaches the live end. While it shows,
-/// other people's messages arriving at the live end are counted on it.
+/// "You’re viewing older messages": a toast floating over a timeline just
+/// above the composer, as in Discord, with a Jump to latest button. A history
+/// that reaches the live end shows it while the reader is more than half a
+/// screen above the newest loaded message, and counts other people's messages
+/// arriving at the live end meanwhile. A detached window (one that stops short
+/// of the live end) shows it wherever the reader is, without a count.
 public enum JumpToLatest {
-    /// Shows when the newest loaded message is more than half a viewport
-    /// below the bottom of what the reader sees, and the history is live
-    /// (no "Load newer messages"/"Back to latest" window).
+    /// The toast's label until others have written.
+    public static let viewingOlder = "You’re viewing older messages"
+    /// The toast's button.
+    public static let button = "Jump to latest"
+
+    /// In a live history, shows when the newest loaded message is more than
+    /// half a viewport below the bottom of what the reader sees; in a detached
+    /// window (`live` false), always.
     public static func shows(distanceFromEnd: CGFloat, viewport: CGFloat, live: Bool) -> Bool {
-        live && viewport > 0 && distanceFromEnd > viewport / 2
+        !live || (viewport > 0 && distanceFromEnd > viewport / 2)
     }
 
     /// "1 new message", "3 new messages", capped at "99+ new messages"; nil without new messages.
@@ -19,8 +26,14 @@ public enum JumpToLatest {
         return count == 1 ? "1 new message" : "\(count) new messages"
     }
 
+    /// The toast's visible label: the count once others have written, else "You’re viewing older messages".
+    public static func label(_ count: Int) -> String {
+        countText(count) ?? viewingOlder
+    }
+
+    /// The button's accessible name.
     public static func accessibilityLabel(_ count: Int) -> String {
-        countText(count).map { "Jump to latest, \($0)" } ?? "Jump to latest"
+        countText(count).map { "\(button), \($0)" } ?? button
     }
 
     /// Animated unless Reduce Motion is on or the newest message is many screens away.

@@ -611,16 +611,23 @@ import XCTest
         timeline.update(history, conversationID: "channel", viewerID: "me")
         timeline.layoutSubtreeIfNeeded()
         XCTAssertEqual(timeline.jump.count, 2, "Only other people's messages count")
-        // A detached history window keeps its own controls instead.
+        // A detached history window shows it uncounted, wherever the reader is.
         timeline.live = false
         timeline.update(history, conversationID: "channel", viewerID: "me")
         timeline.layoutSubtreeIfNeeded()
-        XCTAssertFalse(timeline.jump.shows)
+        XCTAssertTrue(timeline.jump.shows)
+        XCTAssertEqual(timeline.jump.count, 0, "A detached window has no count")
+        let detachedEnd = (timeline.documentView?.frame.height ?? 0) - timeline.contentSize.height
+        timeline.contentView.scroll(to: NSPoint(x: 0, y: detachedEnd))
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertTrue(timeline.jump.shows, "Even at the end of a detached window")
+        timeline.contentView.scroll(to: NSPoint(x: 0, y: 0))
+        timeline.layoutSubtreeIfNeeded()
         timeline.live = true
         timeline.update(history, conversationID: "channel", viewerID: "me")
         timeline.layoutSubtreeIfNeeded()
         XCTAssertTrue(timeline.jump.shows)
-        XCTAssertEqual(timeline.jump.count, 0, "Hiding clears the count")
+        XCTAssertEqual(timeline.jump.count, 0)
         // Reaching the bottom by scrolling hides it.
         let end = (timeline.documentView?.frame.height ?? 0) - timeline.contentSize.height
         timeline.contentView.scroll(to: NSPoint(x: 0, y: end))

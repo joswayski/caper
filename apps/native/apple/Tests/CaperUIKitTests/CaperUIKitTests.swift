@@ -252,9 +252,10 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-rail-unread")
     }
 
-    /// A reply's context jumps to the old message; the bar then offers Load
-    /// newer messages and Back to latest, which returns to the live end.
-    func testJumpThenBackToLatest() {
+    /// A reply's context jumps to the old message. The detached window shows
+    /// the viewing older messages toast wherever the reader is, uncounted, in
+    /// place of Back to latest; Jump to latest returns to the live end.
+    func testJumpThenJumpToLatestFromADetachedWindow() {
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
         control(["incomingMessage": ["channelId": "chan00000001", "text": "replying way back", "replyToId": "b00000000002000"]])
@@ -263,10 +264,12 @@ final class CaperUIKitTests: XCTestCase {
         context.tap()
         let target = row("00000000-0000-4000-9000-000000002000")
         XCTAssertTrue(target.waitForExistence(timeout: 15), "Jumps to the replied-to message")
-        let latest = app.buttons["back-to-latest"]
+        let latest = app.buttons["jump-to-latest"]
         XCTAssertTrue(latest.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["Load newer messages"].exists)
-        screenshot("uikit-back-to-latest")
+        XCTAssertEqual(latest.label, "Jump to latest", "A detached window counts nothing")
+        XCTAssertTrue(app.staticTexts["You’re viewing older messages"].exists)
+        XCTAssertFalse(app.buttons["back-to-latest"].exists)
+        screenshot("uikit-jump-detached-window")
         latest.tap()
         XCTAssertTrue(latest.waitForNonExistence(timeout: 15))
         let reply = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "replying way back")).firstMatch
@@ -304,6 +307,7 @@ final class CaperUIKitTests: XCTestCase {
         timeline.swipeDown(velocity: .slow)
         XCTAssertTrue(jump.waitForExistence(timeout: 10))
         XCTAssertEqual(jump.label, "Jump to latest")
+        XCTAssertTrue(app.staticTexts["You’re viewing older messages"].exists)
         screenshot("uikit-jump-to-latest")
         for text in ["first while away", "second while away", "third while away"] {
             control(["incomingMessage": ["channelId": "chan00000001", "text": text]])
@@ -311,7 +315,8 @@ final class CaperUIKitTests: XCTestCase {
         let counted = NSPredicate(format: "label == %@", "Jump to latest, 3 new messages")
         expectation(for: counted, evaluatedWith: jump)
         waitForExpectations(timeout: 10)
-        XCTAssertGreaterThanOrEqual(jump.frame.height, 44)
+        XCTAssertTrue(app.staticTexts["3 new messages"].exists, "The count replaces the toast's label")
+        XCTAssertGreaterThanOrEqual(jump.frame.height, 40)
         screenshot("uikit-jump-to-latest-count")
         jump.tap()
         XCTAssertTrue(jump.waitForNonExistence(timeout: 10))

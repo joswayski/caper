@@ -49,12 +49,26 @@ enum PendingAction { case retry, edit, dismiss }
     /// The divider the rows were last laid out with.
     private var shownNewMessagesID: String?
     var canLoadOlder = false
-    /// The loaded history reaches the live end (no newer page or jump window).
+    /// The loaded history reaches the live end (no newer page after a jump).
     /// Set it before `update`.
     var live = true
-    /// "Jump to latest": whether it shows, and other people's messages that
-    /// arrived at the live end while it did.
+    /// The "You’re viewing older messages" toast: whether it shows, and other
+    /// people's messages that arrived at the live end while it did. A
+    /// detached window (not `live`) shows it wherever the reader is, uncounted.
     private(set) var jump = (shows: false, count: 0)
+    /// Below the last row, as Load newer in a detached window: 8 points above
+    /// it and 68 below, so the toast floating over the history never covers it.
+    var footer: NSView? {
+        didSet {
+            guard footer !== oldValue else { return }
+            oldValue?.removeFromSuperview()
+            if let footer { document.addSubview(footer) }
+            realize(anchor: geometry.anchor(at: contentView.bounds.minY))
+        }
+    }
+    private var footerHeight: CGFloat { footer == nil ? 0 : 8 + 28 + 68 }
+    /// The end of the scrollable content: the last row, and the footer under it.
+    private var contentEnd: CGFloat { geometry.contentHeight + footerHeight }
     var jumpChanged: (() -> Void)?
     private var jumpAnimation: Timer?
     var loadOlder: (() -> Void)?
@@ -289,7 +303,7 @@ enum PendingAction { case retry, edit, dismiss }
         rows.values.forEach { $0.cancelArrivalMotion() }
         let viewport = contentSize.height
         let start = contentView.bounds.minY
-        guard JumpToLatest.animates(distanceFromEnd: geometry.contentHeight - contentView.bounds.maxY, viewport: viewport,
+        guard JumpToLatest.animates(distanceFromEnd: contentEnd - contentView.bounds.maxY, viewport: viewport,
                                     reduceMotion: CaperAccessibility.reduceMotion) else { showLatest(); return }
         stopJumpAnimation()
         focusedID = nil
@@ -302,7 +316,7 @@ enum PendingAction { case retry, edit, dismiss }
                 guard let self else { return }
                 let t = min(1, (CACurrentMediaTime() - began) / 0.26)
                 let eased = 1 - pow(1 - t, 3)
-                let end = max(0, self.geometry.contentHeight - self.contentSize.height)
+                let end = max(0, self.contentEnd - self.contentSize.height)
                 self.contentView.scroll(to: NSPoint(x: 0, y: start + (end - start) * eased))
                 self.reflectScrolledClipView(self.contentView)
                 if t >= 1 { self.showLatest() }
@@ -318,12 +332,13 @@ enum PendingAction { case retry, edit, dismiss }
         jumpAnimation = nil
     }
 
-    /// Shows Jump to latest more than half a screen above the newest loaded
-    /// message of a live history; anywhere closer hides it and clears its count.
+    /// Shows the toast more than half a screen above the newest loaded message
+    /// of a live history; anywhere closer hides it and clears its count. A
+    /// detached window shows it wherever the reader is, without a count.
     private func refreshJump() {
-        let shows = jumpAnimation == nil && !followEnd && JumpToLatest.shows(
-            distanceFromEnd: geometry.contentHeight - contentView.bounds.maxY, viewport: contentSize.height, live: live)
-        let next = (shows: shows, count: shows ? jump.count : 0)
+        let shows = !live || (jumpAnimation == nil && !followEnd && JumpToLatest.shows(
+            distanceFromEnd: contentEnd - contentView.bounds.maxY, viewport: contentSize.height, live: true))
+        let next = (shows: shows, count: shows && live ? jump.count : 0)
         guard next != jump else { return }
         jump = next
         jumpChanged?()
@@ -366,7 +381,7 @@ enum PendingAction { case retry, edit, dismiss }
     @objc private func scrolled() {
         guard !rendering else { return }
         dismissHover?()
-        followEnd = contentView.bounds.maxY >= geometry.contentHeight - 2
+        followEnd = contentView.bounds.maxY >= contentEnd - 2
         realize(anchor: geometry.anchor(at: contentView.bounds.minY))
         if !followEnd { requestOlderIfNeeded() }
     }
@@ -403,8 +418,8 @@ enum PendingAction { case retry, edit, dismiss }
             // Prepending can group the anchor under its new predecessor and
             // hide its header. Anchor the text, not just the row's outer box.
             let textShift = anchor.flatMap { rows[$0.id]?.textTop }.flatMap { top in anchorTextTop.map { top - $0 } } ?? 0
-            let wanted = followEnd ? geometry.contentHeight - viewport : (anchor.flatMap { geometry.offset(for: $0) } ?? contentView.bounds.minY) + textShift
-            return min(max(0, wanted), max(0, geometry.contentHeight - viewport))
+            let wanted = followEnd ? contentEnd - viewport : (anchor.flatMap { geometry.offset(for: $0) } ?? contentView.bounds.minY) + textShift
+            return min(max(0, wanted), max(0, contentEnd - viewport))
         }
         // Measures and places the visible rows at one width, and returns them.
         func place() -> Range<Int> {
@@ -428,16 +443,20 @@ enum PendingAction { case retry, edit, dismiss }
                 if row.body.selectedRange().length > 0 { selection[id] = (row.body.string, row.body.selectedRange()) }
                 row.removeFromSuperview()
             }
-            document.setFrameSize(NSSize(width: width, height: max(viewport, geometry.contentHeight)))
+            document.setFrameSize(NSSize(width: width, height: max(viewport, contentEnd)))
             // A conversation shorter than the pane rests on the composer, as
             // on web, instead of hanging under the header.
-            let lead = max(0, viewport - geometry.contentHeight)
+            let lead = max(0, viewport - contentEnd)
             for index in needed {
                 let row = cell(at: index)
                 row.frame = NSRect(x: 0, y: lead + geometry.origin(of: index), width: width, height: geometry.height(at: index))
                 // NSTextView resizing can scroll its selection into view. Finish
                 // that layout before restoring the reader's anchor, not after it.
                 row.layoutSubtreeIfNeeded()
+            }
+            if let footer {
+                let footerWidth = min(180, max(0, width - 40))
+                footer.frame = NSRect(x: (width - footerWidth) / 2, y: lead + geometry.contentHeight + 8, width: footerWidth, height: 28)
             }
             contentView.scroll(to: NSPoint(x: 0, y: offset()))
             reflectScrolledClipView(contentView)
@@ -456,7 +475,9 @@ enum PendingAction { case retry, edit, dismiss }
         }
         rows.values.forEach { $0.refreshHover() }
         // These are real, selectable NSTextViews/buttons, not label-only mirrors.
-        document.setAccessibilityChildren(needed.compactMap { rows[ids[$0]] })
+        var children: [NSView] = needed.compactMap { rows[ids[$0]] }
+        if let footer { children.append(footer) }
+        document.setAccessibilityChildren(children)
         let visible = Set(needed.compactMap { index -> String? in
             guard index < entries.count, case .message(let message) = entries[index] else { return nil }
             let bottom = geometry.origin(of: index) + geometry.height(at: index)

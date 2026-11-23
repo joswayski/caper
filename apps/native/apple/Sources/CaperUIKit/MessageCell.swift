@@ -977,6 +977,35 @@ final class TimelineEdgeCell: UICollectionViewCell {
 /// `firstLoad`: a thread's replies before any arrive, as SwiftUI's two-row skeleton.
 enum TimelineEdge: Hashable { case beginning, loading, failed, firstLoad }
 
+/// "Load newer messages" (or replies) after the last row of a window detached
+/// from the live end, with room below so the Jump to latest toast floating
+/// over the timeline never covers it.
+final class TimelineNewerCell: UICollectionViewCell {
+    static let reuse = "newer"
+    private let button = CaperButton("Load newer messages", kind: .secondary, size: 13) {}
+    var load: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.addSubview(button)
+        button.addAction(UIAction { [weak self] _ in self?.load?() }, for: .primaryActionTriggered)
+        NSLayoutConstraint.activate([
+            button.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            button.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
+            button.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -68).withPriority(.init(999)),
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            button.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, constant: -36),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(_ title: String, loading: Bool, identifier: String) {
+        button.setTitle(loading ? "Loading…" : title)
+        button.isEnabled = !loading
+        button.accessibilityIdentifier = identifier
+    }
+}
+
 /// A row's hold, which also says when to show the press wash: from 0.15s after
 /// the finger lands (a finger that starts a scroll at once never shows it)
 /// for as long as the hold can still fire. A scroll or a swipe taking the

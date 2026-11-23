@@ -14,6 +14,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         case blocked(String)
         /// "New messages", above the first unread message.
         case newMessages
+        /// "Load newer messages", after the last row of a detached window.
+        case newer
 
         var rowID: String? { if case let .row(id) = self { return id } else { return nil } }
         var isRow: Bool { rowID != nil }
@@ -95,9 +97,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let typingObserver = ModelObserver()
     private let headerObserver = ModelObserver()
     private let composerObserver = ModelObserver()
-    /// Floats over the timeline's bottom trailing corner while the reader is up
-    /// in a live history; counts other people's new messages.
-    private lazy var jump = JumpToLatestButton(identifier: "jump-to-latest") { [weak self] in self?.jumpToLatest() }
+    /// "You’re viewing older messages", centered just above the composer while
+    /// the reader is up in a live history (counting other people's new
+    /// messages), or always in a window detached from the live end.
+    private lazy var jump = JumpToLatestToast(identifier: "jump-to-latest") { [weak self] in self?.jumpToLatest() }
     /// The messages shown last, to count arrivals at the live end.
     private var shownMessageIDs: Set<String> = []
 
@@ -508,6 +511,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         collection.register(DayDividerCell.self, forCellWithReuseIdentifier: DayDividerCell.reuse)
         collection.register(BlockedRunCell.self, forCellWithReuseIdentifier: BlockedRunCell.reuse)
         collection.register(TimelineEdgeCell.self, forCellWithReuseIdentifier: TimelineEdgeCell.reuse)
+        collection.register(TimelineNewerCell.self, forCellWithReuseIdentifier: TimelineNewerCell.reuse)
         dataSource = UICollectionViewDiffableDataSource(collectionView: collection) { [weak self] collection, indexPath, item in
             guard let self else { return nil }
             switch item {
@@ -523,6 +527,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             case .newMessages:
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: indexPath) as! DayDividerCell
                 cell.configure("New messages", unread: true)
+                return cell
+            case .newer:
+                let cell = collection.dequeueReusableCell(withReuseIdentifier: TimelineNewerCell.reuse, for: indexPath) as! TimelineNewerCell
+                let chat = self.model.chat
+                cell.load = { Task { await chat.loadNewer() } }
+                cell.configure("Load newer messages", loading: self.newerLoading, identifier: "load-newer-messages")
                 return cell
             case let .blocked(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: BlockedRunCell.reuse, for: indexPath) as! BlockedRunCell
@@ -627,15 +637,14 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         ])
     }
 
-    /// 16 points above the composer and from the timeline's trailing edge,
-    /// and never over a notice row.
+    /// Centered 12 points above the timeline's bottom edge, just above the
+    /// composer and its notices, and at most the timeline's width less 24.
     private func buildJump() {
         view.addSubview(jump)
         NSLayoutConstraint.activate([
-            jump.trailingAnchor.constraint(equalTo: collection.trailingAnchor, constant: -16),
-            jump.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -16).withPriority(.defaultHigh),
-            jump.bottomAnchor.constraint(lessThanOrEqualTo: notices.view.topAnchor),
-            jump.leadingAnchor.constraint(greaterThanOrEqualTo: collection.leadingAnchor, constant: 16),
+            jump.centerXAnchor.constraint(equalTo: collection.centerXAnchor),
+            jump.bottomAnchor.constraint(equalTo: collection.bottomAnchor, constant: -12),
+            jump.widthAnchor.constraint(lessThanOrEqualTo: collection.widthAnchor, constant: -24),
         ])
     }
 
@@ -644,14 +653,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     /// Your call, or Join for the open channel's voice.
     private lazy var voiceStrip = NativeVoiceStripController(model: model) { [weak self] in self?.browse?() }
     /// A failed action or a voice error, above the composer.
-    private lazy var notices = UIKitConversationNotices(model: model) { [weak self] in
-        guard let self else { return }
-        self.returningToLatest = true
-        let chat = self.model.chat
-        Task { await chat.retryLoad() }
-    }
-    /// Back to latest was pressed: once the reopened window is in, follow the tail.
+    private lazy var notices = UIKitConversationNotices(model: model)
+    /// A detached window's Jump to latest was pressed: once the reopened
+    /// window is in, follow the tail.
     private var returningToLatest = false
+    /// Load newer is under way, for its row.
+    private var newerLoading = false
 
     private func embed(_ child: UIViewController) {
         addChild(child)
@@ -801,6 +808,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                                        error: error, rejected: rejected, blocked: blocked, revealed: revealedBlocked,
                                        newMessagesID: live ? model.channelNewMessagesDividerID() : nil)
         if edge != nil { built.items.insert(.edge, at: 0) }
+        // A detached window pages toward the live end from after its last row.
+        newerLoading = live && model.chat.loadingNewer
+        if live && model.chat.hasNewer { built.items.append(.newer) }
         let items = built.items, nextRows = built.rows, nextDays = built.days, nextRuns = built.runs
 
         let switched = key != shownKey
@@ -838,7 +848,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             case let .row(id): return rows[id] != nextRows[id]
             case let .day(day): return days[day] != nextDays[day]
             case let .blocked(run): return blockedRuns[run] != nextRuns[run]
-            case .edge: return true
+            case .edge, .newer: return true
             case .newMessages: return false
             }
         }
@@ -874,15 +884,24 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private var jumpCount = 0
 
     /// Shows more than half a screen above the newest loaded message of a live
-    /// history (not a Load newer/Back to latest window); closer hides it and clears its count.
+    /// history; closer hides it and clears its count. A window detached from
+    /// the live end shows it wherever the reader is, without a count.
     private func refreshJump() {
-        let shows = live && !followingTail && !model.chat.hasNewer
-            && JumpToLatest.shows(distanceFromEnd: tailOffset - collection.contentOffset.y, viewport: collection.bounds.height, live: true)
-        if !shows { jumpCount = 0 }
+        let detached = model.chat.hasNewer
+        let shows = live && (detached || !followingTail
+            && JumpToLatest.shows(distanceFromEnd: tailOffset - collection.contentOffset.y, viewport: collection.bounds.height, live: true))
+        if !shows || detached { jumpCount = 0 }
         jump.update(shows: shows, count: jumpCount)
     }
 
     private func jumpToLatest() {
+        // A detached window reloads the latest page and lands at its end.
+        if model.chat.hasNewer {
+            returningToLatest = true
+            let chat = model.chat
+            Task { await chat.retryLoad() }
+            return
+        }
         let animated = JumpToLatest.animates(distanceFromEnd: tailOffset - collection.contentOffset.y, viewport: collection.bounds.height,
                                              reduceMotion: UIKitStyle.reduceMotion)
         scrollToTail(animated: animated)

@@ -114,6 +114,7 @@ import CaperCore
     private lazy var broadcast: NativeButton = NativeButton("") { [weak self] in
         guard let self else { return }; self.model.chat.threadBroadcast = self.broadcast.state == .on
     }
+    /// At the end of a detached window's history, clear of the toast over it.
     private lazy var newer = NativeButton("Load newer messages") { [weak self] in
         guard let self else { return }
         Task {
@@ -121,10 +122,10 @@ import CaperCore
             else { await self.model.chat.loadNewer() }
         }
     }
-    private lazy var latest = NativeButton("Back to latest") { [weak self] in
-        guard let self else { return }
-        let context = self.dialogs.messageContext, root = self.model.chat.threadRootID
-        let conversation = self.dialogs.conversationContext
+    /// A detached window's Jump to latest: reloads the latest page and lands at its end.
+    private func returnToLatest() {
+        let context = dialogs.messageContext, root = model.chat.threadRootID
+        let conversation = dialogs.conversationContext
         Task {
             if self.inThread { await self.model.chat.loadThread() }
             else { await self.model.chat.retryLoad() }
@@ -135,11 +136,12 @@ import CaperCore
             self.timeline.showLatest()
         }
     }
-    /// Floats over the history's bottom trailing corner while the reader is
-    /// up in a live history; counts other people's new messages.
-    private lazy var jumpToLatest = NativeButton("Jump to latest") { [weak self] in
+    /// "You’re viewing older messages", centered over the history just above
+    /// the composer while the reader is up in a live history (counting other
+    /// people's new messages), or always in a detached window.
+    private lazy var jumpToLatest = JumpToLatestToast { [weak self] in
         guard let self else { return }
-        self.timeline.jumpToLatest()
+        if self.timeline.live { self.timeline.jumpToLatest() } else { self.returnToLatest() }
         self.focusComposer()
     }
     private var uploadConversationID: String?
@@ -198,7 +200,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, composerShell, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerShell, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         browse.setAccessibilityIdentifier("open-navigation")
         pinsButton.setAccessibilityIdentifier("channel-pins")
         pinsButton.isHidden = inThread
@@ -209,27 +211,11 @@ import CaperCore
         broadcast.isHidden = !inThread; broadcast.setButtonType(.switch)
         broadcast.font = NativeStyle.font(11); broadcast.layer?.backgroundColor = NSColor.clear.cgColor
         broadcast.setAccessibilityIdentifier("thread-broadcast")
-        newer.font = NativeStyle.font(11); latest.font = NativeStyle.font(11)
-        jumpToLatest.setAccessibilityIdentifier(inThread ? "thread-jump-to-latest" : "jump-to-latest")
-        jumpToLatest.layer?.backgroundColor = NativeStyle.surface.cgColor
-        jumpToLatest.layer?.borderWidth = 1
-        // Web's lift off the history: 0 8px 24px at 35% black. NSShadow
-        // offsets are in window coordinates, so -8 is downward.
-        let lift = NSShadow()
-        lift.shadowColor = NSColor.black.withAlphaComponent(0.35)
-        lift.shadowBlurRadius = 24
-        lift.shadowOffset = NSSize(width: 0, height: -8)
-        jumpToLatest.shadow = lift
-        jumpToLatest.hoverChanged = { [weak self] hovering in
-            self?.jumpToLatest.layer?.backgroundColor = (hovering ? NativeStyle.raised : NativeStyle.surface).cgColor
-        }
-        jumpToLatest.image = NSImage(systemSymbolName: "arrow.down", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
-        jumpToLatest.imageHugsTitle = true
-        jumpToLatest.isHidden = true
+        newer.font = NativeStyle.font(11)
+        jumpToLatest.setAccessibilityIdentifier(inThread ? "thread-jump-toast" : "jump-toast")
+        jumpToLatest.button.setAccessibilityIdentifier(inThread ? "thread-jump-to-latest" : "jump-to-latest")
         timeline.jumpChanged = { [weak self] in self?.updateJumpToLatest() }
         newer.setAccessibilityIdentifier(inThread ? "load-newer-replies" : "load-newer-messages")
-        latest.setAccessibilityIdentifier(inThread ? "thread-latest" : "channel-latest")
         attachmentScroll.drawsBackground = false
         attachmentScroll.hasVerticalScroller = true
         attachmentScroll.autohidesScrollers = true
@@ -443,8 +429,9 @@ import CaperCore
                 + projected.filter { ids.contains($0.id) }
             let identity = [self.dialogs.conversationContext, root ?? "channel"].joined(separator: ":")
             self.timeline.newMessagesID = self.inThread ? nil : self.model.channelNewMessagesDividerID()
-            // A jump or a detached window keeps Load newer/Back to latest instead.
-            self.timeline.live = !(self.inThread ? chat.threadHasNewer : chat.hasNewer) && chat.focusedMessageID == nil
+            // A window detached from the live end (after a jump) always shows
+            // the toast, whose Jump to latest reloads the latest page.
+            self.timeline.live = !(self.inThread ? chat.threadHasNewer : chat.hasNewer)
             let pending = chat.pendingMessage.flatMap { $0.threadRootId == root ? $0 : nil }
             let pendingError = pending != nil ? chat.error : nil
             let sendRejected = pending != nil && chat.sendRejected
@@ -753,12 +740,9 @@ import CaperCore
         let roomyStatus = inThread || !retry.isHidden
         let statusHeight: CGFloat = roomyStatus ? 22 : 16
         let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - (roomyStatus ? 24 : 18) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
-        let top: CGFloat = newer.isHidden && latest.isHidden ? 48 : 88
+        let top: CGFloat = 48
         timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - top))
         lip.frame = NSRect(x: 0, y: max(top, timeline.frame.maxY - 8), width: center, height: min(8, timeline.frame.height))
-        let historyWidth = max(0, (center - 48) / 2)
-        newer.frame = NSRect(x: 20, y: 52, width: min(150, historyWidth), height: 28)
-        latest.frame = NSRect(x: center - 20 - min(110, historyWidth), y: 52, width: min(110, historyWidth), height: 28)
         status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: statusHeight)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
         counter.frame = NSRect(x: 20, y: base - 24, width: center - 40, height: 16)
@@ -876,12 +860,14 @@ import CaperCore
             stage.addSubview(card, positioned: .below, relativeTo: suggestions)
             linkPreview = card
         } else if !hasLink { linkPreview?.removeFromSuperview(); linkPreview = nil }
-        newer.isHidden = !(inThread ? chat.threadHasNewer : chat.hasNewer)
-        newer.title = inThread ? "Load newer replies" : "Load newer messages"
+        let detached = inThread ? chat.threadHasNewer : chat.hasNewer
+        let loadingNewer = inThread ? chat.threadLoading : chat.loadingNewer
+        newer.title = loadingNewer ? "Loading…" : inThread ? "Load newer replies" : "Load newer messages"
         newer.setAccessibilityLabel(newer.title)
-        newer.isEnabled = inThread ? !chat.threadLoading : !chat.loadingNewer
-        latest.isHidden = newer.isHidden && chat.focusedMessageID == nil
-        latest.isEnabled = inThread ? !chat.threadLoading : !chat.loading && !chat.jumpingToMessage
+        newer.isEnabled = !loadingNewer
+        timeline.footer = detached ? newer : nil
+        // A detached window's Jump to latest reloads; not while a load is under way.
+        jumpToLatest.button.isEnabled = !detached || (inThread ? !chat.threadLoading : !chat.loading && !chat.jumpingToMessage)
         // Keystrokes change only the composer, not timeline geometry.
         let pending = chat.pendingMessage.flatMap { $0.threadRootId == root ? $0 : nil }
         let historyError = inThread ? chat.threadError : chat.olderError
@@ -905,42 +891,24 @@ import CaperCore
         }
     }
 
-    /// Shows, hides or recounts Jump to latest. It arrives with the short
-    /// fade and rise and leaves at once.
+    /// Shows, hides or recounts the toast.
     private func updateJumpToLatest() {
         let state = timeline.jump
-        let wasHidden = jumpToLatest.isHidden
-        jumpToLatest.isHidden = !state.shows
-        let count = JumpToLatest.countText(state.count)
-        jumpToLatest.attributedTitle = NSAttributedString(string: count.map { " \($0)" } ?? "", attributes: [
-            .font: NativeStyle.font(13, bold: true), .foregroundColor: NativeStyle.text,
-        ])
-        jumpToLatest.imagePosition = count == nil ? .imageOnly : .imageLeading
-        jumpToLatest.contentTintColor = NativeStyle.text
-        jumpToLatest.layer?.borderColor = (count == nil ? NativeStyle.border : NativeStyle.accent).cgColor
-        jumpToLatest.setAccessibilityLabel(JumpToLatest.accessibilityLabel(state.count))
-        jumpToLatest.toolTip = "Jump to latest"
+        jumpToLatest.update(shows: state.shows, count: state.count)
         layoutJumpToLatest()
-        guard state.shows, wasHidden, !CaperAccessibility.reduceMotion, let layer = jumpToLatest.layer else { return }
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0; fade.toValue = 1
-        let rise = CABasicAnimation(keyPath: "transform.translation.y")
-        rise.fromValue = 6; rise.toValue = 0  // The stage is flipped: from just below.
-        let entrance = CAAnimationGroup()
-        entrance.animations = [fade, rise]; entrance.duration = 0.14
-        entrance.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
-        layer.add(entrance, forKey: "entrance")
     }
 
-    /// 16 points inside the history's bottom trailing corner, as on web. Below
-    /// the history it would overhang the status row, which is stacked above
-    /// it and would take its clicks.
+    /// Centered 12 points above the history's bottom edge, just above the
+    /// composer, and at most the history's width less 24. Below the history
+    /// it would overhang the status row, which is stacked above it and would
+    /// take its clicks.
     private func layoutJumpToLatest() {
         guard !jumpToLatest.isHidden else { return }
-        let height: CGFloat = 36
-        let hasCount = jumpToLatest.imagePosition != .imageOnly
-        let width = hasCount ? min(max(36, jumpToLatest.attributedTitle.size().width + 44), max(36, timeline.frame.width - 32)) : 36
-        jumpToLatest.frame = NSRect(x: timeline.frame.maxX - 16 - width, y: timeline.frame.maxY - 16 - height, width: width, height: height)
+        let maxWidth = max(0, timeline.frame.width - 24)
+        let size = jumpToLatest.size(maxWidth: maxWidth)
+        let width = min(size.width, maxWidth)
+        jumpToLatest.frame = NSRect(x: timeline.frame.midX - width / 2, y: timeline.frame.maxY - 12 - size.height,
+                                    width: width, height: size.height)
     }
 
     /// The status row: an error, loading, or who is typing. Its own
@@ -1286,8 +1254,6 @@ import CaperCore
 
     @objc private func handleThemeChange() {
         applyComposerChrome()
-        jumpToLatest.layer?.backgroundColor = NativeStyle.surface.cgColor
-        jumpToLatest.layer?.borderColor = NativeStyle.border.cgColor
         updateComposer()
     }
 

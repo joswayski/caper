@@ -7,11 +7,10 @@ import Observation
 @MainActor public final class UIKitConversationNotices: UIViewController {
     private let model: AppModel
     private let inThread: Bool
-    private let backToLatest: () -> Void
     private let body = UIStackView()
     private var generation = 0
-    public init(model: AppModel, inThread: Bool = false, backToLatest: @escaping () -> Void = {}) {
-        self.model = model; self.inThread = inThread; self.backToLatest = backToLatest
+    public init(model: AppModel, inThread: Bool = false) {
+        self.model = model; self.inThread = inThread
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -52,12 +51,6 @@ import Observation
                 }
             }
         } else {
-            if chat.hasNewer {
-                let newer = UIKitMessageDialog.button(chat.loadingNewer ? "Loading…" : "Load newer messages") { Task { await chat.loadNewer() } }
-                newer.isEnabled = !chat.loadingNewer
-                let latest = UIKitMessageDialog.button("Back to latest", action: backToLatest); latest.accessibilityIdentifier = "back-to-latest"
-                rows.append(row([newer, latest]))
-            }
             if let error = chat.sessionError { rows.append(sessionError(error)) }
             if let error = chat.error, chat.pendingMessage == nil, !chat.loadFailed, !chat.displayedMessages.isEmpty {
                 rows.append(label(error, error: true, id: "chat-error"))

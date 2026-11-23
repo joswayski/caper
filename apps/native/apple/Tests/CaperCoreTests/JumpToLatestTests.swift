@@ -7,10 +7,11 @@ final class JumpToLatestTests: XCTestCase {
                     content: ChatContent(version: 1, type: "text", text: id), createdAt: "2026-01-01T00:00:00Z", clientMessageId: "c-\(id)")
     }
 
-    func testShowsBeyondHalfAScreenOfALiveHistoryOnly() {
+    func testShowsBeyondHalfAScreenOfALiveHistoryAndAlwaysInADetachedWindow() {
         XCTAssertFalse(JumpToLatest.shows(distanceFromEnd: 300, viewport: 600, live: true))
         XCTAssertTrue(JumpToLatest.shows(distanceFromEnd: 301, viewport: 600, live: true))
-        XCTAssertFalse(JumpToLatest.shows(distanceFromEnd: 5000, viewport: 600, live: false), "a detached window keeps its own controls")
+        XCTAssertTrue(JumpToLatest.shows(distanceFromEnd: 5000, viewport: 600, live: false))
+        XCTAssertTrue(JumpToLatest.shows(distanceFromEnd: 0, viewport: 600, live: false), "a detached window shows it even at its end")
     }
 
     func testLabelsCountAndCapAtNinetyNine() {
@@ -19,6 +20,8 @@ final class JumpToLatestTests: XCTestCase {
         XCTAssertEqual(JumpToLatest.countText(3), "3 new messages")
         XCTAssertEqual(JumpToLatest.countText(99), "99 new messages")
         XCTAssertEqual(JumpToLatest.countText(100), "99+ new messages")
+        XCTAssertEqual(JumpToLatest.label(0), "You’re viewing older messages")
+        XCTAssertEqual(JumpToLatest.label(3), "3 new messages")
         XCTAssertEqual(JumpToLatest.accessibilityLabel(0), "Jump to latest")
         XCTAssertEqual(JumpToLatest.accessibilityLabel(3), "Jump to latest, 3 new messages")
     }

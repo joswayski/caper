@@ -55,6 +55,8 @@ enum UIKitStyle {
     static let terracottaBright = UIColor(CaperTheme.terracottaBright)
     static let action = UIColor(CaperTheme.action)
     static let actionPress = UIColor(CaperTheme.actionPress)
+    /// Ink on a primary (chalk) fill.
+    static let onAction = UIColor(CaperTheme.onAction)
     static let error = UIColor(CaperTheme.error)
     static let green = UIColor(CaperTheme.green)
 

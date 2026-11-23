@@ -42,8 +42,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     /// The preview note, a failed action, Retry session and the pending note.
     private lazy var notices = UIKitConversationNotices(model: model, inThread: true)
     var closed: (() -> Void)?
-    /// Jump to latest, while the reader is up in the replies of a live thread.
-    private lazy var jump = JumpToLatestButton(identifier: "thread-jump-to-latest") { [weak self] in self?.jumpToLatest() }
+    /// "You’re viewing older messages", while the reader is up in the replies
+    /// of a live thread, or always in a window detached from its newest replies.
+    private lazy var jump = JumpToLatestToast(identifier: "thread-jump-to-latest") { [weak self] in self?.jumpToLatest() }
     private var jumpCount = 0
     private var shownReplyIDs: Set<String> = []
 
@@ -112,6 +113,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         collection.register(DayDividerCell.self, forCellWithReuseIdentifier: DayDividerCell.reuse)
         collection.register(BlockedRunCell.self, forCellWithReuseIdentifier: BlockedRunCell.reuse)
         collection.register(TimelineEdgeCell.self, forCellWithReuseIdentifier: TimelineEdgeCell.reuse)
+        collection.register(TimelineNewerCell.self, forCellWithReuseIdentifier: TimelineNewerCell.reuse)
         dataSource = UICollectionViewDiffableDataSource(collectionView: collection) { [weak self] collection, path, item in
             guard let self else { return nil }
             switch item {
@@ -129,6 +131,12 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             case .newMessages:
                 // Channels only; threads have no unread line.
                 return collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: path)
+            case .newer:
+                let cell = collection.dequeueReusableCell(withReuseIdentifier: TimelineNewerCell.reuse, for: path) as! TimelineNewerCell
+                let chat = self.chat
+                cell.load = { Task { await chat.loadThread(newer: true) } }
+                cell.configure("Load newer replies", loading: chat.threadLoading, identifier: "load-newer-replies")
+                return cell
             case let .blocked(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: BlockedRunCell.reuse, for: path) as! BlockedRunCell
                 if let run = self.runs[key] {
@@ -236,12 +244,13 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             broadcast.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
         ComposerLipView.attach(to: collection, in: view)
-        // 16 points above the reply box (and its broadcast toggle and notices).
+        // Centered 12 points above the replies' bottom edge, just above the
+        // reply box (and its broadcast toggle and notices).
         view.addSubview(jump)
         NSLayoutConstraint.activate([
-            jump.trailingAnchor.constraint(equalTo: collection.trailingAnchor, constant: -16),
-            jump.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -16),
-            jump.leadingAnchor.constraint(greaterThanOrEqualTo: collection.leadingAnchor, constant: 16),
+            jump.centerXAnchor.constraint(equalTo: collection.centerXAnchor),
+            jump.bottomAnchor.constraint(equalTo: collection.bottomAnchor, constant: -12),
+            jump.widthAnchor.constraint(lessThanOrEqualTo: collection.widthAnchor, constant: -24),
         ])
         // As SwiftUI's ThreadBackSwipe: a swipe right from anywhere follows
         // the finger back to the channel.
@@ -345,6 +354,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                                        rejected: chat.sendRejected, inThread: true,
                                        blocked: chat.blockedAuthorIDs, revealed: revealed, above: shownRootMessage)
         items += built.items
+        // A detached window pages toward the newest replies from after its last one.
+        if chat.threadHasNewer && !firstLoad { items.append(.newer) }
         nextRows.merge(built.rows) { _, new in new }
         nextDays.merge(built.days) { _, new in new }
 
@@ -364,7 +375,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             case let .row(id): return rows[id] != nextRows[id]
             case let .day(key): return days[key] != nextDays[key]
             case let .blocked(key): return runs[key] != built.runs[key]
-            case .edge: return true
+            case .edge, .newer: return true
             case .newMessages: return false
             }
         }
@@ -486,15 +497,24 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     }
 
     /// Shows more than half a screen above the newest loaded reply of a live
-    /// thread; closer hides it and clears its count.
+    /// thread; closer hides it and clears its count. A window detached from
+    /// the newest replies shows it wherever the reader is, without a count.
     private func refreshJump() {
-        let shows = !followingTail && JumpToLatest.shows(distanceFromEnd: tailOffset - collection.contentOffset.y,
-                                                         viewport: collection.bounds.height, live: !chat.threadHasNewer)
-        if !shows { jumpCount = 0 }
+        let detached = chat.threadHasNewer
+        let shows = detached || !followingTail && JumpToLatest.shows(distanceFromEnd: tailOffset - collection.contentOffset.y,
+                                                                     viewport: collection.bounds.height, live: true)
+        if !shows || detached { jumpCount = 0 }
         jump.update(shows: shows, count: jumpCount)
     }
 
     private func jumpToLatest() {
+        // A detached window reloads the newest replies and lands at their end.
+        if chat.threadHasNewer {
+            followingTail = true
+            let chat = chat
+            Task { await chat.loadThread() }
+            return
+        }
         let animated = JumpToLatest.animates(distanceFromEnd: tailOffset - collection.contentOffset.y, viewport: collection.bounds.height,
                                              reduceMotion: UIKitStyle.reduceMotion)
         followingTail = true
