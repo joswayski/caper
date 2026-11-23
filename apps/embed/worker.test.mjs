@@ -185,6 +185,30 @@ test("Truth Social posts come from its Mastodon status API", async () => {
     timestamp: "2026-11-23T16:32:47.849Z",
   });
 });
+test("Truth Social media skips the proxy, which its host refuses; other media still goes through it", async () => {
+  serve({
+    "https://truthsocial.com/api/v1/statuses/117666713950631493": jsonResponse(fixture("truth-status.json")),
+  });
+  const { body } = await unfurlRequest("https://truthsocial.com/@realDonaldTrump/117666713950631493");
+  const [person, , pictures] = body.embed.blocks;
+  assert.match(person.icon, /^https:\/\/static-assets-1\.truthsocial\.com\/.*avatars/);
+  assert.match(
+    pictures.items[0].url,
+    /^https:\/\/static-assets-1\.truthsocial\.com\/.*original\/559ca2f2d433a2ad\.jpg$/,
+  );
+
+  // Same host name inside another address, or plain http, is still proxied.
+  serve({
+    "https://news.example/": html(`<head><meta property="og:title" content="A">
+      <meta property="og:image" content="https://static-assets-1.truthsocial.com.evil.example/x.jpg"></head>`),
+    "https://plain.example/": html(`<head><meta property="og:title" content="B">
+      <meta property="og:image" content="http://static-assets-1.truthsocial.com/x.jpg"></head>`),
+  });
+  for (const url of ["https://news.example/", "https://plain.example/"]) {
+    const image = (await unfurlRequest(url)).body.embed.blocks.find((block) => block.type === "images");
+    assert.ok(image.items[0].url.startsWith("https://embed.test/m/"), url);
+  }
+});
 
 test("Wikipedia articles take their title and lead from the summary API, image from the page", async () => {
   const seen = serve({

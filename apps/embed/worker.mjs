@@ -16,7 +16,7 @@
 
 import { contentType, discard, fetchableUrl, safeFetch } from "./safe-fetch.mjs";
 import { playerPage, playPath } from "./player.mjs";
-import { instagramFiles, tiktokItem, tiktokPlayUrl, unfurl } from "./sites.mjs";
+import { DIRECT_MEDIA_HOSTS, instagramFiles, tiktokItem, tiktokPlayUrl, unfurl } from "./sites.mjs";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -78,9 +78,16 @@ function respond(status, body, headers = {}) {
 // Rewrites every media field to a signed URL on this Worker, so clients only
 // ever load preview images from embed.caper.chat. Direct video files stay on
 // the site (X, generic pages): the player streams them from there.
+// HTTPS media on hosts that refuse servers but serve people's devices; clients
+// load these themselves, so that site sees the viewer's address.
+function directMedia(value) {
+  const url = fetchableUrl(value);
+  return url?.protocol === "https:" && DIRECT_MEDIA_HOSTS.has(url.hostname);
+}
+
 async function signMedia(embed, origin, secret) {
   const media = async (value) => {
-    if (!value) return value;
+    if (!value || directMedia(value)) return value;
     const path = value.startsWith("/") ? value : `/i?u=${encodeURIComponent(value)}`;
     return `${origin}/m/${await signPath(secret, path)}${path}`;
   };

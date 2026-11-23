@@ -2673,7 +2673,8 @@ string as plain text. Every client tests `shared/messages/embed-cases.json`.
   databases or the EC2 metadata service. It also refuses IP literals, internal
   names (`.local`, `.internal`, `.svc.cluster.local`, ...), non-default ports and
   credentials in URLs, and re-checks every redirect (at most five).
-- Reads at most 1 MiB of HTML and stops at `</head>`. Images are at most 20 MiB
+- Reads at most 1 MiB of HTML and stops at `</head>` once it holds an og/twitter
+  title. Images are at most 20 MiB
   and must be PNG, JPEG, GIF, WebP or AVIF; SVG is never served. Media responses
   carry `nosniff` and a `sandbox` CSP.
 - Never renders anything from a page: tags become length-limited plain strings.
@@ -2684,6 +2685,10 @@ string as plain text. Every client tests `shared/messages/embed-cases.json`.
   fresh address on each view (cached ten minutes) and redirect video to it.
 - Media URLs are signed with `EMBED_MEDIA_SECRET` (Worker only), so it is not an
   open proxy.
+- Card images go through the Worker so the source never sees viewers, except on
+  `DIRECT_MEDIA_HOSTS` in `sites.mjs` (hosts that challenge every server but
+  serve devices, today only Truth Social's): clients load those HTTPS addresses
+  themselves, as they already do X's MP4 videos.
 
 Site readers (`apps/embed/sites.mjs`):
 
@@ -2695,7 +2700,7 @@ Site readers (`apps/embed/sites.mjs`):
 | Twitch | page tags | title, `player` (clip, VOD or channel) |
 | Instagram (posts, reels, carousels) | the logged-out query Instagram's own web app makes for a post, unofficial; page tags as Meta's crawler if refused | author, caption, video or photos (re-resolved on each view), likes and comments |
 | Facebook, Threads | page tags as Meta's crawler | title, description, image |
-| Truth Social | its Mastodon status API (`/api/v1/statuses/{id}`); the pages refuse crawlers | author, text, video or photos, quote, likes, ReTruths and replies |
+| Truth Social | its Mastodon status API (`/api/v1/statuses/{id}`); the pages refuse crawlers. Its media host (`static-assets-1.truthsocial.com`) challenges every server, so clients load its avatars, photos and videos directly, not through `/m/` | author, text, video or photos, quote, likes, ReTruths and replies |
 | Wikipedia | the REST page summary for title and lead; the page's `og:image` | title, lead, image |
 | everything else | OpenGraph / Twitter Card / `<title>`, including OpenGraph/Twitter tags a page writes into `<body>` | site, title, description, image or direct video |
 

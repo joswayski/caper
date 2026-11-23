@@ -330,7 +330,11 @@ async function readTwitch(url) {
 }
 
 // Truth Social. Its pages refuse crawlers, but it runs Mastodon, whose public
-// status API answers them.
+// status API answers them. Its media host answers every server (Cloudflare's
+// included) with a bot challenge yet serves people's devices, so its pictures
+// and videos skip this Worker's proxy and clients load them directly.
+
+export const DIRECT_MEDIA_HOSTS = new Set(["static-assets-1.truthsocial.com"]);
 
 const TRUTH_STATUS = /^\/@[A-Za-z0-9_]{1,30}\/(?:posts\/)?(\d{6,25})(?:\/|$)/;
 
