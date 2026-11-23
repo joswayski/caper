@@ -1,6 +1,6 @@
 //! Opt-in compositor entrances and live-end row arrivals. Geometry stays put:
 //! only opacity and translation animate, and closing always cancels instantly.
-use crate::{App, gfx, theme::TERRACOTTA};
+use crate::App;
 use std::{cell::Cell, collections::HashMap, time::Instant};
 use windows::Win32::{
     Graphics::{Direct2D::*, DirectComposition::*},
@@ -249,27 +249,6 @@ pub fn row(
         dc.PopLayer();
         result
     }
-}
-
-/// Soft static terracotta halo. Selection remains visible with motion off.
-pub fn space_glow(
-    dc: &ID2D1DeviceContext,
-    r: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F,
-) -> Result<()> {
-    let brush = crate::files::alpha(dc, TERRACOTTA, 1.0)?;
-    for spread in (1..=12).rev() {
-        let d = spread as f32;
-        unsafe {
-            brush.SetOpacity(0.18 * (1.0 - d / 13.0).powi(2));
-        }
-        gfx::stroke_round(
-            dc,
-            gfx::rect(r.left - d, r.top - d, r.right + d, r.bottom + d),
-            12.0 + d,
-            &brush,
-        );
-    }
-    Ok(())
 }
 
 impl App {

@@ -109,31 +109,44 @@ const ERROR: Color32 = Color32::from_rgb(255, 150, 133);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(228, 229, 234);
 // END GENERATED THEME TOKENS
 
-/// Paints the single-surface Spatial Glass composer hairline and subtle focus
-/// halo around a composer frame.
+/// Paints the recessed dark outer trough, quiet outer hairline, inner border,
+/// and subtle top specular shine around a composer frame.
 fn paint_composer_chrome(painter: &egui::Painter, rect: egui::Rect, focused: bool) {
     let radius = 16.0;
-    if focused {
-        let focus_halo =
-            Color32::from_rgba_unmultiplied(TERRACOTTA.r(), TERRACOTTA.g(), TERRACOTTA.b(), 46);
-        painter.rect_stroke(
-            rect.expand(1.5),
-            radius + 1.5,
-            Stroke::new(3.0, focus_halo),
-            egui::StrokeKind::Outside,
-        );
-    }
-    let border = if focused {
+    let outer_well = Color32::from_rgba_unmultiplied(0, 0, 0, 107);
+    let outer_rim = Color32::from_rgba_unmultiplied(255, 255, 255, 14);
+    let inner_border = if focused {
         TERRACOTTA_BRIGHT
     } else {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 20)
+        Color32::from_rgba_unmultiplied(255, 255, 255, 19)
     };
     painter.rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, border),
+        Stroke::new(4.0, outer_well),
+        egui::StrokeKind::Outside,
+    );
+    painter.rect_stroke(
+        rect.expand(4.0),
+        radius + 4.0,
+        Stroke::new(1.0, outer_rim),
+        egui::StrokeKind::Outside,
+    );
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, inner_border),
         egui::StrokeKind::Inside,
     );
+    let inner = rect.shrink(1.5);
+    if inner.width() > 4.0 && inner.height() > 4.0 {
+        painter.rect_stroke(
+            inner,
+            (radius - 1.5).max(0.0),
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
+            egui::StrokeKind::Inside,
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -12118,37 +12131,26 @@ impl CaperApp {
                                 )
                             });
                             let response = response.on_hover_text(description);
-                            // Selected: a terracotta ring and soft outer glow that
-                            // blooms in and settles. Deselection is instant.
-                            let selection = ui.ctx().animate_value_with_time(
-                                egui::Id::unique(("space-indicator", &id)),
-                                if active { 1.0 } else { 0.0 },
-                                if active && !motion::reduced() {
-                                    0.7
-                                } else {
-                                    0.0
-                                },
-                            );
-                            let glow = selection + 0.5 * (selection * std::f32::consts::PI).sin();
+                            // Selected: crisp offset botanical ring separated from the tile edge.
+                            // Hovered: matching quiet neutral offset ring that upgrades on click.
                             let tile = response.rect;
-                            let behind = if glow > 0.0 {
-                                egui::Shape::Vec(vec![
-                                    egui::Shadow {
-                                        offset: [0, 0],
-                                        blur: (12.0 + 8.0 * (glow - 1.0).max(0.0)) as u8,
-                                        spread: 1,
-                                        color: TERRACOTTA.gamma_multiply(0.36 * glow),
-                                    }
-                                    .as_shape(tile, 12)
-                                    .into(),
-                                    egui::Shape::rect_filled(
-                                        tile.expand(1.0),
-                                        13.0,
-                                        TERRACOTTA.gamma_multiply(0.9 * glow.min(1.0)),
-                                    ),
-                                ])
+                            let behind = if active {
+                                egui::Shape::rect_stroke(
+                                    tile.expand(3.0),
+                                    15.5,
+                                    Stroke::new(2.0, TERRACOTTA_BRIGHT),
+                                    egui::StrokeKind::Middle,
+                                )
                             } else if response.hovered() {
-                                egui::Shape::rect_filled(tile.expand(1.0), 13.0, BORDER)
+                                egui::Shape::rect_stroke(
+                                    tile.expand(3.0),
+                                    15.5,
+                                    Stroke::new(
+                                        1.5,
+                                        Color32::from_rgba_unmultiplied(244, 244, 246, 66),
+                                    ),
+                                    egui::StrokeKind::Middle,
+                                )
                             } else {
                                 egui::Shape::Noop
                             };
@@ -18537,6 +18539,9 @@ impl CaperApp {
             &message.author.id,
             self.account.as_ref().map(|account| account.id.as_str()),
         );
+        if !grouped && !in_pins {
+            ui.add_space(12.0);
+        }
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
         let hover_tint = ui.painter().add(egui::Shape::Noop);
@@ -29015,12 +29020,13 @@ fn message_row<R>(
             activated = Some(response);
         }
     };
+    let vertical = if grouped.is_some() { 3 } else { 4 };
     let shown = egui::Frame::new()
         .inner_margin(egui::Margin {
             left: 18,
             right: 18,
-            top: if grouped.is_some() { 2 } else { 10 },
-            bottom: 10,
+            top: vertical,
+            bottom: vertical,
         })
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);

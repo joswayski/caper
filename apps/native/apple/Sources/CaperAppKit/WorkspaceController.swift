@@ -1425,7 +1425,8 @@ private final class AppKitComposerShell: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.cornerRadius = 15
+        layer?.cornerRadius = 24
+        layer?.cornerCurve = .continuous
         layer?.borderWidth = 1
         layer?.masksToBounds = true
         // Unflipped: (0.5, 1) is the top edge and (0.5, 0) is the bottom edge.

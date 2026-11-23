@@ -73,7 +73,12 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         translatesAutoresizingMaskIntoConstraints = false
         fieldShell.translatesAutoresizingMaskIntoConstraints = false
         fieldShell.isUserInteractionEnabled = false
-        fieldShell.isHidden = true
+        fieldShell.backgroundColor = UIColor.black.withAlphaComponent(0.42)
+        fieldShell.layer.cornerRadius = 23
+        fieldShell.layer.cornerCurve = .continuous
+        fieldShell.layer.borderWidth = 1
+        fieldShell.layer.borderColor = UIColor.white.withAlphaComponent(0.055).cgColor
+        fieldShell.clipsToBounds = true
         addSubview(fieldShell)
 
         field.translatesAutoresizingMaskIntoConstraints = false
@@ -81,7 +86,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         field.layer.cornerRadius = 20
         field.layer.cornerCurve = .continuous
         field.layer.borderWidth = 1
-        field.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        field.layer.borderColor = UIColor.white.withAlphaComponent(0.075).cgColor
         field.clipsToBounds = true
         addSubview(field)
 

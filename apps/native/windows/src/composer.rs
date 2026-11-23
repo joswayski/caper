@@ -1128,29 +1128,33 @@ impl Composer {
     ) -> Result<()> {
         unsafe {
             dc.Clear(Some(&gfx::color(crate::theme::SURFACE_CONVERSATION, 1.0)));
-            // Single-surface Spatial Glass composer capsule with soft focus halo.
-            let inner_r = rect(2.5, 2.5, w - 2.5, h - 2.5);
-            let inner_radius = 18.0_f32.min((h - 5.0) * 0.5).max(crate::theme::RADIUS);
-            if self.focused {
-                let halo_r = rect(0.5, 0.5, w - 0.5, h - 0.5);
-                let halo =
-                    dc.CreateSolidColorBrush(&gfx::color(crate::theme::TERRACOTTA, 0.18), None)?;
-                dc.DrawRoundedRectangle(
-                    &D2D1_ROUNDED_RECT {
-                        rect: halo_r,
-                        radiusX: inner_radius + 2.0,
-                        radiusY: inner_radius + 2.0,
-                    },
-                    &halo,
-                    3.0,
-                    None,
-                );
-            }
+            // Recessed dark outer trough + top-lit inner composer surface.
+            let outer_r = rect(0.5, 0.5, w - 0.5, h - 0.5);
+            let inner_r = rect(4.5, 4.5, w - 4.5, h - 4.5);
+            let inner_radius = 20.0_f32.min((h - 9.0) * 0.5).max(crate::theme::RADIUS);
+            let outer_radius = inner_radius + 4.0;
+            let outer_fill = dc.CreateSolidColorBrush(&gfx::color(0x000000, 0.42), None)?;
+            fill_round(dc, outer_r, outer_radius, &outer_fill);
+            let outer_border = dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.055), None)?;
+            crate::gfx::stroke_round(dc, outer_r, outer_radius, &outer_border);
+
             fill_round(dc, inner_r, inner_radius, &g.brushes.composer);
+            let top_rim = dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.08), None)?;
+            crate::gfx::stroke_round(
+                dc,
+                rect(
+                    inner_r.left + 1.0,
+                    inner_r.top + 1.0,
+                    inner_r.right - 1.0,
+                    inner_r.bottom - 1.0,
+                ),
+                (inner_radius - 1.0).max(0.0),
+                &top_rim,
+            );
             let inner_border = if self.focused {
                 dc.CreateSolidColorBrush(&gfx::color(crate::theme::TERRACOTTA_BRIGHT, 0.58), None)?
             } else {
-                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.08), None)?
+                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.075), None)?
             };
             crate::gfx::stroke_round(dc, inner_r, inner_radius, &inner_border);
             // The selection's toolbar, as web's: one group of buttons with a

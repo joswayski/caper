@@ -162,7 +162,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 /** Pages a detached window toward the live end, clear of the Jump to latest toast over it. */
 function HistoryFooter({ context }: { context?: HistoryContext }) {
   const newer = context?.newer;
-  if (!newer) return null;
+  if (!newer) return <div className="chat-list-tail" aria-hidden="true" />;
   return (
     <div className="chat-history chat-history-newer" role="status">
       {newer.error && <span>{newer.error}</span>}

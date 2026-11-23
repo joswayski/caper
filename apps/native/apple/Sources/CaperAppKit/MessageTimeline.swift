@@ -66,7 +66,7 @@ enum PendingAction { case retry, edit, dismiss }
             realize(anchor: geometry.anchor(at: contentView.bounds.minY))
         }
     }
-    private var footerHeight: CGFloat { footer == nil ? 0 : 8 + 28 + 68 }
+    private var footerHeight: CGFloat { footer == nil ? 8 : 8 + 28 + 68 }
     /// The end of the scrollable content: the last row, and the footer under it.
     private var contentEnd: CGFloat { geometry.contentHeight + footerHeight }
     var jumpChanged: (() -> Void)?
@@ -740,16 +740,20 @@ enum PendingAction { case retry, edit, dismiss }
     private var unreadHeight: CGFloat { unread.isHidden ? 0 : ceil(unread.cell?.cellSize.height ?? 15) + 16 }
     /// The dividers above the message: its day, then the unread line.
     private var dividerHeight: CGFloat { dayHeight + unreadHeight }
+    /// Inter-group breathing room sits outside `messageBounds` so hover, mention,
+    /// reply and pin highlights stay vertically symmetric on every row.
+    private var groupGap: CGFloat { (grouped || blockedRun != nil || dividerHeight > 0) ? 0 : 12 }
+    private var topInset: CGFloat { dividerHeight + groupGap }
     private var messageBounds: NSRect {
-        NSRect(x: 0, y: dividerHeight, width: bounds.width, height: max(0, bounds.height - dividerHeight))
+        NSRect(x: 0, y: topInset, width: bounds.width, height: max(0, bounds.height - topInset))
     }
     var textTop: CGFloat {
-        // A grouped row sits right under its author's previous one, as on
-        // web; its hover actions float over the row's top edge.
-        return dividerHeight + pinHeight + quoteHeight + (grouped ? 2 : compact ? 52 : 32)
+        // Symmetric vertical padding inside the highlight box: 3pt on grouped
+        // rows, 4pt above the avatar/header on group starts (20pt header + 2pt gap).
+        return topInset + pinHeight + quoteHeight + (grouped ? 3 : compact ? 46 : 26)
     }
-    /// Space under the row: a hairline when the next row continues the run.
-    private var bottomPadding: CGFloat { continued ? 2 : 12 }
+    /// Symmetric bottom padding inside the row highlight box.
+    private var bottomPadding: CGFloat { grouped ? 3 : 4 }
 
     init() {
         super.init()
@@ -1287,12 +1291,13 @@ enum PendingAction { case retry, edit, dismiss }
         quoteHeight = quote?.height(for: max(40, width - 40)) ?? 0
         let textHeight = body.string.isEmpty && attachments != nil ? 0
             : max(20, max(coreTextHeight, ceil(nativeHeight))) + (editedFrame(width: textWidth)?.ownLine == true ? 18 : 0)
-        let height = textTop + textHeight + attachmentHeight + reactionHeight + failureHeight + threadHeight + bottomPadding
+        let avatarMinHeight = grouped ? 0 : topInset + pinHeight + quoteHeight + 4 + 36 + bottomPadding
+        let height = max(avatarMinHeight, textTop + textHeight + attachmentHeight + reactionHeight + failureHeight + threadHeight + bottomPadding)
         guard pending == nil else { return height }
         let controlsWidth = min(controls.preferredWidth, max(30, width - 30))
         // A wrapped hover bar must not steal the next grouped row's hit area.
         return controlsWidth < controls.preferredWidth
-            ? max(height, dividerHeight + pinHeight + quoteHeight + controls.height(for: controlsWidth) + 11) : height
+            ? max(height, topInset + pinHeight + quoteHeight + controls.height(for: controlsWidth) + 11) : height
     }
 
     private var reactionFrames: [NSRect] {
@@ -1309,7 +1314,7 @@ enum PendingAction { case retry, edit, dismiss }
 
     override func layout() {
         super.layout()
-        let dayInset = dayHeight, inset = dividerHeight
+        let dayInset = dayHeight, inset = dividerHeight, contentInset = topInset
         let dayWidth = min(ceil(day.cell?.cellSize.width ?? 0), max(0, bounds.width - 36))
         day.frame = NSRect(x: (bounds.width - dayWidth) / 2, y: 8, width: dayWidth, height: max(0, dayInset - 16))
         let unreadWidth = min(ceil(unread.cell?.cellSize.width ?? 0), max(0, bounds.width - 32))
@@ -1322,12 +1327,12 @@ enum PendingAction { case retry, edit, dismiss }
         let unreadLine = dayInset + floor((inset - dayInset) / 2)
         unreadLeading.frame = NSRect(x: 16, y: unreadLine, width: max(0, unread.frame.minX - 24), height: 1)
         unreadTrailing.frame = NSRect(x: unread.frame.maxX + 8, y: unreadLine, width: max(0, bounds.width - unread.frame.maxX - 24), height: 1)
-        // Date dividers remain neutral even when the following message mentions you or is hovered.
+        // Date dividers and inter-group gaps remain neutral when hovered or tinted.
         let messageRect = messageBounds
         mentionTint.frame = messageRect
         hoverTint.frame = messageRect
-        mentionBar.frame = NSRect(x: 0, y: inset, width: 3, height: max(0, bounds.height - inset))
-        blockedBar.frame = NSRect(x: 0, y: inset, width: 2, height: max(0, bounds.height - inset))
+        mentionBar.frame = NSRect(x: 0, y: messageRect.minY, width: 3, height: messageRect.height)
+        blockedBar.frame = NSRect(x: 0, y: messageRect.minY, width: 2, height: messageRect.height)
         CATransaction.commit()
         if trackingRect != messageRect { updateTrackingAreas() }
         avatar.isHidden = grouped; author.isHidden = grouped; timestamp.isHidden = grouped
@@ -1338,10 +1343,10 @@ enum PendingAction { case retry, edit, dismiss }
             return
         }
         let textWidth = max(40, bounds.width - textInset - 20)
-        pinnedBy.frame = NSRect(x: textInset, y: inset, width: textWidth, height: pinHeight)
-        quote?.frame = NSRect(x: 20, y: inset + pinHeight, width: max(40, bounds.width - 40), height: quoteHeight)
-        let messageTop = inset + pinHeight + quoteHeight
-        avatar.frame = NSRect(x: 20, y: messageTop + 10, width: 36, height: 36)
+        pinnedBy.frame = NSRect(x: textInset, y: contentInset, width: textWidth, height: pinHeight)
+        quote?.frame = NSRect(x: 20, y: contentInset + pinHeight, width: max(40, bounds.width - 40), height: quoteHeight)
+        let messageTop = contentInset + pinHeight + quoteHeight
+        avatar.frame = NSRect(x: 20, y: messageTop + 4, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.
         // Badges and time stay beside the name at every width, as on web and
@@ -1354,23 +1359,23 @@ enum PendingAction { case retry, edit, dismiss }
         let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - trailingWidth))
         // A label's cell draws its text 2 points in; the body has no inset.
         // Start the name 2 points early so it lines up with the message.
-        author.frame = NSRect(x: 66, y: messageTop + 10, width: authorWidth, height: 20)
+        author.frame = NSRect(x: 66, y: messageTop + 4, width: authorWidth, height: 20)
         var headerX = author.frame.maxX
         if !adminBadge.isHidden {
-            adminBadge.frame = NSRect(x: headerX + 6, y: messageTop + 12, width: adminBadge.preferredWidth, height: 15)
+            adminBadge.frame = NSRect(x: headerX + 6, y: messageTop + 6, width: adminBadge.preferredWidth, height: 15)
             headerX = adminBadge.frame.maxX
         }
         if !guestBadge.isHidden {
-            guestBadge.frame = NSRect(x: headerX + 6, y: messageTop + 12, width: guestBadge.preferredWidth, height: 15)
+            guestBadge.frame = NSRect(x: headerX + 6, y: messageTop + 6, width: guestBadge.preferredWidth, height: 15)
             headerX = guestBadge.frame.maxX
         }
-        timestamp.frame = NSRect(x: headerX + 7, y: messageTop + 13, width: timeWidth, height: 17)
+        timestamp.frame = NSRect(x: headerX + 7, y: messageTop + 7, width: timeWidth, height: 17)
         // The hover wash and focus ring get room around the name, which
         // otherwise touches their left edge.
         authorAction.frame = author.frame.insetBy(dx: -4, dy: -1)
         avatarAction.frame = avatar.frame
         let controlsWidth = min(controls.preferredWidth, max(30, bounds.width - 30))
-        controls.frame = NSRect(x: max(0, bounds.width - controlsWidth - 15), y: messageTop + (grouped ? -3 : 3),
+        controls.frame = NSRect(x: max(0, bounds.width - controlsWidth - 15), y: messageTop + (grouped ? -2 : 2),
             width: controlsWidth, height: controls.height(for: controlsWidth))
         let footer = attachmentHeight + reactionHeight + failureHeight + threadHeight
         let top = textTop
@@ -1415,11 +1420,11 @@ enum PendingAction { case retry, edit, dismiss }
         if let tracking { removeTrackingArea(tracking) }
         let rect = messageBounds
         trackingRect = rect
-        let hasDivider = dividerHeight > 0
-        let options: NSTrackingArea.Options = hasDivider
+        let hasTopInset = topInset > 0
+        let options: NSTrackingArea.Options = hasTopInset
             ? [.mouseEnteredAndExited, .activeInKeyWindow]
             : [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow]
-        let tracking = NSTrackingArea(rect: hasDivider ? rect : .zero, options: options, owner: self, userInfo: nil)
+        let tracking = NSTrackingArea(rect: hasTopInset ? rect : .zero, options: options, owner: self, userInfo: nil)
         self.tracking = tracking; addTrackingArea(tracking)
     }
     override func mouseEntered(with event: NSEvent) { refreshHover() }

@@ -2321,9 +2321,22 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     )
 }
 
-/** Single-surface Spatial Glass composer wrapper, matching web and Apple. */
+/** Recessed dark outer trough and subtle top specular shine around the composer field, matching web and Apple. */
 @Composable internal fun ComposerShell(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Box(modifier) {
+    val light = CaperThemeStore.active.isLight
+    val outerBrush = if (light) {
+        Brush.verticalGradient(listOf(Color(0xFF0F172A).copy(alpha = 0.055f), Color(0xFF0F172A).copy(alpha = 0.085f)))
+    } else {
+        Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.42f), Color.Black.copy(alpha = 0.52f)))
+    }
+    val outerBorder = if (light) Color(0xFF0F172A).copy(alpha = 0.10f) else Color.White.copy(alpha = 0.055f)
+    Box(
+        modifier
+            .clip(RoundedCornerShape(24.dp))
+            .background(outerBrush)
+            .border(1.dp, outerBorder, RoundedCornerShape(24.dp))
+            .padding(4.dp),
+    ) {
         content()
     }
 }
@@ -3172,7 +3185,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val mentioned = message.pin == null && mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
     val replyWash = !deleted && message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.threadRootId != message.id
     val replyToMe = replyWash && own != null && message.author.id != own && message.replyTo?.author?.id == own
-    Column((if (!mentioned && !replyToMe) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = if (replyToMe) 0.12f else 0.08f)).drawBehind {
+    val groupGap = if (grouped || inPins) 0.dp else 12.dp
+    Column(Modifier.padding(top = groupGap).then(if (!mentioned && !replyToMe) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = if (replyToMe) 0.12f else 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
     }).hoverable(interaction).drawBehind {
@@ -3756,7 +3770,8 @@ internal const val DELETED_REPLY = "Original message was deleted."
         .size(34.dp).wrapContentSize(unbounded = true).minimumInteractiveComponentSize()
         .clearAndSetSemantics {}.clip(CircleShape)
         .clickable(role = Role.Button, onClickLabel = "Open profile for $author", onClick = openAuthor)
-    Row(Modifier.fillMaxWidth().hoverable(hover).padding(start = 18.dp, end = 18.dp, top = if (grouped) 2.dp else 10.dp, bottom = 10.dp)) {
+    val verticalPadding = if (grouped) 3.dp else 4.dp
+    Row(Modifier.fillMaxWidth().hoverable(hover).padding(start = 18.dp, end = 18.dp, top = verticalPadding, bottom = verticalPadding)) {
         if (grouped) Box(
             // The empty avatar column still names the author and time for screen readers.
             Modifier.width(34.dp).clearAndSetSemantics {

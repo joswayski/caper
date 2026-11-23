@@ -410,8 +410,9 @@ function MessageRowView({
     );
   }
   const emojiOpen = actionMode === "emoji";
+  const groupStart = !grouped && !divider && !newMessages && run?.first !== message.clientMessageId;
   return (
-    <div data-motion-key={message.clientMessageId}>
+    <div data-motion-key={message.clientMessageId} className={groupStart ? "chat-message-group-start" : undefined}>
       {divider && (!run || run.first === message.clientMessageId) && (
         <div className="chat-date-divider">
           <time dateTime={message.createdAt}>{divider}</time>

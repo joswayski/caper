@@ -583,11 +583,14 @@ impl Pane {
         for (i, y) in rows {
             let h = self.rows.height(i);
             if y + off < HEADER_H + vh && y + h + off > HEADER_H {
-                let lead = self.rows.row(i).map_or(0.0, |r| r.lead);
+                let top = self
+                    .rows
+                    .row(i)
+                    .map_or(0.0, |r| list::highlight_top(r, self.c.messages[i].grouped));
                 if active_row == Some(i) {
                     unsafe {
                         dc.FillRectangle(
-                            &rect(0.0, y + off + lead, w, y + off + h),
+                            &rect(0.0, y + off + top, w, y + off + h),
                             &g.brushes.hover,
                         );
                     }

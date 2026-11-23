@@ -180,6 +180,7 @@ final class NativeButton: NSButton {
     }
     /// The fill is the bounds. NSButton otherwise reports its bezel's alignment
     /// rect, which makes a 24-point icon 31 points tall and over its neighbours.
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsetsZero }
     override func accessibilityFrame() -> NSRect {
         guard window != nil else { return super.accessibilityFrame() }
         return NSAccessibility.screenRect(fromView: self, rect: bounds)

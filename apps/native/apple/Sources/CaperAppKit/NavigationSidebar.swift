@@ -1192,8 +1192,9 @@ private final class NativeFeedbackRow: NativeView {
     private let symbol = NSImageView()
     private let dash = CAShapeLayer()
     private let dot = CALayer()
-    /// Hover's pill at the rail's edge, in the unread dot's place.
-    private let pill = CALayer()
+    /// Offset outer ring around the tile: subtle neutral halo on hover,
+    /// upgrading smoothly to botanical green when selected.
+    private let ring = CALayer()
     private let mentionBadge = NativeView(NativeStyle.accent)
     private let mentionText = NativeStyle.label("", size: 11, bold: true)
     private let mutedBadge = NSImageView()
@@ -1205,24 +1206,28 @@ private final class NativeFeedbackRow: NativeView {
     init(_ face: Face) {
         self.face = face
         super.init()
+        layer?.addSublayer(ring)
         addSubview(tile)
         [initial, icon, symbol].forEach { tile.addSubview($0) }
         [mutedBadge, voiceBadge, mentionBadge].forEach { addSubview($0) }
         mentionBadge.addSubview(mentionText)
         layer?.addSublayer(dot)
-        layer?.addSublayer(pill)
         tile.layer?.addSublayer(dash)
-        tile.layer?.cornerRadius = 12
-        tile.layer?.shadowColor = NativeStyle.accent.cgColor
-        tile.layer?.shadowOffset = .zero; tile.layer?.shadowRadius = 6; tile.layer?.shadowOpacity = 0
+        tile.layer?.cornerRadius = 13
+        tile.layer?.cornerCurve = .continuous
+        tile.layer?.shadowColor = NSColor.black.cgColor
+        tile.layer?.shadowOffset = NSSize(width: 0, height: -4); tile.layer?.shadowRadius = 6; tile.layer?.shadowOpacity = 0
+        ring.backgroundColor = NSColor.clear.cgColor
+        ring.cornerRadius = 15.5
+        ring.cornerCurve = .continuous
+        ring.borderWidth = 0
+        ring.isHidden = true
         // The icon covers the initial once it loads; until then the initial shows through.
         icon.layer?.backgroundColor = NSColor.clear.cgColor
         initial.alignment = .center; initial.textColor = NativeStyle.muted
         symbol.imageScaling = .scaleNone
         dash.fillColor = nil; dash.lineWidth = 1; dash.lineDashPattern = [4, 4]; dash.isHidden = true
-        dot.backgroundColor = NativeStyle.text.cgColor; dot.cornerRadius = 3; dot.isHidden = true
-        pill.backgroundColor = NativeStyle.text.cgColor; pill.cornerRadius = 2; pill.opacity = 0
-        pill.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+        dot.backgroundColor = NativeStyle.text.cgColor; dot.cornerRadius = 2.5; dot.isHidden = true
         mentionBadge.layer?.cornerRadius = 9; mentionBadge.isHidden = true
         mentionBadge.layer?.borderWidth = 2; mentionBadge.layer?.borderColor = NativeStyle.blackout.cgColor
         mentionText.alignment = .center
@@ -1253,7 +1258,6 @@ private final class NativeFeedbackRow: NativeView {
     override func applyTheme() {
         super.applyTheme()
         dot.backgroundColor = NativeStyle.text.cgColor
-        pill.backgroundColor = NativeStyle.text.cgColor
         mentionBadge.layer?.borderColor = NativeStyle.blackout.cgColor
         mutedBadge.layer?.backgroundColor = NativeStyle.blackout.cgColor
         refreshRing()
@@ -1298,11 +1302,8 @@ private final class NativeFeedbackRow: NativeView {
         }
         dot.isHidden = !unread
         CATransaction.commit()
-        let wasSelected = self.selected
         self.selected = selected
         refreshRing()
-        // Selection blooms in and settles; deselection is instant.
-        if selected, wasSelected == false, motion { bloom() }
         needsLayout = true
     }
 
@@ -1312,52 +1313,29 @@ private final class NativeFeedbackRow: NativeView {
         let isSpace: Bool
         if case .space = face { isSpace = true } else { isSpace = false }
         CATransaction.begin(); CATransaction.setDisableActions(true)
+        layer.borderWidth = 0
         if focused {
-            layer.borderWidth = 2; layer.borderColor = NativeStyle.accentBright.cgColor
+            ring.isHidden = false
+            ring.borderWidth = 2
+            ring.borderColor = NativeStyle.accentBright.cgColor
         } else if selected {
-            layer.borderWidth = 1; layer.borderColor = NativeStyle.accent.withAlphaComponent(0.9).cgColor
+            ring.isHidden = false
+            ring.borderWidth = 2
+            ring.borderColor = NativeStyle.accentBright.cgColor
         } else if hovered && isSpace {
-            layer.borderWidth = 1; layer.borderColor = NativeStyle.text.withAlphaComponent(0.26).cgColor
+            ring.isHidden = false
+            ring.borderWidth = 1.5
+            ring.borderColor = NativeStyle.text.withAlphaComponent(0.26).cgColor
         } else {
-            layer.borderWidth = 0
+            ring.isHidden = true
+            ring.borderWidth = 0
         }
-        layer.shadowOpacity = selected ? 0.36 : 0
-        // Every tile but the selected space lifts on hover, as web's rail.
-        layer.backgroundColor = (hovered && !selected ? NativeStyle.raised : NativeStyle.surface).cgColor
+        layer.shadowOpacity = (selected || (hovered && isSpace)) ? 0.26 : 0
+        // Every space tile lifts subtly on hover or selection, matching web.
+        layer.backgroundColor = ((hovered || selected) ? NativeStyle.raised : NativeStyle.surface).cgColor
         if isSpace { initial.textColor = selected || hovered ? NativeStyle.text : NativeStyle.muted }
         if case .symbol = face { dash.strokeColor = (hovered ? NativeStyle.muted : NativeStyle.border).cgColor }
-        // A hovered space grows a pill at the rail's edge over its unread dot;
-        // it arrives briefly and leaves at once.
-        let showPill = hovered && isSpace && !selected
-        if showPill, pill.opacity == 0, window != nil, !CaperAccessibility.reduceMotion {
-            let grow = CABasicAnimation(keyPath: "transform.scale.y")
-            grow.fromValue = 0.3; grow.toValue = 1
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = 0; fade.toValue = 1
-            let group = CAAnimationGroup()
-            group.animations = [grow, fade]; group.duration = 0.14
-            group.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            pill.add(group, forKey: "arrive")
-        }
-        if !showPill { pill.removeAnimation(forKey: "arrive") }
-        pill.opacity = showPill ? 1 : 0
-        dot.opacity = showPill ? 0 : 1
         CATransaction.commit()
-    }
-
-    /// A terracotta bloom that settles to the selected halo, as web's.
-    private func bloom() {
-        guard let layer = tile.layer else { return }
-        let times = [0, 0.45, 1].map { NSNumber(value: $0) }
-        let opacity = CAKeyframeAnimation(keyPath: "shadowOpacity")
-        opacity.values = [0, 0.52, 0.36]; opacity.keyTimes = times
-        let radius = CAKeyframeAnimation(keyPath: "shadowRadius")
-        radius.values = [0, 9, 6]; radius.keyTimes = times
-        let group = CAAnimationGroup()
-        group.animations = [opacity, radius]
-        group.duration = 0.7
-        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        layer.add(group, forKey: "bloom")
     }
 
     override func layout() {
@@ -1365,11 +1343,11 @@ private final class NativeFeedbackRow: NativeView {
         let side = Self.side, x = ((bounds.width - side) / 2).rounded(), y = Self.inset
         tile.frame = NSRect(x: x, y: y, width: side, height: side)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        tile.layer?.shadowPath = CGPath(roundedRect: tile.bounds, cornerWidth: 12, cornerHeight: 12, transform: nil)
+        ring.frame = tile.frame.insetBy(dx: -3.0, dy: -3.0)
+        tile.layer?.shadowPath = CGPath(roundedRect: tile.bounds, cornerWidth: 13, cornerHeight: 13, transform: nil)
         dash.frame = tile.bounds
-        dash.path = CGPath(roundedRect: tile.bounds.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 11.5, cornerHeight: 11.5, transform: nil)
-        dot.frame = NSRect(x: 3, y: y + side / 2 - 3, width: 6, height: 6)
-        pill.frame = NSRect(x: 0, y: y + side / 2 - 10, width: 4, height: 20)
+        dash.path = CGPath(roundedRect: tile.bounds.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 12.5, cornerHeight: 12.5, transform: nil)
+        dot.frame = NSRect(x: 1, y: y + side / 2 - 2.5, width: 5, height: 5)
         mutedBadge.layer?.cornerRadius = 8; voiceBadge.layer?.cornerRadius = 9
         CATransaction.commit()
         initial.frame = NSRect(x: 0, y: (side - 20) / 2, width: side, height: 20)

@@ -3810,13 +3810,15 @@ impl App {
                 list::draw_head_row(g, dc, foot, lw, *y, *lit)?;
             }
             for (i, y, h, rs) in tops {
-                // The date divider above a row is not part of its hover.
-                let lead = rows.row(i).map_or(0.0, |r| r.lead);
+                // Date dividers and inter-group gaps stay outside the highlight.
+                let top = rows
+                    .row(i)
+                    .map_or(0.0, |r| list::highlight_top(r, c.messages[i].grouped));
                 if focused == Some(i) {
-                    dc.FillRectangle(&rect(0.0, y + lead, lw, y + h), &g.brushes.focused);
+                    dc.FillRectangle(&rect(0.0, y + top, lw, y + h), &g.brushes.focused);
                 }
                 if hover == Some(i) {
-                    dc.FillRectangle(&rect(0.0, y + lead, lw, y + h), &g.brushes.hover);
+                    dc.FillRectangle(&rect(0.0, y + top, lw, y + h), &g.brushes.hover);
                 }
                 list::draw_row(g, dc, c, rows, i, y, rs, media.as_mut())?;
                 if hover == Some(i) || focused == Some(i) {
@@ -4062,9 +4064,6 @@ impl App {
                 for (i, space) in c.spaces.iter().enumerate() {
                     let (x, y, w, h) = Self::space_rect(i);
                     let r = rect(x, y, x + w, y + h);
-                    if i == c.space {
-                        motion::space_glow(dc, r)?;
-                    }
                     fill_round(
                         dc,
                         r,
@@ -4078,21 +4077,21 @@ impl App {
                     if i == c.space {
                         stroke_round(
                             dc,
-                            rect(r.left - 2.0, r.top - 2.0, r.right + 2.0, r.bottom + 2.0),
-                            14.0,
+                            rect(r.left - 3.0, r.top - 3.0, r.right + 3.0, r.bottom + 3.0),
+                            15.5,
                             &g.brushes.terracotta,
                         );
                     }
                     // An uploaded icon fills the tile in place of the initial.
-                    let icon = avatars::draw(dc, &space.icon, r, 12.0);
-                    // As web: a hovered space lifts with a brighter ring and
-                    // grows a pill at the rail's edge in its unread dot's place.
+                    let icon = avatars::draw(dc, &space.icon, r, 13.0);
+                    // A hovered space shows a quiet offset neutral ring that upgrades
+                    // seamlessly to botanical green when selected.
                     let lifted = hover == Some(i) && i != c.space;
                     if lifted {
                         stroke_round(
                             dc,
-                            r,
-                            12.0,
+                            rect(r.left - 3.0, r.top - 3.0, r.right + 3.0, r.bottom + 3.0),
+                            15.5,
                             &dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.26), None)?,
                         );
                     }
@@ -4113,7 +4112,7 @@ impl App {
                             fill_round(
                                 dc,
                                 r,
-                                12.0,
+                                13.0,
                                 &dc.CreateSolidColorBrush(&gfx::color(BLACKOUT, 0.5), None)?,
                             );
                         }
@@ -4161,14 +4160,7 @@ impl App {
                     // terracotta mention count on the tile's corner.
                     let (unread, mentions) = space_badges.get(i).copied().unwrap_or_default();
                     let cy = r.top + h / 2.0;
-                    if lifted {
-                        fill_round(
-                            dc,
-                            rect(-2.0, cy - 10.0, 4.0, cy + 10.0),
-                            2.0,
-                            &g.brushes.text,
-                        );
-                    } else if unread {
+                    if unread {
                         fill_round(
                             dc,
                             rect(r.left - 7.0, cy - 3.0, r.left - 1.0, cy + 3.0),

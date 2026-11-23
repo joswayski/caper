@@ -76,14 +76,15 @@
   --hover-pill-bg: var(--surface-hover);
   --hover-pill-border: transparent;
   --hover-pill-shadow: none;
-  --composer-border: rgb(255 255 255 / 8%);
-  --composer-top-sheen: transparent;
+  --composer-border: rgb(255 255 255 / 7.5%);
+  --composer-top-sheen: rgb(255 255 255 / 3.5%);
   --composer-focus-border: color-mix(in srgb, var(--accent-bright) 52%, var(--border-solid));
   --composer-focus-ring: rgb(var(--accent-rgb) / 18%);
-  --composer-shadow: inset 0 1px 0 rgb(255 255 255 / 5%), 0 4px 16px rgb(0 0 0 / 20%);
-  --composer-shell-bg: transparent;
-  --composer-shell-border: transparent;
-  --composer-outer-shadow: 0 0 0 0 transparent;
+  --composer-shadow: inset 0 1px 0 rgb(255 255 255 / 12%), inset 0 -1px 0 rgb(0 0 0 / 42%), 0 1px 3px rgb(0 0 0 / 52%);
+  --composer-shell-bg: rgb(0 0 0 / 42%);
+  --composer-shell-border: rgb(255 255 255 / 5.5%);
+  --composer-outer-shadow: 0 2px 10px rgb(0 0 0 / 32%);
+  --space-hover-ring: rgb(255 255 255 / 26%);
   --popover-shadow: 0 12px 36px rgb(0 0 0 / 38%), 0 0 0 1px rgb(255 255 255 / 4%) inset;
   --dialog-shadow: 0 24px 64px rgb(0 0 0 / 50%), 0 1px 0 rgb(255 255 255 / 6%) inset;
   /* The account dock and message field share one bottom edge. */
@@ -130,14 +131,15 @@
   --hover-pill-bg: var(--surface-hover);
   --hover-pill-border: transparent;
   --hover-pill-shadow: none;
-  --composer-border: rgb(15 23 42 / 9%);
-  --composer-top-sheen: transparent;
+  --composer-border: rgb(15 23 42 / 11%);
+  --composer-top-sheen: rgb(255 255 255 / 65%);
   --composer-focus-border: color-mix(in srgb, var(--accent) 48%, #c9ced8);
   --composer-focus-ring: rgb(var(--accent-rgb) / 14%);
-  --composer-shadow: 0 1px 2px rgb(15 23 42 / 4%), 0 4px 14px rgb(15 23 42 / 5%);
-  --composer-shell-bg: transparent;
-  --composer-shell-border: transparent;
-  --composer-outer-shadow: 0 0 0 0 transparent;
+  --composer-shadow: inset 0 1px 0 rgb(255 255 255 / 96%), 0 1px 2px rgb(15 23 42 / 8%);
+  --composer-shell-bg: rgb(15 23 42 / 5.5%);
+  --composer-shell-border: rgb(15 23 42 / 10%);
+  --composer-outer-shadow: 0 2px 8px rgb(15 23 42 / 6%);
+  --space-hover-ring: rgb(15 23 42 / 22%);
   --popover-shadow: 0 12px 32px rgb(15 23 42 / 12%), 0 2px 6px rgb(15 23 42 / 6%);
   --dialog-shadow: 0 24px 64px rgb(15 23 42 / 16%), 0 2px 8px rgb(15 23 42 / 6%);
 }

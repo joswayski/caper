@@ -378,18 +378,20 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
                     : NSColor.white.withAlphaComponent(0.06)
     }
     public nonisolated static let composerBorderColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor(srgbRed: 15/255, green: 23/255, blue: 42/255, alpha: 0.09)
-                    : NSColor.white.withAlphaComponent(0.08)
+        doc.isLight ? NSColor(srgbRed: 15/255, green: 23/255, blue: 42/255, alpha: 0.11)
+                    : NSColor.white.withAlphaComponent(0.075)
     }
     public nonisolated static let composerTopShineColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor.white.withAlphaComponent(0.6)
-                    : NSColor.white.withAlphaComponent(0.05)
+        doc.isLight ? NSColor.white.withAlphaComponent(0.96)
+                    : NSColor.white.withAlphaComponent(0.14)
     }
-    public nonisolated static let composerTopSheenColor = dynamicNSColor { _ in
-        NSColor.clear
+    public nonisolated static let composerTopSheenColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor.white.withAlphaComponent(0.65)
+                    : NSColor.white.withAlphaComponent(0.035)
     }
-    public nonisolated static let composerBottomShadeColor = dynamicNSColor { _ in
-        NSColor.clear
+    public nonisolated static let composerBottomShadeColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 15/255, green: 23/255, blue: 42/255, alpha: 0.08)
+                    : NSColor.black.withAlphaComponent(0.42)
     }
     public nonisolated static let composerFocusBorderColor = dynamicNSColor { doc in
         let accent = nsColor(fromHex: doc.accent.bright) ?? NSColor(srgbRed: 119/255, green: 166/255, blue: 89/255, alpha: 1)
@@ -398,14 +400,17 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
             : NSColor(srgbRed: 36/255, green: 38/255, blue: 47/255, alpha: 1)
         return neutral.blended(withFraction: doc.isLight ? 0.48 : 0.52, of: accent) ?? accent.withAlphaComponent(0.6)
     }
-    public nonisolated static let composerOuterBgColor = dynamicNSColor { _ in
-        NSColor.clear
+    public nonisolated static let composerOuterBgColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 15/255, green: 23/255, blue: 42/255, alpha: 0.055)
+                    : NSColor.black.withAlphaComponent(0.42)
     }
-    public nonisolated static let composerOuterDepthColor = dynamicNSColor { _ in
-        NSColor.clear
+    public nonisolated static let composerOuterDepthColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 15/255, green: 23/255, blue: 42/255, alpha: 0.085)
+                    : NSColor.black.withAlphaComponent(0.52)
     }
-    public nonisolated static let composerOuterBorderColor = dynamicNSColor { _ in
-        NSColor.clear
+    public nonisolated static let composerOuterBorderColor = dynamicNSColor { doc in
+        doc.isLight ? NSColor(srgbRed: 15/255, green: 23/255, blue: 42/255, alpha: 0.10)
+                    : NSColor.white.withAlphaComponent(0.055)
     }
     public nonisolated static let callFillColor = dynamicNSColor { doc in
         doc.isLight ? NSColor(srgbRed: 226/255, green: 240/255, blue: 217/255, alpha: 1)

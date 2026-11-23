@@ -340,6 +340,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private var nativeReply: UIKitNativeReplyContext?
     private let above = UIStackView()
     private let threadLink = ThreadLinkButton()
+    private var tintTop: NSLayoutConstraint!
     private var top: NSLayoutConstraint!
     private var badgeTop: NSLayoutConstraint!
     private var columnUnderBadge: NSLayoutConstraint!
@@ -461,28 +462,29 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             self.host?.openThread(link.rootID)
         }, for: .touchUpInside)
 
-        top = column.topAnchor.constraint(equalTo: self.topAnchor, constant: 10)
-        badgeTop = above.topAnchor.constraint(equalTo: self.topAnchor, constant: 10)
+        tintTop = tint.topAnchor.constraint(equalTo: self.topAnchor, constant: 12)
+        top = column.topAnchor.constraint(equalTo: tint.topAnchor, constant: 4)
+        badgeTop = above.topAnchor.constraint(equalTo: tint.topAnchor, constant: 4)
         columnUnderBadge = column.topAnchor.constraint(equalTo: above.bottomAnchor, constant: 5)
-        bottom = column.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -10)
+        bottom = column.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -4)
         bottom.priority = .init(999)
         avatarWidth = gutter.widthAnchor.constraint(equalToConstant: 34)
         NSLayoutConstraint.activate([
             tint.leadingAnchor.constraint(equalTo: self.leadingAnchor),
             tint.trailingAnchor.constraint(equalTo: self.trailingAnchor),
-            tint.topAnchor.constraint(equalTo: self.topAnchor),
+            tintTop,
             tint.bottomAnchor.constraint(equalTo: self.bottomAnchor),
             hover.leadingAnchor.constraint(equalTo: self.leadingAnchor),
             hover.trailingAnchor.constraint(equalTo: self.trailingAnchor),
-            hover.topAnchor.constraint(equalTo: self.topAnchor),
+            hover.topAnchor.constraint(equalTo: tint.topAnchor),
             hover.bottomAnchor.constraint(equalTo: self.bottomAnchor),
             press.leadingAnchor.constraint(equalTo: self.leadingAnchor),
             press.trailingAnchor.constraint(equalTo: self.trailingAnchor),
-            press.topAnchor.constraint(equalTo: self.topAnchor),
+            press.topAnchor.constraint(equalTo: tint.topAnchor),
             press.bottomAnchor.constraint(equalTo: self.bottomAnchor),
             accent.leadingAnchor.constraint(equalTo: self.leadingAnchor),
             accent.widthAnchor.constraint(equalToConstant: 3),
-            accent.topAnchor.constraint(equalTo: self.topAnchor),
+            accent.topAnchor.constraint(equalTo: tint.topAnchor),
             accent.bottomAnchor.constraint(equalTo: self.bottomAnchor),
             gutter.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 18),
             gutter.topAnchor.constraint(equalTo: column.topAnchor),
@@ -495,7 +497,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             above.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             above.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             badgeTop, top, bottom,
-            self.heightAnchor.constraint(greaterThanOrEqualTo: gutter.heightAnchor),
+            self.bottomAnchor.constraint(greaterThanOrEqualTo: gutter.bottomAnchor, constant: 4),
         ])
         // The row contains its header and text as separate VoiceOver elements,
         // so readers can move into the text and select it.
@@ -511,11 +513,13 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         if state?.id != row.id || row.pending { hover.isHidden = true }
         state = row
         authorTaps.forEach { $0.isEnabled = row.authorProfile && !row.pending }
-        // SwiftUI's grouped rows read about 4pt further apart than their 2pt padding.
-        let topPadding: CGFloat = row.grouped ? 6 : 10
-        top.constant = topPadding
-        badgeTop.constant = topPadding
-        bottom.constant = row.continued ? -2 : -10
+        // Inter-group spacing stays outside the highlight/tint layers so every
+        // row has symmetric vertical padding when hovered, pressed or tinted.
+        tintTop.constant = (row.grouped || row.inPins) ? 0 : 12
+        let verticalPadding: CGFloat = row.grouped ? 3 : 4
+        top.constant = verticalPadding
+        badgeTop.constant = verticalPadding
+        bottom.constant = -verticalPadding
         // "Pinned by …" heads the row, over the text column.
         pinBadge.isHidden = row.pinnedBy == nil
         if let host, let reply = row.replyTo {

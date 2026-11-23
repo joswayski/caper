@@ -770,7 +770,7 @@ import XCTest
         XCTAssertFalse(try author(2).isHidden, "The first unread message starts a new author group")
         XCTAssertGreaterThanOrEqual(try author(2).frame.minY, try line(2).frame.maxY, "The line sits above the message's header")
         XCTAssertGreaterThan(try row(2).frame.height, groupedHeight)
-        XCTAssertGreaterThan(try row(1).frame.height, continuedHeight, "The row above the line no longer runs into the next one")
+        XCTAssertEqual(try row(1).frame.height, continuedHeight, accuracy: 0.5, "Row above the line keeps symmetric highlight padding")
         XCTAssertGreaterThanOrEqual(try row(2).frame.minY, try row(1).frame.maxY)
 
         update(3)
@@ -854,5 +854,30 @@ import XCTest
         timeline.setActiveMessageID(nil)
         XCTAssertTrue(secondRow.hoverTint.isHidden)
         XCTAssertFalse(secondRow.isRowHighlighted)
+    }
+
+    func testMessageHighlightHasSymmetricVerticalPadding() throws {
+        _ = NSApplication.shared
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        let first = message(0, author: "alex")
+        let grouped = message(1, author: "alex")
+        let standalone = message(2, author: "maya")
+        timeline.update([first, grouped, standalone], conversationID: "channel", canInteract: true)
+        timeline.layoutSubtreeIfNeeded()
+        let firstBody = try XCTUnwrap(bodies(in: timeline).first { $0.string == first.content.text })
+        let groupedBody = try XCTUnwrap(bodies(in: timeline).first { $0.string == grouped.content.text })
+        let standaloneBody = try XCTUnwrap(bodies(in: timeline).first { $0.string == standalone.content.text })
+        let firstRow = try XCTUnwrap(firstBody.superview as? MessageCell)
+        let groupedRow = try XCTUnwrap(groupedBody.superview as? MessageCell)
+        let standaloneRow = try XCTUnwrap(standaloneBody.superview as? MessageCell)
+
+        // Grouped continuation row has symmetric 3pt top and bottom padding inside hoverTint.
+        let groupedTop = groupedBody.frame.minY - groupedRow.hoverTint.frame.minY
+        let groupedBottom = groupedRow.hoverTint.frame.maxY - groupedBody.frame.maxY
+        XCTAssertEqual(groupedTop, groupedBottom, accuracy: 0.5)
+
+        // First-in-group and standalone rows share identical highlight height; inter-group gap stays outside hoverTint.
+        XCTAssertEqual(firstRow.hoverTint.frame.height, standaloneRow.hoverTint.frame.height, accuracy: 0.5)
+        XCTAssertGreaterThan(standaloneRow.hoverTint.frame.minY, 0, "Inter-group gap stays outside hoverTint")
     }
 }

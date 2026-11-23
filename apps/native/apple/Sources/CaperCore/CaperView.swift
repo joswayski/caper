@@ -7392,7 +7392,7 @@ struct ComposerLip: View {
     }
 }
 
-/// Single-surface Spatial Glass composer capsule, matching web and AppKit.
+/// Recessed dark outer well and subtle top specular shine around the composer capsule, matching web and AppKit.
 struct ComposerBezelModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -7400,9 +7400,39 @@ struct ComposerBezelModifier: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(CaperTheme.borderSubtle, lineWidth: 1)
+                    .strokeBorder(Color.white.opacity(0.075), lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.18), radius: 8, y: 3)
+            .overlay(
+                RoundedRectangle(cornerRadius: 19, style: .continuous)
+                    .inset(by: 1)
+                    .strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: Color.white.opacity(0.14), location: 0),
+                                .init(color: Color.white.opacity(0), location: 0.26),
+                                .init(color: Color.black.opacity(0), location: 0.8),
+                                .init(color: Color.black.opacity(0.42), location: 1),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: Color.black.opacity(0.45), radius: 2, y: 1)
+            .padding(4)
+            .background(
+                LinearGradient(
+                    colors: [Color.black.opacity(0.42), Color.black.opacity(0.52)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.white.opacity(0.055), lineWidth: 1)
+            )
     }
 }
 

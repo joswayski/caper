@@ -391,7 +391,11 @@
   min-height: 100%;
   display: flex;
   flex-direction: column;
+  padding-bottom: 8px;
   background: var(--surface-conversation);
+}
+.chat-list-tail {
+  height: 8px;
 }
 /* A short history sits at the bottom with its header directly above the first
    message, the same as the native clients, rather than leaving the header
@@ -581,12 +585,17 @@
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
+/* Inter-group breathing room sits outside the message row so hover, focus,
+   mention, reply and pin highlights stay vertically symmetric. */
+.chat-message-group-start {
+  padding-top: 12px;
+}
 .chat-message {
   position: relative;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   gap: 10px;
-  padding: 10px 18px;
+  padding: 4px 18px;
 }
 .chat-reply-context,
 .chat-reply-draft {
@@ -865,13 +874,10 @@ button.chat-reply-source {
 .chat-message-pinned:focus-within {
   background-color: var(--pin-wash);
 }
-/* Follow-ups from the same person (grouping.ts): no avatar or name, tighter
-   spacing, and the time in the avatar column on hover. */
+/* Follow-ups from the same person (grouping.ts): no avatar or name, symmetric
+   vertical padding, and the time in the avatar column on hover. */
 .chat-message-grouped {
-  padding-top: 2px;
-}
-.chat-message-continued {
-  padding-bottom: 2px;
+  padding-block: 3px;
 }
 .chat-grouped-time {
   width: 34px;
@@ -973,7 +979,7 @@ button.chat-reply-source {
 .chat-message-tools {
   position: absolute;
   right: 12px;
-  top: 1px;
+  top: 2px;
   display: flex;
   gap: 1px;
   padding: 3px;
@@ -983,6 +989,9 @@ button.chat-reply-source {
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
   box-shadow: var(--popover-shadow);
+}
+.chat-message-grouped > div > .chat-message-tools {
+  top: -2px;
 }
 .chat-message-tools > button,
 .chat-pinned-message > .chat-message-actions-trigger {
@@ -1633,6 +1642,9 @@ button.chat-reply-source {
   font-size: 0.86rem;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+.chat-message-grouped > :where(:not(.chat-forward-card)) > p {
+  margin-top: 0;
 }
 .chat-pin-marker {
   grid-column: 2;
@@ -2423,7 +2435,12 @@ button.chat-mention-card-avatar {
   border-radius: var(--radius-composer);
   color: var(--text);
   background-color: var(--surface-composer);
-  box-shadow: var(--composer-shadow);
+  background-image: linear-gradient(180deg, var(--composer-top-sheen) 0%, transparent 28%);
+  box-shadow:
+    var(--composer-shadow),
+    0 0 0 4px var(--composer-shell-bg),
+    0 0 0 5px var(--composer-shell-border),
+    var(--composer-outer-shadow);
   font: inherit;
   font-size: 0.875rem;
   line-height: 1.45;
@@ -2437,8 +2454,10 @@ button.chat-mention-card-avatar {
 :is(.chat-composer, .chat-profile-composer) .chat-rich-input:focus {
   border-color: var(--composer-focus-border);
   box-shadow:
-    0 0 0 3px var(--composer-focus-ring),
-    var(--composer-shadow);
+    var(--composer-shadow),
+    0 0 0 4px var(--composer-shell-bg),
+    0 0 0 5px var(--composer-shell-border),
+    var(--composer-outer-shadow);
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.chat-composer, .chat-profile-composer) .chat-rich-input,
@@ -2501,8 +2520,8 @@ button.chat-mention-card-avatar {
   grid-column: 1;
   grid-row: 1;
   min-width: 0;
-  border-radius: 8px;
-  background: var(--surface-composer);
+  border-radius: var(--radius-composer);
+  background: transparent;
 }
 .chat-rich-input {
   position: relative;

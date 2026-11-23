@@ -1056,7 +1056,8 @@ fn place(row: &mut Row, m: &crate::model::Message) {
         y += 4.0 + ERROR_H;
     }
     let body = y.max(row.header_y + if m.grouped { 18.0 } else { AVATAR });
-    row.height = (top + body + 4.0).ceil();
+    let bottom = if m.grouped { 3.0 } else { 4.0 };
+    row.height = (top + body + bottom).ceil();
 }
 
 /// The row's reaction chips, then its Retry and Dismiss buttons, with the
@@ -1455,7 +1456,18 @@ pub fn draw_head_row(
 
 /// Top padding of a row's content.
 pub fn content_top(grouped: bool) -> f32 {
-    if grouped { 2.0 } else { 14.0 }
+    if grouped { 3.0 } else { 14.0 }
+}
+
+/// Top of a row's hover/focus highlight in row-local DIPs: starts below any
+/// date/unread divider and below the 10-DIP inter-group gap so non-grouped
+/// rows get symmetric 4-DIP top and bottom highlight padding.
+pub fn highlight_top(row: &Row, grouped: bool) -> f32 {
+    if grouped || row.quote.is_some() {
+        row.lead
+    } else {
+        row.lead + 10.0
+    }
 }
 
 /// A grouped row's time ("9:42") in the avatar's column, drawn while the
