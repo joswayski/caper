@@ -28,7 +28,7 @@ import CaperCore
     private var realized: [Int: NSView] = [:]
     private var rendering = false
 
-    private struct Entry {
+    private struct Entry: Equatable {
         let y: CGFloat
         let height: CGFloat
         let text: String
@@ -143,6 +143,7 @@ import CaperCore
             scroll.contentView.scroll(to: .zero)
         }
         let presence = model.presence
+        let previous = entries
         let demo = model.detail?.space.demo == true
         count.stringValue = demo ? "" : "\(model.detail?.members.count ?? 0)"
         searchButton.isHidden = searching || demo
@@ -172,7 +173,11 @@ import CaperCore
                 }
             } else { appendSections(visible) }
         }
-        discardRows()
+        // A presence snapshot changes few rows, if any: unchanged rows keep
+        // their views, and their avatars keep their decoded frames and motion.
+        for (index, row) in realized where index >= previous.count || index >= entries.count || previous[index] != entries[index] {
+            realized.removeValue(forKey: index); row.removeFromSuperview()
+        }
         realize()
     }
 

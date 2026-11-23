@@ -14,6 +14,9 @@ import CaperCore
     var leaveChannel: ((Channel) -> Void)?
     var block: ((BlockTarget) -> Void)?
     private let observation = NativeObservation()
+    /// Your status dot reads every member's status: observed on its own so a
+    /// presence change elsewhere in the space doesn't render the whole sidebar.
+    private let presenceObservation = NativeObservation()
     private let rail = NativeView(NativeStyle.blackout)
     private let railScroll = NSScrollView()
     private var railButtons: [String: NativeButton] = [:]
@@ -203,6 +206,7 @@ import CaperCore
         settings.setAccessibilityIdentifier("account-settings-menu")
         error.textColor = NativeStyle.error
         observation.start { [weak self] in self?.render() }
+        presenceObservation.start(reading: { [model] in model.ownPresence }) { [weak self] in self?.renderPresence($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -210,7 +214,13 @@ import CaperCore
         super.applyTheme()
         accountPanel.layer?.borderColor = NativeStyle.border.cgColor
         accountPresence.borderColor = NativeStyle.raised.cgColor
-        render()
+        render(); renderPresence(model.ownPresence)
+    }
+
+    private func renderPresence(_ presence: PresenceStatus?) {
+        account.setAccessibilityValue(presence == nil || presence == .unknown ? "Status unavailable" : presence!.rawValue.capitalized)
+        accountPresence.backgroundColor = (presence == .online ? NativeStyle.green : presence == .idle
+            ? NSColor(srgbRed: 0.72, green: 0.60, blue: 0.35, alpha: 1) : NativeStyle.border).cgColor
     }
 
     override func viewDidMoveToWindow() {
@@ -465,10 +475,6 @@ import CaperCore
         accountName.stringValue = model.account?.displayName ?? ""
         account.setAccessibilityLabel("Edit profile for \(model.account?.displayName ?? "your account")")
         if let current = model.account { accountAvatar.update(current) }
-        account.setAccessibilityValue(model.ownPresence == nil || model.ownPresence == .unknown
-            ? "Status unavailable" : model.ownPresence!.rawValue.capitalized)
-        accountPresence.backgroundColor = (model.ownPresence == .online ? NativeStyle.green : model.ownPresence == .idle
-            ? NSColor(srgbRed: 0.72, green: 0.60, blue: 0.35, alpha: 1) : NativeStyle.border).cgColor
         mute.image = NSImage(systemSymbolName: model.voice.muted ? "mic.slash" : "mic", accessibilityDescription: nil)
         mute.setAccessibilityLabel(model.voice.muted ? "Unmute microphone" : "Mute microphone")
         mute.setAccessibilityValue(model.voice.muted ? "Muted" : "On")

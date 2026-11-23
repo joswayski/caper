@@ -2713,7 +2713,9 @@ public final class AppModel {
             let accountGeneration = generation
             let enabled = (try? await api.mediaStatus(channelID: channel.id)) ?? false
             guard !Task.isCancelled, generation == accountGeneration, visit?.channelID == channel.id else { return }
-            voiceAvailability[channel.id] = enabled
+            // An unchanged answer writes nothing: every voice card asks, and
+            // each write would render every observer of the map again.
+            if voiceAvailability[channel.id] != enabled { voiceAvailability[channel.id] = enabled }
             return
         }
         guard let detail,
@@ -2723,7 +2725,7 @@ public final class AppModel {
         let enabled = (try? await api.mediaStatus(channelID: root == "general" ? nil : root)) ?? false
         guard !Task.isCancelled, generation == accountGeneration, self.detail?.space.id == detail.space.id,
               self.detail?.channels.contains(where: { $0.id == channel.id }) == true else { return }
-        voiceAvailability[root] = enabled
+        if voiceAvailability[root] != enabled { voiceAvailability[root] = enabled }
     }
 
     private var preparedVoice: [String: ContinuousClock.Instant] = [:]
