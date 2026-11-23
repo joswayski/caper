@@ -88,8 +88,6 @@ import coil3.compose.AsyncImage
 import coil3.asDrawable
 import coil3.request.SuccessResult
 import coil3.request.allowHardware
-import coil3.gif.AnimatedImageDecoder
-import coil3.gif.GifDecoder
 import coil3.size.Size
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -414,7 +412,7 @@ private class ViewerDismiss(private val scope: CoroutineScope) {
         AttachmentImages.request(context, url, "${attachment.id}:original").newBuilder()
             .size(Size.ORIGINAL)
             .apply { if (respectReducedMotion) memoryCacheKey("${attachment.id}:original:$animate") }
-            .apply { if (animate) decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory()) }
+            .apply { if (animate) decoderFactory(animatedDecoderFactory()) }
             .build()
     }
     val known = attachment.width?.let { width -> attachment.height?.let { IntSize(width, it) } }

@@ -280,6 +280,38 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertThrowsError(try ProfilePicturePreparer.prepare(Data("not a picture".utf8))) { XCTAssertEqual($0 as? PictureError, .unreadable) }
     }
 
+    /// The repository's shared 40 × 30 two-frame fixtures (red for 80 ms, then blue for 120 ms).
+    private func sharedPicture(_ name: String) throws -> Data {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        return try Data(contentsOf: root.appendingPathComponent("shared/pictures/\(name)"))
+    }
+
+    func testAnimatedWebPAndAPNGUploadUnchangedAndPlay() throws {
+        for (name, type) in [("two-frames.webp", "image/webp"), ("two-frames.png", "image/png")] {
+            let data = try sharedPicture(name)
+            XCTAssertEqual(ProfilePicturePolicy.animatedPicture(data)?.contentType, type)
+            XCTAssertTrue(ProfilePicturePolicy.keepsAnimation(data))
+            XCTAssertEqual(ProfilePicturePolicy.animationMessage(data), "Editing saves a still frame, not the animation.")
+            let prepared = try ProfilePicturePreparer.prepare(data)
+            XCTAssertEqual(prepared.data, data, "\(name) is never re-encoded")
+            XCTAssertEqual([prepared.contentType, "\(prepared.width)x\(prepared.height)"], [type, "40x30"])
+            let frames = try ProfilePictureDecoder.decode(data, pixelSize: 64)
+            XCTAssertEqual(frames.images.count, 2, name)
+            XCTAssertEqual(frames.durations[0], 0.08, accuracy: 0.001)
+            XCTAssertEqual(frames.durations[1], 0.12, accuracy: 0.001)
+
+            // Over 5 MiB the animation can't be kept: the prompt says why, and preparing makes a still.
+            let heavy = data + Data(count: ProfilePicturePolicy.gifMaxBytes)
+            XCTAssertFalse(ProfilePicturePolicy.keepsAnimation(heavy))
+            XCTAssertTrue(ProfilePicturePolicy.animationMessage(heavy).hasSuffix(ProfilePicturePolicy.animationLimitMessage))
+        }
+        var still = try sharedPicture("two-frames.webp")
+        still[20] &= ~0x02
+        XCTAssertNil(ProfilePicturePolicy.animatedPicture(still))
+        XCTAssertFalse(ProfilePicturePolicy.keepsAnimation(still))
+    }
+
     func testStillsApplyOrientationCropToASquareAndDropLocation() throws {
         // Stored 300 x 200 with a red left and blue right half; EXIF 6 shows
         // it 200 x 300 with red on top.

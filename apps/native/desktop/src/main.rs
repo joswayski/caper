@@ -24475,15 +24475,16 @@ impl CaperApp {
             return;
         }
         let head = std::fs::File::open(&path).and_then(|file| {
-            if file.metadata()?.len() > pictures::MAX_SOURCE_BYTES {
+            let size = file.metadata()?.len();
+            if size > pictures::MAX_SOURCE_BYTES {
                 return Err(std::io::Error::other("too large"));
             }
             let mut head = Vec::new();
             file.take(64 * 1024).read_to_end(&mut head)?;
-            Ok(head)
+            Ok((head, size as usize))
         });
         match head {
-            Ok(head)
+            Ok((head, size))
                 if pictures::is_gif(&head)
                     || (compress::sniff("image/png", &head)
                         && compress::png_is_animated(&head))
@@ -24491,7 +24492,12 @@ impl CaperApp {
                         && head.get(12..16) == Some(b"VP8X")
                         && head.get(20).is_some_and(|flags| flags & 0x02 != 0)) =>
             {
-                self.picture_edit.choice = Some((target, path, scratch, pictures::is_gif(&head)))
+                self.picture_edit.choice = Some((
+                    target,
+                    path,
+                    scratch,
+                    pictures::keeps_animation(size, &head),
+                ))
             }
             Ok(_) => self.open_picture_editor(context, target, path, scratch),
             Err(_) => {
@@ -24796,16 +24802,31 @@ impl CaperApp {
                 _ => {}
             }
         }
-        if let Some((target, path, scratch, gif)) = self.picture_edit.choice.take() {
+        if let Some((target, path, scratch, keep)) = self.picture_edit.choice.take() {
             let mut action = 0;
-            let modal = egui::Modal::new(egui::Id::unique("picture-animation-choice")).show(context, |ui| {
-                ui.set_max_width(420.0);
-                ui.heading("Animated picture");
-                ui.label("Editing saves a still frame and removes animation. Original animation upload is available for GIFs only.");
-                if ui.add_enabled(gif, egui::Button::new("Keep original animation")).clicked() { action = 1; }
-                if ui.button("Edit still image").clicked() { action = 2; }
-                if ui.button("Cancel").clicked() { action = 3; }
-            });
+            let modal = egui::Modal::new(egui::Id::unique("picture-animation-choice")).show(
+                context,
+                |ui| {
+                    ui.set_max_width(420.0);
+                    ui.heading("Animated picture");
+                    ui.label("Editing saves a still frame and removes animation.");
+                    if !keep {
+                        ui.label(pictures::ANIMATION_LIMIT);
+                    }
+                    if ui
+                        .add_enabled(keep, egui::Button::new("Keep original animation"))
+                        .clicked()
+                    {
+                        action = 1;
+                    }
+                    if ui.button("Edit still image").clicked() {
+                        action = 2;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        action = 3;
+                    }
+                },
+            );
             motion::modal(context, modal.response.layer_id);
             if modal.should_close() {
                 action = 3;
@@ -24838,7 +24859,7 @@ impl CaperApp {
                 }
                 2 => self.open_picture_editor(context, target, path, scratch),
                 3 => {}
-                _ => self.picture_edit.choice = Some((target, path, scratch, gif)),
+                _ => self.picture_edit.choice = Some((target, path, scratch, keep)),
             }
         }
         if let Some((target, receiver)) = &self.picture_edit.picking {

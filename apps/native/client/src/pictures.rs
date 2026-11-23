@@ -12,8 +12,8 @@ use std::time::Duration;
 
 pub const INVALID: &str = "That picture couldn't be used. Try another one.";
 pub const UNAVAILABLE: &str = "Picture uploads aren’t available right now.";
-/// GIFs upload unchanged up to this size (the API's limit); bigger ones are
-/// shrunk to fit it.
+/// GIFs and animated WebP/PNG upload unchanged up to this size (the API's
+/// limit); bigger GIFs are shrunk to fit it.
 pub const MAX_GIF_BYTES: usize = 5 * 1024 * 1024;
 /// Every other picture is re-encoded to at most this size.
 pub const MAX_STILL_BYTES: usize = 1024 * 1024;
@@ -238,6 +238,53 @@ pub fn gif_frame_count(bytes: &[u8]) -> Option<usize> {
     }
 }
 
+/// `image/webp` or `image/png` for an animated WebP or APNG, by its leading
+/// bytes: these upload unchanged, as GIFs do, when [`keeps_animation`].
+pub fn animated_format(head: &[u8]) -> Option<&'static str> {
+    if crate::compress::sniff("image/webp", head)
+        && head.get(12..16) == Some(b"VP8X")
+        && head.get(20).is_some_and(|flags| flags & 0x02 != 0)
+    {
+        Some("image/webp")
+    } else if crate::compress::sniff("image/png", head) && crate::compress::png_is_animated(head) {
+        Some("image/png")
+    } else {
+        None
+    }
+}
+
+/// An animated WebP's canvas or an APNG's IHDR size.
+fn animated_dimensions(head: &[u8]) -> Option<(u32, u32)> {
+    let u24 = |at: usize| {
+        head.get(at..at + 3)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], 0]) + 1)
+    };
+    let u32_be = |at: usize| {
+        head.get(at..at + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    match animated_format(head)? {
+        "image/webp" => Some((u24(24)?, u24(27)?)),
+        _ => Some((u32_be(16)?, u32_be(20)?)),
+    }
+}
+
+/// Whether a picked file of `size` bytes starting with `head` can keep its
+/// animation: any GIF (bigger ones are shrunk), or an animated WebP/APNG
+/// within the API's 5 MiB and 1024 × 1024 limits.
+pub fn keeps_animation(size: usize, head: &[u8]) -> bool {
+    is_gif(head)
+        || animated_dimensions(head).is_some_and(|(width, height)| {
+            size <= MAX_GIF_BYTES
+                && (1..=MAX_DIMENSION).contains(&width)
+                && (1..=MAX_DIMENSION).contains(&height)
+        })
+}
+
+/// Explains, in the animated-picture prompt, why keeping is unavailable.
+pub const ANIMATION_LIMIT: &str =
+    "Animated WebP and PNG pictures keep their animation up to 5 MB and 1024 × 1024.";
+
 /// The centred square crop of a `width` × `height` image: `(x, y, side)`.
 pub fn square_crop(width: u32, height: u32) -> (u32, u32, u32) {
     let side = width.min(height);
@@ -285,9 +332,21 @@ pub fn prepare_edited(
     )
 }
 
-/// Prepare picked bytes under the picture upload policy. Unedited GIFs retain
-/// animation; stills become square, metadata-free images of at most 512 px.
+/// Prepare picked bytes under the picture upload policy. Unedited GIFs, and
+/// animated WebP/APNG within the limits, retain animation; stills become
+/// square, metadata-free images of at most 512 px.
 pub fn prepare(bytes: Vec<u8>) -> Result<Prepared, String> {
+    if keeps_animation(bytes.len(), &bytes)
+        && let (Some(content_type), Some((width, height))) =
+            (animated_format(&bytes), animated_dimensions(&bytes))
+    {
+        return Ok(Prepared {
+            bytes,
+            content_type,
+            width,
+            height,
+        });
+    }
     if is_gif(&bytes) {
         let (width, height) = gif_dimensions(&bytes)
             .filter(|(width, height)| *width > 0 && *height > 0)
@@ -616,12 +675,12 @@ fn square(image: &image::RgbaImage, edge: u32) -> Rgba {
     Rgba::from_image(scaled)
 }
 
-/// Decode a picture for display: every composited frame of an animated GIF
-/// when `animate` and the budget allow, otherwise one still. Squares of at
-/// most [`DISPLAY_EDGE`] pixels.
+/// Decode a picture for display: every composited frame of an animated GIF,
+/// WebP or APNG when `animate` and the budget allow, otherwise one still.
+/// Squares of at most [`DISPLAY_EDGE`] pixels.
 pub fn decode(bytes: &[u8], animate: bool) -> Option<Frames> {
     if animate
-        && is_gif(bytes)
+        && (is_gif(bytes) || animated_format(bytes).is_some())
         && let Some(frames) = decode_animation(bytes)
     {
         return Some(frames);
@@ -637,16 +696,60 @@ fn limits() -> image::Limits {
     limits
 }
 
+/// How many frames an animated WebP (its `ANMF` chunks) or APNG (`acTL`)
+/// declares, read without decoding.
+fn animated_frame_count(bytes: &[u8]) -> Option<usize> {
+    if animated_format(bytes)? == "image/png" {
+        let mut at = 8;
+        while let Some(chunk) = bytes.get(at..at + 8) {
+            let length = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as usize;
+            if &chunk[4..] == b"acTL" {
+                let count = bytes.get(at + 8..at + 12)?;
+                return usize::try_from(u32::from_be_bytes(count.try_into().ok()?)).ok();
+            }
+            at = at.checked_add(12 + length)?;
+        }
+        return None;
+    }
+    let (mut at, mut frames) = (12, 0);
+    while let Some(chunk) = bytes.get(at..at + 8) {
+        frames += usize::from(&chunk[..4] == b"ANMF");
+        let length = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]) as usize;
+        // Chunks are padded to an even length.
+        at = at.checked_add(8 + length + (length & 1))?;
+    }
+    (frames > 0).then_some(frames)
+}
+
 fn decode_animation(bytes: &[u8]) -> Option<Frames> {
     use image::AnimationDecoder;
-    let count = gif_frame_count(bytes)?;
-    let (width, height) = gif_dimensions(bytes)?;
+    let (count, (width, height)) = if is_gif(bytes) {
+        (gif_frame_count(bytes)?, gif_dimensions(bytes)?)
+    } else {
+        (animated_frame_count(bytes)?, animated_dimensions(bytes)?)
+    };
     let edge = animated_edge(count, width.min(height))?;
-    let mut decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
-    decoder.set_limits(limits()).ok()?;
+    let cursor = std::io::Cursor::new(bytes);
+    let decoded = match animated_format(bytes) {
+        None => {
+            let mut decoder = image::codecs::gif::GifDecoder::new(cursor).ok()?;
+            decoder.set_limits(limits()).ok()?;
+            decoder.into_frames()
+        }
+        Some("image/webp") => {
+            let mut decoder = image::codecs::webp::WebPDecoder::new(cursor).ok()?;
+            decoder.set_limits(limits()).ok()?;
+            decoder.into_frames()
+        }
+        Some(_) => image::codecs::png::PngDecoder::with_limits(cursor, limits())
+            .ok()?
+            .apng()
+            .ok()?
+            .into_frames(),
+    };
     let mut frames = Vec::new();
     let mut total = 0;
-    for frame in decoder.into_frames() {
+    for frame in decoded {
         let frame = frame.ok()?;
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         let delay = Duration::from_millis(u64::from(numerator / denominator.max(1)));
@@ -722,6 +825,67 @@ mod tests {
         // A file cut inside its second image still counts the first.
         assert_eq!(gif_frame_count(&bytes[..bytes.len() - 20]), Some(1));
         assert_eq!(gif_frame_count(b"GIF89a"), None);
+    }
+
+    const WEBP: &[u8] = include_bytes!("../../../../shared/pictures/two-frames.webp");
+    const APNG: &[u8] = include_bytes!("../../../../shared/pictures/two-frames.png");
+
+    #[test]
+    fn animated_webp_and_apng_upload_unchanged_and_play() {
+        // Both fixtures: 40 × 30, red for 80 ms, then blue for 120 ms.
+        for (bytes, content_type) in [(WEBP, "image/webp"), (APNG, "image/png")] {
+            assert_eq!(animated_format(bytes), Some(content_type));
+            assert_eq!(animated_dimensions(bytes), Some((40, 30)));
+            assert_eq!(animated_frame_count(bytes), Some(2));
+            assert!(keeps_animation(bytes.len(), bytes));
+            assert!(!keeps_animation(MAX_GIF_BYTES + 1, bytes));
+            let prepared = prepare(bytes.to_vec()).unwrap();
+            assert_eq!(prepared.bytes, bytes, "{content_type} is not re-encoded");
+            assert_eq!(
+                (prepared.content_type, prepared.width, prepared.height),
+                (content_type, 40, 30)
+            );
+            let frames = decode(bytes, true).unwrap();
+            // Colours within lossy rounding of pure red, then pure blue.
+            let shown: Vec<_> = frames
+                .iter()
+                .map(|(image, delay)| {
+                    let color = image.pixels[..4]
+                        .iter()
+                        .map(|c| c / 128)
+                        .collect::<Vec<_>>();
+                    (image.size, color, delay.as_millis())
+                })
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    ([30, 30], vec![1, 0, 0, 1], 80),
+                    ([30, 30], vec![0, 0, 1, 1], 120)
+                ],
+                "{content_type}"
+            );
+            // Reduced motion: the first frame alone.
+            let still = decode(bytes, false).unwrap();
+            assert_eq!(still.len(), 1);
+            assert_eq!(&still[0].0.pixels[..4], [255, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn animations_beyond_the_api_limits_cannot_be_kept() {
+        let mut wide = WEBP.to_vec();
+        wide[24..27].copy_from_slice(&1024u32.to_le_bytes()[..3]); // 1025 px canvas
+        assert!(!keeps_animation(wide.len(), &wide));
+        let mut tall = APNG.to_vec();
+        tall[20..24].copy_from_slice(&1025u32.to_be_bytes());
+        assert!(!keeps_animation(tall.len(), &tall));
+        // A still WebP/PNG is not an animation, whatever its size.
+        let mut still = WEBP.to_vec();
+        still[20] &= !0x02;
+        assert_eq!(animated_format(&still), None);
+        assert!(!keeps_animation(still.len(), &still));
+        assert!(keeps_animation(MAX_GIF_BYTES * 2, b"GIF89a\x10\0\x10\0"));
     }
 
     #[test]

@@ -110,10 +110,54 @@ fn stored_pictures_must_fit_1024_pixels() {
     assert!(!fits("image/png", &png(10, 4000)));
 }
 
+/// An APNG's leading chunks: IHDR, then `before` ahead of the first IDAT.
+fn apng(before: &[&[u8; 4]]) -> Vec<u8> {
+    let mut bytes = png(64, 64);
+    bytes.extend([0; 4]); // IHDR CRC
+    for chunk in before.iter().copied().chain([b"IDAT"]) {
+        let data = if chunk == b"acTL" { 8 } else { 3 };
+        bytes.extend(u32::try_from(data).unwrap().to_be_bytes());
+        bytes.extend(chunk);
+        bytes.extend(vec![0; data + 4]);
+    }
+    bytes
+}
+
+#[test]
+fn only_animations_use_the_animated_size_limit() {
+    let mut flags = vec![0x02, 0, 0, 0];
+    flags.extend([63, 0, 0, 63, 0, 0]);
+    let animated_webp = webp(b"VP8X", &flags);
+    flags[0] = 0x10; // alpha only
+    let still_webp = webp(b"VP8X", &flags);
+    assert!(animated("image/webp", &animated_webp));
+    assert!(!animated("image/webp", &still_webp));
+    assert!(animated("image/png", &apng(&[b"gAMA", b"acTL"])));
+    // acTL after the first IDAT is not an APNG; neither is a plain PNG.
+    let mut late = apng(&[b"gAMA"]);
+    late.extend(apng(&[b"acTL"])[33..].iter());
+    assert!(!animated("image/png", &late));
+    assert!(!animated("image/png", &png(64, 64)));
+    assert!(!animated("image/gif", &gif(64, 64)));
+
+    let big = STILL_MAX_BYTES + 1;
+    assert!(accepts("image/webp", &animated_webp, ANIMATED_MAX_BYTES));
+    assert!(accepts("image/png", &apng(&[b"acTL"]), big));
+    assert!(accepts("image/gif", &gif(64, 64), big));
+    assert!(!accepts("image/webp", &still_webp, big));
+    assert!(!accepts("image/png", &png(64, 64), big));
+    assert!(accepts("image/png", &png(64, 64), STILL_MAX_BYTES));
+    assert!(!accepts(
+        "image/webp",
+        &animated_webp,
+        ANIMATED_MAX_BYTES + 1
+    ));
+}
+
 #[test]
 fn reservations_check_type_size_and_dimensions() {
     assert!(check_reservation("image/webp", STILL_MAX_BYTES, Some(512), Some(512)).is_ok());
-    assert!(check_reservation("image/gif", GIF_MAX_BYTES, Some(480), Some(480)).is_ok());
+    assert!(check_reservation("image/gif", ANIMATED_MAX_BYTES, Some(480), Some(480)).is_ok());
     let code = |result: Result<(), ApiError>| result.unwrap_err().code;
     assert_eq!(
         code(check_reservation("image/avif", 10, Some(1), Some(1))),
@@ -123,9 +167,11 @@ fn reservations_check_type_size_and_dimensions() {
         code(check_reservation("image/svg+xml", 10, Some(1), Some(1))),
         Some("picture_type")
     );
+    // WebP and PNG may be animated: completion applies the still limit.
+    assert!(check_reservation("image/png", ANIMATED_MAX_BYTES, Some(1), Some(1)).is_ok());
     assert_eq!(
         code(check_reservation(
-            "image/png",
+            "image/jpeg",
             STILL_MAX_BYTES + 1,
             Some(1),
             Some(1)
@@ -134,8 +180,17 @@ fn reservations_check_type_size_and_dimensions() {
     );
     assert_eq!(
         code(check_reservation(
+            "image/webp",
+            ANIMATED_MAX_BYTES + 1,
+            Some(1),
+            Some(1)
+        )),
+        Some("picture_too_large")
+    );
+    assert_eq!(
+        code(check_reservation(
             "image/gif",
-            GIF_MAX_BYTES + 1,
+            ANIMATED_MAX_BYTES + 1,
             Some(1),
             Some(1)
         )),

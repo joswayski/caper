@@ -123,6 +123,47 @@ public enum ProfilePicturePolicy {
         return data.count <= gifMaxBytes && (1...maxDimension).contains(size.width) && (1...maxDimension).contains(size.height)
     }
 
+    // MARK: Animated WebP and APNG
+
+    /// Why an animated WebP or PNG can't keep its animation.
+    public static let animationLimitMessage = "Animated WebP and PNG pictures keep their animation up to 5 MB and 1024 × 1024."
+
+    /// An animated WebP (the extended header's animation flag and canvas) or
+    /// APNG (`acTL` before the first `IDAT`, and the IHDR size), by its bytes.
+    public static func animatedPicture(_ data: Data) -> (contentType: String, width: Int, height: Int)? {
+        let bytes = [UInt8](data.prefix(65_536))
+        func ascii(_ at: Int, _ text: String) -> Bool {
+            let expected = Array(text.utf8)
+            return at >= 0 && bytes.count >= at + expected.count && Array(bytes[at..<at + expected.count]) == expected
+        }
+        if ascii(0, "RIFF"), ascii(8, "WEBP"), ascii(12, "VP8X"), bytes.count >= 30, bytes[20] & 0x02 != 0 {
+            func u24(_ at: Int) -> Int { Int(bytes[at]) | Int(bytes[at + 1]) << 8 | Int(bytes[at + 2]) << 16 }
+            return ("image/webp", u24(24) + 1, u24(27) + 1)
+        }
+        guard bytes.count >= 24, bytes.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) else { return nil }
+        func u32(_ at: Int) -> Int { bytes[at..<at + 4].reduce(0) { $0 << 8 | Int($1) } }
+        var offset = 8
+        while offset + 8 <= bytes.count {
+            if ascii(offset + 4, "acTL") { return ("image/png", u32(16), u32(20)) }
+            if ascii(offset + 4, "IDAT") || ascii(offset + 4, "IEND") { return nil }
+            offset += 12 + u32(offset)
+        }
+        return nil
+    }
+
+    /// Whether picked bytes can keep their animation: any GIF (bigger ones
+    /// are shrunk), or an animated WebP/APNG within 5 MiB and 1024 × 1024.
+    public static func keepsAnimation(_ data: Data) -> Bool {
+        if isGIF(data) { return true }
+        guard let animation = animatedPicture(data) else { return false }
+        return data.count <= gifMaxBytes && (1...maxDimension).contains(animation.width) && (1...maxDimension).contains(animation.height)
+    }
+
+    /// The animated-picture prompt's message for picked bytes.
+    public static func animationMessage(_ data: Data) -> String {
+        "Editing saves a still frame, not the animation." + (keepsAnimation(data) ? "" : " " + animationLimitMessage)
+    }
+
     // MARK: Stills
 
     /// The centred square of a `width` × `height` image.
@@ -251,11 +292,17 @@ public enum ProfilePicturePreparer {
 
     /// GIFs (by magic bytes) keep animating: unchanged within 5 MiB and
     /// 1024 × 1024, else shrunk by `GIFShrink` to a square that fits.
+    /// Animated WebP and APNG within those limits upload unchanged too.
     /// Anything else ImageIO decodes (PNG, JPEG, HEIC, WebP, AVIF, BMP…) becomes an oriented, centre-cropped square of at
     /// most 512 px, as lossy WebP (PNG/JPEG if WebP fails), at most 1 MiB.
     /// Re-encoding drops EXIF/GPS metadata; HEIC and AVIF are never uploaded.
     public static func prepare(_ data: Data) throws -> PreparedPicture {
         if ProfilePicturePolicy.isGIF(data) { return try prepareGIF(data) }
+        if ProfilePicturePolicy.keepsAnimation(data), let animation = ProfilePicturePolicy.animatedPicture(data),
+           let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+           CGImageSourceGetCount(source) > 0 {
+            return PreparedPicture(data: data, contentType: animation.contentType, width: animation.width, height: animation.height)
+        }
         return try prepareStill(data)
     }
 
@@ -391,7 +438,7 @@ public enum ProfilePictureUploader {
 
 // MARK: Display decoding
 
-/// A decoded picture: every frame of an animated GIF within the display
+/// A decoded picture: every frame of an animated GIF, WebP or APNG within the display
 /// budget, or one still. Immutable, so the cache and views share it.
 public final class ProfilePictureFrames: @unchecked Sendable {
     public let images: [CGImage]

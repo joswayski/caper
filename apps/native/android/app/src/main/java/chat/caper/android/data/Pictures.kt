@@ -8,12 +8,13 @@ import kotlinx.coroutines.ensureActive
 
 /**
  * Custom profile pictures and space icons: GIFs keep animating (unchanged when small enough,
- * else shrunk by [GifShrink]); every other picture becomes a centered square of at most 512 px,
+ * else shrunk by [GifShrink]), as do animated WebP and APNG within the limits (unchanged);
+ * every other picture becomes a centered square of at most 512 px,
  * encoded as WebP. The server
  * re-checks size, type and real pixel dimensions before applying one.
  */
 object PicturePolicy {
-    /** A GIF up to this size (and [MAX_SIDE]) uploads unchanged; a bigger one is shrunk to fit. */
+    /** A GIF or animated WebP/PNG up to this size (and [MAX_SIDE]) uploads unchanged; a bigger GIF is shrunk to fit. */
     const val GIF_MAX_BYTES = 5L * 1024 * 1024
     /** Any other picture must end up within 1 MiB. */
     const val STILL_MAX_BYTES = 1024L * 1024
@@ -26,6 +27,7 @@ object PicturePolicy {
 
     const val GIF_UNREADABLE = "That GIF couldn’t be opened. Try another one."
     const val UNUSABLE = "That picture couldn’t be used. Try another one."
+    const val ANIMATION_LIMIT = "Animated WebP and PNG pictures keep their animation up to 5 MB and 1024 × 1024."
 }
 
 /** A picture problem found on this device, before anything uploads. */
@@ -66,6 +68,28 @@ fun gifSize(header: ByteArray): Pair<Int, Int>? {
 /** Whether a GIF of [byteSize] bytes and header size [width] × [height] uploads byte for byte; any other GIF is shrunk. */
 fun gifUploadsUnchanged(byteSize: Long, width: Int, height: Int): Boolean =
     byteSize in 1..PicturePolicy.GIF_MAX_BYTES && width in 1..PicturePolicy.MAX_SIDE && height in 1..PicturePolicy.MAX_SIDE
+
+/** An animated WebP or APNG's content type and canvas size. */
+data class AnimatedPicture(val contentType: String, val width: Int, val height: Int)
+
+/**
+ * An animated WebP (the extended header's animation flag and canvas) or APNG (`acTL` before the
+ * first `IDAT`, and the IHDR size), from a file's leading bytes.
+ */
+fun animatedPicture(header: ByteArray): AnimatedPicture? {
+    fun u24(at: Int) = (header[at].toInt() and 0xFF) or ((header[at + 1].toInt() and 0xFF) shl 8) or ((header[at + 2].toInt() and 0xFF) shl 16)
+    fun u32(at: Int) = ((header[at].toInt() and 0xFF) shl 24) or ((header[at + 1].toInt() and 0xFF) shl 16) or
+        ((header[at + 2].toInt() and 0xFF) shl 8) or (header[at + 3].toInt() and 0xFF)
+    return when {
+        header.size >= 30 && isAnimatedImage("image/webp", header) -> AnimatedPicture("image/webp", u24(24) + 1, u24(27) + 1)
+        header.size >= 24 && isAnimatedImage("image/png", header) -> AnimatedPicture("image/png", u32(16), u32(20))
+        else -> null
+    }
+}
+
+/** Whether a picked picture keeps its animation: any GIF (bigger ones are shrunk), or an animated WebP/APNG within the limits. */
+fun keepsAnimation(byteSize: Long, header: ByteArray): Boolean =
+    gifSize(header) != null || animatedPicture(header)?.let { gifUploadsUnchanged(byteSize, it.width, it.height) } == true
 
 /** The centered square of a picture: its [left] and [top] offsets and its [side]. */
 data class SquareCrop(val left: Int, val top: Int, val side: Int)

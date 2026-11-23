@@ -4780,9 +4780,11 @@ generate notes for a branch or unshipped revision.
 ## Custom profile pictures and space icons
 
 People can replace their saved mascot with their own picture, and space owners can
-give a space an icon. Both may be still images or animated GIFs; GIFs animate
-everywhere (members, chat authors, replies, threads, DMs, reactions, voice tiles,
-invites, the rail), and reduced motion shows the first frame. Removing a picture
+give a space an icon. Both may be still images or animations (GIF, animated WebP
+or APNG), which animate everywhere (members, chat authors, replies, threads, DMs,
+reactions, voice tiles, invites, the rail), and reduced motion shows the first
+frame. Windows shows every picture's first frame; Android before 9 plays GIF and
+APNG but shows an animated WebP's first frame. Removing a picture
 restores the same saved mascot (`users.avatar_id` never changes) or the space's
 initial.
 
@@ -4841,8 +4843,8 @@ active voice room, so the next room snapshot carries it.
 
 | Call | Behavior |
 | --- | --- |
-| `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); GIFs ≤ 5 MiB, others ≤ 1 MiB (`413 picture_too_large`); 1–1024 px per side. 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
-| `POST /api/assets/{id}/complete` | Checks size and magic bytes, then the real pixel size from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion applies the picture and returns `account` or `space`; retries return current state without re-applying. A picture completing after a later-reserved one is kept but not applied. |
+| `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); GIF, WebP and PNG ≤ 5 MiB, JPEG ≤ 1 MiB (`413 picture_too_large`); 1–1024 px per side. 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
+| `POST /api/assets/{id}/complete` | Checks size and magic bytes, then the real pixel size from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px, and that a WebP or PNG over 1 MiB is animated (VP8X animation flag; `acTL` before the first `IDAT`) (`422 picture_invalid`). The first successful completion applies the picture and returns `account` or `space`; retries return current state without re-applying. A picture completing after a later-reserved one is kept but not applied. |
 | `POST /api/assets/{id}/complete?draft=true` | Avatars only: verifies and retains without applying or broadcasting. Clients call it after Save profile, before the atomic profile commit. A repeated completion never applies it. |
 | `POST /api/assets/{id}/cancel` | Cancels before completion; `409` afterwards. |
 | `POST /api/account/profile` with optional `avatar: {avatarId,avatarAsset,expectedAvatarId,expectedAvatarAsset}` | Saves names and the chosen mascot/photo atomically, then broadcasts once. `avatarAsset` is an owned, completed, retained avatar ID or null; `avatarId` is 0–799. Stale expected values return `409 profile_changed` without changing names. Omitting `avatar` keeps the picture. |
@@ -4870,11 +4872,20 @@ All clients prepare pictures the same way:
   merged). Web (`account/gif-shrink.ts`, in a worker) and Android (`GifShrink.kt`)
   share one decoder/encoder with per-frame palettes of changed pixels; Apple uses
   ImageIO and Rust desktop the `image` crate.
+- An animated WebP or APNG (detected by bytes) within 5 MB and 1024 × 1024
+  uploads unchanged and keeps its animation. A bigger one can't be kept (it is
+  never shrunk): the prompt explains the limit and offers only a still edit.
+  Upload metadata cleaning (web) and the API's ExifTool pass keep every frame.
 - Still pictures open in the attachment editor with a square crop (reposition,
   resize, rotate, draw, text); the region is scaled to at most 512 px and encoded
   as WebP (PNG or JPEG where WebP is unavailable), dropping location metadata.
-  GIFs offer **Keep original animation** or an acknowledged still-frame edit;
-  animated PNG/WebP require confirmation before becoming stills.
+  Animations offer **Keep original animation** (disabled, with the reason, for
+  an animated WebP/APNG beyond the limits) or an acknowledged still-frame edit.
+- Display decoding: web uses the browser's image element; Apple ImageIO's GIF,
+  WebP and APNG frames; Rust (`caper_client::pictures::decode`) the `image`
+  crate's GIF, WebP and APNG decoders; Android Coil's GIF decoder (Android 9+:
+  `AnimatedImageDecoder`, which also plays animated WebP) plus Caper's own APNG
+  decoder (`ApngDecoder.kt`), which also serves the media viewer.
 - Pictures show aspect-filled in a rounded square (corner radius 30%, the
   `--radius-avatar` token); speaking rings follow that shape. Space icons fill
   their tile. The mascot or initial shows while loading or on failure. Decoded

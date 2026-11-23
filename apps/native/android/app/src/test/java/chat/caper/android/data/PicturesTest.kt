@@ -57,6 +57,47 @@ class PicturesTest {
         assertFalse(gifUploadsUnchanged(1_000, 0, 480))
     }
 
+    /** The repository's shared 40 × 30 two-frame fixtures (red for 80 ms, then blue for 120 ms). */
+    private fun sharedPicture(name: String) = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+        .map { java.io.File(it, "shared/pictures/$name") }.first { it.isFile }.readBytes()
+
+    @Test fun `animated webp and apng keep their animation within 5 MiB and 1024 on each side`() {
+        for ((name, type) in listOf("two-frames.webp" to "image/webp", "two-frames.png" to "image/png")) {
+            val bytes = sharedPicture(name)
+            assertEquals(AnimatedPicture(type, 40, 30), animatedPicture(bytes))
+            assertTrue(keepsAnimation(bytes.size.toLong(), bytes))
+            assertFalse(keepsAnimation(PicturePolicy.GIF_MAX_BYTES + 1, bytes))
+        }
+        val tall = sharedPicture("two-frames.png").apply { this[20] = 0; this[21] = 0; this[22] = 4; this[23] = 1 } // 1025 px
+        assertFalse(keepsAnimation(tall.size.toLong(), tall))
+        val still = sharedPicture("two-frames.webp").apply { this[20] = (this[20].toInt() and 0x02.inv()).toByte() }
+        assertNull(animatedPicture(still))
+        assertFalse(keepsAnimation(still.size.toLong(), still))
+        // Any GIF keeps its animation: a big one is shrunk.
+        assertTrue(keepsAnimation(PicturePolicy.GIF_MAX_BYTES * 2, "GIF89a".toByteArray() + byteArrayOf(16, 0, 16, 0)))
+    }
+
+    @Test fun `apng frames split into standalone pngs with their placement and timing`() {
+        val apng = requireNotNull(chat.caper.android.Apng.parse(sharedPicture("two-frames.png")))
+        assertEquals(40 to 30, apng.width to apng.height)
+        assertEquals(listOf(80, 120), apng.frames.map { it.delayMillis })
+        val colors = listOf(listOf(255, 0, 0, 255), listOf(0, 0, 255, 255))
+        for ((frame, color) in apng.frames.zip(colors)) {
+            assertEquals(listOf(0, 0, 40, 30), listOf(frame.x, frame.y, frame.width, frame.height))
+            // A PNG with its own IHDR and image data and no animation chunks.
+            val text = String(frame.png, Charsets.ISO_8859_1)
+            assertTrue(text.startsWith("\u0089PNG") && "IHDR" in text && "IDAT" in text && text.endsWith("IEND\u00aeB`\u0082"))
+            assertFalse("acTL" in text || "fcTL" in text || "fdAT" in text)
+            // The frame's own pixels: 30 rows of a filter byte and 40 RGBA pixels.
+            val start = text.indexOf("IDAT") + 4
+            val length = java.nio.ByteBuffer.wrap(frame.png, start - 8, 4).int
+            val pixels = ByteArray(30 * 161)
+            assertEquals(pixels.size, java.util.zip.Inflater().run { setInput(frame.png, start, length); inflate(pixels) })
+            assertEquals(color, pixels.copyOfRange(1, 5).map { it.toInt() and 0xFF })
+        }
+        assertNull(chat.caper.android.Apng.parse(sharedPicture("two-frames.webp")))
+    }
+
     @Test fun `stills crop to the centered square and scale to at most 512`() {
         assertEquals(SquareCrop(420, 0, 3024), squareCrop(3864, 3024))
         assertEquals(SquareCrop(0, 656, 3024), squareCrop(3024, 4336))

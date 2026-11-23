@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { test } from "vitest";
 import { getRememberedAccount, subscribeAccount, withAccountProfile, type Account } from "../account/client.ts";
-import { PictureError, preparePicture, uploadAvatar, uploadPicture } from "../account/picture-upload.ts";
+import {
+  animatedPicture,
+  PictureError,
+  preparePicture,
+  uploadAvatar,
+  uploadPicture,
+} from "../account/picture-upload.ts";
 import {
   gifSize,
-  gifUploadsUnchanged,
+  animationUploadsUnchanged,
   MAX_GIF_BYTES,
   pictureEdge,
   pictureErrorMessage,
@@ -45,14 +52,14 @@ test("GIFs are recognised by their magic bytes and logical screen size, not thei
 });
 
 test("GIFs upload unchanged up to 5 MiB and 1024 × 1024; bigger ones are shrunk", () => {
-  assert.equal(gifUploadsUnchanged(MAX_GIF_BYTES, { width: 1024, height: 1024 }), true);
+  assert.equal(animationUploadsUnchanged(MAX_GIF_BYTES, { width: 1024, height: 1024 }), true);
   for (const [size, width, height] of [
     [MAX_GIF_BYTES + 1, 10, 10],
     [100, 1025, 10],
     [100, 10, 1025],
     [100, 0, 10],
   ])
-    assert.equal(gifUploadsUnchanged(size, { width, height }), false);
+    assert.equal(animationUploadsUnchanged(size, { width, height }), false);
 });
 
 test("stills are center-cropped square and scaled to their short edge, at most 512", () => {
@@ -233,6 +240,28 @@ test("GIFs are prepared unchanged; unreadable GIFs and undecodable files fail be
   await assert.rejects(preparePicture(new Blob([new Uint8Array(64)], { type: "image/heic" })), (error: unknown) => {
     return error instanceof PictureError && error.message === pictureMessages.undecodable;
   });
+});
+
+test("animated WebP and APNG keep their animation within 5 MiB and 1024 × 1024", async () => {
+  // Shared fixtures: 40 × 30, two frames.
+  for (const [name, contentType] of [
+    ["two-frames.webp", "image/webp"],
+    ["two-frames.png", "image/png"],
+  ]) {
+    const bytes = readFileSync(new URL(`../../../../shared/pictures/${name}`, import.meta.url));
+    assert.deepEqual(animatedPicture(bytes), { contentType, width: 40, height: 30 });
+    const file = new Blob([bytes]);
+    const prepared = await preparePicture(file);
+    assert.equal(prepared.blob, file, `${name} uploads unchanged`);
+    assert.deepEqual({ ...prepared, blob: undefined }, { blob: undefined, contentType, width: 40, height: 30 });
+    // Beyond the limits it is a still: Node can't decode it, like a browser that can't open it.
+    const big = new Blob([bytes, new Uint8Array(MAX_GIF_BYTES)]);
+    await assert.rejects(preparePicture(big), PictureError);
+  }
+  const still = readFileSync(new URL("../../../../shared/pictures/two-frames.webp", import.meta.url));
+  still[20] &= ~0x02;
+  assert.equal(animatedPicture(still.subarray(0, 30)), undefined);
+  assert.equal(animatedPicture(gif(10, 10)), undefined);
 });
 
 function transport(responses: Record<string, Response[]>) {

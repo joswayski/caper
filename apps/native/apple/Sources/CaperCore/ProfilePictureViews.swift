@@ -45,7 +45,7 @@ struct PictureLoading<Content: View>: View {
 }
 
 /// Decoded picture frames aspect-filled in a `size`-point square over a
-/// neutral backdrop (never the mascot through transparent pixels). GIFs
+/// neutral backdrop (never the mascot through transparent pixels). Animations
 /// play, other people's included; Reduce Motion shows the first frame.
 struct PictureFrames: View {
     let frames: ProfilePictureFrames
@@ -277,7 +277,7 @@ struct PictureEditor<Preview: View>: View {
                 animationData = nil
                 send(data, edit: nil)
             }
-            .disabled(animationData.map { !ProfilePicturePolicy.isGIF($0) } ?? true)
+            .disabled(animationData.map { !ProfilePicturePolicy.keepsAnimation($0) } ?? true)
             Button("Edit a still picture") {
                 guard let data = animationData else { return }
                 animationData = nil
@@ -285,7 +285,7 @@ struct PictureEditor<Preview: View>: View {
             }
             Button("Cancel", role: .cancel) { animationData = nil }
         } message: {
-            Text("Editing saves a still frame, not the animation. Original animation upload is available for GIFs only.")
+            Text(animationData.map(ProfilePicturePolicy.animationMessage) ?? "")
         }
         .onDisappear {
             loadTask?.cancel()

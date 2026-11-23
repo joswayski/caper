@@ -110,8 +110,8 @@ import AppKit
         status.stringValue = state.status ?? ""; status.textColor = state.error == nil ? AppKitKit.muted : AppKitKit.error; status.isHidden = state.status == nil
         guard !picking, alert == nil, child == nil, let window else { return }
         if let data = state.animation {
-            let alert = NSAlert(); alert.messageText = "Animated picture"; alert.informativeText = "Editing saves a still frame, not the animation. Original animation upload is available for GIFs only."
-            alert.addButton(withTitle: "Use original animation").isEnabled = ProfilePicturePolicy.isGIF(data); alert.addButton(withTitle: "Edit a still picture"); alert.addButton(withTitle: "Cancel"); self.alert = alert
+            let alert = NSAlert(); alert.messageText = "Animated picture"; alert.informativeText = ProfilePicturePolicy.animationMessage(data)
+            alert.addButton(withTitle: "Use original animation").isEnabled = ProfilePicturePolicy.keepsAnimation(data); alert.addButton(withTitle: "Edit a still picture"); alert.addButton(withTitle: "Cancel"); self.alert = alert
             alert.beginSheetModal(for: window) { [weak self] response in
                 guard let self else { return }; self.alert = nil
                 if response == .alertFirstButtonReturn { self.state.original(data) } else if response == .alertSecondButtonReturn { self.state.still(data) } else { self.state.animation = nil }; self.render()
@@ -179,8 +179,8 @@ import UIKit
         status.text = state.status; status.isHidden = state.status == nil; status.textColor = UIColor(state.error == nil ? CaperTheme.muted : CaperTheme.error)
         guard child == nil, !closing, window != nil else { return }
         if let data = state.animation {
-            let alert = UIAlertController(title: "Animated picture", message: "Editing saves a still frame, not the animation. Original animation upload is available for GIFs only.", preferredStyle: .alert)
-            let original = UIAlertAction(title: "Use original animation", style: .default) { [weak self] _ in self?.afterAlert { self?.state.original(data) } }; original.isEnabled = ProfilePicturePolicy.isGIF(data); alert.addAction(original)
+            let alert = UIAlertController(title: "Animated picture", message: ProfilePicturePolicy.animationMessage(data), preferredStyle: .alert)
+            let original = UIAlertAction(title: "Use original animation", style: .default) { [weak self] _ in self?.afterAlert { self?.state.original(data) } }; original.isEnabled = ProfilePicturePolicy.keepsAnimation(data); alert.addAction(original)
             alert.addAction(UIAlertAction(title: "Edit a still picture", style: .default) { [weak self] _ in self?.afterAlert { self?.state.still(data) } })
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.afterAlert { self?.state.animation = nil } }); show(alert)
         } else if let request = state.editing {

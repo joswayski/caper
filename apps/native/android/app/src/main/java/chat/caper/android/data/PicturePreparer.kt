@@ -20,7 +20,8 @@ import kotlinx.coroutines.withContext
 /**
  * Turns a picked image (a local copy, see [AttachmentPreparer.copy]) into the bytes a profile
  * picture or space icon uploads. A GIF (by magic bytes) keeps animating: byte for byte within
- * 5 MiB and 1024 × 1024, else shrunk by [GifShrink] to a square that fits. Anything else the platform decodes is oriented,
+ * 5 MiB and 1024 × 1024, else shrunk by [GifShrink] to a square that fits. Animated WebP and APNG
+ * within those limits upload byte for byte too. Anything else the platform decodes is oriented,
  * center-cropped to a square of at most 512 px and encoded as lossy WebP, which also drops EXIF
  * and location metadata. AVIF and HEIC never upload as themselves.
  */
@@ -30,10 +31,13 @@ object PicturePreparer {
 
     suspend fun prepare(file: File, edit: AttachmentEdit? = null, typeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT_BOLD): PreparedPicture = withContext(Dispatchers.Default) {
         val header = file.inputStream().use { stream ->
-            val bytes = ByteArray(16)
+            val bytes = ByteArray(64 * 1024)
             var read = 0
             while (read < bytes.size) { val count = stream.read(bytes, read, bytes.size - read); if (count < 0) break; read += count }
             bytes.copyOf(read)
+        }
+        animatedPicture(header)?.takeIf { edit == null && gifUploadsUnchanged(file.length(), it.width, it.height) }?.let {
+            return@withContext PreparedPicture(file.readBytes(), it.contentType, it.width, it.height)
         }
         gifSize(header)?.takeIf { edit == null }?.let { (width, height) ->
             if (gifUploadsUnchanged(file.length(), width, height)) {

@@ -2,7 +2,6 @@ package chat.caper.android
 
 import android.content.Context
 import android.net.Uri
-import android.os.Build
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -55,8 +54,6 @@ import chat.caper.android.model.caperAvatarIndex
 import chat.caper.android.model.pictureOf
 import chat.caper.android.ui.*
 import coil3.compose.AsyncImage
-import coil3.gif.AnimatedImageDecoder
-import coil3.gif.GifDecoder
 import coil3.request.ImageRequest
 import coil3.size.Scale
 import chat.caper.android.data.AttachmentEdit
@@ -76,7 +73,7 @@ internal val PictureShape = RoundedCornerShape(percent = 30)
  * A custom profile picture or space icon request. Both caches are keyed by the picture's asset
  * ID, never its URL, which re-signs daily. The memory entry is per display size (decoded near
  * [px], so long member lists stay small) and per animated or still; the disk entry holds the
- * downloaded original once. GIFs and animated WebP animate unless [animate] is false.
+ * downloaded original once. GIFs, APNG and animated WebP (Android 9+) animate unless [animate] is false.
  */
 internal fun pictureRequest(context: Context, picture: Picture, px: Int, animate: Boolean): ImageRequest =
     ImageRequest.Builder(context).data(picture.url)
@@ -84,7 +81,7 @@ internal fun pictureRequest(context: Context, picture: Picture, px: Int, animate
         .diskCacheKey("picture:${picture.asset}")
         // Fill the square, so a non-square GIF still covers the circle once cropped.
         .size(px).scale(Scale.FILL)
-        .apply { if (animate) decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory()) }
+        .apply { if (animate) decoderFactory(animatedDecoderFactory()) }
         .build()
 
 /**
@@ -429,7 +426,7 @@ private val FrameSide = 112.dp
         var file by remember { mutableStateOf<File?>(null) }
         var error by remember { mutableStateOf<String?>(null) }
         var animated by remember { mutableStateOf(false) }
-        var gif by remember { mutableStateOf(false) }
+        var keep by remember { mutableStateOf(false) }
         var consent by remember { mutableStateOf(false) }
         var handedOff by remember { mutableStateOf(false) }
         var preparing by remember { mutableStateOf(false) }
@@ -448,7 +445,8 @@ private val FrameSide = 112.dp
                         }
                         buffer.copyOf(count)
                     }
-                    gif = String(header.take(6).toByteArray(), Charsets.US_ASCII).startsWith("GIF8")
+                    val gif = String(header.take(6).toByteArray(), Charsets.US_ASCII).startsWith("GIF8")
+                    keep = chat.caper.android.data.keepsAnimation(copied.length(), header)
                     gif ||
                         isAnimatedImage("image/webp", header) || isAnimatedImage("image/png", header)
                 }
@@ -499,9 +497,9 @@ private val FrameSide = 112.dp
             file == null -> AlertDialog(onDismissRequest = { source = null }, title = { Text("Opening picture…") },
                 confirmButton = { TextButton({ source = null }) { Text("Cancel") } })
             animated && !consent -> AlertDialog(onDismissRequest = { source = null }, title = { Text("Animated picture") },
-                text = { Text(if (gif) "Cropping or adjusting saves a still frame and removes animation. Keep the original GIF to preserve its animation, or edit a still frame."
-                    else "Editing saves a still frame and removes animation. Animated pictures must be GIFs to keep their animation; cancel and choose a GIF to preserve it.") },
-                confirmButton = { if (gif) TextButton({ upload(null) }) { Text("Keep original animation") } },
+                text = { Text(if (keep) "Cropping or adjusting saves a still frame and removes animation. Keep the original to preserve its animation, or edit a still frame."
+                    else "Editing saves a still frame and removes animation. ${chat.caper.android.data.PicturePolicy.ANIMATION_LIMIT}") },
+                confirmButton = { if (keep) TextButton({ upload(null) }) { Text("Keep original animation") } },
                 dismissButton = { Row {
                     TextButton({ source = null }) { Text("Cancel") }
                     TextButton({ consent = true }) { Text("Edit still frame") }

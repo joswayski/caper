@@ -16,8 +16,8 @@
 use crate::api::Api;
 use caper_client::pictures::FRAME_BUDGET;
 pub use caper_client::pictures::{
-    Applied, Changed, Failure, MAX_SOURCE_BYTES, PICKER_EXTENSIONS, PreviousPicture, Source,
-    Target, UNAVAILABLE, is_gif, prepare, square_frame,
+    ANIMATION_LIMIT, Applied, Changed, Failure, MAX_SOURCE_BYTES, PICKER_EXTENSIONS,
+    PreviousPicture, Source, Target, UNAVAILABLE, is_gif, keeps_animation, prepare, square_frame,
 };
 #[cfg(test)]
 pub use caper_client::pictures::{INVALID, failure, select};

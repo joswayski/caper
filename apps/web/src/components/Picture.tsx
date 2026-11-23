@@ -18,7 +18,7 @@ const reducedMotion = () => typeof matchMedia !== "undefined" && matchMedia(REDU
  * A custom picture (profile picture or space icon) laid over the mascot or
  * initial its parent already shows: invisible until it loads, removed if it
  * fails, so there is never a broken image. Fills the parent's shape (the
- * parent must be positioned). GIFs animate; with reduced motion a still frame
+ * parent must be positioned). GIFs, animated WebP and APNG animate; with reduced motion a still frame
  * is shown instead.
  */
 export default function Picture({ asset, url, localPreview }: { asset?: string; url?: string; localPreview?: string }) {

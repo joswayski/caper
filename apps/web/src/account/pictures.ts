@@ -2,7 +2,7 @@
 // Browser preparation and upload live in `picture-upload.ts`; rendering in
 // `components/Picture.tsx`.
 
-/** GIFs up to this size (and edge) upload unchanged; bigger ones are shrunk to fit it (gif-shrink.ts). */
+/** GIFs and animated WebP/PNG up to this size (and edge) upload unchanged; bigger GIFs are shrunk to fit it (gif-shrink.ts). */
 export const MAX_GIF_BYTES = 5 * 1024 * 1024;
 /** Every other picture is re-encoded and must end at or under 1 MiB. */
 export const MAX_PICTURE_BYTES = 1024 * 1024;
@@ -40,6 +40,7 @@ export const pictureMessages = {
   notOwner: "Only the space owner can change its icon.",
   signedOut: "You’re signed out. Sign in again to continue.",
   failed: "Your picture couldn’t be uploaded. Try again.",
+  animationLimit: "Animated WebP and PNG pictures keep their animation up to 5 MB and 1024 × 1024.",
 } as const;
 
 /** `GIF87a`/`GIF89a` and the logical screen size (bytes 6–9, little-endian), whatever the file is called. */
@@ -50,8 +51,8 @@ export function gifSize(bytes: Uint8Array): { width: number; height: number } | 
   return { width: bytes[6] | (bytes[7] << 8), height: bytes[8] | (bytes[9] << 8) };
 }
 
-/** Whether a GIF can upload byte for byte; any other GIF is shrunk first. */
-export function gifUploadsUnchanged(byteSize: number, size: { width: number; height: number }) {
+/** Whether a GIF or animated WebP/PNG can upload byte for byte; any other GIF is shrunk first. */
+export function animationUploadsUnchanged(byteSize: number, size: { width: number; height: number }) {
   return (
     byteSize <= MAX_GIF_BYTES &&
     size.width >= 1 &&

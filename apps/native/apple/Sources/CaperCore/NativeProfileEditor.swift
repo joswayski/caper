@@ -21,10 +21,10 @@ struct NativeProfileEditorSheet: View {
                 Button("Discard", role: .destructive, action: state.discard)
             } message: { Text("Your unsaved profile changes will be lost.") }
             .confirmationDialog("Animated picture", isPresented: Binding(get: { state.animationData != nil }, set: { if !$0 { state.animationData = nil } }), titleVisibility: .visible, presenting: state.animationData) { data in
-                Button("Use original animation") { state.useAnimation(data) }.disabled(!ProfilePicturePolicy.isGIF(data))
+                Button("Use original animation") { state.useAnimation(data) }.disabled(!ProfilePicturePolicy.keepsAnimation(data))
                 Button("Edit a still picture") { state.editStill(data) }
                 Button("Cancel", role: .cancel) { state.animationData = nil }
-            } message: { _ in Text("Editing saves a still frame, not the animation. Original animation upload is available for GIFs only.") }
+            } message: { data in Text(ProfilePicturePolicy.animationMessage(data)) }
             .sheet(item: $state.editing, onDismiss: state.closeCrop) { request in
                 NativeAttachmentEditorBridge(request: request, close: state.closeCrop)
                     .preferredColorScheme(.dark)

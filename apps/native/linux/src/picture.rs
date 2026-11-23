@@ -110,22 +110,23 @@ impl App {
     ) {
         use std::io::Read;
         let head = std::fs::File::open(&path).and_then(|file| {
-            if file.metadata()?.len() > pictures::MAX_SOURCE_BYTES {
+            let size = file.metadata()?.len();
+            if size > pictures::MAX_SOURCE_BYTES {
                 return Err(std::io::Error::other("too large"));
             }
             let mut head = Vec::new();
             file.take(64 * 1024).read_to_end(&mut head)?;
-            Ok(head)
+            Ok((head, size as usize))
         });
-        let Ok(head) = head else {
+        let Ok((head, size)) = head else {
             self.picture_error(
                 &target,
                 "Could not read that picture, or it is too large.".into(),
             );
             return;
         };
-        let gif = pictures::is_gif(&head);
-        let animated = gif
+        let keep = pictures::keeps_animation(size, &head);
+        let animated = pictures::is_gif(&head)
             || (compress::sniff("image/png", &head) && compress::png_is_animated(&head))
             || (compress::sniff("image/webp", &head)
                 && head.get(12..16) == Some(b"VP8X")
@@ -149,7 +150,14 @@ impl App {
         root.set_size_request(420, -1);
         root.append(&label("Animated picture", &["dialog-title"]));
         let text = label(
-            "Editing saves a still frame and removes animation. Original animation upload is available for GIFs only.",
+            &if keep {
+                "Editing saves a still frame and removes animation.".to_string()
+            } else {
+                format!(
+                    "Editing saves a still frame and removes animation. {}",
+                    pictures::ANIMATION_LIMIT
+                )
+            },
             &["muted"],
         );
         text.set_wrap(true);
@@ -159,19 +167,19 @@ impl App {
         buttons.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
         let still = gtk::Button::with_label("Edit still image");
-        let keep = gtk::Button::with_label("Keep original animation");
-        keep.add_css_class("primary");
-        keep.set_sensitive(gif);
-        if !gif {
-            keep.set_tooltip_text(Some("Available for GIFs only"));
+        let keep_button = gtk::Button::with_label("Keep original animation");
+        keep_button.add_css_class("primary");
+        keep_button.set_sensitive(keep);
+        if !keep {
+            keep_button.set_tooltip_text(Some(pictures::ANIMATION_LIMIT));
         }
         buttons.append(&cancel);
         buttons.append(&still);
-        buttons.append(&keep);
+        buttons.append(&keep_button);
         root.append(&buttons);
         window.set_child(Some(&root));
         let choice = Rc::new(RefCell::new(Some((target, path, scratch))));
-        for (button, action) in [(&keep, 1), (&still, 2), (&cancel, 0)] {
+        for (button, action) in [(&keep_button, 1), (&still, 2), (&cancel, 0)] {
             let (weak, window, choice) = (Rc::downgrade(self), window.clone(), choice.clone());
             button.connect_clicked(move |_| {
                 window.destroy();

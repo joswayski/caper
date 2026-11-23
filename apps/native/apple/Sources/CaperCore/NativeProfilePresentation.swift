@@ -42,8 +42,8 @@ import AppKit
         guard alert == nil, !choosing else { return }
         if let data = state.animationData {
             let alert = NSAlert(); alert.messageText = "Animated picture"
-            alert.informativeText = "Editing saves a still frame, not the animation. Original animation upload is available for GIFs only."
-            alert.addButton(withTitle: "Use original animation").isEnabled = ProfilePicturePolicy.isGIF(data)
+            alert.informativeText = ProfilePicturePolicy.animationMessage(data)
+            alert.addButton(withTitle: "Use original animation").isEnabled = ProfilePicturePolicy.keepsAnimation(data)
             alert.addButton(withTitle: "Edit a still picture"); alert.addButton(withTitle: "Cancel"); self.alert = alert
             alert.beginSheetModal(for: window) { [weak self] response in
                 guard let self else { return }; self.alert = nil
@@ -126,9 +126,9 @@ import UIKit
             alert.addAction(UIAlertAction(title: "Discard", style: .destructive) { [weak self] _ in self?.state.confirmingDiscard = false; self?.state.discard(); self?.dismissChild() })
             show(alert, kind: "discard")
         } else if let data = state.animationData {
-            let alert = UIAlertController(title: "Animated picture", message: "Editing saves a still frame, not the animation. Original animation upload is available for GIFs only.", preferredStyle: .alert)
+            let alert = UIAlertController(title: "Animated picture", message: ProfilePicturePolicy.animationMessage(data), preferredStyle: .alert)
             let original = UIAlertAction(title: "Use original animation", style: .default) { [weak self] _ in self?.state.useAnimation(data); self?.dismissChild() }
-            original.isEnabled = ProfilePicturePolicy.isGIF(data); alert.addAction(original)
+            original.isEnabled = ProfilePicturePolicy.keepsAnimation(data); alert.addAction(original)
             alert.addAction(UIAlertAction(title: "Edit a still picture", style: .default) { [weak self] _ in self?.state.editStill(data); self?.dismissChild() })
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.state.animationData = nil; self?.dismissChild() })
             show(alert, kind: "animation")

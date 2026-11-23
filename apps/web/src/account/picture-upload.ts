@@ -2,7 +2,7 @@
 // steps as attachments (reserve, presigned PUT, complete) with a `purpose`.
 // The server applies the picture when the upload completes.
 import { cropPixels, loadEditFont, paintEdit, type AttachmentEdit } from "../chat/edit.ts";
-import { encode, surface, type Context2D, type Surface } from "../chat/prepare.ts";
+import { encode, pngIsAnimated, surface, webpInfo, type Context2D, type Surface } from "../chat/prepare.ts";
 import { decodeBitmap } from "../chat/heic.ts";
 import { cleanMetadata, MetadataRefused } from "../chat/metadata.ts";
 import {
@@ -17,7 +17,7 @@ import { rememberSavedAccount, type Account } from "./client.ts";
 import { GifShrinkError, shrinkGif } from "./gif-shrink.ts";
 import {
   gifSize,
-  gifUploadsUnchanged,
+  animationUploadsUnchanged,
   MAX_GIF_BYTES,
   MAX_PICTURE_BYTES,
   pictureEdge,
@@ -127,16 +127,34 @@ function shrinkGifOffPage(bytes: Uint8Array): Promise<{ bytes: Uint8Array; edge:
 }
 
 /**
+ * An animated WebP (its extended header's canvas) or APNG (its IHDR size) by its leading bytes. Within
+ * `animationUploadsUnchanged` these upload byte for byte, as GIFs do; they are never shrunk.
+ */
+export function animatedPicture(bytes: Uint8Array): { contentType: string; width: number; height: number } | undefined {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length >= 30 && webpInfo(bytes)?.animated && String.fromCharCode(...bytes.subarray(12, 16)) === "VP8X") {
+    const u24 = (at: number) => (bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16)) + 1;
+    return { contentType: "image/webp", width: u24(24), height: u24(27) };
+  }
+  if (bytes.length >= 24 && pngIsAnimated(bytes))
+    return { contentType: "image/png", width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+/**
  * GIFs (by their magic bytes) keep animating: within 5 MB and 1024 × 1024 they
  * upload unchanged, and any bigger one is shrunk to a square that fits, every
- * frame kept. Anything else the browser decodes is center-cropped square,
- * scaled to at most 512 px and re-encoded as WebP, which also drops metadata
- * such as location.
+ * frame kept. Animated WebP and APNG within those limits upload unchanged too.
+ * Anything else the browser decodes is center-cropped square, scaled to at
+ * most 512 px and re-encoded as WebP, which also drops metadata such as
+ * location.
  */
 export async function preparePicture(file: Blob, edit?: AttachmentEdit): Promise<PreparedPicture> {
-  const gif = gifSize(new Uint8Array(await file.slice(0, 10).arrayBuffer()));
+  const head = new Uint8Array(await file.slice(0, 65536).arrayBuffer());
+  const animation = edit ? undefined : animatedPicture(head);
+  if (animation && animationUploadsUnchanged(file.size, animation)) return { blob: file, ...animation };
+  const gif = gifSize(head);
   if (gif && !edit) {
-    if (gifUploadsUnchanged(file.size, gif)) return { blob: file, contentType: "image/gif", ...gif };
+    if (animationUploadsUnchanged(file.size, gif)) return { blob: file, contentType: "image/gif", ...gif };
     const shrunk = await shrinkGifOffPage(new Uint8Array(await file.arrayBuffer()));
     if (!shrunk) throw new PictureError(pictureMessages.gifUnreadable);
     const blob = new Blob([shrunk.bytes as BlobPart], { type: "image/gif" });

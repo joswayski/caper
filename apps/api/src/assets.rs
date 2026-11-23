@@ -1402,7 +1402,7 @@ async fn complete_inner(
         if purpose.is_picture() {
             // Pictures also prove their real pixel size from the stored bytes.
             let head = assets.r2.head_bytes(&staged, pictures::HEAD_BYTES).await?;
-            if !sniff(content_type, &head) || !pictures::fits(content_type, &head) {
+            if !sniff(content_type, &head) || !pictures::accepts(content_type, &head, *expected) {
                 tx.rollback().await.map_err(database_error)?;
                 return reject(assets, &asset, purpose).await;
             }
@@ -1455,7 +1455,7 @@ async fn complete_inner(
             // Recheck the published bytes, not a potentially replaced staging
             // object inspected before the full download.
             let head = assets.r2.head_bytes(key, pictures::HEAD_BYTES).await?;
-            if !pictures::fits(content_type, &head) || size > pictures::max_bytes(content_type) {
+            if !pictures::accepts(content_type, &head, size) {
                 tx.rollback().await.map_err(database_error)?;
                 return reject(assets, &asset, purpose).await;
             }

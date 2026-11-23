@@ -20,8 +20,8 @@ use sqlx::PgPool;
 
 /// Still pictures arrive cropped and resized to at most 512 px by the client.
 pub(crate) const STILL_MAX_BYTES: i64 = 1024 * 1024;
-/// GIFs upload unchanged so they keep their animation.
-pub(crate) const GIF_MAX_BYTES: i64 = 5 * 1024 * 1024;
+/// GIFs and animated WebP/PNG upload unchanged so they keep their animation.
+pub(crate) const ANIMATED_MAX_BYTES: i64 = 5 * 1024 * 1024;
 pub(crate) const MAX_DIMENSION: u32 = 1024;
 /// Picture uploads (profile and space icons together) per person per day.
 pub(crate) const PER_DAY: i64 = 50;
@@ -78,9 +78,12 @@ pub(crate) fn allowed_type(content_type: &str) -> bool {
     )
 }
 
+/// The reservation limit. WebP and PNG may be animated, which only the
+/// stored bytes show, so completion applies the still limit to those
+/// ([`accepts`]).
 pub(crate) fn max_bytes(content_type: &str) -> i64 {
-    if content_type == "image/gif" {
-        GIF_MAX_BYTES
+    if matches!(content_type, "image/gif" | "image/webp" | "image/png") {
+        ANIMATED_MAX_BYTES
     } else {
         STILL_MAX_BYTES
     }
@@ -197,6 +200,41 @@ pub(crate) fn fits(content_type: &str, head: &[u8]) -> bool {
     dimensions(content_type, head).is_some_and(|(width, height)| {
         (1..=MAX_DIMENSION).contains(&width) && (1..=MAX_DIMENSION).contains(&height)
     })
+}
+
+/// An animated WebP (the extended header's animation flag) or APNG (an
+/// `acTL` chunk before the first `IDAT`), from a picture's leading bytes.
+pub(crate) fn animated(content_type: &str, head: &[u8]) -> bool {
+    match content_type {
+        "image/webp" => {
+            head.get(12..16) == Some(b"VP8X") && head.get(20).is_some_and(|f| f & 0x02 != 0)
+        }
+        "image/png" => {
+            let mut at = 8;
+            while let Some(chunk) = head.get(at..at + 8) {
+                match &chunk[4..] {
+                    b"acTL" => return true,
+                    b"IDAT" | b"IEND" => return false,
+                    _ => {}
+                }
+                let length = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                at = at.saturating_add(12).saturating_add(length as usize);
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Whether stored picture bytes, `size` in all, may be used: within 1024 px,
+/// and within the still limit unless they are a GIF or an animation.
+pub(crate) fn accepts(content_type: &str, head: &[u8], size: i64) -> bool {
+    let limit = if content_type == "image/gif" || animated(content_type, head) {
+        ANIMATED_MAX_BYTES
+    } else {
+        STILL_MAX_BYTES
+    };
+    fits(content_type, head) && size <= limit
 }
 
 /// What completing a picture did.

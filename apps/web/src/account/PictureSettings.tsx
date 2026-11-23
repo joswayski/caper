@@ -12,8 +12,8 @@ import { removeSpaceIcon, SpacesApiError, type Space } from "../spaces/client";
 import { avatarUrl } from "./avatar";
 import { AccountApiError, type Account } from "./client";
 import AvatarHistory from "./AvatarHistory";
-import { PictureError, preparePicture, uploadSpaceIcon, type PreparedPicture } from "./picture-upload";
-import { gifSize, pictureErrorMessage, pictureMessages } from "./pictures";
+import { animatedPicture, PictureError, preparePicture, uploadSpaceIcon, type PreparedPicture } from "./picture-upload";
+import { animationUploadsUnchanged, gifSize, pictureErrorMessage, pictureMessages } from "./pictures";
 import "./pictures.css";
 
 type Phase =
@@ -69,7 +69,8 @@ function PictureEditor({
   const [sources, setSources] = useState(false);
   const pick = () => (touchLayout() ? setSources(true) : input.current?.click());
   const [dropping, setDropping] = useState(false);
-  const [draft, setDraft] = useState<{ file: Blob; animation: boolean; gif: boolean }>();
+  // `keep`: the animation can upload as it is (any GIF, or an animated WebP/PNG within the limits).
+  const [draft, setDraft] = useState<{ file: Blob; animation: boolean; keep: boolean }>();
   const active = useRef(true);
   useEffect(() => {
     active.current = true;
@@ -130,7 +131,9 @@ function PictureEditor({
       if (file.size > 64 * 1024 * 1024) throw new PictureError(pictureMessages.tooLarge);
       const head = new Uint8Array(await file.slice(0, 65536).arrayBuffer());
       const gif = !!gifSize(head);
-      if (active.current) setDraft({ file, gif, animation: gif || pngIsAnimated(head) || !!webpInfo(head)?.animated });
+      const animated = animatedPicture(head);
+      const keep = gif || (!!animated && animationUploadsUnchanged(file.size, animated));
+      if (active.current) setDraft({ file, keep, animation: gif || pngIsAnimated(head) || !!webpInfo(head)?.animated });
     } catch (reason) {
       if (active.current) setError(uploadError(reason));
     } finally {
@@ -377,9 +380,9 @@ function PictureEditor({
         <div className="picture-settings-animation" role="group" aria-label="Animated picture">
           <p>
             Editing saves a still frame and removes animation.
-            {!draft.gif && " To keep animation, choose a GIF instead."}
+            {!draft.keep && ` ${pictureMessages.animationLimit}`}
           </p>
-          {draft.gif && (
+          {draft.keep && (
             <button type="button" onClick={() => void upload(draft.file)}>
               Keep original animation
             </button>

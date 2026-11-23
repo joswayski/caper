@@ -9,7 +9,7 @@
 // PICTURE_VIEWER_ONLY=1 runs viewers; PICTURE_GALLERY_ONLY=1 also runs drafts/galleries,
 // skipping the broader rendering/upload/space-icon suite.
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 
@@ -109,6 +109,9 @@ function png(width, height, pixel) {
     chunk("IEND", Buffer.alloc(0)),
   ]);
 }
+
+// The repository's shared 40 × 30 two-frame animated WebP: red, then blue.
+const animatedWebp = readFileSync(new URL("../shared/pictures/two-frames.webp", import.meta.url));
 
 const colors = [palette.green, palette.eggshell, palette.terracotta, palette.blackout];
 const animatedAvatar = gif(64, 64, colors, quadrantFrames(64, 0, 2));
@@ -1164,6 +1167,36 @@ async function checkExistingPictures(browser) {
   await gallery.waitFor({ state: "detached" });
   await saveProfile(page, dialog);
   await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000003"]'));
+  // An animated WebP keeps its animation and uploads unchanged, like a GIF.
+  await dialog.locator('.picture-settings input[type="file"][tabindex="-1"]').setInputFiles({
+    name: "loop.webp",
+    mimeType: "image/webp",
+    buffer: animatedWebp,
+  });
+  await dialog.getByText("Editing saves a still frame and removes animation.", { exact: true }).waitFor();
+  await shot(dialog, "pictures-animation-choice-webp.png");
+  await dialog.getByRole("button", { name: "Keep original animation" }).click();
+  await saveProfile(page, dialog);
+  await page.waitForFunction(() => window.pictureFixture.completes === 4);
+  const webp = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
+  assert.deepEqual(
+    [webp.contentType, webp.filename, webp.byteSize, webp.width, webp.height],
+    ["image/webp", "avatar.webp", animatedWebp.length, 40, 30],
+  );
+  assert.ok(stored.get("upload000004").body.equals(animatedWebp), "the animated WebP is stored byte for byte");
+  await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000004"]'));
+  // Beyond 5 MB it can't be kept: the prompt says why and offers only a still edit.
+  await dialog.locator('.picture-settings input[type="file"][tabindex="-1"]').setInputFiles({
+    name: "huge.webp",
+    mimeType: "image/webp",
+    buffer: Buffer.concat([animatedWebp, Buffer.alloc(5 * 1024 * 1024)]),
+  });
+  await dialog
+    .getByText("Animated WebP and PNG pictures keep their animation up to 5 MB and 1024 × 1024.", { exact: false })
+    .waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Keep original animation" }).count(), 0);
+  await shot(dialog, "pictures-animation-choice-webp-too-large.png");
+  await dialog.locator(".picture-settings-animation").getByRole("button", { name: "Cancel" }).click();
   await dialog.getByRole("button", { name: "Close profile" }).click();
 
   // ---- Space icon: remove, then upload a new one; the rail follows ----
