@@ -755,6 +755,7 @@ pub fn start(
         );
     }
     let (sender, receiver) = async_channel::unbounded();
+    let wakes = Wakes::new(sender.clone());
     let images = Rc::new(Images::new(api.clone(), sender.clone()));
     // Rows reach the app once it exists.
     let slot: Rc<RefCell<Weak<App>>> = Rc::default();
@@ -782,11 +783,11 @@ pub fn start(
         settings.set_gtk_application_prefer_dark_theme(!active_theme.is_light());
     }
     theme_style.load_from_data(&active_theme.to_gtk_css());
-    let repaint = sender.clone();
+    let repaint = wakes.clone();
     let voice = caper_client::voice::Voice::new(
         api.base().clone(),
         caper_client::voice::Repaint::new(move |delay| {
-            Wakes(repaint.clone()).wake_after(delay.unwrap_or_default());
+            repaint.wake_after(delay.unwrap_or_default());
         }),
     );
     let app = Rc::new(App {
@@ -813,7 +814,7 @@ pub fn start(
         browsing: Cell::new(false),
         wide_members: Cell::new(true),
         images,
-        worker: Worker::new(api.clone(), Wakes(sender.clone())),
+        worker: Worker::new(api.clone(), wakes.clone()),
         state: RefCell::new(State::default()),
         follow: Cell::new(true),
         thread_follow: Cell::new(true),
@@ -843,7 +844,7 @@ pub fn start(
         feedback_page: RefCell::default(),
         updates: RefCell::new(caper_client::updates::Updates::start(
             {
-                let wakes = Wakes(sender.clone());
+                let wakes = wakes.clone();
                 move || wakes.wake()
             },
             true,
@@ -874,7 +875,7 @@ pub fn start(
         profile: RefCell::default(),
         forwarding: RefCell::default(),
         profile_dialog: RefCell::default(),
-        wakes: Wakes(sender.clone()),
+        wakes,
         settings: RefCell::default(),
         mute_timer: Cell::new(false),
         api: api.clone(),
@@ -3956,10 +3957,8 @@ impl App {
         let Some(page) = caper_web_player::play_page(&play) else {
             return crate::media::open_uri(&fallback);
         };
-        let wakes = self.wakes.0.clone();
-        let wake = move || {
-            let _ = wakes.try_send(Signal::Wake);
-        };
+        let wakes = self.wakes.clone();
+        let wake = move || wakes.wake();
         match crate::web_player::Player::start(&page, provider, size, fallback.clone(), wake) {
             Some(mut player) => {
                 player.play = play;
@@ -3998,6 +3997,8 @@ impl App {
 
     /// Drains the worker's events, then updates what they changed.
     fn receive(self: &Rc<Self>) {
+        // Before draining, so an event arriving meanwhile wakes again.
+        self.wakes.draining();
         let mut typing = false;
         // Only typing and presence arrived: no row, page or panel changed.
         let mut ambient = None;

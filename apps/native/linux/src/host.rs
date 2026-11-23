@@ -4,6 +4,8 @@
 //! main loop through a channel that `App` drains there.
 
 use caper_client::Host;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub enum Signal {
@@ -31,27 +33,51 @@ pub enum Signal {
     },
 }
 
+/// Every clone shares one pending wake: a burst of worker events queues one
+/// `Signal::Wake`, so the app drains and renders once, not once per event.
 #[derive(Clone)]
-pub struct Wakes(pub async_channel::Sender<Signal>);
+pub struct Wakes {
+    pub sender: async_channel::Sender<Signal>,
+    pending: Arc<AtomicBool>,
+}
+
+impl Wakes {
+    pub fn new(sender: async_channel::Sender<Signal>) -> Self {
+        Self {
+            sender,
+            pending: Arc::default(),
+        }
+    }
+
+    /// The main loop is about to drain: anything sent from now on wakes it
+    /// again.
+    pub fn draining(&self) {
+        self.pending.store(false, Ordering::SeqCst);
+    }
+}
 
 impl Host for Wakes {
     fn wake(&self) {
-        let _ = self.0.try_send(Signal::Wake);
+        if !self.pending.swap(true, Ordering::SeqCst) {
+            let _ = self.sender.try_send(Signal::Wake);
+        }
     }
 
+    /// A main-loop timer, not a sleeping thread per request: a call asks
+    /// for a wake with every voice report.
     fn wake_after(&self, delay: Duration) {
-        let sender = self.0.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            let _ = sender.try_send(Signal::Wake);
-        });
+        if delay.is_zero() {
+            return self.wake();
+        }
+        let wakes = self.clone();
+        gtk::glib::timeout_add_once(delay, move || wakes.wake());
     }
 
     fn bring_to_front(&self) {
-        let _ = self.0.try_send(Signal::Front);
+        let _ = self.sender.try_send(Signal::Front);
     }
 
     fn set_title(&self, title: String) {
-        let _ = self.0.try_send(Signal::Title(title));
+        let _ = self.sender.try_send(Signal::Title(title));
     }
 }
