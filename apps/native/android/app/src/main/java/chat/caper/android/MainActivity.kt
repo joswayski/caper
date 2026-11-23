@@ -2654,8 +2654,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (!inThread && latestMessage != null && !collapsesFor(latestMessage, blocked, selfId)) announcement = messageAnnouncement(latestMessage)
     }
     if (announcement.isNotEmpty()) Box(Modifier.size(0.dp).semantics { liveRegion = LiveRegionMode.Polite; contentDescription = announcement })
-    // Jump to latest: shown away from the newest row of a list that reaches the live end (a detached window keeps
-    // its Load newer and Back to latest buttons instead), counting other people's arrivals meanwhile.
+    // The "You’re viewing older messages" toast: shown away from the newest row of a list that reaches the live end,
+    // counting other people's arrivals meanwhile, and always over a channel's detached window (see the overlay).
     val jump = remember(listState, if (inThread) state.thread?.rootId else state.selectedChannel?.id) { JumpToLatest() }
     val atLiveEnd by rememberUpdatedState(if (inThread) state.thread?.let { !it.loading && !it.hasNewer } == true else !state.hasNewerMessages && !state.loadingNewer)
     val jumpThreshold = with(LocalDensity.current) { 80.dp.roundToPx() }
@@ -2835,16 +2835,18 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         } }
+        // At the end of a jump's window, padded clear of the Jump to latest toast floating over it.
         if (newer) item(contentType = "history") {
-            HistoryRow {
+            HistoryRow(Modifier.padding(top = 8.dp, bottom = 68.dp).heightIn(min = 44.dp)) {
                 newerError?.let { Text(it, color = TextMuted, fontSize = 11.sp) }
                 HistoryButton(if (loadingNewer) "Loading…" else if (newerError != null) "Retry newer messages" else "Load newer messages", !loadingNewer, viewModel::loadNewer)
-                HistoryButton("Back to latest", onClick = viewModel::retryMessages)
             }
         }
     }
-        // Over the list's bottom end corner, so it takes no space and stays clear of the composer below.
-        JumpToLatestOverlay(jump, jumpToLatest, Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp))
+        // Centred over the list just above the composer, taking no space. A detached window's button reloads the
+        // latest page and lands at its end.
+        JumpToLatestOverlay(jump, newer, jumpToLatest, viewModel::retryMessages,
+            Modifier.align(Alignment.BottomCenter).padding(start = 12.dp, end = 12.dp, bottom = 12.dp))
     } }
     actionTarget?.let { target ->
         val presented = state.displayedMessages.firstOrNull { it.id == target.id } ?: target
@@ -3098,15 +3100,15 @@ internal fun olderPageAnchor(visible: List<Triple<Any, Int, Int>>, boundary: Any
 internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     before.withIndex().firstOrNull { (index, key) -> now.indexOf(key).let { it >= 0 && it != index } }?.value
 
-/** Web's `.chat-history` buttons: older and newer messages or replies, and Back to latest, all alike. */
+/** Web's `.chat-history` buttons: older and newer messages or replies, all alike. */
 @Composable private fun HistoryButton(label: String, enabled: Boolean = true, onClick: () -> Unit) = OutlinedButton(
     onClick, enabled = enabled, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted),
 ) { Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
 
-/** A centred row of [HistoryButton]s (and their status text), as tall as the timeline's first row. */
-@Composable private fun HistoryRow(content: @Composable RowScope.() -> Unit) = Row(
-    Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp),
+/** A centred row of [HistoryButton]s (and their status text), as tall as the timeline's first row unless [modifier] says otherwise. */
+@Composable private fun HistoryRow(modifier: Modifier = Modifier.height(44.dp), content: @Composable RowScope.() -> Unit) = Row(
+    Modifier.fillMaxWidth().then(modifier).padding(horizontal = 14.dp),
     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically, content = content,
 )
 

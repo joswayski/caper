@@ -1,15 +1,16 @@
 package chat.caper.android
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Surface
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -18,26 +19,32 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.model.ChatMessage
-import chat.caper.android.ui.Border
+import chat.caper.android.ui.BorderSubtle
+import chat.caper.android.ui.SurfaceRaised
 import chat.caper.android.ui.Terracotta
+import chat.caper.android.ui.primaryButtonColors
 
 /**
- * A message list's Jump to latest button: whether it shows, and how many of other people's messages arrived at the
+ * A message list's live Jump to latest toast: whether it shows, and how many of other people's messages arrived at the
  * live end while it did. [known] is the message IDs the list last showed.
  */
 internal class JumpToLatest {
     var shown by mutableStateOf(false)
     var unseen by mutableIntStateOf(0)
-    /** A tap's scroll is under way: the button stays hidden until it ends. */
+    /** A tap's scroll is under way: the toast stays hidden until it ends. */
     var jumping = false
     var known: Set<String>? = null
 
@@ -45,8 +52,9 @@ internal class JumpToLatest {
 }
 
 /**
- * Whether Jump to latest shows: only while the loaded history reaches the live end, from more than half a viewport
- * away from the newest row; once shown it stays until the reader is back within [threshold] of the bottom.
+ * Whether a live list's Jump to latest toast shows: from more than half a viewport away from the newest row; once shown
+ * it stays until the reader is back within [threshold] of the bottom. A detached window ([live] false) shows its own,
+ * uncounted toast instead (see [jumpToastCount]).
  */
 internal fun jumpToLatestShown(shown: Boolean, live: Boolean, distance: Int, viewport: Int, threshold: Int): Boolean =
     live && if (shown) distance > threshold else distance > viewport / 2
@@ -72,33 +80,61 @@ internal fun LazyListLayoutInfo.distanceFromEnd(): Int {
     return beyond + if (hidden > 0) hidden * (visible.sumOf { it.size } / visible.size) else 0
 }
 
+/** The toast's label: the count of other people's arrivals, or that the reader is looking at older messages. */
 internal fun jumpToLatestLabel(unseen: Int): String = when {
-    unseen <= 0 -> ""
+    unseen <= 0 -> "You’re viewing older messages"
     unseen == 1 -> "1 new message"
     unseen > 99 -> "99+ new messages"
     else -> "$unseen new messages"
 }
 
-/** Its own scope, so showing it or a new count recomposes only the button, not the timeline's rows. */
-@Composable internal fun JumpToLatestOverlay(jump: JumpToLatest, onClick: () -> Unit, modifier: Modifier) {
-    if (jump.shown) JumpToLatestButton(jump.unseen, onClick, modifier)
+/** The button's accessible name, with the count when there is one. */
+internal fun jumpToLatestName(unseen: Int): String = if (unseen > 0) "Jump to latest, ${jumpToLatestLabel(unseen)}" else "Jump to latest"
+
+/**
+ * The toast's count, or null while it is hidden: a detached history window (one that stops short of the live end)
+ * always shows it, uncounted; a live list shows it only while [shown], with what arrived meanwhile.
+ */
+internal fun jumpToastCount(detached: Boolean, shown: Boolean, unseen: Int): Int? = when {
+    detached -> 0
+    shown -> unseen
+    else -> null
 }
 
-/** Surface fill, border (terracotta once something new arrived), a down arrow and the count beside it. */
-@Composable internal fun JumpToLatestButton(unseen: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val label = jumpToLatestLabel(unseen)
-    Surface(
-        onClick, modifier.entrance(MOTION_BASE, dy = 6.dp).heightIn(min = 44.dp).clearAndSetSemantics {
-            role = Role.Button
-            contentDescription = if (label.isEmpty()) "Jump to latest" else "Jump to latest, $label"
-            onClick { onClick(); true }
-        },
-        shape = RoundedCornerShape(8.dp), color = chat.caper.android.ui.Surface, contentColor = chat.caper.android.ui.Text,
-        border = BorderStroke(1.dp, if (unseen > 0) Terracotta else Border),
+/**
+ * Its own scope, so showing it or a new count recomposes only the toast, not the timeline's rows. In a [detached]
+ * window its button reloads the latest page ([onReturn]); otherwise it glides back to the newest row ([onJump]).
+ */
+@Composable internal fun JumpToLatestOverlay(jump: JumpToLatest, detached: Boolean, onJump: () -> Unit, onReturn: () -> Unit, modifier: Modifier) {
+    val count = jumpToastCount(detached, jump.shown, jump.unseen) ?: return
+    JumpToLatestToast(count, if (detached) onReturn else onJump, modifier)
+}
+
+/**
+ * Discord's "You’re viewing older messages" toast (web's `.chat-jump-latest`): a raised card with a hairline border
+ * (terracotta once something new arrived), the label, which wraps on a narrow list rather than truncating, and a
+ * primary Jump to latest button.
+ */
+@Composable internal fun JumpToLatestToast(unseen: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = MaterialTheme.shapes.medium
+    Row(
+        modifier.entrance(MOTION_FAST, dy = 6.dp)
+            .dropShadow(shape, Shadow(24.dp, color = Color.Black.copy(alpha = 0.35f), offset = DpOffset(0.dp, 8.dp)))
+            .background(SurfaceRaised, shape)
+            .border(1.dp, if (unseen > 0) Terracotta else BorderSubtle, shape)
+            .padding(start = 14.dp, top = 6.dp, end = 6.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
-            Icon(painterResource(R.drawable.lucide_arrow_down), null, Modifier.size(18.dp))
-            if (label.isNotEmpty()) Text(label, fontSize = 12.sp, maxLines = 1, softWrap = false)
-        }
+        Text(jumpToLatestLabel(unseen), Modifier.weight(1f, fill = false), color = chat.caper.android.ui.Text,
+            fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 16.sp)
+        val name = jumpToLatestName(unseen)
+        Button(
+            onClick, Modifier.heightIn(min = 40.dp).clearAndSetSemantics {
+                role = Role.Button
+                contentDescription = name
+                onClick { onClick(); true }
+            },
+            shape = RoundedCornerShape(10.dp), colors = primaryButtonColors(), contentPadding = PaddingValues(horizontal = 12.dp),
+        ) { Text("Jump to latest", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false) }
     }
 }
