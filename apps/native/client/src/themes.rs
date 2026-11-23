@@ -304,21 +304,23 @@ impl ThemeDocument {
         if self.is_light() {
             css.push_str(
                 "button.primary {\n\
-                   background-image: linear-gradient(180deg, @caper_action_hover, @caper_action);\n\
-                   border-color: rgba(0, 0, 0, 0.78);\n\
-                   box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.24), inset 0 -2px 0 rgba(0, 0, 0, 0.35), 0 3px 10px rgba(22, 22, 26, 0.2);\n\
+                   background-image: none;\n\
+                   background-color: @caper_action;\n\
+                   border-color: transparent;\n\
+                   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.14), 0 4px 12px rgba(15, 23, 42, 0.1);\n\
                  }\n\
                  button.primary:hover {\n\
-                   background-image: linear-gradient(180deg, @caper_action_hover, @caper_action);\n\
+                   background-image: none;\n\
+                   background-color: @caper_action_hover;\n\
                  }\n\
                  .composer {\n\
-                   background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.65) 0%, rgba(255, 255, 255, 0) 28%);\n\
-                   border-color: rgba(11, 11, 12, 0.12);\n\
-                   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96), 0 1px 2px rgba(22, 22, 26, 0.09), 0 0 0 4px rgba(11, 11, 12, 0.06), 0 0 0 5px rgba(11, 11, 12, 0.11), 0 2px 8px rgba(22, 22, 26, 0.06);\n\
+                   background-image: none;\n\
+                   border-color: rgba(15, 23, 42, 0.09);\n\
+                   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 14px rgba(15, 23, 42, 0.05);\n\
                  }\n\
                  .composer:focus-within {\n\
-                   border-color: alpha(@caper_terracotta, 0.62);\n\
-                   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96), 0 1px 2px rgba(22, 22, 26, 0.09), 0 0 0 4px rgba(11, 11, 12, 0.06), 0 0 0 5px rgba(11, 11, 12, 0.11), 0 2px 8px rgba(22, 22, 26, 0.06);\n\
+                   border-color: alpha(@caper_terracotta, 0.52);\n\
+                   box-shadow: 0 0 0 3px alpha(@caper_terracotta, 0.14), 0 1px 2px rgba(15, 23, 42, 0.04);\n\
                  }\n",
             );
         }
@@ -343,7 +345,7 @@ mod tests {
         assert!(
             light
                 .to_gtk_css()
-                .contains("@define-color caper_blackout #efeff2;")
+                .contains("@define-color caper_blackout #eceef2;")
         );
     }
 

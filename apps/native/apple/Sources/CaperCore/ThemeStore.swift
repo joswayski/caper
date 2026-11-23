@@ -96,21 +96,21 @@ public struct CaperThemeDocument: Codable, Equatable, Sendable {
         name: "Obsidian",
         appearance: "dark",
         surfaces: .init(
-            frame: "#0b0b0c", base: "#121214", sidebar: "#0f0f11", sidebarRaised: "#1c1c20",
-            conversation: "#131316", raised: "#1b1b1f", composer: "#222228", replyDraft: "#17171b",
-            hover: "rgb(255 255 255 / 6%)", hoverAlpha: 0.06
+            frame: "#090a0c", base: "#111216", sidebar: "#0d0e11", sidebarRaised: "#17191f",
+            conversation: "#121317", raised: "#191b22", composer: "#1b1d24", replyDraft: "#171920",
+            hover: "rgb(255 255 255 / 5%)", hoverAlpha: 0.05
         ),
-        borders: .init(default: "#29292f", translucent: "rgb(255 255 255 / 9%)", subtle: "rgb(255 255 255 / 6%)", rim: "rgb(255 255 255 / 8%)"),
-        text: .init(primary: "#f4f3ef", message: "#e6e5e0", muted: "#9a99a2", link: "#7cc7ff", linkHover: "#b2dfff"),
-        action: .init(primary: "#f4f3ef", primaryHover: "#ffffff", primaryPress: "#dfddd6", onPrimary: "#0b0b0c"),
-        accent: .init(primary: "#557a38", bright: "#87bc5c", softText: "#c3e4a4", surface: "#1c2816", border: "#486832"),
-        brand: .init(caper: "#6f9948", caperBright: "#8ec460", resizeHighlight: "#485d38"),
+        borders: .init(default: "#24262f", translucent: "rgb(255 255 255 / 8%)", subtle: "rgb(255 255 255 / 5%)", rim: "rgb(255 255 255 / 6%)"),
+        text: .init(primary: "#f4f4f6", message: "#e4e5ea", muted: "#8f919c", link: "#6eb8ff", linkHover: "#a3d3ff"),
+        action: .init(primary: "#f4f4f6", primaryHover: "#ffffff", primaryPress: "#e2e3e8", onPrimary: "#090a0c"),
+        accent: .init(primary: "#4e7835", bright: "#77a659", softText: "#b9d9a3", surface: "#172314", border: "#3f612c"),
+        brand: .init(caper: "#638e46", caperBright: "#7aa85c", resizeHighlight: "#3d5431"),
         status: .init(
-            voice: "#4ade80", pin: "#e4c76a", pinWash: "rgb(228 199 106 / 6%)", idle: "#d6a44e",
-            errorText: "#ff9b82", danger: "#c83c4e", dangerHover: "#e04c5f", dangerWash: "rgb(200 60 78 / 16%)",
-            onDanger: "#ffffff", voiceOff: "#ff7182", voiceOffIcon: "#ff7182", voiceOffWash: "rgb(224 76 95 / 18%)"
+            voice: "#4cc970", pin: "#e2c36b", pinWash: "rgb(226 195 107 / 7%)", idle: "#d8a64f",
+            errorText: "#ff9685", danger: "#cf4254", dangerHover: "#e45265", dangerWash: "rgb(207 66 84 / 15%)",
+            onDanger: "#ffffff", voiceOff: "#ff6e7f", voiceOffIcon: "#eb5265", voiceOffWash: "rgb(235 82 101 / 16%)"
         ),
-        radii: .init(canvas: 16, card: 13, composer: 15, control: 10, pill: 999, avatar: "30%")
+        radii: .init(canvas: 18, card: 16, composer: 20, control: 10, pill: 999, avatar: "32%")
     )
 
     public static let paper = CaperThemeDocument(
@@ -119,21 +119,21 @@ public struct CaperThemeDocument: Codable, Equatable, Sendable {
         name: "Paper",
         appearance: "light",
         surfaces: .init(
-            frame: "#efeff2", base: "#f7f7f9", sidebar: "#efeff2", sidebarRaised: "#e5e5ea",
-            conversation: "#ffffff", raised: "#f5f5f8", composer: "#f2f2f6", replyDraft: "#f2f2f6",
-            hover: "rgb(11 11 12 / 5%)", hoverAlpha: 0.05
+            frame: "#eceef2", base: "#ffffff", sidebar: "#f1f2f6", sidebarRaised: "#e5e7ed",
+            conversation: "#ffffff", raised: "#f4f5f8", composer: "#f3f4f8", replyDraft: "#f3f4f8",
+            hover: "rgb(15 23 42 / 5%)", hoverAlpha: 0.05
         ),
-        borders: .init(default: "#dcdce2", translucent: "rgb(11 11 12 / 9%)", subtle: "rgb(11 11 12 / 6%)", rim: "rgb(255 255 255 / 85%)"),
-        text: .init(primary: "#111114", message: "#25252b", muted: "#666672", link: "#1d6fe2", linkHover: "#1456b8"),
-        action: .init(primary: "#111114", primaryHover: "#232329", primaryPress: "#000000", onPrimary: "#ffffff"),
-        accent: .init(primary: "#496d2d", bright: "#3f6325", softText: "#2b4717", surface: "#e8f0e1", border: "#a4c28c"),
-        brand: .init(caper: "#5a7e3a", caperBright: "#4c6e2f", resizeHighlight: "#b8cca6"),
+        borders: .init(default: "#dcdfe6", translucent: "rgb(15 23 42 / 8%)", subtle: "rgb(15 23 42 / 5%)", rim: "rgb(255 255 255 / 90%)"),
+        text: .init(primary: "#111217", message: "#24262f", muted: "#656876", link: "#1466d6", linkHover: "#0f4fa8"),
+        action: .init(primary: "#111217", primaryHover: "#22242d", primaryPress: "#000000", onPrimary: "#ffffff"),
+        accent: .init(primary: "#456c2d", bright: "#3a5d24", softText: "#264215", surface: "#eaf1e5", border: "#a1be8d"),
+        brand: .init(caper: "#567d3b", caperBright: "#476b2f", resizeHighlight: "#b4c9a4"),
         status: .init(
-            voice: "#15803d", pin: "#b58918", pinWash: "rgb(181 137 24 / 10%)", idle: "#b47819",
+            voice: "#238742", pin: "#b58918", pinWash: "rgb(181 137 24 / 10%)", idle: "#b47819",
             errorText: "#c23244", danger: "#c83c4e", dangerHover: "#ad2b3d", dangerWash: "rgb(200 60 78 / 12%)",
             onDanger: "#ffffff", voiceOff: "#d63b4e", voiceOffIcon: "#d63b4e", voiceOffWash: "rgb(214 59 78 / 12%)"
         ),
-        radii: .init(canvas: 16, card: 13, composer: 15, control: 10, pill: 999, avatar: "30%")
+        radii: .init(canvas: 18, card: 16, composer: 20, control: 10, pill: 999, avatar: "32%")
     )
 }
 
@@ -373,42 +373,37 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
     }
     public nonisolated static let surfaceRimColor = dynamicNSColor { doc in
         doc.isLight ? NSColor.white.withAlphaComponent(0.9)
-                    : NSColor.white.withAlphaComponent(0.11)
+                    : NSColor.white.withAlphaComponent(0.06)
     }
     public nonisolated static let composerBorderColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.12)
-                    : NSColor.white.withAlphaComponent(0.075)
+        doc.isLight ? NSColor(srgbRed: 15/255, green: 23/255, blue: 42/255, alpha: 0.09)
+                    : NSColor.white.withAlphaComponent(0.08)
     }
     public nonisolated static let composerTopShineColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor.white.withAlphaComponent(0.96)
-                    : NSColor.white.withAlphaComponent(0.14)
+        doc.isLight ? NSColor.white.withAlphaComponent(0.6)
+                    : NSColor.white.withAlphaComponent(0.05)
     }
-    public nonisolated static let composerTopSheenColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor.white.withAlphaComponent(0.65)
-                    : NSColor.white.withAlphaComponent(0.035)
+    public nonisolated static let composerTopSheenColor = dynamicNSColor { _ in
+        NSColor.clear
     }
-    public nonisolated static let composerBottomShadeColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor(srgbRed: 22/255, green: 22/255, blue: 26/255, alpha: 0.08)
-                    : NSColor.black.withAlphaComponent(0.42)
+    public nonisolated static let composerBottomShadeColor = dynamicNSColor { _ in
+        NSColor.clear
     }
     public nonisolated static let composerFocusBorderColor = dynamicNSColor { doc in
-        let accent = nsColor(fromHex: doc.accent.primary) ?? NSColor(srgbRed: 85/255, green: 122/255, blue: 56/255, alpha: 1)
+        let accent = nsColor(fromHex: doc.accent.bright) ?? NSColor(srgbRed: 119/255, green: 166/255, blue: 89/255, alpha: 1)
         let neutral = doc.isLight
-            ? NSColor(srgbRed: 208/255, green: 208/255, blue: 216/255, alpha: 1)
-            : NSColor(srgbRed: 58/255, green: 58/255, blue: 66/255, alpha: 1)
-        return neutral.blended(withFraction: doc.isLight ? 0.45 : 0.48, of: accent) ?? accent.withAlphaComponent(0.6)
+            ? NSColor(srgbRed: 201/255, green: 206/255, blue: 216/255, alpha: 1)
+            : NSColor(srgbRed: 36/255, green: 38/255, blue: 47/255, alpha: 1)
+        return neutral.blended(withFraction: doc.isLight ? 0.48 : 0.52, of: accent) ?? accent.withAlphaComponent(0.6)
     }
-    public nonisolated static let composerOuterBgColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.06)
-                    : NSColor.black.withAlphaComponent(0.40)
+    public nonisolated static let composerOuterBgColor = dynamicNSColor { _ in
+        NSColor.clear
     }
-    public nonisolated static let composerOuterDepthColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.085)
-                    : NSColor.black.withAlphaComponent(0.50)
+    public nonisolated static let composerOuterDepthColor = dynamicNSColor { _ in
+        NSColor.clear
     }
-    public nonisolated static let composerOuterBorderColor = dynamicNSColor { doc in
-        doc.isLight ? NSColor(srgbRed: 11/255, green: 11/255, blue: 12/255, alpha: 0.11)
-                    : NSColor.white.withAlphaComponent(0.055)
+    public nonisolated static let composerOuterBorderColor = dynamicNSColor { _ in
+        NSColor.clear
     }
     public nonisolated static let callFillColor = dynamicNSColor { doc in
         doc.isLight ? NSColor(srgbRed: 226/255, green: 240/255, blue: 217/255, alpha: 1)

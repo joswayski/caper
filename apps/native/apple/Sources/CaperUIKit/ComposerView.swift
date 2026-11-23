@@ -73,61 +73,16 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         translatesAutoresizingMaskIntoConstraints = false
         fieldShell.translatesAutoresizingMaskIntoConstraints = false
         fieldShell.isUserInteractionEnabled = false
-        fieldShell.layer.cornerRadius = 14
-        fieldShell.layer.cornerCurve = .continuous
-        fieldShell.layer.borderWidth = 1
-        fieldShell.layer.borderColor = UIColor.white.withAlphaComponent(0.055).cgColor
-        fieldShell.clipsToBounds = true
-        shellDepth.colors = [
-            UIColor.black.withAlphaComponent(0.40).cgColor,
-            UIColor.black.withAlphaComponent(0.50).cgColor,
-        ]
-        shellDepth.startPoint = CGPoint(x: 0.5, y: 0)
-        shellDepth.endPoint = CGPoint(x: 0.5, y: 1)
-        fieldShell.layer.addSublayer(shellDepth)
+        fieldShell.isHidden = true
         addSubview(fieldShell)
 
         field.translatesAutoresizingMaskIntoConstraints = false
         field.backgroundColor = UIKitStyle.composer
-        field.layer.cornerRadius = 11
+        field.layer.cornerRadius = 20
         field.layer.cornerCurve = .continuous
         field.layer.borderWidth = 1
-        field.layer.borderColor = UIColor.white.withAlphaComponent(0.075).cgColor
+        field.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
         field.clipsToBounds = true
-        fieldSheen.colors = [
-            UIColor.white.withAlphaComponent(0.035).cgColor,
-            UIColor.white.withAlphaComponent(0).cgColor,
-        ]
-        fieldSheen.startPoint = CGPoint(x: 0.5, y: 0)
-        fieldSheen.endPoint = CGPoint(x: 0.5, y: 1)
-        fieldSheen.locations = [0, 0.28]
-        field.layer.addSublayer(fieldSheen)
-
-        fieldTopRim.colors = [
-            UIColor.white.withAlphaComponent(0.14).cgColor,
-            UIColor.white.withAlphaComponent(0).cgColor,
-        ]
-        fieldTopRim.startPoint = CGPoint(x: 0.5, y: 0)
-        fieldTopRim.endPoint = CGPoint(x: 0.5, y: 1)
-        fieldTopRim.locations = [0, 0.26]
-        fieldTopRimMask.fillColor = nil
-        fieldTopRimMask.strokeColor = UIColor.black.cgColor
-        fieldTopRimMask.lineWidth = 1
-        fieldTopRim.mask = fieldTopRimMask
-        field.layer.addSublayer(fieldTopRim)
-
-        fieldBottomShade.colors = [
-            UIColor.black.withAlphaComponent(0.42).cgColor,
-            UIColor.black.withAlphaComponent(0).cgColor,
-        ]
-        fieldBottomShade.startPoint = CGPoint(x: 0.5, y: 1)
-        fieldBottomShade.endPoint = CGPoint(x: 0.5, y: 0)
-        fieldBottomShade.locations = [0, 0.2]
-        fieldBottomShadeMask.fillColor = nil
-        fieldBottomShadeMask.strokeColor = UIColor.black.cgColor
-        fieldBottomShadeMask.lineWidth = 1
-        fieldBottomShade.mask = fieldBottomShadeMask
-        field.layer.addSublayer(fieldBottomShade)
         addSubview(field)
 
         textView.translatesAutoresizingMaskIntoConstraints = false

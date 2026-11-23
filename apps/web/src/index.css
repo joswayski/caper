@@ -361,9 +361,11 @@
   overscroll-behavior: contain;
   padding: 8px 16px 16px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 30%);
+  border-radius: var(--radius-popover);
+  background: var(--surface-glass-bg);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--popover-shadow);
   animation: download-picker-enter var(--motion-fast) var(--ease-out);
 }
 .download-picker-heading {
@@ -479,7 +481,7 @@
   padding: 0;
   list-style: none;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card);
   background: var(--surface);
   overflow: hidden;
 }

@@ -77,85 +77,63 @@ const RESTORE_LIMIT: Duration = Duration::from_secs(5);
 const VERSION_COPIED_FOR: Duration = Duration::from_secs(2);
 use model::DELETE_ACCOUNT_URL;
 // BEGIN GENERATED THEME TOKENS
-const BLACKOUT: Color32 = Color32::from_rgb(11, 11, 12);
-const SURFACE: Color32 = Color32::from_rgb(18, 18, 20);
-const RAISED: Color32 = Color32::from_rgb(27, 27, 31);
-const SIDEBAR: Color32 = Color32::from_rgb(15, 15, 17);
+const BLACKOUT: Color32 = Color32::from_rgb(9, 10, 12);
+const SURFACE: Color32 = Color32::from_rgb(17, 18, 22);
+const RAISED: Color32 = Color32::from_rgb(25, 27, 34);
+const SIDEBAR: Color32 = Color32::from_rgb(13, 14, 17);
 /// Web's --surface-hover (6% white) over the sidebar, opaque: a private
 /// channel's own members in the member list.
-const SIDEBAR_RAISED: Color32 = Color32::from_rgb(28, 28, 32);
-const CONVERSATION: Color32 = Color32::from_rgb(19, 19, 22);
-const COMPOSER: Color32 = Color32::from_rgb(34, 34, 40);
+const SIDEBAR_RAISED: Color32 = Color32::from_rgb(23, 25, 31);
+const CONVERSATION: Color32 = Color32::from_rgb(18, 19, 23);
+const COMPOSER: Color32 = Color32::from_rgb(27, 29, 36);
 /// Web's `--surface-hover`: a neutral wash that reads on every dark surface.
 const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
-const BORDER: Color32 = Color32::from_rgb(41, 41, 47);
+const BORDER: Color32 = Color32::from_rgb(36, 38, 47);
 /// The reply-draft card: 3% white over the conversation surface.
-const REPLY_CARD: Color32 = Color32::from_rgb(26, 26, 30);
-const TEXT: Color32 = Color32::from_rgb(244, 243, 239);
-const MUTED: Color32 = Color32::from_rgb(154, 153, 162);
-const TERRACOTTA: Color32 = Color32::from_rgb(85, 122, 56);
-const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(135, 188, 92);
-const LINK: Color32 = Color32::from_rgb(124, 199, 255);
-const LINK_ACTIVE: Color32 = Color32::from_rgb(178, 223, 255);
+const REPLY_CARD: Color32 = Color32::from_rgb(23, 25, 32);
+const TEXT: Color32 = Color32::from_rgb(244, 244, 246);
+const MUTED: Color32 = Color32::from_rgb(143, 145, 156);
+const TERRACOTTA: Color32 = Color32::from_rgb(78, 120, 53);
+const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(119, 166, 89);
+const LINK: Color32 = Color32::from_rgb(110, 184, 255);
+const LINK_ACTIVE: Color32 = Color32::from_rgb(163, 211, 255);
 /// Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json).
-const ACTION: Color32 = Color32::from_rgb(244, 243, 239);
+const ACTION: Color32 = Color32::from_rgb(244, 244, 246);
 const ACTION_HOVER: Color32 = Color32::from_rgb(255, 255, 255);
-const ACTION_PRESS: Color32 = Color32::from_rgb(223, 221, 214);
+const ACTION_PRESS: Color32 = Color32::from_rgb(226, 227, 232);
 const ON_ACTION: Color32 = BLACKOUT;
-const CAPER: Color32 = Color32::from_rgb(111, 153, 72);
-const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 222, 128);
-const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
-const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
-const MESSAGE_TEXT: Color32 = Color32::from_rgb(230, 229, 224);
+const CAPER: Color32 = Color32::from_rgb(99, 142, 70);
+const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(76, 201, 112);
+const PIN_GOLD: Color32 = Color32::from_rgb(226, 195, 107);
+const ERROR: Color32 = Color32::from_rgb(255, 150, 133);
+const MESSAGE_TEXT: Color32 = Color32::from_rgb(228, 229, 234);
 // END GENERATED THEME TOKENS
 
-/// Paints the recessed dark outer trough, quiet outer hairline, inner border,
-/// and subtle top specular shine around a composer frame.
+/// Paints the single-surface Spatial Glass composer hairline and subtle focus
+/// halo around a composer frame.
 fn paint_composer_chrome(painter: &egui::Painter, rect: egui::Rect, focused: bool) {
-    let outer_well = Color32::from_rgba_unmultiplied(0, 0, 0, 102);
-    let outer_rim = Color32::from_rgba_unmultiplied(255, 255, 255, 11);
-    let inner_border = if focused {
-        Color32::from_rgb(71, 89, 61)
-    } else {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 19)
-    };
-    let top_shine = Color32::from_rgba_unmultiplied(255, 255, 255, 34);
-    let bottom_shade = Color32::from_rgba_unmultiplied(0, 0, 0, 107);
-    painter.rect_stroke(
-        rect,
-        8.0,
-        Stroke::new(4.0, outer_well),
-        egui::StrokeKind::Outside,
-    );
-    painter.rect_stroke(
-        rect.expand(4.0),
-        12.0,
-        Stroke::new(1.0, outer_rim),
-        egui::StrokeKind::Outside,
-    );
-    painter.rect_stroke(
-        rect,
-        8.0,
-        Stroke::new(1.0, inner_border),
-        egui::StrokeKind::Inside,
-    );
-    let inset = 8.0_f32.min(rect.width() / 2.0);
-    if rect.width() > inset * 2.0 && rect.height() > 4.0 {
-        painter.line_segment(
-            [
-                egui::pos2(rect.left() + inset, rect.top() + 1.5),
-                egui::pos2(rect.right() - inset, rect.top() + 1.5),
-            ],
-            Stroke::new(1.0, top_shine),
-        );
-        painter.line_segment(
-            [
-                egui::pos2(rect.left() + inset, rect.bottom() - 1.5),
-                egui::pos2(rect.right() - inset, rect.bottom() - 1.5),
-            ],
-            Stroke::new(1.0, bottom_shade),
+    let radius = 16.0;
+    if focused {
+        let focus_halo =
+            Color32::from_rgba_unmultiplied(TERRACOTTA.r(), TERRACOTTA.g(), TERRACOTTA.b(), 46);
+        painter.rect_stroke(
+            rect.expand(1.5),
+            radius + 1.5,
+            Stroke::new(3.0, focus_halo),
+            egui::StrokeKind::Outside,
         );
     }
+    let border = if focused {
+        TERRACOTTA_BRIGHT
+    } else {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 20)
+    };
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
 }
 
 #[derive(Clone, Copy)]

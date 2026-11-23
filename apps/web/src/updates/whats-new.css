@@ -112,19 +112,20 @@
 }
 .whats-new-footer .primary,
 .whats-new-dialog .secondary {
-  min-height: 40px;
+  min-height: 38px;
   padding: 8px 20px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-pill);
   color: var(--text);
   background: var(--surface-raised);
-  font-weight: 700;
+  font-weight: 650;
   cursor: pointer;
 }
 .whats-new-footer .primary {
-  border-color: var(--action);
+  border-color: var(--btn-primary-border);
   color: var(--on-action);
-  background: var(--action);
+  background: var(--btn-primary-bg);
+  box-shadow: var(--btn-primary-shadow);
 }
 @media (hover: hover) {
   .whats-new-footer .primary:hover {

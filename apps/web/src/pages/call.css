@@ -108,10 +108,8 @@
   cursor: default;
 }
 .voice-panel:has(.connected-channel[data-phase="connected"]) {
-  border-color: rgb(74 222 128 / 26%);
-  background:
-    radial-gradient(120% 90% at 10% 0%, rgb(74 222 128 / 11%), transparent 62%),
-    linear-gradient(180deg, #1e1e23 0%, var(--surface-raised) 100%);
+  border-color: color-mix(in srgb, var(--voice-session-green) 32%, var(--border));
+  background: color-mix(in srgb, var(--voice-session-green) 7%, var(--card-bg));
 }
 .connected-channel[data-phase="connected"] .voice-dock-channel :is(svg, strong) {
   color: var(--voice-session-green);
@@ -137,17 +135,21 @@
   color: #d9ab5c;
 }
 .voice-hangup {
-  width: 34px;
+  width: 32px;
   height: 32px;
   flex: 0 0 auto;
   display: grid;
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  background: var(--surface-composer);
+  border-radius: var(--radius-pill);
+  color: var(--voice-off);
+  background: var(--voice-off-wash);
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-spring);
 }
 .voice-hangup:focus-visible {
   color: var(--voice-off);
@@ -155,9 +157,12 @@
 }
 @media (hover: hover) {
   .voice-hangup:hover {
-    color: var(--voice-off);
-    background: var(--voice-off-wash);
+    color: var(--on-danger);
+    background: var(--danger);
   }
+}
+.voice-hangup:active {
+  transform: scale(0.94);
 }
 .voice-hangup svg {
   width: 17px;
@@ -311,10 +316,12 @@
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-popover);
   color: var(--text);
-  background: var(--surface);
-  box-shadow: 0 12px 30px rgb(0 0 0 / 0.35);
+  background: var(--surface-glass-bg);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--popover-shadow);
 }
 .device-menu .call-settings-trigger {
   width: 16px;
@@ -406,7 +413,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border-subtle);
+  border-right: 0;
   background: var(--surface-sidebar);
 }
 .channel-sidebar-resize {
@@ -672,12 +679,12 @@
 @media (min-width: 761px) {
   .call-room.spaces-room > .stage {
     --workspace-bottom-inset: 8px;
-    margin: 8px 8px 8px 0;
+    margin: 8px;
     border: 1px solid var(--border);
     border-radius: var(--radius-canvas);
     box-shadow:
       inset 0 1px 0 var(--surface-rim-strong),
-      0 8px 28px var(--canvas-drop-shadow);
+      0 10px 30px var(--canvas-drop-shadow);
     overflow: hidden;
   }
 }
@@ -737,34 +744,29 @@
 }
 .range-slider-track {
   position: relative;
-  height: 6px;
+  height: 5px;
   flex: 1;
   overflow: hidden;
   border-radius: 999px;
-  background: var(--surface-composer);
-  box-shadow:
-    inset 0 1px 2px rgb(0 0 0 / 0.35),
-    0 1px 0 var(--surface-rim);
+  background: var(--border-solid);
 }
 .range-slider-fill {
   position: absolute;
   height: 100%;
   border-radius: inherit;
-  background: var(--terracotta-bright);
+  background: var(--accent-bright);
 }
 .range-slider-thumb {
   width: var(--slider-thumb-size);
   height: var(--slider-thumb-size);
   display: block;
-  border: 1.5px solid var(--btn-primary-border);
+  border: 0;
   border-radius: 50%;
-  background: var(--btn-primary-bg);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.9),
-    0 2px 6px rgb(0 0 0 / 0.45);
+  background: var(--action);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.32);
   cursor: grab;
   transition:
-    transform var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-spring),
     box-shadow var(--motion-fast) var(--ease-out);
 }
 .range-slider-default {
@@ -831,9 +833,10 @@
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-dialog);
   color: var(--text);
   background: var(--surface);
+  box-shadow: var(--dialog-shadow);
 }
 .audio-dialog {
   box-sizing: border-box;
@@ -850,7 +853,9 @@
   height: auto;
 }
 .audio-dialog::backdrop {
-  background: rgb(0 0 0 / 0.65);
+  background: rgb(0 0 0 / 0.5);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 .audio-dialog-heading {
   flex: none;

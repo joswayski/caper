@@ -1337,7 +1337,8 @@ private final class AppKitComposerField: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.cornerRadius = 11
+        layer?.cornerRadius = 20
+        layer?.cornerCurve = .continuous
         layer?.borderWidth = 1
         layer?.masksToBounds = true
         // Unflipped: (0.5, 1) is top and (0.5, 0) is bottom.
@@ -1381,7 +1382,7 @@ private final class AppKitComposerField: NSView {
         bottomShadeMask.frame = bounds
         let inset = bounds.insetBy(dx: 1.5, dy: 1.5)
         if inset.width > 0, inset.height > 0 {
-            let radius = min(9.5, inset.width / 2, inset.height / 2)
+            let radius = min(18.5, inset.width / 2, inset.height / 2)
             let path = CGPath(roundedRect: inset, cornerWidth: radius, cornerHeight: radius, transform: nil)
             topRimMask.path = path
             bottomShadeMask.path = path

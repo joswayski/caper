@@ -2321,65 +2321,21 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     )
 }
 
-/** Recessed dark outer trough and subtle top specular shine around the composer field, matching web and Apple. */
+/** Single-surface Spatial Glass composer wrapper, matching web and Apple. */
 @Composable internal fun ComposerShell(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val light = CaperThemeStore.active.isLight
-    val outerBrush = if (light) {
-        Brush.verticalGradient(listOf(Color(0xFF0B0B0C).copy(alpha = 0.06f), Color(0xFF0B0B0C).copy(alpha = 0.085f)))
-    } else {
-        Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.40f), Color.Black.copy(alpha = 0.50f)))
-    }
-    val outerBorder = if (light) Color(0xFF0B0B0C).copy(alpha = 0.11f) else Color.White.copy(alpha = 0.055f)
-    val sheenTop = if (light) Color.White.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.035f)
-    val topShine = if (light) Color.White.copy(alpha = 0.96f) else Color.White.copy(alpha = 0.14f)
-    val bottomShade = if (light) Color(0xFF16161A).copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.42f)
-    Box(
-        modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(outerBrush)
-            .border(1.dp, outerBorder, RoundedCornerShape(14.dp))
-            .padding(3.dp),
-    ) {
-        Box(
-            Modifier.fillMaxWidth().drawWithContent {
-                drawContent()
-                val radiusPx = 10.dp.toPx()
-                val strokePx = 1.dp.toPx()
-                val inset = strokePx * 1.5f
-                val innerRadius = (radiusPx - strokePx).coerceAtLeast(0f)
-                drawRoundRect(
-                    brush = Brush.verticalGradient(0f to sheenTop, 0.28f to Color.Transparent),
-                    cornerRadius = CornerRadius(radiusPx, radiusPx),
-                )
-                if (size.width > inset * 2 && size.height > inset * 2) {
-                    drawRoundRect(
-                        brush = Brush.verticalGradient(
-                            0f to topShine,
-                            0.26f to Color.Transparent,
-                            0.80f to Color.Transparent,
-                            1f to bottomShade,
-                        ),
-                        topLeft = Offset(inset, inset),
-                        size = Size(size.width - inset * 2, size.height - inset * 2),
-                        cornerRadius = CornerRadius(innerRadius, innerRadius),
-                        style = Stroke(width = strokePx),
-                    )
-                }
-            },
-        ) {
-            content()
-        }
+    Box(modifier) {
+        content()
     }
 }
 
-/** The channel and thread composers' field: the composer surface, terracotta while focused. */
+/** The channel and thread composers' field: the composer surface, botanical green while focused. */
 @Composable internal fun composerFieldColors(): TextFieldColors {
     val light = CaperThemeStore.active.isLight
-    val unfocused = if (light) Color(0xFF0B0B0C).copy(alpha = 0.12f) else Color.White.copy(alpha = 0.075f)
+    val unfocused = if (light) Color(0xFF0F172A).copy(alpha = 0.09f) else Color.White.copy(alpha = 0.08f)
     return OutlinedTextFieldDefaults.colors(
         focusedContainerColor = SurfaceComposer,
         unfocusedContainerColor = SurfaceComposer,
-        focusedBorderColor = Terracotta.copy(alpha = 0.65f),
+        focusedBorderColor = TerracottaBright.copy(alpha = 0.58f),
         unfocusedBorderColor = unfocused,
     )
 }

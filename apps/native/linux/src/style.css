@@ -1,35 +1,35 @@
 /* Caper's tokens (shared/design.css), as GTK named colours. GTK 4.8 has no
    CSS custom properties; keep these in step with the web's. */
 /* BEGIN GENERATED THEME TOKENS */
-@define-color caper_blackout #0b0b0c;
-@define-color caper_surface #121214;
-@define-color caper_surface_raised #1b1b1f;
-@define-color caper_surface_sidebar #0f0f11;
-@define-color caper_surface_conversation #131316;
-@define-color caper_surface_composer #222228;
-@define-color caper_surface_hover rgba(255, 255, 255, 0.06);
-@define-color caper_border rgba(255, 255, 255, 0.09);
-@define-color caper_border_solid #29292f;
-@define-color caper_border_subtle rgba(255, 255, 255, 0.06);
-@define-color caper_surface_rim rgba(255, 255, 255, 0.08);
-@define-color caper_text #f4f3ef;
-@define-color caper_text_muted #9a99a2;
-@define-color caper_link #7cc7ff;
-@define-color caper_link_hover #b2dfff;
-@define-color caper_terracotta #557a38;
-@define-color caper_terracotta_bright #87bc5c;
-@define-color caper_accent_soft_text #c3e4a4;
-@define-color caper_accent_surface #1c2816;
-@define-color caper_accent_border #486832;
-@define-color caper_action #f4f3ef;
+@define-color caper_blackout #090a0c;
+@define-color caper_surface #111216;
+@define-color caper_surface_raised #191b22;
+@define-color caper_surface_sidebar #0d0e11;
+@define-color caper_surface_conversation #121317;
+@define-color caper_surface_composer #1b1d24;
+@define-color caper_surface_hover rgba(255, 255, 255, 0.05);
+@define-color caper_border rgba(255, 255, 255, 0.08);
+@define-color caper_border_solid #24262f;
+@define-color caper_border_subtle rgba(255, 255, 255, 0.05);
+@define-color caper_surface_rim rgba(255, 255, 255, 0.06);
+@define-color caper_text #f4f4f6;
+@define-color caper_text_muted #8f919c;
+@define-color caper_link #6eb8ff;
+@define-color caper_link_hover #a3d3ff;
+@define-color caper_terracotta #4e7835;
+@define-color caper_terracotta_bright #77a659;
+@define-color caper_accent_soft_text #b9d9a3;
+@define-color caper_accent_surface #172314;
+@define-color caper_accent_border #3f612c;
+@define-color caper_action #f4f4f6;
 @define-color caper_action_hover #ffffff;
-@define-color caper_action_press #dfddd6;
-@define-color caper_on_action #0b0b0c;
-@define-color caper_green #6f9948;
-@define-color caper_voice_green #4ade80;
-@define-color caper_error_text #ff9b82;
-@define-color caper_danger #c83c4e;
-@define-color caper_danger_hover #e04c5f;
+@define-color caper_action_press #e2e3e8;
+@define-color caper_on_action #090a0c;
+@define-color caper_green #638e46;
+@define-color caper_voice_green #4cc970;
+@define-color caper_error_text #ff9685;
+@define-color caper_danger #cf4254;
+@define-color caper_danger_hover #e45265;
 /* END GENERATED THEME TOKENS */
 
 window.caper {
@@ -86,39 +86,36 @@ window.caper label link:hover {
   color: @caper_error_text;
 }
 
-/* Buttons: warm chalk primary pills with subtle tactile lift; disabled steps back to neutral chrome. */
+/* Buttons: crisp Spatial Glass pills with subtle lift; disabled steps back to neutral chrome. */
 button {
   border-radius: 10px;
 }
 
 button.primary {
-  background-image: linear-gradient(180deg, #faf9f6, #eae8e1);
+  background-image: none;
   background-color: @caper_action;
   color: @caper_on_action;
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  border: 1px solid transparent;
   border-radius: 999px;
   box-shadow:
-    inset 0 1.5px 0 rgba(255, 255, 255, 0.94),
-    inset 0 -2px 0 rgba(0, 0, 0, 0.18),
-    0 2px 0 rgba(0, 0, 0, 0.44),
-    0 6px 16px rgba(0, 0, 0, 0.34);
-  font-weight: 700;
-  min-height: 40px;
+    0 1px 2px rgba(0, 0, 0, 0.24),
+    0 4px 12px rgba(0, 0, 0, 0.16);
+  font-weight: 650;
+  min-height: 38px;
 }
 
 button.primary:hover {
-  background-image: linear-gradient(180deg, @caper_action_hover, @caper_action);
+  background-image: none;
+  background-color: @caper_action_hover;
   box-shadow:
-    inset 0 1.5px 0 rgba(255, 255, 255, 1),
-    inset 0 -2px 0 rgba(0, 0, 0, 0.15),
-    0 3px 0 rgba(0, 0, 0, 0.48),
-    0 8px 20px rgba(0, 0, 0, 0.4);
+    0 2px 4px rgba(0, 0, 0, 0.28),
+    0 6px 16px rgba(0, 0, 0, 0.2);
 }
 
 button.primary:active {
   background-image: none;
   background-color: @caper_action_press;
-  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
 }
 
 button.primary:disabled {
@@ -136,13 +133,10 @@ button.flat {
 button.destructive-action {
   background: @caper_danger;
   color: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid transparent;
   border-radius: 999px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    inset 0 -2px 0 rgba(0, 0, 0, 0.25),
-    0 2px 6px rgba(0, 0, 0, 0.3);
-  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.24);
+  font-weight: 650;
 }
 
 button.destructive-action:hover {
@@ -157,12 +151,9 @@ window.caper.dialog .dialog-action-area button:not(.destructive-action) {
 }
 
 window.caper.dialog .dialog-action-area button {
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid @caper_border;
   border-radius: 999px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 -2px 0 rgba(0, 0, 0, 0.3),
-    0 2px 6px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
   min-height: 36px;
 }
 
@@ -1025,35 +1016,34 @@ button.send image {
 }
 
 button.send:not(:disabled) {
-  background: @caper_surface_raised;
+  background: @caper_terracotta;
+  color: #ffffff;
+  border-radius: 999px;
 }
 
-/* Recessed dark outer well and top-lit inner composer surface, matching web and macOS. */
+button.send:not(:disabled):hover {
+  background: @caper_terracotta_bright;
+}
+
+/* Single-surface Spatial Glass composer capsule, matching web and macOS. */
 .composer {
   background-color: @caper_surface_composer;
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0) 28%);
-  border: 1px solid rgba(255, 255, 255, 0.075);
-  border-radius: 11px;
+  background-image: none;
+  border: 1px solid @caper_border;
+  border-radius: 20px;
   margin: 2px 20px 18px;
-  padding: 5px 8px 5px 6px;
+  padding: 5px 8px 5px 8px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.42),
-    0 1px 3px rgba(0, 0, 0, 0.52),
-    0 0 0 4px rgba(0, 0, 0, 0.4),
-    0 0 0 5px rgba(255, 255, 255, 0.04),
-    0 2px 10px rgba(0, 0, 0, 0.32);
+    inset 0 1px 0 @caper_surface_rim,
+    0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 .composer:focus-within {
-  border-color: alpha(@caper_terracotta, 0.65);
+  border-color: alpha(@caper_terracotta_bright, 0.58);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.42),
-    0 1px 3px rgba(0, 0, 0, 0.52),
-    0 0 0 4px rgba(0, 0, 0, 0.4),
-    0 0 0 5px rgba(255, 255, 255, 0.04),
-    0 2px 10px rgba(0, 0, 0, 0.32);
+    0 0 0 3px alpha(@caper_terracotta, 0.18),
+    inset 0 1px 0 @caper_surface_rim,
+    0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 .composer textview,
@@ -3044,11 +3034,11 @@ button.theme-card.selected {
 }
 
 .theme-swatch-obsidian {
-  background-color: #0b0b0c;
+  background-color: #090a0c;
 }
 
 .theme-swatch-paper {
-  background-color: #efeff2;
+  background-color: #eceef2;
 }
 
 .theme-swatch-sidebar {
@@ -3057,11 +3047,11 @@ button.theme-card.selected {
 }
 
 .theme-swatch-obsidian .theme-swatch-sidebar {
-  background-color: #0f0f11;
+  background-color: #0d0e11;
 }
 
 .theme-swatch-paper .theme-swatch-sidebar {
-  background-color: #efeff2;
+  background-color: #f1f2f6;
 }
 
 .theme-swatch-canvas {
@@ -3070,7 +3060,7 @@ button.theme-card.selected {
 }
 
 .theme-swatch-obsidian .theme-swatch-canvas {
-  background-color: #131316;
+  background-color: #121317;
 }
 
 .theme-swatch-paper .theme-swatch-canvas {
@@ -3091,31 +3081,31 @@ button.theme-card.selected {
 }
 
 .theme-swatch-obsidian .theme-swatch-bar.brand {
-  background-color: #6f9948;
+  background-color: #638e46;
   margin-right: 4px;
 }
 
 .theme-swatch-paper .theme-swatch-bar.brand {
-  background-color: #5a7e3a;
+  background-color: #567d3b;
   margin-right: 4px;
 }
 
 .theme-swatch-obsidian .theme-swatch-bar.primary {
-  background-color: rgba(244, 243, 239, 0.78);
+  background-color: rgba(244, 244, 246, 0.78);
   margin-right: 18px;
 }
 
 .theme-swatch-paper .theme-swatch-bar.primary {
-  background-color: rgba(17, 17, 20, 0.78);
+  background-color: rgba(17, 18, 23, 0.78);
   margin-right: 18px;
 }
 
 .theme-swatch-obsidian .theme-swatch-bar.muted {
-  background-color: rgba(154, 153, 162, 0.72);
+  background-color: rgba(143, 145, 156, 0.72);
 }
 
 .theme-swatch-paper .theme-swatch-bar.muted {
-  background-color: rgba(102, 102, 114, 0.72);
+  background-color: rgba(101, 104, 118, 0.72);
 }
 
 .theme-swatch-pill {
@@ -3125,9 +3115,9 @@ button.theme-card.selected {
 }
 
 .theme-swatch-obsidian .theme-swatch-pill {
-  background-color: #f4f3ef;
+  background-color: #f4f4f6;
 }
 
 .theme-swatch-paper .theme-swatch-pill {
-  background-color: #111114;
+  background-color: #111217;
 }

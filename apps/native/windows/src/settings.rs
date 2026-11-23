@@ -1331,25 +1331,25 @@ fn draw_theme_card(
     }
     let palette = if is_paper {
         Palette {
-            frame: 0xEFEFF2,
-            sidebar: 0xEFEFF2,
+            frame: 0xECEEF2,
+            sidebar: 0xF1F2F6,
             convo: 0xFFFFFF,
-            brand: 0x5A7E3A,
-            primary: 0x111114,
-            muted: 0x666672,
-            action: 0x111114,
+            brand: 0x567D3B,
+            primary: 0x111217,
+            muted: 0x656876,
+            action: 0x111217,
             name: "Paper",
             mode: "Light",
         }
     } else {
         Palette {
-            frame: 0x0B0B0C,
-            sidebar: 0x0F0F11,
-            convo: 0x131316,
-            brand: 0x6F9948,
-            primary: 0xF4F3EF,
-            muted: 0x9A99A2,
-            action: 0xF4F3EF,
+            frame: 0x090A0C,
+            sidebar: 0x0D0E11,
+            convo: 0x121317,
+            brand: 0x638E46,
+            primary: 0xF4F4F6,
+            muted: 0x8F919C,
+            action: 0xF4F4F6,
             name: "Obsidian",
             mode: "Dark",
         }

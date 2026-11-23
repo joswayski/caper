@@ -24,22 +24,29 @@
 .inbox-filters {
   display: flex;
   flex-shrink: 0;
-  gap: 4px;
+  gap: 6px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .inbox-filters button {
   border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  padding: 12px;
+  border-radius: var(--radius-pill);
+  padding: 6px 13px;
   background: transparent;
   color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 550;
   white-space: nowrap;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 .inbox-filters button[aria-pressed="true"] {
   color: var(--text);
-  border-bottom-color: var(--terracotta-bright);
+  font-weight: 650;
+  background: var(--active-row-bg);
+  box-shadow: var(--active-row-shadow);
 }
 .inbox-toolbar {
   display: flex;
@@ -367,7 +374,7 @@
     max-height: 76dvh;
     margin: auto 0 0;
     border-width: 1px 0 0;
-    border-radius: 16px 16px 0 0;
+    border-radius: 22px 22px 0 0;
   }
   .notifications-inbox {
     padding: 0 16px max(24px, env(safe-area-inset-bottom));

@@ -30,41 +30,41 @@ import chat.caper.android.R
 import org.json.JSONObject
 
 // BEGIN GENERATED THEME TOKENS
-val Blackout = Color(0xFF0B0B0C)
-val Surface = Color(0xFF121214)
-val Border = Color(0xFF29292F)
+val Blackout = Color(0xFF090A0C)
+val Surface = Color(0xFF111216)
+val Border = Color(0xFF24262F)
 val BorderSubtle = Color(0x17FFFFFF)
 val SurfaceRim = Color(0x14FFFFFF)
-val Text = Color(0xFFF4F3EF)
-val Terracotta = Color(0xFF557A38)
+val Text = Color(0xFFF4F4F6)
+val Terracotta = Color(0xFF4E7835)
 /** Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json). */
-val Action = Color(0xFFF4F3EF)
-val OnAction = Color(0xFF0B0B0C)
-val CaperGreen = Color(0xFF6F9948)
+val Action = Color(0xFFF4F4F6)
+val OnAction = Color(0xFF090A0C)
+val CaperGreen = Color(0xFF638E46)
 // Caper green mixed into Border: replaces a panel divider while its resize handle is in use.
-val ResizeHighlight = Color(0xFF485D38)
-val VoiceSessionGreen = Color(0xFF4ADE80)
-val SurfaceSidebar = Color(0xFF0F0F11)
+val ResizeHighlight = Color(0xFF3D5431)
+val VoiceSessionGreen = Color(0xFF4CC970)
+val SurfaceSidebar = Color(0xFF0D0E11)
 /** Web's --surface-hover (6% white) over the sidebar, opaque: a private channel's own members in the member list. */
-val SurfaceSidebarRaised = Color(0xFF1C1C20)
-val SurfaceConversation = Color(0xFF131316)
-val SurfaceComposer = Color(0xFF222228)
-val SurfaceRaised = Color(0xFF1B1B1F)
-val TextMuted = Color(0xFF9A99A2)
-val MessageText = Color(0xFFE6E5E0)
-val LinkBlue = Color(0xFF7CC7FF)
-val LinkBlueActive = Color(0xFFB2DFFF)
-val TerracottaBright = Color(0xFF87BC5C)
-val TerracottaDark = Color(0xFF1C2816)
-val TerracottaBorder = Color(0xFF486832)
-val TerracottaWash = Color(0x29557A38)
+val SurfaceSidebarRaised = Color(0xFF17191F)
+val SurfaceConversation = Color(0xFF121317)
+val SurfaceComposer = Color(0xFF1B1D24)
+val SurfaceRaised = Color(0xFF191B22)
+val TextMuted = Color(0xFF8F919C)
+val MessageText = Color(0xFFE4E5EA)
+val LinkBlue = Color(0xFF6EB8FF)
+val LinkBlueActive = Color(0xFFA3D3FF)
+val TerracottaBright = Color(0xFF77A659)
+val TerracottaDark = Color(0xFF172314)
+val TerracottaBorder = Color(0xFF3F612C)
+val TerracottaWash = Color(0x294E7835)
 /** Text on an accent wash, such as your own reaction's count. */
-val TerracottaLight = Color(0xFFC3E4A4)
-val PinGold = Color(0xFFE4C76A)
-val PinGoldWash = Color(0x0FE4C76A)
-val Idle = Color(0xFFD6A44E)
-val Danger = Color(0xFFC83C4E)
-val ErrorText = Color(0xFFFF9B82)
+val TerracottaLight = Color(0xFFB9D9A3)
+val PinGold = Color(0xFFE2C36B)
+val PinGoldWash = Color(0x0FE2C36B)
+val Idle = Color(0xFFD8A64F)
+val Danger = Color(0xFFCF4254)
+val ErrorText = Color(0xFFFF9685)
 // END GENERATED THEME TOKENS
 private val ControlShape = RoundedCornerShape(10.dp)
 val PillShape = RoundedCornerShape(999.dp)
@@ -130,19 +130,19 @@ object CaperThemeStore {
         id = "paper",
         name = "Paper",
         isLight = true,
-        blackout = Color(0xFFEFEFF2),
-        surface = Color(0xFFF7F7F9),
-        surfaceRaised = Color(0xFFF5F5F8),
-        surfaceComposer = Color(0xFFF2F2F6),
-        border = Color(0xFFDCDCE2),
-        text = Color(0xFF111114),
-        textMuted = Color(0xFF666672),
-        action = Color(0xFF111114),
+        blackout = Color(0xFFECEEF2),
+        surface = Color(0xFFFFFFFF),
+        surfaceRaised = Color(0xFFF4F5F8),
+        surfaceComposer = Color(0xFFF3F4F8),
+        border = Color(0xFFDCDFE6),
+        text = Color(0xFF111217),
+        textMuted = Color(0xFF656876),
+        action = Color(0xFF111217),
         onAction = Color(0xFFFFFFFF),
-        accent = Color(0xFF496D2D),
-        accentBright = Color(0xFF3F6325),
-        accentSurface = Color(0xFFE8F0E1),
-        caperGreen = Color(0xFF5A7E3A),
+        accent = Color(0xFF456C2D),
+        accentBright = Color(0xFF3A5D24),
+        accentSurface = Color(0xFFEAF1E5),
+        caperGreen = Color(0xFF567D3B),
         errorText = Color(0xFFC23244),
         rawJson = null,
     )

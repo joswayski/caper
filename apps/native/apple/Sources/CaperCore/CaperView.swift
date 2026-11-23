@@ -12,37 +12,37 @@ import ServiceManagement
 
 public enum CaperTheme {
     // BEGIN GENERATED THEME TOKENS
-    public static let blackout = Color(red: 11/255, green: 11/255, blue: 12/255)
-    public static let surface = Color(red: 18/255, green: 18/255, blue: 20/255)
-    public static let raised = Color(red: 27/255, green: 27/255, blue: 31/255)
-    public static let sidebar = Color(red: 15/255, green: 15/255, blue: 17/255)
+    public static let blackout = Color(red: 9/255, green: 10/255, blue: 12/255)
+    public static let surface = Color(red: 17/255, green: 18/255, blue: 22/255)
+    public static let raised = Color(red: 25/255, green: 27/255, blue: 34/255)
+    public static let sidebar = Color(red: 13/255, green: 14/255, blue: 17/255)
     /// Web's --surface-hover (6% white) over the sidebar, opaque: a private
     /// channel's own members in the member list.
-    public static let sidebarRaised = Color(red: 28/255, green: 28/255, blue: 32/255)
-    public static let conversation = Color(red: 19/255, green: 19/255, blue: 22/255)
-    public static let composer = Color(red: 34/255, green: 34/255, blue: 40/255)
+    public static let sidebarRaised = Color(red: 23/255, green: 25/255, blue: 31/255)
+    public static let conversation = Color(red: 18/255, green: 19/255, blue: 23/255)
+    public static let composer = Color(red: 27/255, green: 29/255, blue: 36/255)
     /// 3% white over the conversation: the reply draft card above the composer.
-    public static let replyDraft = Color(red: 26/255, green: 26/255, blue: 30/255)
-    public static let border = Color(red: 41/255, green: 41/255, blue: 47/255)
+    public static let replyDraft = Color(red: 23/255, green: 25/255, blue: 32/255)
+    public static let border = Color(red: 36/255, green: 38/255, blue: 47/255)
     public static let borderSubtle = Color.white.opacity(0.08)
     public static let surfaceRim = Color.white.opacity(0.08)
-    public static let text = Color(red: 244/255, green: 243/255, blue: 239/255)
-    public static let muted = Color(red: 154/255, green: 153/255, blue: 162/255)
-    public static let link = Color(red: 124/255, green: 199/255, blue: 255/255)
-    public static let terracotta = Color(red: 85/255, green: 122/255, blue: 56/255)
-    public static let terracottaBright = Color(red: 135/255, green: 188/255, blue: 92/255)
+    public static let text = Color(red: 244/255, green: 244/255, blue: 246/255)
+    public static let muted = Color(red: 143/255, green: 145/255, blue: 156/255)
+    public static let link = Color(red: 110/255, green: 184/255, blue: 255/255)
+    public static let terracotta = Color(red: 78/255, green: 120/255, blue: 53/255)
+    public static let terracottaBright = Color(red: 119/255, green: 166/255, blue: 89/255)
     /// Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json).
-    public static let action = Color(red: 244/255, green: 243/255, blue: 239/255)
+    public static let action = Color(red: 244/255, green: 244/255, blue: 246/255)
     public static let actionHover = Color(red: 255/255, green: 255/255, blue: 255/255)
-    public static let actionPress = Color(red: 223/255, green: 221/255, blue: 214/255)
+    public static let actionPress = Color(red: 226/255, green: 227/255, blue: 232/255)
     public static let onAction = blackout
-    public static let green = Color(red: 111/255, green: 153/255, blue: 72/255)
-    public static let voiceSessionGreen = Color(red: 74/255, green: 222/255, blue: 128/255)
-    public static let pinGold = Color(red: 228/255, green: 199/255, blue: 106/255)
+    public static let green = Color(red: 99/255, green: 142/255, blue: 70/255)
+    public static let voiceSessionGreen = Color(red: 76/255, green: 201/255, blue: 112/255)
+    public static let pinGold = Color(red: 226/255, green: 195/255, blue: 107/255)
     /// Web's error text, in place of the system red.
-    public static let error = Color(red: 255/255, green: 155/255, blue: 130/255)
+    public static let error = Color(red: 255/255, green: 150/255, blue: 133/255)
     /// Web's muted/deafened account controls: the icon and its options chevron.
-    public static let voiceOff = Color(red: 237/255, green: 82/255, blue: 101/255)
+    public static let voiceOff = Color(red: 235/255, green: 82/255, blue: 101/255)
     // END GENERATED THEME TOKENS
     /// Shared bottom edge for the account dock and conversation composer.
     static let workspaceBottomInset: CGFloat = 16
@@ -7371,53 +7371,17 @@ struct ComposerLip: View {
     }
 }
 
-/// Recessed dark outer trough and top-lit inner composer card, matching web and AppKit.
+/// Single-surface Spatial Glass composer capsule, matching web and AppKit.
 struct ComposerBezelModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .background {
-                ZStack {
-                    CaperTheme.composer
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.035), .clear],
-                        startPoint: .top,
-                        endPoint: UnitPoint(x: 0.5, y: 0.28)
-                    )
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .background(CaperTheme.composer)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 11)
-                    .strokeBorder(Color.white.opacity(0.075), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(CaperTheme.borderSubtle, lineWidth: 1)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .inset(by: 1)
-                    .strokeBorder(
-                        LinearGradient(
-                            stops: [
-                                .init(color: Color.white.opacity(0.14), location: 0),
-                                .init(color: Color.white.opacity(0), location: 0.26),
-                                .init(color: Color.black.opacity(0), location: 0.8),
-                                .init(color: Color.black.opacity(0.42), location: 1),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-            )
-            .shadow(color: Color.black.opacity(0.45), radius: 2, y: 1)
-            .padding(3)
-            .background(
-                LinearGradient(
-                    colors: [Color.black.opacity(0.40), Color.black.opacity(0.50)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ),
-                in: RoundedRectangle(cornerRadius: 14)
-            )
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.055), lineWidth: 1))
+            .shadow(color: Color.black.opacity(0.18), radius: 8, y: 3)
     }
 }
 
@@ -9817,11 +9781,7 @@ struct PrimaryActionFill: ViewModifier {
                 } else if hovered {
                     CaperTheme.actionHover
                 } else {
-                    LinearGradient(
-                        colors: [Color(red: 250 / 255, green: 249 / 255, blue: 246 / 255), Color(red: 234 / 255, green: 232 / 255, blue: 225 / 255)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+                    CaperTheme.action
                 }
             }
             .clipShape(Capsule())
@@ -9829,20 +9789,15 @@ struct PrimaryActionFill: ViewModifier {
                 Capsule()
                     .strokeBorder(
                         !enabled
-                            ? AnyShapeStyle(CaperTheme.borderSubtle)
+                            ? CaperTheme.borderSubtle
                             : focused
-                                ? AnyShapeStyle(CaperTheme.terracottaBright)
-                                : AnyShapeStyle(LinearGradient(
-                                    colors: [Color.white.opacity(0.92), Color.black.opacity(0.24)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )),
-                        lineWidth: focused && enabled ? 2 : 1.25
+                                ? CaperTheme.terracottaBright
+                                : Color.clear,
+                        lineWidth: focused && enabled ? 2 : 1
                     )
                     .allowsHitTesting(false)
             }
-            .shadow(color: enabled ? Color.black.opacity(hovered ? 0.44 : 0.36) : .clear, radius: hovered ? 10 : 7, y: pressed ? 1 : hovered ? 4 : 3)
-            .offset(y: !enabled || reduceMotion ? 0 : pressed ? 1 : hovered ? -1 : 0)
+            .shadow(color: enabled ? Color.black.opacity(hovered ? 0.22 : 0.16) : .clear, radius: hovered ? 8 : 5, y: pressed ? 1 : 2)
             .scaleEffect(pressed && enabled && !reduceMotion ? 0.98 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: pressed)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)

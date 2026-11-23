@@ -16,12 +16,12 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 14px 0;
   overflow-y: auto;
   /* A classic scrollbar would squeeze the tiles off-center in the 60px rail. */
   scrollbar-width: none;
-  border-right: 1px solid var(--border-subtle);
+  border-right: 0;
   background: var(--blackout);
 }
 .space-rail::-webkit-scrollbar {
@@ -43,7 +43,7 @@
   place-items: center;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 13px;
   color: var(--text-muted);
   background: var(--surface);
   font: inherit;
@@ -54,12 +54,13 @@
   transition:
     border-color var(--motion-fast) var(--ease-out),
     color var(--motion-fast) var(--ease-out),
-    background-color var(--motion-fast) var(--ease-out);
+    background-color var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-spring);
 }
 /* Utility controls keep their hover treatment; space tiles use only the pill. */
 @media (hover: hover) {
   .space-rail > :is(button, a):hover:not(:disabled, [aria-current="page"]) {
-    border-color: var(--text-muted);
+    border-color: var(--btn-secondary-border-hover);
     color: var(--text);
     background: var(--surface-raised);
   }
@@ -68,7 +69,11 @@
   border: 0;
   color: var(--text-muted);
   background: var(--surface);
-  transition: none;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-spring);
 }
 /* Hover lifts the tile and grows a short pill at the rail's edge, taking the
    unread dot's place; leaving is instant. */
@@ -77,14 +82,19 @@
   position: absolute;
   left: 0;
   top: 50%;
-  width: 4px;
-  height: 20px;
-  margin-top: -10px;
-  border-radius: 0 4px 4px 0;
-  background: var(--text);
+  width: 3px;
+  height: 18px;
+  margin-top: -9px;
+  border-radius: 0 3px 3px 0;
+  background: var(--text-muted);
   opacity: 0;
-  transform: scaleY(0.3);
+  transform: scaleY(0.35);
   pointer-events: none;
+}
+.space-rail-item[data-active="true"]::before {
+  background: var(--accent-bright);
+  opacity: 1;
+  transform: none;
 }
 @media (hover: hover) {
   .space-rail-item:not([data-active="true"]):has(button:hover)::before {
@@ -92,7 +102,7 @@
     transform: none;
     transition:
       opacity var(--motion-fast) var(--ease-out),
-      transform var(--motion-fast) var(--ease-out);
+      transform var(--motion-fast) var(--ease-spring);
   }
   .space-rail-item:not([data-active="true"]):has(button:hover) .space-unread {
     opacity: 0;
@@ -100,33 +110,17 @@
   .space-rail-item:not([data-active="true"]) button:hover {
     color: var(--text);
     background: var(--surface-raised);
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--text) 26%, transparent),
-      0 4px 12px rgb(0 0 0 / 28%);
-    transition:
-      background-color var(--motion-fast) var(--ease-out),
-      box-shadow var(--motion-fast) var(--ease-out);
+    box-shadow: 0 0 0 1px var(--border);
   }
 }
-/* The selected space glows: a terracotta bloom that settles to a soft halo. */
+/* Active space: crisp quiet botanical ring without harsh neon bloom. */
 .space-rail-item[data-active="true"] button {
   color: var(--text);
+  background: var(--surface-raised);
+  border-radius: 14px;
   box-shadow:
-    0 0 0 1px rgb(var(--accent-rgb) / 0.9),
-    0 0 12px 1px rgb(var(--accent-rgb) / 0.36);
-  animation: space-rail-bloom 700ms var(--ease-out);
-}
-@keyframes space-rail-bloom {
-  from {
-    box-shadow:
-      0 0 0 1px rgb(var(--accent-rgb) / 0),
-      0 0 0 0 rgb(var(--accent-rgb) / 0);
-  }
-  45% {
-    box-shadow:
-      0 0 0 1px rgb(var(--accent-rgb) / 1),
-      0 0 18px 3px rgb(var(--accent-rgb) / 0.52);
-  }
+    0 0 0 1.5px var(--accent-bright),
+    0 4px 12px rgb(0 0 0 / 20%);
 }
 @media (prefers-reduced-motion: reduce) {
   .space-rail-item button,
@@ -619,22 +613,24 @@ html[data-resizing-sections] * {
   width: 100%;
   padding: 5px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+  border-radius: var(--radius-popover);
+  background: var(--surface-glass-bg);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--popover-shadow);
 }
 .space-actions button {
   width: 100%;
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 10px 8px;
+  padding: 9px 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   background: transparent;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   text-align: left;
   cursor: pointer;
 }
@@ -810,32 +806,34 @@ html[data-resizing-sections] * {
 }
 .channel-select {
   min-width: 0;
-  height: 38px;
+  height: 36px;
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 34px 0 9px;
+  gap: 7px;
+  padding: 0 34px 0 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   font: inherit;
-  font-size: 0.82rem;
-  font-weight: 650;
+  font-size: 0.84rem;
+  font-weight: 550;
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 .channel-select svg {
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
 }
 .channel-select > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transform: translateY(-1px);
 }
 @media (hover: hover) {
   .channel-select:hover:not([aria-current="page"]) {
@@ -845,11 +843,13 @@ html[data-resizing-sections] * {
 }
 .channel-select[aria-current="page"] {
   color: var(--text);
-  background: rgb(var(--accent-rgb) / 0.16);
+  font-weight: 650;
+  background: var(--active-row-bg);
+  box-shadow: var(--active-row-shadow);
   cursor: default;
 }
 .channel-select[aria-current="page"] svg {
-  color: var(--terracotta-bright);
+  color: var(--accent-bright);
 }
 .direct-select[data-unread] > span:nth-child(2) {
   color: var(--text);
@@ -1058,7 +1058,8 @@ html[data-resizing-sections] * {
   cursor: default;
 }
 .direct-line:has(.direct-select[aria-current="page"]) {
-  background: rgb(var(--accent-rgb) / 0.16);
+  background: var(--active-row-bg);
+  box-shadow: var(--active-row-shadow);
 }
 @media (hover: hover) {
   .direct-line:hover:not(:has(.direct-select[aria-current="page"])) {
@@ -1107,7 +1108,7 @@ html[data-resizing-sections] * {
   --presence-ring: var(--surface-sidebar);
   min-height: 0;
   min-width: 0;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--border-subtle);
   background: var(--surface-sidebar);
   overflow-y: auto;
 }
@@ -1637,10 +1638,10 @@ html[data-resizing-sections] * {
   padding: 0;
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-dialog);
   color: var(--text);
   background: var(--surface);
-  box-shadow: 0 24px 80px rgb(0 0 0 / 0.55);
+  box-shadow: var(--dialog-shadow);
 }
 .space-dialog-wide {
   width: min(600px, calc(100vw - 32px));
@@ -1653,7 +1654,9 @@ html[data-resizing-sections] * {
   flex-shrink: 0;
 }
 .space-dialog::backdrop {
-  background: rgb(0 0 0 / 0.4);
+  background: rgb(0 0 0 / 0.45);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 .space-dialog:has(.invitation-consent)::backdrop {
   /* Safari before 18 only knows the prefixed property. */
@@ -1868,9 +1871,9 @@ html[data-resizing-sections] * {
 .member-add input {
   width: 100%;
   height: 42px;
-  padding: 0 11px;
+  padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   color: var(--text);
   background: var(--surface-composer);
   font: inherit;

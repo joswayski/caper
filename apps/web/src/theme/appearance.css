@@ -38,33 +38,30 @@
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--btn-secondary-border);
+  border: 1.5px solid var(--border);
   border-radius: var(--radius-card);
-  background: var(--btn-secondary-bg);
-  box-shadow: var(--btn-secondary-shadow);
+  background: var(--surface-raised);
   color: var(--text);
   text-align: left;
   cursor: pointer;
   transition:
-    transform var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-spring),
     border-color var(--motion-fast) var(--ease-out),
-    box-shadow var(--motion-fast) var(--ease-out);
+    box-shadow var(--motion-fast) var(--ease-out),
+    background-color var(--motion-fast) var(--ease-out);
 }
 @media (hover: hover) {
   .appearance-card:hover {
     border-color: var(--btn-secondary-border-hover);
     box-shadow: var(--btn-secondary-shadow-hover);
-    transform: translateY(-1px);
   }
 }
 .appearance-card:active {
-  transform: translateY(1px) scale(0.985);
+  transform: scale(0.985);
 }
 .appearance-card[aria-pressed="true"] {
   border-color: var(--accent-bright);
-  box-shadow:
-    0 0 0 2px rgb(var(--accent-bright-rgb) / 28%),
-    var(--btn-secondary-shadow-hover);
+  box-shadow: 0 0 0 3px var(--composer-focus-ring);
 }
 .appearance-card:focus-visible {
   outline: 2px solid var(--accent-bright);

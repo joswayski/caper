@@ -26,9 +26,9 @@ describe("web theme engine (caper.theme.v1)", () => {
     expect(validateThemeDocument(PAPER_THEME).ok).toBe(true);
 
     const paperVars = themeToCssVars(PAPER_THEME);
-    expect(paperVars["--blackout"]).toBe("#efeff2");
+    expect(paperVars["--blackout"]).toBe("#eceef2");
     expect(paperVars["--surface-conversation"]).toBe("#ffffff");
-    expect(paperVars["--action"]).toBe("#111114");
+    expect(paperVars["--action"]).toBe("#111217");
     expect(paperVars["--on-action"]).toBe("#ffffff");
   });
 

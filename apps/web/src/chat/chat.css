@@ -148,7 +148,10 @@
   gap: 16px;
   height: var(--chat-header-height);
   padding: 8px 18px;
-  border-bottom: 1px solid var(--border);
+  background: var(--header-glass-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .chat-heading h2 {
   margin: 0;
@@ -166,10 +169,13 @@
   height: 34px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 /* Hover-capable pointers only: on touch, :hover sticks after the tap that
    opened Pins and leaves the closed button looking pressed. */
@@ -190,8 +196,9 @@
   align-items: center;
   gap: 8px;
   overflow: hidden;
-  font-size: 0.86rem;
-  letter-spacing: -0.01em;
+  font-size: 0.92rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -285,14 +292,16 @@
   left: 50%;
   max-width: calc(100% - 32px);
   margin: 0;
-  padding: 7px 12px;
+  padding: 7px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-pill);
   color: var(--text);
-  background: var(--surface-raised);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  background: var(--surface-glass-bg);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--popover-shadow);
   font-size: 0.78rem;
-  font-weight: 700;
+  font-weight: 600;
   pointer-events: none;
   transform: translate(-50%, 0);
 }
@@ -309,14 +318,16 @@
   margin-inline: auto;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 6px 6px 6px 14px;
+  gap: 12px;
+  padding: 5px 5px 5px 14px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-pill);
   color: var(--text);
-  background: var(--surface-raised);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
-  font-size: 0.82rem;
+  background: var(--surface-glass-bg);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--popover-shadow);
+  font-size: 0.8rem;
   font-weight: 600;
 }
 /* A narrow thread panel wraps the label rather than cutting it off. */
@@ -325,19 +336,20 @@
   line-height: 1.25;
 }
 .chat-jump-latest[data-new] {
-  border-color: var(--terracotta);
+  border-color: var(--accent-border);
 }
 .chat-jump-latest button {
   flex: none;
-  min-height: 30px;
+  min-height: 28px;
   padding: 0 12px;
   border: 1px solid var(--btn-primary-border);
-  border-radius: 10px;
+  border-radius: var(--radius-pill);
   color: var(--on-action);
   background: var(--btn-primary-bg);
   box-shadow: var(--btn-primary-shadow);
   font: inherit;
-  font-weight: 700;
+  font-size: 0.78rem;
+  font-weight: 650;
   cursor: pointer;
 }
 .chat-jump-latest button:focus-visible {
@@ -886,14 +898,11 @@ button.chat-reply-source {
 }
 .chat-link {
   color: var(--link);
-  background: color-mix(in srgb, var(--link) 10%, transparent);
-  border-radius: 4px;
-  padding: 1px 3px;
-  box-shadow: 0 0 6px color-mix(in srgb, var(--link) 8%, transparent);
-  box-decoration-break: clone;
-  text-decoration: none;
+  border-radius: 3px;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 38%, transparent);
   text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
+  text-underline-offset: 2.5px;
   overflow-wrap: anywhere;
 }
 .chat-link-start {
@@ -917,16 +926,13 @@ button.chat-reply-source {
   .call-page a.chat-link {
     transition:
       color var(--motion-fast) var(--ease-out),
-      background-color var(--motion-fast) var(--ease-out),
-      box-shadow var(--motion-fast) var(--ease-out);
+      text-decoration-color var(--motion-fast) var(--ease-out);
   }
 }
 @media (hover: hover) {
   .chat-link:hover {
     color: var(--link-hover);
-    background: color-mix(in srgb, var(--link) 18%, transparent);
-    box-shadow: 0 0 8px color-mix(in srgb, var(--link) 14%, transparent);
-    text-decoration-line: underline;
+    text-decoration-color: currentcolor;
   }
 }
 .chat-link:focus-visible {
@@ -966,14 +972,17 @@ button.chat-reply-source {
 }
 .chat-message-tools {
   position: absolute;
-  right: 11px;
+  right: 12px;
   top: 1px;
   display: flex;
-  padding: 2px;
+  gap: 1px;
+  padding: 3px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 20%);
+  border-radius: 10px;
+  background: var(--surface-glass-bg);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--popover-shadow);
 }
 .chat-message-tools > button,
 .chat-pinned-message > .chat-message-actions-trigger {
@@ -983,7 +992,7 @@ button.chat-reply-source {
   height: 24px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: 7px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -991,8 +1000,8 @@ button.chat-reply-source {
 .chat-pinned-message > .chat-message-actions-trigger {
   position: absolute;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  border-radius: 9px;
+  background: var(--surface-raised);
 }
 .chat-quick-reaction:focus-visible,
 .chat-reply-thread:focus-visible,
@@ -1060,7 +1069,7 @@ button.chat-reply-source {
 .chat-message-actions-trigger[aria-expanded="true"] {
   color: var(--text);
   background: rgb(var(--accent-rgb) / 16%);
-  box-shadow: inset 0 0 0 1px var(--terracotta);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 .chat-reactions,
 .chat-forward-reactions {
@@ -1073,55 +1082,44 @@ button.chat-reply-source {
 .chat-forward-reactions > span {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 4px 10px;
+  gap: 5px;
+  min-height: 27px;
+  padding: 3px 9px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
-  background: var(--surface-raised);
-  box-shadow: inset 0 1px 0 var(--surface-rim);
+  background: var(--surface-hover);
   color: var(--text-muted);
   font: inherit;
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .chat-reaction {
   cursor: pointer;
-  box-shadow:
-    inset 0 1px 0 var(--surface-rim),
-    0 1px 2px rgb(0 0 0 / 24%);
   transition:
     border-color var(--motion-fast) var(--ease-out),
     background-color var(--motion-fast) var(--ease-out),
-    box-shadow var(--motion-fast) var(--ease-out),
-    transform var(--motion-fast) var(--ease-out);
+    color var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-spring);
 }
 .chat-reaction:active:not([aria-disabled="true"]) {
-  transform: translateY(1px) scale(0.96);
+  transform: scale(0.94);
 }
 .chat-reaction[aria-pressed="true"] {
   border-color: var(--accent-border);
-  background: rgb(var(--accent-rgb) / 18%);
+  background: rgb(var(--accent-rgb) / 16%);
   color: var(--accent-soft-text);
-  box-shadow:
-    inset 0 1px 0 rgb(var(--accent-bright-rgb) / 28%),
-    0 1px 3px rgb(0 0 0 / 26%);
 }
 /* Hover-capable pointers only, so a tapped chip does not keep a stale border. */
 @media (hover: hover) {
   .chat-reaction:not([aria-pressed="true"]):not([aria-disabled="true"]):hover {
     border-color: var(--btn-secondary-border-hover);
-    background: var(--hover-pill-bg);
-    box-shadow: var(--hover-pill-shadow);
-    transform: translateY(-1px);
+    background: var(--surface-raised);
+    color: var(--text);
   }
   .chat-reaction[aria-pressed="true"]:not([aria-disabled="true"]):hover {
-    border-color: var(--terracotta-bright);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--accent-bright-rgb) / 38%),
-      0 3px 8px rgb(0 0 0 / 28%);
-    transform: translateY(-1px);
+    border-color: var(--accent-bright);
+    background: rgb(var(--accent-rgb) / 22%);
   }
 }
 .chat-reaction img,
@@ -1150,7 +1148,9 @@ button.chat-reply-source {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  background: rgb(0 0 0 / 60%);
+  background: rgb(0 0 0 / 50%);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 .chat-message-actions {
   z-index: 1000;
@@ -1159,19 +1159,21 @@ button.chat-reply-source {
   overflow-y: auto;
   padding: 6px 8px 8px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  border-radius: var(--radius-popover);
+  background: var(--surface-glass-bg);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--popover-shadow);
   color: var(--text);
 }
 .chat-message-actions:not(.chat-message-actions-drawer) {
-  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  box-shadow: var(--popover-shadow);
 }
 .chat-message-actions-drawer {
   width: min(480px, 100%);
   padding: 8px 16px max(16px, env(safe-area-inset-bottom));
   border-bottom: 0;
-  border-radius: 16px 16px 0 0;
+  border-radius: 22px 22px 0 0;
   box-shadow: none;
 }
 .chat-drawer-handle {
@@ -1899,17 +1901,19 @@ button.chat-mention-card-avatar {
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 @media (hover: hover) {
   .chat-profile-header-actions button:hover:not(:disabled),
   .chat-composer-tool:hover:not(:disabled) {
     color: var(--text);
-    background: var(--hover-pill-bg);
-    box-shadow: var(--hover-pill-shadow);
+    background: var(--surface-hover);
   }
 }
 .chat-profile-header-actions button:focus-visible,
@@ -1975,31 +1979,29 @@ button.chat-mention-card-avatar {
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   transition:
-    transform var(--motion-fast) var(--ease-out),
-    box-shadow var(--motion-fast) var(--ease-out),
-    background-color var(--motion-fast) var(--ease-out);
+    transform var(--motion-fast) var(--ease-spring),
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
-/* Ready to send: a soft chalk glow rather than a solid fill. */
+/* Ready to send: crisp solid botanical pill with clean contrast. */
 .chat-composer-send:not(:disabled) {
-  border-color: color-mix(in srgb, var(--text) 24%, transparent);
-  background: color-mix(in srgb, var(--text) 9%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--text) 22%, transparent);
-  color: var(--text);
+  background: var(--accent);
+  color: #ffffff;
 }
 @media (hover: hover) {
   .chat-composer-send:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--text) 15%, transparent);
-    box-shadow: 0 0 16px color-mix(in srgb, var(--text) 34%, transparent);
+    background: var(--accent-bright);
+    transform: scale(1.03);
   }
 }
 .chat-composer-send:active:not(:disabled) {
-  transform: scale(0.95);
+  transform: scale(0.94);
 }
 /* The paper plane's weight sits up and right of its box: nudge it to look centred. */
 :is(.chat-composer-send, .chat-thread-send-row button[type="submit"]) svg {
@@ -2230,11 +2232,13 @@ button.chat-mention-card-avatar {
   width: min(260px, calc(100% - 36px));
   max-height: min(304px, 40dvh);
   overflow-y: auto;
-  padding: 4px;
+  padding: 5px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+  border-radius: var(--radius-popover);
+  background: var(--surface-glass-bg);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--popover-shadow);
 }
 .chat-emoji-suggestions button {
   display: flex;
@@ -2414,17 +2418,12 @@ button.chat-mention-card-avatar {
   overflow-y: auto;
   min-height: 42px;
   max-height: min(320px, 40vh);
-  padding: 10px 13px;
+  padding: 10px 14px;
   border: 1px solid var(--composer-border);
   border-radius: var(--radius-composer);
   color: var(--text);
   background-color: var(--surface-composer);
-  background-image: linear-gradient(180deg, var(--composer-top-sheen) 0%, transparent 28%);
-  box-shadow:
-    var(--composer-shadow),
-    0 0 0 4px var(--composer-shell-bg),
-    0 0 0 5px var(--composer-shell-border),
-    var(--composer-outer-shadow);
+  box-shadow: var(--composer-shadow);
   font: inherit;
   font-size: 0.875rem;
   line-height: 1.45;
@@ -2438,10 +2437,8 @@ button.chat-mention-card-avatar {
 :is(.chat-composer, .chat-profile-composer) .chat-rich-input:focus {
   border-color: var(--composer-focus-border);
   box-shadow:
-    var(--composer-shadow),
-    0 0 0 4px var(--composer-shell-bg),
-    0 0 0 5px var(--composer-shell-border),
-    var(--composer-outer-shadow);
+    0 0 0 3px var(--composer-focus-ring),
+    var(--composer-shadow);
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.chat-composer, .chat-profile-composer) .chat-rich-input,
@@ -4854,7 +4851,7 @@ a.chat-draft-preview {
   max-width: min(600px, max(50%, calc(100% - 300px)));
   min-width: 0;
   min-height: 0;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--border-subtle);
   background: var(--surface-conversation);
 }
 .chat-thread-resize {
@@ -4880,7 +4877,10 @@ a.chat-draft-preview {
   gap: 10px;
   height: var(--chat-header-height);
   padding: 8px 18px;
-  border-bottom: 1px solid var(--border);
+  background: var(--header-glass-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .chat-thread-heading > div {
   flex: 1;
@@ -5230,10 +5230,10 @@ a.chat-draft-preview {
   max-height: calc(100dvh - 32px);
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-dialog);
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  box-shadow: var(--dialog-shadow);
 }
 /* Line the title up with the body's 16px inset. */
 .chat-forward-dialog > .chat-reaction-picker-heading {
@@ -5394,14 +5394,16 @@ a.chat-draft-preview {
   padding: 24px;
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-dialog);
   background: var(--surface);
   color: var(--text);
   font: inherit;
-  box-shadow: 0 20px 80px rgb(0 0 0 / 45%);
+  box-shadow: var(--dialog-shadow);
 }
 .chat-edit-dialog::backdrop {
-  background: rgb(0 0 0 / 65%);
+  background: rgb(0 0 0 / 50%);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 .chat-edit-dialog h2 {
   margin: 0;
