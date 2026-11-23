@@ -560,7 +560,7 @@ fn platform_show(
     clicked: impl Fn() + Send + 'static,
 ) -> Result<(), String> {
     use winrt_toast_reborn::{
-        Image, Toast, ToastManager,
+        DismissalReason, Image, Toast, ToastManager,
         content::image::{ImageHintCrop, ImagePlacement},
         register,
     };
@@ -600,14 +600,24 @@ fn platform_show(
     }
     let activated = Arc::new(AtomicBool::new(false));
     let done = activated.clone();
+    let closed = activated.clone();
     let cancelled = lifetime.clone();
-    let manager = ToastManager::new(APP_ID).on_activated(None, move |_| {
-        done.store(true, Ordering::Relaxed);
-        wake();
-        if !cancelled.ended() {
-            clicked();
-        }
-    });
+    let manager = ToastManager::new(APP_ID)
+        .on_activated(None, move |_| {
+            done.store(true, Ordering::Relaxed);
+            wake();
+            if !cancelled.ended() {
+                clicked();
+            }
+        })
+        // Closed with its X: gone from Action Center too, so nothing is left
+        // to retract. A timed-out toast stays there and keeps waiting.
+        .on_dismissed(move |dismissed| {
+            if dismissed.is_ok_and(|d| d.reason == DismissalReason::UserCanceled) {
+                closed.store(true, Ordering::Relaxed);
+                wake();
+            }
+        });
     manager.show(&toast).map_err(|_| {
         "Couldn’t show desktop notification. Check Windows notification settings.".to_owned()
     })?;
