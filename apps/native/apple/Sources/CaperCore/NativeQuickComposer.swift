@@ -10,6 +10,10 @@ import Observation
     let close: () -> Void
     let autocomplete = ComposerAutocompleteController()
     var uploadsAvailable = false
+    /// Until the upload check answers, Attach looks ready instead of
+    /// flashing from dimmed to enabled; a tap meanwhile opens once it answers.
+    var uploadsChecked = false
+    @ObservationIgnored private var wantsFiles = false
     var showingFiles = false
     var showingEmoji = false
     var showingGIF = false
@@ -43,6 +47,8 @@ import Observation
         async let gifs: () = model.chat.checkKlipyAvailability()
         do { _ = try await model.api.assetUsage(); try Task.checkCancellation(); uploadsAvailable = !draft.discarded && active }
         catch { uploadsAvailable = false }
+        uploadsChecked = true
+        if wantsFiles { wantsFiles = false; pickFiles() }
         await gifs
     }
     func synchronizePresentation() { draft.presentingDialog = showingFiles || showingEmoji || showingGIF || previewFile != nil || editing != nil }
@@ -66,7 +72,12 @@ import Observation
     func openEmoji() { guard editable else { return }; insertEmoji = autocomplete.insertAction; showingEmoji = true; synchronizePresentation() }
     func pickEmoji(_ emoji: String) { if editable { insertEmoji?(emoji) }; showingEmoji = false; synchronizePresentation() }
     func finishPicker() { insertEmoji = nil; synchronizePresentation(); autocomplete.restoreFocus() }
-    func pickFiles() { guard uploadsAvailable, editable else { return }; showingFiles = true; synchronizePresentation() }
+    var canAttach: Bool { (uploadsAvailable || !uploadsChecked) && editable && draft.files.count < AttachmentPolicy.maxAttachments }
+    func pickFiles() {
+        guard editable, !draft.presentingDialog else { return }
+        guard uploadsChecked else { wantsFiles = true; return }
+        guard uploadsAvailable else { return }; showingFiles = true; synchronizePresentation()
+    }
     func paste() -> Bool {
         guard uploadsAvailable else { return false }; guard editable else { return true }
         do { let files = try NativeAttachmentPaste.stage(); guard !files.isEmpty else { return false }; draft.add(files) }
@@ -192,7 +203,7 @@ import AppKit
         session.synchronize(); recordingBar.isHidden = !recording; editor.isHidden = recording
         incoming.isHidden = !state.incoming
         editor.update(editable: state.editable && !recording)
-        attach.isEnabled = state.uploadsAvailable && state.editable && !state.draft.presentingDialog && state.draft.files.count < AttachmentPolicy.maxAttachments && !recording
+        attach.isEnabled = state.canAttach && !recording
         emoji.isEnabled = state.editable && !recording; send.isEnabled = state.canSend && !recording
         send.title = state.draft.pending == nil ? "Send" : "Retry send"
         status.stringValue = state.draft.error ?? (state.draft.pending != nil && !state.draft.sending ? "Delivery isn’t confirmed. Send retries the same message." : state.draft.progress ?? "")
@@ -292,17 +303,45 @@ import UIKit
         let discardVoice = UIKitMessageDialog.button("Discard") { [state] in state.draft.discardVoice() }; discardVoice.accessibilityIdentifier = "mention-card-voice-discard"
         let retryActions = UIStackView(arrangedSubviews: [voiceRetryButton, discardVoice]); retryActions.spacing = 8
         voiceRetry.addArrangedSubview(voiceRetryText); voiceRetry.addArrangedSubview(retryActions)
-        attach = UIKitMessageDialog.button("Attach files") { [state] in state.pickFiles() }; attach.accessibilityIdentifier = "mention-card-files"
-        emoji = UIKitMessageDialog.button("Insert emoji") { [state] in state.openEmoji() }; emoji.accessibilityIdentifier = "mention-card-emoji"
-        gif = UIKitMessageDialog.button("GIF") { [state] in state.showingGIF = true; state.synchronizePresentation() }; gif.accessibilityIdentifier = "mention-card-gif"
+        attach = Self.tool(symbol: "plus", label: "Attach files") { [state] in state.pickFiles() }; attach.accessibilityIdentifier = "mention-card-files"
+        attach.addAction(UIAction { _ in AttachGalleryCache.warm() }, for: .touchDown)
+        emoji = Self.tool(symbol: "face.smiling", label: "Insert emoji") { [state] in state.openEmoji() }; emoji.accessibilityIdentifier = "mention-card-emoji"
+        gif = Self.tool(title: "GIF", label: "GIF") { [state] in state.showingGIF = true; state.synchronizePresentation() }; gif.accessibilityIdentifier = "mention-card-gif"
         send = UIKitMessageDialog.button("Send", primary: true) { [state] in state.send() }; send.accessibilityIdentifier = "mention-card-send"
-        let row = UIStackView(arrangedSubviews: [attach, emoji, send]); row.spacing = 4; row.distribution = .fillEqually
-        let voiceRow = UIStackView(arrangedSubviews: [gif, recordingBar, voice]); voiceRow.spacing = 8
-        [incoming, files!, editor!, row, voiceRow, voiceNotice!, voiceRetry, status].forEach { body.addArrangedSubview($0) }
+        // One toolbar under the field, as the conversation composer: tools
+        // on the left, the microphone and Send on the right.
+        let spacer = UIView(); spacer.setContentHuggingPriority(.fittingSizeLevel, for: .horizontal)
+        let row = UIStackView(arrangedSubviews: [attach, emoji, gif, spacer, voice, send]); row.spacing = 4; row.alignment = .center
+        [attach!, emoji!, gif!, voice!, send!].forEach { $0.setContentHuggingPriority(.required, for: .horizontal) }
+        row.setCustomSpacing(8, after: voice)
+        [incoming, files!, editor!, recordingBar!, row, voiceNotice!, voiceRetry, status].forEach { body.addArrangedSubview($0) }
         files.heightChanged = { [weak self] in self?.view.invalidateIntrinsicContentSize() }
         status.accessibilityIdentifier = "mention-card-error"
     }
-    override func viewDidLoad() { super.viewDidLoad(); startTask = Task { [state] in await state.start() }; AttachGalleryCache.warm(); observe() }
+    override func viewDidLoad() { super.viewDidLoad(); startTask = Task { [state] in await state.start() }; observe() }
+    /// A borderless toolbar control: a tap dims its glyph briefly and it
+    /// never takes a filled or hover-like wash.
+    private static func tool(symbol: String? = nil, title: String? = nil, label: String, action: @escaping () -> Void) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        if let symbol { config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)) }
+        if let title {
+            let font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Bold", size: 13) ?? .boldSystemFont(ofSize: 13))
+            config.attributedTitle = AttributedString(title, attributes: AttributeContainer([.font: font]))
+        }
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
+        let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
+        button.accessibilityLabel = label
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.configurationUpdateHandler = { button in
+            var config = button.configuration
+            let color = UIColor(button.isEnabled ? CaperTheme.text : CaperTheme.muted)
+            config?.baseForegroundColor = button.isHighlighted ? color.withAlphaComponent(0.5) : color
+            config?.background.backgroundColor = .clear
+            button.configuration = config
+        }
+        return button
+    }
     func stop() { active = false; startTask?.cancel(); session.stop(); closePresentation(); state.stop() }
     private func observe() {
         guard active else { return }
@@ -312,13 +351,14 @@ import UIKit
         guard isViewLoaded else { return }
         let recording = VoiceMessageRecorder.shared.isRecording(state.voiceTarget.owner)
         session.synchronize(); recordingBar.isHidden = !recording; editor.isHidden = recording; incoming.isHidden = !state.incoming
+        attach.isHidden = recording; emoji.isHidden = recording
         editor.update(editable: state.editable && !recording)
-        attach.isEnabled = state.uploadsAvailable && state.editable && !state.draft.presentingDialog && state.draft.files.count < AttachmentPolicy.maxAttachments && !recording
+        attach.isEnabled = state.canAttach && !recording
         emoji.isEnabled = state.editable && !recording; send.isEnabled = state.canSend && !recording
         send.configuration?.title = state.draft.pending == nil ? "Send" : "Retry send"
         status.text = state.draft.error ?? (state.draft.pending != nil && !state.draft.sending ? "Delivery isn’t confirmed. Send retries the same message." : state.draft.progress)
         status.isHidden = status.text == nil; files.isHidden = state.draft.files.isEmpty; files.render()
-        gif.isHidden = state.model.chat.klipy == nil; gif.isEnabled = state.editable && !state.incoming && !state.draft.presentingDialog
+        gif.isHidden = recording || state.model.chat.klipy == nil; gif.isEnabled = state.editable && !state.incoming
         voiceRetryText.text = VoiceMessage.retryNotice(unconfirmed: state.draft.voice?.command != nil)
         voiceRetryButton.isEnabled = state.allowed && !state.draft.presentingDialog
         voiceRetry.isHidden = state.draft.voice == nil || state.draft.sending
