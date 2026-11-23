@@ -1,5 +1,7 @@
 import {
   Fragment,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useId,
@@ -29,12 +31,16 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import ProfileForm, { type ProfileFormHandle } from "../account/ProfileForm";
+import type { ProfileFormHandle } from "../account/ProfileForm";
 import { hostProfileEditor } from "../account/profile-editor";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
-import AppearanceSettings from "../theme/AppearanceSettings";
 import WhatsNew from "../updates/WhatsNew";
+
+// The profile dialog's editors (pictures, crop editor, GIF shrinking, themes)
+// load when it first opens, not with every conversation.
+const ProfileForm = lazy(() => import("../account/ProfileForm"));
+const AppearanceSettings = lazy(() => import("../theme/AppearanceSettings"));
 import { getAccount, getRememberedAccount, logout, subscribeAccount, type Account } from "../account/client";
 import { withPicture } from "../account/pictures";
 import { routeOutput } from "../audio/output";
@@ -568,7 +574,9 @@ export default function Call({
   const [profileOpen, setProfileOpen] = useState(false);
   const profileDialog = useRef<HTMLDialogElement>(null);
   const profileForm = useRef<ProfileFormHandle>(null);
-  const closeProfile = () => profileForm.current?.requestClose(() => setProfileOpen(false));
+  // Before the form's code arrives there is nothing unsaved to confirm.
+  const closeProfile = () =>
+    profileForm.current ? profileForm.current.requestClose(() => setProfileOpen(false)) : setProfileOpen(false);
   const profileBackdrop = useBackdropDismiss(closeProfile);
   // Your own profile card in chat or the member list opens this dialog too.
   useEffect(() => (account ? hostProfileEditor(() => setProfileOpen(true)) : undefined), [!!account]);
@@ -2466,21 +2474,23 @@ export default function Call({
         {/* The body scrolls beneath a fixed heading, so a classic scrollbar's
             gutter never cuts the heading's divider short. */}
         <div className="audio-dialog-body">
-          {profileOpen && account && (
-            <ProfileForm
-              ref={profileForm}
-              account={account}
-              onCancel={() => setProfileOpen(false)}
-              onSaved={(updated) => {
-                setAccount(updated);
-                setName(updated.displayName ?? "");
-                setProfileOpen(false);
-              }}
-            />
-          )}
-          {profileOpen && account?.username && <AppearanceSettings />}
-          {profileOpen && account?.username && <NotificationSettings />}
-          {profileOpen && account?.username && <PrivacySettings />}
+          <Suspense fallback={null}>
+            {profileOpen && account && (
+              <ProfileForm
+                ref={profileForm}
+                account={account}
+                onCancel={() => setProfileOpen(false)}
+                onSaved={(updated) => {
+                  setAccount(updated);
+                  setName(updated.displayName ?? "");
+                  setProfileOpen(false);
+                }}
+              />
+            )}
+            {profileOpen && account?.username && <AppearanceSettings />}
+            {profileOpen && account?.username && <NotificationSettings />}
+            {profileOpen && account?.username && <PrivacySettings />}
+          </Suspense>
         </div>
       </dialog>
       {!embedded && (

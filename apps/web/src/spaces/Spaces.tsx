@@ -1,5 +1,7 @@
 import {
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -61,7 +63,6 @@ import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
 import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
-import { SpaceIconSettings } from "../account/PictureSettings";
 import { withSpaceIcon } from "../account/pictures";
 import { usePeopleSuggestions } from "../components/PeopleSuggestions";
 import { Dialog } from "./Dialog";
@@ -153,6 +154,11 @@ import {
 } from "./client";
 import { friendlyError } from "./errors";
 import "./spaces.css";
+
+// Space icon editing brings the crop editor and GIF shrinking; load it with the settings that show it.
+const SpaceIconSettings = lazy(() =>
+  import("../account/PictureSettings").then((module) => ({ default: module.SpaceIconSettings })),
+);
 
 /** Readable text for server and network failures; native clients share the same sentences. */
 const errorMessage = friendlyError;
@@ -1042,10 +1048,12 @@ function ManageSpaceDialog({
       )}
       {!inviteOnly && (
         <div className="space-icon-section">
-          <SpaceIconSettings
-            space={detail.space}
-            onChanged={(space) => onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members })}
-          />
+          <Suspense fallback={null}>
+            <SpaceIconSettings
+              space={detail.space}
+              onChanged={(space) => onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members })}
+            />
+          </Suspense>
         </div>
       )}
       <InviteLinkManager

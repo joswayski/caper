@@ -2,7 +2,6 @@ import { createFileRoute, redirect, useLocation } from "@tanstack/react-router";
 import { getAccount } from "../account/client";
 import Spaces from "../spaces/Spaces";
 import { beforeSpaces, listDirectConversations, listSpaces, type DirectConversation } from "../spaces/client";
-import { prepareSpaceLanding } from "../spaces/navigation";
 import SpacesLoading from "../spaces/SpacesLoading";
 
 export const Route = createFileRoute("/spaces")({
@@ -22,6 +21,9 @@ export const Route = createFileRoute("/spaces")({
       // Start spaces and DMs with the account read instead of after it, saving a
       // round trip; a signed-out visitor's extra requests are ignored.
       const spaces = listSpaces().catch(() => undefined);
+      // Landing pulls in the chat client (uploads, voice, image encoders). Import it
+      // here, beside the requests, so the entry chunk every page loads stays small.
+      const navigation = import("../spaces/navigation");
       // Read DMs beside the landing conversation so the sidebar arrives whole,
       // but never hold the conversation for them: Spaces fetches a late list itself.
       let initialDirects: DirectConversation[] | undefined;
@@ -36,7 +38,9 @@ export const Route = createFileRoute("/spaces")({
         throw redirect({ href: beforeSpaces("/profile", location.searchStr), replace: true });
       const initialSpaceList = await spaces;
       const landing = initialSpaceList
-        ? await prepareSpaceLanding(account.id, initialSpaceList.spaces, new URLSearchParams(location.searchStr))
+        ? await (
+            await navigation
+          ).prepareSpaceLanding(account.id, initialSpaceList.spaces, new URLSearchParams(location.searchStr))
         : undefined;
       return { initialAccount: account, initialSpaceList, initialDirects, ...landing, entrySearch: location.searchStr };
     },
