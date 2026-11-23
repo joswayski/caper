@@ -272,11 +272,6 @@ import SwiftUI
     /// past its neighbors inside the composer.
     override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsetsZero }
 
-    override func accessibilityFrame() -> NSRect {
-        guard window != nil else { return super.accessibilityFrame() }
-        return NSAccessibility.screenRect(fromView: self, rect: bounds)
-    }
-
     override var intrinsicContentSize: NSSize {
         let text = attributedTitle.size()
         let bare = kind == .plain || kind == .text
