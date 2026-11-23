@@ -15,6 +15,9 @@ use std::rc::Rc;
 pub(super) struct Shown {
     groups: Vec<(String, Vec<(Member, usize)>)>,
     query: String,
+    /// Which members' pictures had loaded: a picture arriving redraws the
+    /// list, which otherwise kept the mascot or initial it first showed.
+    pictures: Vec<bool>,
 }
 
 /// A member's section: online (or idle), offline, or unknown.
@@ -41,6 +44,14 @@ impl App {
             *self.members_shown.borrow_mut() = Shown::default();
             return;
         };
+        ui.members_title.set_label("Members");
+        ui.members_count
+            .set_label(&detail.members.len().to_string());
+        // A closed list is built when it opens (the toggle renders), not on
+        // every presence change while nobody can see it.
+        if !ui.members_toggle.is_active() || state.feedback_open {
+            return;
+        }
         let query = ui.member_search.text().trim().to_lowercase();
         let matches = |member: &&Member| {
             member.display_name.to_lowercase().contains(&query)
@@ -67,10 +78,23 @@ impl App {
             }
             None => vec![(String::new(), sectioned(detail.members.iter().collect()))],
         };
-        let next = Shown { groups, query };
-        ui.members_title.set_label("Members");
-        ui.members_count
-            .set_label(&detail.members.len().to_string());
+        let pictures = groups
+            .iter()
+            .flat_map(|(_, members)| members)
+            .map(|(member, _)| {
+                self.images.picture_ready(&Avatar::new(
+                    &member.display_name,
+                    member.avatar_id,
+                    &member.avatar_asset,
+                    &member.avatar_url,
+                ))
+            })
+            .collect();
+        let next = Shown {
+            groups,
+            query,
+            pictures,
+        };
         if *self.members_shown.borrow() == next {
             return;
         }

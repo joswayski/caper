@@ -406,6 +406,9 @@ struct State {
 impl State {
     /// A fresh DM list; an open DM keeps its peer's current name.
     fn set_directs(&mut self, directs: Vec<DirectConversation>) {
+        if self.directs == directs {
+            return;
+        }
         self.directs = directs;
         if let Some(direct) = &self.direct
             && let Some(entry) = self.directs.iter().find(|entry| &entry.id == direct)
@@ -4384,7 +4387,7 @@ impl App {
                 ..
             } if epoch == state.epoch && revision == state.unread_revision => {
                 let mut reads = HashMap::new();
-                state.unread = unread
+                let counts: HashMap<_, _> = unread
                     .spaces
                     .into_iter()
                     .map(|space| {
@@ -4406,6 +4409,11 @@ impl App {
                         (space.id, channels)
                     })
                     .collect();
+                // Each poll usually matches what the sidebar already shows.
+                let changed = state.unread != counts
+                    || state.reads != reads
+                    || state.feedback_waiting != unread.feedback_waiting;
+                state.unread = counts;
                 state.reads = reads;
                 // A closed inbox loads ahead when its count changes, so it
                 // opens on these notifications.
@@ -4415,7 +4423,9 @@ impl App {
                     self.load_inbox(state, false, true);
                 }
                 state.feedback_waiting = unread.feedback_waiting;
-                state.layout += 1;
+                if changed {
+                    state.layout += 1;
+                }
                 self.clear_open_unread(state);
             }
             Event::ChannelRead {

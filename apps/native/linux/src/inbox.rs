@@ -330,12 +330,20 @@ impl App {
             glib::Propagation::Proceed
         });
         // The 15-second refresh, checked each second while open.
+        // It ends with its own window: one reopened within the second
+        // starts its own clock instead of running two.
         let app = Rc::downgrade(self);
+        let own = window.downgrade();
         glib::timeout_add_seconds_local(1, move || {
             let Some(app) = app.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if app.inbox_window.borrow().is_none() {
+            if app
+                .inbox_window
+                .borrow()
+                .as_ref()
+                .is_none_or(|open| own.upgrade().is_none_or(|own| own != open.window))
+            {
                 return glib::ControlFlow::Break;
             }
             if let Ok(mut state) = app.state.try_borrow_mut()

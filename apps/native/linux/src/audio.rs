@@ -362,12 +362,19 @@ impl App {
         });
         self.render_audio();
         window.present();
+        // It ends with its own window, so reopening never runs two.
         let weak = Rc::downgrade(self);
+        let own = window.downgrade();
         glib::timeout_add_local(METER, move || {
             let Some(app) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if app.audio.borrow().is_none() {
+            if app
+                .audio
+                .borrow()
+                .as_ref()
+                .is_none_or(|open| own.upgrade().is_none_or(|own| own != open.window))
+            {
                 return glib::ControlFlow::Break;
             }
             app.receive_reports();
@@ -952,11 +959,17 @@ impl App {
         self.render_report();
         window.present();
         let weak = Rc::downgrade(self);
+        let own = window.downgrade();
         glib::timeout_add_local(Duration::from_secs(1), move || {
             let Some(app) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if app.report.borrow().is_none() {
+            if app
+                .report
+                .borrow()
+                .as_ref()
+                .is_none_or(|open| own.upgrade().is_none_or(|own| own != open.window))
+            {
                 return glib::ControlFlow::Break;
             }
             app.receive_reports();

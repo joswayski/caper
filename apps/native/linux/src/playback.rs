@@ -19,6 +19,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The clock while a voice message plays or loads, and while it's paused
+/// or failed (only checking that its card still shows).
+const PLAYING_TICK: Duration = Duration::from_millis(33);
+const IDLE_TICK: Duration = Duration::from_secs(1);
+
 /// Waveform bars: 3 px wide, 5 px apart, as on the desktop.
 const BAR: f64 = 3.0;
 const PITCH: f64 = 5.0;
@@ -109,7 +114,9 @@ pub struct Voice {
     streams: Rc<Streams>,
     current: RefCell<Option<Current>>,
     cards: RefCell<Vec<Card>>,
-    ticking: Cell<bool>,
+    /// The running clock's period and generation; a clock whose
+    /// generation is old ends at its next turn.
+    ticking: Cell<(u64, Option<Duration>)>,
 }
 
 impl Voice {
@@ -118,7 +125,7 @@ impl Voice {
             streams,
             current: RefCell::default(),
             cards: RefCell::default(),
-            ticking: Cell::new(false),
+            ticking: Cell::new((0, None)),
         }
     }
 
@@ -203,16 +210,27 @@ impl Voice {
 
     /// Keeps the clock moving while a voice message is loaded; it stops
     /// at the end, or once its message leaves the screen (another channel,
-    /// a closed thread, sign-out).
+    /// a closed thread, sign-out). Paused or failed, nothing moves, so it
+    /// only checks once a second whether the card is still showing.
     fn tick(self: &Rc<Self>) {
-        if self.ticking.replace(true) {
+        self.tick_every(PLAYING_TICK);
+    }
+
+    fn tick_every(self: &Rc<Self>, period: Duration) {
+        let (generation, current) = self.ticking.get();
+        if current == Some(period) {
             return;
         }
+        let generation = generation.wrapping_add(1);
+        self.ticking.set((generation, Some(period)));
         let voice = Rc::downgrade(self);
-        glib::timeout_add_local(Duration::from_millis(33), move || {
+        glib::timeout_add_local(period, move || {
             let Some(voice) = voice.upgrade() else {
                 return glib::ControlFlow::Break;
             };
+            if voice.ticking.get().0 != generation {
+                return glib::ControlFlow::Break;
+            }
             let state = voice
                 .current
                 .borrow_mut()
@@ -239,11 +257,20 @@ impl Voice {
             } else {
                 voice.render();
             }
-            if voice.current.borrow().is_some() {
-                return glib::ControlFlow::Continue;
+            if voice.current.borrow().is_none() {
+                voice.ticking.set((generation, None));
+                return glib::ControlFlow::Break;
             }
-            voice.ticking.set(false);
-            glib::ControlFlow::Break
+            let wanted = if matches!(state, Some(State::Loading | State::Playing)) {
+                PLAYING_TICK
+            } else {
+                IDLE_TICK
+            };
+            if wanted != period {
+                voice.tick_every(wanted);
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
         });
     }
 

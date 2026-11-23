@@ -140,7 +140,15 @@ pub(super) struct Admin {
 }
 
 impl State {
+    /// The 15 s membership refresh usually finds nothing new; only a
+    /// change rebuilds the sidebar.
     pub(super) fn set_spaces(&mut self, spaces: Spaces) {
+        if self.spaces == spaces.spaces
+            && self.admin.invitations == spaces.invitations
+            && self.admin.limits == spaces.limits
+        {
+            return;
+        }
         self.spaces = spaces.spaces;
         self.admin.invitations = spaces.invitations;
         self.admin.limits = spaces.limits;
