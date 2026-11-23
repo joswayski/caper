@@ -833,6 +833,13 @@ impl Composer {
         Ok(self.text_h)
     }
 
+    /// Whether [`Self::tint_mentions`] can change anything: the draft or its
+    /// IME composition has an `@`, or a tint is still applied.
+    pub fn may_mention(&self) -> bool {
+        let at = u16::from(b'@');
+        !self.mentions.is_empty() || self.text.contains(&at) || self.comp.contains(&at)
+    }
+
     /// Tint the visible draft, not its Markdown source. Layout effects never
     /// change the wire text, selection or IME; refresh even while unfocused.
     pub fn tint_mentions(

@@ -149,16 +149,28 @@ impl App {
     }
 
     /// Membership can change without a keystroke; all three drafts keep their
-    /// tint when focus moves or suggestions are dismissed.
+    /// tint when focus moves or suggestions are dismissed. Runs every frame,
+    /// so the people list is only built when a draft can hold a mention.
     pub fn tint_drafts(&mut self) -> Result<()> {
-        let (people, specials) = self.suggest_people(Field::Main);
-        self.dirty.composer |= self.composer.tint_mentions(&self.g, &people, specials)?;
-        if let Some(t) = &mut self.thread {
-            self.dirty.thread_box |= t.composer.tint_mentions(&self.g, &people, specials)?;
+        let main = self.composer.may_mention();
+        let thread = self
+            .thread
+            .as_ref()
+            .is_some_and(|t| t.composer.may_mention());
+        if main || thread {
+            let (people, specials) = self.suggest_people(Field::Main);
+            if main {
+                self.dirty.composer |= self.composer.tint_mentions(&self.g, &people, specials)?;
+            }
+            if let Some(t) = self.thread.as_mut().filter(|_| thread) {
+                self.dirty.thread_box |= t.composer.tint_mentions(&self.g, &people, specials)?;
+            }
         }
-        let (people, specials) = self.suggest_people(Field::Profile);
-        if let Some(c) = &mut self.profile {
-            self.dirty.profile |= c.field.tint_mentions(&self.g, &people, specials)?;
+        if self.profile.as_ref().is_some_and(|c| c.field.may_mention()) {
+            let (people, specials) = self.suggest_people(Field::Profile);
+            if let Some(c) = &mut self.profile {
+                self.dirty.profile |= c.field.tint_mentions(&self.g, &people, specials)?;
+            }
         }
         Ok(())
     }
