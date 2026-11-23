@@ -594,6 +594,9 @@ public final class AppModel {
     @ObservationIgnored private(set) var notificationFeedLive = false
     /// Set to cut the poll loop's current wait short.
     @ObservationIgnored private var pollSoon = false
+    /// The poll loop's current wait; cancelling it makes the loop look again
+    /// (`pollSoon`, a changed interval) instead of waking four times a second.
+    @ObservationIgnored private var shellPollWait: Task<Void, Never>?
     @ObservationIgnored var shellPollInterval: (live: Duration, offline: Duration) = (.seconds(60), .seconds(15))
     #if os(iOS)
     /// iPhone's notifications feed rides the profiles socket (the Mac's has its own).
@@ -893,12 +896,28 @@ public final class AppModel {
         #endif
     }
 
+    /// The shell poll loop's next wait, or nil once it should poll: its
+    /// interval is over, `pollSoon` cut it short, or the session changed.
+    /// One sleep for the rest of the interval, which
+    /// `notificationFeedChanged` cancels to have it look again.
+    private func nextShellPollWait(attempt: Int, since started: ContinuousClock.Instant) -> Task<Void, Never>? {
+        guard generation == attempt, !pollSoon else { return nil }
+        let interval = notificationFeedLive ? shellPollInterval.live : shellPollInterval.offline
+        let left = interval - (ContinuousClock.now - started)
+        guard left > .zero else { return nil }
+        let wait = Task { _ = try? await Task.sleep(for: left) }
+        shellPollWait = wait
+        return wait
+    }
+
     /// The notifications feed went live or dropped. Coming back refreshes the
     /// shell once, for whatever happened while it was down.
     func notificationFeedChanged(live: Bool) {
         guard live != notificationFeedLive else { return }
         notificationFeedLive = live
         if live, account != nil { pollSoon = true }
+        // Dropping shortens the backstop's interval; coming back polls now.
+        shellPollWait?.cancel()
     }
 
     func receiveProfileFeed(_ raw: [String: Any]) {
@@ -1910,9 +1929,8 @@ public final class AppModel {
                 // Every 60 seconds while the notifications feed is live, else 15;
                 // the feed coming back cuts the wait short.
                 let started = ContinuousClock.now
-                while !Task.isCancelled, let self, self.generation == attempt, !self.pollSoon,
-                      ContinuousClock.now - started < (self.notificationFeedLive ? self.shellPollInterval.live : self.shellPollInterval.offline) {
-                    try? await Task.sleep(for: .milliseconds(250))
+                while !Task.isCancelled, let wait = self?.nextShellPollWait(attempt: attempt, since: started) {
+                    await withTaskCancellationHandler { await wait.value } onCancel: { wait.cancel() }
                 }
                 self?.pollSoon = false
                 guard self?.generation == attempt else { return }
