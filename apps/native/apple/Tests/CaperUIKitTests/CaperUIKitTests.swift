@@ -261,6 +261,10 @@ final class CaperUIKitTests: XCTestCase {
         control(["incomingMessage": ["channelId": "chan00000001", "text": "replying way back", "replyToId": "b00000000002000"]])
         let context = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View original message from")).firstMatch
         XCTAssertTrue(context.waitForExistence(timeout: 10))
+        let replying = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "replying way back")).firstMatch
+        XCTAssertTrue(replying.waitForExistence(timeout: 10))
+        // A new quote card measured before its first layout wrapped at zero width and left a tall gap.
+        XCTAssertLessThan(replying.frame.minY - context.frame.maxY, 60, "The reply sits right under its quote")
         context.tap()
         let target = row("00000000-0000-4000-9000-000000002000")
         XCTAssertTrue(target.waitForExistence(timeout: 15), "Jumps to the replied-to message")

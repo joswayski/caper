@@ -228,6 +228,11 @@ private final class PinCardCell: UICollectionViewCell {
         setJumping(jumping)
     }
 
+    override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        row.prepareFitting(width: attributes.size.width)
+        return super.preferredLayoutAttributesFitting(attributes)
+    }
+
     func setJumping(_ jumping: Bool) {
         go.setTitle(jumping ? "Loading message…" : "Go to message")
         go.isEnabled = !jumping

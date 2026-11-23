@@ -218,6 +218,10 @@ import UIKit
     private let open = UIButton(type: .custom), expand = UIButton(type: .system), thumbnails = UIStackView()
     private var loads: [Task<Void, Never>] = [], scrolling: NSKeyValueObservation?
     private var expanded = false, blocked = false, generation = 0, lastHeight: CGFloat = 0
+    /// The width a self-sizing cell is about to give this view. A new view
+    /// is measured before its first layout, while its bounds are still zero,
+    /// and the cell keeps that height, so it measures at this width instead.
+    public var fittingWidth: CGFloat = 0 { didSet { if fittingWidth != oldValue { invalidateIntrinsicContentSize() } } }
     public init(reference: MessageReply, motionKey: String, chat: ChatModel) {
         self.reference = reference; self.motionKey = motionKey; self.chat = chat; wire = NativeReplyWire(key: motionKey)
         super.init(frame: .zero); layer.addSublayer(panel); layer.addSublayer(wire.layer)
@@ -286,9 +290,10 @@ import UIKit
         let limit = ceil(excerpt.font.lineHeight * 3), more = !blocked && reference.deleted != true && (expanded || full > limit), text = expanded ? full : min(limit, full)
         return (text, more, max(44, 40 + text + (thumbnails.arrangedSubviews.isEmpty ? 0 : 47)) + (more ? 44 : 0) + 13)
     }
-    public override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: metrics(bounds.width).height) }
+    public override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: metrics(fittingWidth > 0 ? fittingWidth : bounds.width).height) }
     public override func layoutSubviews() {
-        super.layoutSubviews(); let width = max(1, bounds.width - 68), m = metrics(bounds.width)
+        super.layoutSubviews(); if bounds.width > 0 { fittingWidth = bounds.width }
+        let width = max(1, bounds.width - 68), m = metrics(bounds.width)
         CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 44, y: 0, width: max(1, bounds.width - 44), height: m.height - 13); CATransaction.commit()
         avatar.frame = CGRect(x: 56, y: 12, width: 16, height: 16)
         let nameX: CGFloat = blocked ? 56 : 78

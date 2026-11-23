@@ -650,6 +650,12 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
 
     private var chipsWidth: CGFloat = 0
 
+    /// Called by the cell before it measures itself at `width`, so the reply
+    /// card wraps its quote at the column's width rather than at zero.
+    func prepareFitting(width: CGFloat) {
+        nativeReply?.fittingWidth = width - 18 - avatarWidth.constant - 10 - 18
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         // A rotation or a different card width rewraps the chips.
@@ -916,6 +922,11 @@ final class MessageCell: UICollectionViewCell {
     }
 
     func arrive() { row.arrive() }
+
+    override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        row.prepareFitting(width: attributes.size.width)
+        return super.preferredLayoutAttributesFitting(attributes)
+    }
 
     override func prepareForReuse() {
         super.prepareForReuse()
