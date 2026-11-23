@@ -2078,7 +2078,9 @@ const DirectNavigation = memo(function DirectNavigation({
           .map((conversation) => {
             const conversationNotifications = overrideFor(notifications, { conversationId: conversation.id });
             const muted = isMuted(conversationNotifications?.mutedUntil);
-            const unread = !muted && !blockedIds.has(conversation.peer.id) && directUnread(conversation);
+            const blocked = blockedIds.has(conversation.peer.id);
+            const unread = !muted && !blocked && directUnread(conversation);
+            const detail = blocked ? "Blocked" : directStatus(conversation) === "outgoing" ? "Request sent" : undefined;
             const errorKey = `dm:${conversation.id}`;
             return (
               <li key={conversation.id} data-muted={muted ? "" : undefined}>
@@ -2087,6 +2089,7 @@ const DirectNavigation = memo(function DirectNavigation({
                     type="button"
                     className="channel-select direct-select"
                     data-unread={unread ? "" : undefined}
+                    data-detail={detail ? "" : undefined}
                     aria-current={conversation.id === activeDirectId ? "page" : undefined}
                     title={`@${conversation.peer.username}`}
                     aria-busy={pendingDirect === conversation.id}
@@ -2098,11 +2101,7 @@ const DirectNavigation = memo(function DirectNavigation({
                       <Avatar person={conversation.peer} name={conversation.peer.displayName} />
                     </span>
                     <span>{conversation.peer.displayName}</span>
-                    {blockedIds.has(conversation.peer.id) ? (
-                      <small>Blocked</small>
-                    ) : (
-                      directStatus(conversation) === "outgoing" && <small>Request sent</small>
-                    )}
+                    {detail && <small>{detail}</small>}
                     {/* Muted DMs keep their quiet presentation. */}
                     {muted ? (
                       <>

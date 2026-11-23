@@ -1,6 +1,5 @@
 import { Images, ImageUp, Pencil, RefreshCw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import AttachmentEditor from "../chat/AttachmentEditor";
+import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { PictureSourceSheet, touchLayout } from "../chat/AttachmentPicker";
 import type { AttachmentEdit } from "../chat/edit";
 import { pngIsAnimated, webpInfo } from "../chat/prepare";
@@ -15,6 +14,9 @@ import AvatarHistory from "./AvatarHistory";
 import { animatedPicture, PictureError, preparePicture, uploadSpaceIcon, type PreparedPicture } from "./picture-upload";
 import { animationUploadsUnchanged, gifSize, pictureErrorMessage, pictureMessages } from "./pictures";
 import "./pictures.css";
+
+// Loaded on first edit, as in the composer, so the editor stays out of the page bundle.
+const AttachmentEditor = lazy(() => import("../chat/AttachmentEditor.tsx"));
 
 type Phase =
   | { kind: "idle" }
@@ -396,17 +398,19 @@ function PictureEditor({
         </div>
       ) : (
         draft && (
-          <AttachmentEditor
-            file={draft.file}
-            kind="image"
-            name={title}
-            tool="crop"
-            pictureMode
-            saveLabel={localDraft ? "Apply crop" : undefined}
-            anchor={frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit") ?? undefined}
-            onCancel={cancelEdit}
-            onSave={(edit) => void upload(draft.file, edit)}
-          />
+          <Suspense fallback={null}>
+            <AttachmentEditor
+              file={draft.file}
+              kind="image"
+              name={title}
+              tool="crop"
+              pictureMode
+              saveLabel={localDraft ? "Apply crop" : undefined}
+              anchor={frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit") ?? undefined}
+              onCancel={cancelEdit}
+              onSave={(edit) => void upload(draft.file, edit)}
+            />
+          </Suspense>
         )
       )}
       {error ? (

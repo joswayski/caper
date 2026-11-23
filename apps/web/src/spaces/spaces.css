@@ -502,21 +502,23 @@ html[data-resizing-sections] * {
 }
 @media (max-width: 760px), (hover: none), (pointer: coarse) {
   /* Touch rows are tall enough for a status under the name, so neither crowds
-     the other down to a letter in a phone-width column. */
-  .direct-line .direct-select:has(> small) {
+     the other down to a letter in a phone-width column. A data attribute, not
+     `:has(> small)`: a `:has()` ahead of the `> *` subject restyled the page on
+     every DOM change, which made scrolling the conversation stutter. */
+  .direct-line .direct-select[data-detail] {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-content: center;
     align-items: center;
     column-gap: 6px;
   }
-  .direct-line .direct-select:has(> small) > * {
+  .direct-line .direct-select[data-detail] > * {
     grid-row: 1 / 3;
   }
-  .direct-line .direct-select:has(> small) > span:nth-child(2) {
+  .direct-line .direct-select[data-detail] > span:nth-child(2) {
     grid-area: 1 / 2;
   }
-  .direct-line .direct-select:has(> small) > small {
+  .direct-line .direct-select[data-detail] > small {
     grid-area: 2 / 2;
     line-height: 1.25;
   }
