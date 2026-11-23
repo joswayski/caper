@@ -182,7 +182,10 @@ export default function ProfileForm({
             This is what people see in conversations.
           </small>
           <div className="mt-7 flex flex-wrap items-center justify-end gap-3">
-            <span className="mr-auto inline-flex items-center gap-2 text-[.85rem] text-content-muted" role="status">
+            <span
+              className="pointer-events-none select-none inline-flex items-center gap-2 text-[.85rem] text-content-muted empty:hidden"
+              role="status"
+            >
               {dirty && (
                 <>
                   <span className="size-1.5 rounded-full bg-terracotta" aria-hidden="true" />

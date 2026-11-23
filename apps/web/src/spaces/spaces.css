@@ -806,7 +806,7 @@ html[data-resizing-sections] * {
   transform: translateY(-1px);
 }
 @media (hover: hover) {
-  .channel-select:hover {
+  .channel-select:hover:not([aria-current="page"]) {
     color: var(--text);
     background: var(--surface-hover);
   }
@@ -814,6 +814,7 @@ html[data-resizing-sections] * {
 .channel-select[aria-current="page"] {
   color: var(--text);
   background: rgb(var(--accent-rgb) / 0.16);
+  cursor: default;
 }
 .channel-select[aria-current="page"] svg {
   color: var(--terracotta-bright);
@@ -1020,6 +1021,9 @@ html[data-resizing-sections] * {
 .direct-line .direct-select:hover,
 .direct-line .direct-select[aria-current="page"] {
   background: transparent;
+}
+.direct-line .direct-select[aria-current="page"] {
+  cursor: default;
 }
 .direct-line:has(.direct-select[aria-current="page"]) {
   background: rgb(var(--accent-rgb) / 0.16);

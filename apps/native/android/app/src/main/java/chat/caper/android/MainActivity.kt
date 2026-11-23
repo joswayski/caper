@@ -4311,13 +4311,15 @@ internal fun counterTone(count: Int): Color = when {
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             error?.takeIf { submitted }?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
-        if (close != null && changed) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Box(Modifier.size(5.dp).background(Terracotta, CircleShape))
-            Text("Unsaved changes", color = TextMuted, fontSize = 12.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+            if (close != null && changed) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(5.dp).background(Terracotta, CircleShape))
+                Text("Unsaved changes", color = TextMuted, fontSize = 12.sp)
+            }
+            PrimaryButton(if (account.username.isNullOrEmpty()) "Finish setup" else "Save profile", "Saving…", busy, profileValid(username, name, account.displayName) && (close == null || changed),
+                minWidth = if (close == null) 200.dp else 148.dp,
+                contentPadding = PaddingValues(horizontal = if (close == null) 20.dp else 16.dp, vertical = if (close == null) 16.dp else 8.dp)) { submitted = true; submit(username, name) }
         }
-        PrimaryButton(if (account.username.isNullOrEmpty()) "Finish setup" else "Save profile", "Saving…", busy, profileValid(username, name, account.displayName) && (close == null || changed),
-            Modifier.align(Alignment.End), minWidth = if (close == null) 200.dp else 148.dp,
-            contentPadding = PaddingValues(horizontal = if (close == null) 20.dp else 16.dp, vertical = if (close == null) 16.dp else 8.dp)) { submitted = true; submit(username, name) }
     }
     // Onboarding spaces the form as the Edit profile dialog does.
     if (close == null) AuthFrame { Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) { form() } }

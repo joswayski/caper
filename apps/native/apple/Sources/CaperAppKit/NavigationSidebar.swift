@@ -161,6 +161,9 @@ import CaperCore
         accountPresence.cornerRadius = 5; accountPresence.borderWidth = 2
         accountPresence.borderColor = NativeStyle.raised.cgColor
         accountName.setAccessibilityElement(false)
+        accountName.usesSingleLineMode = true
+        accountName.maximumNumberOfLines = 1
+        accountName.alignment = .left
         newMessage.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
         newMessage.imagePosition = .imageLeft; newMessage.alignment = .left
         newMessage.font = NativeStyle.font(13); newMessage.profileFeedback = true
@@ -282,7 +285,13 @@ import CaperCore
         CATransaction.begin(); CATransaction.setDisableActions(true)
         accountPresence.frame = NSRect(x: accountAvatar.frame.maxX - 8, y: accountAvatar.frame.maxY - 8, width: 10, height: 10)
         CATransaction.commit()
-        accountName.frame = NSRect(x: accountAvatar.frame.maxX + 6, y: row + 6, width: max(0, account.frame.maxX - accountAvatar.frame.maxX - 10), height: 20)
+        let nameHeight = ceil(accountName.cell?.cellSize.height ?? 16)
+        accountName.frame = NSRect(
+            x: accountAvatar.frame.maxX + 8,
+            y: row + ((32 - nameHeight) / 2).rounded(),
+            width: max(0, account.frame.maxX - accountAvatar.frame.maxX - 12),
+            height: nameHeight
+        )
         accountName.isHidden = account.frame.width < 76
     }
 
@@ -833,6 +842,7 @@ private final class NativeDirectRow: NativeView {
         super.init()
         layer?.cornerRadius = 6
         open.layer?.backgroundColor = NSColor.clear.cgColor
+        open.showsDefaultHover = false
         [open, avatar, name, you, badge, bell, options].forEach { addSubview($0) }
         [name, you, badge, bell].forEach { $0.setAccessibilityElement(false) }
         you.textColor = NativeStyle.muted
@@ -844,10 +854,15 @@ private final class NativeDirectRow: NativeView {
         options.focusChanged = { [weak self] focused in self?.optionsFocused = focused; self?.updateHover() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func applyTheme() {
+        super.applyTheme()
+        updateHover()
+    }
     @objc private func showMenu() { openMenu?() }
     func update(name: String, avatarID: Int?, picture: CaperPicture?, selected: Bool, unread: Bool,
                 count: Int?, muted: Bool, isSelf: Bool, busy: Bool) {
         self.selected = selected
+        open.showsHandCursor = !selected
         self.name.stringValue = name; self.name.font = NativeStyle.font(13, bold: unread)
         self.name.textColor = selected || unread ? NativeStyle.text : NativeStyle.muted
         avatar.update(name: name, avatarId: avatarID, picture: picture)
@@ -896,7 +911,7 @@ private final class NativeDirectRow: NativeView {
     override func mouseEntered(with event: NSEvent) { hovered = true; updateHover() }
     override func mouseExited(with event: NSEvent) { hovered = false; updateHover() }
     private func updateHover() {
-        layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : hovered ? NSColor.white.withAlphaComponent(0.06) : .clear).cgColor
+        layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : hovered ? NativeStyle.hoverWash : .clear).cgColor
         options.layer?.opacity = hovered || optionsFocused ? 1 : 0
     }
 }
@@ -957,6 +972,9 @@ final class NavigationRow: NativeView {
     /// row, such as a quiet channel's headphones.
     var trailingReserve: CGFloat = 0 { didSet { if trailingReserve != oldValue { needsLayout = true } } }
     private let bell = NSImageView()
+    private var selected = false
+    private var hovered = false
+    private var tracking: NSTrackingArea?
     var openMenu: (() -> Void)?
 
     init(_ name: String, symbol: String, selected: Bool, unread: Bool, muted: Bool, open action: @escaping () -> Void) {
@@ -966,6 +984,7 @@ final class NavigationRow: NativeView {
         open.imagePosition = .imageLeft
         open.alignment = .left
         open.layer?.backgroundColor = NSColor.clear.cgColor
+        open.showsDefaultHover = false
         bell.image = NSImage(systemSymbolName: "bell.slash", accessibilityDescription: nil)
         bell.contentTintColor = NativeStyle.muted
         bell.setAccessibilityElement(false)
@@ -976,9 +995,14 @@ final class NavigationRow: NativeView {
         update(name, symbol: symbol, selected: selected, unread: unread, muted: muted)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func applyTheme() {
+        super.applyTheme()
+        updateHover()
+    }
     @objc private func showMenu() { openMenu?() }
     func update(_ name: String, symbol: String, selected: Bool, unread: Bool, muted: Bool) {
-        layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : .clear).cgColor
+        self.selected = selected
+        open.showsHandCursor = !selected
         open.title = name + (unread ? "  •" : "")
         open.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         open.font = NativeStyle.font(13, bold: unread)
@@ -986,6 +1010,7 @@ final class NavigationRow: NativeView {
         open.setAccessibilityLabel(name)
         open.setAccessibilityValue([selected ? "Selected" : "", unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", "))
         bell.isHidden = !muted
+        updateHover()
         needsLayout = true
     }
     override func layout() {
@@ -997,6 +1022,21 @@ final class NavigationRow: NativeView {
         detail.frame = NSRect(x: trailing, y: (bounds.height - 16) / 2, width: detailWidth, height: 16)
         // Under the section heading's own options, so they line up down the list.
         options.frame = NSRect(x: bounds.width - 28, y: 0, width: 28, height: bounds.height)
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; updateHover() }
+    override func mouseExited(with event: NSEvent) { hovered = false; updateHover() }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { hovered = false; updateHover() }
+    }
+    private func updateHover() {
+        layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : hovered ? NativeStyle.hoverWash : .clear).cgColor
     }
 }
 

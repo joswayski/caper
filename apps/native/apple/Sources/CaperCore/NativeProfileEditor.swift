@@ -57,13 +57,30 @@ struct NativeProfileEditorSheet: View {
 #if os(macOS)
 import AppKit
 
+private final class NonInteractiveLabel: NSTextField {
+    override var acceptsFirstResponder: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 @MainActor final class AppKitProfileEditor: AppKitSettingsDialog, NSTextFieldDelegate {
     let state: NativeProfileEditing
     private let choose: () -> Void
     private let username = AppKitKitField(), displayName = AppKitKitField()
     private let hint = AppKitKit.label("", size: 12, color: AppKitKit.muted)
     private let error = AppKitKit.label("", size: 12, color: AppKitKit.error)
-    private let unsaved = AppKitKit.label("Unsaved changes", size: 12, color: AppKitKit.muted)
+    private let unsaved: NSTextField = {
+        let label = NonInteractiveLabel(labelWithString: "Unsaved changes")
+        label.font = AppKitKit.font(12)
+        label.textColor = AppKitKit.muted
+        label.isEditable = false
+        label.isSelectable = false
+        label.isBordered = false
+        label.drawsBackground = false
+        label.usesSingleLineMode = true
+        label.maximumNumberOfLines = 1
+        label.refusesFirstResponder = true
+        return label
+    }()
     private let avatar = AppKitAvatar()
     private let prepared = NSImageView()
     private let sign = AppKitKit.image("caper-change-me", size: 112)
@@ -92,7 +109,18 @@ import AppKit
         username.nextKeyView = displayName
         save = AppKitKitButton("Save profile", kind: .primary) { [state] in state.save() }
         save.setAccessibilityIdentifier("profile-save"); unsaved.setAccessibilityIdentifier("profile-unsaved")
-        let actions = NSStackView(views: [unsaved, NSView(), save]); actions.spacing = 12
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        unsaved.setContentHuggingPriority(.required, for: .horizontal)
+        unsaved.setContentCompressionResistancePriority(.required, for: .horizontal)
+        save.setContentHuggingPriority(.required, for: .horizontal)
+        save.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let actions = NSStackView(views: [spacer, unsaved, save])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 12
         setRows([pictures, AppKitKit.divider(), Self.heading("Username"), username,
             Self.note("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores."),
             Self.heading("Display name"), displayName, hint, error, actions])
@@ -248,7 +276,14 @@ struct NativeProfileForm: UIViewControllerRepresentable {
         username.autocapitalizationType = .none; username.autocorrectionType = .no; username.returnKeyType = .next; displayName.returnKeyType = .done
         save = Self.button("Save profile", primary: true) { [state] in state.save() }; save.accessibilityIdentifier = "profile-save"
         unsaved.accessibilityIdentifier = "profile-unsaved"
-        let actions = UIStackView(arrangedSubviews: [unsaved, UIView(), save]); actions.spacing = 12
+        unsaved.isUserInteractionEnabled = false
+        let spacer = UIView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        unsaved.setContentHuggingPriority(.required, for: .horizontal)
+        save.setContentHuggingPriority(.required, for: .horizontal)
+        let actions = UIStackView(arrangedSubviews: [spacer, unsaved, save])
+        actions.alignment = .center
+        actions.spacing = 12
         [pictures, Self.label("Username", bold: true), username, Self.label("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores."),
          Self.label("Display name", bold: true), displayName, hint, error, actions].forEach { body.addArrangedSubview($0) }
         observe()

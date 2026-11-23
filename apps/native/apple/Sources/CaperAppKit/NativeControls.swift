@@ -162,6 +162,9 @@ final class NativeButton: NSButton {
     }
 
     @objc private func pressed() { actionHandler() }
+    var showsHandCursor = true {
+        didSet { if showsHandCursor != oldValue { window?.invalidateCursorRects(for: self) } }
+    }
     override var isEnabled: Bool {
         didSet { alphaValue = isEnabled ? 1 : 0.45; needsLayout = true; window?.invalidateCursorRects(for: self) }
     }
@@ -233,7 +236,7 @@ final class NativeButton: NSButton {
     /// Every enabled button shows the hand, as web's buttons do.
     override func resetCursorRects() {
         super.resetCursorRects()
-        if isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
+        if isEnabled && showsHandCursor { addCursorRect(bounds, cursor: .pointingHand) }
     }
 
     static func icon(_ label: String, symbol: String, action: @escaping () -> Void) -> NativeButton {
