@@ -9,7 +9,7 @@ import {
 import { Ban, MoreHorizontal, Pin, SmilePlus } from "lucide-react";
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
-import { preloadReactionPicker, quickReactions } from "./MessageActions.tsx";
+import { preloadReactionPicker, useQuickReactions } from "./MessageActions.tsx";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { ForwardCard } from "./Forwarding.tsx";
 import { ReplyContext } from "./Replies.tsx";
@@ -370,6 +370,11 @@ function MessageRowView({
   // row's elements, so only a row that shows its buttons draws them.
   const [engaged, setEngaged] = useState(false);
   const tools = useSyncExternalStore(subscribeToolsShown, toolsAlwaysShown, () => false) || engaged || !!actionMode;
+  // A new quick-reaction list waits until the pointer and focus leave, so a
+  // button never moves under them.
+  const latestQuick = useQuickReactions();
+  const [quickReactions, setQuickReactions] = useState(latestQuick);
+  if (!engaged && !actionMode && quickReactions.join() !== latestQuick.join()) setQuickReactions(latestQuick);
   const run = runFirst === undefined ? undefined : { first: runFirst, count: runCount };
   const edited =
     "content" in message && !message.forward && !message.deletedAt && (message.revision ?? 1) > 1 ? (

@@ -5146,9 +5146,10 @@ enum ChatTimestamp {
     }
 }
 
-/// Web's quick reactions, first in message actions.
-enum MessageQuickReactions {
-    static let emoji = ["👍", "❤️", "😂"]
+/// The account's quick reactions, first in message actions. `AppModel`
+/// keeps them current: its most used in the last 30 days, then defaults.
+@MainActor enum MessageQuickReactions {
+    static var emoji = Account.defaultQuickReactions
 }
 
 #if os(iOS)
@@ -6726,7 +6727,7 @@ struct MessageActionsSheet: View {
     @State private var forwardRequested = false
     @State private var reactionsRequested: String?
 
-    private let quickReactions = MessageQuickReactions.emoji
+    private var quickReactions: [String] { MessageQuickReactions.emoji }
 
     /// A deleted message opens its thread, when it has one, and copies its ID.
     private var deletedThread: Bool { reply != nil && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) }

@@ -3262,8 +3262,6 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     }
 }
 
-private val quickReactions = listOf("👍", "❤️", "😂")
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun MessageActionsSheet(
     message: ChatMessage,
@@ -3311,7 +3309,7 @@ private val quickReactions = listOf("👍", "❤️", "😂")
             Text("Message actions", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             if (canReact) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    quickReactions.forEach { emoji ->
+                    (state.account?.quickReactionList() ?: DEFAULT_QUICK_REACTIONS).forEach { emoji ->
                         val selected = message.reactions.firstOrNull { it.emoji == emoji }?.authorIds?.contains(own) == true
                         IconButton(
                             onClick = { setReaction(message.id, emoji, !selected); onDismiss() },

@@ -29,8 +29,48 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
 // ---------------------------------------------------------------------------
 // The hover toolbar.
 
-/// Quick reactions at the start of the toolbar, as in the egui client.
-pub const QUICK: [&str; 3] = ["\u{1f44d}", "\u{2764}\u{fe0f}", "\u{1f602}"];
+/// The account's quick reactions at the start of the toolbar: its most used
+/// (`Account::quick_reactions`). UI Automation reads labels off the UI thread.
+static QUICK: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+/// A newer list, shown once the toolbar leaves its row (`settle_quick`), so a
+/// button never changes under the pointer.
+static PENDING: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// `Live` sets the list when the account loads and after each reaction you add.
+pub fn set_quick(quick: Vec<String>) {
+    *PENDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(quick);
+}
+
+/// Shows a pending list; called when the toolbar moves or hides.
+pub fn settle_quick() {
+    if let Some(quick) = PENDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        *QUICK
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = quick;
+    }
+}
+
+/// Quick reaction `k` of the three.
+pub fn quick(k: usize) -> String {
+    QUICK
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(k)
+        .cloned()
+        .unwrap_or_else(|| {
+            caper_client::model::DEFAULT_QUICK_REACTIONS
+                .get(k)
+                .copied()
+                .unwrap_or_default()
+                .to_owned()
+        })
+}
 const SLOT: f32 = 24.0;
 pub const BAR_H: f32 = 30.0;
 /// The widest toolbar: three quick reactions and four buttons.
@@ -48,7 +88,7 @@ pub enum Tool {
 impl Tool {
     pub fn label(self) -> String {
         match self {
-            Self::Quick(k) => format!("React with {}", QUICK[k]),
+            Self::Quick(k) => format!("React with {}", quick(k)),
             Self::Thread => "Reply in thread".into(),
             Self::Reply => "Reply".into(),
             Self::Emoji => "Add reaction".into(),
@@ -113,7 +153,7 @@ pub fn draw_bar(g: &Gfx, dc: &ID2D1DeviceContext, key: &BarKey, x: f32, y: f32) 
                         stroke_round(dc, r, 5.0, &g.brushes.terracotta);
                     }
                 }
-                if let Some(entry) = emoji::find(QUICK[q]) {
+                if let Some(entry) = emoji::find(&quick(q)) {
                     let alpha = if t.enabled { 1.0 } else { 0.5 };
                     let e = rect(r.left + 3.0, r.top + 3.0, r.right - 3.0, r.bottom - 3.0);
                     emoji::draw_with(dc, entry, e, alpha);
@@ -554,11 +594,12 @@ impl App {
         let can_react = !deleted && self.live.as_ref().is_none_or(|l| l.can_react());
         let mut out = Vec::new();
         if !deleted {
-            for (k, q) in QUICK.iter().enumerate() {
+            for k in 0..3 {
+                let q = quick(k);
                 let on = m
                     .reactions
                     .iter()
-                    .any(|r| r.mine && same_emoji(&r.emoji, q));
+                    .any(|r| r.mine && same_emoji(&r.emoji, &q));
                 out.push(ToolState {
                     tool: Tool::Quick(k),
                     enabled: can_react,
@@ -657,7 +698,7 @@ impl App {
             Tool::Quick(k) => {
                 let id = self.c.messages[i].id.clone();
                 if let Some(live) = &mut self.live {
-                    live.react(&id, QUICK[k], !t.on);
+                    live.react(&id, &quick(k), !t.on);
                 }
                 if let Err(e) = self.drain_live() {
                     eprintln!("reaction update failed: {e:?}");

@@ -450,9 +450,9 @@ public struct UIKitTimelineEntry {
     }
 }
 
-/// The quick reactions on every client: 👍 ❤️ 😂.
+/// The account's quick reactions, as on every client.
 public enum UIKitReactions {
-    public static let quick = MessageQuickReactions.emoji
+    @MainActor public static var quick: [String] { MessageQuickReactions.emoji }
     /// Caper's emoji artwork, where the catalog has it.
     public static func artwork(_ emoji: String) -> CGImage? {
         EmojiArtwork.entry(for: emoji).flatMap(EmojiArtwork.image(for:))

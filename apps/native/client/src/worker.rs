@@ -903,6 +903,12 @@ pub enum Event {
         active: bool,
         result: Result<crate::model::ReactionUpdate, SendFailure>,
     },
+    /// Read after you add a reaction, which can change your most used:
+    /// [`crate::model::Account::quick_reactions`] for the account `token`.
+    QuickReactions {
+        token: String,
+        quick: Vec<String>,
+    },
     /// Fenced by account token: channel loads advance the generation.
     AssetUsage {
         token: String,
@@ -2435,13 +2441,8 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
             message,
             emoji,
             active,
-        } => Event::Reacted {
-            generation,
-            channel: channel.clone(),
-            message: message.clone(),
-            emoji: emoji.clone(),
-            active,
-            result: api
+        } => {
+            let result = api
                 .react(
                     token.as_deref(),
                     &chat_token,
@@ -2454,8 +2455,31 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
                     code: error.code,
-                }),
-        },
+                });
+            let added = active && result.is_ok();
+            send(
+                events,
+                host,
+                Event::Reacted {
+                    generation,
+                    channel,
+                    message,
+                    emoji,
+                    active,
+                    result,
+                },
+            );
+            let Some(token) = token.filter(|_| added) else {
+                return;
+            };
+            let Ok(account) = api.me(&token) else {
+                return;
+            };
+            Event::QuickReactions {
+                quick: account.quick_reactions(),
+                token,
+            }
+        }
         Command::LoadReactors {
             generation,
             token,

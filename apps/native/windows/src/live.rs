@@ -1436,6 +1436,8 @@ impl Live {
         out: &mut Vec<Update>,
     ) {
         self.account_id = Some(account.id.clone());
+        crate::actions::set_quick(account.quick_reactions());
+        crate::actions::settle_quick();
         self.feedback_team = account.feedback_team;
         self.debug_enabled = account.debug_enabled;
         self.account_avatar = account.avatar();
@@ -5890,6 +5892,10 @@ impl Live {
             Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
                 self.klipy = config;
                 out.push(Update::Drafts);
+            }
+            // Toolbars pick these up when the shown one moves or hides.
+            Event::QuickReactions { token, quick } if self.token.as_ref() == Some(&token) => {
+                crate::actions::set_quick(quick);
             }
             Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
                 self.uploads = settings;

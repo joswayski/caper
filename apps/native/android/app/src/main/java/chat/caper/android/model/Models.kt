@@ -21,12 +21,20 @@ import kotlinx.serialization.json.JsonTransformingSerializer
  * [feedbackTeam]: a Caper feedback team member, who gets the Feedback inbox; absent (false) for everyone else.
  * [avatarAsset]/[avatarUrl]: a custom picture in place of the saved mascot (see [pictureOf]); every
  * person object below that carries `avatarId` may carry them too.
+ * [quickReactions]: the account's most used reactions in the last 30 days, then defaults; old servers
+ * omit it, so read [quickReactionList].
  */
 @Serializable data class Account(
     val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false, val avatarId: Int? = null,
     val feedbackTeam: Boolean = false,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
-)
+    val quickReactions: List<String> = emptyList(),
+) {
+    /** Always three: the server's list, filled from [DEFAULT_QUICK_REACTIONS]. */
+    fun quickReactionList(): List<String> =
+        (quickReactions.take(3) + DEFAULT_QUICK_REACTIONS.filter { it !in quickReactions }).take(3)
+}
+val DEFAULT_QUICK_REACTIONS = listOf("👍", "❤️", "😂")
 @Serializable data class Challenge(val challengeId: String)
 @Serializable data class VerifyResult(val account: Account, val token: String)
 @Serializable data class Inviter(val username: String, val displayName: String)

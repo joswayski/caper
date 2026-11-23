@@ -73,7 +73,7 @@ public enum NativePresentation {
     /// The same bundled artwork as SwiftUI, without exposing a SwiftUI view.
     public static func emojiImage(for entry: EmojiCatalogEntry) -> CGImage? { EmojiArtwork.image(for: entry) }
 
-    public static let quickReactions = MessageQuickReactions.emoji
+    @MainActor public static var quickReactions: [String] { MessageQuickReactions.emoji }
 
     /// Both Mac hosts show the same names, self-first ordering and count fallback.
     @MainActor static func reactionSummary(_ message: ChatMessage, emoji: String, chat: ChatModel, viewerID: String?) -> String {

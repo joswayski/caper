@@ -1443,12 +1443,18 @@ async fn account_me(
 pub(crate) async fn own_account(state: &AppState, user: &accounts::User) -> Value {
     let mut account =
         serde_json::to_value(user.own(&state.debug_users)).expect("account serializes");
-    // Team members get the feedback inbox. A database outage only hides it.
+    account["quickReactions"] = json!(accounts::DEFAULT_QUICK_REACTIONS);
+    // Team members get the feedback inbox; quick reactions follow what the
+    // account uses. A database outage only hides the inbox and keeps defaults.
     if let Some(pool) = &state.database
         && let Ok(mut connection) = pool.acquire().await
-        && let Ok(true) = feedback::team_member(&mut connection, Some(user.id)).await
     {
-        account["feedbackTeam"] = json!(true);
+        if let Ok(true) = feedback::team_member(&mut connection, Some(user.id)).await {
+            account["feedbackTeam"] = json!(true);
+        }
+        if let Ok(quick) = accounts::quick_reactions(&mut connection, user.id).await {
+            account["quickReactions"] = json!(quick);
+        }
     }
     account
 }

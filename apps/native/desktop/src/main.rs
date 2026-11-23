@@ -3291,6 +3291,7 @@ impl CaperApp {
             display_name: Some("Fixture Owner".into()),
             debug_enabled: false,
             feedback_team: false,
+            quick_reactions: Vec::new(),
         });
         let channels = vec![
             channel.clone(),
@@ -27527,6 +27528,7 @@ fn carries_identities(event: &Event) -> bool {
             | Event::VoiceChecked { .. }
             | Event::AssetUsage { .. }
             | Event::Klipy { .. }
+            | Event::QuickReactions { .. }
             | Event::Dictated { .. }
             | Event::AttachmentUrls { .. }
             | Event::Upload { .. }
@@ -50637,6 +50639,7 @@ mod tests {
             display_name: profile.then(|| "Member".into()),
             debug_enabled: false,
             feedback_team: false,
+            quick_reactions: Vec::new(),
         }
     }
 

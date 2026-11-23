@@ -198,6 +198,17 @@ impl Reactor {
 }
 
 impl Account {
+    /// Always three: the server's list, filled from the defaults.
+    pub fn quick_reactions(&self) -> Vec<String> {
+        let mut quick: Vec<String> = self.quick_reactions.iter().take(3).cloned().collect();
+        for default in DEFAULT_QUICK_REACTIONS {
+            if quick.len() < 3 && !quick.iter().any(|emoji| emoji == default) {
+                quick.push(default.to_owned());
+            }
+        }
+        quick
+    }
+
     /// Your own profile saved on another device.
     pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
         if self.id != update.id {
@@ -252,7 +263,15 @@ pub struct Account {
     /// omits it for everyone else. Shows the Feedback inbox.
     #[serde(default)]
     pub feedback_team: bool,
+    /// The hover bar's reactions: the account's most used in the last 30
+    /// days, then defaults. Old servers omit it; read it with
+    /// [`Account::quick_reactions`].
+    #[serde(default)]
+    pub quick_reactions: Vec<String>,
 }
+
+/// The quick reactions for an account that hasn't reacted (and old servers).
+pub const DEFAULT_QUICK_REACTIONS: [&str; 3] = ["\u{1f44d}", "\u{2764}\u{fe0f}", "\u{1f602}"];
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

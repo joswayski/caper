@@ -1527,6 +1527,7 @@ impl App {
     fn establish(&self, state: &mut State, token: String, account: Account, spaces: Spaces) {
         state.epoch += 1;
         state.token = Some(token);
+        crate::rows::set_quick_reactions(account.quick_reactions());
         state.account = Some(account);
         state.set_spaces(spaces);
         state.page = Some(Page::Chat);
@@ -4824,6 +4825,10 @@ impl App {
             }
             Event::Klipy { token, config } if state.token.as_ref() == Some(&token) => {
                 state.klipy = config;
+            }
+            // Toolbars pick these up the next time one is shown.
+            Event::QuickReactions { token, quick } if state.token.as_ref() == Some(&token) => {
+                crate::rows::set_quick_reactions(quick);
             }
             Event::AssetUsage { token, settings } if state.token.as_ref() == Some(&token) => {
                 state.uploads = settings;

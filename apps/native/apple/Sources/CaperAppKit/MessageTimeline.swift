@@ -1495,6 +1495,7 @@ enum PendingAction { case retry, edit, dismiss }
     var isRowHighlighted: Bool { message != nil && (hovered || controls.hasFocus || menuOpen || actionActive) }
     private func updateControlsVisibility() {
         let lit = isRowHighlighted
+        if lit, controls.alphaValue == 0 { controls.refreshQuick() }
         controls.alphaValue = lit ? 1 : 0
         CATransaction.begin(); CATransaction.setDisableActions(true)
         hoverTint.isHidden = !lit
@@ -1657,6 +1658,8 @@ enum PendingAction { case retry, edit, dismiss }
     private var menuOpen = false
     private var reactionPickerOpen = false
     private var quick: [NativeButton] = []
+    /// The account's quick reactions the buttons show (`NativePresentation.quickReactions`).
+    private var quickEmoji: [String] = []
     private lazy var add: NativeButton = NativeButton.icon("Add reaction", symbol: "face.smiling") { [weak self] in
         guard let self else { return }; self.action?(.addReaction, self.add)
     }
@@ -1678,17 +1681,13 @@ enum PendingAction { case retry, edit, dismiss }
     init() {
         super.init(NativeStyle.surface)
         layer?.cornerRadius = 8; layer?.borderWidth = 1; layer?.borderColor = NativeStyle.border.cgColor
-        quick = NativePresentation.quickReactions.map { emoji in
-            let button = NativeButton("React with \(emoji)") { [weak self] in
-                guard let self else { return }; self.action?(.reaction(emoji), self)
+        quick = (0..<3).map { index in
+            NativeButton("") { [weak self] in
+                guard let self, self.quickEmoji.indices.contains(index) else { return }
+                self.action?(.reaction(self.quickEmoji[index]), self)
             }
-            if let image = NativePresentation.emojiImage(emoji) {
-                button.image = NSImage(cgImage: image, size: NSSize(width: 18, height: 18))
-                button.imagePosition = .imageOnly
-            }
-            button.toolTip = "React with \(emoji)"
-            return button
         }
+        showQuick(NativePresentation.quickReactions)
         for button in quick + [add, reply, more] {
             button.layer?.backgroundColor = NSColor.clear.cgColor
             button.focusChanged = { [weak self] _ in
@@ -1727,8 +1726,32 @@ enum PendingAction { case retry, edit, dismiss }
         }
     }
 
+    /// Dresses the quick-reaction buttons for `emoji` (the account's most used).
+    private func showQuick(_ emoji: [String]) {
+        quickEmoji = emoji
+        for (emoji, button) in zip(emoji, quick) {
+            let artwork = NativePresentation.emojiImage(emoji)
+            button.title = artwork == nil ? emoji : ""
+            button.image = artwork.map { NSImage(cgImage: $0, size: NSSize(width: 18, height: 18)) }
+            button.imagePosition = artwork == nil ? .noImage : .imageOnly
+            button.setAccessibilityLabel("React with \(emoji)"); button.toolTip = "React with \(emoji)"
+        }
+    }
+
+    private var configured: (message: ChatMessage, canInteract: Bool, viewerID: String?)?
+
+    /// As the bar appears: a newer quick-reaction list (never while it shows,
+    /// so a button can't change under the pointer).
+    func refreshQuick() {
+        guard quickEmoji != NativePresentation.quickReactions, let configured else { return }
+        showQuick(NativePresentation.quickReactions)
+        configure(configured.message, canInteract: configured.canInteract, viewerID: configured.viewerID)
+    }
+
     func configure(_ message: ChatMessage, canInteract: Bool, viewerID: String?) {
-        for (emoji, button) in zip(NativePresentation.quickReactions, quick) {
+        configured = (message, canInteract, viewerID)
+        if alphaValue == 0, quickEmoji != NativePresentation.quickReactions { showQuick(NativePresentation.quickReactions) }
+        for (emoji, button) in zip(quickEmoji, quick) {
             button.isHidden = !canInteract || message.isDeleted
             button.isEnabled = canInteract
             button.setAccessibilityIdentifier("quick-reaction-\(message.id)-\(emoji)")

@@ -412,3 +412,26 @@ test("a mouse row keeps every action button but draws their icons only for hover
   expect(document.querySelector(".chat-message-actions")).not.toBeNull();
   expect(icons(row)).toBe(7);
 });
+
+test("rows follow the account's quick reactions without re-rendering for an unchanged list", async () => {
+  const { getAccount } = await import("../account/client.ts");
+  let quickReactions = ["🔥", "🎉", "🙌"];
+  vi.mocked(globalThis.fetch).mockImplementation(async (input) =>
+    String(input).endsWith("/api/account/me")
+      ? Response.json({ id: "viewer", username: "viewer", displayName: "Viewer", quickReactions })
+      : new Response("{}", { status: 404 }),
+  );
+  await render(<Page speaking="Nobody is speaking" />);
+  await act(async () => {
+    await getAccount();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  const settled = counts();
+  // A refresh returns the same list as a new array: no row re-renders.
+  await act(async () => void (await getAccount()));
+  expect(counts()).toEqual(settled);
+  // A new most-used emoji reaches every row.
+  quickReactions = ["🎉", "🔥", "🙌"];
+  await act(async () => void (await getAccount()));
+  expect(counts()).toEqual(settled.map((count) => count + 1));
+});

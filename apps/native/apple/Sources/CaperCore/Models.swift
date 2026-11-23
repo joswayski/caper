@@ -61,8 +61,19 @@ public struct Account: Codable, Equatable, Sendable {
     /// The custom profile picture (`avatarAsset`/`avatarUrl`); absent for the saved mascot.
     public var avatarAsset: String? = nil
     public var avatarUrl: String? = nil
+    /// The hover bar's reactions: the account's most used in the last 30
+    /// days, then defaults. Old servers omit it; read `quickReactionList`.
+    public var quickReactions: [String]? = nil
 
     public var isFeedbackTeam: Bool { feedbackTeam == true }
+
+    public static let defaultQuickReactions = ["👍", "❤️", "😂"]
+    /// Always three: the server's list, filled from the defaults.
+    public var quickReactionList: [String] {
+        var list = Array((quickReactions ?? []).prefix(3))
+        for emoji in Self.defaultQuickReactions where list.count < 3 && !list.contains(emoji) { list.append(emoji) }
+        return list
+    }
 
     /// The account's own picture for a retained snapshot of the same person:
     /// for the same asset, whichever URL expires later (the snapshot may be

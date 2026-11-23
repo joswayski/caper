@@ -24,7 +24,11 @@ import { ChatClient, initialChatView, rememberedAccountSession } from "./client.
 import { subscribeProfiles } from "../account/profiles.ts";
 import { shellPoll } from "../account/shell-poll.ts";
 import type { ReactionSave } from "./MessageReactions.tsx";
-import MessageActions, { preloadReactionPicker, type MessageActionTarget } from "./MessageActions.tsx";
+import MessageActions, {
+  preloadReactionPicker,
+  refreshQuickReactions,
+  type MessageActionTarget,
+} from "./MessageActions.tsx";
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
@@ -545,6 +549,7 @@ export default function Chat({
     setReactionSaves((current) => ({ ...current, [messageId]: undefined }));
     try {
       await client.setReaction(messageId, emoji, active);
+      if (active) refreshQuickReactions();
     } catch (error) {
       if (clientRef.current === client)
         setReactionSaves((current) => ({

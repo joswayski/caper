@@ -11,6 +11,8 @@ export interface Account extends PersonPicture {
   debugEnabled?: boolean;
   /** On the Caper feedback team: sees the feedback inbox and can visit reported conversations. */
   feedbackTeam?: boolean;
+  /** The hover bar's three reactions: this account's most used in the last 30 days, then defaults. */
+  quickReactions?: string[];
 }
 
 export function normalizeUsername(value: string) {

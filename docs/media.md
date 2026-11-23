@@ -1905,9 +1905,8 @@ Desktop web exposes **Add reaction** on message hover or keyboard focus; clickin
 a message or reaction does not keep the toolbar visible after the pointer leaves.
 Reaction chips have no outer focus ring; keyboard navigation uses an inset cue.
 Mobile web, Android and iPhone hide the per-message add button: press and hold a
-committed message to open a bottom drawer with five fixed quick reactions
-(👍 ❤️ 😂 🎉 👀), the searchable emoji picker, **Copy text** and **Copy message
-ID**. Copy uses the exact text or the public message `id`, never the client retry
+committed message to open a bottom drawer with your three quick reactions, the
+searchable emoji picker, **Copy text** and **Copy message ID**. Copy uses the exact text or the public message `id`, never the client retry
 UUID or channel-local sequence. Read-only previews allow copying but not reaction
 mutations. Web offers a keyboard/screen-reader message-actions button; iPhone
 provides a VoiceOver action and Android a labelled long-click action. macOS and
@@ -1923,6 +1922,19 @@ snapshots. A failed current choice rolls back only your contribution to the
 latest server state and offers a retry; superseded failures do not undo a newer
 choice. Cached history and replay cursors hold authoritative state, not optimistic
 counts.
+
+Quick reactions (the hover bar's and the drawer's first three) are your three
+most used emoji in the last 30 days. `GET /api/account/me`, and every response
+that returns your account, computes them as `quickReactions` from
+`message_reactions`: each emoji counts the messages you reacted to with it,
+including reactions you later removed, so toggling one on and off counts once;
+ties go to the most recent. 👍 ❤️ 😂 fill the rest, so the list always has three
+and clients treat a missing field (an older server) as those defaults. Nothing
+is cached or scheduled. Clients read the list with the account and reread it
+shortly after you add a reaction (web, Apple and Android once a burst settles,
+about two seconds; Windows and Linux after each one), so other devices catch up
+on their next account load. A changed list
+appears the next time a hover bar or drawer opens, never under the pointer.
 
 Web, macOS and Rust desktop group the message hover actions in one neutral,
 rounded, bordered bar, kept visible while its menu or picker is open; thread rows

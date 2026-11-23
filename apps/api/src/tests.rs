@@ -440,6 +440,113 @@ async fn profile_keeps_an_existing_reserved_username_before_database_access() {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable Postgres DATABASE_URL"]
+async fn account_quick_reactions_follow_the_last_30_days_of_own_reactions(pool: sqlx::PgPool) {
+    let mut users = Vec::new();
+    for name in ["quick-reactor", "quick-other", "quick-once", "quick-none"] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO public.users(external_id,username,display_name) VALUES ($1,replace($1,'-','_'),$1) RETURNING id",
+        )
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 hour')")
+            .bind(Sha256::digest(name.as_bytes()).as_slice()).bind(id).execute(&pool).await.unwrap();
+        users.push(id);
+    }
+    let (reactor, other, once) = (users[0], users[1], users[2]);
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES ('quick-space','Quick',$1) RETURNING id")
+        .bind(reactor).fetch_one(&pool).await.unwrap();
+    let channel: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name) VALUES ('quick-channel',$1,'quick') RETURNING id")
+        .bind(space).fetch_one(&pool).await.unwrap();
+    let session: i64 = sqlx::query_scalar("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id) VALUES ('quick-session','\\x00','Quick',$1) RETURNING id")
+        .bind(reactor).fetch_one(&pool).await.unwrap();
+    let mut messages = Vec::new();
+    for seq in 1..=8_i64 {
+        messages.push(sqlx::query_scalar::<_, i64>(
+            "INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload)
+             VALUES ($1,$2,$3,gen_random_uuid(),'\\x00',$4,'{}') RETURNING id",
+        )
+        .bind(format!("quick-message-{seq}")).bind(channel).bind(session).bind(seq)
+        .fetch_one(&pool).await.unwrap());
+    }
+    // (user, emoji, message index, age in days, removed)
+    let rows: &[(i64, &str, usize, i64, bool)] = &[
+        // Three messages: the most used.
+        (reactor, "🔥", 0, 1, false),
+        (reactor, "🔥", 1, 2, false),
+        (reactor, "🔥", 2, 3, false),
+        // Two messages, one since removed: removed reactions still count.
+        (reactor, "🎉", 0, 5, true),
+        (reactor, "🎉", 1, 6, false),
+        // Toggled five times on one message: one use, so not ahead of 🎉.
+        (reactor, "👍", 3, 20, true),
+        (reactor, "👍", 3, 20, true),
+        (reactor, "👍", 3, 20, true),
+        (reactor, "👍", 3, 20, true),
+        (reactor, "👍", 3, 20, false),
+        // Also one use, but more recent than 👍: it wins the tie.
+        (reactor, "🙌", 4, 10, false),
+        // Many uses, all older than 30 days.
+        (reactor, "🚀", 0, 31, false),
+        (reactor, "🚀", 1, 40, false),
+        (reactor, "🚀", 2, 45, false),
+        (reactor, "🚀", 3, 50, false),
+        (reactor, "🚀", 4, 60, false),
+        // Someone else's favourite.
+        (other, "❤️", 0, 1, false),
+        (other, "❤️", 1, 1, false),
+        (other, "❤️", 2, 1, false),
+        (other, "❤️", 3, 1, false),
+        (other, "❤️", 4, 1, false),
+        (once, "😂", 5, 1, false),
+    ];
+    for &(user, emoji, message, days, removed) in rows {
+        sqlx::query(
+            "INSERT INTO public.message_reactions(message_id,emoji,user_id,created_at,deleted_at)
+             VALUES ($1,$2,$3,now()-make_interval(days => $4::int),CASE WHEN $5 THEN now() END)",
+        )
+        .bind(messages[message])
+        .bind(emoji)
+        .bind(user)
+        .bind(days as i32)
+        .bind(removed)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let (mut state, _) = state();
+    state.database = Some(pool.clone());
+    state.auth = auth::AuthVerifier::new();
+    let router = app(state);
+    let quick = |token: &'static str| {
+        let router = router.clone();
+        async move {
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/account/me")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap())
+                    .unwrap();
+            body["quickReactions"].clone()
+        }
+    };
+    assert_eq!(quick("quick-reactor").await, json!(["🔥", "🎉", "🙌"]));
+    // Fewer than three of your own: defaults fill in, without repeating yours.
+    assert_eq!(quick("quick-once").await, json!(["😂", "👍", "❤️"]));
+    assert_eq!(quick("quick-none").await, json!(["👍", "❤️", "😂"]));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable Postgres DATABASE_URL"]
 async fn regenerate_avatar_changes_saved_mascot_and_never_replaces_a_photo(pool: sqlx::PgPool) {
     let user_id: i64 = sqlx::query_scalar(
         "INSERT INTO public.users(external_id,username,display_name,avatar_id)

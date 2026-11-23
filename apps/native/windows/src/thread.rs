@@ -753,14 +753,15 @@ impl App {
         let enabled = !m.deleted && self.live.as_ref().is_some_and(|l| l.can_react());
         let mut tools = Vec::new();
         if !m.deleted {
-            tools.extend(actions::QUICK.iter().enumerate().map(|(k, emoji)| {
+            tools.extend((0..3).map(|k| {
+                let emoji = actions::quick(k);
                 ToolState {
                     tool: Tool::Quick(k),
                     enabled,
                     on: m
                         .reactions
                         .iter()
-                        .any(|r| r.mine && actions::same_emoji(&r.emoji, emoji)),
+                        .any(|r| r.mine && actions::same_emoji(&r.emoji, &emoji)),
                 }
             }));
             if enabled {
@@ -1916,7 +1917,7 @@ impl App {
                 match tool {
                     Tool::Quick(k) => {
                         if let Some(live) = &mut self.live {
-                            live.react(&id, actions::QUICK[k], !state.on);
+                            live.react(&id, &actions::quick(k), !state.on);
                         }
                         if let Err(e) = self.drain_live() {
                             eprintln!("reaction update failed: {e:?}");

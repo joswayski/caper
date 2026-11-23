@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import {
   autoUpdate,
@@ -18,6 +18,7 @@ import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 import ReactionPicker, { loadReactionPicker } from "./LazyReactionPicker.tsx";
+import { getAccount, getRememberedAccount, subscribeAccount } from "../account/client.ts";
 
 export interface MessageActionTarget {
   messageId: string;
@@ -28,7 +29,21 @@ export interface MessageActionTarget {
   inThread: boolean;
 }
 
-export const quickReactions = ["👍", "❤️", "😂"];
+const defaultQuickReactions = ["👍", "❤️", "😂"];
+/** The account's quick reactions (from the API); the account store only notifies when they change. */
+function quickReactionsSnapshot() {
+  const quick = getRememberedAccount()?.quickReactions;
+  return quick?.length ? quick : defaultQuickReactions;
+}
+export function useQuickReactions() {
+  return useSyncExternalStore(subscribeAccount, quickReactionsSnapshot, () => defaultQuickReactions);
+}
+let quickRefresh: ReturnType<typeof setTimeout> | undefined;
+/** A reaction can change the account's most used: reread it once a burst of reactions settles. */
+export function refreshQuickReactions() {
+  clearTimeout(quickRefresh);
+  quickRefresh = setTimeout(() => void getAccount().catch(() => {}), 2_000);
+}
 
 export function preloadReactionPicker() {
   void loadReactionPicker().catch(() => {});
@@ -82,6 +97,7 @@ export default function MessageActions({
   /** Another signed-in author. Blocking is confirmed by the caller; unblocking is immediate. */
   block?: { blocked: boolean; name: string; onBlock: () => void; onUnblock: () => Promise<void> };
 }) {
+  const quickReactions = useQuickReactions();
   const [mode, setMode] = useState(target.mode);
   const [copyError, setCopyError] = useState<string>();
   const returnFocus = useRef(target.anchor);

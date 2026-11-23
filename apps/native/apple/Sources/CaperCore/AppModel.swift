@@ -13,12 +13,26 @@ public final class AppModel {
     public var phase: Phase = .loading
     public var account: Account? {
         didSet {
+            MessageQuickReactions.emoji = account?.quickReactionList ?? Account.defaultQuickReactions
             if account == nil || (oldValue != nil && oldValue?.id != account?.id) { updateApplicationBadge(0) }
             if oldValue?.id != account?.id { profileConnection = .disconnected }
         }
     }
     private(set) var desiredBadgeCount = 0
     private var badgeUpdateRunning = false
+    @ObservationIgnored private var quickReactionRefresh: Task<Void, Never>?
+
+    /// A reaction can change your most used: reread the account's quick
+    /// reactions once a burst of reactions settles.
+    func refreshQuickReactions() {
+        quickReactionRefresh?.cancel()
+        quickReactionRefresh = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self, let id = self.account?.id,
+                  let fresh = try? await self.api.account(), fresh.id == id, self.account?.id == id else { return }
+            self.account?.quickReactions = fresh.quickReactions
+        }
+    }
 
     /// One writer drains the newest desired value; logout cannot race an older setter.
     private func updateApplicationBadge(_ count: Int) {
@@ -610,6 +624,7 @@ public final class AppModel {
         }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
         chatModel.viewerProfile = { [weak self] in self?.account }
+        chatModel.reactionAdded = { [weak self] in self?.refreshQuickReactions() }
         chatModel.profileDirectory = { [weak self] in self?.profileUpdates ?? ProfileDirectory() }
         chatModel.onOpenForward = { [weak self] message in await self?.openForwardedConversation(message) ?? false }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
@@ -3604,6 +3619,8 @@ public final class ChatModel {
     /// The signed-in account, also while previewing without a chat session.
     @ObservationIgnored public var viewerAccountID: () -> String? = { nil }
     @ObservationIgnored var viewerProfile: () -> Account? = { nil }
+    /// After a reaction you added is saved: it can change your quick reactions.
+    @ObservationIgnored var reactionAdded: () -> Void = {}
     /// Other people's live profile updates (`AppModel.profileUpdates`).
     @ObservationIgnored var profileDirectory: () -> ProfileDirectory = { ProfileDirectory() }
 
@@ -5193,6 +5210,7 @@ public final class ChatModel {
                 if pendingReactions[messageID]?[emoji] == desired {
                     pendingReactions[messageID]?[emoji] = nil
                 }
+                if desired.active { reactionAdded() }
                 if pendingReactions[messageID]?.isEmpty == true { pendingReactions[messageID] = nil }
                 renderReactions()
             } catch {

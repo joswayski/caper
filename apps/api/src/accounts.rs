@@ -178,6 +178,32 @@ pub async fn load(pool: &PgPool, user_id: i64) -> Result<Option<User>, sqlx::Err
     .await
 }
 
+/// The quick-reaction bar for an account with no reactions of its own.
+pub(crate) const DEFAULT_QUICK_REACTIONS: [&str; 3] = ["👍", "❤️", "😂"];
+
+/// An account's three most used reactions in the last 30 days, counting each
+/// message once (toggling one reaction on and off is one use) and breaking
+/// ties by the most recent. Defaults fill the rest, so there are always three.
+pub(crate) async fn quick_reactions(
+    connection: &mut sqlx::PgConnection,
+    user_id: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    let mut emoji: Vec<String> = sqlx::query_scalar(
+        "SELECT emoji FROM public.message_reactions
+         WHERE user_id = $1 AND created_at > now() - interval '30 days'
+         GROUP BY emoji ORDER BY count(DISTINCT message_id) DESC, max(created_at) DESC LIMIT 3",
+    )
+    .bind(user_id)
+    .fetch_all(connection)
+    .await?;
+    for default in DEFAULT_QUICK_REACTIONS {
+        if emoji.len() < 3 && !emoji.iter().any(|used| used == default) {
+            emoji.push(default.to_owned());
+        }
+    }
+    Ok(emoji)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2137,6 +2137,22 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         connection.sendTyping(token, active)
     }
 
+    private var quickReactionRefresh: Job? = null
+
+    /** A reaction can change your most used: reread the account's quick reactions once a burst settles. */
+    private fun refreshQuickReactions() {
+        quickReactionRefresh?.cancel()
+        val token = accountToken ?: return
+        val requestAccountGeneration = accountGeneration
+        quickReactionRefresh = viewModelScope.launch {
+            delay(2_000)
+            val fresh = runCatching { api.me(token) }.getOrNull() ?: return@launch
+            val account = mutable.value.account
+            if (requestAccountGeneration != accountGeneration || account == null || account.id != fresh.id) return@launch
+            mutable.value = mutable.value.copy(account = account.copy(quickReactions = fresh.quickReactions))
+        }
+    }
+
     fun setReaction(messageId: String, emoji: String, active: Boolean) {
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
         val key = "$messageId:$emoji"
@@ -2166,6 +2182,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                         mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - "$messageId:${intent.emoji}")
                     }
                     projectPendingReaction(messageId, own)
+                    if (intent.active) refreshQuickReactions()
                 } catch (error: Throwable) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
                     if (request == generation) {

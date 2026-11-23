@@ -14,8 +14,18 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
-/// The quick reactions on each row's toolbar, as desktop shows them.
-pub const QUICK_REACTIONS: [&str; 3] = ["👍", "❤️", "😂"];
+thread_local! {
+    /// The account's quick reactions (`Account::quick_reactions`), set when
+    /// it loads and after each reaction you add.
+    static QUICK_REACTIONS: RefCell<Vec<String>> = RefCell::new(
+        caper_client::model::DEFAULT_QUICK_REACTIONS.map(str::to_owned).to_vec(),
+    );
+}
+
+/// Toolbars built from now on show `quick`; shown ones update on next hover.
+pub fn set_quick_reactions(quick: Vec<String>) {
+    QUICK_REACTIONS.with_borrow_mut(|current| *current = quick);
+}
 
 /// One reaction chip: the emoji, how many reacted, and whether you did.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1213,6 +1223,8 @@ struct Toolbar {
     /// Web's "Actions for {author}'s message" group, renamed in `dress`; its
     /// widget name is the author it was last named for.
     group: gtk::Box,
+    /// The quick reactions it was built with.
+    quick: Vec<String>,
     thread: gtk::Button,
     reply: gtk::Button,
     more: gtk::Button,
@@ -1629,15 +1641,28 @@ fn build_widgets() -> Widgets {
     }
 }
 
-/// Builds `widgets`' toolbar if it has none yet, dressed for its row.
+/// Builds `widgets`' toolbar if it has none yet, or none with the current
+/// quick reactions, dressed for its row.
 fn toolbar(widgets: &Rc<Widgets>, images: &Images, handler: &Handler) {
-    if widgets.toolbar.borrow().is_some() {
-        return;
+    let quick_reactions = QUICK_REACTIONS.with_borrow(Clone::clone);
+    let current = widgets
+        .toolbar
+        .borrow()
+        .as_ref()
+        .map(|toolbar| toolbar.quick == quick_reactions);
+    match current {
+        Some(true) => return,
+        Some(false) => {
+            if let Some(stale) = widgets.toolbar.take() {
+                widgets.tools.remove(&stale.group);
+            }
+        }
+        None => {}
     }
     // Web's group, "Actions for {author}'s message" (named per message in
     // `dress`), so a screen reader hears whose tools these are.
     let tools = group("Message actions");
-    let quick: Vec<gtk::Button> = QUICK_REACTIONS
+    let quick: Vec<gtk::Button> = quick_reactions
         .iter()
         .map(|emoji| {
             let button =
@@ -1664,7 +1689,7 @@ fn toolbar(widgets: &Rc<Widgets>, images: &Images, handler: &Handler) {
         button.set_focus_on_click(false);
         tools.append(button);
     }
-    for (button, emoji) in quick.iter().zip(QUICK_REACTIONS) {
+    for (button, emoji) in quick.iter().zip(quick_reactions.clone()) {
         let (weak, handler) = (Rc::downgrade(widgets), handler.clone());
         button.connect_clicked(move |_| {
             let Some(widgets) = weak.upgrade() else {
@@ -1699,6 +1724,7 @@ fn toolbar(widgets: &Rc<Widgets>, images: &Images, handler: &Handler) {
     widgets.tools.append(&tools);
     let toolbar = Toolbar {
         group: tools,
+        quick: quick_reactions,
         thread,
         reply,
         more,

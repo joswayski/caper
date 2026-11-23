@@ -3907,6 +3907,7 @@ impl App {
             self.redraw.extend(self.lit_row);
             self.redraw.extend(lit);
             self.lit_row = lit;
+            actions::settle_quick();
         }
 
         // Keep a quarter viewport drawn beyond each edge; when that runs out,
