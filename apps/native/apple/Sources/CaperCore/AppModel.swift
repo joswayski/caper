@@ -38,7 +38,9 @@ public final class AppModel {
     private func updateApplicationBadge(_ count: Int) {
         desiredBadgeCount = max(0, count)
         #if os(macOS)
-        NSApp?.dockTile.badgeLabel = desiredBadgeCount == 0 ? nil : String(desiredBadgeCount)
+        // Each set redraws the Dock tile; an unchanged count leaves it alone.
+        let label = desiredBadgeCount == 0 ? nil : String(desiredBadgeCount)
+        if let tile = NSApp?.dockTile, tile.badgeLabel != label { tile.badgeLabel = label }
         #elseif canImport(UserNotifications)
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         guard !badgeUpdateRunning else { return }
