@@ -1,7 +1,6 @@
-//! The in-app media viewer, as the egui client's (`apps/native/desktop/src/viewer.rs`,
-//! after web's `MediaViewer.tsx`): clicking a ready image or video opens it
-//! almost full window over the conversation, with the rest of that
-//! message's images and videos one arrow (or Left/Right) away.
+//! The in-app media viewer, after web's `MediaViewer.tsx`: clicking a ready
+//! image or video opens it almost full window over the conversation, with the
+//! rest of that message's images and videos one arrow (or Left/Right) away.
 //!
 //! Images load at full size through the shared media cache
 //! (`Media::full`, up to `FULL_EDGE`; GIF and WebP animate unless Windows

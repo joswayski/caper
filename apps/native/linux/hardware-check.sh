@@ -2,8 +2,7 @@
 # Caper Linux hardware check: what an orb can't test. Run it from a desktop
 # session on real hardware (see HARDWARE-CHECK.md). It records the machine,
 # runs the scripted performance scenarios on every GTK renderer and display
-# backend against the local fixture (and the egui desktop for comparison),
-# then walks through the manual checks, saving everything to one report.
+# backend against the local fixture, then walks through the manual checks, saving everything to one report.
 set -u
 cd "$(dirname "$0")/../../.." || exit 1
 REPO=$PWD
@@ -14,7 +13,6 @@ PORT=${CAPER_CHECK_PORT:-3931}
 RUNS=${RUNS:-3}
 TARGET=$REPO/apps/native/desktop/target/release
 LINUX=$TARGET/caper-linux
-EGUI=$TARGET/caper-desktop
 FIXTURE_PID=""
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -78,32 +76,22 @@ say "Caper Linux hardware check → $REPORT"
 } >"$REPORT"
 
 # The nightly tester build instead of building from source: FROM_CI=1
-# downloads the newest one (and the egui desktop's development build) with
-# gh; CAPER_LINUX_BUILD=<caper-linux-x64.tar.gz> uses one you downloaded.
+# downloads the newest one with gh; CAPER_LINUX_BUILD=<caper-linux-x64.tar.gz> uses one you downloaded.
 if [ -n "${FROM_CI:-}" ]; then
   say "Downloading the newest nightly builds from GitHub Actions"
   for run in $(gh run list --repo joswayski/caper --workflow native.yml --branch main \
     --status completed --limit 5 --json databaseId -q '.[].databaseId'); do
     rm -rf "$WORK/ci"
     gh run download "$run" --repo joswayski/caper --pattern 'caper-linux-x64-*' -D "$WORK/ci" 2>/dev/null || continue
-    gh run download "$run" --repo joswayski/caper --pattern 'caper-development-linux-x64-*' -D "$WORK/ci" 2>/dev/null || true
     break
   done
   CAPER_LINUX_BUILD=$(find "$WORK/ci" -name caper-linux-x64.tar.gz 2>/dev/null | head -1)
   [ -n "$CAPER_LINUX_BUILD" ] || { echo "No nightly caper-linux build found (gh auth login?)."; exit 1; }
-  egui_build=$(find "$WORK/ci" -name Caper-linux-x64.tar.gz | head -1)
-  if [ -n "$egui_build" ]; then
-    mkdir -p "$WORK/egui" && tar -xzf "$egui_build" -C "$WORK/egui"
-    EGUI=$WORK/egui/Caper-linux-x64/caper-desktop
-  fi
 fi
 if [ -n "${CAPER_LINUX_BUILD:-}" ]; then
   mkdir -p "$WORK/build" && tar -xzf "$CAPER_LINUX_BUILD" -C "$WORK/build"
   LINUX=$WORK/build/caper-linux-x64/lib/caper-linux
   log "caper-linux build: $(cat "$WORK/build/caper-linux-x64/REVISION" 2>/dev/null || echo "$CAPER_LINUX_BUILD")"
-  # Without a downloaded egui build, an installed Caper desktop is the comparison.
-  [ -x "$EGUI" ] || EGUI=$(command -v caper-desktop || true)
-  log "egui build: ${EGUI:-none, so its benchmarks are skipped}"
   SKIP_BUILD=1
 fi
 
@@ -113,7 +101,7 @@ if [ -z "${SKIP_BUILD:-}" ]; then
     LK_CUSTOM_WEBRTC=$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux | tail -1)
     export LK_CUSTOM_WEBRTC
   fi
-  cargo build --manifest-path apps/native/desktop/Cargo.toml --release -p caper-linux -p caper-desktop || {
+  cargo build --manifest-path apps/native/desktop/Cargo.toml --release -p caper-linux || {
     echo "Build failed; fix it or rerun with SKIP_BUILD=1."
     exit 1
   }
@@ -126,13 +114,11 @@ FIXTURE_PID=$!
 sleep 2
 
 say "Signing in to the fixture"
-echo "Each client opens once. If it shows sign-in, use fixture@example.test and"
+echo "Caper opens once. If it shows sign-in, use fixture@example.test and"
 echo "code ABC234. It closes by itself about 2 s after #general's messages show."
 read -r -p "Press Enter to start." _
 profile linux
 bench "sign-in caper-linux" "$LINUX" startup 600
-profile egui
-bench "sign-in caper-desktop" "$EGUI" startup 600
 
 # GTK's renderers on the session's own backend, plus GL through XWayland.
 # A renderer GTK was built without falls back to its default (see the log).
@@ -140,14 +126,14 @@ native=x11
 [ "${XDG_SESSION_TYPE:-}" = wayland ] && native=wayland
 configs="$native:gl $native:ngl $native:vulkan $native:cairo"
 [ "$native" = wayland ] && configs="$configs x11:gl"
-count=$(( $(wc -w <<<"$configs") + 1 ))
+count=$(wc -w <<<"$configs")
 say "Performance: $RUNS runs of each scenario per renderer (hands off the mouse and keyboard)"
 echo "Each run opens Caper, waits for #general, then scrolls, types or idles by itself."
 read -r -p "Press Enter to start (about $((RUNS * 4 * count * 15 / 60)) minutes)." _
 log ""
 log "## Performance"
 log ""
-log "One JSON line per run (the Windows bench's metrics). The label is the client, GDK_BACKEND and GSK_RENDERER."
+log "One JSON line per run (the Windows bench's metrics). The label is GDK_BACKEND and GSK_RENDERER."
 log ""
 log '```'
 for scenario in startup idle scroll typing; do
@@ -157,8 +143,6 @@ for scenario in startup idle scroll typing; do
       GDK_BACKEND=${config%:*} GSK_RENDERER=${config#*:} \
         bench "caper-linux ${config%:*} ${config#*:}" "$LINUX" "$scenario"
     done
-    profile egui
-    bench "caper-desktop wgpu" "$EGUI" "$scenario"
   done
 done
 log '```'

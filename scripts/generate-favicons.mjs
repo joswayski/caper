@@ -47,7 +47,6 @@ const pngs = new Map(
     }),
   ]),
 );
-files.set(`${desktop}caper-icon.png`, pngs.get(128));
 files.set(`${desktop}caper.svg`, readFileSync(source));
 files.set(android, pngs.get(432));
 for (const size of [16, 32, 64, 128, 256, 512, 1024]) {

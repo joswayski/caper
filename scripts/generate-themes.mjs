@@ -1,6 +1,6 @@
 // Sync Caper's shared theme tokens (shared/themes/obsidian.json) into every
-// client's native token block so Web, Apple, Android, Windows, Linux, and
-// desktop stay in lockstep. Use --check to fail on drift without writing.
+// client's native token block so Web, Apple, Android, Windows and Linux stay
+// in lockstep. Use --check to fail on drift without writing.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -116,10 +116,6 @@ const rgbTriplet = (hex) => {
   return `${r} ${g} ${b}`;
 };
 const rustHex = (hex) => `0x${parseHex(hex, hex).upper}`;
-const rustRgb = (hex) => {
-  const { r, g, b } = parseHex(hex, hex);
-  return `Color32::from_rgb(${r}, ${g}, ${b})`;
-};
 const kotlinColor = (hex) => `Color(0xFF${parseHex(hex, hex).upper})`;
 const kotlinAlphaColor = (hex, alphaHex) => `Color(0x${alphaHex}${parseHex(hex, hex).upper})`;
 const swiftColor = (hex) => {
@@ -368,47 +364,8 @@ replaceGeneratedBlock(
   ].join("\n"),
 );
 
-// 7. apps/native/desktop/src/main.rs
-replaceGeneratedBlock(
-  "apps/native/desktop/src/main.rs",
-  "// BEGIN GENERATED THEME TOKENS",
-  "// END GENERATED THEME TOKENS",
-  [
-    `const BLACKOUT: Color32 = ${rustRgb(t.surfaces.frame)};`,
-    `const SURFACE: Color32 = ${rustRgb(t.surfaces.base)};`,
-    `const RAISED: Color32 = ${rustRgb(t.surfaces.raised)};`,
-    `const SIDEBAR: Color32 = ${rustRgb(t.surfaces.sidebar)};`,
-    `/// Web's --surface-hover (6% white) over the sidebar, opaque: a private`,
-    `/// channel's own members in the member list.`,
-    `const SIDEBAR_RAISED: Color32 = ${rustRgb(t.surfaces.sidebarRaised)};`,
-    `const CONVERSATION: Color32 = ${rustRgb(t.surfaces.conversation)};`,
-    `const COMPOSER: Color32 = ${rustRgb(t.surfaces.composer)};`,
-    `/// Web's \`--surface-hover\`: a neutral wash that reads on every dark surface.`,
-    `const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);`,
-    `const BORDER: Color32 = ${rustRgb(t.borders.default)};`,
-    `/// The reply-draft card: 3% white over the conversation surface.`,
-    `const REPLY_CARD: Color32 = ${rustRgb(t.surfaces.replyDraft)};`,
-    `const TEXT: Color32 = ${rustRgb(t.text.primary)};`,
-    `const MUTED: Color32 = ${rustRgb(t.text.muted)};`,
-    `const TERRACOTTA: Color32 = ${rustRgb(t.accent.primary)};`,
-    `const TERRACOTTA_BRIGHT: Color32 = ${rustRgb(t.accent.bright)};`,
-    `const LINK: Color32 = ${rustRgb(t.text.link)};`,
-    `const LINK_ACTIVE: Color32 = ${rustRgb(t.text.linkHover)};`,
-    `/// Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json).`,
-    `const ACTION: Color32 = ${rustRgb(t.action.primary)};`,
-    `const ACTION_HOVER: Color32 = ${rustRgb(t.action.primaryHover)};`,
-    `const ACTION_PRESS: Color32 = ${rustRgb(t.action.primaryPress)};`,
-    `const ON_ACTION: Color32 = BLACKOUT;`,
-    `const CAPER: Color32 = ${rustRgb(t.brand.caper)};`,
-    `const VOICE_SESSION_GREEN: Color32 = ${rustRgb(t.status.voice)};`,
-    `const PIN_GOLD: Color32 = ${rustRgb(t.status.pin)};`,
-    `const ERROR: Color32 = ${rustRgb(t.status.errorText)};`,
-    `const MESSAGE_TEXT: Color32 = ${rustRgb(t.text.message)};`,
-  ].join("\n"),
-);
-
 console.log(
   checkOnly
-    ? `Verified ${presets.size} theme presets and all 7 client token blocks.`
-    : `Synced ${presets.size} theme presets into all 7 client token blocks.`,
+    ? `Verified ${presets.size} theme presets and all 6 client token blocks.`
+    : `Synced ${presets.size} theme presets into all 6 client token blocks.`,
 );

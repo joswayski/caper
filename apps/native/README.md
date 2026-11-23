@@ -14,16 +14,14 @@ local HTTP server, Tauri, or Electron; the website remains available.
 Windows packages carry the Win32 client (`windows/`, package `caper-windows`)
 and Linux packages carry the GTK 4 client (`linux/`). `desktop/build.ps1` and
 `desktop/build.sh` ship them as `Caper.exe` and `caper-desktop` in the earlier
-egui client's install layout, so existing installs, saved sessions, launch at
-login, `caper://` links and self-updates carry over. The egui/wgpu client in
-`desktop/src` is no longer released; it still builds for development.
-Apple and Android have separate native UI implementations. All
-clients talk directly to the same Caper API. No server or Cloudflare credentials
-belong in an app.
+desktop client's install layout, so existing installs, saved sessions, launch at
+login, `caper://` links and self-updates carry over. Apple and Android have
+separate native UI implementations. All clients talk directly to the same Caper
+API. No server or Cloudflare credentials belong in an app.
 
 `linux/` (package `caper-linux`) is the Linux client, in GTK 4 on the shared
 `client/` core. `desktop/build.sh` builds it into the Linux release packages
-under the egui client's name and layout (`caper-desktop` beside
+under the earlier client's name and layout (`caper-desktop` beside
 `caper-updater`, FFmpeg, ONNX Runtime and `caper-web-player`), so existing
 installs, saved sessions, launch at login, `caper://` links and self-updates
 carry over. Run it with `cargo run -p caper-linux` from `desktop/`
@@ -265,7 +263,7 @@ adds 45 members to Fixture Studio and replaces `#general` with 3,000 generated m
 every run and client gets the same text, mentions, links, emoji and reactions). `CAPER_FIXTURE_PORT` and
 `CAPER_FIXTURE_GATEWAY_PORT` move it off 3001/3002.
 
-The egui desktop and the Linux client run the Windows client's scripted scenarios too
+The Linux client runs the Windows client's scripted scenarios too
 (`caper_client::bench`): with `BENCH` set to `startup`, `idle`, `scroll` or `typing`, a signed-in client
 waits until its first frame showing the conversation's messages, settles 2 s, runs the scenario and quits,
 appending the Windows client's JSON line (plus `content_ms`, process start to that frame) to `BENCH_OUT`.

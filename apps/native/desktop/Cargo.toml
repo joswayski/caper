@@ -1,18 +1,6 @@
-[package]
-name = "caper-desktop"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.99"
-license = "Apache-2.0"
-description = "Native Caper desktop client"
-
 [workspace]
 members = ["../client", "../linux", "../windows", "voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build", "web-player"]
-exclude = ["vendor/egui-winit"]
-
-[patch.crates-io]
-# Preserve the paste command even when only non-text clipboard formats exist.
-egui-winit = { path = "vendor/egui-winit" }
+resolver = "3"
 
 [workspace.package]
 edition = "2021"
@@ -34,64 +22,6 @@ thiserror = "2"
 tokio = { version = "1", default-features = false }
 tokio-stream = "0.1"
 
-[dependencies]
-# egui only pastes text; read native copied file lists and RGBA images too.
-arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
-# Encoded clipboard attachments (including animated GIF), without image decoding.
-clipboard-rs = { version = "=0.3.5", default-features = false, features = ["wayland"] }
-# The UI-free client core: API, gateway, model, uploads, voice media and
-# notifications (../client).
-caper-client = { path = "../client" }
-# Link preview players: the play-page allowlist and the Linux helper's line
-# protocol, without a web engine (see web-player/ and src/web_player.rs).
-caper-web-player = { path = "web-player" }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# system_fonts: load installed fonts on demand for scripts and emoji that
-# Inrond and egui's bundled fonts lack (CJK, Arabic, Devanagari, color emoji).
-# experimental: the widget theme API, which keeps text fields' earlier metrics.
-eframe = { version = "=0.37.0", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts", "persistence", "system_fonts", "experimental"] }
-egui_extras = { version = "=0.37.0", default-features = false, features = ["svg", "image"] }
-# Attachments decode PNG/JPEG/WebP/GIF/BMP/TIFF in pure Rust. AVIF inline
-# images and AVIF/HEIC full-size images use the bundled FFmpeg instead.
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
-# File picker: Win32 dialogs on Windows; XDG desktop portal (libdbus loaded at runtime) on Linux.
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
-rodio = { version = "=0.21.1", default-features = false, features = ["playback", "wav"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.47", features = ["rt-multi-thread", "time", "sync"] }
-unicode-segmentation = "=1.13.3"
-url = "2.5"
-uuid = { version = "1.18", features = ["v4"] }
-
-[features]
-# rav1e's x86-64 assembly: about twice as fast AVIF photo encoding, identical
-# output. It needs NASM at build time, so build.sh/build.ps1 enable it for
-# release builds only when `nasm` is on PATH.
-avif-asm = ["caper-client/avif-asm"]
-
-[dev-dependencies]
-# Tests enumerate fixture audio devices, never real hardware.
-caper-client = { path = "../client", features = ["test-fixtures"] }
-# Tests check that eframe reads Caper's `window` record.
-egui-winit = { version = "=0.37.0", default-features = false, features = ["serde"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# Caper's X11 window id for the web player helper.
-raw-window-handle = "0.6"
-wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-# WebView2 in process for link preview players; its loader finds the
-# system runtime at run time.
-caper-web-player = { path = "web-player", features = ["engine"] }
-wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "dx12"] }
-windows = { version = "0.61.3", features = ["UI_ViewManagement", "Win32_UI_WindowsAndMessaging"] }
-winreg = "0.55"
-
-[target.'cfg(target_os = "windows")'.build-dependencies]
-winresource = "0.1"
-
 [profile.dev]
 debug = 0
 
@@ -105,11 +35,3 @@ opt-level = 3
 [profile.release]
 strip = "debuginfo"
 lto = "thin"
-
-[lints.rust]
-# Only the Windows invite link handoff's foreground grant needs it (see
-# src/app_link.rs).
-unsafe_code = "deny"
-
-[lints.clippy]
-all = "deny"

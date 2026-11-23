@@ -1,6 +1,6 @@
-//! The formatted composer, as desktop's (`apps/native/desktop/src/formatting.rs`)
-//! and web's: the buffer holds the draft's Markdown source with its
-//! delimiters hidden and its runs drawn in their styles: bold, italic,
+//! The formatted composer, as Windows' and web's: the buffer holds the
+//! draft's Markdown source with its delimiters hidden and its runs drawn in
+//! their styles: bold, italic,
 //! underline, strikethrough, spoilers on a #34383B wash and quoted lines
 //! indented beside a bar. Each typed edit goes through the shared
 //! `composer::edit` (`shared/messages/composer.rs`), which leaves the source

@@ -49,9 +49,8 @@ chmod 0755 "$ffmpeg_dir/ffmpeg"
 "$ffmpeg_dir/ffmpeg" -hide_banner -version | sed -n 1p
 
 # Linux ships the GTK 4 client (apps/native/linux, package caper-linux) under
-# the egui client's name and layout (caper-desktop), so installs, the
-# updater, launchers and launch at login carry over. Windows still builds
-# the egui client (build.ps1).
+# the earlier desktop client's name and layout (caper-desktop), so installs,
+# the updater, launchers and launch at login carry over.
 # A release runs the checks and the packaging as two jobs side by side
 # (CAPER_DESKTOP_STAGE=checks or package), so the tests gate publishing without
 # delaying the packages. Without it, this script does both.

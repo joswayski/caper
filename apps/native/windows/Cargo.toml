@@ -13,7 +13,7 @@ workspace = "../desktop"
 
 [features]
 # rav1e's x86-64 assembly for AVIF photo encoding (needs NASM at build time);
-# release builds enable it, as for egui.
+# release builds enable it when NASM is installed.
 avif-asm = ["caper-client/avif-asm"]
 
 [build-dependencies]

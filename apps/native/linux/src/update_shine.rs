@@ -6,10 +6,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
 
-/// "Update available" with the desktop's shine (desktop/src/update_art.rs,
-/// UpdateButtonShine on macOS): a still five-colour edge and a short light
-/// sweep every eight seconds, drawn over the button by a layer that takes
-/// no input, so the label and hit target never move. No edge while the
+/// "Update available" with the shine Windows and macOS (UpdateButtonShine)
+/// draw: a still five-colour edge and a short light sweep every eight seconds,
+/// drawn over the button by a layer that takes no input, so the label and hit
+/// target never move. No edge while the
 /// button shows keyboard focus (its focus ring stays), nothing while it is
 /// disabled, and no sweep when animations are off (reduced motion) or the
 /// window is in the background. The overlay shows with the button.

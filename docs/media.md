@@ -1120,9 +1120,7 @@ content URIs through Paste or Ctrl+V, and keyboard rich content via
 keeps the temporary URI permission until the attachment job finishes. Rust
 desktop accepts native file lists, encoded media/documents and images with
 Ctrl+V; native file references come first, and the encoded fallback recognizes
-media, PDF, ZIP and generic binary data, preferring GIF over PNG. Rust vendors a
-narrow `egui-winit` 0.37.0 patch that delivers paste intent on key-down even
-without text; see the vendored `PATCHES.md` when upgrading egui.
+media, PDF, ZIP and generic binary data, preferring GIF over PNG.
 `scripts/test-chat-paste.mjs` covers web against `native-parity-fixture.mjs`.
 
 ### Editing attachments before sending
@@ -1215,7 +1213,7 @@ The server sees an ordinary upload.
 | Web | `AttachmentEditor.tsx` (loaded on demand), full-window dialog | Canvas at full resolution, then the existing encoders | Mediabunny/WebCodecs: rotate, crop and resize, then the overlay; HDR through `hdr-video.ts`. Offered only where the browser encodes H.264 |
 | Android | `AttachmentEditor.kt`, full-screen Compose dialog; the custom swatch opens a small hue and saturation/value picker | `EditPainter` (android.graphics) on the decoded crop region, then the existing encoders | Media3: `ScaleAndRotateTransformation`, `Crop`, `Presentation`, then a `BitmapOverlay`; HDR needs Android 10+. AVIF editable from Android 12, HEIC from 9; TIFF not at all |
 | Apple | `AttachmentEditor.swift`: full-screen cover on iPhone/iPad, window overlay on Mac (inside the profile popover there); system `ColorPicker` | `AttachmentEditRenderer` (CoreGraphics/CoreText), then the existing encoders | The BT.709 composition read as BGRA, each frame turned, cropped, scaled and overlaid with Core Image, written through a pixel-buffer adaptor |
-| Rust desktop | `attachment_editor.rs`, full-window egui modal with egui's colour picker | `attachment_edit.rs`: tiny-skia strokes, Inrond 40 Bold through ab_glyph, then the existing encoders; HEIC/AVIF decode through the bundled FFmpeg | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or tone map. Marks need `overlay` with `png_pipe` input, which the bundled FFmpeg lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables them; the app detects them once present. Videos show a frame from 1 s in |
+| Rust desktop | Full-window modal: `attachment_editor.rs` (Windows), `editor.rs` (Linux) | `attachment_edit.rs`: tiny-skia strokes, Inrond 40 Bold through ab_glyph, then the existing encoders; HEIC/AVIF decode through the bundled FFmpeg | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or tone map. Marks need `overlay` with `png_pipe` input, which the bundled FFmpeg lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables them; the app detects them once present. Videos show a frame from 1 s in |
 
 ### Editing attachments after sending
 
@@ -1374,7 +1372,7 @@ is a new release revision and a new pin. The app uses it to:
 
 - compress videos before upload with the shared rules, reporting
   \"Compressing… N%\" on the draft chip; any failure uploads the original;
-- play videos in the viewer: one FFmpeg decodes RGBA frames into an egui texture,
+- play videos in the viewer: one FFmpeg decodes RGBA frames into a texture,
   another decodes 48 kHz stereo PCM for rodio, and audio is the clock. FFmpeg has
   no TLS, so it streams the signed CDN URL through a loopback range proxy
   (`media_proxy.rs`, bound to 127.0.0.1 with an unguessable per-video token).
@@ -1569,8 +1567,8 @@ takes focus back.
 - Web: `DropOverlay.tsx` over `.chat-panel` or `.chat-thread-panel`. Files dropped
   elsewhere in the app are refused instead of navigating. Thread drops attach to
   that thread.
-- Rust desktop: `file_drop.rs`, painted from egui's hovered files.
-  `--fixture parity-file-drop` (and `-narrow`) hold it open.
+- Rust desktop: `drop_overlay.rs` on Windows (OLE drag feedback) and
+  `file_drop.rs` on Linux.
 - Apple: `FileDropOverlay` on the conversation's `dropDestination` on iOS and
   macOS, taking photos/videos/audio/PDFs as media and other files as URLs. The
   macOS composer (`NSTextView`) accepts only text drags.
@@ -2111,8 +2109,8 @@ and keep a bounded window so latest rows are never spliced across a history gap.
 Context snapshots merge independently of the replay cursor. Pinned non-broadcast
 replies navigate into their thread. Jump to latest, and sends from historical
 context, reload the latest page. A target deleted before its context loads is
-answered with "That message was deleted." on web, Android, Apple and the egui
-desktop, which hide deleted rows; Linux and Windows land on its "This message
+answered with "That message was deleted." on web, Android and Apple, which
+hide deleted rows; Linux and Windows land on its "This message
 was deleted." row.
 
 On every client, a channel, DM or thread scrolled more than half a screen above
@@ -2734,7 +2732,7 @@ separate `caper-web-player` helper, so the app never links GTK and starts withou
 it. The native view sits exactly over the card, as a child of Caper's window on
 Windows and X11; Wayland cannot embed another process's surface, so it plays in
 its own small window and the card offers Show window/Close. It hides, still
-playing, while the box is partly out of view or anything egui paints (menus,
+playing, while the box is partly out of view or anything Caper paints (menus,
 popups, tooltips, dialogs, the viewer) meets it, with the poster marked "Playing";
 one plays at a time, and it closes on another Play, a conversation change, the
 card staying out of view, or quit. Same rules as mobile web views: ephemeral
@@ -3555,7 +3553,7 @@ longer exists is forgotten. Each client notices the loss its own way:
 | Client | A lost input is |
 | --- | --- |
 | Web | an ended track (unplugged, or permission revoked) or a device missing from the device list |
-| Windows, Linux, egui desktop | a failed capture, or the chosen device missing from the list polled every 2 seconds |
+| Windows, Linux | a failed capture, or the chosen device missing from the list polled every 2 seconds |
 | macOS | a CoreAudio device-list change that removes the chosen input, or a default input that cannot be followed; a reopened input that goes away follows the next default, with no ten-second limit |
 | Android | no captured audio for 3 seconds while unmuted (not while audio focus is lost); a reopened input that delivers nothing within 1.5 seconds is not reopened again in that call |
 | iOS | a route change, which iOS reroutes itself; an interruption that does not resume mutes |
@@ -4039,7 +4037,7 @@ eight hues.
 | iOS | Original packaged icon; no alternate-icon calls. |
 | Android | The launcher and all 800 legacy aliases use the original mascot. Keep alias component names and enabled state for existing entries and pinned shortcuts; the app never switches launcher components. |
 | macOS | Original AppIcon; no runtime `applicationIconImage` replacement. |
-| Rust desktop | Bundled original-mascot window icon; installer, pinned-shortcut and Wayland identities stay original. |
+| Windows, Linux | Original executable icon (`caper.ico`) and installed `caper.svg`; installer, pinned-shortcut and Wayland identities stay original. |
 
 Regenerate with `node scripts/generate-favicons.mjs` (ImageMagick 7 and librsvg),
 `node scripts/generate-android-launcher-aliases.mjs --check` and
@@ -4370,7 +4368,7 @@ Back animate it; Android only intercepts Back while the list shows. The closed
 list takes no touches. Opening Browse with the list open carries it along. The
 panel has 16px outlined corners and the conversation's edge shadow (web
 `-12px 0 32px rgb(0 0 0 / 0.45)`, Apple radius 16 / x −12 / 45%, Android 16dp
-elevation, Rust desktop egui edge shadow). A 1:1 DM title keeps its menu for
+elevation). A 1:1 DM title keeps its menu for
 Block/Unblock on Apple and Android, and phones also have Block there on web.
 
 On web between 761 and 1099px, Members sit beside the conversation while it keeps
@@ -4391,8 +4389,7 @@ Web, wide Android and Apple layouts allow dragging the thread's leading divider
 double-click/tap resets to 340px/pt/dp. Preferred widths range 300–600 and
 persist locally. The pane reserves 300 for the main conversation, or splits the
 area equally when it is under 600; shrinking the window does not overwrite the
-preference. Phone threads are full screen without a handle. Rust desktop uses a
-resizable egui `SidePanel` (300–480).
+preference. Phone threads are full screen without a handle.
 
 ### Optimistic feedback and thread loading
 
@@ -4468,8 +4465,7 @@ iPhone uses a backdrop-only tap recognizer on the sheet's presentation container
 
 Clipboard files: web accepts paste-event files; Apple uses its native Paste for
 file URLs and file-like bytes; Android and Rust desktop put **Paste from
-clipboard** in the Attach menu (Android also accepts keyboard `commitContent`;
-Rust repairs egui's missing image-only Ctrl+V).
+clipboard** in the Attach menu (Android also accepts keyboard `commitContent`).
 
 Channel, thread and profile composers have an Emoji button that opens the
 reaction picker (popover on web desktop, Rust desktop and macOS; bottom sheet on
@@ -4480,8 +4476,7 @@ touch) and inserts at the caret within the 4,000-character limit.
 Composers show the catalog name when an inline emoji is hovered or held; joined
 emoji, flags and keycaps are one target. Web, Android and iOS use a 400 ms hover
 and 500 ms hold, keeping a completed hold readable for 1.5 s; movement, editing,
-scrolling or leaving dismisses it. macOS uses text-range AppKit tooltips; Rust
-desktop uses egui's hover/long-touch timing. Web's lookup normalizes padded
+scrolling or leaving dismisses it. macOS uses text-range AppKit tooltips. Web's lookup normalizes padded
 keycap code points.
 
 ### Reply composer focus
@@ -4729,9 +4724,8 @@ progress. The retired SwiftUI apps (`CaperIOS`, `CaperMacOS`) are excluded from
 product paths; `CaperUIKit` and `CaperAppKit` are the released iOS and macOS
 clients (the Win32 and GTK hosts are outside the eligible roots, as the
 released clients). `apps/native/windows/src/` is the released Windows client and
-`apps/native/linux/src/` the released Linux client; the egui client in
-`apps/native/desktop/src/` is no longer released, while the rest of
-`apps/native/desktop/` (packaging, web player, WebRTC) ships on both. Shared-code
+`apps/native/linux/src/` the released Linux client; `apps/native/desktop/`
+(packaging, web player, WebRTC) ships on both. Shared-code
 changes still need evidence of released behavior; mixed
 commits describe only that behavior. Update these boundaries and the editorial
 prompt when the remaining replacement hosts ship.

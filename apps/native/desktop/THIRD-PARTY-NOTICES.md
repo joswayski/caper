@@ -22,9 +22,9 @@ archive distributed by LiveKit, without using LiveKit rooms or servers. The
 unchanged `libwebrtc-LICENSE.md` and `webrtc-sys-NOTICE.md` accompany both
 desktop packages.
 
-Principal UI/network dependencies are eframe/egui/egui_extras (MIT OR Apache-2.0), wgpu
-(MIT OR Apache-2.0), reqwest (MIT OR Apache-2.0), tungstenite (MIT OR
-Apache-2.0), and keyring (MIT OR Apache-2.0).
+Principal UI/network dependencies are gtk4-rs (MIT) on Linux, windows-rs (MIT
+OR Apache-2.0) on Windows, resvg (Apache-2.0 OR MIT), reqwest (MIT OR
+Apache-2.0), tungstenite (MIT OR Apache-2.0), and keyring (MIT OR Apache-2.0).
 
 ## Attachments
 
@@ -79,8 +79,7 @@ are not part of Rust's statically linked runtime or covered by Caper's license.
 ## Lucide icons
 
 The bundled vectors are exported from the web client's pinned lucide-react
-0.468.0 package by `scripts/native-icons.mjs`. They render locally through egui's
-SVG loader; no browser or JavaScript runtime is used by the application.
+0.468.0 package by `scripts/native-icons.mjs`. They render locally through resvg; no browser or JavaScript runtime is used by the application.
 
 ISC License
 

@@ -60,7 +60,7 @@ Expand-Archive $FfmpegArchive -DestinationPath $FfmpegExtract -Force
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Windows ships the Win32 client (apps/native/windows, package caper-windows)
-# as Caper.exe in the egui client's layout, so installs, the updater,
+# as Caper.exe in the earlier desktop client's layout, so installs, the updater,
 # shortcuts, caper:// links and launch at login carry over.
 # A release runs the checks and the packaging as two jobs side by side
 # (CAPER_DESKTOP_STAGE=checks or package), so the tests gate publishing without
