@@ -4,7 +4,8 @@
 Uploading only makes a build appear in App Store Connect. This waits for Apple
 to finish processing it, sets its "What to Test" text, adds it to each beta
 group that does not already receive every build automatically, and submits it
-for beta app review when an external group (such as the public link) needs it.
+for beta app review when an external group (such as the public link) needs it
+and no earlier build is still waiting for review.
 
 Environment: NOTARY_KEY_PATH (.p8), NOTARY_KEY_ID, NOTARY_ISSUER, BUILD_NUMBER,
 CAPER_IOS_BUNDLE_ID (default chat.caper.ios), WHAT_TO_TEST (optional).
@@ -203,7 +204,27 @@ def main() -> None:
         print(f"{name}: build {build_number} added")
         external = external or not attributes.get("isInternalGroup")
 
+    pending = []
     if external:
+        # Apple caps beta review submissions per day, so don't spend one while an
+        # earlier build still waits: once it is approved, a later release's build
+        # is submitted. If the lookup fails, submit as before.
+        status, body = call(
+            "GET",
+            "/builds",
+            query={
+                "filter[app]": app_id,
+                "filter[betaAppReviewSubmission.betaReviewState]": "WAITING_FOR_REVIEW,IN_REVIEW",
+                "limit": "1",
+            },
+        )
+        pending = body.get("data", []) if status < 300 else []
+    if pending:
+        print(
+            f"Beta app review: build {pending[0]['attributes'].get('version')} is already waiting for review; "
+            f"build {build_number} stays with internal testers, and a later build will reach external testers."
+        )
+    elif external:
         status, body = call(
             "POST",
             "/betaAppReviewSubmissions",

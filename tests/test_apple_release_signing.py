@@ -251,15 +251,17 @@ class TestFlightDistributionTests(unittest.TestCase):
             main = runpy.run_path(str(script))["main"]
         limit = (422, "ENTITY_UNPROCESSABLE.SUBMISSION_LIMIT_REACHED")
         cases = (
-            (404, 2, True, (201, None)),
-            (404, 100, False, (201, None)),
-            (403, 1, False, (201, None)),
+            (404, 2, True, (201, None), False),
+            (404, 100, False, (201, None), False),
+            (403, 1, False, (201, None), False),
             # Apple's review quota leaves the build with its groups; other review errors still fail.
-            (404, 0, True, limit),
-            (404, 0, False, (422, "ENTITY_ERROR.ATTRIBUTE.INVALID")),
+            (404, 0, True, limit, False),
+            (404, 0, False, (422, "ENTITY_ERROR.ATTRIBUTE.INVALID"), False),
+            # An earlier build still waiting for review keeps this one from spending a submission.
+            (404, 0, True, (201, None), True),
         )
-        for error, failures, succeeds, (review_status, review_code) in cases:
-            with self.subTest(error=error, failures=failures, review=review_code):
+        for error, failures, succeeds, (review_status, review_code), pending in cases:
+            with self.subTest(error=error, failures=failures, review=review_code, pending=pending):
                 state = {"remaining": failures, "added": False, "reviewed": False}
                 clock = [0]
 
@@ -276,6 +278,9 @@ class TestFlightDistributionTests(unittest.TestCase):
                         self.wfile.write(json.dumps(body).encode())
 
                     def do_GET(self):
+                        if "betaReviewState" in self.path:
+                            waiting = [{"id": "build-204", "attributes": {"version": "204.1"}}]
+                            return self.respond(200, {"data": waiting if pending else []})
                         data = {
                             "/apps": [{"id": "app"}],
                             "/builds": [{"id": "build-205", "attributes": {"processingState": "VALID"}}],
@@ -326,7 +331,7 @@ class TestFlightDistributionTests(unittest.TestCase):
                             with self.assertRaisesRegex(SystemExit, f"HTTP {error if failures else review_status}"):
                                 main()
                     self.assertEqual(state["added"], succeeds or not failures)
-                    self.assertEqual(state["reviewed"], succeeds or not failures)
+                    self.assertEqual(state["reviewed"], (succeeds or not failures) and not pending)
                     if error == 403:
                         self.assertEqual(clock[0], 0, "authorization failures must fail immediately")
                     elif not succeeds and failures:
