@@ -1815,12 +1815,14 @@ mod tests {
                     body,
                 };
                 let (status, reply) = respond(&origin, &request.line, &request);
+                // Recorded before replying, so a client that has its answer
+                // always finds its request here.
+                recorded.lock().unwrap().push(request);
                 let _ = write!(
                     reader.get_mut(),
                     "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                     reply.len()
                 );
-                recorded.lock().unwrap().push(request);
             }
         });
         (base, seen)

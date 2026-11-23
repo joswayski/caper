@@ -30,7 +30,7 @@ final class NativeSpaceTile: UIButton {
     private let unread = UIView()
     /// A pointer's hover pill at the rail's edge, in the unread dot's place, as web's rail.
     private let pill = UIView()
-    private var hovered = false
+    private var pointerOver = false
     private let mentions = UIKitStyle.label(size: 11, weight: .bold)
     private let muted = UIImageView(image: UIKitStyle.icon("bell-off"))
     private let voice = UIImageView(image: UIKitStyle.icon("volume-2"))
@@ -58,8 +58,8 @@ final class NativeSpaceTile: UIButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func hover(_ recognizer: UIHoverGestureRecognizer) {
         let next = recognizer.state == .began || recognizer.state == .changed
-        guard next != hovered else { return }
-        hovered = next; render()
+        guard next != pointerOver else { return }
+        pointerOver = next; render()
     }
     override func didMoveToWindow() { super.didMoveToWindow(); if window != nil { observer.start { [weak self] in self?.render() } } else { observer.stop() } }
     override func layoutSubviews() {
@@ -85,7 +85,7 @@ final class NativeSpaceTile: UIButton {
         voice.backgroundColor = connected ? UIColor(CaperTheme.voiceSessionGreen) : UIKitStyle.blackout
         // A hovered space gets a brighter ring and the edge pill; the pill
         // eases in and leaves at once.
-        let lifted = hovered && !selected
+        let lifted = pointerOver && !selected
         layer.borderWidth = selected || lifted ? 1 : 0
         layer.borderColor = (selected ? UIKitStyle.terracotta : UIKitStyle.text.withAlphaComponent(0.26)).cgColor
         layer.shadowOpacity = selected ? 0.36 : 0

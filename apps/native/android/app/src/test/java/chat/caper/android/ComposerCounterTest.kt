@@ -6,6 +6,7 @@ import chat.caper.android.model.AttachmentDraftTarget
 import chat.caper.android.model.Channel
 import chat.caper.android.model.DraftAttachmentUi
 import chat.caper.android.model.ThreadUi
+import chat.caper.android.ui.PinGold
 import chat.caper.android.ui.TextMuted
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -14,7 +15,7 @@ import org.junit.Test
 class ComposerCounterTest {
     @Test fun `counter tones match the web thresholds`() {
         assertEquals(TextMuted, counterTone(3499))
-        assertEquals(Color(0xFFE4C76A), counterTone(3500))
+        assertEquals(PinGold, counterTone(3500))
         assertEquals(Color(0xFFEDA361), counterTone(3750))
         assertEquals(Color(0xFFFF827C), counterTone(3900))
     }
