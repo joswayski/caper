@@ -88,3 +88,44 @@ test("a version without highlights links its changes on GitHub", async () => {
     container.remove();
   }
 });
+
+test("a click on the backdrop closes it, but a selection dragged out of the text does not", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.mocked(loadReleaseHighlights).mockResolvedValue({
+    schema: 1,
+    platform: "web",
+    revision: "b".repeat(40),
+    sequence: 1,
+    releases: [
+      {
+        sequence: 1,
+        revision: "b".repeat(40),
+        publishedAt: "2026-10-21T12:00:00Z",
+        highlights: [{ title: "A change", body: "Text someone might copy." }],
+      },
+    ],
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onManualClose = vi.fn();
+  try {
+    await act(async () => {
+      root.render(<WhatsNew ready blocked={false} manualOpen onManualClose={onManualClose} />);
+    });
+    const dialog = container.querySelector("dialog")!;
+    const press = (down: Element, up: Element) =>
+      act(() => {
+        down.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        up.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    await press(container.querySelector("article p")!, dialog);
+    await press(container.querySelector("article p")!, container.querySelector("article p")!);
+    expect(onManualClose).not.toHaveBeenCalled();
+    await press(dialog, dialog);
+    expect(onManualClose).toHaveBeenCalledTimes(1);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});

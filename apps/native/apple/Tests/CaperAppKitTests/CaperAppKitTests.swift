@@ -257,12 +257,12 @@ import XCTest
         defer { app.terminate() }
         let main = app.windows["Caper — AppKit development (not feature complete)"]
         let caperMenu = app.menuBars.menuBarItems.matching(NSPredicate(format: "title BEGINSWITH %@ OR label BEGINSWITH %@", "Caper", "Caper")).firstMatch
-        let close = app.buttons["Close What’s new"]
+        let close = app.buttons["whats-new-done"]
         let done = app.buttons["Done"]
         let preview = app.staticTexts["TEST FIXTURE — Message editing"]
         XCTAssertTrue(preview.waitForExistence(timeout: 15))
         XCTAssertTrue(app.descendants(matching: .any)["whats-new"].firstMatch.exists)
-        XCTAssertEqual(app.buttons.matching(identifier: "Close What’s new").count, 1)
+        XCTAssertEqual(app.buttons.matching(identifier: "whats-new-done").count, 1)
         XCTAssertTrue(close.isHittable); XCTAssertTrue(done.isHittable)
         app.typeKey(",", modifierFlags: .command)
         XCTAssertFalse(app.windows["caper-appkit-settings"].exists)
@@ -272,7 +272,8 @@ import XCTest
             close.hover(); done.hover(); close.hover()
             capture("What's new labelled preview main \(Int(width))", app: app)
         }
-        close.click()
+        // A click on the window behind the sheet closes it.
+        main.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.97)).click()
         XCTAssertTrue(close.waitForNonExistence(timeout: 5)); XCTAssertFalse(preview.exists)
         let composer = app.textViews["message-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
@@ -291,10 +292,10 @@ import XCTest
             XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
             item.hover(); app.menus["caper-menu"].menuItems["Settings…"].hover(); item.click()
             XCTAssertTrue(close.waitForExistence(timeout: 5))
-            XCTAssertTrue(main.buttons["Close What’s new"].exists)
+            XCTAssertTrue(main.buttons["whats-new-done"].exists)
             XCTAssertTrue(app.staticTexts[unavailable].waitForExistence(timeout: 5))
             XCTAssertFalse(preview.exists)
-            XCTAssertEqual(app.buttons.matching(identifier: "Close What’s new").count, 1)
+            XCTAssertEqual(app.buttons.matching(identifier: "whats-new-done").count, 1)
             XCTAssertEqual(app.buttons.matching(identifier: "Done").count, 1)
             close.hover(); done.hover()
             capture("account What's new development unavailable main \(Int(width))", app: app)
@@ -316,13 +317,13 @@ import XCTest
                 caperMenu.click()
                 app.menuBars.menuItems["Settings…"].hover(); app.menuBars.menuItems["What’s new"].click()
             }
-            let ownedClose = settings.buttons["Close What’s new"]
+            let ownedClose = settings.buttons["whats-new-done"]
             XCTAssertTrue(ownedClose.waitForExistence(timeout: 5))
             XCTAssertTrue(settings.staticTexts[unavailable].waitForExistence(timeout: 5))
             // Repeated manual requests must foreground this same presentation.
             caperMenu.click(); app.menuBars.menuItems["What’s new"].click()
-            XCTAssertFalse(main.buttons["Close What’s new"].exists, "Settings must not also present a workspace sheet")
-            XCTAssertEqual(app.buttons.matching(identifier: "Close What’s new").count, 1)
+            XCTAssertFalse(main.buttons["whats-new-done"].exists, "Settings must not also present a workspace sheet")
+            XCTAssertEqual(app.buttons.matching(identifier: "whats-new-done").count, 1)
             XCTAssertEqual(app.buttons.matching(identifier: "Done").count, 1)
             XCTAssertEqual(settings.sheets.count, 1)
             XCTAssertEqual(app.sheets.count, 1, "There must be one owner, not two concurrent sheets")

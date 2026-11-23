@@ -2,6 +2,7 @@ package chat.caper.android
 
 import android.content.Context
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -68,7 +69,7 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
 @Composable internal fun WhatsNewDialog(
     state: WhatsNewUi, displayed: WhatsNewSnapshot?, automatic: Boolean, retry: () -> Unit, close: () -> Unit,
 ) = CaperDialog(
-    "What’s new", close, heroIcon = R.drawable.caper_face,
+    "What’s new", close, heroIcon = R.drawable.caper_face, showClose = false,
     // Like the update review on desktop: the installed version right under the title.
     subtitle = {
         val version = "Installed version ${BuildConfig.VERSION_NAME}"
@@ -92,14 +93,23 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
             onClickLabel = "Open this version’s changes on GitHub",
         )
     } else releases.groupBy { it.publishedAt.take(10) }.forEach { (date, dayReleases) ->
-        Text(releaseDayLabel(date), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextMuted)
-        dayReleases.forEach { release ->
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ReleaseCommitLink(release.version?.let { "Version $it" } ?: release.revision.take(7), release.revision)
-                release.highlights.forEach { highlight ->
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        Text(highlight.body, fontSize = 14.sp, color = TextMuted)
+        dayReleases.forEachIndexed { index, release ->
+            Column {
+                // Each day's first version sits right under its date, as on web.
+                if (index == 0) {
+                    SelectionContainer { Text(releaseDayLabel(date), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextMuted) }
+                    Spacer(Modifier.height(6.dp))
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ReleaseCommitLink(release.version?.let { "Version $it" } ?: release.revision.take(7), release.revision)
+                    release.highlights.forEach { highlight ->
+                        // Release notes can be selected and copied, like text on web.
+                        SelectionContainer {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                Text(highlight.body, fontSize = 14.sp, color = TextMuted)
+                            }
+                        }
                     }
                 }
             }

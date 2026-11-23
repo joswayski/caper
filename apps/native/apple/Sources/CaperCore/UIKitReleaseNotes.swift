@@ -110,7 +110,17 @@ import Observation
         let sheet = UIKitReleaseNotes(notes: model.whatsNew, display: display) { [weak self] in self?.close() }
         self.sheet = sheet
         UIKitHosting.sheet(sheet, background: CaperTheme.surface)
-        sheet.sheetPresentationController?.detents = [.large()]
+        // As tall as the notes (a tap above a short sheet closes it), and
+        // draggable to full height when they run longer.
+        let fit = UISheetPresentationController.Detent.custom(identifier: UIKitReleaseNotes.fit) { [weak sheet, weak self] context in
+            let maximum = context.maximumDetentValue
+            return MainActor.assumeIsolated {
+                guard let sheet else { return nil }
+                let width = sheet.view.bounds.width > 0 ? sheet.view.bounds.width : self?.view.window?.bounds.width ?? 390
+                return min(sheet.fittingHeight(width: width), maximum)
+            }
+        }
+        sheet.sheetPresentationController?.detents = [fit, .large()]
         present(sheet, animated: !CaperAccessibility.reduceMotion)
     }
     private func close() {
@@ -122,6 +132,7 @@ import Observation
 }
 
 @MainActor private final class UIKitReleaseNotes: UIKitMessageDialog {
+    static let fit = UISheetPresentationController.Detent.Identifier("whats-new-fit")
     private let notes: WhatsNewModel
     private(set) var display: WhatsNewDisplay
     /// Kept across renders so its "Copied" feedback and focus survive.
@@ -130,6 +141,8 @@ import Observation
         self.notes = notes; self.display = display; super.init(title: "What’s new", closeLabel: "Close What’s new", close: close)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    /// Done, a swipe down or a tap outside closes it.
+    override var showsCloseButton: Bool { false }
     override func viewDidLoad() { super.viewDidLoad(); view.accessibilityIdentifier = "whats-new"; observe() }
     override func render() {
         if display.releases == nil, let next = notes.presentation, next.id == display.id { display = next }
@@ -157,8 +170,8 @@ import Observation
             }
             let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
             for date in days.keys.sorted(by: >) {
-                let day = Self.label(releaseDayLabel(date), bold: true)
-                body.addArrangedSubview(day); body.setCustomSpacing(8, after: day)
+                let day = Self.selectable(releaseDayLabel(date), size: 12, bold: true, muted: true)
+                body.addArrangedSubview(day); body.setCustomSpacing(4, after: day)
                 for release in days[date] ?? [] {
                     // Web's spacing: the link 6 above its highlights, each title
                     // 4 above its text, 12 between highlights, 20 around the rule.
@@ -166,8 +179,8 @@ import Observation
                                       url: URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)"))
                     body.addArrangedSubview(source); body.setCustomSpacing(6, after: source)
                     for highlight in release.highlights {
-                        let title = Self.label(highlight.title, size: 16, bold: true); title.accessibilityTraits.insert(.header)
-                        let text = Self.label(highlight.body, size: 14)
+                        let title = Self.selectable(highlight.title, size: 16, bold: true); title.accessibilityTraits.insert(.header)
+                        let text = Self.selectable(highlight.body, size: 14, muted: true)
                         body.addArrangedSubview(title); body.setCustomSpacing(4, after: title)
                         body.addArrangedSubview(text); body.setCustomSpacing(12, after: text)
                     }
@@ -182,6 +195,18 @@ import Observation
             body.addArrangedSubview(Self.button("Retry") { [notes] in Task { await notes.refresh() } })
         }
         body.addArrangedSubview(Self.button(display.automatic ? "Got it" : "Done", primary: true, action: close))
+        if view.window != nil, let sheet = sheetPresentationController { sheet.animateChanges { sheet.invalidateDetents() } }
+    }
+    /// Release notes can be selected and copied, like text on web.
+    private static func selectable(_ text: String, size: CGFloat, bold: Bool = false, muted: Bool = false) -> UITextView {
+        let view = UITextView()
+        view.text = text; view.isEditable = false; view.isSelectable = true; view.isScrollEnabled = false
+        view.backgroundColor = .clear; view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = 0
+        view.font = UIFontMetrics(forTextStyle: .body).scaledFont(for:
+            UIFont(name: bold ? "Figtree-Bold" : "Figtree-Regular", size: size) ?? .systemFont(ofSize: size))
+        view.adjustsFontForContentSizeCategory = true
+        view.textColor = UIColor(muted ? CaperTheme.muted : CaperTheme.text)
+        return view
     }
     /// A quiet commit link like every other client's: flush with the text,
     /// muted at rest with an external-link icon, brightening while pressed.

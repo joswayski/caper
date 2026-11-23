@@ -159,10 +159,13 @@ fn highlight(title: &str, body: &str) -> gtk::Box {
     let heading = label(&format!("• {title}"), &["highlight-title"]);
     heading.set_xalign(0.0);
     heading.set_wrap(true);
+    // Release notes can be selected and copied, like text on web.
+    heading.set_selectable(true);
     item.append(&heading);
     let text = label(body, &["muted", "highlight-body"]);
     text.set_xalign(0.0);
     text.set_wrap(true);
+    text.set_selectable(true);
     item.append(&text);
     item
 }
@@ -261,7 +264,6 @@ impl App {
             .modal(true)
             .title("What’s new")
             .default_width(480)
-            .default_height(560)
             .build();
         crate::app::close_on_escape(&window);
         window.add_css_class("caper");
@@ -285,17 +287,15 @@ impl App {
             }
         }
         top.append(&heading);
-        let close: gtk::Button = super::named("GtkButton", "Close What’s new");
-        close.set_child(Some(&self.images.icon_image(Icon::Close, "#b9bcbe", 14)));
-        close.add_css_class("flat");
-        close.set_valign(gtk::Align::Start);
-        top.append(&close);
         root.append(&top);
         let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        // As tall as the notes, so a short list leaves no empty space under it.
         root.append(
             &gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
                 .vexpand(true)
+                .propagate_natural_height(true)
+                .max_content_height(560)
                 .child(&body)
                 .build(),
         );
@@ -304,17 +304,27 @@ impl App {
         done.set_halign(gtk::Align::End);
         root.append(&done);
         window.set_child(Some(&root));
-        for button in [&close, &done] {
-            let weak = window.downgrade();
-            button.connect_clicked(move |_| {
-                if let Some(window) = weak.upgrade() {
-                    window.close();
-                }
-            });
-        }
+        // Done, Escape or a click on the main window closes it.
+        let weak = window.downgrade();
+        done.connect_clicked(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window.close();
+            }
+        });
+        let outside = gtk::GestureClick::new();
+        outside.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = window.downgrade();
+        outside.connect_pressed(move |gesture, _, _, _| {
+            if let Some(window) = weak.upgrade() {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                window.close();
+            }
+        });
+        self.ui.window.add_controller(outside.clone());
         let app = Rc::downgrade(self);
         window.connect_close_request(move |_| {
             if let Some(app) = app.upgrade() {
+                app.ui.window.remove_controller(&outside);
                 app.whats_new_window.borrow_mut().take();
                 // Only what was shown counts as read.
                 let mut whats_new = app.whats_new.borrow_mut();
@@ -363,6 +373,9 @@ impl App {
         }
         open.shown = Some(shown);
         clear(&open.body);
+        // Back to its natural height for what this render shows, as an
+        // already open window keeps its size otherwise.
+        open.window.set_default_size(480, -1);
         if loading {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             let spinner = gtk::Spinner::new();
@@ -402,6 +415,7 @@ impl App {
             return;
         }
         let mut previous_day = None;
+        let mut first_of_day = false;
         for release in releases {
             let day = chrono::DateTime::parse_from_rfc3339(&release.published_at)
                 .ok()
@@ -413,18 +427,22 @@ impl App {
                     &["settings-section"],
                 );
                 date.set_xalign(0.0);
+                date.set_selectable(true);
                 if previous_day.is_some() {
                     date.set_margin_top(20);
                 }
                 open.body.append(&date);
                 previous_day = day;
+                first_of_day = true;
             }
             let version = release_link(
                 &self.images,
                 &release_label(&release),
                 &updates::commit_url(&release.revision).unwrap_or_default(),
             );
-            version.set_margin_top(12);
+            // A day's first version sits right under its date, as on web.
+            version.set_margin_top(if first_of_day { 4 } else { 12 });
+            first_of_day = false;
             open.body.append(&version);
             for item in &release.highlights {
                 let item = highlight(&item.title, &item.body);

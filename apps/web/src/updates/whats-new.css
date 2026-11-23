@@ -1,6 +1,7 @@
 .audio-dialog.whats-new-dialog {
   width: min(560px, calc(100vw - 24px));
-  height: auto;
+  /* A modal dialog is fixed with inset 0, so auto would stretch it to its max height. */
+  height: fit-content;
   max-height: min(680px, calc(100dvh - 32px));
 }
 .whats-new-heading {

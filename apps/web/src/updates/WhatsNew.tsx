@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { ExternalLink, X } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import {
   loadReleaseHighlights,
   releaseHighlightDays,
@@ -23,6 +23,9 @@ export default function WhatsNew({
   onManualClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  // Whether the current press began on the backdrop, so a text selection
+  // dragged out of the dialog doesn't count as a click outside.
+  const pressedBackdrop = useRef(false);
   const titleId = useId();
   const acknowledged = useRef<number | undefined>(undefined);
   const initialized = useRef(false);
@@ -171,6 +174,15 @@ export default function WhatsNew({
         event.preventDefault();
         close();
       }}
+      // A click on the backdrop closes it; the dialog's own box has no padding,
+      // so only the backdrop targets the dialog element itself.
+      onPointerDown={(event) => {
+        pressedBackdrop.current = event.target === event.currentTarget;
+      }}
+      onClick={(event) => {
+        if (pressedBackdrop.current && event.target === event.currentTarget) close();
+        pressedBackdrop.current = false;
+      }}
     >
       {/* Like the native update review: the face, the title, then the build right under it. */}
       <header className="audio-dialog-heading whats-new-heading">
@@ -190,9 +202,6 @@ export default function WhatsNew({
             </a>
           )}
         </div>
-        <button type="button" className="voice-icon-button" aria-label="Close What’s new" onClick={close}>
-          <X aria-hidden="true" />
-        </button>
       </header>
       <div className="audio-dialog-body">
         {loading && !feed && <p role="status">Loading release highlights…</p>}

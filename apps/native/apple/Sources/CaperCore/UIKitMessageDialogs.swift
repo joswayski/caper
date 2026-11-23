@@ -28,6 +28,8 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
     private var closeButton: UIButton?
     private var originals: [String: (message: ChatMessage, view: UIKitOriginalMessage)] = [:]
     var dismissDisabled: Bool { false }
+    /// False for a dialog whose own footer button already closes it.
+    var showsCloseButton: Bool { true }
 
     private let closeLabel: String
     private var header: UIStackView?
@@ -62,6 +64,7 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         titleLabel = title
         let close = Self.button("Close") { [weak self] in if let self, !self.dismissDisabled { self.close() } }
         close.accessibilityLabel = closeLabel; closeButton = close
+        close.isHidden = !showsCloseButton
         let header = Self.header(title, close); self.header = header
         let scroll = UIScrollView(); scroll.keyboardDismissMode = .interactive; self.scroll = scroll
         body.axis = .vertical; body.spacing = 14

@@ -100,7 +100,6 @@ pub enum SPart {
     ReleaseRevision(usize),
     /// "See what changed on GitHub" under a version without highlights.
     Changes,
-    Done,
     Level(usize),
     VoiceStarted,
     RetryNotifications,
@@ -195,7 +194,6 @@ impl SPart {
             Self::WhatsNew => 45,
             Self::RetryHighlights => 46,
             Self::InstalledRevision => 47,
-            Self::Done => 48,
             Self::Connection => 49,
             Self::Diagnostics => 50,
             Self::CopyReport => 51,
@@ -252,7 +250,6 @@ impl SPart {
                 | Self::CopyVersion
                 | Self::ReleaseRevision(_)
                 | Self::Changes
-                | Self::Done
                 | Self::RetryNotifications
                 | Self::RetryPrivacy
                 | Self::RetryBlocks
@@ -907,8 +904,8 @@ impl Builder<'_> {
                 self.separator();
             }
         }
-        self.y += 12.0;
-        self.button(SPart::Done, "Done")
+        // The header's close, Escape or a click outside closes it.
+        Ok(())
     }
 
     /// The inbox, as egui's `activity_dialog` stacks it.
@@ -1605,7 +1602,7 @@ impl App {
         self.need = true;
     }
 
-    /// Close, Done, Escape and a click outside give the keyboard back to
+    /// Close, Escape and a click outside give the keyboard back to
     /// the composer, or, as web's dialog does, to the sidebar row that
     /// opened the page.
     fn close_settings_refocus(&mut self) {
@@ -1736,7 +1733,7 @@ impl App {
             | SPart::FeedbackArchived
             | SPart::FeedbackOpen(_)
             | SPart::FeedbackArchive(_) => return self.support_activate(part),
-            SPart::Close | SPart::Done => return self.close_settings_refocus(),
+            SPart::Close => return self.close_settings_refocus(),
             SPart::WhatsNew => return self.open_highlights(),
             SPart::RetryHighlights => {
                 if let Some(live) = &mut self.live {

@@ -536,6 +536,7 @@ import UniformTypeIdentifiers
     private let readiness = AppKitObservation()
     private var sheet: AppKitWhatsNewSheet?
     private weak var owner: NSWindow?
+    private var dismissMonitor: Any?
     private var timer: Timer?
     private var refreshing = false
     private var lastRefresh: Date?
@@ -612,11 +613,25 @@ import UniformTypeIdentifiers
         let next = AppKitWhatsNewSheet(notes: notes, display: display) { [weak self] in self?.endSheet() }
         sheet = next; owner = target
         target.beginSheet(next) { _ in }
+        next.fitHeight()
+        // A click on the window behind (or Settings' own parent) closes it, like
+        // web's light-dismiss dialog, and goes no further. Escape closes it even
+        // while selected text has focus, which would otherwise take the key.
+        dismissMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { [weak self, weak next] event in
+            guard let self, let next, let window = event.window, let parent = next.sheetParent else { return event }
+            let close = event.type == .keyDown
+                ? window === next && event.keyCode == 53
+                : sequence(first: parent, next: { $0.sheetParent }).contains { $0 === window }
+            guard close else { return event }
+            self.endSheet()
+            return nil
+        }
     }
 
     private func endSheet() {
         guard let sheet else { return }
         self.sheet = nil
+        if let dismissMonitor { NSEvent.removeMonitor(dismissMonitor); self.dismissMonitor = nil }
         let display = sheet.display
         owner?.endSheet(sheet)
         owner = nil
@@ -627,16 +642,20 @@ import UniformTypeIdentifiers
 
 /// The release highlights sheet: the face, title and installed version, then
 /// each day's releases, and Done (or Got it for an automatic presentation).
+/// Escape, Done or a click outside closes it; it is as tall as its notes.
 @MainActor private final class AppKitWhatsNewSheet: NSWindow {
+    private static let width: CGFloat = 520
     private let notes: WhatsNewModel
     private(set) var display: WhatsNewDisplay
     private let finish: () -> Void
     private let observation = AppKitObservation()
     private let body = AppKitKit.stack([], spacing: 16)
+    private var scroll: NSScrollView!
+    private var scrollHeight: NSLayoutConstraint!
 
     init(notes: WhatsNewModel, display: WhatsNewDisplay, close: @escaping () -> Void) {
         self.notes = notes; self.display = display; self.finish = close
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 520, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
+        super.init(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         appearance = NSAppearance(named: CaperThemeStore.shared.active.isLight ? .aqua : .darkAqua)
         isReleasedWhenClosed = false
         contentView = makeContent()
@@ -646,7 +665,7 @@ import UniformTypeIdentifiers
     }
 
     private func makeContent() -> NSView {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 540))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 400))
         root.wantsLayer = true
         root.layer?.backgroundColor = AppKitKit.surface.cgColor
         root.setAccessibilityElement(true)
@@ -657,34 +676,29 @@ import UniformTypeIdentifiers
         title.setAccessibilityRole(.staticText)
         var heading: [NSView] = [AppKitKit.image("caper-face", size: 36), title]
         heading.append(appKitVersionControl())
-        let headingStack = AppKitKit.stack(heading, spacing: 2)
-        headingStack.setCustomSpacing(10, after: heading[0])
-        let closeButton = AppKitKitButton("Close") { [weak self] in self?.finish() }
-        closeButton.setAccessibilityLabel("Close What’s new")
-        closeButton.keyEquivalent = "\u{1b}"
-        let header = NSView(); header.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(headingStack); header.addSubview(closeButton)
+        let header = AppKitKit.stack(heading, spacing: 2)
+        header.setCustomSpacing(10, after: heading[0])
 
         let scroll = appKitKitScroll(body, insets: NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22))
+        self.scroll = scroll
+        scrollHeight = scroll.heightAnchor.constraint(equalToConstant: 200)
+        // Done is the one way out on screen; Escape and a click outside also close.
         let done = AppKitKitButton(display.automatic ? "Got it" : "Done", kind: .primary) { [weak self] in self?.finish() }
         done.keyEquivalent = "\r"
+        done.setAccessibilityIdentifier("whats-new-done")
         let divider = AppKitKit.divider()
         for view in [header, divider, scroll, done] as [NSView] { root.addSubview(view) }
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 22),
-            header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -22),
+            header.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -22),
             header.topAnchor.constraint(equalTo: root.topAnchor, constant: 22),
-            headingStack.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            headingStack.topAnchor.constraint(equalTo: header.topAnchor),
-            headingStack.bottomAnchor.constraint(equalTo: header.bottomAnchor),
-            closeButton.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            closeButton.topAnchor.constraint(equalTo: header.topAnchor),
             divider.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             divider.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             divider.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 22),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: divider.bottomAnchor),
+            scrollHeight,
             done.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 22),
             done.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -22),
             done.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
@@ -700,6 +714,7 @@ import UniformTypeIdentifiers
             body.addArrangedSubview(view)
             if fill { AppKitKit.fillWidth(view, of: body) }
         }
+        defer { fitHeight() }
         if let releases = display.releases {
             if releases.isEmpty {
                 add(AppKitKit.label("No release highlights for this version yet.", color: AppKitKit.muted))
@@ -709,15 +724,18 @@ import UniformTypeIdentifiers
             }
             let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
             for day in days.keys.sorted(by: >) {
-                add(AppKitKit.label(releaseDayLabel(day), size: 12, weight: .bold, color: AppKitKit.muted))
+                let date = selectable(AppKitKit.label(releaseDayLabel(day), size: 12, weight: .bold, color: AppKitKit.muted))
+                add(date)
+                // Each version sits right under its date, as on web.
+                body.setCustomSpacing(6, after: date)
                 for release in days[day] ?? [] {
                     var rows: [NSView] = []
                     if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
                         rows.append(AppKitKitLink(release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)), url: url, size: 12))
                     }
                     for highlight in release.highlights {
-                        let title = AppKitKit.label(highlight.title, size: 16, weight: .bold)
-                        let text = AppKitKit.label(highlight.body, size: 14, color: AppKitKit.muted)
+                        let title = selectable(AppKitKit.label(highlight.title, size: 16, weight: .bold))
+                        let text = selectable(AppKitKit.label(highlight.body, size: 14, color: AppKitKit.muted))
                         let item = AppKitKit.stack([title, text], spacing: 4)
                         AppKitKit.fillWidth(title, of: item); AppKitKit.fillWidth(text, of: item)
                         rows.append(item)
@@ -738,6 +756,26 @@ import UniformTypeIdentifiers
             add(AppKitKit.label(error, color: AppKitKit.error))
             add(AppKitKitButton("Retry") { [notes] in Task { await notes.refresh() } }, fill: false)
         }
+    }
+
+    /// Release notes can be selected and copied, like any text on web.
+    private func selectable(_ label: NSTextField) -> NSTextField { label.isSelectable = true; return label }
+
+    /// Tall enough for the notes, so a short list leaves no empty space under
+    /// it; a long one scrolls within the parent window's height.
+    func fitHeight() {
+        guard let root = contentView, let document = scroll.documentView else { return }
+        // Twice: wrapped labels settle their height once they know their width.
+        root.layoutSubtreeIfNeeded(); root.layoutSubtreeIfNeeded()
+        let chrome = root.bounds.height - scroll.frame.height
+        let limit = min(680, (sheetParent?.frame.height ?? 720) - 40)
+        let height = min(chrome + document.frame.height, max(limit, chrome + 120))
+        scrollHeight.constant = height - chrome
+        // Keep the top edge where it is, attached under the parent's title bar.
+        var next = frame
+        let size = frameRect(forContentRect: NSRect(x: 0, y: 0, width: Self.width, height: height)).size
+        next.origin.y += next.height - size.height; next.size = size
+        setFrame(next, display: true)
     }
 
     override func cancelOperation(_ sender: Any?) { finish() }

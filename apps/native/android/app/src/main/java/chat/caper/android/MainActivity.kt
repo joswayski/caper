@@ -4656,6 +4656,8 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     subtitle: (@Composable () -> Unit)? = null,
     /** A request is in flight: X, back and outside taps wait, so it can't finish behind a closed dialog. */
     busy: Boolean = false,
+    /** False when the dialog's own Done already closes it (back and outside taps still do). */
+    showClose: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Dialog({ if (!busy) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -4664,7 +4666,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
             // Named by its title, like web's aria-labelledby.
             Surface(Modifier.fillMaxWidth().heightIn(max = minOf(maxHeight, 760.dp)).semantics { paneTitle = title }, color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                 Column {
-                    Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 10.dp, top = 10.dp, bottom = if (description != null || subtitle != null) 16.dp else 10.dp), verticalAlignment = Alignment.Top) {
+                    Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = if (showClose) 10.dp else 22.dp, top = if (showClose || heroIcon == null) 10.dp else 22.dp, bottom = if (description != null || subtitle != null) 16.dp else 10.dp), verticalAlignment = Alignment.Top) {
                         Column(Modifier.weight(1f)) {
                             // Centered on the close button's row; the title follows below.
                             heroIcon?.let { Image(painterResource(it), contentDescription = null, modifier = Modifier.padding(top = 6.dp, bottom = 10.dp).size(36.dp)) }
@@ -4676,8 +4678,10 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
                             description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
                             subtitle?.let { Box(Modifier.padding(top = 2.dp)) { it() } }
                         }
-                        Spacer(Modifier.width(8.dp))
-                        IconButton(close, Modifier.size(48.dp), enabled = !busy) { Icon(painterResource(R.drawable.lucide_x), "Close $title", tint = if (busy) TextMuted.copy(alpha = 0.4f) else TextMuted) }
+                        if (showClose) {
+                            Spacer(Modifier.width(8.dp))
+                            IconButton(close, Modifier.size(48.dp), enabled = !busy) { Icon(painterResource(R.drawable.lucide_x), "Close $title", tint = if (busy) TextMuted.copy(alpha = 0.4f) else TextMuted) }
+                        }
                     }
                     HorizontalDivider(color = Border)
                     Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
