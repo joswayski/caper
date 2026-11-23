@@ -1126,12 +1126,12 @@ final class LoopingPlayback {
     /// Waits for the file: true once it plays, false when it fails to load
     /// (usually an expired signature) or the wait is cancelled.
     @MainActor func loads() async -> Bool {
-        for await status in looper.publisher(for: \.status).values {
-            switch status {
-            case .ready: return true
-            case .failed, .cancelled: return false
-            default: continue
-            }
+        // Only settled states reach the loop: KVO's initial `.unknown` would
+        // use up the async sequence's one-value demand, and the change to
+        // `.ready` arriving before the next request was dropped, so this
+        // never returned and looping clips never started.
+        for await status in looper.publisher(for: \.status).filter({ $0 != .unknown }).values {
+            return status == .ready
         }
         return false
     }

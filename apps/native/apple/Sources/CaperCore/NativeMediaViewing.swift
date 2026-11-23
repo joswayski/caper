@@ -134,9 +134,10 @@ import UIKit
                 } else {
                     let created = AVPlayer(url: url); player = created; created.play()
                     if let current = created.currentItem {
-                        for await status in current.publisher(for: \.status).values {
+                        // Filtered upstream: an `.unknown` reaching the loop would
+                        // use up the sequence's demand and drop `.readyToPlay`.
+                        for await status in current.publisher(for: \.status).filter({ $0 != .unknown }).values {
                             guard active, !Task.isCancelled, player === created else { return }
-                            if status == .unknown { continue }
                             loading = false; failed = status == .failed; break
                         }
                     }
