@@ -1,9 +1,10 @@
 //! Jumping to a message with its context, as on the egui desktop: a reply
 //! quote or Pins' "Go to message" loads the history around a message the
 //! list doesn't hold (`LoadContext`), and the list then shows only that
-//! window. "Load newer messages" extends it; "Back to latest messages"
-//! returns to the live end. A quoted thread reply opens its thread at that
-//! reply instead. A child of `app`.
+//! window. "Load newer messages", at its end, extends it; the "You’re
+//! viewing older messages" toast (`jump`) shows over it throughout, and its
+//! "Jump to latest" returns to the live end. A quoted thread reply opens its
+//! thread at that reply instead. A child of `app`.
 
 use super::{App, State};
 use caper_client::model::{Message, MessageContext};
@@ -153,7 +154,8 @@ impl App {
         }
     }
 
-    /// The bar under the list while it is away from the live end.
+    /// "Load newer messages" under the list, and the toast over it, while it
+    /// is away from the live end.
     pub(super) fn render_context_bar(&self, state: &State) {
         let ui = &self.ui;
         ui.newer_bar.set_visible(state.has_newer);

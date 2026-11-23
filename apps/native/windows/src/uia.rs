@@ -121,10 +121,11 @@ pub enum Id {
     ReplyCancel,
     /// The history's head: "Load older messages" and its other states.
     Older,
-    /// The history's foot after View original: Load newer messages (0)
-    /// and Back to latest messages (1).
-    Newer(usize),
-    /// Jump to latest, floating over the history's bottom right (`jump`).
+    /// The history's foot after View original: Load newer messages.
+    Newer,
+    /// "You're viewing older messages", floating over the history's
+    /// bottom (`jump`): its label (text) and its Jump to latest button.
+    JumpLabel,
     Jump,
     /// View original on row `i`'s quote.
     Original(usize),
@@ -528,8 +529,8 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map(|_| Id::Older)
             .into_iter()
             .chain(a.visible_rows().map(Id::Row))
-            .chain((0..2).filter(|k| a.foot_rect(*k).is_some()).map(Id::Newer))
-            .chain(a.jump_rect().map(|_| Id::Jump))
+            .chain(a.foot_rect().map(|_| Id::Newer))
+            .chain(a.jump_rect().into_iter().flat_map(|_| [Id::JumpLabel, Id::Jump]))
             .collect(),
         Id::Members => [SPartM::Open, SPartM::Field, SPartM::Close]
             .into_iter()
@@ -607,7 +608,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::DmItem(_) => Id::DmMenu,
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) | Id::ReactionError(i) => Id::Row(i),
-        Id::Older | Id::Newer(_) | Id::Jump => Id::History,
+        Id::Older | Id::Newer | Id::JumpLabel | Id::Jump => Id::History,
         Id::Original(i)
         | Id::Edited(i)
         | Id::File(i, _)
@@ -764,8 +765,8 @@ fn exists(a: &App, id: Id) -> bool {
         }
         Id::Reply | Id::ReplyCancel => a.reply.is_some() && a.dialog.is_none(),
         Id::Older => a.dialog.is_none() && a.head_rect().is_some(),
-        Id::Newer(k) => a.dialog.is_none() && a.foot_rect(k).is_some(),
-        Id::Jump => a.dialog.is_none() && a.jump_rect().is_some(),
+        Id::Newer => a.dialog.is_none() && a.foot_rect().is_some(),
+        Id::JumpLabel | Id::Jump => a.dialog.is_none() && a.jump_rect().is_some(),
         Id::Original(i) => a.dialog.is_none() && a.quote_link_rect(i).is_some(),
         Id::Forward(i, p) => {
             a.dialog.is_none() && a.forward_parts(false, i).iter().any(|(q, _, _)| *q == p)
@@ -980,7 +981,8 @@ fn name(a: &App, id: Id) -> String {
             format!("Replying to {}: {}", r.target.author.name, r.target.text)
         }),
         Id::ReplyCancel => "Cancel reply".into(),
-        Id::Newer(k) => a.foot_head(k).label.into(),
+        Id::Newer => a.foot_head().label.into(),
+        Id::JumpLabel => a.jump.text(),
         Id::Jump => a.jump.name(),
         Id::Original(_) => "View original".into(),
         Id::Forward(i, p) => a
@@ -1195,7 +1197,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Gif(GPart::Search) => UIA_EditControlTypeId,
         Id::Gif(_) => UIA_ButtonControlTypeId,
         Id::Reply => UIA_TextControlTypeId,
-        Id::Older | Id::Newer(_) | Id::Jump => UIA_ButtonControlTypeId,
+        Id::Older | Id::Newer | Id::Jump => UIA_ButtonControlTypeId,
+        Id::JumpLabel => UIA_TextControlTypeId,
         Id::Original(_) | Id::Embed(..) => UIA_HyperlinkControlTypeId,
         Id::Forward(_, ForwardPart::Body)
         | Id::ThreadPart(TPart::Forward(_, ForwardPart::Body)) => UIA_TextControlTypeId,
@@ -1244,7 +1247,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
         Id::ThreadPart(TPart::Row(_)) => UIA_ListItemControlTypeId,
-        Id::ThreadPart(TPart::Reply) => UIA_TextControlTypeId,
+        Id::ThreadPart(TPart::Reply | TPart::JumpLabel) => UIA_TextControlTypeId,
         Id::ThreadPart(TPart::Broadcast) => UIA_CheckBoxControlTypeId,
         Id::ThreadPart(TPart::Field) => UIA_EditControlTypeId,
         Id::ThreadPart(_) => UIA_ButtonControlTypeId,
@@ -1406,8 +1409,9 @@ fn runtime_id(id: Id) -> [i32; 3] {
         ),
         Id::Reply => (19, 0),
         Id::Older => (20, 0),
-        Id::Newer(k) => (26, k),
+        Id::Newer => (26, 0),
         Id::Jump => (97, 0),
+        Id::JumpLabel => (97, 1),
         Id::Original(i) => (27, i),
         Id::Forward(i, p) => {
             let (kind, k) = p.identity();
@@ -1463,6 +1467,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Reply => (22, 14),
             TPart::CancelReply => (22, 15),
             TPart::Jump => (22, 16),
+            TPart::JumpLabel => (22, 17),
             TPart::Upload(p) => (93, runtime_id(Id::BoxPart(p))[2] as usize),
             TPart::Row(i) => (23, i),
             TPart::Tool(i, tool) => (
@@ -1655,8 +1660,9 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Reply => a.reply_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::ReplyCancel => a.reply_cancel_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Older => a.head_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
-        Id::Newer(k) => a.foot_rect(k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
-        Id::Jump => a.jump_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Newer => a.foot_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::JumpLabel => a.jump_label_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Jump => a.jump_button_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Original(i) => a.quote_link_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Forward(i, p) => a
             .forward_parts(false, i)
@@ -1823,7 +1829,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::DmItem(_) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Title | Part::Message) => false,
             Id::Forward(_, ForwardPart::Body)
-            | Id::ThreadPart(TPart::Forward(_, ForwardPart::Body) | TPart::Reply) => false,
+            | Id::ThreadPart(
+                TPart::Forward(_, ForwardPart::Body) | TPart::Reply | TPart::JumpLabel,
+            ) => false,
             Id::Forward(..) => pattern == UIA_InvokePatternId,
             Id::Rec(p) => p.button() && pattern == UIA_InvokePatternId,
             Id::MenuItem(_)
@@ -1840,7 +1848,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::Tool(..)
             | Id::ReplyCancel
             | Id::Older
-            | Id::Newer(_)
+            | Id::Newer
             | Id::Jump
             | Id::Original(_)
             | Id::Edited(_)
@@ -2168,7 +2176,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::BoxPart(crate::uploads::Part::Attach), _) => {
                         a.live.as_ref().is_some_and(|l| l.can_attach())
                     }
-                    (Id::Newer(k), _) => a.foot_head(k).enabled,
+                    (Id::Newer, _) => a.foot_head().enabled,
                     (Id::Older, _) => a.live.as_ref().is_some_and(|l| {
                         matches!(
                             l.older(),
@@ -2464,7 +2472,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Gif(part) => a.gifs_activate(part),
                 Id::ReplyCancel => a.cancel_reply(),
                 Id::Older => a.load_older(),
-                Id::Newer(k) => a.foot_activate(k),
+                Id::Newer => a.foot_activate(),
                 Id::Jump => a.jump_activate(),
                 Id::Original(i) => a.view_original_of(i),
                 Id::Forward(i, p) => a.forward_activate(false, i, p),
@@ -3473,7 +3481,6 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
         | Id::Narrow(_)
         | Id::MemberSearch(SPartM::Open | SPartM::Close)
         | Id::ReplyCancel
-        | Id::Jump
         | Id::Tool(..)
         | Id::Control(_, Action::Add)
         | Id::Voice(

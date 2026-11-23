@@ -490,9 +490,10 @@ pub struct App {
     typing_p: Panel,
     /// The composer's lip: a shade over the bottom of the history.
     lip_p: Panel,
-    /// Jump to latest (`jump`): its state, panel, what the panel last drew,
-    /// whether the pointer is on it or it has the keyboard, and its glide
-    /// (from where, since when).
+    /// "You're viewing older messages" (`jump`): its state, panel, what
+    /// the panel last drew, whether the pointer is on its Jump to latest
+    /// button or the button has the keyboard, and its glide (from where,
+    /// since when).
     pub jump: caper_client::jump::Jump,
     jump_p: Panel,
     jump_drawn: Option<jump::Drawn>,
@@ -513,10 +514,10 @@ pub struct App {
     send_waiting: Option<(Vec<u16>, Vec<u64>)>,
     attach_error: Option<String>,
     head_hover: bool,
-    /// The foot (Load newer / Back to latest) needs drawing; the button
-    /// under the pointer; View original's highlighted message.
+    /// The foot (Load newer messages) needs drawing; the pointer is on its
+    /// button; View original's highlighted message.
     redraw_foot: bool,
-    foot_hover: Option<usize>,
+    foot_hover: bool,
     focused: Option<String>,
     /// The who-reacted card, the chip it follows (message id and emoji),
     /// and its surface.
@@ -640,8 +641,8 @@ impl App {
                 conversation_layer.AddVisual(v, true, prev.as_ref())?;
                 prev = Some(v.cast()?);
             }
-            // Over the history, unclipped so its focus ring shows, below
-            // the composer and everything else.
+            // Over the history, unclipped so its shadow and focus ring
+            // show, below the composer and everything else.
             conversation_layer.AddVisual(&jump_p.visual, true, &history_clip)?;
             let mut prev: IDCompositionVisual = background.cast()?;
             for v in [
@@ -823,7 +824,7 @@ impl App {
                 attach_error: None,
                 head_hover: false,
                 redraw_foot: false,
-                foot_hover: None,
+                foot_hover: false,
                 focused: None,
                 kb: None,
                 card: None,
@@ -870,7 +871,7 @@ impl App {
         self.gifs = None;
         self.older_armed = false;
         self.focused = None;
-        self.foot_hover = None;
+        self.foot_hover = false;
         if self.thread.take().is_some() {
             self.dirty.layout = true;
         }
@@ -1121,7 +1122,7 @@ impl App {
                     new.reaction_error = error;
                     new.date = date;
                     self.c.messages.push(new);
-                    // Others' messages are counted while Jump to latest shows.
+                    // Others' messages are counted while the toast shows.
                     if me.as_deref() != Some(m.author.id.as_str())
                         && self
                             .live
@@ -2213,7 +2214,7 @@ impl App {
 
     fn history_hover(&self) -> Option<usize> {
         let (x, y) = self.pointer?;
-        // Settings covers the history, and Jump to latest floats over it.
+        // Settings covers the history, and the toast floats over it.
         if !self.in_history(x, y) || self.settings.is_some() || self.jump_at(x, y) {
             return None;
         }
@@ -2610,11 +2611,13 @@ impl App {
                 unsafe {
                     SetCapture(self.hwnd);
                 }
-                if !self.jump_at(x, y) {
+                if !self.jump_button_at(x, y) {
                     self.set_jump_kb(false);
                 }
-                if self.jump_at(x, y) {
+                if self.jump_button_at(x, y) {
                     self.jump_activate();
+                } else if self.jump_at(x, y) {
+                    // The rest of the toast keeps the click off the rows.
                 } else if self.on_gear(x, y) {
                     self.toggle_account_menu();
                 } else if let Some(k) = self.inbox_at(x, y) {
@@ -2657,8 +2660,8 @@ impl App {
                         self.open_thread_of(i);
                     } else if self.on_head_button(x, y) {
                         self.load_older();
-                    } else if let Some(k) = self.foot_at(x, y) {
-                        self.foot_activate(k);
+                    } else if self.foot_at(x, y) {
+                        self.foot_activate();
                     } else if let Some(i) = self.quote_link_at(x, y) {
                         self.view_original_of(i);
                     } else if let Some((i, part)) = self.forward_at(x, y) {
@@ -2828,8 +2831,8 @@ impl App {
                             || self.on_pins_button(x, y)
                             || self.on_update_dock(x, y)
                             || self.thread_link_at(x, y).is_some()
-                            || self.foot_at(x, y).is_some()
-                            || self.jump_at(x, y)
+                            || self.foot_at(x, y)
+                            || self.jump_button_at(x, y)
                             || self.quote_link_at(x, y).is_some()
                             || self.forward_at(x, y).is_some()
                             || self.edited_at(x, y).is_some()
@@ -2845,7 +2848,8 @@ impl App {
                 // (or any spot while a selection is being dragged).
                 let beam = !hand
                     && ((self.in_box(x, y) && !bar)
-                        || (self.in_history(x, y) && (self.selecting || self.over_text(x, y))));
+                        || (self.in_history(x, y)
+                            && (self.selecting || (!self.jump_at(x, y) && self.over_text(x, y)))));
                 unsafe {
                     SetCursor(
                         LoadCursorW(
@@ -3234,8 +3238,8 @@ impl App {
     /// Shift+Tab from the composer reaches the last one on screen, Tab past
     /// the newest returns to the composer.
     fn history_key(&mut self, vk: VIRTUAL_KEY, shift: bool) -> bool {
-        // Jump to latest sits between the history's controls and the
-        // composer in the Tab order.
+        // The toast's Jump to latest sits between the history's controls
+        // and the composer in the Tab order.
         if self.jump_kb && self.jump_rect().is_some() {
             match vk {
                 VK_TAB if shift => {
@@ -3336,7 +3340,7 @@ impl App {
                 VK_END => {
                     self.stop_autoscroll();
                     if self.live.as_ref().is_some_and(live::Live::has_newer) {
-                        self.foot_activate(1);
+                        self.load_latest();
                     }
                     self.at_end = true;
                     self.need = true;
@@ -3769,22 +3773,16 @@ impl App {
             .map(|(top, state)| (((self.row_px(top) - y0 as f64) / s as f64) as f32, state))
             .filter(|(y, _)| *y < (y1 - y0) as f32 / s && *y + list::HEAD_H > 0.0);
         let head_hover = self.head_hover;
-        let foot: Vec<(f32, list::Head, bool)> =
-            if self.foot_h() > 0.0 && self.rows.lo < self.rows.len() {
-                (0..2)
-                    .map(|k| {
-                        let top = self.rows.bottom() + (k as f32 * list::HEAD_H) as f64;
-                        (
-                            ((self.row_px(top) - y0 as f64) / s as f64) as f32,
-                            self.foot_head(k),
-                            self.foot_hover == Some(k),
-                        )
-                    })
-                    .filter(|(y, ..)| *y < (y1 - y0) as f32 / s && *y + list::HEAD_H > 0.0)
-                    .collect()
-            } else {
-                Vec::new()
-            };
+        let foot: Option<(f32, list::Head, bool)> = (self.foot_h() > 0.0
+            && self.rows.lo < self.rows.len())
+        .then(|| {
+            (
+                ((self.row_px(self.rows.bottom()) - y0 as f64) / s as f64) as f32,
+                self.foot_head(),
+                self.foot_hover,
+            )
+        })
+        .filter(|(y, ..)| *y < (y1 - y0) as f32 / s && *y + list::HEAD_H > 0.0);
         let focused = self
             .focused
             .as_ref()
@@ -3808,7 +3806,7 @@ impl App {
             if let Some((y, state)) = head {
                 list::draw_head(g, dc, state, lw, y, head_hover)?;
             }
-            for (y, foot, lit) in &foot {
+            if let Some((y, foot, lit)) = &foot {
                 list::draw_head_row(g, dc, foot, lw, *y, *lit)?;
             }
             for (i, y, h, rs) in tops {

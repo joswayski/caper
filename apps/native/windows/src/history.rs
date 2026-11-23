@@ -3,8 +3,9 @@
 //! conversation"), loading the previous page when the list reaches its
 //! start, and putting that page above the shown rows without moving them.
 //! After View original jumped into the past, the foot below the last row
-//! offers "Load newer messages" and "Back to latest messages", as in
-//! egui; the jumped-to message is centred and highlighted.
+//! offers "Load newer messages", padded clear of the "You're viewing older
+//! messages" toast floating over it (`jump`), whose Jump to latest reloads
+//! the latest page; the jumped-to message is centred and highlighted.
 use crate::list::{self, HEAD_H, Head};
 use crate::live::{self, Older};
 use crate::model::Conversation;
@@ -116,35 +117,34 @@ impl App {
         Ok(())
     }
 
-    /// The foot's height: two history rows while newer messages exist past
-    /// the shown window.
+    /// The foot's height: a history row and the room the toast floats in,
+    /// while newer messages exist past the shown window.
     pub fn foot_h(&self) -> f32 {
         if self.live.as_ref().is_some_and(live::Live::has_newer) {
-            2.0 * HEAD_H
+            HEAD_H + FOOT_PAD
         } else {
             0.0
         }
     }
 
-    /// The foot's buttons: Load newer messages, then Back to latest.
-    pub fn foot_head(&self, k: usize) -> Head<'static> {
+    /// The foot's Load newer messages button.
+    pub fn foot_head(&self) -> Head<'static> {
         let loading = self.live.as_ref().is_some_and(|l| l.context_loading);
         Head {
-            label: FOOT[k],
+            label: FOOT,
             button: true,
-            enabled: k == 1 || !loading,
+            enabled: !loading,
             note: None,
         }
     }
 
-    /// Foot button `k` in client DIPs, while the foot exists.
-    pub fn foot_rect(&self, k: usize) -> Option<(f32, f32, f32, f32)> {
+    /// Load newer messages in client DIPs, while the foot exists.
+    pub fn foot_rect(&self) -> Option<(f32, f32, f32, f32)> {
         if self.foot_h() == 0.0 || self.rows.lo >= self.rows.len() {
             return None;
         }
-        let r = list::head_button_rect(&self.g, &self.foot_head(k), self.list_w()).ok()?;
-        let top = self.rows.bottom() + (k as f32 * HEAD_H) as f64;
-        let y = self.history_y() + (top - self.scroll_top) as f32;
+        let r = list::head_button_rect(&self.g, &self.foot_head(), self.list_w()).ok()?;
+        let y = self.history_y() + (self.rows.bottom() - self.scroll_top) as f32;
         Some((
             self.list_x() + r.left,
             y + r.top,
@@ -153,27 +153,21 @@ impl App {
         ))
     }
 
-    /// The foot button under (x, y).
-    pub fn foot_at(&self, x: f32, y: f32) -> Option<usize> {
-        if !self.in_history(x, y) {
-            return None;
-        }
-        (0..2).find(|k| {
-            self.foot_rect(*k)
+    /// Whether (x, y) is on Load newer messages (not under the toast).
+    pub fn foot_at(&self, x: f32, y: f32) -> bool {
+        self.in_history(x, y)
+            && !self.jump_at(x, y)
+            && self
+                .foot_rect()
                 .is_some_and(|(l, t, w, h)| x >= l && x < l + w && y >= t && y < t + h)
-        })
     }
 
-    /// Clicks and UIA Invoke on the foot's buttons.
-    pub fn foot_activate(&mut self, k: usize) {
+    /// Clicks and UIA Invoke on Load newer messages.
+    pub fn foot_activate(&mut self) {
         let Some(live) = &mut self.live else {
             return;
         };
-        if k == 0 {
-            live.load_newer();
-        } else {
-            live.back_to_latest();
-        }
+        live.load_newer();
         self.redraw_foot = true;
         self.need = true;
         if let Err(e) = self.drain_live() {
@@ -181,8 +175,22 @@ impl App {
         }
     }
 
+    /// Leaves a detached window for the latest page, landing at its end:
+    /// the toast's Jump to latest there, and End.
+    pub fn load_latest(&mut self) {
+        let Some(live) = &mut self.live else {
+            return;
+        };
+        live.back_to_latest();
+        self.redraw_foot = true;
+        self.need = true;
+        if let Err(e) = self.drain_live() {
+            eprintln!("latest messages failed: {e:?}");
+        }
+    }
+
     pub fn track_foot_hover(&mut self) {
-        let hover = self.pointer.and_then(|(x, y)| self.foot_at(x, y));
+        let hover = self.pointer.is_some_and(|(x, y)| self.foot_at(x, y));
         if hover != self.foot_hover {
             self.foot_hover = hover;
             self.redraw_foot = true;
@@ -348,4 +356,6 @@ impl App {
     }
 }
 
-const FOOT: [&str; 2] = ["Load newer messages", "Back to latest messages"];
+const FOOT: &str = "Load newer messages";
+/// Below Load newer messages, as web's 68 px: the toast never covers it.
+const FOOT_PAD: f32 = 68.0;

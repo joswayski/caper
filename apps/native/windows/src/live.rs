@@ -2731,7 +2731,8 @@ impl Live {
     }
 
     /// Newer messages exist after the shown window: "Load newer messages"
-    /// and "Back to latest messages" end the history.
+    /// ends the history, and the "You're viewing older messages" toast
+    /// always shows.
     pub fn has_newer(&self) -> bool {
         self.window.is_some_and(|(_, end)| end.is_some())
     }
@@ -2764,7 +2765,8 @@ impl Live {
         }
     }
 
-    /// Leaves the window for the channel's latest history.
+    /// Leaves the window for the channel's latest history (the toast's
+    /// Jump to latest, and End).
     pub fn back_to_latest(&mut self) {
         self.reload();
     }

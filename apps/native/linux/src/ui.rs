@@ -498,34 +498,44 @@ pub struct List {
     pub jump: JumpButton,
 }
 
-/// "Jump to latest" (`caper_client::jump`): floats over its list's bottom
-/// right corner, in the list's overlay, taking no layout space.
+/// "You’re viewing older messages" (`caper_client::jump`): a toast centered
+/// over the bottom of its list, in the list's overlay, taking no layout
+/// space: its label (or "3 new messages") and a primary "Jump to latest".
 pub struct JumpButton {
+    pub toast: gtk::Box,
     pub button: gtk::Button,
-    count: gtk::Label,
+    label: gtk::Label,
     shown: Cell<caper_client::jump::Jump>,
 }
 
 impl JumpButton {
-    fn new(images: &Images) -> Self {
+    fn new() -> Self {
+        let toast = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+        toast.add_css_class("jump-latest");
+        toast.set_halign(gtk::Align::Center);
+        toast.set_valign(gtk::Align::End);
+        // Never wider than the list less 12px a side.
+        toast.set_margin_start(12);
+        toast.set_margin_end(12);
+        // A narrow thread panel wraps the label rather than cutting it off.
+        let label = gtk::Label::new(None);
+        label.set_wrap(true);
+        label.set_wrap_mode(pango::WrapMode::WordChar);
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        toast.append(&label);
+        // Its name, renamed with the count, is not its label's text.
         let button = gtk::Button::new();
-        button.add_css_class("jump-latest");
-        button.set_halign(gtk::Align::End);
-        button.set_valign(gtk::Align::End);
-        button.set_margin_end(16);
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        content.set_halign(gtk::Align::Center);
-        content.append(&images.icon_image(Icon::ArrowDown, "#f3f4f5", 16));
-        let count = gtk::Label::new(None);
-        count.set_visible(false);
-        content.append(&count);
-        button.set_child(Some(&content));
-        button.set_tooltip_text(Some("Jump to latest"));
-        button.set_visible(false);
-        arrive(&button);
+        crate::app::show_text(&button, caper_client::jump::BUTTON);
+        button.add_css_class("primary");
+        button.set_valign(gtk::Align::Center);
+        toast.append(&button);
+        toast.set_visible(false);
+        arrive(&toast);
         let jump = Self {
+            toast,
             button,
-            count,
+            label,
             shown: Cell::default(),
         };
         jump.label(caper_client::jump::Jump::default());
@@ -545,17 +555,15 @@ impl JumpButton {
         if before.count != jump.count {
             self.label(jump);
         }
-        self.button.set_visible(jump.shown);
+        self.toast.set_visible(jump.shown);
     }
 
     fn label(&self, jump: caper_client::jump::Jump) {
-        let text = jump.text();
-        self.count.set_visible(text.is_some());
-        self.count.set_label(text.as_deref().unwrap_or_default());
+        self.label.set_label(&jump.text());
         if jump.unread() {
-            self.button.add_css_class("unread");
+            self.toast.add_css_class("unread");
         } else {
-            self.button.remove_css_class("unread");
+            self.toast.remove_css_class("unread");
         }
         crate::app::rename(self.button.upcast_ref(), &jump.name());
     }
@@ -597,7 +605,7 @@ impl List {
             store,
             view,
             scroller,
-            jump: JumpButton::new(images),
+            jump: JumpButton::new(),
         }
     }
 }
@@ -710,11 +718,10 @@ pub struct Ui {
     pub composer: Composer,
     pub composer_error: gtk::Label,
     pub typing: gtk::Label,
-    /// Away from the live end: "Load newer messages" and "Back to latest
-    /// messages".
+    /// A jump's window short of the live end: "Load newer messages" at the
+    /// end of the list, clear of the toast floating over it.
     pub newer_bar: gtk::Box,
     pub load_newer: gtk::Button,
-    pub latest: gtk::Button,
     pub join_bar: gtk::Box,
     pub join_label: gtk::Label,
     pub join: gtk::Button,
@@ -1254,23 +1261,21 @@ impl Ui {
         crate::autoscroll::attach(&list.scroller, &list_overlay);
         list_overlay.add_overlay(&empty);
         list_overlay.add_overlay(&composer_lip());
-        // Jump to latest floats over the list and the typing band under it:
-        // 12px up from the band, which ends 4px above the composer.
+        // The toast floats over the list and the typing band under it: 12px
+        // up from the band, which ends 4px above the composer.
         let above_composer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         above_composer.append(&list_overlay);
         let jump_overlay = gtk::Overlay::new();
         jump_overlay.set_child(Some(&above_composer));
-        list.jump.button.set_margin_bottom(12);
-        jump_overlay.add_overlay(&list.jump.button);
+        list.jump.toast.set_margin_bottom(12);
+        jump_overlay.add_overlay(&list.jump.toast);
         conversation.append(&jump_overlay);
         let newer_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         newer_bar.add_css_class("newer-bar");
         newer_bar.set_halign(gtk::Align::Center);
         newer_bar.set_visible(false);
         let load_newer = gtk::Button::with_label("Load newer messages");
-        let latest = gtk::Button::with_label("Back to latest messages");
         newer_bar.append(&load_newer);
-        newer_bar.append(&latest);
         above_composer.append(&newer_bar);
         let typing = label("", &["typing"]);
         typing.set_ellipsize(pango::EllipsizeMode::End);
@@ -1413,8 +1418,8 @@ impl Ui {
         thread_overlay.set_child(Some(&thread_list.scroller));
         crate::autoscroll::attach(&thread_list.scroller, &thread_overlay);
         thread_overlay.add_overlay(&composer_lip());
-        thread_list.jump.button.set_margin_bottom(16);
-        thread_overlay.add_overlay(&thread_list.jump.button);
+        thread_list.jump.toast.set_margin_bottom(16);
+        thread_overlay.add_overlay(&thread_list.jump.toast);
         thread_panel.append(&thread_overlay);
         let thread_error = label("", &["error", "composer-error"]);
         thread_error.set_wrap(true);
@@ -1584,7 +1589,6 @@ impl Ui {
             typing,
             newer_bar,
             load_newer,
-            latest,
             join_bar,
             join_label,
             join,

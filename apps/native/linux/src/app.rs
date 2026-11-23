@@ -1123,8 +1123,6 @@ impl App {
         let app = self.clone();
         ui.load_newer.connect_clicked(move |_| app.load_newer());
         let app = self.clone();
-        ui.latest.connect_clicked(move |_| app.back_to_latest());
-        let app = self.clone();
         ui.member_search
             .connect_search_changed(move |_| app.render_members());
         let app = self.clone();

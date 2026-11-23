@@ -1,8 +1,9 @@
-//! "Jump to latest" over the message list and the thread
-//! (`caper_client::jump`): shown more than half a screen from the newest
-//! message, counting others' messages that land meanwhile; activating it
-//! glides back to the live end and follows new messages again. A child of
-//! `app`.
+//! "You’re viewing older messages" over the message list and the thread
+//! (`caper_client::jump`): a toast shown more than half a screen from the
+//! newest message, counting others' messages that land meanwhile, and always
+//! while the main list shows a jump's window short of the live end. Its
+//! "Jump to latest" glides back to the live end and follows new messages
+//! again, or in that window reloads the latest page. A child of `app`.
 
 use super::App;
 use caper_client::jump::{self, Jump};
@@ -49,7 +50,7 @@ impl App {
     }
 
     /// Someone else's message landed at a list's live end: counted while
-    /// the button shows.
+    /// the toast shows.
     pub(super) fn jump_arrived(&self, thread: bool) {
         let list = self.jump_list(thread);
         let mut state = list.jump.state();
@@ -58,13 +59,14 @@ impl App {
         }
     }
 
-    /// A conversation or thread opened afresh: no button, no count.
+    /// A conversation or thread opened afresh: no toast, no count.
     pub(super) fn reset_jump(&self, thread: bool) {
         self.jump_list(thread).jump.show(Jump::default());
     }
 
     /// The button: back to the newest message, gliding there unless motion
-    /// is reduced or it is many screens away, then following again.
+    /// is reduced or it is many screens away, then following again. In a
+    /// jump's window short of the live end, the latest page loads instead.
     pub(super) fn jump_to_latest(self: &Rc<Self>, thread: bool) {
         let list = self.jump_list(thread);
         let focused = list.jump.button.has_focus();
@@ -76,6 +78,11 @@ impl App {
             } else {
                 self.focus_composer();
             }
+        }
+        let detached = !thread && self.state.borrow().has_newer;
+        if detached {
+            self.back_to_latest();
+            return;
         }
         let adjustment = list.scroller.vadjustment();
         let page = adjustment.page_size();
@@ -92,7 +99,7 @@ impl App {
             return;
         }
         // The glide's own scrolling is not the reader's: it neither stops
-        // following nor shows the button again.
+        // following nor shows the toast again.
         if thread {
             self.gliding.set(true);
         } else {

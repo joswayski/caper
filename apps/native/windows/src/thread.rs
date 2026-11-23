@@ -106,7 +106,10 @@ pub enum Part {
     RemovePreview,
     Upload(crate::uploads::Part),
     Send,
-    /// Jump to latest over the history's bottom right (`jump`).
+    /// "You're viewing older messages" over the history's bottom
+    /// (`jump`): its label (text, and the rest of the toast for hit
+    /// testing) and its Jump to latest button.
+    JumpLabel,
     Jump,
 }
 
@@ -134,7 +137,8 @@ pub struct Pane {
     /// Distance scrolled from the top of the history's content.
     pub scroll: f32,
     pub at_end: bool,
-    /// Jump to latest (`jump`), and its glide (from where, since when).
+    /// "You're viewing older messages" (`jump`), and its Jump to latest
+    /// glide (from where, since when).
     pub jump: caper_client::jump::Jump,
     pub jump_glide: Option<(f32, std::time::Instant)>,
     width: f32,
@@ -984,7 +988,8 @@ impl App {
                 let (x, y, w, h) = close_local(t.width, self.is_narrow());
                 Some((x0 + x, y, w, h))
             }
-            Part::Jump => self.thread_jump_rect(),
+            Part::JumpLabel => self.thread_jump_label_rect(),
+            Part::Jump => self.thread_jump_button_rect(),
             Part::Row(i) => {
                 let y = t.row_y(i)?;
                 clip((x0, y + off, t.width, t.rows.height(i)))
@@ -1132,7 +1137,7 @@ impl App {
         }
         push_rows(&mut out, after);
         if self.thread_jump_rect().is_some() {
-            out.push(Part::Jump);
+            out.extend([Part::JumpLabel, Part::Jump]);
         }
         if t.reply.is_some() {
             out.extend([Part::Reply, Part::CancelReply]);
@@ -1164,9 +1169,19 @@ impl App {
     }
 
     pub fn thread_hit(&self, x: f32, y: f32) -> Option<Part> {
-        // It floats over the rows and their toolbars.
+        // The toast floats over the rows and their toolbars; only its
+        // button is a control.
         if self.thread_jump_rect().is_some_and(|r| contains(r, x, y)) {
-            return Some(Part::Jump);
+            return Some(
+                if self
+                    .thread_jump_button_rect()
+                    .is_some_and(|r| contains(r, x, y))
+                {
+                    Part::Jump
+                } else {
+                    Part::JumpLabel
+                },
+            );
         }
         let parts = self.thread_parts();
         if y >= HEADER_H
@@ -1297,6 +1312,7 @@ impl App {
                 format!("Replying to {}: {}", r.target.author.name, r.target.text)
             }),
             Part::CancelReply => "Cancel reply".into(),
+            Part::JumpLabel => t.jump.text(),
             Part::Jump => t.jump.name(),
             Part::Field => "Reply to thread".into(),
             Part::Upload(p) => {
@@ -1464,7 +1480,7 @@ impl App {
             p.set(&self.g, view, state, vh, watching)?;
         }
         // Others' replies landing after the newest one shown before are
-        // counted while Jump to latest shows.
+        // counted while the toast shows.
         if let (Some(known), Some(p), Some(live)) = (known, &self.thread, &self.live) {
             let tail =
                 p.c.messages
@@ -1992,7 +2008,7 @@ impl App {
             Part::Jump => self.thread_jump_activate(),
             Part::Spoiler(i, k) => self.reveal_thread_spoiler(i, k),
             Part::Forward(i, p) => self.forward_activate(true, i, p),
-            Part::Row(_) | Part::Reply => {}
+            Part::Row(_) | Part::Reply | Part::JumpLabel => {}
         }
     }
 
@@ -2047,7 +2063,12 @@ impl App {
                     .in_thread(x, y)
                     .then(|| self.thread_hit(x, y))
                     .flatten()
-                    .filter(|p| !matches!(p, Part::Row(_) | Part::Field | Part::Reply));
+                    .filter(|p| {
+                        !matches!(
+                            p,
+                            Part::Row(_) | Part::Field | Part::Reply | Part::JumpLabel
+                        )
+                    });
                 self.set_thread_hover(hover);
                 None
             }
@@ -2198,7 +2219,7 @@ impl App {
                         IDC_HAND
                     }
                     Some(Part::Row(_)) if self.over_thread_text(px, py) => IDC_IBEAM,
-                    Some(Part::Row(_) | Part::Reply) | None => IDC_ARROW,
+                    Some(Part::Row(_) | Part::Reply | Part::JumpLabel) | None => IDC_ARROW,
                     Some(_) => IDC_HAND,
                 };
                 unsafe {

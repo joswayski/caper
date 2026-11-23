@@ -1,12 +1,18 @@
-//! "Jump to latest", as every client: a floating button over a message
-//! list's bottom right corner while the reader is more than half a screen
-//! away from the newest loaded message and that history reaches the live
-//! end. While it shows it counts others' messages arriving at the live end.
-//! The clients own the widget, its scrolling and its entrance; this is its
-//! state, its text and its accessible name.
+//! "You're viewing older messages", as every client: a floating toast
+//! centered just above the composer, with a "Jump to latest" button, while
+//! the reader is more than half a screen away from the newest loaded message,
+//! and always while the loaded history is a window detached from the live end
+//! (after a jump to an old message), where the button reloads the latest
+//! page. While it shows over live history it counts others' messages arriving
+//! at the live end. The clients own the widget, its scrolling and its
+//! entrance; this is its state, its text and its accessible name.
 
 /// The count reads "99+" past this.
 const CAP: u32 = 99;
+/// The toast's label before anything new arrives.
+pub const VIEWING_OLDER: &str = "You’re viewing older messages";
+/// The toast's button.
+pub const BUTTON: &str = "Jump to latest";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Jump {
@@ -20,11 +26,16 @@ impl Jump {
     /// bottom of the newest loaded message to the bottom of the viewport,
     /// `page` the viewport's height, `at_end` whether the list counts as
     /// read at its newest message, and `live` whether the loaded history
-    /// reaches the live end (a detached history window has its own
-    /// controls). Returns whether anything shown changed.
+    /// reaches the live end (a detached history window always shows the
+    /// toast, without a count). Returns whether anything shown changed.
     pub fn scrolled(&mut self, distance: f64, page: f64, at_end: bool, live: bool) -> bool {
         let before = *self;
-        if at_end || !live {
+        if !live {
+            *self = Self {
+                shown: true,
+                count: 0,
+            };
+        } else if at_end {
             *self = Self::default();
         } else if distance > page / 2.0 {
             self.shown = true;
@@ -41,22 +52,23 @@ impl Jump {
         self.shown
     }
 
-    /// "3 new messages" beside the arrow, or nothing before any arrive.
-    pub fn text(&self) -> Option<String> {
+    /// The toast's label beside its button: "You’re viewing older
+    /// messages", or "3 new messages" once others' messages arrive.
+    pub fn text(&self) -> String {
         match self.count {
-            0 => None,
-            1 => Some("1 new message".into()),
-            count if count > CAP => Some(format!("{CAP}+ new messages")),
-            count => Some(format!("{count} new messages")),
+            0 => VIEWING_OLDER.into(),
+            1 => "1 new message".into(),
+            count if count > CAP => format!("{CAP}+ new messages"),
+            count => format!("{count} new messages"),
         }
     }
 
-    /// The accessible name: "Jump to latest", or "Jump to latest, 3 new
-    /// messages".
+    /// The button's accessible name: "Jump to latest", or "Jump to latest,
+    /// 3 new messages".
     pub fn name(&self) -> String {
-        match self.text() {
-            Some(text) => format!("Jump to latest, {text}"),
-            None => "Jump to latest".into(),
+        match self.count {
+            0 => BUTTON.into(),
+            _ => format!("{BUTTON}, {}", self.text()),
         }
     }
 
@@ -103,14 +115,26 @@ mod tests {
     }
 
     #[test]
-    fn a_detached_history_window_never_shows_it() {
+    fn a_detached_history_window_always_shows_it_without_a_count() {
         let mut jump = Jump::default();
-        assert!(!jump.scrolled(5000.0, 800.0, false, false));
-        assert!(!jump.shown);
+        // Even at the window's own end.
+        assert!(jump.scrolled(0.0, 800.0, true, false));
+        assert!(jump.shown);
+        assert_eq!(jump.text(), "You’re viewing older messages");
         jump.scrolled(5000.0, 800.0, false, true);
         jump.arrived();
-        // Jumping to an old message detaches the window: gone, count and all.
+        // Jumping to an old message detaches the window: the count goes, the toast stays.
         assert!(jump.scrolled(5000.0, 800.0, false, false));
+        assert_eq!(
+            jump,
+            Jump {
+                shown: true,
+                count: 0
+            }
+        );
+        assert_eq!(jump.name(), "Jump to latest");
+        // Back at the latest page's end it goes.
+        assert!(jump.scrolled(0.0, 800.0, true, true));
         assert_eq!(jump, Jump::default());
     }
 
@@ -121,7 +145,7 @@ mod tests {
         assert_eq!(jump.count, 0);
         jump.scrolled(900.0, 800.0, false, true);
         assert!(jump.arrived());
-        assert_eq!(jump.text().as_deref(), Some("1 new message"));
+        assert_eq!(jump.text(), "1 new message");
         assert!(jump.unread());
         jump.arrived();
         jump.arrived();
@@ -132,7 +156,7 @@ mod tests {
         jump.scrolled(0.0, 800.0, true, true);
         assert_eq!(jump.count, 0);
         assert_eq!(jump.name(), "Jump to latest");
-        assert_eq!(jump.text(), None);
+        assert_eq!(jump.text(), "You’re viewing older messages");
     }
 
     #[test]
@@ -141,9 +165,9 @@ mod tests {
             shown: true,
             count: 99,
         };
-        assert_eq!(jump.text().as_deref(), Some("99 new messages"));
+        assert_eq!(jump.text(), "99 new messages");
         jump.arrived();
-        assert_eq!(jump.text().as_deref(), Some("99+ new messages"));
+        assert_eq!(jump.text(), "99+ new messages");
         assert_eq!(jump.name(), "Jump to latest, 99+ new messages");
     }
 

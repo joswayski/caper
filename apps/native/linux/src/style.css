@@ -2347,9 +2347,11 @@ button.edited:hover {
   font-size: 12px;
 }
 
-/* A jump's context: back toward the live end. */
+/* A jump's context: "Load newer messages" at the end of the list, clear of
+   the toast floating 12px above the 16px typing band (68px from the
+   band's bottom, as web). */
 .newer-bar {
-  margin: 4px 20px;
+  margin: 8px 20px 52px;
 }
 
 button.quote-more {
@@ -2980,32 +2982,34 @@ window.viewer.arriving > :not(decoration) {
   animation: caper-chip-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* "Jump to latest": floats over the list's bottom right corner while away
-   from the newest message; its border turns terracotta once new messages
-   wait. It rises in and leaves at once. */
-button.jump-latest {
-  min-height: 36px;
-  min-width: 36px;
-  padding: 0 10px;
+/* "You’re viewing older messages": a toast centered just above the
+   composer while away from the newest message (or in a jump's window short
+   of the live end), with a primary "Jump to latest"; its border turns
+   terracotta once new messages wait. It rises in and leaves at once. */
+.jump-latest {
+  padding: 6px 6px 6px 14px;
   border: 1px solid @caper_border;
-  border-radius: 8px;
-  background: @caper_surface;
+  border-radius: 13px;
+  background: @caper_surface_raised;
   color: @caper_text;
   font-size: 13px;
-  font-weight: 500;
-  box-shadow: 0 4px 12px alpha(black, 0.32);
+  font-weight: 600;
+  box-shadow: 0 8px 24px alpha(black, 0.35);
 }
 
-button.jump-latest:hover {
-  background: @caper_surface_raised;
-}
-
-button.jump-latest.unread {
+.jump-latest.unread {
   border-color: @caper_terracotta;
 }
 
-button.jump-latest.arriving {
-  animation: caper-rise-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+.jump-latest > button.primary {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.jump-latest.arriving {
+  animation: caper-rise-in 140ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 button.theme-card {

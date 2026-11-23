@@ -123,6 +123,10 @@ pub struct Formats {
     /// The history's head: its 11.52px label and bold button.
     pub head: IDWriteTextFormat,
     pub head_button: IDWriteTextFormat,
+    /// "You're viewing older messages": its 13px semibold label, which
+    /// wraps when narrow, and its bold button.
+    pub toast: IDWriteTextFormat,
+    pub toast_button: IDWriteTextFormat,
     /// Message history's compared text: egui's 12px monospace.
     pub mono: IDWriteTextFormat,
     /// An attachment card's name and its detail line (one line each).
@@ -319,6 +323,8 @@ impl Gfx {
                 menu_item: fmt(12.48, DWRITE_FONT_WEIGHT_NORMAL)?,
                 head: fmt(11.52, DWRITE_FONT_WEIGHT_NORMAL)?,
                 head_button: fmt(11.52, DWRITE_FONT_WEIGHT_BOLD)?,
+                toast: fmt(13.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
+                toast_button: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 mono: dwrite.CreateTextFormat(
                     w!("Consolas"),
                     None,
