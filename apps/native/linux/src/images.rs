@@ -15,7 +15,6 @@ use gtk::{gdk, glib, prelude::*};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
 
 /// Avatar textures are drawn at this size and scaled down by GTK.
 const AVATAR_EDGE: u32 = 72;
@@ -274,7 +273,7 @@ impl Images {
             cell.extend_from_slice(&sheet[start..start + EMOJI_EDGE * 4]);
         }
         // `download` writes GDK's default format, premultiplied BGRA.
-        let texture = straight_texture(EMOJI_EDGE, EMOJI_EDGE, cell, gdk::MemoryFormat::B8g8r8a8);
+        let texture = texture_from(EMOJI_EDGE, EMOJI_EDGE, cell, true, true);
         let mut cells = self.emoji.borrow_mut();
         cells.insert(entry.id.clone(), texture.clone());
         // A browsed picker leaves thousands of cells behind (64 KiB each).
@@ -487,32 +486,61 @@ fn render_svg(svg: &[u8], edge: u32) -> Option<gdk::Texture> {
         ),
         &mut pixmap.as_mut(),
     );
-    Some(straight_texture(
+    Some(texture_from(
         edge as usize,
         edge as usize,
         pixmap.take(),
-        gdk::MemoryFormat::R8g8b8a8,
+        false,
+        true,
     ))
 }
 
-/// A texture from premultiplied pixels, stored with straight alpha in
-/// `format`'s channel order. GTK 4.8's cairo renderer converts a texture
-/// to its own format on every frame it draws, and only from straight
-/// alpha without going through floats per pixel.
-fn straight_texture(
+/// A texture from `pixels`: BGRA (`bgra`) or RGBA, premultiplied or
+/// straight alpha. The cairo renderer converts a texture to cairo's format,
+/// premultiplied BGRA, on every frame that draws it. GTK 4.14 and later copy
+/// that format as is (other formats go through a threaded per-pixel
+/// conversion); GTK 4.8 converts only straight alpha without floats. So
+/// textures are stored in whichever this GTK draws cheapest.
+pub fn texture_from(
     width: usize,
     height: usize,
     mut pixels: Vec<u8>,
-    format: gdk::MemoryFormat,
+    bgra: bool,
+    premultiplied: bool,
 ) -> gdk::Texture {
-    for pixel in pixels.as_chunks_mut::<4>().0 {
-        let alpha = u16::from(pixel[3]);
-        if alpha > 0 && alpha < 255 {
-            for channel in &mut pixel[..3] {
-                *channel = ((u16::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+    thread_local! {
+        static CAIRO_FORMAT: bool = gtk::check_version(4, 14, 0).is_none();
+    }
+    let format = if CAIRO_FORMAT.with(|cairo| *cairo) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            if !bgra {
+                pixel.swap(0, 2);
+            }
+            let alpha = u16::from(pixel[3]);
+            if !premultiplied && alpha < 255 {
+                for channel in &mut pixel[..3] {
+                    *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+                }
             }
         }
-    }
+        gdk::MemoryFormat::B8g8r8a8Premultiplied
+    } else {
+        if premultiplied {
+            for pixel in pixels.as_chunks_mut::<4>().0 {
+                let alpha = u16::from(pixel[3]);
+                if alpha > 0 && alpha < 255 {
+                    for channel in &mut pixel[..3] {
+                        *channel = ((u16::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+                    }
+                }
+            }
+        }
+        if bgra {
+            gdk::MemoryFormat::B8g8r8a8
+        } else {
+            gdk::MemoryFormat::R8g8b8a8
+        }
+    };
     gdk::MemoryTexture::new(
         width as i32,
         height as i32,
@@ -552,16 +580,17 @@ fn svg_texture(svg: &[u8], width: u32, height: u32) -> Option<gdk::Texture> {
         ),
         &mut pixmap.as_mut(),
     );
-    Some(straight_texture(
+    Some(texture_from(
         width as usize,
         height as usize,
         pixmap.take(),
-        gdk::MemoryFormat::R8g8b8a8,
+        false,
+        true,
     ))
 }
 
 /// An animated picture's frames and how long each shows.
-type AnimationFrames = Vec<(gdk::Texture, Duration)>;
+type AnimationFrames = crate::animate::Frames;
 
 /// Whether pictures may move: GTK's animation setting, which follows the
 /// desktop's reduced-motion choice.
@@ -607,39 +636,8 @@ fn fit(frames: caper_client::pictures::Frames, edge: u32) -> caper_client::pictu
         .collect()
 }
 
-/// The frame of `frames` (never empty) showing at `time`, a frame clock's
-/// microseconds. Every avatar shares that one timeline, as a browser plays
-/// one image: a picture moves in step wherever it shows, and all of them
-/// change in one redraw instead of one redraw each.
-fn frame_at<T>(frames: &[(T, Duration)], time: i64) -> usize {
-    let length = |delay: &Duration| delay.as_micros() as i64;
-    let total: i64 = frames.iter().map(|(_, delay)| length(delay)).sum();
-    let mut time = time.rem_euclid(total.max(1));
-    for (index, (_, delay)) in frames.iter().enumerate() {
-        if time < length(delay) {
-            return index;
-        }
-        time -= length(delay);
-    }
-    0
-}
-
 fn texture(image: &Rgba) -> Option<gdk::Texture> {
-    let [width, height] = image.size;
-    if width == 0 || height == 0 || image.pixels.len() != width * height * 4 {
-        return None;
-    }
-    let bytes = glib::Bytes::from(&image.pixels[..]);
-    Some(
-        gdk::MemoryTexture::new(
-            width as i32,
-            height as i32,
-            gdk::MemoryFormat::R8g8b8a8,
-            &bytes,
-            width * 4,
-        )
-        .into(),
-    )
+    crate::media::texture(image)
 }
 
 /// An avatar widget: the picture or mascot, else the initial on a raised
@@ -649,8 +647,6 @@ pub struct AvatarView {
     pub root: gtk::Overlay,
     picture: gtk::Image,
     size: i32,
-    /// The running animation, replaced whenever the avatar changes.
-    ticking: Rc<Cell<Option<gtk::TickCallbackId>>>,
     initial: gtk::Label,
     dot: Option<gtk::Box>,
 }
@@ -692,44 +688,39 @@ impl AvatarView {
             root,
             picture,
             size,
-            ticking: Rc::default(),
             initial,
             dot,
         }
     }
 
     pub fn set(&self, images: &Images, avatar: &Avatar) {
-        if let Some(tick) = self.ticking.take() {
-            tick.remove();
-        }
         let edge = (self.size * self.root.scale_factor()).max(0) as u32;
         let texture = images.avatar(avatar, edge);
         let animation = images.animation(avatar).filter(|_| motion());
-        if let Some(frames) = animation.clone() {
-            let shown = Cell::new(usize::MAX);
-            let tick = self.picture.add_tick_callback(move |image, clock| {
-                let index = frame_at(frames.as_slice(), clock.frame_time());
-                if shown.replace(index) != index {
-                    image.set_paintable(Some(&frames[index].0));
-                }
-                glib::ControlFlow::Continue
-            });
-            self.ticking.set(Some(tick));
-        }
         match texture {
             Some(texture) => {
-                // A row filled again keeps its animation's place instead of
-                // blinking back to the first frame.
-                let now = self.picture.frame_clock().map(|clock| clock.frame_time());
-                let texture = match (&animation, now) {
-                    (Some(frames), Some(now)) => frames[frame_at(frames.as_slice(), now)].0.clone(),
-                    _ => texture,
+                // Every avatar plays on one timeline: a row filled again
+                // keeps its animation's place instead of blinking back to
+                // the first frame.
+                let texture = match &animation {
+                    Some(frames) => {
+                        crate::animate::play(&self.picture, frames, 0, |image, frame| {
+                            if let Some(image) = image.downcast_ref::<gtk::Image>() {
+                                image.set_paintable(Some(frame));
+                            }
+                        })
+                    }
+                    None => {
+                        crate::animate::stop(&self.picture);
+                        texture
+                    }
                 };
                 self.picture.set_paintable(Some(&texture));
                 self.picture.set_visible(true);
                 self.initial.set_visible(false);
             }
             None => {
+                crate::animate::stop(&self.picture);
                 self.picture.clear();
                 self.picture.set_visible(false);
                 self.initial.set_label(&avatar.initial());
@@ -761,6 +752,30 @@ impl AvatarView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn textures_draw_the_same_pixels_whatever_they_are_stored_as() {
+        // Downloads come out premultiplied BGRA, cairo's own format.
+        let drawn = |texture: gdk::Texture| {
+            let mut pixels = [0; 8];
+            texture.download(&mut pixels, 8);
+            pixels
+        };
+        let expected = [25, 50, 100, 128, 0, 0, 255, 255];
+        // Decoded pictures: straight RGBA.
+        let straight = vec![200, 100, 50, 128, 255, 0, 0, 255];
+        assert_eq!(drawn(texture_from(2, 1, straight, false, false)), expected);
+        // Rendered SVGs: premultiplied RGBA.
+        let premultiplied = vec![100, 50, 25, 128, 255, 0, 0, 255];
+        assert_eq!(
+            drawn(texture_from(2, 1, premultiplied, false, true)),
+            expected
+        );
+        // Emoji cells: premultiplied BGRA.
+        let cell = vec![25, 50, 100, 128, 0, 0, 255, 255];
+        assert_eq!(drawn(texture_from(2, 1, cell, true, true)), expected);
+    }
 
     fn frames(edge: usize, count: usize) -> caper_client::pictures::Frames {
         let frame = || Rgba {
@@ -797,18 +812,5 @@ mod tests {
             small.iter().all(|(frame, _)| frame.size == [40, 40]),
             "never enlarged"
         );
-    }
-
-    #[test]
-    fn avatars_share_one_animation_timeline() {
-        let millis = Duration::from_millis;
-        let frames = [((), millis(100)), ((), millis(50)), ((), millis(250))];
-        assert_eq!(frame_at(&frames, 0), 0);
-        assert_eq!(frame_at(&frames, 99_999), 0);
-        assert_eq!(frame_at(&frames, 100_000), 1);
-        assert_eq!(frame_at(&frames, 150_000), 2);
-        // The loop is 400 ms: the clock decides the frame, not when a view
-        // started showing it.
-        assert_eq!(frame_at(&frames, 7 * 400_000 + 120_000), 1);
     }
 }

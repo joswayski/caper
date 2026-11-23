@@ -36,7 +36,7 @@ const FULL_KEY: &str = "full:";
 
 /// A decoded picture: one still, or every frame of an animation with its
 /// delay.
-pub type Frames = Vec<(gdk::Texture, Duration)>;
+pub type Frames = crate::animate::Frames;
 
 /// Ephemeral reveals by presentation/message origin, then attachment ID.
 pub type Revealed = HashMap<String, HashSet<String>>;
@@ -496,58 +496,37 @@ pub fn texture(image: &Rgba) -> Option<gdk::Texture> {
     if width == 0 || height == 0 || image.pixels.len() != width * height * 4 {
         return None;
     }
-    let bytes = glib::Bytes::from(&image.pixels[..]);
-    Some(
-        gdk::MemoryTexture::new(
-            width as i32,
-            height as i32,
-            gdk::MemoryFormat::R8g8b8a8,
-            &bytes,
-            width * 4,
-        )
-        .into(),
-    )
+    Some(crate::images::texture_from(
+        width,
+        height,
+        image.pixels.clone(),
+        false,
+        false,
+    ))
 }
 
 /// Shows `frames` in `picture`: a still, or an animation that plays while
-/// the picture is on screen (tick callbacks stop while it is unmapped) and
-/// stays on its first frame when animations are off.
+/// the picture is on screen (`crate::animate`) and stays on its first frame
+/// when animations are off.
 pub fn show(picture: &gtk::Picture, frames: &Rc<Frames>) {
     let Some((first, _)) = frames.first() else {
         return;
     };
-    picture.set_paintable(Some(first));
     picture.add_css_class("loaded");
     let animate = frames.len() > 1
         && gtk::Settings::default().is_none_or(|settings| settings.is_gtk_enable_animations());
     if !animate {
+        crate::animate::stop(picture);
+        picture.set_paintable(Some(first));
         return;
     }
-    let total: Duration = frames.iter().map(|(_, delay)| *delay).sum();
-    let total = total.as_micros().max(1) as i64;
-    let frames = frames.clone();
-    let shown = Cell::new(0usize);
-    let start = Cell::new(None::<i64>);
-    // Tiles are built per row, so each picture runs one callback.
-    picture.add_tick_callback(move |picture, clock| {
-        let now = clock.frame_time();
-        let first = *start.get().get_or_insert(now);
-        start.set(Some(first));
-        let mut time = (now - first) % total;
-        let mut index = 0;
-        for (position, (_, delay)) in frames.iter().enumerate() {
-            let length = delay.as_micros() as i64;
-            if time < length {
-                index = position;
-                break;
-            }
-            time -= length;
+    // Each tile starts its animation from the first frame.
+    let frame = crate::animate::play(picture, frames, glib::monotonic_time(), |picture, frame| {
+        if let Some(picture) = picture.downcast_ref::<gtk::Picture>() {
+            picture.set_paintable(Some(frame));
         }
-        if shown.replace(index) != index {
-            picture.set_paintable(Some(&frames[index].0));
-        }
-        glib::ControlFlow::Continue
     });
+    picture.set_paintable(Some(&frame));
 }
 
 #[cfg(test)]

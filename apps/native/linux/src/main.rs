@@ -1,6 +1,7 @@
 //! Caper's native Linux client, in GTK 4. `apps/native/desktop/build.sh`
 //! ships it in the Linux release packages as `caper-desktop`.
 
+mod animate;
 mod app;
 mod autoscroll;
 mod composing;
