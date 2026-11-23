@@ -261,10 +261,6 @@ final class CaperUIKitTests: XCTestCase {
         control(["incomingMessage": ["channelId": "chan00000001", "text": "replying way back", "replyToId": "b00000000002000"]])
         let context = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View original message from")).firstMatch
         XCTAssertTrue(context.waitForExistence(timeout: 10))
-        let replying = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "replying way back")).firstMatch
-        XCTAssertTrue(replying.waitForExistence(timeout: 10))
-        // A new quote card measured before its first layout wrapped at zero width and left a tall gap.
-        XCTAssertLessThan(replying.frame.minY - context.frame.maxY, 60, "The reply sits right under its quote")
         context.tap()
         let target = row("00000000-0000-4000-9000-000000002000")
         XCTAssertTrue(target.waitForExistence(timeout: 15), "Jumps to the replied-to message")
@@ -279,6 +275,23 @@ final class CaperUIKitTests: XCTestCase {
         let reply = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "replying way back")).firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
         XCTAssertTrue(reply.isHittable, "Back at the live end")
+    }
+
+    /// A new quote card was measured before its first layout, at zero width,
+    /// so a one-line quote wrapped to three lines plus Show more and the row
+    /// kept a tall gap between the card and the reply.
+    func testShortReplyQuoteSitsRightOverTheReply() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        control(["incomingMessage": ["channelId": "chan00000001", "text": "short quote"]])
+        control(["incomingMessage": ["channelId": "chan00000001", "text": "answering the short quote", "replyToId": "latest"]])
+        let context = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View original message from")).firstMatch
+        XCTAssertTrue(context.waitForExistence(timeout: 10))
+        let reply = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "answering the short quote")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Show more"].exists, "A one-line quote needs no Show more")
+        // Card margin, column spacing and the header: about 40pt.
+        XCTAssertLessThan(reply.frame.minY - context.frame.maxY, 60, "The reply sits right under its quote")
     }
 
     func testLiveMessageFollowsTailAndHistoryLoadsOnScrollUp() {

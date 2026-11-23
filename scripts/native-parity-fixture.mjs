@@ -1288,7 +1288,11 @@ export async function startFixture({
             createdAt: new Date().toISOString(),
           };
           // Optional `replyToId`: a reply to an older message, whose context jumps to it.
-          const target = messages.find((row) => row.id === body.incomingMessage.replyToId);
+          // "latest" quotes the channel's newest message.
+          const target =
+            body.incomingMessage.replyToId === "latest"
+              ? messages.at(-1)
+              : messages.find((row) => row.id === body.incomingMessage.replyToId);
           if (body.incomingMessage.replyToId !== undefined && !target)
             return reject(response, 404, "Fixture message not found.");
           if (target)
