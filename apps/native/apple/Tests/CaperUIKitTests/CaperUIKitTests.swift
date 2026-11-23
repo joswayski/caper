@@ -484,6 +484,9 @@ final class CaperUIKitTests: XCTestCase {
                                                    "url": "http://127.0.0.1:3001/__fixture/embed.svg"]]]])
         let media = row(Self.latest).descendants(matching: .any)["attachment-fixtureimage001"]
         XCTAssertTrue(media.waitForExistence(timeout: 15))
+        // The row is measured with the image at full size, not spilling into the rows below.
+        XCTAssertGreaterThan(media.frame.height, 100)
+        XCTAssertLessThanOrEqual(media.frame.maxY, row(Self.latest).frame.maxY + 0.5)
         screenshot("uikit-attachment-row")
     }
 

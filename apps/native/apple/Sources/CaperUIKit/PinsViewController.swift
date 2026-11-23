@@ -230,6 +230,7 @@ private final class PinCardCell: UICollectionViewCell {
 
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
         row.prepareFitting(width: attributes.size.width)
+        layOutAtFittingWidth(attributes)
         return super.preferredLayoutAttributesFitting(attributes)
     }
 

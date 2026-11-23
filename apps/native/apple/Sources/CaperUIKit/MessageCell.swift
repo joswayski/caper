@@ -893,6 +893,17 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     }
 }
 
+extension UICollectionViewCell {
+    /// GIFs, photos and videos size their height from their laid-out width,
+    /// which a new or reused row hasn't had yet; measuring then sizes the row
+    /// as if the media were nearly flat, and it spills over the rows below.
+    /// Lay out at the width being measured first.
+    func layOutAtFittingWidth(_ attributes: UICollectionViewLayoutAttributes) {
+        if abs(bounds.width - attributes.size.width) > 0.5 { bounds.size.width = attributes.size.width }
+        layoutIfNeeded()
+    }
+}
+
 final class MessageCell: UICollectionViewCell {
     static let reuse = "message"
     let row = MessageRowView()
@@ -909,7 +920,8 @@ final class MessageCell: UICollectionViewCell {
             row.topAnchor.constraint(equalTo: contentView.topAnchor),
             row.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             row.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            // Below required, so laying out at the estimated height doesn't conflict.
+            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor).withPriority(.init(999)),
         ])
         isAccessibilityElement = false
         contentView.isAccessibilityElement = false
@@ -925,6 +937,7 @@ final class MessageCell: UICollectionViewCell {
 
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
         row.prepareFitting(width: attributes.size.width)
+        layOutAtFittingWidth(attributes)
         return super.preferredLayoutAttributesFitting(attributes)
     }
 
