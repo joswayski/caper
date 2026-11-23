@@ -1821,6 +1821,7 @@ impl App {
             self.dirty.settings = true;
             self.need = true;
             self.events |= EV_SCREEN | EV_FOCUS;
+            self.resume_gifs();
         }
     }
 

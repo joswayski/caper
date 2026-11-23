@@ -104,6 +104,8 @@ pub struct People {
     generation: Option<u64>,
     pub focus: Option<VPart>,
     dragging: bool,
+    /// What the last `TIMER_CALL` step showed.
+    shown: Option<(Option<Card>, Vec<bool>)>,
 }
 
 /// What the card shows.
@@ -961,6 +963,24 @@ impl App {
             }
         }
         self.audio_changed();
+    }
+
+    /// The 80 ms step: the sidebar redraws only when the card's clock or
+    /// connection state, or who is lit, changed since the last step.
+    pub fn call_tick(&mut self) {
+        let now = std::time::Instant::now();
+        let speaking = self.live.as_ref().map_or_else(Vec::new, |live| {
+            self.call_people()
+                .iter()
+                .map(|p| live.voice.speaking(&p.id, p.muted, now))
+                .collect()
+        });
+        let shown = Some((self.voice_card(), speaking));
+        if shown != self.call_ui.shown {
+            self.call_ui.shown = shown;
+            self.dirty.sidebar = true;
+            self.need = true;
+        }
     }
 
     /// Tracks the pointer over voice's controls; nearing a Join prepares

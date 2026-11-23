@@ -1077,7 +1077,7 @@ impl App {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), crate::TIMER_GIF_FRAMES);
         }
-        if self.gifs.is_some() {
+        if self.gifs.is_some() && !self.pause_gifs() {
             self.dirty.gifs = true;
             self.need = true;
         }

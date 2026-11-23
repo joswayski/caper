@@ -1100,6 +1100,7 @@ impl App {
         self.need = true;
         self.events |= EV_SCREEN | EV_FOCUS;
         self.set_composer_focus(true);
+        self.resume_gifs();
     }
 
     pub(crate) fn stop_viewer_video(&mut self, video: Option<Video>) {

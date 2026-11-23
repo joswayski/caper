@@ -901,11 +901,46 @@ impl App {
         }
     }
 
+    /// Whether anyone can watch GIFs advance: Caper in front, not
+    /// minimized, and not covered by the viewer or Settings.
+    pub fn gifs_watched(&self) -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsIconic};
+        self.viewer.is_none()
+            && self.settings.is_none()
+            && unsafe { GetForegroundWindow() == self.hwnd && !IsIconic(self.hwnd).as_bool() }
+    }
+
+    /// Unwatched GIFs hold their frame: the step stops until
+    /// `resume_gifs` instead of redrawing rows nobody sees.
+    pub(crate) fn pause_gifs(&mut self) -> bool {
+        if self.gifs_watched() {
+            return false;
+        }
+        self.gifs_paused = true;
+        true
+    }
+
+    /// Caper came to the front, or the viewer or Settings closed: paused
+    /// GIFs, in the channel, a thread and the picker, carry on.
+    pub fn resume_gifs(&mut self) {
+        if !std::mem::take(&mut self.gifs_paused) {
+            return;
+        }
+        // The rows still waiting for a frame: their next one, at once.
+        self.redraw.extend(std::mem::take(&mut self.gif_rows));
+        self.dirty.thread |= self.thread.is_some();
+        self.dirty.gifs |= self.gifs.is_some();
+        self.need = true;
+    }
+
     pub fn next_gif_frame(&mut self) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), crate::TIMER_MEDIA);
         }
         self.gif_due = None;
+        if self.pause_gifs() {
+            return;
+        }
         // A new frame changes no row's accessible content.
         let rows = std::mem::take(&mut self.gif_rows);
         if !rows.is_empty() {

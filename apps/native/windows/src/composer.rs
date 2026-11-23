@@ -56,6 +56,9 @@ pub struct Composer {
     pub(crate) codes: Vec<(u32, u32)>,
     /// Complete mention ranges in the displayed UTF-16 draft.
     pub(crate) mentions: Vec<(u32, u32)>,
+    /// `mentions` are applied to the current layout (`tint_mentions`); a
+    /// new layout starts untinted.
+    pub(crate) tinted: bool,
     /// What typing left in a formatted composer; `None` in plain fields.
     pub(crate) rich: Option<Typing>,
     /// A typed high surrogate waiting for its low half (formatted only).
@@ -830,6 +833,7 @@ impl Composer {
         self.codes = codes;
         self.text_h = gfx::metrics(&layout).height.max(LINE);
         self.layout = Some(layout);
+        self.tinted = false;
         Ok(self.text_h)
     }
 
@@ -880,6 +884,7 @@ impl Composer {
         }
         let changed = self.mentions != ranges;
         self.mentions = ranges;
+        self.tinted = true;
         Ok(changed)
     }
 

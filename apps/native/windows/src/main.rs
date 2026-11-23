@@ -557,6 +557,11 @@ pub struct App {
     caret_paused: bool,
     /// The last key, click or focus, which the caret timeout counts from.
     caret_input: Instant,
+    /// GIFs stopped on their frame while nobody could watch them
+    /// (`resume_gifs`).
+    gifs_paused: bool,
+    /// The worker updated something since drafts were last tinted.
+    tint_due: bool,
     /// Inside Windows' modal move/size loop, which runs instead of ours.
     sizing: bool,
     quit: bool,
@@ -917,6 +922,8 @@ impl App {
                 drop_p,
                 caret_paused: false,
                 caret_input: Instant::now(),
+                gifs_paused: false,
+                tint_due: true,
                 sizing: false,
                 quit: false,
             })
@@ -1014,6 +1021,8 @@ impl App {
         }
         // A link card's answer arrives through the same wake.
         self.preview_tick();
+        // Who `@` can name changes only through the worker's updates.
+        self.tint_due |= !updates.is_empty();
         for u in updates {
             match u {
                 live::Update::SignedOut(warning) => {
@@ -2477,6 +2486,10 @@ impl App {
         ) {
             self.resume_caret();
         }
+        // Brought to the front: GIFs that paused behind other windows play.
+        if msg == WM_ACTIVATE && wp.0 & 0xffff != 0 {
+            self.resume_gifs();
+        }
         if let Some(r) = self.autoscroll_input(msg, wp, x, y) {
             return Some(r);
         }
@@ -2622,6 +2635,7 @@ impl App {
                 self.resized(pw, ph);
                 if wp.0 != SIZE_MINIMIZED as usize {
                     self.resume_caret();
+                    self.resume_gifs();
                 }
                 // Nothing was drawn while minimized; GIFs resume with this frame.
                 self.need = true;
@@ -2663,11 +2677,8 @@ impl App {
                 }
                 tips::TIMER_TIP => self.tip_tick(),
                 web_player::TIMER_WEB_PLAYER => self.need = true,
-                // Levels, speaking release and the call's running time.
-                call::TIMER_CALL => {
-                    self.dirty.sidebar = true;
-                    self.need = true;
-                }
+                // Speaking rings, their release and the call's running time.
+                call::TIMER_CALL => self.call_tick(),
                 settings::TIMER_INBOX => self.inbox_tick(),
                 settings::TIMER_VERSION_COPIED => self.version_copied_tick(),
                 TIMER_TYPING => self.typing_tick(),

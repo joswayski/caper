@@ -5391,6 +5391,12 @@ impl Live {
                 if revision == self.unread_revision
                     && let Ok(unread) = result
                 {
+                    // Most 15 s answers repeat what is shown: nothing redraws.
+                    let changed = unread.feedback_waiting != self.feedback_waiting
+                        || unread.spaces != self.unread_spaces
+                        || unread
+                            .badge_count
+                            .is_some_and(|count| count != self.activity.unread_count());
                     self.feedback_waiting = unread.feedback_waiting;
                     self.unread_spaces = unread.spaces;
                     // A closed inbox loads ahead when its count changes, so
@@ -5400,7 +5406,9 @@ impl Live {
                     {
                         self.load_activity(false, true);
                     }
-                    out.extend([Update::Badges, Update::Inbox]);
+                    if changed {
+                        out.extend([Update::Badges, Update::Inbox]);
+                    }
                 }
             }
             Event::Reactors {
@@ -5632,8 +5640,12 @@ impl Live {
                 if epoch == self.account_epoch && self.token.is_some() =>
             {
                 self.voice_activity_pending = false;
-                self.voice_spaces = result.unwrap_or_default().into_iter().collect();
-                out.push(Update::Voice);
+                let spaces: HashSet<String> = result.unwrap_or_default().into_iter().collect();
+                // Unchanged 15 s answers leave voice's surfaces alone.
+                if spaces != self.voice_spaces {
+                    self.voice_spaces = spaces;
+                    out.push(Update::Voice);
+                }
             }
             Event::MediaStatus {
                 generation,
@@ -5859,17 +5871,23 @@ impl Live {
             } if epoch == self.account_epoch && request == self.membership_request => {
                 self.membership_pending = false;
                 if let Ok((spaces, detail)) = result {
+                    let mut changed = spaces.invitations != self.invitations;
                     self.invitations = spaces.invitations;
                     if spaces.limits.is_some() {
+                        changed |= spaces.limits != self.limits;
                         self.limits = spaces.limits;
                     }
                     if let (Some(fresh), Some(open)) = (detail, &mut self.detail)
                         && navigation == self.navigation
                         && fresh.space.id == open.space.id
                     {
+                        changed |= fresh.channel_invitations != open.channel_invitations;
                         open.channel_invitations = fresh.channel_invitations;
                     }
-                    out.push(Update::Invitations);
+                    // Unchanged 15 s answers redraw nothing.
+                    if changed {
+                        out.push(Update::Invitations);
+                    }
                 }
             }
             Event::InvitationLoaded {
@@ -6080,20 +6098,24 @@ impl Live {
 impl Live {
     /// A fresh DM list; a read acknowledged here is never undone by an
     /// older list.
-    fn set_directs(&mut self, directs: Vec<core::DirectConversation>, out: &mut Vec<Update>) {
-        let reads: HashMap<String, String> = self
+    fn set_directs(&mut self, mut directs: Vec<core::DirectConversation>, out: &mut Vec<Update>) {
+        let reads: HashMap<&str, &str> = self
             .directs
             .iter()
-            .map(|d| (d.id.clone(), d.read_seq.clone()))
+            .map(|d| (d.id.as_str(), d.read_seq.as_str()))
             .collect();
-        self.directs = directs;
-        for d in &mut self.directs {
-            if let Some(read) = reads.get(&d.id)
+        for d in &mut directs {
+            if let Some(&read) = reads.get(d.id.as_str())
                 && core::sequence(read).unwrap_or(0) > core::sequence(&d.read_seq).unwrap_or(0)
             {
-                d.read_seq.clone_from(read);
+                read.clone_into(&mut d.read_seq);
             }
         }
+        // The 15 s refresh usually brings the same list: nothing redraws.
+        if directs == self.directs {
+            return;
+        }
+        self.directs = directs;
         out.push(Update::Badges);
         if self.direct.is_some() {
             // The header and empty note follow the list.

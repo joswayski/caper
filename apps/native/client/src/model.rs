@@ -290,7 +290,7 @@ pub struct Inviter {
     pub avatar_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UnreadChannel {
     pub id: String,
@@ -304,7 +304,7 @@ pub struct UnreadChannel {
     pub mention_count: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct UnreadSpace {
     pub id: String,
     pub channels: Vec<UnreadChannel>,

@@ -150,13 +150,15 @@ impl App {
 
     /// Membership can change without a keystroke; all three drafts keep their
     /// tint when focus moves or suggestions are dismissed. Runs every frame,
-    /// so the people list is only built when a draft can hold a mention.
+    /// so the people list is only built when a draft can hold a mention and
+    /// the worker sent updates or that draft has a new, untinted layout.
     pub fn tint_drafts(&mut self) -> Result<()> {
-        let main = self.composer.may_mention();
+        let due = std::mem::take(&mut self.tint_due);
+        let main = self.composer.may_mention() && (due || !self.composer.tinted);
         let thread = self
             .thread
             .as_ref()
-            .is_some_and(|t| t.composer.may_mention());
+            .is_some_and(|t| t.composer.may_mention() && (due || !t.composer.tinted));
         if main || thread {
             let (people, specials) = self.suggest_people(Field::Main);
             if main {
@@ -166,7 +168,11 @@ impl App {
                 self.dirty.thread_box |= t.composer.tint_mentions(&self.g, &people, specials)?;
             }
         }
-        if self.profile.as_ref().is_some_and(|c| c.field.may_mention()) {
+        if self
+            .profile
+            .as_ref()
+            .is_some_and(|c| c.field.may_mention() && (due || !c.field.tinted))
+        {
             let (people, specials) = self.suggest_people(Field::Profile);
             if let Some(c) = &mut self.profile {
                 self.dirty.profile |= c.field.tint_mentions(&self.g, &people, specials)?;

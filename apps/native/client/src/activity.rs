@@ -382,6 +382,10 @@ impl Inbox {
     pub fn ready(&self) -> bool {
         self.loading || !self.items.is_empty()
     }
+    /// Unread notifications, as the inbox and its badge show them.
+    pub fn unread_count(&self) -> u64 {
+        self.unread_count
+    }
     /// An unread snapshot's count. Returns whether the closed inbox should
     /// load ahead (as a refresh), so opening it shows these notifications at
     /// once rather than a loading state.

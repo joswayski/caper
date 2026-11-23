@@ -2356,7 +2356,7 @@ impl App {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_MEDIA);
         }
-        if self.thread.is_some() {
+        if self.thread.is_some() && !self.pause_gifs() {
             self.dirty.thread = true;
             self.need = true;
         }
