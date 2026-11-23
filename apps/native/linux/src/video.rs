@@ -17,6 +17,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+/// How often a hidden GIF-style clip checks whether it shows again.
+const HIDDEN_CHECK: Duration = Duration::from_millis(500);
+
 /// Videos decode at most at 1080p however large the stage.
 const MAX_VIDEO: [f32; 2] = [1920.0, 1080.0];
 /// Below this the time and the volume make way, as on the desktop.
@@ -37,6 +40,8 @@ struct Stage {
     notice: gtk::Label,
     controls: Option<Controls>,
     ticking: Cell<bool>,
+    /// A GIF-style clip paused because nobody can see it.
+    hidden: Cell<bool>,
     /// The seek bar's value while it is dragged, and the pending seek.
     scrub: Cell<Option<f64>>,
     seek: RefCell<Option<glib::SourceId>>,
@@ -124,6 +129,7 @@ pub fn stage(images: &Images, attachment: &Attachment, width: i32, height: i32) 
         notice,
         controls,
         ticking: Cell::new(false),
+        hidden: Cell::new(false),
         scrub: Cell::new(None),
         seek: RefCell::default(),
     });
@@ -420,6 +426,22 @@ impl Stage {
     }
 
     fn update(&self) -> Option<Duration> {
+        // A GIF-style clip scrolled away or in a minimized window stops
+        // decoding, and carries on from there once it shows again.
+        if self.attachment.animated {
+            let seen = crate::animate::visible(self.frame.upcast_ref());
+            let mut player = self.player.borrow_mut();
+            let player = player.as_mut()?;
+            if !seen && player.state() == State::Playing {
+                player.pause();
+                self.hidden.set(true);
+            } else if seen && self.hidden.replace(false) {
+                player.play();
+            }
+            if self.hidden.get() {
+                return Some(HIDDEN_CHECK);
+            }
+        }
         let next = {
             let mut player = self.player.borrow_mut();
             let player = player.as_mut()?;
