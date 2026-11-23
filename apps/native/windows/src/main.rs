@@ -557,6 +557,8 @@ pub struct App {
     caret_paused: bool,
     /// The last key, click or focus, which the caret timeout counts from.
     caret_input: Instant,
+    /// Inside Windows' modal move/size loop, which runs instead of ours.
+    sizing: bool,
     quit: bool,
 }
 
@@ -915,6 +917,7 @@ impl App {
                 drop_p,
                 caret_paused: false,
                 caret_input: Instant::now(),
+                sizing: false,
                 quit: false,
             })
         }
@@ -2623,6 +2626,8 @@ impl App {
                 // Nothing was drawn while minimized; GIFs resume with this frame.
                 self.need = true;
             }
+            WM_ENTERSIZEMOVE => self.sizing = true,
+            WM_EXITSIZEMOVE => self.sizing = false,
             WM_SETTINGCHANGE => self.motion_changed(),
             WM_TIMER => match wp.0 {
                 TIMER_BENCH if self.bench.tick() => self.quit = true,
@@ -5108,6 +5113,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     | WM_KILLFOCUS
             ) {
                 a.refresh_suggest();
+            }
+            // While a drag moves or resizes the window, Windows' modal loop
+            // runs instead of ours: draw here, so the content follows the
+            // new size and GIFs and the caret keep going.
+            if a.sizing && a.need && !a.quit {
+                a.need = false;
+                if let Err(e) = a.frame() {
+                    eprintln!("frame failed: {e:?}");
+                }
             }
             r
         });
