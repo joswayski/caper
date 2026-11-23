@@ -598,7 +598,8 @@ public final class ComposerTextView: UITextView {
 extension MessageFormattingAction {
     /// The edit menu's formatting groups, in the toolbar's order: the inline
     /// styles, then (after the menu's divider) Quote and Spoiler. A style the
-    /// selection already has is on.
+    /// selection already has is on. They follow the system's Cut, Copy and
+    /// Paste so those stay on the menu's first page.
     @MainActor public static func editMenus(text: String, selection: NSRange, format: @escaping (MessageStyle) -> Void) -> [UIMenuElement] {
         let pressed = MessageFormatting.selectionStyles(text, selection: selection)
         return [false, true].map { block -> UIMenuElement in
@@ -734,8 +735,8 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         }
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
             guard textView.isEditable else { return nil }
-            return UIMenu(children: MessageFormattingAction.editMenus(text: textView.text, selection: range) { [weak self] in self?.format($0) }
-                + suggestedActions)
+            return UIMenu(children: suggestedActions
+                + MessageFormattingAction.editMenus(text: textView.text, selection: range) { [weak self] in self?.format($0) })
         }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
         func scrollViewDidScroll(_ scrollView: UIScrollView) { (scrollView as? ComposerTextView)?.hideEmojiName() }

@@ -361,13 +361,14 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
-    /// The formatting toolbar's styles lead the edit menu, as in SwiftUI:
-    /// Bold, Italic, Underline, Strikethrough, then Quote and Spoiler, with a
-    /// style the selection already has turned on.
+    /// The edit menu keeps the system's Cut, Copy and Paste first, then the
+    /// formatting toolbar's styles, as in SwiftUI: Bold, Italic, Underline,
+    /// Strikethrough, then Quote and Spoiler, with a style the selection
+    /// already has turned on.
     func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         guard textView.isEditable else { return nil }
-        return UIMenu(children: MessageFormattingAction.editMenus(text: textView.text, selection: range) { [weak self] in self?.format($0) }
-            + suggestedActions)
+        return UIMenu(children: suggestedActions
+            + MessageFormattingAction.editMenus(text: textView.text, selection: range) { [weak self] in self?.format($0) })
     }
 
     /// Turns `style` on or off for the selection through the shared toggle
