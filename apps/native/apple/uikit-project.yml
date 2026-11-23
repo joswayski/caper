@@ -30,7 +30,7 @@ targets:
         NSPhotoLibraryUsageDescription: Caper shows your recent photos and videos so you can attach them to messages. Only items you choose are uploaded.
         PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
         ITSAppUsesNonExemptEncryption: false
-        UIAppFonts: [Figtree-Regular.ttf, Figtree-Medium.ttf, Figtree-Bold.ttf, Figtree-Black.ttf, BricolageGrotesque-Bold.ttf, BricolageGrotesque-ExtraBold.ttf]
+        UIAppFonts: [Figtree-Regular.ttf, Figtree-Medium.ttf, Figtree-Bold.ttf, Figtree-Black.ttf, Nunito-Bold.ttf, Nunito-ExtraBold.ttf]
         UILaunchScreen:
           UIColorName: ""
         UIApplicationSceneManifest:

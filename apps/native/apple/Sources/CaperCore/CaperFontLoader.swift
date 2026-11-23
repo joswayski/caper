@@ -7,8 +7,8 @@ public enum CaperFontLoader {
         "Figtree-Medium",
         "Figtree-Bold",
         "Figtree-Black",
-        "BricolageGrotesque-Bold",
-        "BricolageGrotesque-ExtraBold",
+        "Nunito-Bold",
+        "Nunito-ExtraBold",
     ]
     private static var registered = false
 

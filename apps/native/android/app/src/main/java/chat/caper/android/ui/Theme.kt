@@ -74,10 +74,10 @@ private val Figtree = FontFamily(
     Font(R.font.figtree_bold, FontWeight.Bold),
     Font(R.font.figtree_black, FontWeight.Black),
 )
-private val Bricolage = FontFamily(
-    Font(R.font.bricolage_bold, FontWeight.Bold),
-    Font(R.font.bricolage_extrabold, FontWeight.ExtraBold),
-    Font(R.font.bricolage_extrabold, FontWeight.Black),
+private val Nunito = FontFamily(
+    Font(R.font.nunito_bold, FontWeight.Bold),
+    Font(R.font.nunito_extrabold, FontWeight.ExtraBold),
+    Font(R.font.nunito_extrabold, FontWeight.Black),
 )
 
 data class CaperThemePalette(
@@ -386,9 +386,9 @@ object CaperThemeStore {
         colorScheme = scheme,
         typography = Typography().run {
             copy(
-                displayLarge = displayLarge.copy(fontFamily = Bricolage, letterSpacing = (-0.4).sp), displayMedium = displayMedium.copy(fontFamily = Bricolage, letterSpacing = (-0.3).sp), displaySmall = displaySmall.copy(fontFamily = Bricolage, letterSpacing = (-0.25).sp),
-                headlineLarge = headlineLarge.copy(fontFamily = Bricolage, letterSpacing = (-0.3).sp), headlineMedium = headlineMedium.copy(fontFamily = Bricolage, letterSpacing = (-0.25).sp), headlineSmall = headlineSmall.copy(fontFamily = Bricolage, letterSpacing = (-0.2).sp),
-                titleLarge = titleLarge.copy(fontFamily = Bricolage, letterSpacing = (-0.2).sp), titleMedium = titleMedium.copy(fontFamily = Figtree, letterSpacing = 0.sp), titleSmall = titleSmall.copy(fontFamily = Figtree, letterSpacing = 0.sp),
+                displayLarge = displayLarge.copy(fontFamily = Nunito, letterSpacing = (-0.25).sp), displayMedium = displayMedium.copy(fontFamily = Nunito, letterSpacing = (-0.2).sp), displaySmall = displaySmall.copy(fontFamily = Nunito, letterSpacing = (-0.15).sp),
+                headlineLarge = headlineLarge.copy(fontFamily = Nunito, letterSpacing = (-0.2).sp), headlineMedium = headlineMedium.copy(fontFamily = Nunito, letterSpacing = (-0.15).sp), headlineSmall = headlineSmall.copy(fontFamily = Nunito, letterSpacing = (-0.1).sp),
+                titleLarge = titleLarge.copy(fontFamily = Nunito, letterSpacing = (-0.1).sp), titleMedium = titleMedium.copy(fontFamily = Figtree, letterSpacing = 0.sp), titleSmall = titleSmall.copy(fontFamily = Figtree, letterSpacing = 0.sp),
                 bodyLarge = bodyLarge.copy(fontFamily = Figtree, letterSpacing = 0.sp), bodyMedium = bodyMedium.copy(fontFamily = Figtree, letterSpacing = 0.sp), bodySmall = bodySmall.copy(fontFamily = Figtree, letterSpacing = 0.sp),
                 labelLarge = labelLarge.copy(fontFamily = Figtree, letterSpacing = 0.sp), labelMedium = labelMedium.copy(fontFamily = Figtree, letterSpacing = 0.sp), labelSmall = labelSmall.copy(fontFamily = Figtree, letterSpacing = 0.sp),
             )

@@ -35,8 +35,8 @@ import SwiftUI
     static func displayFont(_ size: CGFloat, weight: NSFont.Weight = .bold) -> NSFont {
         CaperFontLoader.register()
         let name = switch weight {
-        case .black, .heavy: "BricolageGrotesque-ExtraBold"
-        default: "BricolageGrotesque-Bold"
+        case .black, .heavy: "Nunito-ExtraBold"
+        default: "Nunito-Bold"
         }
         return NSFont(name: name, size: size) ?? font(size, weight: weight)
     }

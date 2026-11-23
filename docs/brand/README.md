@@ -2,7 +2,7 @@
 
 These owner-supplied references describe the intended brand, not implemented product features.
 
-- [Identity and style guide](identity.png): wordmark, character, colors, type (shown in Satoshi; the apps now use Bricolage Grotesque and Figtree), and controls.
+- [Identity and style guide](identity.png): wordmark, character, colors, type (shown in Satoshi; the apps now use Nunito and Figtree), and controls.
 - [Conversation layout](conversation.png): neutral chrome, channel selection, conversation and thread hierarchy.
 - [Call layout](call.png): screen-sharing stage, participant strip, and restrained call controls.
 

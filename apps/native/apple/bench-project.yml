@@ -43,7 +43,7 @@ targets:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: This TEST FIXTURE bench app talks only to the Caper bench fixture on your local network.
         ITSAppUsesNonExemptEncryption: false
-        UIAppFonts: [Figtree-Regular.ttf, Figtree-Medium.ttf, Figtree-Bold.ttf, Figtree-Black.ttf, BricolageGrotesque-Bold.ttf, BricolageGrotesque-ExtraBold.ttf]
+        UIAppFonts: [Figtree-Regular.ttf, Figtree-Medium.ttf, Figtree-Bold.ttf, Figtree-Black.ttf, Nunito-Bold.ttf, Nunito-ExtraBold.ttf]
         UILaunchScreen:
           UIColorName: ""
         UIApplicationSceneManifest:
@@ -89,7 +89,7 @@ targets:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: This TEST FIXTURE bench app talks only to the Caper bench fixture on your local network.
         ITSAppUsesNonExemptEncryption: false
-        UIAppFonts: [Figtree-Regular.ttf, Figtree-Medium.ttf, Figtree-Bold.ttf, Figtree-Black.ttf, BricolageGrotesque-Bold.ttf, BricolageGrotesque-ExtraBold.ttf]
+        UIAppFonts: [Figtree-Regular.ttf, Figtree-Medium.ttf, Figtree-Bold.ttf, Figtree-Black.ttf, Nunito-Bold.ttf, Nunito-ExtraBold.ttf]
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]

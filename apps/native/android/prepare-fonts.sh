@@ -11,6 +11,6 @@ for weight in Regular Medium Bold Black; do
   # tr, not ${weight,,}: macOS ships bash 3.2.
   cp "$FONTS/Figtree-$weight.ttf" "$GENERATED/res/font/figtree_$(printf %s "$weight" | tr "[:upper:]" "[:lower:]").ttf"
 done
-cp "$FONTS/BricolageGrotesque-Bold.ttf" "$GENERATED/res/font/bricolage_bold.ttf"
-cp "$FONTS/BricolageGrotesque-ExtraBold.ttf" "$GENERATED/res/font/bricolage_extrabold.ttf"
+cp "$FONTS/Nunito-Bold.ttf" "$GENERATED/res/font/nunito_bold.ttf"
+cp "$FONTS/Nunito-ExtraBold.ttf" "$GENERATED/res/font/nunito_extrabold.ttf"
 cp "$FONTS/OFL.txt" "$GENERATED/assets/NOTICE-Fonts-OFL.txt"

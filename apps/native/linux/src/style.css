@@ -276,7 +276,7 @@ button.login-action:disabled {
 }
 
 .title {
-  font-family: "Bricolage Grotesque", "Figtree", sans-serif;
+  font-family: "Nunito", "Figtree", sans-serif;
   font-size: 24px;
   font-weight: 800;
 }
@@ -2129,7 +2129,7 @@ checkbutton.broadcast {
 
 .empty-state.stage .empty-title {
   margin-top: 6px;
-  font-family: "Bricolage Grotesque", "Figtree", sans-serif;
+  font-family: "Nunito", "Figtree", sans-serif;
   font-size: 20px;
   font-weight: 800;
 }
@@ -2149,7 +2149,7 @@ checkbutton.broadcast {
 }
 
 .first-title {
-  font-family: "Bricolage Grotesque", "Figtree", sans-serif;
+  font-family: "Nunito", "Figtree", sans-serif;
   font-size: 40px;
   font-weight: 800;
   color: @caper_text;

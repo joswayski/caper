@@ -14,7 +14,7 @@ printf 'CAPER_SOURCE_REVISION = %s\n' "$revision" > "$ROOT/.build/SourceRevision
 FONT_RESOURCES="$ROOT/Resources/Fonts"
 rm -rf "$FONT_RESOURCES"
 mkdir -p "$FONT_RESOURCES"
-for file in Figtree-Regular.ttf Figtree-Medium.ttf Figtree-Bold.ttf Figtree-Black.ttf BricolageGrotesque-Bold.ttf BricolageGrotesque-ExtraBold.ttf; do
+for file in Figtree-Regular.ttf Figtree-Medium.ttf Figtree-Bold.ttf Figtree-Black.ttf Nunito-Bold.ttf Nunito-ExtraBold.ttf; do
   cp "$REPO/shared/fonts/$file" "$FONT_RESOURCES/$file"
 done
 cp "$REPO/shared/fonts/OFL.txt" "$FONT_RESOURCES/Fonts-OFL.txt"

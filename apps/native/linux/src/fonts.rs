@@ -29,12 +29,12 @@ const FONTS: [(&str, &[u8]); 6] = [
         include_bytes!("../../../../shared/fonts/Figtree-Black.ttf"),
     ),
     (
-        "BricolageGrotesque-Bold.ttf",
-        include_bytes!("../../../../shared/fonts/BricolageGrotesque-Bold.ttf"),
+        "Nunito-Bold.ttf",
+        include_bytes!("../../../../shared/fonts/Nunito-Bold.ttf"),
     ),
     (
-        "BricolageGrotesque-ExtraBold.ttf",
-        include_bytes!("../../../../shared/fonts/BricolageGrotesque-ExtraBold.ttf"),
+        "Nunito-ExtraBold.ttf",
+        include_bytes!("../../../../shared/fonts/Nunito-ExtraBold.ttf"),
     ),
 ];
 

@@ -157,14 +157,14 @@ pub struct Gfx {
     solids: std::cell::RefCell<std::collections::HashMap<u32, ID2D1SolidColorBrush>>,
 }
 
-/// Figtree (UI/chat) and Bricolage Grotesque (display), the app fonts (see shared/fonts/README.md).
+/// Figtree (UI/chat) and Nunito (display), the app fonts (see shared/fonts/README.md).
 const APP_FONTS: [&[u8]; 6] = [
     include_bytes!("../../../../shared/fonts/Figtree-Regular.ttf"),
     include_bytes!("../../../../shared/fonts/Figtree-Medium.ttf"),
     include_bytes!("../../../../shared/fonts/Figtree-Bold.ttf"),
     include_bytes!("../../../../shared/fonts/Figtree-Black.ttf"),
-    include_bytes!("../../../../shared/fonts/BricolageGrotesque-Bold.ttf"),
-    include_bytes!("../../../../shared/fonts/BricolageGrotesque-ExtraBold.ttf"),
+    include_bytes!("../../../../shared/fonts/Nunito-Bold.ttf"),
+    include_bytes!("../../../../shared/fonts/Nunito-ExtraBold.ttf"),
 ];
 
 /// The web app's wordmark, drawn with Direct2D's SVG renderer.
@@ -256,7 +256,7 @@ impl Gfx {
             };
             let display_fmt = |size: f32, weight: DWRITE_FONT_WEIGHT| {
                 dwrite.CreateTextFormat(
-                    w!("Bricolage Grotesque"),
+                    w!("Nunito"),
                     &fonts,
                     weight,
                     DWRITE_FONT_STYLE_NORMAL,

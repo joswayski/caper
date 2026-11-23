@@ -65,7 +65,7 @@ export const Route = createRootRoute({
       },
       {
         rel: "preload",
-        href: "/fonts/caper/BricolageGrotesque.latin.woff2",
+        href: "/fonts/caper/Nunito.latin.woff2",
         as: "font",
         type: "font/woff2",
         crossOrigin: "anonymous",

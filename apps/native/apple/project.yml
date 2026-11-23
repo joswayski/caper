@@ -319,7 +319,7 @@ targets:
           - CFBundleURLName: chat.caper.invite
             CFBundleURLSchemes: [caper]
         NSUserActivityTypes: [INSendMessageIntent]
-        UIAppFonts: [Figtree-Regular.ttf, Figtree-Medium.ttf, Figtree-Bold.ttf, Figtree-Black.ttf, BricolageGrotesque-Bold.ttf, BricolageGrotesque-ExtraBold.ttf]
+        UIAppFonts: [Figtree-Regular.ttf, Figtree-Medium.ttf, Figtree-Bold.ttf, Figtree-Black.ttf, Nunito-Bold.ttf, Nunito-ExtraBold.ttf]
         UIBackgroundModes: [audio]
         UILaunchScreen:
           UIColorName: ""

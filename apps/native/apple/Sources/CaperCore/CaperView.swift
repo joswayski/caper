@@ -65,8 +65,8 @@ public enum CaperTheme {
 
     public static func displayFont(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
         let name = switch weight {
-        case .black, .heavy: "BricolageGrotesque-ExtraBold"
-        default: "BricolageGrotesque-Bold"
+        case .black, .heavy: "Nunito-ExtraBold"
+        default: "Nunito-Bold"
         }
         return .custom(name, size: size)
     }
