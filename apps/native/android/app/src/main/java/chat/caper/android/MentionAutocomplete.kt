@@ -235,10 +235,14 @@ internal class MentionVisualTransformation(private val source: MentionSource) : 
         }
         val visible = projected.toAnnotatedString()
         val quotes = formatted.ranges(chat.caper.android.data.FormatStyle.QUOTE)
+        val codeRanges = formatted.ranges(chat.caper.android.data.FormatStyle.CODE) +
+            formatted.ranges(chat.caper.android.data.FormatStyle.CODE_BLOCK)
+        fun inCode(start: Int, end: Int) = codeRanges.any { start <= it.last && end > it.first }
         // Drawn text only: the newline at a quote's edge becomes a paragraph break of the same length.
         val shown = AnnotatedString(quoteBreaks(visible.text, quotes), visible.spanStyles)
-        val mentions = draftMentionSpans(visible.text, source)
-        val links = linkRanges(visible.text, mentions.map { it.start until it.end })
+        val mentions = draftMentionSpans(visible.text, source).filterNot { inCode(it.start, it.end) }
+        val links = linkRanges(visible.text, mentions.map { it.start until it.end } + codeRanges)
+            .filterNot { inCode(it.start, it.end) }
         // This map is in projected coordinates, not source coordinates. Compose the
         // maps below so hidden delimiters keep the formatter's caret affinity.
         val linkMapping = object : OffsetMapping {
@@ -296,11 +300,14 @@ internal class MentionVisualTransformation(private val source: MentionSource) : 
 internal fun highlightedMentions(text: String, mentions: List<MessageMention>): List<MentionSpan> {
     if (mentions.isEmpty()) return emptyList()
     val formatted = chat.caper.android.data.formattedMessage(text)
+    val codeRanges = formatted.ranges(chat.caper.android.data.FormatStyle.CODE) +
+        formatted.ranges(chat.caper.android.data.FormatStyle.CODE_BLOCK)
     val everyone = mentions.any { it.type == "everyone" }
     val here = mentions.any { it.type == "here" }
     val feedback = mentions.any { it.type == "feedback" }
     val users = mentions.filter { it.type == "user" }.mapNotNull { it.username?.lowercase(Locale.ROOT) }.toSet()
     return mentionSpans(formatted.text).filter { span ->
+        if (codeRanges.any { span.start <= it.last && span.end > it.first }) return@filter false
         when (span.name) {
             "everyone" -> everyone
             "here" -> here

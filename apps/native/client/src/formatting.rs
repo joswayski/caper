@@ -3,6 +3,9 @@
 //! Styles are the bits of `shared/messages/formatting.rs`.
 //! Positions are Unicode scalars unless a range says bytes.
 
+/// Fenced code blocks, language detection, and syntax highlighting.
+#[path = "../../../../shared/messages/code.rs"]
+pub mod code;
 /// Composer edits as web makes them (`composer::edit`).
 #[path = "../../../../shared/messages/composer.rs"]
 pub mod composer;
@@ -11,7 +14,7 @@ pub mod parser;
 use crate::links;
 pub use parser::runs;
 
-pub use parser::{BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
+pub use parser::{BOLD, CODE, CODE_BLOCK, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
 
 #[derive(Debug)]
 pub struct SourceRun {

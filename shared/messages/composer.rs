@@ -13,12 +13,14 @@
 
 use super::parser;
 
-pub use super::parser::{BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
+pub use super::parser::{BOLD, CODE, CODE_BLOCK, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
 
 /// Every style bit; a carried style is a set of these.
-pub const STYLES: i32 = BOLD | ITALIC | UNDERLINE | STRIKETHROUGH | SPOILER | QUOTE;
+pub const STYLES: i32 =
+    BOLD | ITALIC | UNDERLINE | STRIKETHROUGH | SPOILER | QUOTE | CODE | CODE_BLOCK;
 /// Inline styles in the order web's serializer prefers one as the outer pair
-/// when two cover the same characters.
+/// when two cover the same characters. `CODE` is handled innermost because
+/// backticks suppress nested Markdown.
 const INLINE: [i32; 5] = [BOLD, UNDERLINE, ITALIC, STRIKETHROUGH, SPOILER];
 
 /// An edit's result: the source text and selection, and `pending`, the style
@@ -97,20 +99,17 @@ fn marker(style: i32) -> String {
     m.iter().collect()
 }
 
-/// The lines of `chars` as `(start, end, quoted)`, without their newlines. A
-/// line is quoted when any of its characters is.
-fn lines(chars: &[char], styles: &[i32]) -> Vec<(usize, usize, bool)> {
+/// The lines of `chars` as `(start, end, quoted, code_block)`, without their newlines.
+fn lines(chars: &[char], styles: &[i32]) -> Vec<(usize, usize, bool, bool)> {
     let mut out = Vec::new();
     let mut start = 0;
     loop {
         let end = (start..chars.len())
             .find(|i| chars[*i] == '\n')
             .unwrap_or(chars.len());
-        out.push((
-            start,
-            end,
-            styles[start..end].iter().any(|s| s & QUOTE != 0),
-        ));
+        let code_block = styles[start..end].iter().any(|s| s & CODE_BLOCK != 0);
+        let quoted = !code_block && styles[start..end].iter().any(|s| s & QUOTE != 0);
+        out.push((start, end, quoted, code_block));
         if end == chars.len() {
             return out;
         }
@@ -120,19 +119,22 @@ fn lines(chars: &[char], styles: &[i32]) -> Vec<(usize, usize, bool)> {
 
 /// Web's `composerEncoding`: the source for styled characters, each
 /// character's source position, and the delimiters written. Quoted lines are
-/// encoded alone after `> `; consecutive unquoted lines together. Among
-/// inline styles the longer is the outer pair; whitespace at a style's edge
-/// goes outside its markers.
+/// encoded alone after `> `; fenced code block lines stay literal; consecutive
+/// unquoted lines together. Among inline styles the longer is the outer pair
+/// (with `CODE` always innermost); whitespace at a style's edge goes outside
+/// its markers.
 fn encode(chars: &[char], styles: &[i32]) -> (String, Vec<usize>, Vec<Delimiter>) {
     enum Token {
         Char(usize),
-        Marker(i32, usize, usize),
+        Marker(i32, usize, usize, bool),
     }
+    let is_word = |ch: char| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@');
     fn write(
         chars: &[char],
         styles: &[i32],
         range: std::ops::Range<usize>,
         removed: i32,
+        is_word: &impl Fn(char) -> bool,
     ) -> Vec<Token> {
         let style = |index: usize| styles[index] & !removed;
         let mut out = Vec::new();
@@ -153,8 +155,8 @@ fn encode(chars: &[char], styles: &[i32]) -> (String, Vec<usize>, Vec<Delimiter>
                 .filter(|bit| style(index) & bit != 0)
                 .map(|bit| (bit, end_of(bit)))
                 .reduce(|best, next| if next.1 > best.1 { next } else { best })
-                .unwrap();
-            let inner = write(chars, styles, index..end, removed | bit);
+                .unwrap_or_else(|| (CODE, end_of(CODE)));
+            let inner = write(chars, styles, index..end, removed | bit, is_word);
             let blank = |token: &Token| matches!(token, Token::Char(i) if space(chars[*i]));
             let mut start = 0;
             let mut limit = inner.len();
@@ -164,12 +166,36 @@ fn encode(chars: &[char], styles: &[i32]) -> (String, Vec<usize>, Vec<Delimiter>
             while limit > start && blank(&inner[limit - 1]) {
                 limit -= 1;
             }
+            let star_italic = if bit == ITALIC && start < limit {
+                let first_char = inner[start..limit].iter().find_map(|t| match t {
+                    Token::Char(i) => Some(*i),
+                    _ => None,
+                });
+                let last_char = inner[start..limit].iter().rev().find_map(|t| match t {
+                    Token::Char(i) => Some(*i),
+                    _ => None,
+                });
+                let non_underscore = (BOLD | STRIKETHROUGH | SPOILER | CODE) & !removed;
+                let left_word = first_char.is_some_and(|i| {
+                    i > range.start
+                        && is_word(chars[i - 1])
+                        && (styles[i - 1] & non_underscore) == 0
+                });
+                let right_word = last_char.is_some_and(|i| {
+                    i + 1 < range.end
+                        && is_word(chars[i + 1])
+                        && (styles[i + 1] & non_underscore) == 0
+                });
+                left_word || right_word
+            } else {
+                false
+            };
             let mut inner = inner.into_iter();
             out.extend(inner.by_ref().take(start));
             if start < limit {
-                out.push(Token::Marker(bit, index, end));
+                out.push(Token::Marker(bit, index, end, star_italic));
                 out.extend(inner.by_ref().take(limit - start));
-                out.push(Token::Marker(bit, index, end));
+                out.push(Token::Marker(bit, index, end, star_italic));
             }
             out.extend(inner);
             index = end;
@@ -180,17 +206,34 @@ fn encode(chars: &[char], styles: &[i32]) -> (String, Vec<usize>, Vec<Delimiter>
     let mut tokens = Vec::new();
     let mut index = 0;
     while index < lines.len() {
-        let (start, end, quoted) = lines[index];
-        if quoted {
-            tokens.push(Token::Marker(QUOTE, start, end));
-            tokens.extend(write(chars, styles, start..end, QUOTE));
+        let (start, end, quoted, code_block) = lines[index];
+        if code_block {
+            for i in start..end {
+                tokens.push(Token::Char(i));
+            }
+            index += 1;
+        } else if quoted {
+            tokens.push(Token::Marker(QUOTE, start, end, false));
+            tokens.extend(write(
+                chars,
+                styles,
+                start..end,
+                QUOTE | CODE_BLOCK,
+                &is_word,
+            ));
             index += 1;
         } else {
             let mut last = index;
-            while last + 1 < lines.len() && !lines[last + 1].2 {
+            while last + 1 < lines.len() && !lines[last + 1].2 && !lines[last + 1].3 {
                 last += 1;
             }
-            tokens.extend(write(chars, styles, start..lines[last].1, QUOTE));
+            tokens.extend(write(
+                chars,
+                styles,
+                start..lines[last].1,
+                QUOTE | CODE_BLOCK,
+                &is_word,
+            ));
             index = last + 1;
         }
         if index < lines.len() {
@@ -208,14 +251,18 @@ fn encode(chars: &[char], styles: &[i32]) -> (String, Vec<usize>, Vec<Delimiter>
                 source.push(chars[index]);
                 length += 1;
             }
-            Token::Marker(style, from, to) => {
+            Token::Marker(style, from, to, star_italic) => {
                 delimiters.push(Delimiter {
                     style,
                     from,
                     to,
                     position: length,
                 });
-                let marker = marker(style);
+                let marker = if star_italic {
+                    "*".to_owned()
+                } else {
+                    marker(style)
+                };
                 source.push_str(&marker);
                 length += marker.chars().count();
             }
@@ -247,6 +294,11 @@ fn typed(previous: &str, next: &str, start: usize, end: usize, continuing: i32) 
     } else {
         old.styles.first().copied().unwrap_or(0)
     };
+    let style = if style & CODE_BLOCK != 0 {
+        CODE_BLOCK
+    } else {
+        style
+    };
     let mut chars = old.chars;
     let mut styles = old.styles;
     chars.splice(caret..caret, after[at..start].iter().copied());
@@ -256,7 +308,7 @@ fn typed(previous: &str, next: &str, start: usize, end: usize, continuing: i32) 
     for segment in super::links::segments(&chars.iter().collect::<String>()) {
         let limit = offset + segment.text.chars().count();
         if segment.href.is_some() {
-            for bit in [BOLD, ITALIC, UNDERLINE, STRIKETHROUGH, SPOILER, QUOTE] {
+            for bit in [BOLD, ITALIC, UNDERLINE, STRIKETHROUGH, SPOILER, QUOTE, CODE] {
                 let marked = styles[offset..limit]
                     .iter()
                     .filter(|s| **s & bit != 0)
@@ -374,12 +426,113 @@ pub fn toggle(text: &str, start: usize, end: usize, style: i32) -> Option<(Strin
         }
         offset = limit;
     }
+    if style == CODE_BLOCK {
+        let all_code_block = styles[from..to].iter().all(|s| s & CODE_BLOCK != 0);
+        let any_code_block = styles[from..to].iter().any(|s| s & CODE_BLOCK != 0);
+        if any_code_block && !all_code_block {
+            return None;
+        }
+        let mut new_chars = chars.clone();
+        let mut new_styles = styles.clone();
+        let (sel_from, sel_to): (usize, usize);
+        if all_code_block {
+            let mut blk_start = from;
+            while blk_start > 0 && styles[blk_start - 1] & CODE_BLOCK != 0 {
+                blk_start -= 1;
+            }
+            let mut blk_end = to;
+            while blk_end < styles.len() && styles[blk_end] & CODE_BLOCK != 0 {
+                blk_end += 1;
+            }
+            let (inner_start, inner_end) =
+                if let Some((a, b)) = parser::single_line_fence(&chars, blk_start, blk_end) {
+                    (a, b)
+                } else {
+                    let first_nl = (blk_start..blk_end).find(|&i| chars[i] == '\n')?;
+                    let last_nl = (blk_start..blk_end).rfind(|&i| chars[i] == '\n')?;
+                    if first_nl >= last_nl {
+                        return None;
+                    }
+                    (first_nl + 1, last_nl)
+                };
+            let body: Vec<char> = chars[inner_start..inner_end].to_vec();
+            if body.is_empty() {
+                return None;
+            }
+            let body_len = body.len();
+            new_chars.splice(blk_start..blk_end, body);
+            new_styles.splice(blk_start..blk_end, std::iter::repeat_n(0, body_len));
+            let clamped_from = from.clamp(inner_start, inner_end) - inner_start;
+            let clamped_to = to.clamp(inner_start, inner_end) - inner_start;
+            if clamped_from < clamped_to {
+                sel_from = blk_start + clamped_from;
+                sel_to = blk_start + clamped_to;
+            } else {
+                sel_from = blk_start;
+                sel_to = blk_start + body_len;
+            }
+        } else {
+            if chars[from..to].iter().all(|c| space(*c)) {
+                return None;
+            }
+            let need_leading_nl = from > 0 && chars[from - 1] != '\n';
+            let need_trailing_nl = to < chars.len() && chars[to] != '\n';
+            let mut prefix_chars: Vec<char> = Vec::new();
+            let mut prefix_styles: Vec<i32> = Vec::new();
+            if need_leading_nl {
+                prefix_chars.push('\n');
+                prefix_styles.push(0);
+            }
+            for ch in "```\n".chars() {
+                prefix_chars.push(ch);
+                prefix_styles.push(CODE_BLOCK);
+            }
+            let mut suffix_chars: Vec<char> = Vec::new();
+            let mut suffix_styles: Vec<i32> = Vec::new();
+            for ch in "\n```".chars() {
+                suffix_chars.push(ch);
+                suffix_styles.push(CODE_BLOCK);
+            }
+            if need_trailing_nl {
+                suffix_chars.push('\n');
+                suffix_styles.push(0);
+            }
+            let prefix_len = prefix_chars.len();
+            let body_len = to - from;
+            for s in &mut new_styles[from..to] {
+                *s = CODE_BLOCK;
+            }
+            new_chars.splice(to..to, suffix_chars);
+            new_styles.splice(to..to, suffix_styles);
+            new_chars.splice(from..from, prefix_chars);
+            new_styles.splice(from..from, prefix_styles);
+            sel_from = from + prefix_len;
+            sel_to = sel_from + body_len;
+        }
+        let (source, _, _) = encode(&new_chars, &new_styles);
+        let parsed = visible(&source);
+        if source.chars().count() > 4000 || parsed.chars != new_chars || parsed.styles != new_styles
+        {
+            return None;
+        }
+        return Some((
+            source,
+            parsed.sources[sel_from],
+            parsed.sources[sel_to - 1] + 1,
+        ));
+    }
+    if styles[from..to].iter().any(|s| s & CODE_BLOCK != 0) {
+        return None;
+    }
     if style == QUOTE {
         let lines = lines(&chars, &styles);
         let touched: Vec<usize> = (0..lines.len())
             .filter(|line| {
-                let (start, end, _) = lines[*line];
-                start < to && end >= from && !chars[start..end].iter().all(|c| space(*c))
+                let (start, end, _, code_block) = lines[*line];
+                !code_block
+                    && start < to
+                    && end >= from
+                    && !chars[start..end].iter().all(|c| space(*c))
             })
             .collect();
         if touched.is_empty() {
@@ -388,7 +541,7 @@ pub fn toggle(text: &str, start: usize, end: usize, style: i32) -> Option<(Strin
         let add = !touched.iter().any(|line| lines[*line].2);
         let mut quoted: Vec<bool> = lines.iter().map(|line| line.2).collect();
         for line in touched {
-            let (start, end, _) = lines[line];
+            let (start, end, _, _) = lines[line];
             quoted[line] = add;
             for s in &mut styles[start..end] {
                 *s = if add { *s | QUOTE } else { *s & !QUOTE };
@@ -425,6 +578,9 @@ pub fn toggle(text: &str, start: usize, end: usize, style: i32) -> Option<(Strin
             if from + leading < to {
                 a += leading;
                 b -= trailing;
+            }
+            if style == CODE && chars[a..b].contains(&'\n') {
+                return None;
             }
             if a < b {
                 styles[a..b].iter_mut().for_each(|s| *s |= style);

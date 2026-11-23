@@ -195,6 +195,11 @@ extension MessageFormatting {
                     span.backgroundColor = CaperTheme.border
                     part = Text(span)
                     if segment.highlighted { part = part.fontWeight(.medium) }
+                } else if run.code {
+                    var span = AttributedString(text)
+                    span.font = .system(size: 13, design: .monospaced)
+                    span.backgroundColor = CaperTheme.raised
+                    part = Text(span)
                 } else if segment.highlighted {
                     var span = AttributedString(text)
                     span.foregroundColor = CaperTheme.text

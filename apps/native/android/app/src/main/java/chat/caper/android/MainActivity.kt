@@ -3781,33 +3781,79 @@ internal const val DELETED_REPLY = "Original message was deleted."
             // A file-only message has empty text: show just its files.
             if (deleted) Text(DELETED_MESSAGE, color = TextMuted, fontSize = 14.sp, lineHeight = 21.sp, fontStyle = FontStyle.Italic)
             else if (text.isNotEmpty() || inlineEdited) {
+                val parsedBlocks = remember(text) { chat.caper.android.data.parseMessageBlocks(text) }
+                val hasCodeBlocks = remember(parsedBlocks) { parsedBlocks.any { it is chat.caper.android.data.ParsedMessageBlock.Code } }
                 // Pending messages have emphasis but no mention or link actions.
                 val links = remember(text, mentions, pending) { if (pending) emptyList() else messageLinkRanges(text, mentions.map { it.start until it.end }) }
                 // Spoilers this row has revealed, by index; tapping one shows it until the row leaves.
                 var revealed by remember(text) { mutableStateOf(emptySet<Int>()) }
-                val blocks = remember(text) { chat.caper.android.data.formattedMessage(text).runs.any { it.spoiler || it.quote } }
-                if (mentions.isEmpty() && links.isEmpty() && !inlineEdited && !blocks) Text(remember(text) { messageText(text, emptyList()) }, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
-                else {
-                    // Pills and links are link annotations: their tap is consumed before the row's long-press handler sees it.
+                if (hasCodeBlocks) {
                     val open by rememberUpdatedState(openMention)
                     val history by rememberUpdatedState(openHistory)
                     val uriHandler = LocalUriHandler.current
                     val linked = if (openMention == null) null else entries
-                    val annotated = remember(text, mentions, linked, links, inlineEdited, uriHandler, revealed) {
-                        messageText(text, mentions, linked, links, { user -> open?.invoke(user) }, { openExternalLink(uriHandler, it) }, if (inlineEdited) ({ history() }) else null,
-                            revealed) { revealed = revealed + it }
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        parsedBlocks.forEachIndexed { idx, block ->
+                            when (block) {
+                                is chat.caper.android.data.ParsedMessageBlock.Code -> {
+                                    CodeBlockCard(block.code, block.languageId)
+                                }
+                                is chat.caper.android.data.ParsedMessageBlock.Prose -> {
+                                    val isLast = idx == parsedBlocks.lastIndex
+                                    val chunkMentions = mentions
+                                        .filter { it.start >= block.start && it.end <= block.end }
+                                        .map { it.copy(start = it.start - block.start, end = it.end - block.start) }
+                                    val chunkLinks = links
+                                        .filter { it.start >= block.start && it.end <= block.end }
+                                        .map { it.copy(start = it.start - block.start, end = it.end - block.start) }
+                                    val annotated = remember(block.text, chunkMentions, linked, chunkLinks, inlineEdited && isLast, uriHandler, revealed) {
+                                        messageText(
+                                            block.text, chunkMentions, linked, chunkLinks,
+                                            { user -> open?.invoke(user) }, { openExternalLink(uriHandler, it) },
+                                            if (inlineEdited && isLast) ({ history() }) else null,
+                                            revealed,
+                                        ) { revealed = revealed + it }
+                                    }
+                                    MessageLinkText(
+                                        annotated,
+                                        color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
+                                    )
+                                }
+                            }
+                        }
+                        if (inlineEdited && parsedBlocks.lastOrNull() is chat.caper.android.data.ParsedMessageBlock.Code) {
+                            Text(
+                                "(edited)",
+                                Modifier.clickable(onClickLabel = "Open message history", onClick = openHistory),
+                                color = TextMuted, fontSize = 10.sp,
+                            )
+                        }
                     }
-                    // Nothing inside a hidden spoiler can be opened, from the text or from TalkBack.
-                    val people = linked?.let { mentions.filterNot { inHiddenSpoiler(text, revealed, it.start, it.end) }.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
-                    val shownLinks = links.filterNot { inHiddenSpoiler(text, revealed, it.start, it.end) }
-                    // TalkBack also reaches each pill, link and the inline "(edited)" through labelled custom actions.
-                    MessageLinkText(
-                        annotated,
-                        color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
-                        actions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } } +
-                            shownLinks.map { link -> CustomAccessibilityAction("Open link ${text.substring(link.start, link.end)}") { openExternalLink(uriHandler, link.href); true } } +
-                            listOfNotNull(if (inlineEdited) CustomAccessibilityAction("Open message history") { history(); true } else null),
-                    )
+                } else {
+                    val blocks = remember(text) { chat.caper.android.data.formattedMessage(text).runs.any { it.spoiler || it.quote } }
+                    if (mentions.isEmpty() && links.isEmpty() && !inlineEdited && !blocks) Text(remember(text) { messageText(text, emptyList()) }, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+                    else {
+                        // Pills and links are link annotations: their tap is consumed before the row's long-press handler sees it.
+                        val open by rememberUpdatedState(openMention)
+                        val history by rememberUpdatedState(openHistory)
+                        val uriHandler = LocalUriHandler.current
+                        val linked = if (openMention == null) null else entries
+                        val annotated = remember(text, mentions, linked, links, inlineEdited, uriHandler, revealed) {
+                            messageText(text, mentions, linked, links, { user -> open?.invoke(user) }, { openExternalLink(uriHandler, it) }, if (inlineEdited) ({ history() }) else null,
+                                revealed) { revealed = revealed + it }
+                        }
+                        // Nothing inside a hidden spoiler can be opened, from the text or from TalkBack.
+                        val people = linked?.let { mentions.filterNot { inHiddenSpoiler(text, revealed, it.start, it.end) }.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
+                        val shownLinks = links.filterNot { inHiddenSpoiler(text, revealed, it.start, it.end) }
+                        // TalkBack also reaches each pill, link and the inline "(edited)" through labelled custom actions.
+                        MessageLinkText(
+                            annotated,
+                            color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
+                            actions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } } +
+                                shownLinks.map { link -> CustomAccessibilityAction("Open link ${text.substring(link.start, link.end)}") { openExternalLink(uriHandler, link.href); true } } +
+                                listOfNotNull(if (inlineEdited) CustomAccessibilityAction("Open message history") { history(); true } else null),
+                        )
+                    }
                 }
             }
             if (!deleted) gif?.let { MessageGif(it) }

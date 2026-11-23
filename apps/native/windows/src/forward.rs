@@ -585,11 +585,11 @@ impl Dialog {
             if formatting > 0.0 {
                 for (k, style) in Style::ALL.into_iter().enumerate() {
                     // Keep the toolbar within even the narrowest dialog.
-                    let bw = ((inner - 12.0) / 6.0).min(36.0);
+                    let bw = ((inner - 12.0) / Style::ALL.len() as f32).min(36.0);
                     parts.push((
                         Part::Forward(Control::Format(style)),
                         (
-                            cx + 16.0 + k as f32 * bw + if k >= 4 { 12.0 } else { 0.0 },
+                            cx + 16.0 + k as f32 * bw + if k >= 6 { 12.0 } else { 0.0 },
                             cy + ch - 116.0 - formatting,
                             bw,
                             36.0,

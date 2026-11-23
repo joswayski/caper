@@ -14,12 +14,16 @@ import {
   normalizeComposer,
   sourceOffset,
 } from "../chat/rich-text.ts";
+import { detectLanguage, highlightCode, languageFromTag, parseMessageBlocks } from "../chat/code.ts";
 import { linkSegments } from "../chat/links.ts";
 import LinkedText from "../chat/LinkedText.tsx";
 import { MessageText } from "../chat/MessageRow.tsx";
 
 const shared = JSON.parse(
   readFileSync(new URL("../../../../shared/messages/formatting-cases.json", import.meta.url), "utf8"),
+);
+const sharedCode = JSON.parse(
+  readFileSync(new URL("../../../../shared/messages/code-cases.json", import.meta.url), "utf8"),
 );
 
 // Fixture runs list the styles they have; the others are false.
@@ -137,7 +141,7 @@ test("editing a style boundary never exposes generated Markdown as user text", (
   let state = EditorState.create({ doc: composerDocument("a _word_ **safe**") });
   state = state.apply(normalizeComposer(state.tr.delete(1, 2)));
   assert.equal(state.doc.textContent, "aword safe");
-  assert.equal(composerSource(state.doc), "aword **safe**", "only unrepresentable emphasis is dropped");
+  assert.equal(composerSource(state.doc), "a*word* **safe**", "mid-word italics switch cleanly to * delimiters");
   state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 1)));
   state = state.apply(normalizeComposer(state.tr.insertText("🙂")));
   assert.equal(state.doc.textContent, "a🙂word safe");
@@ -152,6 +156,10 @@ test("selection formatting toggles without losing adjacent text or Unicode", () 
     ["a **word** z", 2, 6, "italic", "a **_word_** z"],
     [" word \n", 0, 7, "italic", " _word_ \n"],
     [" \t", 0, 2, "bold", " \t"],
+    ["support them all", 4, 16, "italic", "supp*ort them all*"],
+    ["support them all", 4, 16, "underline", "supp__ort them all__"],
+    ["run echo hi", 4, 11, "code", "run `echo hi`"],
+    ["run `echo hi`", 4, 11, "code", "run echo hi"],
   ] as const) {
     let state = EditorState.create({ doc: composerDocument(source) });
     state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, start, end)));
@@ -160,6 +168,63 @@ test("selection formatting toggles without losing adjacent text or Unicode", () 
     });
     assert.equal(composerSource(state.doc), expected);
     assert.deepEqual([state.selection.from, state.selection.to], [start, end]);
+  }
+});
+
+test("code block toggle wraps and unwraps selections cleanly", () => {
+  let state = EditorState.create({ doc: composerDocument("let x = 1;") });
+  state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 0, 10)));
+  assert.equal(
+    formatComposer("codeBlock")(state, (tr) => {
+      state = state.apply(tr);
+    }),
+    true,
+  );
+  assert.equal(composerSource(state.doc), "```\nlet x = 1;\n```");
+  assert.equal(
+    formatComposer("codeBlock")(state, (tr) => {
+      state = state.apply(tr);
+    }),
+    true,
+  );
+  assert.equal(composerSource(state.doc), "let x = 1;");
+});
+
+test("code block parsing, language detection, and syntax highlighting match shared cases", () => {
+  for (const c of sharedCode.blocks) {
+    const parsed = parseMessageBlocks(c.message);
+    assert.equal(parsed.length, c.blocks.length, c.message);
+    parsed.forEach((actual, index) => {
+      const expected = c.blocks[index];
+      assert.equal(actual.kind, expected.kind, c.message);
+      if (actual.kind === "prose") {
+        assert.equal(actual.text, expected.text, c.message);
+      } else {
+        assert.equal(actual.code, expected.text, c.message);
+        if (expected.language !== undefined) assert.equal(actual.language, expected.language, c.message);
+        if (expected.detected !== undefined) assert.equal(actual.detected, expected.detected, c.message);
+      }
+    });
+  }
+  for (const c of sharedCode.detect) {
+    assert.equal(detectLanguage(c.code), c.language, c.code);
+  }
+  for (const c of sharedCode.highlight) {
+    const lang = languageFromTag(c.language) ?? "plain";
+    const spans = highlightCode(c.code, lang);
+    let pos = 0;
+    for (const span of spans) {
+      assert.equal(span.start, pos);
+      assert.ok(span.end > span.start);
+      pos = span.end;
+    }
+    assert.equal(pos, c.code.length);
+    for (const expected of c.must_include) {
+      assert.ok(
+        spans.some((s) => c.code.slice(s.start, s.end) === expected.text && s.kind === expected.kind),
+        `missing ${JSON.stringify(expected)}`,
+      );
+    }
   }
 });
 
@@ -174,6 +239,36 @@ test("sent emphasis composes with safe links and never interprets HTML", () => {
   assert.equal(document.querySelector("body > em")?.textContent, "italics");
   assert.equal(document.querySelector("img"), null);
   assert.equal(document.querySelector("strong a")?.getAttribute("href"), "https://example.com/a_b_c");
+});
+
+test("inline code and fenced code blocks suppress links and mentions and highlight syntax", () => {
+  const html = renderToStaticMarkup(
+    <MessageText
+      message={{
+        id: "m-code",
+        channelId: "c",
+        seq: "2",
+        createdAt: "",
+        clientMessageId: "y",
+        author: { id: "author", name: "Author", isGuest: false },
+        content: {
+          version: 1,
+          type: "text",
+          text: "Use `https://example.com @alice`:\n```rust\npub fn hi() {}\n```",
+          mentions: [{ type: "user", id: "u", username: "alice" }],
+        },
+      }}
+      mentionNames={new Map()}
+      actions={{ openMention: () => {} }}
+    />,
+  );
+  const document = new Window().document;
+  document.body.innerHTML = html;
+  assert.equal(document.querySelector("code.chat-inline-code")?.textContent, "https://example.com @alice");
+  assert.equal(document.querySelector("a"), null);
+  assert.equal(document.querySelector("button.chat-mention"), null);
+  assert.equal(document.querySelector(".chat-code-lang")?.textContent, "Rust");
+  assert.equal(document.querySelector(".chat-code-block .tok-keyword")?.textContent, "pub");
 });
 
 test("emphasis inside a mention keeps one profile control and cannot create a mention boundary", () => {

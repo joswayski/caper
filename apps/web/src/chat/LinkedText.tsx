@@ -1,19 +1,28 @@
+import { Fragment } from "react";
 import { Link } from "lucide-react";
 import { linkSegments } from "./links.ts";
-import FormattedText, { QuoteBlock, quoteBlocks } from "./FormattedText.tsx";
+import FormattedText, { CodeBlockView, QuoteBlock, quoteBlocks } from "./FormattedText.tsx";
 import { formattedRuns } from "./formatting.ts";
+import { parseMessageBlocks } from "./code.ts";
 
 /** Message formatting and safe autolinks; mention-aware callers format their outer runs. */
 export default function LinkedText({ text, formatted = true }: { text: string; formatted?: boolean }) {
   if (formatted) {
-    const runs = formattedRuns(text);
-    return quoteBlocks(runs).map((block) => (
-      <QuoteBlock key={block.start} quote={block.quote}>
-        <FormattedText runs={runs} range={block}>
-          {(part) => <LinkedText text={part} formatted={false} />}
-        </FormattedText>
-      </QuoteBlock>
-    ));
+    return parseMessageBlocks(text).map((block) => {
+      if (block.kind === "code") return <CodeBlockView key={block.start} block={block} />;
+      const runs = formattedRuns(block.text);
+      return (
+        <Fragment key={block.start}>
+          {quoteBlocks(runs).map((qblock) => (
+            <QuoteBlock key={qblock.start} quote={qblock.quote}>
+              <FormattedText runs={runs} range={qblock}>
+                {(part) => <LinkedText text={part} formatted={false} />}
+              </FormattedText>
+            </QuoteBlock>
+          ))}
+        </Fragment>
+      );
+    });
   }
   return (
     <>

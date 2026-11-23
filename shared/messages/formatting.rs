@@ -1,6 +1,7 @@
 //! Message formatting shared by the API's mention resolver and the native
 //! clients: Discord's inline `**bold**`, `_italic_`, `__underline__`,
-//! `~~strikethrough~~` and `||spoiler||`, and `> ` quoted lines.
+//! `~~strikethrough~~`, `||spoiler||`, `` `code` ``, `> ` quoted lines, and
+//! fenced ```` ``` ```` code blocks.
 use crate::links;
 
 /// Style bits of a run. Hosts receive these bits through the mobile bridge.
@@ -12,15 +13,23 @@ pub const SPOILER: i32 = 16;
 /// A whole `> ` line. The newline between two quoted lines is quoted too, so
 /// consecutive quoted characters form one block.
 pub const QUOTE: i32 = 32;
+/// Inline code (`` `...` ``). Markdown delimiters inside stay literal.
+pub const CODE: i32 = 64;
+/// Fenced code block (```` ```[lang]\n...\n``` ```` or single-line ```` ```...``` ````).
+/// Fence characters stay in the visible stream so composers preserve language tags;
+/// message renderers split code blocks with `code::parse_blocks`.
+pub const CODE_BLOCK: i32 = 128;
 
 /// Inline delimiters in the order they are tried at one position; `__` before
-/// `_` so `___x___` is underlined italics.
-pub const MARKERS: [(i32, &[char]); 5] = [
+/// `_` so `___x___` is underlined italics, and `**` before `*`.
+pub const MARKERS: [(i32, &[char]); 7] = [
     (BOLD, &['*', '*']),
     (UNDERLINE, &['_', '_']),
     (STRIKETHROUGH, &['~', '~']),
     (SPOILER, &['|', '|']),
     (ITALIC, &['_']),
+    (ITALIC, &['*']),
+    (CODE, &['`']),
 ];
 
 #[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -33,6 +42,9 @@ pub struct Run {
     pub strikethrough: bool,
     pub spoiler: bool,
     pub quote: bool,
+    pub code: bool,
+    #[serde(rename = "codeBlock")]
+    pub code_block: bool,
 }
 
 impl Run {
@@ -44,6 +56,8 @@ impl Run {
             (self.strikethrough, STRIKETHROUGH),
             (self.spoiler, SPOILER),
             (self.quote, QUOTE),
+            (self.code, CODE),
+            (self.code_block, CODE_BLOCK),
         ]
         .into_iter()
         .filter(|(on, _)| *on)
@@ -66,6 +80,8 @@ pub fn runs(text: &str) -> Vec<Run> {
                 strikethrough: style & STRIKETHROUGH != 0,
                 spoiler: style & SPOILER != 0,
                 quote: style & QUOTE != 0,
+                code: style & CODE != 0,
+                code_block: style & CODE_BLOCK != 0,
             });
         }
     });
@@ -84,6 +100,80 @@ pub fn quoted_line(c: &[char], start: usize, end: usize) -> bool {
         && c[start] == '>'
         && c[start + 1] == ' '
         && !c[start + 2..end].iter().all(|c| whitespace(*c))
+}
+
+/// Whether a fenced code block opening info string is valid (optional language
+/// tag containing ASCII identifier/symbol chars and optional surrounding spaces).
+pub fn valid_fence_info(c: &[char], start: usize, end: usize) -> bool {
+    let mut a = start;
+    let mut b = end;
+    while a < b && whitespace(c[a]) {
+        a += 1;
+    }
+    while b > a && whitespace(c[b - 1]) {
+        b -= 1;
+    }
+    c[a..b]
+        .iter()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '+' | '#' | '.' | '-'))
+}
+
+/// Whether `c[start..end]` is a closing fence line: ```` ``` ```` + optional whitespace.
+pub fn is_closing_fence(c: &[char], start: usize, end: usize) -> bool {
+    end >= start + 3
+        && c[start] == '`'
+        && c[start + 1] == '`'
+        && c[start + 2] == '`'
+        && c[start + 3..end].iter().all(|ch| whitespace(*ch))
+}
+
+/// Whether `c[start..end]` is a single-line fenced block: ```` ```code``` ````
+/// (with optional trailing spaces, non-blank inner content, and no extra ```` ``` ````).
+pub fn single_line_fence(c: &[char], start: usize, end: usize) -> Option<(usize, usize)> {
+    let mut trim_end = end;
+    while trim_end > start && whitespace(c[trim_end - 1]) {
+        trim_end -= 1;
+    }
+    if trim_end <= start + 6 {
+        return None;
+    }
+    if c[start..start + 3] != ['`', '`', '`'] || c[trim_end - 3..trim_end] != ['`', '`', '`'] {
+        return None;
+    }
+    let inner_start = start + 3;
+    let inner_end = trim_end - 3;
+    if c[inner_start] == '`' || c[inner_end - 1] == '`' {
+        return None;
+    }
+    if c[inner_start..inner_end].contains(&'\n') {
+        return None;
+    }
+    if c[inner_start..inner_end].iter().all(|ch| whitespace(*ch)) {
+        return None;
+    }
+    if c[inner_start..inner_end]
+        .windows(3)
+        .any(|w| w == ['`', '`', '`'])
+    {
+        return None;
+    }
+    Some((inner_start, inner_end))
+}
+
+/// Finds the closing line index for a fenced code block starting at `lines[index]`,
+/// returning `Some(close_index)` (`close_index == index` for single-line fences).
+pub fn fenced_block_end(c: &[char], lines: &[(usize, usize)], index: usize) -> Option<usize> {
+    let (start, end) = lines[index];
+    if end < start + 3 || c[start..start + 3] != ['`', '`', '`'] {
+        return None;
+    }
+    if single_line_fence(c, start, end).is_some() {
+        return Some(index);
+    }
+    if !valid_fence_info(c, start + 3, end) {
+        return None;
+    }
+    ((index + 1)..lines.len()).find(|&j| is_closing_fence(c, lines[j].0, lines[j].1))
 }
 
 /// Visits visible source byte ranges in order with their style bits. Gaps
@@ -108,36 +198,59 @@ pub fn visit_runs(text: &str, mut emit: impl FnMut(std::ops::Range<usize>, i32))
             emit(offsets[start]..offsets[end], style);
         }
     };
-    // Unquoted lines parse together, so emphasis may span them; each quoted
-    // line parses alone.
     let n = chars.len();
-    let mut lines = Vec::new();
+    let mut raw_lines = Vec::new();
     let mut start = 0;
     loop {
         let end = (start..n).find(|i| chars[*i] == '\n').unwrap_or(n);
-        lines.push((start, end, quoted_line(&chars, start, end)));
+        raw_lines.push((start, end));
         if end == n {
             break;
         }
         start = end + 1;
     }
+    // Tag lines that belong to fenced code blocks first so their contents
+    // never participate in quote or inline Markdown parsing.
+    let mut is_fence = vec![false; raw_lines.len()];
+    let mut idx = 0;
+    while idx < raw_lines.len() {
+        if let Some(close) = fenced_block_end(&chars, &raw_lines, idx) {
+            for flag in &mut is_fence[idx..=close] {
+                *flag = true;
+            }
+            idx = close + 1;
+        } else {
+            idx += 1;
+        }
+    }
+    let lines: Vec<(usize, usize, bool, bool)> = raw_lines
+        .iter()
+        .enumerate()
+        .map(|(i, &(s, e))| (s, e, !is_fence[i] && quoted_line(&chars, s, e), is_fence[i]))
+        .collect();
+    // Unquoted non-fence lines parse together, so emphasis may span them; each
+    // quoted line parses alone; each fenced block emits verbatim with CODE_BLOCK.
     let mut index = 0;
     while index < lines.len() {
-        let (start, end, quoted) = lines[index];
-        if quoted {
+        let (start, end, quoted, fence) = lines[index];
+        if fence {
+            let close = fenced_block_end(&chars, &raw_lines, index).unwrap_or(index);
+            out(start, lines[close].1, CODE_BLOCK);
+            index = close + 1;
+        } else if quoted {
             parse(&chars, &protected, start + 2, end, QUOTE, &mut out);
             index += 1;
         } else {
             let mut last = index;
-            while last + 1 < lines.len() && !lines[last + 1].2 {
+            while last + 1 < lines.len() && !lines[last + 1].2 && !lines[last + 1].3 {
                 last += 1;
             }
             parse(&chars, &protected, start, lines[last].1, 0, &mut out);
             index = last + 1;
         }
-        let (_, end, quoted) = lines[index - 1];
-        if let Some(&(_, _, next)) = lines.get(index) {
-            out(end, end + 1, if quoted && next { QUOTE } else { 0 });
+        let (_, end, quoted, _) = lines[index - 1];
+        if let Some(&(_, _, next_quoted, _)) = lines.get(index) {
+            out(end, end + 1, if quoted && next_quoted { QUOTE } else { 0 });
         }
     }
 }
@@ -150,15 +263,15 @@ fn marker(c: &[char], protected: &[bool], i: usize, m: &[char]) -> bool {
     c.get(i..i + m.len()) == Some(m)
         && !protected[i]
         && c[..i].iter().rev().take_while(|c| **c == '\\').count() % 2 == 0
-        // `***`, `~~~` and `|||` stay literal; underscores follow word rules.
-        && (m.len() != 2
-            || m[0] == '_'
-            || (c.get(i.wrapping_sub(1)) != Some(&m[0]) && c.get(i + 2) != Some(&m[0])))
+        // `***`, `~~~`, `|||` and `` `` `` stay literal; underscores follow word rules.
+        && (m[0] == '_'
+            || (c.get(i.wrapping_sub(1)) != Some(&m[0]) && c.get(i + m.len()) != Some(&m[0])))
 }
 
 /// Parses `c[start..end]`, already styled `style`, emitting visible ranges.
 /// Underscore delimiters may not touch a word character inside the range; a
-/// delimiter just outside it belongs to an enclosing style.
+/// delimiter just outside it belongs to an enclosing style. Inline code
+/// (`` `...` ``) does not span newlines and suppresses nested Markdown.
 fn parse(
     c: &[char],
     p: &[bool],
@@ -172,26 +285,36 @@ fn parse(
     'scan: while i < end {
         for (bit, m) in MARKERS {
             let len = m.len();
-            let underscore = m[0] == '_';
+            let single_underscore = m == ['_'];
+            let backtick = bit == CODE;
             let inner = i + len;
             if style & bit != 0
                 || inner >= end
                 || !marker(c, p, i, m)
                 || whitespace(c[inner])
-                || (underscore && i > start && word(c.get(i - 1)))
-                || (len == 1 && c[inner] == '_')
+                || (single_underscore && i > start && word(c.get(i - 1)))
+                || (single_underscore && c[inner] == '_')
             {
                 continue;
             }
             let mut close = inner + 1;
             while close + len <= end {
+                if backtick && c[close - 1] == '\n' {
+                    break;
+                }
                 if marker(c, p, close, m)
                     && !whitespace(c[close - 1])
-                    && !(underscore && close + len < end && word(c.get(close + len)))
-                    && !(len == 1 && c[close - 1] == '_')
+                    && !(single_underscore && close + len < end && word(c.get(close + len)))
+                    && !(single_underscore && c[close - 1] == '_')
+                    && !(m == ['_', '_'] && c.get(close + len) == Some(&'_'))
                 {
                     out(plain, i, style);
-                    parse(c, p, inner, close, style | bit, out);
+                    if backtick {
+                        // Everything inside inline code stays literal.
+                        out(inner, close, style | CODE);
+                    } else {
+                        parse(c, p, inner, close, style | bit, out);
+                    }
                     i = close + len;
                     plain = i;
                     continue 'scan;

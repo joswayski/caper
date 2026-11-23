@@ -8,6 +8,8 @@ internal object FormatStyle {
     const val STRIKETHROUGH = 8
     const val SPOILER = 16
     const val QUOTE = 32
+    const val CODE = 64
+    const val CODE_BLOCK = 128
 }
 
 internal data class FormattedRun(val text: String, val style: Int) {
@@ -17,6 +19,8 @@ internal data class FormattedRun(val text: String, val style: Int) {
     val strikethrough get() = style and FormatStyle.STRIKETHROUGH != 0
     val spoiler get() = style and FormatStyle.SPOILER != 0
     val quote get() = style and FormatStyle.QUOTE != 0
+    val code get() = style and FormatStyle.CODE != 0
+    val codeBlock get() = style and FormatStyle.CODE_BLOCK != 0
 }
 internal data class FormattedMessage(val runs: List<FormattedRun>, val sourceIndices: List<Int>) {
     val text: String get() = runs.joinToString("") { it.text }
@@ -37,6 +41,67 @@ internal data class FormattedMessage(val runs: List<FormattedRun>, val sourceInd
     fun displayed(offset: Int): Int = sourceIndices.count { it < offset }
     // At the trailing edge stay inside the closing delimiter, so typing extends the style.
     fun original(offset: Int): Int = sourceIndices.getOrNull(offset) ?: ((sourceIndices.lastOrNull() ?: -1) + 1)
+}
+
+internal sealed class ParsedMessageBlock {
+    data class Prose(val text: String, val start: Int, val end: Int) : ParsedMessageBlock()
+    data class Code(val code: String, val languageId: Int, val detected: Boolean) : ParsedMessageBlock()
+}
+
+internal data class CodeToken(val start: Int, val end: Int, val kind: Int)
+
+internal fun languageDisplayName(id: Int): String = when (id) {
+    1 -> "Rust"
+    2 -> "TypeScript"
+    3 -> "JavaScript"
+    4 -> "Python"
+    5 -> "Swift"
+    6 -> "Kotlin"
+    7 -> "Go"
+    8 -> "C"
+    9 -> "C++"
+    10 -> "Java"
+    11 -> "C#"
+    12 -> "SQL"
+    13 -> "JSON"
+    14 -> "HTML"
+    15 -> "CSS"
+    16 -> "Shell"
+    17 -> "YAML"
+    18 -> "TOML"
+    19 -> "Ruby"
+    20 -> "PHP"
+    21 -> "Diff"
+    else -> "Plain text"
+}
+
+internal fun parseMessageBlocks(text: String): List<ParsedMessageBlock> {
+    val raw = CaperMobile.codeBlocks(text)
+    if (raw.isEmpty()) return emptyList()
+    return buildList(raw.size / 4) {
+        for (i in raw.indices step 4) {
+            val kind = raw[i]
+            val start = raw[i + 1]
+            val end = raw[i + 2]
+            val flags = raw[i + 3]
+            val slice = text.substring(start, end)
+            if (kind == 1) {
+                add(ParsedMessageBlock.Code(slice, flags and 255, (flags and 256) != 0))
+            } else {
+                add(ParsedMessageBlock.Prose(slice, start, end))
+            }
+        }
+    }
+}
+
+internal fun highlightCode(code: String, languageId: Int): List<CodeToken> {
+    val raw = CaperMobile.highlightCode(code, languageId)
+    if (raw.isEmpty()) return emptyList()
+    return buildList(raw.size / 3) {
+        for (i in raw.indices step 3) {
+            add(CodeToken(raw[i], raw[i + 1], raw[i + 2]))
+        }
+    }
 }
 
 /**
@@ -87,6 +152,10 @@ internal fun messageLinkRanges(text: String, excluded: List<IntRange> = emptyLis
     var offset = 0
     for (run in formatted.runs) {
         val end = offset + run.text.length
+        if (run.code || run.codeBlock) {
+            offset = end
+            continue
+        }
         val inside = cuts.filter { it.first < end && it.last + 1 > offset }
             .map { maxOf(it.first, offset) - offset until minOf(it.last + 1, end) - offset }
         for (link in linkRanges(run.text, inside)) {

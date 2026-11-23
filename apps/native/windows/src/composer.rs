@@ -49,10 +49,11 @@ pub struct Composer {
     pub inset: (f32, f32),
     /// Room under the text inside the box (the main composer's link card).
     pub inset_bottom: f32,
-    /// The laid-out spoilers and quote blocks (UTF-16 start and length in
-    /// the layout's text), drawn under the text.
+    /// The laid-out spoilers, quote blocks, and inline/block code ranges
+    /// (UTF-16 start and length in the layout's text), drawn under the text.
     pub(crate) spoilers: Vec<(u32, u32)>,
     pub(crate) quotes: Vec<(u32, u32)>,
+    pub(crate) codes: Vec<(u32, u32)>,
     /// Complete mention ranges in the displayed UTF-16 draft.
     pub(crate) mentions: Vec<(u32, u32)>,
     /// What typing left in a formatted composer; `None` in plain fields.
@@ -77,6 +78,8 @@ pub enum Style {
     Italic,
     Underline,
     Strikethrough,
+    Code,
+    CodeBlock,
     Quote,
     Spoiler,
 }
@@ -84,11 +87,13 @@ pub enum Style {
 impl Style {
     /// The toolbar's buttons in order, as web's; a gap comes before
     /// Quote.
-    pub const ALL: [Style; 6] = [
+    pub const ALL: [Style; 8] = [
         Self::Bold,
         Self::Italic,
         Self::Underline,
         Self::Strikethrough,
+        Self::Code,
+        Self::CodeBlock,
         Self::Quote,
         Self::Spoiler,
     ];
@@ -99,6 +104,8 @@ impl Style {
             Self::Italic => "Italic",
             Self::Underline => "Underline",
             Self::Strikethrough => "Strikethrough",
+            Self::Code => "Code",
+            Self::CodeBlock => "Code block",
             Self::Quote => "Quote",
             Self::Spoiler => "Spoiler",
         }
@@ -111,6 +118,8 @@ impl Style {
             Self::Italic => formatting::ITALIC,
             Self::Underline => formatting::UNDERLINE,
             Self::Strikethrough => formatting::STRIKETHROUGH,
+            Self::Code => formatting::CODE,
+            Self::CodeBlock => formatting::CODE_BLOCK,
             Self::Quote => formatting::QUOTE,
             Self::Spoiler => formatting::SPOILER,
         }
@@ -122,6 +131,8 @@ impl Style {
             Self::Italic => Icon::Italic,
             Self::Underline => Icon::Underline,
             Self::Strikethrough => Icon::Strikethrough,
+            Self::Code => Icon::Code,
+            Self::CodeBlock => Icon::CodeBlock,
             Self::Quote => Icon::TextQuote,
             Self::Spoiler => Icon::EyeOff,
         }
@@ -735,7 +746,7 @@ impl Composer {
     /// A toolbar button, in the box's coordinates, while the toolbar shows.
     pub fn format_rect(&self, style: Style) -> Option<(f32, f32, f32, f32)> {
         let k = Style::ALL.iter().position(|s| *s == style)?;
-        let divider = if k >= 4 { FORMAT_DIVIDER } else { 0.0 };
+        let divider = if k >= 6 { FORMAT_DIVIDER } else { 0.0 };
         (self.format_height() > 0.0).then_some((
             PAD + k as f32 * FORMAT_BUTTON + divider,
             PAD,
@@ -763,7 +774,7 @@ impl Composer {
         let layout = g.layout(&d, format, width)?;
         crate::emoji::apply(&layout, &String::from_utf16_lossy(&d), size, 1.2)?;
         let caret = self.shown_ends().0;
-        let (mut spoilers, mut quotes) = (Vec::new(), Vec::new());
+        let (mut spoilers, mut quotes, mut codes) = (Vec::new(), Vec::new(), Vec::new());
         unsafe {
             if self.rich.is_some() {
                 // Runs after the composition move past it.
@@ -786,6 +797,12 @@ impl Composer {
                     }
                     if style & formatting::STRIKETHROUGH != 0 {
                         layout.SetStrikethrough(true, range)?;
+                    }
+                    if style & (formatting::CODE | formatting::CODE_BLOCK) != 0 {
+                        layout.SetFontCollection(None, range)?;
+                        layout.SetFontFamilyName(w!("Consolas"), range)?;
+                        layout.SetFontSize(13.0, range)?;
+                        gfx::join_range(&mut codes, a, b - a);
                     }
                     if style & formatting::SPOILER != 0 {
                         gfx::join_range(&mut spoilers, a, b - a);
@@ -810,6 +827,7 @@ impl Composer {
         }
         self.spoilers = spoilers;
         self.quotes = quotes;
+        self.codes = codes;
         self.text_h = gfx::metrics(&layout).height.max(LINE);
         self.layout = Some(layout);
         Ok(self.text_h)
@@ -944,6 +962,9 @@ impl Composer {
             _ if rich && ctrl && vk == VIRTUAL_KEY('U' as u16) => {
                 self.toggle(Style::Underline);
             }
+            _ if rich && ctrl && vk == VIRTUAL_KEY('E' as u16) => {
+                self.toggle(Style::Code);
+            }
             _ if rich && ctrl && vk == VIRTUAL_KEY('Z' as u16) => self.undo(shift),
             _ if rich && ctrl && vk == VIRTUAL_KEY('Y' as u16) => self.undo(true),
             _ => return false,
@@ -974,6 +995,21 @@ impl Composer {
                         dc.FillRectangle(
                             &rect(ox, oy + top, ox + gfx::QUOTE_BAR, oy + bottom),
                             &g.brushes.border,
+                        );
+                    }
+                }
+                for &(s, n) in &self.codes {
+                    for m in gfx::range_rects(l, s, n) {
+                        fill_round(
+                            dc,
+                            rect(
+                                ox + m.left - 2.0,
+                                oy + m.top,
+                                ox + m.left + m.width + 2.0,
+                                oy + m.top + m.height,
+                            ),
+                            4.0,
+                            &g.brushes.hover,
                         );
                     }
                 }
@@ -1271,8 +1307,10 @@ mod tests {
         for (typed, shown) in [
             ("**bold**", "bold"),
             ("_it_", "it"),
+            ("*it*", "it"),
+            ("`code`", "code"),
             ("snake_case_name", "snake_case_name"),
-            ("2*3*4", "2*3*4"),
+            ("2 * 3 * 4", "2 * 3 * 4"),
             ("a ** b", "a ** b"),
             ("a *b", "a *b"),
         ] {
@@ -1372,6 +1410,8 @@ mod tests {
                 "italic" => Style::Italic,
                 "underline" => Style::Underline,
                 "strikethrough" => Style::Strikethrough,
+                "code" => Style::Code,
+                "codeBlock" => Style::CodeBlock,
                 "spoiler" => Style::Spoiler,
                 "quote" => Style::Quote,
                 other => panic!("unknown style {other}"),

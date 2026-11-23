@@ -457,7 +457,7 @@
         {
           "key": "x",
           "placed": true,
-          "text": "**a** xb",
+          "text": "**a** x*b*",
           "caret": 3,
           "pending": -1
         }
@@ -555,9 +555,9 @@
         {
           "key": "*",
           "placed": false,
-          "text": "a *b*",
-          "caret": 5,
-          "pending": -1
+          "text": "a _b_",
+          "caret": 3,
+          "pending": 0
         }
       ]
     },
@@ -2067,141 +2067,141 @@
         {
           "key": "*",
           "placed": false,
-          "text": "*star*",
-          "caret": 6,
-          "pending": -1
-        },
-        {
-          "key": " ",
-          "placed": false,
-          "text": "*star* ",
-          "caret": 7,
-          "pending": -1
-        },
-        {
-          "key": "a",
-          "placed": false,
-          "text": "*star* a",
-          "caret": 8,
-          "pending": -1
-        },
-        {
-          "key": "n",
-          "placed": false,
-          "text": "*star* an",
-          "caret": 9,
-          "pending": -1
-        },
-        {
-          "key": "d",
-          "placed": false,
-          "text": "*star* and",
-          "caret": 10,
-          "pending": -1
-        },
-        {
-          "key": " ",
-          "placed": false,
-          "text": "*star* and ",
-          "caret": 11,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "*star* and *",
-          "caret": 12,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "*star* and **",
-          "caret": 13,
-          "pending": -1
-        },
-        {
-          "key": "b",
-          "placed": false,
-          "text": "*star* and **b",
-          "caret": 14,
-          "pending": -1
-        },
-        {
-          "key": "o",
-          "placed": false,
-          "text": "*star* and **bo",
-          "caret": 15,
-          "pending": -1
-        },
-        {
-          "key": "l",
-          "placed": false,
-          "text": "*star* and **bol",
-          "caret": 16,
-          "pending": -1
-        },
-        {
-          "key": "d",
-          "placed": false,
-          "text": "*star* and **bold",
-          "caret": 17,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "*star* and **bold*",
-          "caret": 18,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "*star* and **bold**",
-          "caret": 15,
+          "text": "_star_",
+          "caret": 4,
           "pending": 0
         },
         {
           "key": " ",
           "placed": false,
-          "text": "*star* and **bold** ",
-          "caret": 16,
+          "text": "_star_ ",
+          "caret": 5,
           "pending": -1
         },
         {
           "key": "a",
           "placed": false,
-          "text": "*star* and **bold** a",
-          "caret": 17,
+          "text": "_star_ a",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "_star_ an",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "_star_ and",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "_star_ and ",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "_star_ and *",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "_star_ and **",
+          "caret": 11,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "_star_ and **b",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "_star_ and **bo",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "_star_ and **bol",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "_star_ and **bold",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "_star_ and **bold*",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "_star_ and **bold**",
+          "caret": 13,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "_star_ and **bold** ",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "_star_ and **bold** a",
+          "caret": 15,
           "pending": -1
         },
         {
           "key": "f",
           "placed": false,
-          "text": "*star* and **bold** af",
-          "caret": 18,
+          "text": "_star_ and **bold** af",
+          "caret": 16,
           "pending": -1
         },
         {
           "key": "t",
           "placed": false,
-          "text": "*star* and **bold** aft",
-          "caret": 19,
+          "text": "_star_ and **bold** aft",
+          "caret": 17,
           "pending": -1
         },
         {
           "key": "e",
           "placed": false,
-          "text": "*star* and **bold** afte",
-          "caret": 20,
+          "text": "_star_ and **bold** afte",
+          "caret": 18,
           "pending": -1
         },
         {
           "key": "r",
           "placed": false,
-          "text": "*star* and **bold** after",
-          "caret": 21,
+          "text": "_star_ and **bold** after",
+          "caret": 19,
           "pending": -1
         }
       ]
@@ -2319,7 +2319,7 @@
         {
           "key": "e",
           "placed": false,
-          "text": "a**b**c and de",
+          "text": "a**b**c and *d*e",
           "caret": 10,
           "pending": -1
         }
@@ -3677,477 +3677,477 @@
         {
           "key": "*",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*",
-          "caret": 167,
-          "pending": -1
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_",
+          "caret": 165,
+          "pending": 0
         },
         {
           "key": "?",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*?",
-          "caret": 168,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_?",
+          "caret": 166,
           "pending": -1
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? ",
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? ",
+          "caret": 167,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? *",
+          "caret": 168,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **",
           "caret": 169,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? *",
-          "caret": 170,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **",
-          "caret": 171,
           "pending": -1
         },
         {
           "key": "D",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **D",
-          "caret": 172,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **D",
+          "caret": 170,
           "pending": -1
         },
         {
           "key": "o",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Do",
-          "caret": 173,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Do",
+          "caret": 171,
           "pending": -1
         },
         {
           "key": "n",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Don",
-          "caret": 174,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Don",
+          "caret": 172,
           "pending": -1
         },
         {
           "key": "e",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done",
-          "caret": 175,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done*",
-          "caret": 176,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done**",
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done",
           "caret": 173,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done*",
+          "caret": 174,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done**",
+          "caret": 171,
           "pending": 0
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** ",
-          "caret": 174,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** ",
+          "caret": 172,
           "pending": -1
         },
         {
           "key": "w",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** w",
-          "caret": 175,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** w",
+          "caret": 173,
           "pending": -1
         },
         {
           "key": "h",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** wh",
-          "caret": 176,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** wh",
+          "caret": 174,
           "pending": -1
         },
         {
           "key": "e",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** whe",
-          "caret": 177,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** whe",
+          "caret": 175,
           "pending": -1
         },
         {
           "key": "n",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when",
-          "caret": 178,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when",
+          "caret": 176,
           "pending": -1
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when ",
-          "caret": 179,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when ",
+          "caret": 177,
           "pending": -1
         },
         {
           "key": "_",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _",
-          "caret": 180,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _",
+          "caret": 178,
           "pending": -1
         },
         {
           "key": "h",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _h",
-          "caret": 181,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _h",
+          "caret": 179,
           "pending": -1
         },
         {
           "key": "i",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _hi",
-          "caret": 182,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _hi",
+          "caret": 180,
           "pending": -1
         },
         {
           "key": "s",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _his",
-          "caret": 183,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _his",
+          "caret": 181,
           "pending": -1
         },
         {
           "key": "t",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _hist",
-          "caret": 184,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _hist",
+          "caret": 182,
           "pending": -1
         },
         {
           "key": "o",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _histo",
-          "caret": 185,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _histo",
+          "caret": 183,
           "pending": -1
         },
         {
           "key": "r",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _histor",
-          "caret": 186,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _histor",
+          "caret": 184,
           "pending": -1
         },
         {
           "key": "y",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history",
-          "caret": 187,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history",
+          "caret": 185,
           "pending": -1
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history ",
-          "caret": 188,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history ",
+          "caret": 186,
           "pending": -1
         },
         {
           "key": "l",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history l",
-          "caret": 189,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history l",
+          "caret": 187,
           "pending": -1
         },
         {
           "key": "o",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history lo",
-          "caret": 190,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history lo",
+          "caret": 188,
           "pending": -1
         },
         {
           "key": "a",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loa",
-          "caret": 191,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loa",
+          "caret": 189,
           "pending": -1
         },
         {
           "key": "d",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history load",
-          "caret": 192,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history load",
+          "caret": 190,
           "pending": -1
         },
         {
           "key": "i",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loadi",
-          "caret": 193,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loadi",
+          "caret": 191,
           "pending": -1
         },
         {
           "key": "n",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loadin",
-          "caret": 194,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loadin",
+          "caret": 192,
           "pending": -1
         },
         {
           "key": "g",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading",
-          "caret": 195,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading",
+          "caret": 193,
           "pending": -1
         },
         {
           "key": "_",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_",
-          "caret": 194,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_",
+          "caret": 192,
           "pending": 0
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ ",
-          "caret": 195,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ ",
+          "caret": 193,
           "pending": -1
         },
         {
           "key": "a",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ a",
-          "caret": 196,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ a",
+          "caret": 194,
           "pending": -1
         },
         {
           "key": "n",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ an",
-          "caret": 197,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ an",
+          "caret": 195,
           "pending": -1
         },
         {
           "key": "d",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and",
-          "caret": 198,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and",
+          "caret": 196,
           "pending": -1
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and ",
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and ",
+          "caret": 197,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and *",
+          "caret": 198,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **",
           "caret": 199,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and *",
-          "caret": 200,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **",
-          "caret": 201,
           "pending": -1
         },
         {
           "key": "l",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **l",
-          "caret": 202,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **l",
+          "caret": 200,
           "pending": -1
         },
         {
           "key": "i",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **li",
-          "caret": 203,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **li",
+          "caret": 201,
           "pending": -1
         },
         {
           "key": "n",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **lin",
-          "caret": 204,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **lin",
+          "caret": 202,
           "pending": -1
         },
         {
           "key": "k",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link",
-          "caret": 205,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link",
+          "caret": 203,
           "pending": -1
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link ",
-          "caret": 206,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link ",
+          "caret": 204,
           "pending": -1
         },
         {
           "key": "p",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link p",
-          "caret": 207,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link p",
+          "caret": 205,
           "pending": -1
         },
         {
           "key": "r",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link pr",
-          "caret": 208,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link pr",
+          "caret": 206,
           "pending": -1
         },
         {
           "key": "e",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link pre",
-          "caret": 209,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link pre",
+          "caret": 207,
           "pending": -1
         },
         {
           "key": "v",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link prev",
-          "caret": 210,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link prev",
+          "caret": 208,
           "pending": -1
         },
         {
           "key": "i",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previ",
-          "caret": 211,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previ",
+          "caret": 209,
           "pending": -1
         },
         {
           "key": "e",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previe",
-          "caret": 212,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previe",
+          "caret": 210,
           "pending": -1
         },
         {
           "key": "w",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link preview",
-          "caret": 213,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link preview",
+          "caret": 211,
           "pending": -1
         },
         {
           "key": "s",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews",
-          "caret": 214,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews*",
-          "caret": 215,
-          "pending": -1
-        },
-        {
-          "key": "*",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews**",
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews",
           "caret": 212,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews*",
+          "caret": 213,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews**",
+          "caret": 210,
           "pending": 0
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** ",
-          "caret": 213,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** ",
+          "caret": 211,
           "pending": -1
         },
         {
           "key": "l",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** l",
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** l",
+          "caret": 212,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** lo",
+          "caret": 213,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** loo",
           "caret": 214,
-          "pending": -1
-        },
-        {
-          "key": "o",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** lo",
-          "caret": 215,
-          "pending": -1
-        },
-        {
-          "key": "o",
-          "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** loo",
-          "caret": 216,
           "pending": -1
         },
         {
           "key": "k",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look",
-          "caret": 217,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** look",
+          "caret": 215,
           "pending": -1
         },
         {
           "key": " ",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look ",
-          "caret": 218,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** look ",
+          "caret": 216,
           "pending": -1
         },
         {
           "key": "r",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look r",
-          "caret": 219,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** look r",
+          "caret": 217,
           "pending": -1
         },
         {
           "key": "i",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look ri",
-          "caret": 220,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** look ri",
+          "caret": 218,
           "pending": -1
         },
         {
           "key": "g",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look rig",
-          "caret": 221,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** look rig",
+          "caret": 219,
           "pending": -1
         },
         {
           "key": "h",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look righ",
-          "caret": 222,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** look righ",
+          "caret": 220,
           "pending": -1
         },
         {
           "key": "t",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look right",
-          "caret": 223,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** look right",
+          "caret": 221,
           "pending": -1
         },
         {
           "key": ".",
           "placed": false,
-          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look right.",
-          "caret": 224,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? **Done** when _history loading_ and **link previews** look right.",
+          "caret": 222,
           "pending": -1
         }
       ]

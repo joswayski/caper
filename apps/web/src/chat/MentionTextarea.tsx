@@ -15,8 +15,35 @@ import { Decoration, DecorationSet, EditorView } from "prosemirror-view";
 import { history, undo, redo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap } from "prosemirror-commands";
-import { Bold, EyeOff, Italic, Strikethrough, TextQuote, Underline } from "lucide-react";
+import { Bold, Code, EyeOff, Italic, SquareCode, TextQuote, Underline } from "lucide-react";
 import type { FormatStyle } from "./formatting.ts";
+
+/** Clear S with a continuous horizontal strike bar across the middle. */
+function StrikethroughIcon({
+  size = 17,
+  "aria-hidden": ariaHidden,
+}: {
+  size?: number;
+  "aria-hidden"?: "true" | boolean;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden={ariaHidden}
+    >
+      <path d="M16 5.5C15.2 4.5 13.7 4 12 4c-2.6 0-4.5 1.4-4.5 3.4 0 1.4.8 2.4 2.4 3" />
+      <path d="M14.5 13.5c1.5.7 2.2 1.7 2.2 3.1 0 2.1-2 3.4-4.7 3.4-2 0-3.7-.7-4.6-1.8" />
+      <line x1="3" y1="12" x2="21" y2="12" strokeWidth={2.2} />
+    </svg>
+  );
+}
 import { emojiSegments } from "./emoji.ts";
 import { emojiName } from "./reactors.ts";
 import { draftMentionSegments, type MentionCandidate } from "./mentions.ts";
@@ -319,10 +346,10 @@ export default function MentionTextarea({
         aria-disabled={disabled || undefined}
         aria-readonly={readOnly || undefined}
         aria-label={props["aria-label"] ?? placeholder ?? "Message"}
-        aria-keyshortcuts="Control+B Meta+B Control+I Meta+I Control+U Meta+U"
+        aria-keyshortcuts="Control+B Meta+B Control+I Meta+I Control+U Meta+U Control+E Meta+E"
         aria-description={
           props["aria-description"] ??
-          "Select text to format it. Control or Command B for bold, I for italic, U for underline. Formatting cannot split a link."
+          "Select text to format it. Control or Command B for bold, I for italic, U for underline, E for inline code. Formatting cannot split a link."
         }
         aria-describedby={
           name ? [props["aria-describedby"], tooltipId].filter(Boolean).join(" ") : props["aria-describedby"]
@@ -335,7 +362,9 @@ export default function MentionTextarea({
           close();
           if (!event.nativeEvent.isComposing && !event.altKey && (event.metaKey || event.ctrlKey)) {
             const key = event.key.toLowerCase();
-            const style = ({ b: "bold", i: "italic", u: "underline" } as const)[key as "b" | "i" | "u"];
+            const style = ({ b: "bold", i: "italic", u: "underline", e: "code" } as const)[
+              key as "b" | "i" | "u" | "e"
+            ];
             if (style && !event.shiftKey) {
               event.preventDefault();
               format(style);
@@ -436,8 +465,10 @@ export default function MentionTextarea({
                 ["bold", "Bold", Bold, "B"],
                 ["italic", "Italic", Italic, "I"],
                 ["underline", "Underline", Underline, "U"],
-                ["strikethrough", "Strikethrough", Strikethrough, undefined],
+                ["strikethrough", "Strikethrough", StrikethroughIcon, undefined],
+                ["code", "Inline code", Code, "E"],
                 ["quote", "Quote", TextQuote, undefined],
+                ["codeBlock", "Code block", SquareCode, undefined],
                 ["spoiler", "Spoiler", EyeOff, undefined],
               ] as const
             ).map(([style, label, Icon, shortcut]) => {

@@ -39,6 +39,10 @@ pub struct Row {
     /// Quote blocks (consecutive quoted lines joined): UTF-16 start and
     /// length, indented by `gfx::indent_quotes`.
     pub quotes: Vec<(u32, u32)>,
+    /// Inline code pills (`code`): UTF-16 start and length.
+    pub codes: Vec<(u32, u32)>,
+    /// Fenced code blocks (contiguous lines joined): UTF-16 start and length.
+    pub code_blocks: Vec<(u32, u32)>,
     pub header: Option<Header>,
     pub text_y: f32,
     pub picture_y: f32,
@@ -662,6 +666,21 @@ pub fn spoiler_key(start: u32) -> String {
     format!("spoiler:{start}")
 }
 
+fn syntax_color(token: u8) -> u32 {
+    match token {
+        1 => 0xC695FF, // Keyword
+        2 => 0x87BC5C, // String
+        3 => 0x8C929C, // Comment
+        4 => 0xE5A869, // Number
+        5 => 0x7CC7FF, // Type
+        6 => 0x99C7F5, // Function
+        7 => 0xE5C07B, // Attribute
+        8 => 0x4ADE80, // Addition
+        9 => 0xFF7182, // Deletion
+        _ => crate::theme::TEXT,
+    }
+}
+
 fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
     let m = &c.messages[i];
     let (plain, spans, hrefs) = c.plain(i);
@@ -670,6 +689,8 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
     let mut mentions = Vec::new();
     let mut spoiled = Vec::new();
     let mut quotes = Vec::new();
+    let mut codes = Vec::new();
+    let mut code_blocks = Vec::new();
     unsafe {
         for &(s, l, k) in &spans {
             let r = text_range(s, l);
@@ -678,6 +699,27 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
                 SpanKind::Italic => text.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r)?,
                 SpanKind::Underline => text.SetUnderline(true, r)?,
                 SpanKind::Strikethrough => text.SetStrikethrough(true, r)?,
+                SpanKind::Code => {
+                    text.SetFontCollection(None, r)?;
+                    text.SetFontFamilyName(w!("Consolas"), r)?;
+                    text.SetFontSize(13.0, r)?;
+                    gfx::join_range(&mut codes, s, l);
+                }
+                SpanKind::CodeBlock => {
+                    text.SetFontCollection(None, r)?;
+                    text.SetFontFamilyName(w!("Consolas"), r)?;
+                    text.SetFontSize(13.0, r)?;
+                    gfx::join_range(&mut code_blocks, s, l);
+                }
+                SpanKind::CodeHeader => {
+                    text.SetFontSize(11.0, r)?;
+                    text.SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, r)?;
+                    text.SetDrawingEffect(&g.brushes.muted, r)?;
+                }
+                SpanKind::CodeToken(tok) => {
+                    let brush = g.solid(syntax_color(tok));
+                    text.SetDrawingEffect(&brush, r)?;
+                }
                 SpanKind::Spoiler => gfx::join_range(&mut spoiled, s, l),
                 SpanKind::Quote => gfx::join_range(&mut quotes, s, l),
                 SpanKind::Link => text.SetDrawingEffect(&g.brushes.link, r)?,
@@ -853,6 +895,8 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         links,
         spoilers,
         quotes,
+        codes,
+        code_blocks,
         header,
         text_y: 0.0,
         picture_y: 0.0,
@@ -1615,6 +1659,18 @@ fn draw_content(
                     &g.brushes.border,
                 );
             }
+        }
+        // Fenced code blocks: recessed surface card with hairline border.
+        for &(s, l) in &row.code_blocks {
+            if let Some((t, b)) = gfx::range_extent(&row.text, s, l) {
+                let card = rect(BODY_X - 4.0, ty + t - 3.0, BODY_X + row.width, ty + b + 3.0);
+                fill_round(dc, card, 8.0, &g.brushes.surface);
+                stroke_round(dc, card, 8.0, &g.brushes.border);
+            }
+        }
+        // Inline code pills.
+        for &(s, l) in &row.codes {
+            fill(s, l, &g.brushes.raised, 2.0, 4.0);
         }
         // A hidden spoiler is a border-coloured block (its text is drawn
         // invisible); a revealed one keeps a faint background.

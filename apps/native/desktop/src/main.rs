@@ -31209,6 +31209,13 @@ fn apply_style(format: &mut egui::TextFormat, style: i32) {
     if style & formatting::STRIKETHROUGH != 0 {
         format.strikethrough = Stroke::new(1.0_f32, format.color);
     }
+    if style & (formatting::CODE | formatting::CODE_BLOCK) != 0 {
+        format.font_id.family = egui::FontFamily::Monospace;
+        format.font_id.size = (format.font_id.size - 1.0).max(11.0);
+        if format.background == Color32::TRANSPARENT {
+            format.background = SURFACE_RAISED;
+        }
+    }
 }
 
 /// Moves each row whose first visible character is in `quoted` (galley
@@ -31445,6 +31452,106 @@ fn linked_text(ui: &mut egui::Ui, message: &str, text: &str) {
 /// its room but hides its text, links and pills until clicked.
 ///
 /// `edited` adds a grouped row's "(edited)" marker right after the text.
+fn syntax_token_color(kind: formatting::code::TokenKind) -> Color32 {
+    use formatting::code::TokenKind;
+    match kind {
+        TokenKind::Plain => TEXT,
+        TokenKind::Keyword => Color32::from_rgb(0xC6, 0x95, 0xFF),
+        TokenKind::String => Color32::from_rgb(0x87, 0xBC, 0x5C),
+        TokenKind::Comment => Color32::from_rgb(0x8C, 0x92, 0x9C),
+        TokenKind::Number => Color32::from_rgb(0xE5, 0xA8, 0x69),
+        TokenKind::Type => Color32::from_rgb(0x7C, 0xC7, 0xFF),
+        TokenKind::Function => Color32::from_rgb(0x99, 0xC7, 0xF5),
+        TokenKind::Attribute => Color32::from_rgb(0xE5, 0xC0, 0x7B),
+        TokenKind::Addition => Color32::from_rgb(0x4A, 0xDE, 0x80),
+        TokenKind::Deletion => Color32::from_rgb(0xFF, 0x71, 0x82),
+    }
+}
+
+fn render_code_block(
+    ui: &mut egui::Ui,
+    message: &str,
+    index: usize,
+    block: &formatting::code::CodeBlock<'_>,
+) {
+    let copied_id = ui.make_persistent_id(("code-block-copied", message, index));
+    let copied_until: Option<f64> = ui.data(|d| d.get_temp(copied_id));
+    let now = ui.ctx().input(|i| i.time);
+    let copied = copied_until.is_some_and(|until| now < until);
+    if copied {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    egui::Frame::new()
+        .fill(SURFACE)
+        .stroke(Stroke::new(1.0, BORDER))
+        .corner_radius(8)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            egui::Frame::new()
+                .fill(SURFACE_RAISED)
+                .inner_margin(egui::Margin::symmetric(10, 5))
+                .corner_radius(egui::CornerRadius {
+                    nw: 8,
+                    ne: 8,
+                    sw: 0,
+                    se: 0,
+                })
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(block.language.display_name().to_uppercase())
+                                .size(10.5)
+                                .strong()
+                                .color(MUTED),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let label = if copied { "Copied" } else { "Copy" };
+                            let btn = ui
+                                .add(
+                                    egui::Button::new(RichText::new(label).size(11.0).color(MUTED))
+                                        .frame(false),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if btn.clicked() {
+                                ui.ctx().copy_text(block.code.to_owned());
+                                ui.data_mut(|d| d.insert_temp(copied_id, now + 1.8));
+                            }
+                        });
+                    });
+                });
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_salt(("code-scroll", message, index))
+                        .show(ui, |ui| {
+                            let mut job = egui::text::LayoutJob::default();
+                            let tokens = formatting::code::highlight(block.code, block.language);
+                            if tokens.is_empty() {
+                                job.append(
+                                    block.code,
+                                    0.0,
+                                    egui::TextFormat::simple(egui::FontId::monospace(12.5), TEXT),
+                                );
+                            } else {
+                                for tok in tokens {
+                                    job.append(
+                                        &block.code[tok.start..tok.end],
+                                        0.0,
+                                        egui::TextFormat::simple(
+                                            egui::FontId::monospace(12.5),
+                                            syntax_token_color(tok.kind),
+                                        ),
+                                    );
+                                }
+                            }
+                            ui.add(egui::Label::new(job).extend());
+                        });
+                });
+        });
+}
+
 fn rich_text(
     ui: &mut egui::Ui,
     message: &str,
@@ -31454,16 +31561,59 @@ fn rich_text(
     describe: impl Fn(&model::Mention) -> String,
     edited: bool,
 ) -> Body {
-    rich_text_rows(
-        ui,
-        message,
-        text,
-        plain,
-        mentions,
-        describe,
-        edited,
-        usize::MAX,
-    )
+    let blocks = formatting::code::parse_blocks(text);
+    if !blocks
+        .iter()
+        .any(|b| matches!(b, formatting::code::MessageBlock::Code(_)))
+    {
+        return rich_text_rows(
+            ui,
+            message,
+            text,
+            plain,
+            mentions,
+            describe,
+            edited,
+            usize::MAX,
+        );
+    }
+    let mut combined = Body::default();
+    let last_idx = blocks.len().saturating_sub(1);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        for (idx, block) in blocks.into_iter().enumerate() {
+            match block {
+                formatting::code::MessageBlock::Code(blk) => {
+                    render_code_block(ui, message, idx, &blk);
+                    if edited && idx == last_idx {
+                        let resp = ui.label(RichText::new("(edited)").size(10.0).color(MUTED));
+                        combined.edited = Some(resp.rect);
+                    }
+                }
+                formatting::code::MessageBlock::Prose { text: chunk, .. } => {
+                    let part_id = format!("{message}:{idx}");
+                    let body = rich_text_rows(
+                        ui,
+                        &part_id,
+                        chunk,
+                        plain.clone(),
+                        mentions,
+                        &describe,
+                        edited && idx == last_idx,
+                        usize::MAX,
+                    );
+                    if combined.pill.is_none() {
+                        combined.pill = body.pill;
+                    }
+                    if body.edited.is_some() {
+                        combined.edited = body.edited;
+                    }
+                    combined.link_hovered |= body.link_hovered;
+                }
+            }
+        }
+    });
+    combined
 }
 
 fn append_formatted(
@@ -31554,7 +31704,14 @@ fn rich_text_rows(
         let id = ui.make_persistent_id(("spoiler", message, range.start));
         *revealed = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
     }
-    // Links and mentions inside a hidden spoiler cannot be activated.
+    // Links and mentions inside a hidden spoiler or code span cannot be activated.
+    let in_code = |range: &std::ops::Range<usize>| {
+        styles.iter().any(|(r, st)| {
+            st & (formatting::CODE | formatting::CODE_BLOCK) != 0
+                && r.start < range.end
+                && range.start < r.end
+        })
+    };
     let concealed = |range: &std::ops::Range<usize>| {
         spoilers.iter().any(|(spoiler, revealed)| {
             !revealed && spoiler.start < range.end && range.start < spoiler.end
@@ -31568,9 +31725,18 @@ fn rich_text_rows(
         .filter(|(_, style)| style & formatting::QUOTE != 0)
         .map(|(range, _)| characters(range))
         .collect();
-    let pills = mentions::highlights(text, mentions);
+    let pills: Vec<_> = mentions::highlights(text, mentions)
+        .into_iter()
+        .filter(|(range, _)| !in_code(range))
+        .collect();
     let ranges: Vec<_> = pills.iter().map(|(range, _)| range.clone()).collect();
-    let runs = message_runs(text, &ranges);
+    let runs: Vec<_> = message_runs(text, &ranges)
+        .into_iter()
+        .map(|run| match run {
+            Run::Link(range, _) if in_code(&range) => Run::Plain(range),
+            other => other,
+        })
+        .collect();
     let linked = runs
         .iter()
         .any(|run| matches!(run, Run::Link(range, _) if !concealed(range)));

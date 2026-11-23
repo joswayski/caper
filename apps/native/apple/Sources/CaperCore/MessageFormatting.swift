@@ -11,6 +11,8 @@ public struct MessageStyle: OptionSet, Sendable {
     public static let strikethrough = MessageStyle(rawValue: 8)
     public static let spoiler = MessageStyle(rawValue: 16)
     public static let quote = MessageStyle(rawValue: 32)
+    public static let code = MessageStyle(rawValue: 64)
+    public static let codeBlock = MessageStyle(rawValue: 128)
 }
 
 /// One button of the formatting toolbar (and the composer menus), in web's order.
@@ -22,19 +24,21 @@ public struct MessageFormattingAction: Sendable {
     public let symbol: String
     /// The lowercase Command shortcut, if any.
     public let key: String?
-    /// Quote and Spoiler follow the other styles after a divider.
-    public var block: Bool { style == .quote || style == .spoiler }
+    /// Quote, Code block and Spoiler follow the inline styles after a divider.
+    public var block: Bool { style == .quote || style == .codeBlock || style == .spoiler }
 
     public static let all: [MessageFormattingAction] = [
         .init(style: .bold, title: "Bold", symbol: "bold", key: "b"),
         .init(style: .italic, title: "Italic", symbol: "italic", key: "i"),
         .init(style: .underline, title: "Underline", symbol: "underline", key: "u"),
         .init(style: .strikethrough, title: "Strikethrough", symbol: "strikethrough", key: nil),
+        .init(style: .code, title: "Inline code", symbol: "chevron.left.forwardslash.chevron.right", key: "e"),
         .init(style: .quote, title: "Quote", symbol: "text.quote", key: nil),
+        .init(style: .codeBlock, title: "Code block", symbol: "curlybraces.square", key: nil),
         .init(style: .spoiler, title: "Spoiler", symbol: "eye.slash", key: nil),
     ]
 
-    /// The action for a Command shortcut (B, I or U).
+    /// The action for a Command shortcut (B, I, U or E).
     public static func shortcut(_ key: String) -> MessageFormattingAction? {
         all.first { $0.key == key.lowercased() }
     }
@@ -49,13 +53,15 @@ struct FormattedMessageRun: Equatable, Decodable {
     var strikethrough: Bool { style.contains(.strikethrough) }
     var spoiler: Bool { style.contains(.spoiler) }
     var quote: Bool { style.contains(.quote) }
+    var code: Bool { style.contains(.code) }
+    var codeBlock: Bool { style.contains(.codeBlock) }
 
     init(text: String, style: MessageStyle) {
         self.text = text
         self.style = style
     }
 
-    private enum CodingKeys: String, CodingKey { case text, bold, italic, underline, strikethrough, spoiler, quote }
+    private enum CodingKeys: String, CodingKey { case text, bold, italic, underline, strikethrough, spoiler, quote, code, codeBlock }
 
     /// The shared fixtures list `bold` and `italic`, and the other styles only when true.
     init(from decoder: Decoder) throws {
@@ -63,7 +69,8 @@ struct FormattedMessageRun: Equatable, Decodable {
         text = try container.decode(String.self, forKey: .text)
         var style: MessageStyle = []
         let keys: [(CodingKeys, MessageStyle)] = [(.bold, .bold), (.italic, .italic), (.underline, .underline),
-                                                  (.strikethrough, .strikethrough), (.spoiler, .spoiler), (.quote, .quote)]
+                                                  (.strikethrough, .strikethrough), (.spoiler, .spoiler), (.quote, .quote),
+                                                  (.code, .code), (.codeBlock, .codeBlock)]
         for (key, bit) in keys {
             if try container.decodeIfPresent(Bool.self, forKey: key) == true { style.insert(bit) }
         }
@@ -271,5 +278,82 @@ public enum MessageFormatting {
             caper_mobile_selection_styles(bytes.baseAddress, bytes.count, Int32(selection.location), Int32(NSMaxRange(selection)))
         }
         return MessageStyle(rawValue: bits)
+    }
+
+    public struct CodeToken: Equatable, Sendable {
+        public let text: String
+        /// Semantic kind matching `shared/messages/code.rs::TokenKind`.
+        public let kind: Int32
+    }
+
+    public enum ParsedBlock: Equatable, Sendable {
+        case prose(String)
+        case code(text: String, language: Int32, detected: Bool)
+    }
+
+    /// Display name for a `shared/messages/code.rs::Language` id.
+    public static func languageName(_ id: Int32) -> String {
+        switch id {
+        case 1: return "Rust"
+        case 2: return "TypeScript"
+        case 3: return "JavaScript"
+        case 4: return "Python"
+        case 5: return "Swift"
+        case 6: return "Kotlin"
+        case 7: return "Go"
+        case 8: return "C"
+        case 9: return "C++"
+        case 10: return "Java"
+        case 11: return "C#"
+        case 12: return "SQL"
+        case 13: return "JSON"
+        case 14: return "HTML"
+        case 15: return "CSS"
+        case 16: return "Shell"
+        case 17: return "YAML"
+        case 18: return "TOML"
+        case 19: return "Ruby"
+        case 20: return "PHP"
+        case 21: return "Diff"
+        default: return "Plain text"
+        }
+    }
+
+    /// Splits a message into alternating prose and fenced code blocks via the shared Rust parser.
+    public static func codeBlocks(_ text: String) -> [ParsedBlock] {
+        var source = text
+        return source.withUTF8 { bytes in
+            let raw = caper_mobile_code_blocks(bytes.baseAddress, bytes.count)
+            defer { caper_mobile_ints_free(raw) }
+            var blocks: [ParsedBlock] = []
+            for offset in stride(from: 0, to: raw.len, by: 6) {
+                let values = raw.data.advanced(by: offset)
+                let kind = values[0]
+                let slice = String(decoding: UnsafeBufferPointer(rebasing: bytes[Int(values[3])..<Int(values[4])]), as: UTF8.self)
+                let flags = values[5]
+                if kind == 1 {
+                    blocks.append(.code(text: slice, language: flags & 0xFF, detected: (flags & 256) != 0))
+                } else {
+                    blocks.append(.prose(slice))
+                }
+            }
+            return blocks
+        }
+    }
+
+    /// Syntax-highlights `code` in `language` (`shared/messages/code.rs`) via Rust.
+    public static func highlightCode(_ code: String, language: Int32) -> [CodeToken] {
+        var source = code
+        return source.withUTF8 { bytes in
+            let raw = caper_mobile_highlight_code(bytes.baseAddress, bytes.count, language)
+            defer { caper_mobile_ints_free(raw) }
+            var tokens: [CodeToken] = []
+            for offset in stride(from: 0, to: raw.len, by: 5) {
+                let values = raw.data.advanced(by: offset)
+                let slice = String(decoding: UnsafeBufferPointer(rebasing: bytes[Int(values[2])..<Int(values[3])]), as: UTF8.self)
+                tokens.append(CodeToken(text: slice, kind: values[4]))
+            }
+            return tokens
+        }
     }
 }

@@ -160,6 +160,8 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
     public static let savedThemesKey = "caper.customThemes.v1"
     public static let didChangeNotification = Notification.Name("CaperThemeDidChange")
     private static let snapshotBox = ThemeSnapshotBox()
+    /// Nonisolated read of whether the active theme is light (Paper) or dark (Obsidian).
+    public nonisolated static var isLightTheme: Bool { snapshotBox.get().isLight }
 
     public private(set) var active: CaperThemeDocument
     public private(set) var savedThemes: [CaperThemeDocument] = []

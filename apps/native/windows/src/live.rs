@@ -6240,57 +6240,110 @@ pub fn conversation(
 /// (`caper_client::mentions`) become pills and links
 /// (`shared/messages/links.rs`) are found between them.
 pub fn spans(text: &str, mentions: &[core::Mention]) -> Vec<Span> {
-    let mut visible = String::with_capacity(text.len());
-    let mut styles = Vec::new();
-    crate::formatting::visit_runs(text, |range, style| {
-        let start = visible.len();
-        visible.push_str(&text[range]);
-        styles.push((start..visible.len(), style));
-    });
-    let pills: Vec<_> = caper_client::mentions::highlights(&visible, mentions)
-        .into_iter()
-        .map(|(range, _)| range)
-        .collect();
-    let mut links = Vec::new();
-    let mut gap = 0;
-    for (start, end) in pills
-        .iter()
-        .map(|p| (p.start, p.end))
-        .chain([(visible.len(), visible.len())])
-    {
-        let mut offset = gap;
-        for segment in crate::links::segments(&visible[gap..start]) {
-            let next = offset + segment.text.len();
-            if let Some(href) = segment.href {
-                links.push((offset..next, href));
-            }
-            offset = next;
-        }
-        gap = end;
-    }
     let mut out = Vec::new();
-    for (range, style) in styles {
-        let mut cuts = vec![range.start, range.end];
-        for span in pills.iter().chain(links.iter().map(|(link, _)| link)) {
-            for edge in [span.start, span.end] {
-                if range.start < edge && edge < range.end {
-                    cuts.push(edge);
+    let blocks = caper_client::formatting::code::parse_blocks(text);
+    for (idx, block) in blocks.into_iter().enumerate() {
+        if idx > 0 {
+            out.push(Span::Rich {
+                text: "\n".into(),
+                style: 0,
+                mention: false,
+                href: None,
+            });
+        }
+        match block {
+            caper_client::formatting::code::MessageBlock::Code(blk) => {
+                out.push(Span::CodeBlock {
+                    text: format!("{}\n", blk.language.display_name()),
+                    token: 255,
+                });
+                let tokens = caper_client::formatting::code::highlight(blk.code, blk.language);
+                if tokens.is_empty() {
+                    out.push(Span::CodeBlock {
+                        text: blk.code.to_owned(),
+                        token: 0,
+                    });
+                } else {
+                    for tok in tokens {
+                        out.push(Span::CodeBlock {
+                            text: blk.code[tok.start..tok.end].to_owned(),
+                            token: tok.kind as u8,
+                        });
+                    }
                 }
             }
-        }
-        cuts.sort_unstable();
-        cuts.dedup();
-        for piece in cuts.windows(2) {
-            let (start, end) = (piece[0], piece[1]);
-            out.push(Span::Rich {
-                text: visible[start..end].to_owned(),
-                style,
-                mention: pills.iter().any(|p| p.contains(&start)),
-                href: links
+            caper_client::formatting::code::MessageBlock::Prose { text: chunk, .. } => {
+                let mut visible = String::with_capacity(chunk.len());
+                let mut styles = Vec::new();
+                crate::formatting::visit_runs(chunk, |range, style| {
+                    let start = visible.len();
+                    visible.push_str(&chunk[range]);
+                    styles.push((start..visible.len(), style));
+                });
+                let in_code = |pos: usize| {
+                    styles.iter().any(|(r, st)| {
+                        st & (crate::formatting::CODE | crate::formatting::CODE_BLOCK) != 0
+                            && r.contains(&pos)
+                    })
+                };
+                let pills: Vec<_> = caper_client::mentions::highlights(&visible, mentions)
+                    .into_iter()
+                    .map(|(range, _)| range)
+                    .filter(|r| !in_code(r.start))
+                    .collect();
+                let mut links = Vec::new();
+                let mut gap = 0;
+                for (start, end) in pills
                     .iter()
-                    .find(|(link, _)| link.contains(&start))
-                    .map(|(_, href)| href.clone()),
-            });
+                    .map(|p| (p.start, p.end))
+                    .chain([(visible.len(), visible.len())])
+                {
+                    let mut offset = gap;
+                    for segment in crate::links::segments(&visible[gap..start]) {
+                        let next = offset + segment.text.len();
+                        if let Some(href) = segment.href
+                            && !in_code(offset)
+                        {
+                            links.push((offset..next, href));
+                        }
+                        offset = next;
+                    }
+                    gap = end;
+                }
+                for (range, style) in styles {
+                    if style & (crate::formatting::CODE | crate::formatting::CODE_BLOCK) != 0 {
+                        out.push(Span::Rich {
+                            text: visible[range].to_owned(),
+                            style,
+                            mention: false,
+                            href: None,
+                        });
+                        continue;
+                    }
+                    let mut cuts = vec![range.start, range.end];
+                    for span in pills.iter().chain(links.iter().map(|(link, _)| link)) {
+                        for edge in [span.start, span.end] {
+                            if range.start < edge && edge < range.end {
+                                cuts.push(edge);
+                            }
+                        }
+                    }
+                    cuts.sort_unstable();
+                    cuts.dedup();
+                    for piece in cuts.windows(2) {
+                        let (start, end) = (piece[0], piece[1]);
+                        out.push(Span::Rich {
+                            text: visible[start..end].to_owned(),
+                            style,
+                            mention: pills.iter().any(|p| p.contains(&start)),
+                            href: links
+                                .iter()
+                                .find(|(link, _)| link.contains(&start))
+                                .map(|(_, href)| href.clone()),
+                        });
+                    }
+                }
+            }
         }
     }
     out
@@ -7448,5 +7501,33 @@ mod tests {
             })
             .collect();
         assert_eq!(pills, ["@maya", "@maya"]);
+    }
+
+    #[test]
+    fn inline_code_and_fenced_blocks_suppress_mentions_and_highlight() {
+        let maya = core::Mention {
+            kind: "user".into(),
+            id: Some("member000001".into()),
+            username: Some("maya".into()),
+        };
+        let inline = spans(
+            "use `@maya` and `https://x.example`",
+            std::slice::from_ref(&maya),
+        );
+        assert!(inline.iter().all(|s| !matches!(
+            s,
+            Span::Rich { mention: true, .. } | Span::Rich { href: Some(_), .. }
+        )));
+        let block = spans("```rust\nfn main() {}\n```", &[]);
+        assert!(
+            block
+                .iter()
+                .any(|s| matches!(s, Span::CodeBlock { text, token: 255 } if text == "Rust\n"))
+        );
+        assert!(
+            block
+                .iter()
+                .any(|s| matches!(s, Span::CodeBlock { text, token: 1 } if text == "fn"))
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! the API and gateway; until then `Conversation::demo` generates the
 //! benchmark fixture locally (a labelled development mock, never shown as a
 //! real account).
-use crate::formatting::{BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
+use crate::formatting::{BOLD, CODE, CODE_BLOCK, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
 
 #[derive(Clone, PartialEq)]
 pub struct Person {
@@ -26,6 +26,12 @@ pub enum Span {
         /// A resolved `@` mention, drawn as a pill.
         mention: bool,
         href: Option<String>,
+    },
+    /// A fenced code block header or syntax-highlighted token.
+    /// `token` is `TokenKind as u8` (0..=9), or `255` for the language header.
+    CodeBlock {
+        text: String,
+        token: u8,
     },
     Bold(String),
     Italic(String),
@@ -248,6 +254,8 @@ impl Conversation {
                     (on(ITALIC), SpanKind::Italic),
                     (on(UNDERLINE), SpanKind::Underline),
                     (on(STRIKETHROUGH), SpanKind::Strikethrough),
+                    (on(CODE), SpanKind::Code),
+                    (on(CODE_BLOCK), SpanKind::CodeBlock),
                     (on(SPOILER), SpanKind::Spoiler),
                     (on(QUOTE), SpanKind::Quote),
                     (*mention, SpanKind::Mention),
@@ -262,6 +270,18 @@ impl Conversation {
                 }
                 continue;
             }
+            if let Span::CodeBlock { text, token } = span {
+                len16 += text.encode_utf16().count();
+                out.push_str(text);
+                let len = len16 - start;
+                spans.push((start, len, SpanKind::CodeBlock));
+                if *token == 255 {
+                    spans.push((start, len, SpanKind::CodeHeader));
+                } else if *token > 0 {
+                    spans.push((start, len, SpanKind::CodeToken(*token)));
+                }
+                continue;
+            }
             let (text, kind) = match span {
                 Span::Text(t) => (t.clone(), None),
                 Span::Bold(t) => (t.clone(), Some(SpanKind::Bold)),
@@ -270,7 +290,7 @@ impl Conversation {
                     hrefs.push((start, u.encode_utf16().count(), u.clone()));
                     (u.clone(), Some(SpanKind::Link))
                 }
-                Span::Rich { .. } => unreachable!("handled above"),
+                Span::Rich { .. } | Span::CodeBlock { .. } => unreachable!("handled above"),
                 Span::Mention(a) => (
                     format!("@{}", self.members[*a].name),
                     Some(SpanKind::Mention),
@@ -295,6 +315,14 @@ pub enum SpanKind {
     Italic,
     Underline,
     Strikethrough,
+    /// Inline code (`code`).
+    Code,
+    /// Fenced code block lines.
+    CodeBlock,
+    /// Language header above a fenced code block.
+    CodeHeader,
+    /// Syntax highlight token kind (`TokenKind as u8`, 1..=9).
+    CodeToken(u8),
     /// Hidden until revealed; neighbouring spoiler spans reveal together.
     Spoiler,
     /// A quoted line (and the newline between two of them).

@@ -1,4 +1,11 @@
-import { memo, useContext, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  Fragment,
+  memo,
+  useContext,
+  useState,
+  useSyncExternalStore,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { Ban, MoreHorizontal, Pin, SmilePlus } from "lucide-react";
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
@@ -7,8 +14,9 @@ import { emojiAsset, emojiCode } from "./emoji.ts";
 import { ForwardCard } from "./Forwarding.tsx";
 import { ReplyContext } from "./Replies.tsx";
 import LinkedText from "./LinkedText.tsx";
-import FormattedText, { QuoteBlock, quoteBlocks } from "./FormattedText.tsx";
+import FormattedText, { CodeBlockView, QuoteBlock, quoteBlocks } from "./FormattedText.tsx";
 import { formattedRuns } from "./formatting.ts";
+import { parseMessageBlocks } from "./code.ts";
 import {
   attachmentsOf,
   type ChatAttachment,
@@ -90,7 +98,7 @@ export interface RowActions {
   retrySend(): void;
 }
 
-/** Message text with links, and @mentions that open the person's profile card. */
+/** Message text with links, code blocks, and @mentions that open the person's profile card. */
 export function MessageText({
   message,
   mentionNames,
@@ -100,60 +108,68 @@ export function MessageText({
   mentionNames: ReadonlyMap<string, string>;
   actions: Pick<RowActions, "openMention">;
 }) {
-  const runs = formattedRuns(message.content.text);
-  const displayed = runs.map((run) => run.text).join("");
-  let offset = 0;
-  const segments = mentionSegments(displayed, message.content.mentions).map((segment) => {
-    const start = offset;
-    offset += segment.text.length;
-    return { segment, start, end: offset };
-  });
-  const part = (segment: (typeof segments)[number]["segment"], start: number, end: number) => {
-    const content = (
-      <FormattedText key={start} runs={runs} range={{ start, end }}>
-        {segment.mention ? undefined : (text) => <LinkedText text={text} formatted={false} />}
-      </FormattedText>
-    );
-    if (!segment.mention) return content;
-    const user = segment.user;
-    if (!user)
+  return parseMessageBlocks(message.content.text).map((messageBlock) => {
+    if (messageBlock.kind === "code") return <CodeBlockView key={messageBlock.start} block={messageBlock} />;
+    const runs = formattedRuns(messageBlock.text);
+    // Keep mentions out of inline code spans while preserving character offsets.
+    const mentionScan = runs.map((run) => (run.code ? " ".repeat(run.text.length) : run.text)).join("");
+    let offset = 0;
+    const segments = mentionSegments(mentionScan, message.content.mentions).map((segment) => {
+      const start = offset;
+      offset += segment.text.length;
+      return { segment, start, end: offset };
+    });
+    const part = (segment: (typeof segments)[number]["segment"], start: number, end: number) => {
+      const content = (
+        <FormattedText key={start} runs={runs} range={{ start, end }}>
+          {segment.mention ? undefined : (text) => <LinkedText text={text} formatted={false} />}
+        </FormattedText>
+      );
+      if (!segment.mention) return content;
+      const user = segment.user;
+      if (!user)
+        return (
+          <span
+            key={start}
+            className="chat-mention"
+            title={
+              feedbackAliases.some((alias) => segment.text.slice(1).toLowerCase() === alias)
+                ? "Asks the Caper team to look at this conversation"
+                : undefined
+            }
+          >
+            {content}
+          </span>
+        );
       return (
-        <span
+        <button
+          type="button"
           key={start}
-          className="chat-mention"
-          title={
-            feedbackAliases.some((alias) => segment.text.slice(1).toLowerCase() === alias)
-              ? "Asks the Caper team to look at this conversation"
-              : undefined
-          }
+          className="chat-mention chat-mention-person"
+          aria-haspopup="dialog"
+          aria-label={`Open profile for ${mentionNames.get(user.id) ?? `@${user.username}`}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            actions.openMention(user, event.currentTarget);
+          }}
         >
           {content}
-        </span>
+        </button>
       );
+    };
+    // A mention never holds a newline, so it never crosses a quote's edge.
     return (
-      <button
-        type="button"
-        key={start}
-        className="chat-mention chat-mention-person"
-        aria-haspopup="dialog"
-        aria-label={`Open profile for ${mentionNames.get(user.id) ?? `@${user.username}`}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          actions.openMention(user, event.currentTarget);
-        }}
-      >
-        {content}
-      </button>
+      <Fragment key={messageBlock.start}>
+        {quoteBlocks(runs).map((block) => (
+          <QuoteBlock key={block.start} quote={block.quote}>
+            {segments
+              .filter(({ start, end }) => start < block.end && end > block.start)
+              .map(({ segment, start, end }) => part(segment, Math.max(start, block.start), Math.min(end, block.end)))}
+          </QuoteBlock>
+        ))}
+      </Fragment>
     );
-  };
-  // A mention never holds a newline, so it never crosses a quote's edge.
-  return quoteBlocks(runs).map((block) => (
-    <QuoteBlock key={block.start} quote={block.quote}>
-      {segments
-        .filter(({ start, end }) => start < block.end && end > block.start)
-        .map(({ segment, start, end }) => part(segment, Math.max(start, block.start), Math.min(end, block.end)))}
-    </QuoteBlock>
-  ));
+  });
 }
 
 export function PinMarker({

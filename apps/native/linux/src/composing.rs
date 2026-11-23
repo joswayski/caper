@@ -18,8 +18,8 @@
 //! paste is typed text wherever it lands.
 
 use caper_client::formatting::{
-    self, BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE, normalized_selection, projection,
-    selection_styles, source_runs, toggle,
+    self, BOLD, CODE, CODE_BLOCK, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE,
+    normalized_selection, projection, selection_styles, source_runs, toggle,
 };
 use gtk::{gdk, glib, pango, prelude::*};
 use std::cell::{Cell, RefCell};
@@ -34,7 +34,7 @@ const QUOTE_INDENT: i32 = 15;
 
 /// The toolbar, in web's order: each style bit, its name, its Lucide icon's
 /// SVG elements and its shortcut key. A gap comes before Quote.
-const TOOLS: [(i32, &str, &str, Option<char>); 6] = [
+const TOOLS: [(i32, &str, &str, Option<char>); 8] = [
     (
         BOLD,
         "Bold",
@@ -56,13 +56,25 @@ const TOOLS: [(i32, &str, &str, Option<char>); 6] = [
     (
         STRIKETHROUGH,
         "Strikethrough",
-        r#"<path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><line x1="4" x2="20" y1="12" y2="12"/>"#,
+        r#"<path d="M16 5.5C15.2 4.5 13.7 4 12 4c-2.6 0-4.5 1.4-4.5 3.4 0 1.4.8 2.4 2.4 3"/><path d="M14.5 13.5c1.5.7 2.2 1.7 2.2 3.1 0 2.1-2 3.4-4.7 3.4-2 0-3.7-.7-4.6-1.8"/><line x1="3" x2="21" y1="12" y2="12"/>"#,
         None,
+    ),
+    (
+        CODE,
+        "Inline code",
+        r#"<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>"#,
+        Some('E'),
     ),
     (
         QUOTE,
         "Quote",
         r#"<path d="M17 6H3"/><path d="M21 12H8"/><path d="M21 18H8"/><path d="M3 12v6"/>"#,
+        None,
+    ),
+    (
+        CODE_BLOCK,
+        "Code block",
+        r#"<path d="m10 9-3 3 3 3"/><path d="m14 15 3-3-3-3"/><rect x="3" y="3" width="18" height="18" rx="2"/>"#,
         None,
     ),
     (
@@ -155,8 +167,8 @@ pub struct Rich {
     view: glib::WeakRef<gtk::TextView>,
     typing: RefCell<Typing>,
     /// Hidden delimiters, then bold, italic, underline, strikethrough,
-    /// spoiler and quote, in style bit order.
-    tags: [gtk::TextTag; 7],
+    /// spoiler, quote, inline code and code block, in style bit order.
+    tags: [gtk::TextTag; 9],
     /// The lines a quote covers, from the last restyle.
     quoted: RefCell<BTreeSet<i32>>,
     /// The quote blocks' bars, overlaid on the text.
@@ -227,6 +239,14 @@ pub fn attach(view: &gtk::TextView, anchor: &gtk::Box) -> Rc<Rich> {
         gtk::TextTag::builder().strikethrough(true).build(),
         gtk::TextTag::builder().background("#29292f").build(),
         gtk::TextTag::builder().left_margin(QUOTE_INDENT).build(),
+        gtk::TextTag::builder()
+            .family("monospace")
+            .background("#232329")
+            .build(),
+        gtk::TextTag::builder()
+            .family("monospace")
+            .background("#141418")
+            .build(),
     ];
     for tag in &tags {
         buffer.tag_table().add(tag);
@@ -458,6 +478,12 @@ impl Rich {
                     buffer.apply_tag(tag, &start, &end);
                 }
             }
+            if run.style & CODE != 0 {
+                buffer.apply_tag(&self.tags[7], &start, &end);
+            }
+            if run.style & CODE_BLOCK != 0 {
+                buffer.apply_tag(&self.tags[8], &start, &end);
+            }
             if run.style & QUOTE != 0 {
                 quoted.extend(start.line()..=end.line());
             }
@@ -544,6 +570,7 @@ impl Rich {
             gdk::Key::b | gdk::Key::B if control => self.toggle(BOLD),
             gdk::Key::i | gdk::Key::I if control => self.toggle(ITALIC),
             gdk::Key::u | gdk::Key::U if control => self.toggle(UNDERLINE),
+            gdk::Key::e | gdk::Key::E if control => self.toggle(CODE),
             // GTK moves arrows through the layout, which leaves out
             // invisible text and can land among hidden delimiters.
             gdk::Key::Left | gdk::Key::Right | gdk::Key::KP_Left | gdk::Key::KP_Right

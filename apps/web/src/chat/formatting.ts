@@ -1,6 +1,15 @@
 import { linkSegments } from "./links.ts";
 
-export const formatStyles = ["bold", "italic", "underline", "strikethrough", "spoiler", "quote"] as const;
+export const formatStyles = [
+  "bold",
+  "italic",
+  "underline",
+  "strikethrough",
+  "spoiler",
+  "quote",
+  "code",
+  "codeBlock",
+] as const;
 export type FormatStyle = (typeof formatStyles)[number];
 /** Style bits shared with the native clients (shared/messages/formatting.rs). */
 export const styleBits: Record<FormatStyle, number> = {
@@ -10,14 +19,18 @@ export const styleBits: Record<FormatStyle, number> = {
   strikethrough: 8,
   spoiler: 16,
   quote: 32,
+  code: 64,
+  codeBlock: 128,
 };
-/** Inline delimiters in the order they are tried at one position; `__` before `_`. */
+/** Inline delimiters in the order they are tried at one position; `__` before `_`, `**` before `*`. */
 export const inlineMarkers = [
   ["bold", "**"],
   ["underline", "__"],
   ["strikethrough", "~~"],
   ["spoiler", "||"],
   ["italic", "_"],
+  ["italic", "*"],
+  ["code", "`"],
 ] as const;
 
 export type FormattedRun = { text: string } & Record<FormatStyle, boolean>;
@@ -29,10 +42,53 @@ export function quotedLine(text: string, start: number, end: number) {
   return text.startsWith("> ", start) && end > start + 2 && /\S/.test(text.slice(start + 2, end));
 }
 
-/** A small Markdown subset, as Discord writes it: **bold**, _italic_, __underline__,
- * ~~strikethrough~~, ||spoiler|| and `> ` quoted lines. Delimiters must enclose
- * non-whitespace. Different styles nest; escapes, unmatched delimiters,
- * identifiers and URL contents stay literal.
+/** Whether a fenced code block opening info string is valid (optional language tag). */
+export function validFenceInfo(text: string, start: number, end: number) {
+  const info = text.slice(start, end).trim();
+  return /^[A-Za-z0-9_+#.-]*$/.test(info);
+}
+
+/** Whether `text.slice(start, end)` is a closing fence line: ```` ``` ```` + optional whitespace. */
+export function isClosingFence(text: string, start: number, end: number) {
+  if (end < start + 3 || !text.startsWith("```", start)) return false;
+  for (let i = start + 3; i < end; i++) {
+    if (!formatSpace(text[i])) return false;
+  }
+  return true;
+}
+
+/** Whether `text.slice(start, end)` is a single-line fenced block: ```` ```code``` ````. */
+export function singleLineFence(text: string, start: number, end: number): [number, number] | undefined {
+  let trimEnd = end;
+  while (trimEnd > start && formatSpace(text[trimEnd - 1])) trimEnd--;
+  if (trimEnd <= start + 6) return undefined;
+  if (!text.startsWith("```", start) || text.slice(trimEnd - 3, trimEnd) !== "```") return undefined;
+  const innerStart = start + 3;
+  const innerEnd = trimEnd - 3;
+  if (text[innerStart] === "`" || text[innerEnd - 1] === "`") return undefined;
+  if (text.slice(innerStart, innerEnd).includes("\n")) return undefined;
+  if (!/\S/.test(text.slice(innerStart, innerEnd))) return undefined;
+  if (text.slice(innerStart, innerEnd).includes("```")) return undefined;
+  return [innerStart, innerEnd];
+}
+
+/** Finds the closing line index for a fenced code block starting at `lines[index]`. */
+export function fencedBlockEnd(text: string, lines: [number, number][], index: number): number | undefined {
+  const [start, end] = lines[index];
+  if (end < start + 3 || !text.startsWith("```", start)) return undefined;
+  if (singleLineFence(text, start, end)) return index;
+  if (!validFenceInfo(text, start + 3, end)) return undefined;
+  for (let j = index + 1; j < lines.length; j++) {
+    if (isClosingFence(text, lines[j][0], lines[j][1])) return j;
+  }
+  return undefined;
+}
+
+/** A small Markdown subset, as Discord writes it: **bold**, _italic_ / *italic*,
+ * __underline__, ~~strikethrough~~, ||spoiler||, `code`, `> ` quoted lines, and
+ * fenced ``` code blocks. Delimiters must enclose non-whitespace. Different styles
+ * nest (except inside code); escapes, unmatched delimiters, snake_case identifiers
+ * and URL contents stay literal.
  * Keep native implementations aligned with shared/messages/formatting-cases.json.
  */
 export function formattedRuns(text: string): FormattedRun[] {
@@ -56,8 +112,8 @@ export function formattedMessage(text: string) {
     let slashes = 0;
     for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) slashes++;
     if (slashes % 2) return false;
-    // `***`, `~~~` and `|||` stay literal; underscores follow word rules.
-    return marker.length !== 2 || marker[0] === "_" || (text[index - 1] !== marker[0] && text[index + 2] !== marker[0]);
+    // `***`, `~~~`, `|||` and `` `` `` stay literal; underscores follow word rules.
+    return marker[0] === "_" || (text[index - 1] !== marker[0] && text[index + marker.length] !== marker[0]);
   };
   const append = (start: number, end: number, style: number) => {
     if (start >= end) return;
@@ -77,31 +133,36 @@ export function formattedMessage(text: string) {
         >),
       });
   };
-  // Underscore delimiters may not touch a word character inside the range; a
-  // delimiter just outside it belongs to an enclosing style.
+  // Single-underscore italic delimiters may not touch a word character inside the
+  // range; `*italic*` and `__underline__` work mid-word; inline `` `code` `` does
+  // not span newlines and suppresses nested Markdown.
   const parse = (start: number, end: number, style: number) => {
     let plain = start;
     let index = start;
     scan: while (index < end) {
       for (const [name, marker] of inlineMarkers) {
         const bit = styleBits[name];
-        const underscore = marker[0] === "_";
+        const singleUnderscore = marker === "_";
+        const backtick = name === "code";
         const inner = index + marker.length;
         if (
           style & bit ||
           inner >= end ||
           !markerAt(index, marker) ||
           formatSpace(text[inner]) ||
-          (underscore && index > start && word(text[index - 1])) ||
-          (marker === "_" && text[inner] === "_")
+          (singleUnderscore && index > start && word(text[index - 1])) ||
+          (singleUnderscore && text[inner] === "_")
         )
           continue;
         for (let close = inner + 1; close + marker.length <= end; close++) {
+          if (backtick && text[close - 1] === "\n") break;
           if (!markerAt(close, marker) || formatSpace(text[close - 1])) continue;
-          if (underscore && close + marker.length < end && word(text[close + marker.length])) continue;
-          if (marker === "_" && text[close - 1] === "_") continue;
+          if (singleUnderscore && close + marker.length < end && word(text[close + marker.length])) continue;
+          if (singleUnderscore && text[close - 1] === "_") continue;
+          if (marker === "__" && text[close + marker.length] === "_") continue;
           append(plain, index, style);
-          parse(inner, close, style | bit);
+          if (backtick) append(inner, close, style | bit);
+          else parse(inner, close, style | bit);
           index = close + marker.length;
           plain = index;
           continue scan;
@@ -111,23 +172,40 @@ export function formattedMessage(text: string) {
     }
     append(plain, end, style);
   };
-  // Unquoted lines parse together, so emphasis may span them; each quoted line parses alone.
-  const lines: [number, number, boolean][] = [];
+  const rawLines: [number, number][] = [];
   for (let start = 0; ;) {
     const newline = text.indexOf("\n", start);
     const end = newline < 0 ? text.length : newline;
-    lines.push([start, end, quotedLine(text, start, end)]);
+    rawLines.push([start, end]);
     if (newline < 0) break;
     start = end + 1;
   }
+  const isFence = Array<boolean>(rawLines.length).fill(false);
+  for (let idx = 0; idx < rawLines.length;) {
+    const close = fencedBlockEnd(text, rawLines, idx);
+    if (close !== undefined) {
+      for (let k = idx; k <= close; k++) isFence[k] = true;
+      idx = close + 1;
+    } else idx++;
+  }
+  const lines: [number, number, boolean, boolean][] = rawLines.map(([s, e], i) => [
+    s,
+    e,
+    !isFence[i] && quotedLine(text, s, e),
+    isFence[i],
+  ]);
   for (let index = 0; index < lines.length;) {
-    const [start, end, quoted] = lines[index];
-    if (quoted) {
+    const [start, end, quoted, fence] = lines[index];
+    if (fence) {
+      const close = fencedBlockEnd(text, rawLines, index) ?? index;
+      append(start, lines[close][1], styleBits.codeBlock);
+      index = close + 1;
+    } else if (quoted) {
       parse(start + 2, end, styleBits.quote);
       index++;
     } else {
       let last = index;
-      while (last + 1 < lines.length && !lines[last + 1][2]) last++;
+      while (last + 1 < lines.length && !lines[last + 1][2] && !lines[last + 1][3]) last++;
       parse(start, lines[last][1], 0);
       index = last + 1;
     }

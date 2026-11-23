@@ -272,7 +272,7 @@ public final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
 
 /// Formatting attributes `highlightDraft` owns; composers drop them from
 /// their typing attributes so new text starts plain until it is highlighted.
-public let composerFormattingAttributes: [NSAttributedString.Key] = [.underlineStyle, .strikethroughStyle, .paragraphStyle, .spoilerFill, .quoteBar]
+public let composerFormattingAttributes: [NSAttributedString.Key] = [.underlineStyle, .strikethroughStyle, .paragraphStyle, .spoilerFill, .quoteBar, .inlineCodeFill, .codeBlockFill]
 
 #if os(iOS)
 public typealias PlatformComposerFont = UIFont
@@ -295,11 +295,15 @@ public typealias PlatformComposerFont = NSFont
     let textColor = UIColor(CaperTheme.text)
     let linkTextColor = UIColor(CaperTheme.link)
     let spoilerFill = UIColor(CaperTheme.border)
+    let monoFont = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    let monoBoldFont = UIFont.monospacedSystemFont(ofSize: 13, weight: .bold)
     #else
     let color = CaperThemeStore.accentColor.withAlphaComponent(0.24)
     let textColor = CaperThemeStore.textColor
     let linkTextColor = CaperThemeStore.linkColor
     let spoilerFill = CaperThemeStore.borderColor
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    let monoBoldFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
     #endif
     storage.beginEditing()
     storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
@@ -317,8 +321,14 @@ public typealias PlatformComposerFont = NSFont
     }
     var displayed = 0
     var quoted: [Int] = []
+    var codeIndices = Set<Int>()
     for run in projection.runs {
-        let font = PlatformComposerFont(name: run.bold ? "Figtree-Bold" : "Figtree-Regular", size: 14) ?? baseFont
+        let font: PlatformComposerFont
+        if run.code || run.codeBlock {
+            font = run.bold ? monoBoldFont : monoFont
+        } else {
+            font = PlatformComposerFont(name: run.bold ? "Figtree-Bold" : "Figtree-Regular", size: 14) ?? baseFont
+        }
         for index in displayed..<(displayed + run.text.utf16.count) {
             let character = NSRange(location: projection.sourceIndices[index], length: 1)
             storage.addAttribute(.font, value: font, range: character)
@@ -329,6 +339,14 @@ public typealias PlatformComposerFont = NSFont
             if run.strikethrough { storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: character) }
             // Drafts show spoilers, marked by DraftLinkLayoutManager's rounded fill.
             if run.spoiler { storage.addAttribute(.spoilerFill, value: spoilerFill, range: character) }
+            if run.code {
+                storage.addAttribute(.inlineCodeFill, value: true, range: character)
+                codeIndices.insert(character.location)
+            }
+            if run.codeBlock {
+                storage.addAttribute(.codeBlockFill, value: true, range: character)
+                codeIndices.insert(character.location)
+            }
             if run.quote {
                 storage.addAttribute(.quoteBar, value: true, range: character)
                 quoted.append(character.location)
@@ -350,13 +368,17 @@ public typealias PlatformComposerFont = NSFont
     for segment in MessageLinks.segments(in: storage.string) {
         let range = NSRange(location: offset, length: segment.text.utf16.count)
         offset += range.length
-        if segment.href != nil, !ranges.contains(where: { NSIntersectionRange($0, range).length > 0 }) {
+        if segment.href != nil,
+           !codeIndices.contains(range.location),
+           !ranges.contains(where: { NSIntersectionRange($0, range).length > 0 }) {
             storage.addAttributes([.draftLink: range.location, .foregroundColor: linkTextColor], range: range)
             storage.addAttribute(.kern, value: DraftLinkLayoutManager.iconAdvance,
                                  range: NSRange(location: range.location, length: 1))
         }
     }
-    for range in ranges { storage.addAttribute(.backgroundColor, value: color, range: range) }
+    for range in ranges where !codeIndices.contains(range.location) {
+        storage.addAttribute(.backgroundColor, value: color, range: range)
+    }
     #if os(macOS)
     storage.removeAttribute(.toolTip, range: NSRange(location: 0, length: storage.length))
     for emoji in EmojiArtwork.namedRanges(in: storage.string) {
@@ -405,6 +427,7 @@ public final class ComposerTextView: UITextView {
     @objc func formatBold(_ sender: Any?) { formatSelection?(.bold) }
     @objc func formatItalic(_ sender: Any?) { formatSelection?(.italic) }
     @objc func formatUnderline(_ sender: Any?) { formatSelection?(.underline) }
+    @objc func formatCode(_ sender: Any?) { formatSelection?(.code) }
     private var emojiTooltip: UILabel?
     private var emojiHover: Task<Void, Never>?
     private var inspectedRange: NSRange?
@@ -510,7 +533,8 @@ public final class ComposerTextView: UITextView {
     public override var keyCommands: [UIKeyCommand]? {
         var formatting = [UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(formatBold(_:))),
                           UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(formatItalic(_:))),
-                          UIKeyCommand(input: "u", modifierFlags: .command, action: #selector(formatUnderline(_:)))]
+                          UIKeyCommand(input: "u", modifierFlags: .command, action: #selector(formatUnderline(_:))),
+                          UIKeyCommand(input: "e", modifierFlags: .command, action: #selector(formatCode(_:)))]
         if markedTextRange == nil {
             for input in [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow] {
                 for modifiers in [UIKeyModifierFlags(), .shift] {
@@ -831,7 +855,9 @@ public final class ComposerTextView: NSTextView {
     @objc public func formatItalic(_ sender: Any?) { formatSelection?(.italic) }
     @objc public func formatUnderline(_ sender: Any?) { formatSelection?(.underline) }
     @objc public func formatStrikethrough(_ sender: Any?) { formatSelection?(.strikethrough) }
+    @objc public func formatCode(_ sender: Any?) { formatSelection?(.code) }
     @objc public func formatQuote(_ sender: Any?) { formatSelection?(.quote) }
+    @objc public func formatCodeBlock(_ sender: Any?) { formatSelection?(.codeBlock) }
     @objc public func formatSpoiler(_ sender: Any?) { formatSelection?(.spoiler) }
     /// The action each formatting menu item sends.
     nonisolated public static func formatSelector(_ style: MessageStyle) -> Selector {
@@ -840,7 +866,9 @@ public final class ComposerTextView: NSTextView {
         case .italic: return #selector(ComposerTextView.formatItalic(_:))
         case .underline: return #selector(ComposerTextView.formatUnderline(_:))
         case .strikethrough: return #selector(ComposerTextView.formatStrikethrough(_:))
+        case .code: return #selector(ComposerTextView.formatCode(_:))
         case .quote: return #selector(ComposerTextView.formatQuote(_:))
+        case .codeBlock: return #selector(ComposerTextView.formatCodeBlock(_:))
         default: return #selector(ComposerTextView.formatSpoiler(_:))
         }
     }

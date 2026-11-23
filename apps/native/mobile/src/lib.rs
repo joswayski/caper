@@ -11,6 +11,9 @@
 //! - Android: JNI functions for `chat.caper.android.data.CaperMobile`
 //!   (feature `jni`), built per ABI by cargo-ndk from Gradle.
 
+/// Fenced code blocks, automatic language detection, and syntax highlighting.
+#[path = "../../../../shared/messages/code.rs"]
+pub mod code;
 /// Composer edits as web makes them; it finds the grammar as `super::parser`.
 #[path = "../../../../shared/messages/composer.rs"]
 pub mod composer;
@@ -41,8 +44,8 @@ mod c_abi;
 mod jni;
 
 /// Style bits in a formatting span: 1 bold, 2 italic, 4 underline, 8
-/// strikethrough, 16 spoiler, 32 quote.
-pub use formatting::{BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
+/// strikethrough, 16 spoiler, 32 quote, 64 code, 128 code block.
+pub use formatting::{BOLD, CODE, CODE_BLOCK, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
 
 /// Converts increasing byte offsets in one string to UTF-16 offsets.
 struct Utf16Cursor<'a> {
@@ -90,6 +93,59 @@ pub fn format_spans(text: &str, utf8: bool) -> Vec<i32> {
         }
         out.push(style);
     });
+    out
+}
+
+/// Top-level message blocks (prose vs fenced code blocks). Each block is
+/// `[kind, utf16_start, utf16_end, lang_flags]` (or with `utf8_start, utf8_end`
+/// inserted before `lang_flags` when `utf8` is true). `kind` is 0 for prose
+/// and 1 for a fenced code block (pointing to the inner code without fences);
+/// `lang_flags` carries `Language as i32` in bits 0..8 and bit 256 when
+/// automatically detected.
+pub fn code_blocks(text: &str, utf8: bool) -> Vec<i32> {
+    let mut out = Vec::new();
+    let mut cursor = Utf16Cursor::new(text);
+    for block in code::parse_blocks(text) {
+        match block {
+            code::MessageBlock::Prose { range, .. } => {
+                out.push(0);
+                out.push(offset(cursor.at(range.start)));
+                out.push(offset(cursor.at(range.end)));
+                if utf8 {
+                    out.extend([offset(range.start), offset(range.end)]);
+                }
+                out.push(0);
+            }
+            code::MessageBlock::Code(blk) => {
+                out.push(1);
+                out.push(offset(cursor.at(blk.code_range.start)));
+                out.push(offset(cursor.at(blk.code_range.end)));
+                if utf8 {
+                    out.extend([offset(blk.code_range.start), offset(blk.code_range.end)]);
+                }
+                let flags = (blk.language as i32) | if blk.detected { 256 } else { 0 };
+                out.push(flags);
+            }
+        }
+    }
+    out
+}
+
+/// Syntax-highlighted token spans for `code` in `language` (`code::Language`).
+/// Each span is `[utf16_start, utf16_end, kind]` (or with `utf8_start, utf8_end`
+/// inserted before `kind` when `utf8` is true).
+pub fn highlight_code(source: &str, language: i32, utf8: bool) -> Vec<i32> {
+    let lang = code::Language::from_code(language);
+    let mut out = Vec::new();
+    let mut cursor = Utf16Cursor::new(source);
+    for span in code::highlight(source, lang) {
+        out.push(offset(cursor.at(span.start)));
+        out.push(offset(cursor.at(span.end)));
+        if utf8 {
+            out.extend([offset(span.start), offset(span.end)]);
+        }
+        out.push(span.kind as i32);
+    }
     out
 }
 

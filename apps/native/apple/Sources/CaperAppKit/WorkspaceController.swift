@@ -165,6 +165,8 @@ import CaperCore
     private lazy var directBar = DirectConversationBar(model: model)
     private let suggestions = ComposerSuggestions()
     private var suggestionsDismissed = false
+    private let formatToolbar = AppKitFormatToolbar()
+    private var formatToolbarDismissed = false
     private var formattingDraft = false
     /// The style web carries between typed keys (shared/messages/composer.rs).
     private var typing = ComposerTyping()
@@ -205,7 +207,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, emptyState, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerShell, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, emptyState, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerShell, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions, formatToolbar].forEach { stage.addSubview($0) }
         emptyState.isHidden = true
         emptyState.setAccessibilityElement(false)
         emptyCaper.imageScaling = .scaleProportionallyUpOrDown
@@ -334,10 +336,11 @@ import CaperCore
             guard let self else { return }
             self.composerFocused = focused
             self.applyComposerChrome()
-            if focused { self.refreshSuggestions() } else { self.suggestions.update(nil) }
+            if focused { self.refreshSuggestions() } else { self.suggestions.update(nil); self.formatToolbar.isHidden = true }
         }
         composer.setAccessibilityHelp("Return sends. Shift-Return adds a new line. Use arrows and Return or Tab to choose a suggestion; Escape dismisses.")
         suggestions.accept = { [weak self] in self?.acceptSuggestion($0) }
+        formatToolbar.formatAction = { [weak self] in self?.formatDraft($0) }
         composerScroll.documentView = composer
         composerScroll.hasVerticalScroller = true
         composerScroll.autohidesScrollers = true
@@ -770,6 +773,7 @@ import CaperCore
         broadcast.frame = NSRect(x: 20, y: height - 26, width: min(center - 40, broadcast.fittingSize.width), height: 22)
         join.frame = NSRect(x: 20, y: height - 80, width: min(140, center - 40), height: 38)
         layoutSuggestions()
+        layoutFormatToolbar()
         retry.frame = NSRect(x: center - 84, y: statusY, width: 64, height: 24)
         layoutJumpToLatest()
         editRejected.frame = NSRect(x: 20, y: quoteBottom - quoteHeight - recoveryHeight, width: min(200, center - 40), height: 30)
@@ -1237,13 +1241,17 @@ import CaperCore
         refreshSuggestions()
     }
     func textDidEndEditing(_ notification: Notification) {
-        if notification.object as? NSTextView === composer { typing.end() }
+        if notification.object as? NSTextView === composer {
+            typing.end()
+            formatToolbar.isHidden = true
+        }
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
         guard !formattingDraft else { return }
         typing.observe(composer.string, selection: composer.selectedRange())
         suggestionsDismissed = false
+        formatToolbarDismissed = false
         refreshSuggestions()
     }
     private func refreshSuggestions() {
@@ -1262,15 +1270,50 @@ import CaperCore
             composer.typingAttributes[.foregroundColor] = NativeStyle.text
             formattingDraft = false
         }
-        let active = composer.isEditable && composer.window?.firstResponder === composer && !suggestionsDismissed
+        let focused = composer.isEditable && composer.window?.firstResponder === composer
+        let active = focused && !suggestionsDismissed
         suggestions.update(active ? NativePresentation.autocomplete(text: composer.string, selection: composer.selectedRange(),
             markedText: composer.hasMarkedText(), model: model) : nil)
         layoutSuggestions()
+        let range = composer.selectedRange()
+        let showFormat = focused && !composerField.isHidden && !composer.hasMarkedText() && range.length > 0 && !formatToolbarDismissed
+        if showFormat {
+            formatToolbar.update(text: composer.string, selection: range)
+            formatToolbar.isHidden = false
+            layoutFormatToolbar()
+        } else {
+            formatToolbar.isHidden = true
+        }
     }
     private func layoutSuggestions() {
         let width = suggestions.match?.isMention == true ? composerField.frame.width : min(260, composerField.frame.width)
         suggestions.frame = NSRect(x: composerField.frame.minX, y: composerField.frame.minY - suggestions.height - 8,
             width: width, height: suggestions.height)
+    }
+    private func layoutFormatToolbar() {
+        guard !formatToolbar.isHidden else { return }
+        let barSize = formatToolbar.preferredSize
+        let range = composer.selectedRange()
+        var targetX = composerField.frame.minX
+        if range.length > 0, let layout = composer.layoutManager, let container = composer.textContainer {
+            let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            if glyphs.length > 0 {
+                let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+                let inComposer = NSRect(
+                    x: rect.origin.x + composer.textContainerOrigin.x,
+                    y: rect.origin.y + composer.textContainerOrigin.y,
+                    width: rect.width,
+                    height: rect.height
+                )
+                let inStage = stage.convert(inComposer, from: composer)
+                targetX = inStage.midX - barSize.width / 2
+            }
+        }
+        let minX = composerShell.frame.minX
+        let maxX = max(minX, stage.bounds.width - barSize.width - 16)
+        let x = min(max(targetX, minX), maxX)
+        let y = max(52, composerShell.frame.minY - barSize.height - 8)
+        formatToolbar.frame = NSRect(x: floor(x), y: floor(y), width: barSize.width, height: barSize.height)
     }
     private func formatDraft(_ style: MessageStyle) {
         guard composer.isEditable, !composer.hasMarkedText(),
@@ -1291,6 +1334,11 @@ import CaperCore
             formatDraft(item.style); return true
         }
         if handleSuggestionKey(event) { return true }
+        if event.keyCode == 53, !formatToolbar.isHidden {
+            formatToolbarDismissed = true
+            formatToolbar.isHidden = true
+            return true
+        }
         if event.keyCode == 53, model.chat.threadRootID != nil { closeThread(); return true }
         if event.keyCode == 36, !event.modifierFlags.contains(.shift) { submit(); return true }
         return false
@@ -1325,6 +1373,7 @@ import CaperCore
     private func applyComposerChrome() {
         composerShell.applyTheme()
         composerField.applyTheme(focused: composerFocused)
+        formatToolbar.applyTheme()
         composer.drawsBackground = false
         composer.backgroundColor = .clear
         composer.textColor = NativeStyle.text
@@ -1504,4 +1553,160 @@ private final class AppKitComposerLip: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Floating selection formatting bar anchored over the macOS AppKit composer,
+/// matching web's `.chat-format-toolbar` without stealing composer focus.
+@MainActor private final class AppKitFormatToolbar: NSView {
+    override var isFlipped: Bool { true }
+    var formatAction: ((MessageStyle) -> Void)?
+    private var buttons: [(button: AppKitFormatButton, item: MessageFormattingAction)] = []
+    private let buttonSize: CGFloat = 36
+    private let dividerGap: CGFloat = 12
+
+    var preferredSize: NSSize {
+        let count = CGFloat(MessageFormattingAction.all.count)
+        return NSSize(width: count * buttonSize + dividerGap, height: buttonSize)
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.borderWidth = 1
+        layer?.masksToBounds = false
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.32)
+        shadow.shadowBlurRadius = 16
+        shadow.shadowOffset = NSSize(width: 0, height: -4)
+        self.shadow = shadow
+        setAccessibilityElement(false)
+        setAccessibilityIdentifier("format-toolbar")
+        setAccessibilityLabel("Message formatting")
+        isHidden = true
+
+        var x: CGFloat = 0
+        for item in MessageFormattingAction.all {
+            if item.style == .quote { x += dividerGap }
+            let button = AppKitFormatButton(item: item) { [weak self] in
+                self?.formatAction?(item.style)
+            }
+            button.frame = NSRect(x: x, y: 0, width: buttonSize, height: buttonSize)
+            addSubview(button)
+            buttons.append((button, item))
+            x += buttonSize
+        }
+        applyTheme()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(text: String, selection: NSRange) {
+        let pressed = MessageFormatting.selectionStyles(text, selection: selection)
+        for (button, item) in buttons {
+            let allowed = MessageFormatting.toggle(text, selection: selection, style: item.style) != nil
+            button.isEnabled = allowed
+            button.isActive = pressed.contains(item.style)
+            button.toolTip = allowed
+                ? (item.key.map { "\(item.title) (⌘\($0.uppercased()))" } ?? item.title)
+                : "This selection cannot be formatted without changing its text or link"
+            button.applyTheme()
+        }
+    }
+
+    func applyTheme() {
+        layer?.backgroundColor = NativeStyle.surface.cgColor
+        layer?.borderColor = NativeStyle.border.cgColor
+        for (button, _) in buttons {
+            button.applyTheme()
+        }
+    }
+}
+
+@MainActor private final class AppKitFormatButton: NSButton {
+    private let handler: () -> Void
+    private var hovered = false
+    var isActive = false
+    override var acceptsFirstResponder: Bool { false }
+
+    init(item: MessageFormattingAction, action: @escaping () -> Void) {
+        self.handler = action
+        super.init(frame: .zero)
+        isBordered = false
+        title = ""
+        imagePosition = .imageOnly
+        focusRingType = .none
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        if item.style == .strikethrough {
+            image = Self.strikethroughImage()
+        } else {
+            image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: item.title)?
+                .withSymbolConfiguration(.init(pointSize: 13.5, weight: .medium))
+        }
+        setAccessibilityLabel(item.title)
+        setAccessibilityIdentifier("format-\(item.title.lowercased().replacingOccurrences(of: " ", with: "-"))")
+        target = self
+        self.action = #selector(clicked)
+        let tracking = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(tracking)
+        applyTheme()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func clicked() {
+        guard isEnabled else { return }
+        handler()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovered = true
+        applyTheme()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        applyTheme()
+    }
+
+    override func resetCursorRects() {
+        if isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    func applyTheme() {
+        alphaValue = isEnabled ? 1 : 0.35
+        contentTintColor = (isActive || (hovered && isEnabled)) ? NativeStyle.text : NativeStyle.muted
+        if isActive {
+            layer?.backgroundColor = NativeStyle.accent.withAlphaComponent(hovered && isEnabled ? 0.38 : 0.28).cgColor
+        } else if hovered && isEnabled {
+            layer?.backgroundColor = NativeStyle.hoverWash.cgColor
+        } else {
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+        setAccessibilityValue(isActive ? 1 : 0)
+    }
+
+    /// Clear S with a full-width horizontal strike line through its middle.
+    private static func strikethroughImage() -> NSImage {
+        let size = NSSize(width: 17, height: 17)
+        let image = NSImage(size: size, flipped: true) { rect in
+            let glyph = NSAttributedString(string: "S", attributes: [
+                .font: NativeStyle.font(13.5, bold: false),
+                .foregroundColor: NSColor.black,
+            ])
+            let glyphSize = glyph.size()
+            glyph.draw(at: NSPoint(x: (rect.width - glyphSize.width) / 2, y: (rect.height - glyphSize.height) / 2 - 0.5))
+            let bar = NSBezierPath()
+            bar.move(to: NSPoint(x: 2, y: rect.midY))
+            bar.line(to: NSPoint(x: rect.width - 2, y: rect.midY))
+            bar.lineWidth = 1.6
+            bar.lineCapStyle = .round
+            NSColor.black.setStroke()
+            bar.stroke()
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
 }

@@ -5,9 +5,10 @@
 //! Each quote block is its own label with a bar on its left (`View`), and a
 //! spoiler hides its text until it is clicked.
 
-use crate::formatting::{BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
+use crate::formatting::{BOLD, CODE, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE};
+use caper_client::formatting::code::{self, Language, MessageBlock, TokenKind};
 use caper_client::model::Mention;
-use gtk::{glib, pango, prelude::*};
+use gtk::{gdk, glib, pango, prelude::*};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -35,6 +36,9 @@ const HIDDEN: &str =
 /// A revealed spoiler, as web's: a rgb(255 255 255 / 5%) wash.
 const REVEALED: &str = "background=\"#ffffff\" bgalpha=\"5%\"";
 
+/// Inline code pill, as web's `.chat-inline-code`.
+const INLINE_CODE: &str = "font_family=\"monospace\" background=\"#232329\"";
+
 /// What a hidden spoiler is called, as web's button.
 pub const SPOILER_NAME: &str = "Spoiler, reveal";
 
@@ -59,10 +63,14 @@ enum Block {
         quote: bool,
         pieces: Vec<Piece>,
     },
+    Code {
+        language: Language,
+        code: String,
+    },
 }
 
 /// A message's text, block by block: consecutive quoted lines form one
-/// block, and the text around them others.
+/// block, fenced code blocks form their own card, and prose around them others.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Body(Vec<Block>);
 
@@ -73,114 +81,136 @@ impl Body {
     }
 
     pub fn message(text: &str, mentions: &[Mention]) -> Self {
-        let highlighted = caper_client::mentions::highlights(text, mentions);
-        let pills: Vec<Range<usize>> = highlighted.iter().map(|(range, _)| range.clone()).collect();
-        // A person's pill links to their profile card.
-        let people: Vec<Option<&str>> = highlighted
-            .iter()
-            .map(|(_, mention)| {
-                (mention.kind == "user")
-                    .then_some(mention.id.as_deref())
-                    .flatten()
-            })
-            .collect();
-        let mut links: Vec<(Range<usize>, String)> = Vec::new();
-        // Links only in the plain text between mentions.
-        let mut gap_start = 0;
-        for gap_end in pills
-            .iter()
-            .map(|pill| (pill.start, pill.end))
-            .chain([(text.len(), text.len())])
-        {
-            let mut offset = gap_start;
-            for segment in crate::links::segments(&text[gap_start..gap_end.0]) {
-                let next = offset + segment.text.len();
-                if let Some(href) = segment.href {
-                    links.push((offset..next, href));
+        let mut all_blocks: Vec<Block> = Vec::new();
+        let mut spoilers = 0usize;
+
+        for message_block in code::parse_blocks(text) {
+            match message_block {
+                MessageBlock::Code(blk) => {
+                    all_blocks.push(Block::Code {
+                        language: blk.language,
+                        code: blk.code.to_owned(),
+                    });
                 }
-                offset = next;
-            }
-            gap_start = gap_end.1;
-        }
-        let mut pieces: Vec<Piece> = Vec::new();
-        crate::formatting::visit_runs(text, |range, style| {
-            let mut cuts = vec![range.start, range.end];
-            for edge in pills
-                .iter()
-                .chain(links.iter().map(|(link, _)| link))
-                .flat_map(|span| [span.start, span.end])
-            {
-                if range.start < edge && edge < range.end {
-                    cuts.push(edge);
+                MessageBlock::Prose { text: prose, .. } => {
+                    let highlighted = caper_client::mentions::highlights(prose, mentions);
+                    let pills: Vec<Range<usize>> =
+                        highlighted.iter().map(|(range, _)| range.clone()).collect();
+                    let people: Vec<Option<&str>> = highlighted
+                        .iter()
+                        .map(|(_, mention)| {
+                            (mention.kind == "user")
+                                .then_some(mention.id.as_deref())
+                                .flatten()
+                        })
+                        .collect();
+                    let mut links: Vec<(Range<usize>, String)> = Vec::new();
+                    let mut gap_start = 0;
+                    for gap_end in pills
+                        .iter()
+                        .map(|pill| (pill.start, pill.end))
+                        .chain([(prose.len(), prose.len())])
+                    {
+                        let mut offset = gap_start;
+                        for segment in crate::links::segments(&prose[gap_start..gap_end.0]) {
+                            let next = offset + segment.text.len();
+                            if let Some(href) = segment.href {
+                                links.push((offset..next, href));
+                            }
+                            offset = next;
+                        }
+                        gap_start = gap_end.1;
+                    }
+                    let mut pieces: Vec<Piece> = Vec::new();
+                    crate::formatting::visit_runs(prose, |range, style| {
+                        if style & CODE != 0 {
+                            pieces.push(Piece {
+                                text: prose[range].into(),
+                                style,
+                                link: None,
+                                pill: None,
+                                spoiler: None,
+                            });
+                            return;
+                        }
+                        let mut cuts = vec![range.start, range.end];
+                        for edge in pills
+                            .iter()
+                            .chain(links.iter().map(|(link, _)| link))
+                            .flat_map(|span| [span.start, span.end])
+                        {
+                            if range.start < edge && edge < range.end {
+                                cuts.push(edge);
+                            }
+                        }
+                        cuts.sort_unstable();
+                        cuts.dedup();
+                        for piece in cuts.windows(2) {
+                            let (start, end) = (piece[0], piece[1]);
+                            pieces.push(Piece {
+                                text: prose[start..end].into(),
+                                style,
+                                link: links
+                                    .iter()
+                                    .find(|(link, _)| link.contains(&start))
+                                    .map(|(_, href)| href.clone()),
+                                pill: pills
+                                    .iter()
+                                    .position(|pill| pill.contains(&start))
+                                    .map(|index| people[index].map(str::to_owned)),
+                                spoiler: None,
+                            });
+                        }
+                    });
+                    // Neighbouring spoiler pieces, such as one with a bold word, reveal together.
+                    let mut previous = false;
+                    for piece in &mut pieces {
+                        let spoiler = piece.style & SPOILER != 0;
+                        if spoiler && !previous {
+                            spoilers += 1;
+                        }
+                        previous = spoiler;
+                        piece.spoiler = spoiler.then(|| spoilers - 1);
+                    }
+                    let mut blocks: Vec<(bool, Vec<Piece>)> = Vec::new();
+                    for piece in pieces {
+                        let quote = piece.style & QUOTE != 0;
+                        match blocks.last_mut() {
+                            Some((last, block)) if *last == quote => block.push(piece),
+                            _ => blocks.push((quote, vec![piece])),
+                        }
+                    }
+                    // A quote block takes the line break on each side of it.
+                    for index in 0..blocks.len() {
+                        if blocks[index].0 {
+                            continue;
+                        }
+                        let after_quote = index > 0;
+                        let before_quote = index + 1 < blocks.len();
+                        let pieces = &mut blocks[index].1;
+                        if after_quote
+                            && let Some(first) = pieces.first_mut()
+                            && first.text.starts_with('\n')
+                        {
+                            first.text.remove(0);
+                        }
+                        if before_quote
+                            && let Some(last) = pieces.last_mut()
+                            && last.text.ends_with('\n')
+                        {
+                            last.text.pop();
+                        }
+                        pieces.retain(|piece| !piece.text.is_empty());
+                    }
+                    for (quote, pieces) in blocks {
+                        if !pieces.is_empty() {
+                            all_blocks.push(Block::Text { quote, pieces });
+                        }
+                    }
                 }
             }
-            cuts.sort_unstable();
-            cuts.dedup();
-            for piece in cuts.windows(2) {
-                let (start, end) = (piece[0], piece[1]);
-                pieces.push(Piece {
-                    text: text[start..end].into(),
-                    style,
-                    link: links
-                        .iter()
-                        .find(|(link, _)| link.contains(&start))
-                        .map(|(_, href)| href.clone()),
-                    pill: pills
-                        .iter()
-                        .position(|pill| pill.contains(&start))
-                        .map(|index| people[index].map(str::to_owned)),
-                    spoiler: None,
-                });
-            }
-        });
-        // Neighbouring spoiler pieces, such as one with a bold word, reveal
-        // together.
-        let mut spoilers = 0;
-        let mut previous = false;
-        for piece in &mut pieces {
-            let spoiler = piece.style & SPOILER != 0;
-            if spoiler && !previous {
-                spoilers += 1;
-            }
-            previous = spoiler;
-            piece.spoiler = spoiler.then(|| spoilers - 1);
         }
-        let mut blocks: Vec<(bool, Vec<Piece>)> = Vec::new();
-        for piece in pieces {
-            let quote = piece.style & QUOTE != 0;
-            match blocks.last_mut() {
-                Some((last, block)) if *last == quote => block.push(piece),
-                _ => blocks.push((quote, vec![piece])),
-            }
-        }
-        // A quote block takes the line break on each side of it.
-        for index in 0..blocks.len() {
-            if blocks[index].0 {
-                continue;
-            }
-            let after_quote = index > 0;
-            let before_quote = index + 1 < blocks.len();
-            let pieces = &mut blocks[index].1;
-            if after_quote
-                && let Some(first) = pieces.first_mut()
-                && first.text.starts_with('\n')
-            {
-                first.text.remove(0);
-            }
-            if before_quote
-                && let Some(last) = pieces.last_mut()
-                && last.text.ends_with('\n')
-            {
-                last.text.pop();
-            }
-            pieces.retain(|piece| !piece.text.is_empty());
-        }
-        Self(
-            blocks
-                .into_iter()
-                .map(|(quote, pieces)| Block::Text { quote, pieces })
-                .collect(),
-        )
+        Self(all_blocks)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -195,6 +225,7 @@ impl Body {
             .map(|block| match block {
                 Block::Notice(markup) => (false, markup.clone()),
                 Block::Text { quote, pieces } => (*quote, markup(pieces, revealed)),
+                Block::Code { language, code } => (false, code_markup(code, *language)),
             })
             .collect()
     }
@@ -238,10 +269,45 @@ impl Body {
                     }
                     lines.push(line);
                 }
+                Block::Code { code, .. } => {
+                    lines.push(code.clone());
+                }
             }
         }
         lines.join("\n")
     }
+}
+
+/// Syntax-highlighted Pango markup for a fenced code block.
+fn code_markup(code: &str, language: Language) -> String {
+    let mut out = String::new();
+    for span in code::highlight(code, language) {
+        let escaped = glib::markup_escape_text(&code[span.start..span.end]);
+        let color = match span.kind {
+            TokenKind::Plain => None,
+            TokenKind::Keyword => Some("#d2a8ff"),
+            TokenKind::String => Some("#a5d6a7"),
+            TokenKind::Comment => Some("#7a7a85"),
+            TokenKind::Number => Some("#f2b880"),
+            TokenKind::Type => Some("#79c0ff"),
+            TokenKind::Function => Some("#7ee7c8"),
+            TokenKind::Attribute => Some("#ffa657"),
+            TokenKind::Addition => Some("#4ade80"),
+            TokenKind::Deletion => Some("#f87171"),
+        };
+        if let Some(hex) = color {
+            if span.kind == TokenKind::Comment {
+                out.push_str(&format!(
+                    "<span foreground=\"{hex}\" style=\"italic\">{escaped}</span>"
+                ));
+            } else {
+                out.push_str(&format!("<span foreground=\"{hex}\">{escaped}</span>"));
+            }
+        } else {
+            out.push_str(&escaped);
+        }
+    }
+    out
 }
 
 /// `pieces` as GtkLabel markup. A hidden spoiler is one link over its
@@ -270,24 +336,29 @@ fn markup(pieces: &[Piece], revealed: &BTreeSet<usize>) -> String {
                 out.push_str(&format!("<span {REVEALED}>"));
                 close.push("</span>");
             }
-            if let Some(href) = &piece.link {
-                out.push_str(&format!("<a href=\"{}\">", glib::markup_escape_text(href)));
-                close.push("</a>");
-                if piece.pill.is_none() {
-                    out.push_str(&format!("<span {URL_PILL}>"));
+            if piece.style & CODE != 0 {
+                out.push_str(&format!("<span {INLINE_CODE}>"));
+                close.push("</span>");
+            } else {
+                if let Some(href) = &piece.link {
+                    out.push_str(&format!("<a href=\"{}\">", glib::markup_escape_text(href)));
+                    close.push("</a>");
+                    if piece.pill.is_none() {
+                        out.push_str(&format!("<span {URL_PILL}>"));
+                        close.push("</span>");
+                    }
+                }
+                if let Some(person) = &piece.pill {
+                    if let Some(id) = person {
+                        out.push_str(&format!(
+                            "<a href=\"{PERSON}{}\">",
+                            glib::markup_escape_text(id)
+                        ));
+                        close.push("</a>");
+                    }
+                    out.push_str(&format!("<span {MENTION}>"));
                     close.push("</span>");
                 }
-            }
-            if let Some(person) = &piece.pill {
-                if let Some(id) = person {
-                    out.push_str(&format!(
-                        "<a href=\"{PERSON}{}\">",
-                        glib::markup_escape_text(id)
-                    ));
-                    close.push("</a>");
-                }
-                out.push_str(&format!("<span {MENTION}>"));
-                close.push("</span>");
             }
         }
         for (bit, open, end) in [
@@ -331,9 +402,8 @@ impl Shown {
     }
 }
 
-/// A message body's labels: one per block, quote blocks with a bar. A hidden
-/// spoiler is a link that reveals it; revealed spoilers stay revealed while
-/// the view shows the same body.
+/// A message body's labels: one per block, quote blocks with a bar, and fenced
+/// code blocks in styled cards with language label and copy button.
 pub struct View {
     pub root: gtk::Box,
     shown: Rc<Shown>,
@@ -364,35 +434,87 @@ impl View {
             self.root.remove(&child);
         }
         let mut labels = Vec::new();
-        for (quote, _) in body.blocks(&BTreeSet::new()) {
-            let label = gtk::Label::builder()
-                .xalign(0.0)
-                .wrap(true)
-                .wrap_mode(pango::WrapMode::WordChar)
-                .selectable(true)
-                .css_classes(["body"])
-                .build();
-            if quote {
-                label.add_css_class("message-quote");
-            }
-            let shown = Rc::downgrade(&self.shown);
-            label.connect_activate_link(move |label, uri| {
-                let Some(shown) = shown.upgrade() else {
-                    return glib::Propagation::Proceed;
-                };
-                if let Some(index) = uri.strip_prefix(SPOILER_LINK) {
-                    if let Ok(index) = index.parse() {
-                        shown.revealed.borrow_mut().insert(index);
-                        // Not inside the label's own link handling.
-                        glib::idle_add_local_once(move || shown.render());
-                    }
-                    return glib::Propagation::Stop;
+        for block in &body.0 {
+            match block {
+                Block::Code { language, code } => {
+                    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                    card.add_css_class("message-code-block");
+                    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                    header.add_css_class("message-code-header");
+                    let lang = gtk::Label::new(Some(language.display_name()));
+                    lang.set_xalign(0.0);
+                    lang.set_hexpand(true);
+                    lang.add_css_class("message-code-lang");
+                    let copy = gtk::Button::with_label("Copy");
+                    copy.add_css_class("flat");
+                    copy.add_css_class("message-code-copy");
+                    let raw = code.clone();
+                    copy.connect_clicked(move |button| {
+                        if let Some(display) = gdk::Display::default() {
+                            display.clipboard().set_text(&raw);
+                        }
+                        button.set_label("Copied");
+                        let weak = button.downgrade();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(1600),
+                            move || {
+                                if let Some(button) = weak.upgrade() {
+                                    button.set_label("Copy");
+                                }
+                            },
+                        );
+                    });
+                    header.append(&lang);
+                    header.append(&copy);
+                    card.append(&header);
+
+                    let label = gtk::Label::builder()
+                        .xalign(0.0)
+                        .selectable(true)
+                        .css_classes(["message-code-body"])
+                        .build();
+                    let scroll = gtk::ScrolledWindow::builder()
+                        .hscrollbar_policy(gtk::PolicyType::Automatic)
+                        .vscrollbar_policy(gtk::PolicyType::Never)
+                        .propagate_natural_height(true)
+                        .child(&label)
+                        .build();
+                    card.append(&scroll);
+                    self.root.append(&card);
+                    labels.push(label);
                 }
-                let link = shown.link.borrow().clone();
-                link.map_or(glib::Propagation::Proceed, |link| link(label, uri))
-            });
-            self.root.append(&label);
-            labels.push(label);
+                Block::Notice(_) | Block::Text { .. } => {
+                    let quote = matches!(block, Block::Text { quote: true, .. });
+                    let label = gtk::Label::builder()
+                        .xalign(0.0)
+                        .wrap(true)
+                        .wrap_mode(pango::WrapMode::WordChar)
+                        .selectable(true)
+                        .css_classes(["body"])
+                        .build();
+                    if quote {
+                        label.add_css_class("message-quote");
+                    }
+                    let shown = Rc::downgrade(&self.shown);
+                    label.connect_activate_link(move |label, uri| {
+                        let Some(shown) = shown.upgrade() else {
+                            return glib::Propagation::Proceed;
+                        };
+                        if let Some(index) = uri.strip_prefix(SPOILER_LINK) {
+                            if let Ok(index) = index.parse() {
+                                shown.revealed.borrow_mut().insert(index);
+                                // Not inside the label's own link handling.
+                                glib::idle_add_local_once(move || shown.render());
+                            }
+                            return glib::Propagation::Stop;
+                        }
+                        let link = shown.link.borrow().clone();
+                        link.map_or(glib::Propagation::Proceed, |link| link(label, uri))
+                    });
+                    self.root.append(&label);
+                    labels.push(label);
+                }
+            }
         }
         self.shown.labels.replace(labels);
         self.shown.render();

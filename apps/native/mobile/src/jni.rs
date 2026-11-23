@@ -371,3 +371,36 @@ pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_inviteCod
         None => std::ptr::null_mut(),
     }
 }
+
+/// `CaperMobile.codeBlocks(text)`: `crate::code_blocks(text, false)`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_codeBlocks(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    unsafe { spans(env, text, crate::code_blocks) }
+}
+
+/// `CaperMobile.highlightCode(code, language)`: `crate::highlight_code(code, language, false)`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_highlightCode(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+    language: jint,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { string(env, text) } {
+        // SAFETY: forwarded from the JVM's call.
+        Some(text) => unsafe { int_array(env, &crate::highlight_code(&text, language, false)) },
+        None => std::ptr::null_mut(),
+    }
+}

@@ -22,8 +22,15 @@ typedef struct {
 
 // Five values per visible span: utf16 start, utf16 end, utf8 start, utf8 end,
 // style bits (1 bold, 2 italic, 4 underline, 8 strikethrough, 16 spoiler,
-// 32 quote).
+// 32 quote, 64 code, 128 code block).
 CaperMobileInts caper_mobile_format_spans(const uint8_t *utf8, size_t len);
+// Six values per message block: kind (0 prose, 1 code block), utf16 start,
+// utf16 end, utf8 start, utf8 end, lang_flags (language id in bits 0..8, 256 if auto-detected).
+CaperMobileInts caper_mobile_code_blocks(const uint8_t *utf8, size_t len);
+// Five values per syntax token: utf16 start, utf16 end, utf8 start, utf8 end,
+// token kind (0 plain, 1 keyword, 2 string, 3 comment, 4 number, 5 type,
+// 6 function, 7 attribute, 8 addition, 9 deletion).
+CaperMobileInts caper_mobile_highlight_code(const uint8_t *utf8, size_t len, int32_t language);
 // Five values per link: utf16 start, utf16 end, utf8 start, utf8 end, scheme
 // (8 https://, 7 http://, 0 www.).
 CaperMobileInts caper_mobile_link_spans(const uint8_t *utf8, size_t len);

@@ -1440,6 +1440,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
                 crate::uploads::Part::Format(crate::composer::Style::Strikethrough) => 1006,
                 crate::uploads::Part::Format(crate::composer::Style::Quote) => 1007,
                 crate::uploads::Part::Format(crate::composer::Style::Spoiler) => 1008,
+                crate::uploads::Part::Format(crate::composer::Style::Code) => 1009,
+                crate::uploads::Part::Format(crate::composer::Style::CodeBlock) => 1010,
                 // A recording's chip has no preview: Play takes its place.
                 crate::uploads::Part::Open(k) | crate::uploads::Part::Play(k) => 1 + 4 * k,
                 crate::uploads::Part::Spoiler(k) => 2 + 4 * k,
@@ -1468,6 +1470,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::CancelReply => (22, 15),
             TPart::Jump => (22, 16),
             TPart::JumpLabel => (22, 17),
+            TPart::Format(crate::composer::Style::Code) => (22, 18),
+            TPart::Format(crate::composer::Style::CodeBlock) => (22, 19),
             TPart::Upload(p) => (93, runtime_id(Id::BoxPart(p))[2] as usize),
             TPart::Row(i) => (23, i),
             TPart::Tool(i, tool) => (

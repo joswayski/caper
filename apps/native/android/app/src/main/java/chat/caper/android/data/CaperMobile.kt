@@ -73,4 +73,14 @@ internal object CaperMobile {
 
     /** Web's inviteCode: the 10-character code, one ASCII character per value, or empty. */
     @JvmStatic external fun inviteCode(text: String): IntArray
+
+    /**
+     * Top-level prose and fenced code blocks (shared/messages/code.rs): `[kind, start, end, flags]`
+     * per block, where kind 0 is prose and kind 1 is a code block with `flags & 255` language id
+     * and `(flags and 256) != 0` when auto-detected.
+     */
+    @JvmStatic external fun codeBlocks(text: String): IntArray
+
+    /** Syntax highlight spans for [code] in [language]: `[start, end, tokenKind]` per token. */
+    @JvmStatic external fun highlightCode(code: String, language: Int): IntArray
 }

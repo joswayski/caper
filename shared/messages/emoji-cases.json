@@ -1568,12 +1568,20 @@
   {
    "text": "*:fire*",
    "caret": 6,
-   "token": null
+   "token": {
+    "start": 1,
+    "end": 6,
+    "query": "fire"
+   }
   },
   {
    "text": "*:fire*",
    "caret": 7,
-   "token": null
+   "token": {
+    "start": 1,
+    "end": 6,
+    "query": "fire"
+   }
   },
   {
    "text": "__:dog__",
@@ -1700,12 +1708,20 @@
   {
    "text": "`:fire`",
    "caret": 6,
-   "token": null
+   "token": {
+    "start": 1,
+    "end": 6,
+    "query": "fire"
+   }
   },
   {
    "text": "`:fire`",
    "caret": 7,
-   "token": null
+   "token": {
+    "start": 1,
+    "end": 6,
+    "query": "fire"
+   }
   },
   {
    "text": "~:fire",
@@ -1743,57 +1759,57 @@
    "token": null
   },
   {
-   "text": "\ud83d\udc4d:sm",
+   "text": "👍:sm",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d:sm",
+   "text": "👍:sm",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d:sm",
+   "text": "👍:sm",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d:sm",
+   "text": "👍:sm",
    "caret": 4,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d:sm",
+   "text": "👍:sm",
    "caret": 5,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d :sm",
+   "text": "👍 :sm",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d :sm",
+   "text": "👍 :sm",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d :sm",
+   "text": "👍 :sm",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d :sm",
+   "text": "👍 :sm",
    "caret": 4,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d :sm",
+   "text": "👍 :sm",
    "caret": 5,
    "token": null
   },
   {
-   "text": "\ud83d\udc4d :sm",
+   "text": "👍 :sm",
    "caret": 6,
    "token": {
     "start": 3,
@@ -1802,32 +1818,32 @@
    }
   },
   {
-   "text": "\u00e9 :ca",
+   "text": "é :ca",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\u00e9 :ca",
+   "text": "é :ca",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\u00e9 :ca",
+   "text": "é :ca",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\u00e9 :ca",
+   "text": "é :ca",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\u00e9 :ca",
+   "text": "é :ca",
    "caret": 4,
    "token": null
   },
   {
-   "text": "\u00e9 :ca",
+   "text": "é :ca",
    "caret": 5,
    "token": {
     "start": 2,
@@ -1836,67 +1852,67 @@
    }
   },
   {
-   "text": "\u65e5\u672c:ne",
+   "text": "日本:ne",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\u65e5\u672c:ne",
+   "text": "日本:ne",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\u65e5\u672c:ne",
+   "text": "日本:ne",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\u65e5\u672c:ne",
+   "text": "日本:ne",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\u65e5\u672c:ne",
+   "text": "日本:ne",
    "caret": 4,
    "token": null
   },
   {
-   "text": "\u65e5\u672c:ne",
+   "text": "日本:ne",
    "caret": 5,
    "token": null
   },
   {
-   "text": "\u65e5\u672c :ne",
+   "text": "日本 :ne",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\u65e5\u672c :ne",
+   "text": "日本 :ne",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\u65e5\u672c :ne",
+   "text": "日本 :ne",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\u65e5\u672c :ne",
+   "text": "日本 :ne",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\u65e5\u672c :ne",
+   "text": "日本 :ne",
    "caret": 4,
    "token": null
   },
   {
-   "text": "\u65e5\u672c :ne",
+   "text": "日本 :ne",
    "caret": 5,
    "token": null
   },
   {
-   "text": "\u65e5\u672c :ne",
+   "text": "日本 :ne",
    "caret": 6,
    "token": {
     "start": 3,
@@ -1905,27 +1921,27 @@
    }
   },
   {
-   "text": "\u3000:ne",
+   "text": "　:ne",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\u3000:ne",
+   "text": "　:ne",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\u3000:ne",
+   "text": "　:ne",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\u3000:ne",
+   "text": "　:ne",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\u3000:ne",
+   "text": "　:ne",
    "caret": 4,
    "token": {
     "start": 1,
@@ -1934,27 +1950,27 @@
    }
   },
   {
-   "text": "\u00a0:ne",
+   "text": " :ne",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\u00a0:ne",
+   "text": " :ne",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\u00a0:ne",
+   "text": " :ne",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\u00a0:ne",
+   "text": " :ne",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\u00a0:ne",
+   "text": " :ne",
    "caret": 4,
    "token": {
     "start": 1,
@@ -1963,106 +1979,52 @@
    }
   },
   {
-   "text": "\u0085:ne",
+   "text": ":ne",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\u0085:ne",
+   "text": ":ne",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\u0085:ne",
+   "text": ":ne",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\u0085:ne",
+   "text": ":ne",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\u0085:ne",
+   "text": ":ne",
    "caret": 4,
    "token": null
   },
   {
-   "text": "\ufeff:ne",
+   "text": "﻿:ne",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\ufeff:ne",
+   "text": "﻿:ne",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\ufeff:ne",
+   "text": "﻿:ne",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\ufeff:ne",
+   "text": "﻿:ne",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\ufeff:ne",
-   "caret": 4,
-   "token": {
-    "start": 1,
-    "end": 4,
-    "query": "ne"
-   }
-  },
-  {
-   "text": "\u001c:ne",
-   "caret": 0,
-   "token": null
-  },
-  {
-   "text": "\u001c:ne",
-   "caret": 1,
-   "token": null
-  },
-  {
-   "text": "\u001c:ne",
-   "caret": 2,
-   "token": null
-  },
-  {
-   "text": "\u001c:ne",
-   "caret": 3,
-   "token": null
-  },
-  {
-   "text": "\u001c:ne",
-   "caret": 4,
-   "token": null
-  },
-  {
-   "text": "\u2028:ne",
-   "caret": 0,
-   "token": null
-  },
-  {
-   "text": "\u2028:ne",
-   "caret": 1,
-   "token": null
-  },
-  {
-   "text": "\u2028:ne",
-   "caret": 2,
-   "token": null
-  },
-  {
-   "text": "\u2028:ne",
-   "caret": 3,
-   "token": null
-  },
-  {
-   "text": "\u2028:ne",
+   "text": "﻿:ne",
    "caret": 4,
    "token": {
     "start": 1,
@@ -2071,52 +2033,106 @@
    }
   },
   {
-   "text": "\u200b:ne",
+   "text": "\u001c:ne",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\u200b:ne",
+   "text": "\u001c:ne",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\u200b:ne",
+   "text": "\u001c:ne",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\u200b:ne",
+   "text": "\u001c:ne",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\u200b:ne",
+   "text": "\u001c:ne",
    "caret": 4,
    "token": null
   },
   {
-   "text": "\u180e:ne",
+   "text": " :ne",
    "caret": 0,
    "token": null
   },
   {
-   "text": "\u180e:ne",
+   "text": " :ne",
    "caret": 1,
    "token": null
   },
   {
-   "text": "\u180e:ne",
+   "text": " :ne",
    "caret": 2,
    "token": null
   },
   {
-   "text": "\u180e:ne",
+   "text": " :ne",
    "caret": 3,
    "token": null
   },
   {
-   "text": "\u180e:ne",
+   "text": " :ne",
+   "caret": 4,
+   "token": {
+    "start": 1,
+    "end": 4,
+    "query": "ne"
+   }
+  },
+  {
+   "text": "​:ne",
+   "caret": 0,
+   "token": null
+  },
+  {
+   "text": "​:ne",
+   "caret": 1,
+   "token": null
+  },
+  {
+   "text": "​:ne",
+   "caret": 2,
+   "token": null
+  },
+  {
+   "text": "​:ne",
+   "caret": 3,
+   "token": null
+  },
+  {
+   "text": "​:ne",
+   "caret": 4,
+   "token": null
+  },
+  {
+   "text": "᠎:ne",
+   "caret": 0,
+   "token": null
+  },
+  {
+   "text": "᠎:ne",
+   "caret": 1,
+   "token": null
+  },
+  {
+   "text": "᠎:ne",
+   "caret": 2,
+   "token": null
+  },
+  {
+   "text": "᠎:ne",
+   "caret": 3,
+   "token": null
+  },
+  {
+   "text": "᠎:ne",
    "caret": 4,
    "token": null
   },
@@ -2203,12 +2219,12 @@
    }
   },
   {
-   "text": ":\u00fc",
+   "text": ":ü",
    "caret": 0,
    "token": null
   },
   {
-   "text": ":\u00fc",
+   "text": ":ü",
    "caret": 1,
    "token": {
     "start": 0,
@@ -2217,32 +2233,32 @@
    }
   },
   {
-   "text": ":\u00fc",
+   "text": ":ü",
    "caret": 2,
    "token": null
   },
   {
-   "text": ":abc\ud83d\ude00",
+   "text": ":abc😀",
    "caret": 0,
    "token": null
   },
   {
-   "text": ":abc\ud83d\ude00",
+   "text": ":abc😀",
    "caret": 1,
    "token": null
   },
   {
-   "text": ":abc\ud83d\ude00",
+   "text": ":abc😀",
    "caret": 2,
    "token": null
   },
   {
-   "text": ":abc\ud83d\ude00",
+   "text": ":abc😀",
    "caret": 3,
    "token": null
   },
   {
-   "text": ":abc\ud83d\ude00",
+   "text": ":abc😀",
    "caret": 4,
    "token": {
     "start": 0,
@@ -2251,7 +2267,7 @@
    }
   },
   {
-   "text": ":abc\ud83d\ude00",
+   "text": ":abc😀",
    "caret": 6,
    "token": null
   },

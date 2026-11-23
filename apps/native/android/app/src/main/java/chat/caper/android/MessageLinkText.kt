@@ -1,9 +1,20 @@
 package chat.caper.android
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -14,6 +25,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
@@ -24,6 +36,8 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.ResolvedTextDirection
@@ -34,8 +48,12 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.FormattedRun
+import chat.caper.android.data.highlightCode
+import chat.caper.android.data.languageDisplayName
 import chat.caper.android.ui.Border
+import chat.caper.android.ui.CaperThemeStore
 import chat.caper.android.ui.LinkBlue
+import kotlinx.coroutines.delay
 
 /**
  * Visual-only padding preserves source text, wrapping, selection and Compose's link semantics.
@@ -101,17 +119,110 @@ internal const val SPOILER_DRAFT = "draft"
 internal const val SpoilerReveal = "spoiler"
 internal const val SPOILER_REVEAL_LABEL = "Spoiler, reveal"
 private val SpoilerShown = Color.White.copy(alpha = 0.06f)
+private val InlineCodeBg = Color(0x22808080)
 private val QuoteParagraph = ParagraphStyle(textIndent = TextIndent(15.sp, 15.sp))
 
 /** A run's inline styles, or null without any; [drawFormatting] draws its spoiler and quote. */
 internal fun FormattedRun.spanStyle(): SpanStyle? {
-    if (!bold && !italic && !underline && !strikethrough) return null
+    if (!bold && !italic && !underline && !strikethrough && !code && !codeBlock) return null
     return SpanStyle(
         fontWeight = if (bold) FontWeight.Bold else null,
         fontStyle = if (italic) FontStyle.Italic else null,
+        fontFamily = if (code || codeBlock) FontFamily.Monospace else null,
+        background = if (code || codeBlock) InlineCodeBg else Color.Unspecified,
         textDecoration = listOfNotNull(TextDecoration.Underline.takeIf { underline }, TextDecoration.LineThrough.takeIf { strikethrough })
             .takeIf { it.isNotEmpty() }?.let { TextDecoration.combine(it) },
     )
+}
+
+private fun syntaxTokenColor(kind: Int, isLight: Boolean): Color? = if (isLight) when (kind) {
+    1 -> Color(0xFF7C3AED) // Keyword
+    2 -> Color(0xFF3D6B22) // String
+    3 -> Color(0xFF71717A) // Comment
+    4 -> Color(0xFFB45309) // Number
+    5 -> Color(0xFF0369A1) // Type
+    6 -> Color(0xFF1D4ED8) // Function
+    7 -> Color(0xFF9A3412) // Attribute
+    8 -> Color(0xFF15803D) // Addition
+    9 -> Color(0xFFBE123C) // Deletion
+    else -> null
+} else when (kind) {
+    1 -> Color(0xFFC695FF) // Keyword
+    2 -> Color(0xFF87BC5C) // String
+    3 -> Color(0xFF8C929C) // Comment
+    4 -> Color(0xFFE5A869) // Number
+    5 -> Color(0xFF7CC7FF) // Type
+    6 -> Color(0xFF99C7F5) // Function
+    7 -> Color(0xFFE5C07B) // Attribute
+    8 -> Color(0xFF4ADE80) // Addition
+    9 -> Color(0xFFFF7182) // Deletion
+    else -> null
+}
+
+@Composable internal fun CodeBlockCard(code: String, languageId: Int, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val isLight = CaperThemeStore.active.isLight
+    val palette = CaperThemeStore.active
+    var copied by remember(code) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1800)
+            copied = false
+        }
+    }
+    val highlighted = remember(code, languageId, isLight) {
+        val tokens = highlightCode(code, languageId)
+        buildAnnotatedString {
+            append(code)
+            for (tok in tokens) {
+                val color = syntaxTokenColor(tok.kind, isLight) ?: continue
+                addStyle(SpanStyle(color = color), tok.start, tok.end)
+            }
+        }
+    }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = palette.surface,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, palette.border),
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth().background(palette.surfaceRaised).padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    languageDisplayName(languageId).uppercase(),
+                    color = palette.textMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.6.sp,
+                )
+                TextButton(
+                    onClick = {
+                        context.getSystemService(ClipboardManager::class.java)
+                            ?.setPrimaryClip(ClipData.newPlainText("Code", code))
+                        copied = true
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.height(26.dp),
+                ) {
+                    Text(if (copied) "Copied" else "Copy", color = palette.textMuted, fontSize = 11.sp)
+                }
+            }
+            Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(10.dp)) {
+                Text(
+                    highlighted,
+                    color = palette.text,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.5.sp,
+                    lineHeight = 18.sp,
+                    softWrap = false,
+                )
+            }
+        }
+    }
 }
 
 /** What TalkBack reads while spoilers are hidden: each in its place as "Spoiler, reveal", without icon placeholders. */

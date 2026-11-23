@@ -165,6 +165,8 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
                     || hit is NSTextView
                     || hit is NSTextField
                     || (hit as? NSControl) != nil
+                    || hit.accessibilityIdentifier() == "format-toolbar"
+                    || hit.superview?.accessibilityIdentifier() == "format-toolbar"
                 if !insideText {
                     makeFirstResponder(nil)
                 }

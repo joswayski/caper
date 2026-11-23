@@ -255,6 +255,30 @@ pub unsafe extern "C" fn caper_mobile_invite_code(utf8: *const u8, len: usize) -
     crate::invite_code(unsafe { text(utf8, len) }).into()
 }
 
+/// `crate::code_blocks(text, true)`: six values per prose or fenced code block.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_code_blocks(utf8: *const u8, len: usize) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::code_blocks(unsafe { text(utf8, len) }, true).into()
+}
+
+/// `crate::highlight_code(code, language, true)`: five values per token span.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_highlight_code(
+    utf8: *const u8,
+    len: usize,
+    language: i32,
+) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::highlight_code(unsafe { text(utf8, len) }, language, true).into()
+}
+
 /// # Safety
 /// `ints` must come from this library and be released only once.
 #[unsafe(no_mangle)]

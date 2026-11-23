@@ -2574,11 +2574,11 @@ button.chat-mention-card-avatar {
   display: flex;
   gap: 0;
   padding: 0;
-  border: 0;
+  border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
   background: var(--surface);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 28%);
   animation: chat-format-arrive var(--motion-fast) var(--ease-out);
 }
 /* Portaled inside edit dialogs too; override their general button chrome. */
@@ -2597,12 +2597,19 @@ button.chat-mention-card-avatar {
   background: transparent;
   cursor: pointer;
 }
+.chat-format-toolbar[role="group"] button[aria-pressed="true"] {
+  color: var(--text);
+  background: rgb(var(--accent-rgb) / 28%);
+}
 .chat-format-toolbar[role="group"] button:is(:hover, :focus-visible) {
   color: var(--text);
   background: var(--border);
 }
+.chat-format-toolbar[role="group"] button[aria-pressed="true"]:is(:hover, :focus-visible) {
+  background: rgb(var(--accent-rgb) / 38%);
+}
 .chat-format-toolbar[role="group"] button:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: default;
 }
 @keyframes chat-format-arrive {
@@ -2624,7 +2631,7 @@ button.chat-mention-card-avatar {
     height: 44px;
   }
 }
-/* As Discord's: a gap, not a rule, between inline styles and Quote/Spoiler. */
+/* As Discord's: a gap, not a rule, between inline styles and Quote/Code block/Spoiler. */
 .chat-format-divider {
   flex: none;
   width: 12px;
@@ -2635,26 +2642,29 @@ button.chat-mention-card-avatar {
   box-sizing: border-box;
   width: 100%;
   padding-left: 12px;
-  border-left: 3px solid var(--border);
+  border-left: 3px solid var(--border-solid);
   vertical-align: top;
 }
 .chat-quote-draft {
   padding-left: 12px;
-  border-left: 3px solid var(--border);
+  border-left: 3px solid var(--border-solid);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
-/* A spoiler hides its text until activated; drafts show it, marked. */
+/* A spoiler hides its text until activated; drafts show it clearly masked. */
 .chat-text-spoiler {
   border-radius: 4px;
+  padding: 0 3px;
   background: var(--surface-hover);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 .chat-text-spoiler[role="button"] {
-  background: var(--border);
+  background: var(--border-solid);
   cursor: pointer;
 }
 .chat-text-spoiler[role="button"]:hover {
-  background: #44494d;
+  background: color-mix(in srgb, var(--border-solid) 82%, var(--text));
 }
 .chat-text-spoiler[role="button"]:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -2668,7 +2678,7 @@ button.chat-mention-card-avatar {
 }
 @keyframes chat-text-spoiler-reveal {
   from {
-    background: var(--border);
+    background: var(--border-solid);
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2678,7 +2688,138 @@ button.chat-mention-card-avatar {
 }
 .chat-spoiler-draft {
   border-radius: 4px;
-  background: var(--border);
+  padding: 1px 4px;
+  background: var(--border-solid);
+  box-shadow: inset 0 0 0 1px var(--border);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+/* Inline code & fenced code blocks (Obsidian dark & Paper light palettes). */
+.chat-inline-code,
+.chat-code-draft {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.875em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--surface-raised) 88%, var(--text) 6%);
+  border: 1px solid var(--border);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.chat-code-block-draft {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.875em;
+  background: color-mix(in srgb, var(--surface-raised) 75%, transparent);
+  border-radius: 4px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.chat-code-block {
+  --tok-keyword: #d2a8ff;
+  --tok-string: #a5d6a7;
+  --tok-comment: #7a7a85;
+  --tok-number: #f2b880;
+  --tok-type: #79c0ff;
+  --tok-function: #7ee7c8;
+  --tok-attribute: #ffa657;
+  --tok-addition: #4ade80;
+  --tok-deletion: #f87171;
+  display: block;
+  margin: 6px 0;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg, #0b0b0c) 82%, var(--surface));
+  overflow: hidden;
+  max-width: 100%;
+}
+:root[data-appearance="light"] .chat-code-block {
+  --tok-keyword: #7c3aed;
+  --tok-string: #2e6b30;
+  --tok-comment: #6e6e78;
+  --tok-number: #b45309;
+  --tok-type: #0369a1;
+  --tok-function: #0f766e;
+  --tok-attribute: #c2410c;
+  --tok-addition: #15803d;
+  --tok-deletion: #dc2626;
+  background: color-mix(in srgb, var(--surface-raised) 65%, var(--surface));
+}
+.chat-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-muted);
+}
+.chat-code-lang {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.chat-code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  min-height: 22px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.chat-code-copy:is(:hover, :focus-visible) {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+.chat-code-pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+}
+.chat-code-pre code {
+  font-family: inherit;
+}
+.chat-code-block .tok-keyword {
+  color: var(--tok-keyword);
+}
+.chat-code-block .tok-string {
+  color: var(--tok-string);
+}
+.chat-code-block .tok-comment {
+  color: var(--tok-comment);
+  font-style: italic;
+}
+.chat-code-block .tok-number {
+  color: var(--tok-number);
+}
+.chat-code-block .tok-type {
+  color: var(--tok-type);
+}
+.chat-code-block .tok-function {
+  color: var(--tok-function);
+}
+.chat-code-block .tok-attribute {
+  color: var(--tok-attribute);
+}
+.chat-code-block .tok-addition {
+  color: var(--tok-addition);
+}
+.chat-code-block .tok-deletion {
+  color: var(--tok-deletion);
 }
 .chat-italic {
   font-style: italic;

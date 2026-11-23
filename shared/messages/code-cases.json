@@ -1,0 +1,146 @@
+{
+  "blocks": [
+    {
+      "message": "Check this:\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\nDone",
+      "blocks": [
+        { "kind": "prose", "text": "Check this:" },
+        {
+          "kind": "code",
+          "text": "fn main() {\n    println!(\"hi\");\n}",
+          "language": "rust",
+          "detected": false
+        },
+        { "kind": "prose", "text": "Done" }
+      ]
+    },
+    {
+      "message": "```\nSELECT id, name FROM users WHERE active = true;\n```",
+      "blocks": [
+        {
+          "kind": "code",
+          "text": "SELECT id, name FROM users WHERE active = true;",
+          "language": "sql",
+          "detected": true
+        }
+      ]
+    },
+    {
+      "message": "```let x = 1;```",
+      "blocks": [
+        {
+          "kind": "code",
+          "text": "let x = 1;",
+          "language": "plain",
+          "detected": false
+        }
+      ]
+    },
+    {
+      "message": "unclosed:\n```rust\nfn main() {}",
+      "blocks": [
+        { "kind": "prose", "text": "unclosed:\n```rust\nfn main() {}" }
+      ]
+    }
+  ],
+  "detect": [
+    {
+      "code": "pub fn greet(name: &str) -> String {\n    println!(\"hello {name}\");\n    format!(\"hi {name}\")\n}",
+      "language": "rust"
+    },
+    {
+      "code": "export interface User {\n  id: string;\n  count: number;\n}\nasync function load(id: string): Promise<User> {\n  return fetch(id).then((r) => r.json());\n}",
+      "language": "typescript"
+    },
+    {
+      "code": "const items = [1, 2, 3];\nconsole.log(items.map((x) => x * 2));",
+      "language": "javascript"
+    },
+    {
+      "code": "def fib(n):\n    if n <= 1:\n        return n\n    return fib(n - 1) + fib(n - 2)",
+      "language": "python"
+    },
+    {
+      "code": "import SwiftUI\n@MainActor struct CardView {\n    func render() {\n        guard let value = item else { return }\n    }\n}",
+      "language": "swift"
+    },
+    {
+      "code": "@Composable\nfun Greeting(name: String) {\n    val text = \"Hello $name\"\n    println(text)\n}",
+      "language": "kotlin"
+    },
+    {
+      "code": "package main\nfunc main() {\n    msg := \"hello\"\n    fmt.Println(msg)\n}",
+      "language": "go"
+    },
+    {
+      "code": "SELECT u.id, u.email\nFROM users u\nLEFT JOIN sessions s ON s.user_id = u.id\nWHERE u.active = true\nORDER BY u.id;",
+      "language": "sql"
+    },
+    {
+      "code": "{\n  \"name\": \"caper\",\n  \"version\": 1,\n  \"enabled\": true\n}",
+      "language": "json"
+    },
+    {
+      "code": "<div class=\"card\">\n  <span>Hello</span>\n</div>",
+      "language": "html"
+    },
+    {
+      "code": ".card:hover {\n  display: flex;\n  padding: 12px;\n  border-radius: 10px;\n  background: var(--surface);\n}",
+      "language": "css"
+    },
+    {
+      "code": "#!/bin/bash\nexport FOO=bar\necho \"$FOO\" && curl -s https://example.com",
+      "language": "bash"
+    },
+    {
+      "code": "[package]\nname = \"caper\"\nversion = \"0.1.0\"",
+      "language": "toml"
+    },
+    {
+      "code": "name: caper\nversion: 1\nfeatures: enabled",
+      "language": "yaml"
+    },
+    {
+      "code": "--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n-old\n+new",
+      "language": "diff"
+    },
+    {
+      "code": "hello world this is just plain text",
+      "language": "plain"
+    }
+  ],
+  "highlight": [
+    {
+      "language": "rust",
+      "code": "#[derive(Debug)]\npub fn add(a: i32, b: i32) -> i32 { // sum\n    println!(\"ok\");\n    a + b + 42\n}",
+      "must_include": [
+        { "text": "#[derive(Debug)]", "kind": "attribute" },
+        { "text": "pub", "kind": "keyword" },
+        { "text": "fn", "kind": "keyword" },
+        { "text": "add", "kind": "function" },
+        { "text": "i32", "kind": "type" },
+        { "text": "// sum", "kind": "comment" },
+        { "text": "println!", "kind": "function" },
+        { "text": "\"ok\"", "kind": "string" },
+        { "text": "42", "kind": "number" }
+      ]
+    },
+    {
+      "language": "json",
+      "code": "{\"ok\": true, \"count\": 3}",
+      "must_include": [
+        { "text": "\"ok\"", "kind": "attribute" },
+        { "text": "true", "kind": "keyword" },
+        { "text": "3", "kind": "number" }
+      ]
+    },
+    {
+      "language": "diff",
+      "code": "@@ -1 +1 @@\n-old\n+new",
+      "must_include": [
+        { "text": "@@ -1 +1 @@\n", "kind": "attribute" },
+        { "text": "-old\n", "kind": "deletion" },
+        { "text": "+new", "kind": "addition" }
+      ]
+    }
+  ]
+}

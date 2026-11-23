@@ -276,7 +276,15 @@ final class MessageFormattingTests: XCTestCase {
         let result = MessageFormatting.toggle("**hello** rest", selection: NSRange(location: 2, length: 7), style: .bold)
         XCTAssertEqual(result?.text, "hello rest")
         XCTAssertEqual(result?.selection, NSRange(location: 0, length: 5))
-        XCTAssertNil(MessageFormatting.toggle("identifier", selection: NSRange(location: 2, length: 3), style: .italic))
+        XCTAssertEqual(MessageFormatting.toggle("identifier", selection: NSRange(location: 2, length: 3), style: .italic)?.text, "id*ent*ifier")
+        XCTAssertEqual(MessageFormatting.toggle("identifier", selection: NSRange(location: 2, length: 3), style: .underline)?.text, "id__ent__ifier")
+        XCTAssertEqual(MessageFormatting.toggle("run echo", selection: NSRange(location: 4, length: 4), style: .code)?.text, "run `echo`")
+        let fenced = MessageFormatting.toggle("let x = 1;", selection: NSRange(location: 0, length: 10), style: .codeBlock)
+        XCTAssertEqual(fenced?.text, "```\nlet x = 1;\n```")
+        let blocks = MessageFormatting.codeBlocks("```rust\npub fn hi() {}\n```")
+        XCTAssertEqual(blocks, [.code(text: "pub fn hi() {}", language: 1, detected: false)])
+        let tokens = MessageFormatting.highlightCode("pub fn hi() {}", language: 1)
+        XCTAssertTrue(tokens.contains(where: { $0.text == "pub" && $0.kind == 1 }))
     }
 
     private struct Fixtures: Decodable {
@@ -313,7 +321,9 @@ final class MessageFormattingTests: XCTestCase {
             let whole = MessageFormatting.toggle(text, selection: NSRange(location: start, length: end - start), style: item.style)
             if item.style == .bold { XCTAssertNotNil(whole) }
             guard let result = whole else { continue }
-            XCTAssertEqual(MessageFormatting.runs(result.text).map(\.text).joined(), text, item.title)
+            if item.style != .codeBlock {
+                XCTAssertEqual(MessageFormatting.runs(result.text).map(\.text).joined(), text, item.title)
+            }
             // Renderers find links in each run's visible text, as web's LinkedText;
             // `~~` and `||` around a URL hide it from a scan of the raw source.
             let rendered = MessageFormatting.runs(result.text).flatMap { MessageLinks.segments(in: $0.text).compactMap(\.href) }

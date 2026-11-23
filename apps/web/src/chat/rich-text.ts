@@ -6,7 +6,7 @@ import {
   formatStyles,
   formattedMessage,
   formattedRuns,
-  inlineMarkers,
+  singleLineFence,
   splitsLink,
   styleBits,
   type FormatStyle,
@@ -22,12 +22,14 @@ const span = (className: string) => ({
 export const composerSchema = new Schema({
   nodes: { doc: { content: "text*", whitespace: "pre" }, text: {} },
   marks: {
+    codeBlock: span("chat-code-block-draft"),
     quote: span("chat-quote-draft"),
     bold: { toDOM: () => ["strong", 0], parseDOM: [{ tag: "strong" }, { tag: "b" }] },
     italic: { toDOM: () => ["em", 0], parseDOM: [{ tag: "em" }, { tag: "i" }] },
     underline: { toDOM: () => ["u", 0], parseDOM: [{ tag: "u" }] },
     strikethrough: { toDOM: () => ["s", 0], parseDOM: [{ tag: "s" }] },
     spoiler: span("chat-spoiler-draft"),
+    code: { toDOM: () => ["code", { class: "chat-code-draft" }, 0], parseDOM: [{ tag: "code" }] },
   },
 });
 
@@ -56,10 +58,19 @@ export function composerSource(doc: Node): string {
   return composerEncoding(doc).source;
 }
 
-/** Inline styles in the order the serializer prefers one as the outer pair when two cover the same text. */
+/** Inline styles in the order the serializer prefers one as the outer pair when two cover the same text.
+ * `code` is handled innermost because backticks suppress nested Markdown. */
 const inlineOrder = ["bold", "underline", "italic", "strikethrough", "spoiler"] as const;
-const markerOf = Object.fromEntries(inlineMarkers) as Record<(typeof inlineOrder)[number], string>;
+const markerOf: Record<(typeof inlineOrder)[number] | "code", string> = {
+  bold: "**",
+  underline: "__",
+  italic: "_",
+  strikethrough: "~~",
+  spoiler: "||",
+  code: "`",
+};
 type StyleRange = { style: FormatStyle; from: number; to: number };
+const isWordChar = (ch: string | undefined) => !!ch && /[A-Za-z0-9_@]/.test(ch);
 
 /** The doc's characters (UTF-16 units) and their style bits. */
 function characters(doc: Node) {
@@ -72,13 +83,15 @@ function characters(doc: Node) {
   return { text, styles };
 }
 
-/** The lines of `text` as [start, end, quoted], without their newlines. A line is quoted when any character is. */
+/** The lines of `text` as [start, end, quoted, codeBlock], without their newlines. */
 function lines(text: string, styles: number[]) {
-  const out: [number, number, boolean][] = [];
+  const out: [number, number, boolean, boolean][] = [];
   for (let start = 0; ;) {
     const newline = text.indexOf("\n", start);
     const end = newline < 0 ? text.length : newline;
-    out.push([start, end, styles.slice(start, end).some((style) => style & styleBits.quote)]);
+    const codeBlock = styles.slice(start, end).some((style) => style & styleBits.codeBlock);
+    const quoted = !codeBlock && styles.slice(start, end).some((style) => style & styleBits.quote);
+    out.push([start, end, quoted, codeBlock]);
     if (newline < 0) return out;
     start = end + 1;
   }
@@ -95,48 +108,83 @@ function encode(text: string, styles: number[]) {
         index++;
         continue;
       }
-      // The longer style is the outer pair, keeping nested emphasis contiguous.
+      // The longer style is the outer pair, keeping nested emphasis contiguous; `code` is always innermost.
       const endOf = (bit: number) => {
         let limit = index;
         while (limit < end && style(limit) & bit) limit++;
         return limit;
       };
-      let name: (typeof inlineOrder)[number] | undefined;
+      let name: (typeof inlineOrder)[number] | "code" | undefined;
       let limit = index;
       for (const candidate of inlineOrder) {
         if (!(style(index) & styleBits[candidate])) continue;
         const candidateEnd = endOf(styleBits[candidate]);
         if (!name || candidateEnd > limit) [name, limit] = [candidate, candidateEnd];
       }
-      const inner = write(index, limit, removed | styleBits[name!]);
+      if (!name) {
+        name = "code";
+        limit = endOf(styleBits.code);
+      }
+      const inner = write(index, limit, removed | styleBits[name]);
       let first = 0;
       let last = inner.length;
       while (first < last && inner[first].index !== undefined && formatSpace(inner[first].text)) first++;
       while (last > first && inner[last - 1].index !== undefined && formatSpace(inner[last - 1].text)) last--;
-      const mark: StyleRange = { style: name!, from: index, to: limit };
+      let markerText = markerOf[name];
+      if (name === "italic" && first < last) {
+        let firstChar: number | undefined;
+        for (let k = first; k < last; k++) {
+          if (inner[k].index !== undefined) {
+            firstChar = inner[k].index;
+            break;
+          }
+        }
+        let lastChar: number | undefined;
+        for (let k = last - 1; k >= first; k--) {
+          if (inner[k].index !== undefined) {
+            lastChar = inner[k].index;
+            break;
+          }
+        }
+        const nonUnderscore =
+          (styleBits.bold | styleBits.strikethrough | styleBits.spoiler | styleBits.code) & ~removed;
+        const leftWord =
+          firstChar !== undefined &&
+          firstChar > start &&
+          isWordChar(text[firstChar - 1]) &&
+          (styles[firstChar - 1] & nonUnderscore) === 0;
+        const rightWord =
+          lastChar !== undefined &&
+          lastChar + 1 < end &&
+          isWordChar(text[lastChar + 1]) &&
+          (styles[lastChar + 1] & nonUnderscore) === 0;
+        if (leftWord || rightWord) markerText = "*";
+      }
+      const mark: StyleRange = { style: name, from: index, to: limit };
       result.push(...inner.slice(0, first));
       if (first < last)
-        result.push({ text: markerOf[name!], mark }, ...inner.slice(first, last), { text: markerOf[name!], mark });
+        result.push({ text: markerText, mark }, ...inner.slice(first, last), { text: markerText, mark });
       result.push(...inner.slice(last));
       index = limit;
     }
     return result;
   };
-  // Quoted lines are encoded alone after `> `; consecutive unquoted lines together.
+  // Quoted lines are encoded alone after `> `; codeBlock lines stay literal; consecutive unquoted lines together.
   const tokens: Token[] = [];
   const split = lines(text, styles);
+  const blockMask = styleBits.quote | styleBits.codeBlock;
   for (let index = 0; index < split.length;) {
-    const [start, end, quoted] = split[index];
-    if (quoted) {
-      tokens.push(
-        { text: "> ", mark: { style: "quote", from: start, to: end } },
-        ...write(start, end, styleBits.quote),
-      );
+    const [start, end, quoted, codeBlock] = split[index];
+    if (codeBlock) {
+      for (let i = start; i < end; i++) tokens.push({ text: text[i], index: i });
+      index++;
+    } else if (quoted) {
+      tokens.push({ text: "> ", mark: { style: "quote", from: start, to: end } }, ...write(start, end, blockMask));
       index++;
     } else {
       let last = index;
-      while (last + 1 < split.length && !split[last + 1][2]) last++;
-      tokens.push(...write(start, split[last][1], styleBits.quote));
+      while (last + 1 < split.length && !split[last + 1][2] && !split[last + 1][3]) last++;
+      tokens.push(...write(start, split[last][1], blockMask));
       index = last + 1;
     }
     if (index < split.length) tokens.push({ text: "\n", index: split[index - 1][1] });
@@ -166,11 +214,24 @@ export function sourceOffset(source: string, offset: number, end = false) {
   return end && offset > 0 ? indices[offset - 1] + 1 : (indices[offset] ?? (indices.at(-1) ?? -1) + 1);
 }
 
+function docFromStyles(text: string, styles: number[]) {
+  const nodes: Node[] = [];
+  for (let start = 0; start < text.length;) {
+    let end = start + 1;
+    while (end < text.length && styles[end] === styles[start]) end++;
+    nodes.push(composerSchema.text(text.slice(start, end), marksOf(styles[start])));
+    start = end;
+  }
+  return composerSchema.node("doc", null, nodes);
+}
+
 /** `> ` for each non-blank line the selection touches; newlines inside a quote are quoted, at its edges plain. */
 function toggleQuote(doc: Node, from: number, to: number) {
   const { text, styles } = characters(doc);
   const split = lines(text, styles);
-  const touched = split.filter(([start, end]) => start < to && end >= from && /\S/.test(text.slice(start, end)));
+  const touched = split.filter(
+    ([start, end, , codeBlock]) => !codeBlock && start < to && end >= from && /\S/.test(text.slice(start, end)),
+  );
   if (!touched.length) return undefined;
   const add = !touched.some(([, , quoted]) => quoted);
   const quoted = split.map(([, , quoted]) => quoted);
@@ -185,20 +246,85 @@ function toggleQuote(doc: Node, from: number, to: number) {
     if (quoted[line - 1] || quoted[line]) styles[newline] = quoted[line - 1] && quoted[line] ? styleBits.quote : 0;
     else if (styles[newline] & styleBits.quote) styles[newline] = 0;
   }
-  const nodes: Node[] = [];
-  for (let start = 0; start < text.length;) {
-    let end = start + 1;
-    while (end < text.length && styles[end] === styles[start]) end++;
-    nodes.push(composerSchema.text(text.slice(start, end), marksOf(styles[start])));
-    start = end;
+  return docFromStyles(text, styles);
+}
+
+/** Wraps the selection in a fenced code block, or unwraps the enclosing code block when already inside one. */
+function toggleCodeBlock(doc: Node, from: number, to: number) {
+  const { text, styles } = characters(doc);
+  let allCodeBlock = true;
+  let anyCodeBlock = false;
+  for (let i = from; i < to; i++) {
+    if (styles[i] & styleBits.codeBlock) anyCodeBlock = true;
+    else allCodeBlock = false;
   }
-  return composerSchema.node("doc", null, nodes);
+  if (anyCodeBlock && !allCodeBlock) return undefined;
+  if (allCodeBlock) {
+    let blkStart = from;
+    while (blkStart > 0 && styles[blkStart - 1] & styleBits.codeBlock) blkStart--;
+    let blkEnd = to;
+    while (blkEnd < styles.length && styles[blkEnd] & styleBits.codeBlock) blkEnd++;
+    let innerStart: number;
+    let innerEnd: number;
+    const single = singleLineFence(text, blkStart, blkEnd);
+    if (single) {
+      [innerStart, innerEnd] = single;
+    } else {
+      const firstNl = text.indexOf("\n", blkStart);
+      const lastNl = text.lastIndexOf("\n", blkEnd - 1);
+      if (firstNl < 0 || lastNl < 0 || firstNl >= lastNl) return undefined;
+      innerStart = firstNl + 1;
+      innerEnd = lastNl;
+    }
+    const body = text.slice(innerStart, innerEnd);
+    if (!body) return undefined;
+    const nextText = text.slice(0, blkStart) + body + text.slice(blkEnd);
+    const nextStyles = [...styles.slice(0, blkStart), ...Array<number>(body.length).fill(0), ...styles.slice(blkEnd)];
+    const clampedFrom = Math.min(Math.max(from, innerStart), innerEnd) - innerStart;
+    const clampedTo = Math.min(Math.max(to, innerStart), innerEnd) - innerStart;
+    const selFrom = clampedFrom < clampedTo ? blkStart + clampedFrom : blkStart;
+    const selTo = clampedFrom < clampedTo ? blkStart + clampedTo : blkStart + body.length;
+    return { doc: docFromStyles(nextText, nextStyles), selFrom, selTo };
+  }
+  if (!/\S/.test(text.slice(from, to))) return undefined;
+  const needLeadingNl = from > 0 && text[from - 1] !== "\n";
+  const needTrailingNl = to < text.length && text[to] !== "\n";
+  const prefix = (needLeadingNl ? "\n" : "") + "```\n";
+  const suffix = "\n```" + (needTrailingNl ? "\n" : "");
+  const prefixStyles = [...(needLeadingNl ? [0] : []), ...Array<number>(4).fill(styleBits.codeBlock)];
+  const suffixStyles = [...Array<number>(4).fill(styleBits.codeBlock), ...(needTrailingNl ? [0] : [])];
+  const nextText = text.slice(0, from) + prefix + text.slice(from, to) + suffix + text.slice(to);
+  const nextStyles = [
+    ...styles.slice(0, from),
+    ...prefixStyles,
+    ...Array<number>(to - from).fill(styleBits.codeBlock),
+    ...suffixStyles,
+    ...styles.slice(to),
+  ];
+  const selFrom = from + prefix.length;
+  const selTo = selFrom + (to - from);
+  return { doc: docFromStyles(nextText, nextStyles), selFrom, selTo };
 }
 
 export function formatComposer(style: FormatStyle): Command {
   return (state, dispatch) => {
     const { from, to } = state.selection;
     if (from === to || splitsLink(state.doc.textContent, from, to)) return false;
+    if (style === "codeBlock") {
+      const result = toggleCodeBlock(state.doc, from, to);
+      if (!result) return false;
+      const source = composerSource(result.doc);
+      if (Array.from(source).length > 4000 || !composerDocument(source).eq(result.doc)) return false;
+      const change = state.tr.replaceWith(0, state.doc.content.size, result.doc.content);
+      change.setSelection(TextSelection.create(change.doc, result.selFrom, result.selTo));
+      dispatch?.(change);
+      return true;
+    }
+    if (state.doc.rangeHasMark(from, to, composerSchema.marks.codeBlock)) return false;
+    if (style === "code" && !state.doc.rangeHasMark(from, to, composerSchema.marks.code)) {
+      const selected = state.doc.textBetween(from, to);
+      if (selected.trim().includes("\n")) return false;
+    }
     let change: Transaction | undefined;
     if (style === "quote") {
       const doc = toggleQuote(state.doc, from, to);
@@ -209,8 +335,8 @@ export function formatComposer(style: FormatStyle): Command {
       });
     if (!change) return false;
     const source = composerSource(change.doc);
-    // Some selections (e.g. part of an identifier in italics) cannot be expressed
-    // in the existing wire format. Never show styling that recipients won't see.
+    // Some selections cannot be expressed in the existing wire format.
+    // Never show styling that recipients won't see.
     if (Array.from(source).length > 4000 || !composerDocument(source).eq(change.doc)) return false;
     if (style === "quote") change.setSelection(TextSelection.create(change.doc, from, to));
     dispatch?.(change);
@@ -242,6 +368,7 @@ export function normalizeComposer(transaction: Transaction) {
     const end = offset + part.text.length;
     if (part.href) {
       for (const mark of Object.values(composerSchema.marks)) {
+        if (mark === composerSchema.marks.codeBlock) continue;
         let marked = false;
         let unmarked = false;
         transaction.doc.nodesBetween(offset, end, (node) => {

@@ -123,6 +123,8 @@ class FormattingTest {
                 "italic" -> FormatStyle.ITALIC
                 "underline" -> FormatStyle.UNDERLINE
                 "strikethrough" -> FormatStyle.STRIKETHROUGH
+                "code" -> FormatStyle.CODE
+                "codeBlock" -> FormatStyle.CODE_BLOCK
                 "spoiler" -> FormatStyle.SPOILER
                 "quote" -> FormatStyle.QUOTE
                 else -> error(name)
@@ -152,8 +154,8 @@ class FormattingTest {
         assertEquals(FormatSelection("a  z", 2, 2), repairFormatEdit("a **bold** z", FormatSelection("a ** z", 4, 4)))
         assertEquals(FormatSelection("**llo** tail", 2, 2), repairFormatEdit("**hello** tail", FormatSelection("**llo** tail", 2, 2)))
         assertEquals(FormatSelection("a *", 3, 3), repairFormatEdit("a **", FormatSelection("a *", 3, 3)))
-        assertEquals(null, toggleFormat("identifier", 2, 5, FormatStyle.ITALIC))
-        assertEquals(null, toggleFormat("identifier", 2, 5, FormatStyle.UNDERLINE))
+        assertEquals(FormatSelection("id*ent*ifier", 3, 6), toggleFormat("identifier", 2, 5, FormatStyle.ITALIC))
+        assertEquals(FormatSelection("id__ent__ifier", 4, 7), toggleFormat("identifier", 2, 5, FormatStyle.UNDERLINE))
     }
 
     @Test fun `formatting cannot split links but can wrap complete links`() {
@@ -186,7 +188,8 @@ class FormattingTest {
                 fun bit(name: String, style: Int) = if (run[name]?.jsonPrimitive?.boolean == true) style else 0
                 FormattedRun(run.getValue("text").jsonPrimitive.content,
                     bit("bold", FormatStyle.BOLD) or bit("italic", FormatStyle.ITALIC) or bit("underline", FormatStyle.UNDERLINE) or
-                        bit("strikethrough", FormatStyle.STRIKETHROUGH) or bit("spoiler", FormatStyle.SPOILER) or bit("quote", FormatStyle.QUOTE))
+                        bit("strikethrough", FormatStyle.STRIKETHROUGH) or bit("spoiler", FormatStyle.SPOILER) or bit("quote", FormatStyle.QUOTE) or
+                        bit("code", FormatStyle.CODE) or bit("codeBlock", FormatStyle.CODE_BLOCK))
             }
             val actual = formattedMessage(text)
             assertEquals(text, expected, actual.runs)
@@ -200,6 +203,19 @@ class FormattingTest {
         assertEquals(FormatSelection("a **🙂word** z", 4, 10), toggleFormat("a 🙂word z", 2, 8, FormatStyle.BOLD))
         assertEquals(FormatSelection("a ||🙂word|| z", 4, 10), toggleFormat("a 🙂word z", 2, 8, FormatStyle.SPOILER))
         assertEquals(FormatSelection("> quoted", 2, 8), toggleFormat("quoted", 0, 6, FormatStyle.QUOTE))
+        assertEquals(FormatSelection("`code`", 1, 5), toggleFormat("code", 0, 4, FormatStyle.CODE))
+        assertEquals(FormatSelection("```\ncode\n```", 4, 8), toggleFormat("code", 0, 4, FormatStyle.CODE_BLOCK))
         assertEquals(null, toggleFormat("ab", 1, 1, FormatStyle.BOLD))
+    }
+
+    @Test fun `code blocks parse, detect language, highlight, and suppress links`() {
+        assertEquals(emptyList<LinkRange>(), messageLinkRanges("`https://example.com`"))
+        val blocks = parseMessageBlocks("hi\n```rust\nfn main() {}\n```")
+        assertEquals(2, blocks.size)
+        val code = blocks[1] as ParsedMessageBlock.Code
+        assertEquals("fn main() {}", code.code)
+        assertEquals("Rust", languageDisplayName(code.languageId))
+        val tokens = highlightCode(code.code, code.languageId)
+        assertTrue(tokens.any { it.kind == 1 && code.code.substring(it.start, it.end) == "fn" })
     }
 }

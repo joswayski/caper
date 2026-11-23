@@ -169,6 +169,7 @@ import kotlin.math.roundToInt
                     Key.B -> { format(FormatStyle.BOLD); true }
                     Key.I -> { format(FormatStyle.ITALIC); true }
                     Key.U -> { format(FormatStyle.UNDERLINE); true }
+                    Key.E -> { format(FormatStyle.CODE); true }
                     else -> false
                 }
             } else false
@@ -227,7 +228,7 @@ import kotlin.math.roundToInt
                                         Box(Modifier.draftLinkPills { layout }) { inner() }
                                         if (enabled && !readOnly && focused && value.composition == null && !value.selection.collapsed) {
                                             Surface(color = Surface, shape = MaterialTheme.shapes.small) {
-                                                // Six buttons can outgrow a narrow composer: scroll rather than squeeze them.
+                                                // Eight buttons can outgrow a narrow composer: scroll rather than squeeze them.
                                                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                                                     val styles = selectionStyles(value.text, value.selection.min, value.selection.max)
                                                     // Pressed when some of the selection already has the style; unavailable when formatting
@@ -249,6 +250,8 @@ import kotlin.math.roundToInt
                                                     StyleButton(FormatStyle.ITALIC, "Italic", R.drawable.lucide_italic)
                                                     StyleButton(FormatStyle.UNDERLINE, "Underline", R.drawable.lucide_underline)
                                                     StyleButton(FormatStyle.STRIKETHROUGH, "Strikethrough", R.drawable.lucide_strikethrough)
+                                                    StyleButton(FormatStyle.CODE, "Code", R.drawable.lucide_code)
+                                                    StyleButton(FormatStyle.CODE_BLOCK, "Code block", R.drawable.lucide_square_code)
                                                     Spacer(Modifier.width(12.dp)) // As Discord: a gap between inline styles and Quote/Spoiler.
                                                     StyleButton(FormatStyle.QUOTE, "Quote", R.drawable.lucide_text_quote)
                                                     StyleButton(FormatStyle.SPOILER, "Spoiler", R.drawable.lucide_eye_off)

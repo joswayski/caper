@@ -13,6 +13,10 @@ extension NSAttributedString.Key {
     public static let spoilerFill = NSAttributedString.Key("chat.caper.spoilerFill")
     /// Quoted text: its lines get a 3pt #34383B bar on the left.
     public static let quoteBar = NSAttributedString.Key("chat.caper.quoteBar")
+    /// Inline code pill: a subtle rounded monospace background.
+    public static let inlineCodeFill = NSAttributedString.Key("chat.caper.inlineCodeFill")
+    /// Fenced code block card: full-width recessed rounded fill + hairline border.
+    public static let codeBlockFill = NSAttributedString.Key("chat.caper.codeBlockFill")
 }
 
 /// TextKit 1 decoration, not an attachment or a replacement string. Reserve
@@ -35,13 +39,48 @@ public final class DraftLinkLayoutManager: NSLayoutManager {
         let context = UIGraphicsGetCurrentContext()
         let color = UIColor(CaperTheme.link)
         let border = UIColor(CaperTheme.border)
+        let inlineCodeBg = UIColor(CaperTheme.raised).withAlphaComponent(0.92).cgColor
+        let codeBlockBg = (CaperThemeStore.isLightTheme
+            ? UIColor(red: 243/255, green: 242/255, blue: 238/255, alpha: 1)
+            : UIColor(red: 14/255, green: 14/255, blue: 17/255, alpha: 1)).cgColor
         #else
         let context = NSGraphicsContext.current?.cgContext
         let color = CaperThemeStore.linkColor
         let border = CaperThemeStore.borderColor
+        let inlineCodeBg = CaperThemeStore.raisedColor.withAlphaComponent(0.92).cgColor
+        let codeBlockBg = (CaperThemeStore.isLightTheme
+            ? NSColor(srgbRed: 243/255, green: 242/255, blue: 238/255, alpha: 1)
+            : NSColor(srgbRed: 14/255, green: 14/255, blue: 17/255, alpha: 1)).cgColor
         #endif
         if let context {
             context.saveGState()
+            // Full-width recessed cards for fenced code blocks.
+            storage.enumerateAttribute(.codeBlockFill, in: NSRange(location: 0, length: storage.length)) { value, characters, _ in
+                guard value != nil else { return }
+                let glyphs = NSIntersectionRange(self.glyphRange(forCharacterRange: characters, actualCharacterRange: nil), glyphsToShow)
+                guard glyphs.length > 0 else { return }
+                var union: CGRect?
+                self.enumerateLineFragments(forGlyphRange: glyphs) { line, _, container, _, _ in
+                    let full = CGRect(
+                        x: origin.x + line.minX + container.lineFragmentPadding,
+                        y: origin.y + line.minY,
+                        width: max(line.width - container.lineFragmentPadding * 2, 0),
+                        height: line.height
+                    )
+                    union = union.map { $0.union(full) } ?? full
+                }
+                if let rect = union, rect.width > 0, rect.height > 0 {
+                    let card = rect.insetBy(dx: 0, dy: -3)
+                    let path = CGPath(roundedRect: card, cornerWidth: 8, cornerHeight: 8, transform: nil)
+                    context.setFillColor(codeBlockBg)
+                    context.addPath(path)
+                    context.fillPath()
+                    context.setStrokeColor(border.cgColor)
+                    context.setLineWidth(1)
+                    context.addPath(path)
+                    context.strokePath()
+                }
+            }
             context.setFillColor(border.cgColor)
             storage.enumerateAttribute(.quoteBar, in: NSRange(location: 0, length: storage.length)) { value, characters, _ in
                 guard value != nil else { return }
@@ -53,6 +92,7 @@ public final class DraftLinkLayoutManager: NSLayoutManager {
                                         width: 3, height: line.height))
                 }
             }
+            self.fillRoundedRuns(.inlineCodeFill, in: storage, glyphsToShow: glyphsToShow, at: origin, context: context) { _ in inlineCodeBg }
             self.fillRoundedRuns(.spoilerFill, in: storage, glyphsToShow: glyphsToShow, at: origin, context: context) { value in
                 #if os(iOS)
                 return (value as? UIColor)?.cgColor

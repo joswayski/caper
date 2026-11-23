@@ -2883,6 +2883,45 @@ label.message-quote {
   padding-left: 12px;
 }
 
+box.message-code-block {
+  margin: 6px 0;
+  border-radius: 10px;
+  border: 1px solid @caper_border;
+  background: @caper_frame;
+}
+
+box.message-code-header {
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid @caper_border;
+  background: @caper_surface;
+  border-radius: 10px 10px 0 0;
+}
+
+label.message-code-lang {
+  font-family: monospace;
+  font-size: 11px;
+  color: @caper_muted;
+}
+
+button.message-code-copy {
+  min-height: 22px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: @caper_muted;
+  border-radius: 6px;
+}
+
+button.message-code-copy:hover {
+  color: @caper_text;
+  background: @caper_border;
+}
+
+label.message-code-body {
+  font-family: monospace;
+  font-size: 13px;
+  padding: 10px 12px;
+}
+
 /* What Copy image did, under the image menu's items. */
 .image-menu-status {
   margin: 2px 12px 4px;

@@ -3,17 +3,19 @@ use crate::egui;
 #[cfg(test)]
 use caper_client::formatting::parser;
 pub use caper_client::formatting::{
-    BOLD, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE, adjacent_grapheme, edit, projection,
-    runs, source_runs, toggle,
+    BOLD, CODE, CODE_BLOCK, ITALIC, QUOTE, SPOILER, STRIKETHROUGH, UNDERLINE, adjacent_grapheme,
+    code, edit, projection, runs, source_runs, toggle,
 };
 use caper_client::formatting::{composer, selection_styles};
 
 /// The selection toolbar's styles in web's order; a gap precedes Quote.
-const TOOLBAR: [(i32, &str); 6] = [
+const TOOLBAR: [(i32, &str); 8] = [
     (BOLD, "Bold"),
     (ITALIC, "Italic"),
     (UNDERLINE, "Underline"),
     (STRIKETHROUGH, "Strikethrough"),
+    (CODE, "Code"),
+    (CODE_BLOCK, "Code block"),
     (QUOTE, "Quote"),
     (SPOILER, "Spoiler"),
 ];
@@ -64,6 +66,37 @@ fn toolbar_button(
     };
     let center = rect.center();
     match style {
+        CODE => {
+            let scale = 17.0 / 24.0;
+            let point = |x: f32, y: f32| center + egui::vec2(x - 12.0, y - 12.0) * scale;
+            let stroke = egui::Stroke::new(1.6, color);
+            for [from, to] in [
+                [(8.0, 6.0), (2.0, 12.0)],
+                [(2.0, 12.0), (8.0, 18.0)],
+                [(16.0, 6.0), (22.0, 12.0)],
+                [(22.0, 12.0), (16.0, 18.0)],
+            ] {
+                ui.painter()
+                    .line_segment([point(from.0, from.1), point(to.0, to.1)], stroke);
+            }
+        }
+        CODE_BLOCK => {
+            let scale = 17.0 / 24.0;
+            let point = |x: f32, y: f32| center + egui::vec2(x - 12.0, y - 12.0) * scale;
+            let stroke = egui::Stroke::new(1.5, color);
+            let box_rect = egui::Rect::from_min_max(point(3.0, 3.0), point(21.0, 21.0));
+            ui.painter()
+                .rect_stroke(box_rect, 2.5, stroke, egui::StrokeKind::Middle);
+            for [from, to] in [
+                [(10.0, 9.5), (7.5, 12.0)],
+                [(7.5, 12.0), (10.0, 14.5)],
+                [(14.0, 9.5), (16.5, 12.0)],
+                [(16.5, 12.0), (14.0, 14.5)],
+            ] {
+                ui.painter()
+                    .line_segment([point(from.0, from.1), point(to.0, to.1)], stroke);
+            }
+        }
         QUOTE => {
             // Lucide `text-quote` on its 24-unit grid, drawn at 17px.
             let scale = 17.0 / 24.0;
@@ -108,12 +141,18 @@ fn toolbar_button(
             if style == UNDERLINE {
                 format.underline = egui::Stroke::new(1.0, color);
             }
-            if style == STRIKETHROUGH {
-                format.strikethrough = egui::Stroke::new(1.0, color);
-            }
             let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
             ui.painter()
                 .galley(center - galley.size() / 2.0, galley, color);
+            if style == STRIKETHROUGH {
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(center.x - 7.0, center.y),
+                        egui::pos2(center.x + 7.0, center.y),
+                    ],
+                    egui::Stroke::new(1.6, color),
+                );
+            }
         }
     }
     button.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, allowed, on, label));
@@ -121,6 +160,7 @@ fn toolbar_button(
         BOLD => " · Ctrl/Cmd B",
         ITALIC => " · Ctrl/Cmd I",
         UNDERLINE => " · Ctrl/Cmd U",
+        CODE => " · Ctrl/Cmd E",
         _ => "",
     };
     let button = if allowed {
@@ -403,6 +443,7 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
                 (egui::Key::B, BOLD),
                 (egui::Key::I, ITALIC),
                 (egui::Key::U, UNDERLINE),
+                (egui::Key::E, CODE),
             ] {
                 if i.consume_key(egui::Modifiers::COMMAND, key) {
                     chosen = Some(style);
@@ -806,7 +847,16 @@ mod tests {
         );
         assert_eq!(
             toggle("identifier", 2, 5, ITALIC),
-            ("identifier".into(), 2, 5)
+            ("id*ent*ifier".into(), 3, 6)
+        );
+        assert_eq!(
+            toggle("identifier", 2, 5, UNDERLINE),
+            ("id__ent__ifier".into(), 4, 7)
+        );
+        assert_eq!(toggle("code", 0, 4, CODE), ("`code`".into(), 1, 5));
+        assert_eq!(
+            toggle("code", 0, 4, CODE_BLOCK),
+            ("```\ncode\n```".into(), 4, 8)
         );
     }
 
@@ -871,6 +921,8 @@ mod tests {
                         strikethrough: run.style & STRIKETHROUGH != 0,
                         spoiler: run.style & SPOILER != 0,
                         quote: run.style & QUOTE != 0,
+                        code: run.style & CODE != 0,
+                        code_block: run.style & CODE_BLOCK != 0,
                     });
                 }
             }

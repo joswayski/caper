@@ -41,11 +41,18 @@ pub(crate) enum Mention {
 /// Mentions in first-appearance order without duplicates. `everyone`/`here`
 /// are only special where `specials` is true (space channels).
 pub(crate) fn parse(text: &str, specials: bool) -> Vec<Mention> {
-    // Resolve the names readers see, including **@alice** and _@user_name_.
+    // Resolve the names readers see, including **@alice** and _@user_name_,
+    // while keeping `@mentions` inside inline code or code blocks inert.
     // Stored text remains unchanged so edits and old clients retain the source.
     let text: String = crate::formatting::runs(text)
         .into_iter()
-        .map(|run| run.text)
+        .map(|run| {
+            if run.code || run.code_block {
+                " ".to_owned()
+            } else {
+                run.text
+            }
+        })
         .collect();
     let mut found = Vec::new();
     let mut users = 0;
@@ -188,5 +195,15 @@ mod tests {
         assert_eq!(parsed[0], user("user00"));
         assert_eq!(parsed[MAX_USER_MENTIONS - 1], user("user19"));
         assert_eq!(parsed[MAX_USER_MENTIONS], Mention::Everyone);
+    }
+
+    #[test]
+    fn ignores_mentions_inside_code_and_code_blocks() {
+        assert!(parse("`@alice` and `@everyone`", true).is_empty());
+        assert!(parse("```rust\n// @alice @everyone\n```", true).is_empty());
+        assert_eq!(
+            parse("hi @bob, ignore `@alice` and\n```\n@carol\n```", true),
+            [user("bob")]
+        );
     }
 }

@@ -15,10 +15,14 @@
     {"text":"___both___ **__~~||all||~~__**","runs":[{"text":"both","bold":false,"italic":true,"underline":true},{"text":" ","bold":false,"italic":false},{"text":"all","bold":true,"italic":false,"underline":true,"strikethrough":true,"spoiler":true}]},
     {"text":"a ||secret _x_|| b ~~a~~b","runs":[{"text":"a ","bold":false,"italic":false},{"text":"secret ","bold":false,"italic":false,"spoiler":true},{"text":"x","bold":false,"italic":true,"spoiler":true},{"text":" b ","bold":false,"italic":false},{"text":"a","bold":false,"italic":false,"strikethrough":true},{"text":"b","bold":false,"italic":false}]},
     {"text":"__init__.py ||https://example.com/a_b||","runs":[{"text":"init","bold":false,"italic":false,"underline":true},{"text":".py ","bold":false,"italic":false},{"text":"https://example.com/a_b","bold":false,"italic":false,"spoiler":true}]},
-    {"text":"~~~literal~~~ |||literal||| snake__case__name __x_","runs":[{"text":"~~~literal~~~ |||literal||| snake__case__name __x_","bold":false,"italic":false}]},
+    {"text":"~~~literal~~~ |||literal||| __x_","runs":[{"text":"~~~literal~~~ |||literal||| __x_","bold":false,"italic":false}]},
+    {"text":"supp*ort* and supp__ort__","runs":[{"text":"supp","bold":false,"italic":false},{"text":"ort","bold":false,"italic":true},{"text":" and supp","bold":false,"italic":false},{"text":"ort","bold":false,"italic":false,"underline":true}]},
     {"text":"> quoted **bold**\n> second\nafter","runs":[{"text":"quoted ","bold":false,"italic":false,"quote":true},{"text":"bold","bold":true,"italic":false,"quote":true},{"text":"\nsecond","bold":false,"italic":false,"quote":true},{"text":"\nafter","bold":false,"italic":false}]},
     {"text":">no space\n> \n>  \n\\> escaped","runs":[{"text":">no space\n> \n>  \n\\> escaped","bold":false,"italic":false}]},
     {"text":"**a\n> b**\n\n> c","runs":[{"text":"**a\n","bold":false,"italic":false},{"text":"b**","bold":false,"italic":false,"quote":true},{"text":"\n\n","bold":false,"italic":false},{"text":"c","bold":false,"italic":false,"quote":true}]},
+    {"text":"run `let x = **not_bold**` now","runs":[{"text":"run ","bold":false,"italic":false},{"text":"let x = **not_bold**","bold":false,"italic":false,"code":true},{"text":" now","bold":false,"italic":false}]},
+    {"text":"**`bold code`** and ``literal``","runs":[{"text":"bold code","bold":true,"italic":false,"code":true},{"text":" and ``literal``","bold":false,"italic":false}]},
+    {"text":"hi\n```rust\nfn main() {}\n```\nbye","runs":[{"text":"hi\n","bold":false,"italic":false},{"text":"```rust\nfn main() {}\n```","bold":false,"italic":false,"codeBlock":true},{"text":"\nbye","bold":false,"italic":false}]},
     {"text":"","runs":[]}
   ]
 }
