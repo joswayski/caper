@@ -121,6 +121,31 @@ import SwiftUI
     func stop() { active = false; run = nil }
 }
 
+/// Whether a view's window shows anything: false while it is minimized, fully
+/// covered, on another Space or not yet ordered in. Looping clips, frame
+/// animations and clocks pause until `changed` reports it visible again.
+@MainActor public final class AppKitWindowVisibility {
+    private weak var window: NSWindow?
+    private var token: NSObjectProtocol?
+    private let changed: () -> Void
+    public init(changed: @escaping () -> Void) { self.changed = changed }
+    isolated deinit { token.map(NotificationCenter.default.removeObserver) }
+
+    public var visible: Bool { window?.occlusionState.contains(.visible) == true }
+
+    /// Call from `viewDidMoveToWindow`.
+    public func track(_ window: NSWindow?) {
+        guard window !== self.window else { return }
+        token.map(NotificationCenter.default.removeObserver); token = nil
+        self.window = window
+        guard let window else { return }
+        token = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification,
+                                                       object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.changed() }
+        }
+    }
+}
+
 /// Tab and Shift-Tab as web's document order: rows top to bottom and
 /// side-by-side panes left to right (rail, sidebar, conversation, members).
 /// An open in-window dialog, which is accessibility-modal, keeps Tab inside.

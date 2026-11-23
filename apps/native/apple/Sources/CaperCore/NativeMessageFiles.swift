@@ -7,6 +7,8 @@ import SwiftUI
 /// A realized file owns its decoded preview and player. Hidden spoilers display
 /// only blurred stills and never start playback; viewers share the reveal set.
 @MainActor private final class NativeFileMedia {
+    /// One Core Image context for every spoiler: each is costly to create.
+    private static let blur = CIContext()
     let image = CALayer()
     let video = AVPlayerLayer()
     var changed: (() -> Void)?
@@ -21,6 +23,9 @@ import SwiftUI
     private var motion: NSObjectProtocol?
     private var frames: AttachmentOriginal?
     private var active = false
+    /// The Mac window is minimized or covered: looping clips and GIF frames
+    /// hold still (keeping what they decoded) until it shows again.
+    private var hidden = false
     private var motionCenter: NotificationCenter {
         #if os(macOS)
         NSWorkspace.shared.notificationCenter
@@ -48,6 +53,12 @@ import SwiftUI
     }
     func start() { guard !active else { return }; active = true; load() }
     func stop() { active = false; reset() }
+    func setHidden(_ hidden: Bool) {
+        guard self.hidden != hidden else { return }
+        self.hidden = hidden
+        if hidden { loop?.player.pause(); image.removeAnimation(forKey: "frames") }
+        else { if playing { loop?.player.play() }; animate() }
+    }
     private func reset() {
         task?.cancel(); task = nil; loop?.stop(); loop = nil
         video.player?.pause(); video.player = nil; end.map(NotificationCenter.default.removeObserver); end = nil
@@ -68,7 +79,7 @@ import SwiftUI
                 // expose the decoded still while the spoiler is hidden.
                 if let preview {
                     let input = CIImage(cgImage: preview)
-                    image.contents = CIContext().createCGImage(input.clampedToExtent().applyingFilter("CIGaussianBlur",
+                    image.contents = Self.blur.createCGImage(input.clampedToExtent().applyingFilter("CIGaussianBlur",
                         parameters: [kCIInputRadiusKey: 32]), from: input.extent)
                 }
                 changed?(); return
@@ -98,7 +109,7 @@ import SwiftUI
         let loaded = await loop.loads()
         guard !Task.isCancelled, self.loop === loop else { return }
         failed = !loaded
-        if loaded, !CaperAccessibility.reduceMotion { playing = true; loop.player.play() }
+        if loaded, !CaperAccessibility.reduceMotion { playing = true; if !hidden { loop.player.play() } }
         else if !loaded { chat?.requestFreshAttachmentURLs(ids: [attachment.id]) }
     }
     func toggleAudio() {
@@ -122,14 +133,14 @@ import SwiftUI
         guard active, let attachment, !attachment.spoiler || revealed else { return }; animate()
         if CaperAccessibility.reduceMotion { video.player?.pause(); playing = false }
         else if attachment.animated {
-            if let loop { playing = true; loop.player.play() }
+            if let loop { playing = true; if !hidden { loop.player.play() } }
             else if attachment.kind == .video { task?.cancel(); task = Task { [weak self] in await self?.playAnimation(attachment); self?.changed?() } }
         }
         changed?()
     }
     private func animate() {
         image.removeAnimation(forKey: "frames")
-        guard let frames, frames.images.count > 1, frames.durations.count == frames.images.count, !CaperAccessibility.reduceMotion else { return }
+        guard !hidden, let frames, frames.images.count > 1, frames.durations.count == frames.images.count, !CaperAccessibility.reduceMotion else { return }
         let total = frames.durations.reduce(0, +); guard total > 0 else { return }
         let animation = CAKeyframeAnimation(keyPath: "contents"); animation.values = frames.images + [frames.images[0]]
         var elapsed = 0.0
@@ -245,6 +256,7 @@ import AppKit
     private var file: ChatAttachment?
     private var revealed = false
     private let observation = AppKitObservation()
+    private lazy var visibility = AppKitWindowVisibility { [weak self] in self?.visibilityChanged() }
     override var isFlipped: Bool { true }
     init(chat: ChatModel?, activate: @escaping () -> Void, hide: @escaping () -> Void) {
         self.chat = chat; self.hide = AppKitKitButton("Hide spoiler", kind: .plain, action: hide)
@@ -278,9 +290,11 @@ import AppKit
     func toggleAudio() { media.toggleAudio() }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        visibility.track(window); visibilityChanged()
         if window != nil { if voice == nil { media.start() }; observation.start(reading: { [weak self] in self?.render() }, apply: { _ in }) }
         else { media.stop(); observation.stop() }
     }
+    private func visibilityChanged() { media.setHidden(window != nil && !visibility.visible) }
     private func render() {
         guard let file else { return }
         text.stringValue = NativeSentFiles.label(file, revealed: revealed, failed: media.failed, chat: chat)

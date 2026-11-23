@@ -2,7 +2,8 @@
 import AppKit
 
 /// Only realized rows retain decoded frames. Core Animation plays GIFs without
-/// a per-frame main-thread timer; Reduce Motion keeps their first frame.
+/// a per-frame main-thread timer; Reduce Motion, and a minimized or covered
+/// window, keep their first frame.
 @MainActor public final class AppKitAvatar: NSView {
     private let saved = NSImageView()
     private let initial = AppKitKit.label("", size: 11, weight: .bold, wraps: false)
@@ -12,6 +13,7 @@ import AppKit
     private var frames: ProfilePictureFrames?
     private var loading: Task<Void, Never>?
     private let corner: CGFloat?
+    private lazy var visibility = AppKitWindowVisibility { [weak self] in self?.showPicture() }
 
     public override var isFlipped: Bool { true }
 
@@ -73,6 +75,7 @@ import AppKit
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        visibility.track(window)
         if window == nil {
             loading?.cancel(); loading = nil; requestID = nil; frames = nil
             showPicture()
@@ -116,7 +119,7 @@ import AppKit
         initial.isHidden = !pictureLayer.isHidden || saved.image != nil
         layer?.backgroundColor = (pictureLayer.isHidden && saved.image != nil ? NSColor.clear : AppKitKit.raised).cgColor
         layer?.cornerRadius = corner ?? (pictureLayer.isHidden ? bounds.width / 2 : ProfilePicturePolicy.cornerRadius(side: bounds.width))
-        if let frames, frames.animated, window != nil, !CaperAccessibility.reduceMotion {
+        if let frames, frames.animated, visibility.visible, !CaperAccessibility.reduceMotion {
             let total = frames.durations.reduce(0, +)
             if total > 0 {
                 var elapsed = 0.0

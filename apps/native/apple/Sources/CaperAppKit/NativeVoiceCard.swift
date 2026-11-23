@@ -17,6 +17,7 @@ import CaperCore
     private let roomOverflow = NativeStyle.label("", size: 10, bold: true)
     private var timer: Timer?
     private var availability: Task<Void, Never>?
+    private lazy var visibility = AppKitWindowVisibility { [weak self] in self?.updateClock(); self?.updateTimer() }
     private var startedAt: Double?
     private var own = false
     private var live = false
@@ -236,7 +237,7 @@ import CaperCore
         join.layer?.opacity = live || hovering || (focused ?? (window?.firstResponder === join)) ? 1 : 0
     }
     override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow(); updateTimer()
+        super.viewDidMoveToWindow(); visibility.track(window); updateTimer()
         availability?.cancel(); availability = nil
         if window != nil, let channel {
             availability = Task { [weak model] in
@@ -245,7 +246,8 @@ import CaperCore
         }
     }
     private func updateTimer() {
-        guard window != nil, live, startedAt != nil else { timer?.invalidate(); timer = nil; return }
+        // A minimized or covered window needs no clock; it catches up on showing.
+        guard visibility.visible, live, startedAt != nil else { timer?.invalidate(); timer = nil; return }
         guard timer == nil else { return }
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateClock() }

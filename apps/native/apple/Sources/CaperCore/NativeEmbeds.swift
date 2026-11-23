@@ -39,6 +39,8 @@ private enum NativeEmbedSource {
     #if os(macOS)
     private let button = AppKitMediaHitTarget()
     private let playerView = AVPlayerView()
+    /// A looping GIF clip holds still while the window is minimized or covered.
+    private lazy var visibility = AppKitWindowVisibility { [weak self] in self?.visibilityChanged() }
     #else
     private let button = UIButton(type: .custom)
     private let playerController = AVPlayerViewController()
@@ -80,12 +82,23 @@ private enum NativeEmbedSource {
     }
     #if os(macOS)
     override var isFlipped: Bool { true }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); attachmentChanged(window != nil) }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); visibility.track(window); attachmentChanged(window != nil) }
     override func layout() { super.layout(); layoutMedia() }
+    private func visibilityChanged() {
+        guard active, playing, let loop else { return }
+        if visibility.visible { loop.player.play() } else { loop.player.pause() }
+    }
     #else
     override func didMoveToWindow() { super.didMoveToWindow(); attachmentChanged(window != nil) }
     override func layoutSubviews() { super.layoutSubviews(); layoutMedia() }
     #endif
+    private var shows: Bool {
+        #if os(macOS)
+        visibility.visible
+        #else
+        true
+        #endif
+    }
     private func attachmentChanged(_ attached: Bool) {
         active = attached
         if !attached {
@@ -133,13 +146,13 @@ private enum NativeEmbedSource {
     }
     private func startLoop(_ video: EmbedVideo, automatic: Bool = true) {
         guard !automatic || !CaperAccessibility.reduceMotion else { return }
-        if let loop { loop.player.play(); playing = true; updateButton(); return }
+        if let loop { if shows { loop.player.play() }; playing = true; updateButton(); return }
         guard let url = LinkEmbeds.openableURL(video.url) else { return }
         let loop = LoopingPlayback(url: url); self.loop = loop; animation.player = loop.player
         playTask = Task { [weak self] in
             let loaded = await loop.loads()
             guard !Task.isCancelled, let self, self.loop === loop, active else { return }
-            if loaded, !automatic || !CaperAccessibility.reduceMotion, !userPaused { playing = true; loop.player.play() }
+            if loaded, !automatic || !CaperAccessibility.reduceMotion, !userPaused { playing = true; if shows { loop.player.play() } }
             else { loop.stop(); self.loop = nil; animation.player = nil; playing = false }
             updateButton()
         }
