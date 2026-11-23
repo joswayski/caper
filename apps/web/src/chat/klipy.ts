@@ -157,6 +157,18 @@ export function parseKlipy(response: unknown, kind: KlipyKind): KlipyPage {
 }
 
 let config: Promise<KlipyConfig | null> | undefined;
+let resolvedConfig: KlipyConfig | null = null;
+
+/** The last resolved KLIPY config in this browser tab, so remounting composers keep the GIF button steady. */
+export function rememberedKlipyConfig(): KlipyConfig | null {
+  return typeof window === "undefined" ? null : resolvedConfig;
+}
+
+/** For tests: clear cached KLIPY config between cases. */
+export function resetKlipyConfigForTests() {
+  config = undefined;
+  resolvedConfig = null;
+}
 
 /** The app key and customer id, or null when GIFs are off or signed out. */
 export function klipyConfig(): Promise<KlipyConfig | null> {
@@ -172,6 +184,7 @@ export function klipyConfig(): Promise<KlipyConfig | null> {
     })
     .catch(() => null)
     .then((value) => {
+      resolvedConfig = value;
       // Retry later after a failure or sign-in rather than hiding GIFs for the tab's lifetime.
       if (!value) config = undefined;
       return value;

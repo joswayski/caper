@@ -777,9 +777,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         rememberConversationHistory()
         ++spaceAccessGeneration
         val request = ++generation
-        closeChannel(clearPending = true)
-        mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
-        mutable.value = mutable.value.copy(busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList(), inviteLinks = emptyList())
+        val hasCurrentSpace = mutable.value.selectedSpace != null
+        if (!hasCurrentSpace) {
+            closeChannel(clearPending = true)
+            mutable.value = mutable.value.copy(
+                deniedVoiceChannels = emptySet(),
+                busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList(), inviteLinks = emptyList(),
+            )
+        } else {
+            // Keep the displayed space, conversation, and buttons steady until the target space is ready.
+            mutable.value = mutable.value.copy(error = null, openError = null)
+        }
         viewModelScope.launch {
             try {
                 val since = profileEventCount
@@ -791,9 +799,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val detail = api.space(requireAccountToken(), id)
                 if (request != generation) return@launch
                 val landing = spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])
+                if (landing == null && hasCurrentSpace) closeChannel(clearPending = true)
                 // While restoring, the loading screen waits for the landing conversation too.
-                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false,
-                    restoring = mutable.value.restoring && landing != null)
+                mutable.value = mutable.value.copy(
+                    selectedSpace = detail,
+                    deniedVoiceChannels = emptySet(),
+                    pendingSpaceInvitations = emptyList(),
+                    inviteLinks = emptyList(),
+                    busy = false,
+                    restoring = mutable.value.restoring && landing != null,
+                )
                 // Before a cached conversation of this space opens.
                 repairProfiles(detail.members.map { it.profile() }, since)
                 landing?.let { selectChannel(it, guessedHistory?.takeIf { _ -> it.id == guess }) }

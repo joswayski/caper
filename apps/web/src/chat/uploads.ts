@@ -502,6 +502,19 @@ export const browserTransport: UploadTransport = {
     }),
 };
 
+let cachedUploadSettings: { accountId: string; settings: CompressionSettings | null } | undefined;
+
+/** The last upload settings resolved for this signed-in account in this tab. */
+export function rememberedUploadSettings(accountId?: string): CompressionSettings | null | undefined {
+  if (typeof window === "undefined" || !accountId) return undefined;
+  return cachedUploadSettings?.accountId === accountId ? cachedUploadSettings.settings : undefined;
+}
+
+/** For tests: clear cached upload settings between cases. */
+export function resetUploadSettingsForTests() {
+  cachedUploadSettings = undefined;
+}
+
 /** Uploads are optional server configuration: undefined disables the control.
  * Otherwise returns the server's compression settings from `/api/assets/usage`. */
 export async function uploadSettings(fetcher: typeof fetch = fetch): Promise<CompressionSettings | undefined> {
@@ -511,6 +524,15 @@ export async function uploadSettings(fetcher: typeof fetch = fetch): Promise<Com
   if (!response?.ok) return;
   const body = (await response.json().catch(() => undefined)) as { compression?: unknown } | undefined;
   return compressionSettings(body?.compression);
+}
+
+/** Reuses confirmed upload settings for the signed-in account across channel and space switches. */
+export async function loadUploadSettings(accountId?: string): Promise<CompressionSettings | null> {
+  const cached = rememberedUploadSettings(accountId);
+  if (cached) return cached;
+  const settings = (await uploadSettings()) ?? null;
+  if (typeof window !== "undefined" && accountId) cachedUploadSettings = { accountId, settings };
+  return settings;
 }
 
 /** Fresh URLs for attachments whose signed URLs expired in a long-open tab.

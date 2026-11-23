@@ -138,11 +138,12 @@ function withLatestAuthors(messages: ChatMessage[]) {
     : messages;
 }
 
-export function initialChatView(history?: GeneralChatHistory, error?: string): ChatViewState {
-  if (error) return { ...initialState, phase: "error", error };
+export function initialChatView(history?: GeneralChatHistory, error?: string, author?: ChatAuthor): ChatViewState {
+  if (error) return { ...initialState, ...(author ? { author } : {}), phase: "error", error };
   return history
     ? {
         ...initialState,
+        ...(author ? { author } : {}),
         phase: "ready",
         spaceName: history.space.name,
         channelId: history.channel.id,
@@ -152,7 +153,9 @@ export function initialChatView(history?: GeneralChatHistory, error?: string): C
         hasMore: history.hasMore,
         hasNewer: history.hasNewer,
       }
-    : initialState;
+    : author
+      ? { ...initialState, author }
+      : initialState;
 }
 
 export function apiError(response: Response, fallback: string) {
@@ -327,9 +330,16 @@ let accountSession:
       accountId: string;
       name: string;
       session: Promise<ChatSession>;
+      resolved?: ChatSession;
       token?: string;
     }
   | undefined;
+
+/** The already-minted capability for this account in this tab, so switched conversations start interactive without a disabled flash. */
+export function rememberedAccountSession(accountId?: string, name?: string): ChatSession | undefined {
+  if (typeof window === "undefined" || !accountId || !name) return undefined;
+  return accountSession?.accountId === accountId && accountSession.name === name ? accountSession.resolved : undefined;
+}
 
 export function sharedAccountSession(accountId: string, name: string): Promise<ChatSession> {
   if (accountSession?.accountId === accountId && accountSession.name === name) return accountSession.session;
@@ -341,6 +351,7 @@ export function sharedAccountSession(accountId: string, name: string): Promise<C
       if (minted.author.id !== accountId || minted.author.isGuest)
         throw new Error("The chat service returned another identity.");
       entry.token = minted.token;
+      entry.resolved = minted;
       return minted;
     }),
   };
@@ -413,10 +424,18 @@ export class ChatClient {
   // or move the channel's exclusive pagination boundary past a history gap.
   private readonly threadOnlyRows = new Set<string>();
 
-  constructor(changed: (state: ChatViewState) => void, channelId?: string, options: { sounds?: boolean } = {}) {
+  constructor(
+    changed: (state: ChatViewState) => void,
+    channelId?: string,
+    options: { sounds?: boolean; initialSession?: ChatSession } = {},
+  ) {
     this.changed = changed;
     this.channelId = channelId;
     this.sounds = options.sounds ?? true;
+    if (options.initialSession) {
+      this.session = options.initialSession;
+      this.state = { ...initialState, author: options.initialSession.author };
+    }
   }
 
   start(history?: GeneralChatHistory, error?: string) {
@@ -457,14 +476,28 @@ export class ChatClient {
 
   identify(name: string, signedIn = false, accountId?: string) {
     this.name = name;
-    if (this.accountId !== (signedIn ? accountId : undefined)) {
+    const nextAccountId = signedIn ? accountId : undefined;
+    if (this.accountId !== nextAccountId) {
       ++this.threadUnreadRevision;
-      this.update({ unreadThreads: {} });
+      if (this.state.unreadThreads && Object.keys(this.state.unreadThreads).length) this.update({ unreadThreads: {} });
     }
-    this.accountId = signedIn ? accountId : undefined;
+    this.accountId = nextAccountId;
     this.scheduleThreadUnread();
-    if (signedIn && accountId && this.state.author?.id === accountId)
-      this.update({ author: { ...this.state.author, name } });
+    if (signedIn && accountId) {
+      const remembered = rememberedAccountSession(accountId, name);
+      if (remembered) {
+        this.session = remembered;
+        if (
+          this.state.author?.id !== remembered.author.id ||
+          this.state.author?.name !== remembered.author.name ||
+          this.state.sessionError !== undefined
+        )
+          this.update({ author: remembered.author, sessionError: undefined });
+        return;
+      }
+      if (this.state.author?.id === accountId && this.state.author.name !== name)
+        this.update({ author: { ...this.state.author, name } });
+    }
     const saved = storedSession();
     // Guest identity may persist. Account names are not unique: mint a fresh
     // capability from the current account cookie rather than matching by name.

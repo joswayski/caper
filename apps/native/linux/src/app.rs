@@ -237,6 +237,8 @@ struct State {
     account: Option<Account>,
     spaces: Vec<Space>,
     space: Option<String>,
+    /// Target space while `PrepareNavigation` loads, keeping the current view steady.
+    pending_space: Option<String>,
     detail: Option<SpaceDetail>,
     channel: Option<String>,
     /// The open DM, when `channel` is one.
@@ -554,6 +556,23 @@ impl State {
     }
 }
 
+#[derive(PartialEq, Eq)]
+struct RailSpaceKey {
+    id: String,
+    name: String,
+    icon_asset: Option<String>,
+    unread: bool,
+    voice: u8,
+}
+
+#[derive(PartialEq, Eq)]
+struct RailKey {
+    spaces: Vec<RailSpaceKey>,
+    invitations: Vec<(String, String)>,
+    can_create_space: bool,
+    create_tooltip: String,
+}
+
 pub struct App {
     ui: Ui,
     api: Api,
@@ -590,6 +609,9 @@ pub struct App {
     landing: Cell<bool>,
     rendered_layout: Cell<u64>,
     rendered_files: Cell<u64>,
+    /// The rail's last rendered structure and buttons; selection updates in place.
+    rail_key: RefCell<Option<RailKey>>,
+    rail_buttons: RefCell<Vec<(String, gtk::Button)>>,
     /// The open file dialog: GTK drops a native dialog nothing holds.
     chooser: RefCell<Option<gtk::FileChooserNative>>,
     channel_ids: RefCell<Vec<String>>,
@@ -802,6 +824,8 @@ pub fn start(
         landing: Cell::new(false),
         rendered_layout: Cell::new(u64::MAX),
         rendered_files: Cell::new(u64::MAX),
+        rail_key: RefCell::default(),
+        rail_buttons: RefCell::default(),
         chooser: RefCell::default(),
         channel_ids: RefCell::default(),
         link_preview: RefCell::default(),
@@ -1717,6 +1741,10 @@ impl App {
     }
 
     fn leave_conversation(&self, state: &mut State) {
+        self.reset_conversation(state, true);
+    }
+
+    fn reset_conversation(&self, state: &mut State, bump_navigation: bool) {
         self.ui.composer.rich.end();
         // The composer's unsent text stays with its conversation (an edit
         // in progress is not a draft).
@@ -1734,8 +1762,11 @@ impl App {
         self.set_typing(state, false);
         *self.link_preview.borrow_mut() = Default::default();
         *self.thread_link_preview.borrow_mut() = Default::default();
+        state.pending_space = None;
         state.generation += 1;
-        state.navigation += 1;
+        if bump_navigation {
+            state.navigation += 1;
+        }
         state.loading_older = false;
         state.session = None;
         state.session_error = None;
@@ -1802,15 +1833,55 @@ impl App {
         });
     }
 
+    fn sync_rail_selection(&self, selected: Option<&str>) {
+        for (id, button) in self.rail_buttons.borrow().iter() {
+            if selected == Some(id.as_str()) {
+                button.add_css_class("selected");
+            } else {
+                button.remove_css_class("selected");
+            }
+        }
+    }
+
     fn select_space(self: &Rc<Self>, id: String) {
-        {
+        let deferred = {
             let mut state = self.state.borrow_mut();
             if state.space.as_deref() == Some(&id) && state.direct.is_none() {
+                if state.pending_space.take().is_some() {
+                    state.navigation += 1;
+                    self.sync_rail_selection(Some(&id));
+                }
                 return;
             }
-            self.navigate(&mut state, Some(id), None);
+            if state.detail.is_some() && state.direct.is_none() {
+                if state.pending_space.as_deref() == Some(&id) {
+                    return;
+                }
+                state.visit_request = None;
+                state.feedback_open = false;
+                state.pending_space = Some(id.clone());
+                state.navigation += 1;
+                state.unread_snapshot = None;
+                if let Some(token) = state.token.clone() {
+                    state.unread_snapshot = Some((state.navigation, None));
+                    self.worker.send(Command::LoadUnread {
+                        epoch: state.epoch,
+                        revision: state.unread_revision,
+                        visit: Some(state.navigation),
+                        token,
+                    });
+                }
+                self.prepare(&mut state, Some(id.clone()), None);
+                self.sync_rail_selection(Some(&id));
+                true
+            } else {
+                self.navigate(&mut state, Some(id), None);
+                false
+            }
+        };
+        if !deferred {
+            self.render();
         }
-        self.render();
     }
 
     fn reload(&self, state: &mut State) {
@@ -4802,6 +4873,28 @@ impl App {
             .take()
             .filter(|(navigation, _)| *navigation == state.navigation)
             .map(|(_, target)| target);
+        if let Some(space_id) = state.pending_space.take() {
+            self.reset_conversation(state, false);
+            state.space = Some(space_id);
+            state.detail = None;
+            state.channel = None;
+            state.presence.clear();
+            state.unread_boundary = None;
+            state.unread_visit_pending = false;
+            state.thread_unread.clear();
+            state.thread_unread_dirty = true;
+            if let Ok(prepared) = &result {
+                let target_channel = prepared
+                    .conversation
+                    .as_ref()
+                    .map(|(history, _)| history.channel.id.as_str());
+                state.restore_draft = Some(
+                    target_channel
+                        .and_then(|channel| state.drafts.remove(channel))
+                        .unwrap_or_default(),
+                );
+            }
+        }
         match result {
             Ok(prepared) => {
                 if let Some((history, _)) = &prepared.conversation
@@ -6115,80 +6208,140 @@ impl App {
                 .get(space)
                 .is_some_and(|channels| channels.values().any(|(count, _)| *count > 0))
         };
-        clear(&ui.rail);
-        for space in &state.spaces {
+        let voice_state = |space: &str| {
             let connected = {
                 let voice = self.voice.borrow();
-                voice.active_space.as_deref() == Some(&space.id)
+                voice.active_space.as_deref() == Some(space)
                     && matches!(voice.state.phase, caper_client::state::Phase::Connected(_))
             };
-            let voice =
-                (connected || state.voice_activity.contains(&space.id)).then_some(if connected {
+            if connected {
+                2u8
+            } else if state.voice_activity.contains(space) {
+                1u8
+            } else {
+                0u8
+            }
+        };
+        let edge = (40 * ui.rail.scale_factor()).max(0) as u32;
+        let next_rail_key = RailKey {
+            spaces: state
+                .spaces
+                .iter()
+                .map(|space| {
+                    let icon_asset = space.icon().and_then(|icon| {
+                        let avatar = crate::images::Avatar {
+                            name: space.name.clone(),
+                            mascot: None,
+                            picture: Some((
+                                icon.asset.to_owned(),
+                                icon.url.unwrap_or_default().to_owned(),
+                            )),
+                        };
+                        self.images
+                            .avatar(&avatar, edge)
+                            .map(|_| icon.asset.to_owned())
+                    });
+                    RailSpaceKey {
+                        id: space.id.clone(),
+                        name: space.name.clone(),
+                        icon_asset,
+                        unread: space_unread(&space.id),
+                        voice: voice_state(&space.id),
+                    }
+                })
+                .collect(),
+            invitations: state
+                .admin
+                .invitations
+                .iter()
+                .map(|space| (space.id.clone(), space.name.clone()))
+                .collect(),
+            can_create_space: state.can_create_space(),
+            create_tooltip: state.create_space_tooltip(),
+        };
+        let selected_space = if state.direct.is_none() {
+            state.pending_space.as_deref().or(state.space.as_deref())
+        } else {
+            None
+        };
+        let rail_changed = self.rail_key.borrow().as_ref() != Some(&next_rail_key);
+        if rail_changed {
+            *self.rail_key.borrow_mut() = Some(next_rail_key);
+            clear(&ui.rail);
+            let mut buttons = Vec::with_capacity(state.spaces.len());
+            for space in &state.spaces {
+                let connected = voice_state(&space.id) == 2;
+                let voice = (voice_state(&space.id) > 0).then_some(if connected {
                     "Connected to voice in this space"
                 } else {
                     "Voice active in this space"
                 });
-            let mut name = space.name.clone();
-            if let Some(voice) = voice {
-                name.push_str(&format!(", {}", voice.to_lowercase()));
-            }
-            if space_unread(&space.id) {
-                name.push_str(" (unread)");
-            }
-            let button: gtk::Button = named("GtkButton", &name);
-            // A ready icon fills the tile; the initials show while it loads
-            // or when it fails.
-            let icon = space.icon().map(|icon| crate::images::Avatar {
-                name: space.name.clone(),
-                mascot: None,
-                picture: Some((
-                    icon.asset.to_owned(),
-                    icon.url.unwrap_or_default().to_owned(),
-                )),
-            });
-            let edge = (40 * button.scale_factor()).max(0) as u32;
-            match icon.filter(|icon| self.images.avatar(icon, edge).is_some()) {
-                Some(icon) => {
-                    let view = crate::images::AvatarView::new(40, false);
-                    view.root.add_css_class("space-icon");
-                    view.set(&self.images, &icon);
-                    button.set_child(Some(&view.root));
-                    button.add_css_class("icon");
+                let mut name = space.name.clone();
+                if let Some(voice) = voice {
+                    name.push_str(&format!(", {}", voice.to_lowercase()));
                 }
-                None => show_text(&button, &caper_client::space_initial(&space.name)),
-            }
-            button.set_tooltip_text(Some(&space.name));
-            if state.space.as_deref() == Some(&space.id) && state.direct.is_none() {
-                button.add_css_class("selected");
-            }
-            let overlay = gtk::Overlay::new();
-            overlay.set_child(Some(&button));
-            if space_unread(&space.id) {
-                let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                dot.add_css_class("unread-dot");
-                dot.set_halign(gtk::Align::Start);
-                dot.set_valign(gtk::Align::Center);
-                dot.set_can_target(false);
-                overlay.add_overlay(&dot);
-            }
-            if let Some(voice) = voice {
-                let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                badge.add_css_class("rail-voice");
-                if connected {
-                    badge.add_css_class("connected");
+                if space_unread(&space.id) {
+                    name.push_str(" (unread)");
                 }
-                badge.append(&self.images.icon_image(Icon::Volume, "#f3f4f5", 12));
-                badge.set_halign(gtk::Align::End);
-                badge.set_valign(gtk::Align::Start);
-                badge.set_can_target(false);
-                overlay.add_overlay(&badge);
-                button.set_tooltip_text(Some(&format!("{}\n{voice}", space.name)));
+                let button: gtk::Button = named("GtkButton", &name);
+                // A ready icon fills the tile; the initials show while it loads
+                // or when it fails.
+                let icon = space.icon().map(|icon| crate::images::Avatar {
+                    name: space.name.clone(),
+                    mascot: None,
+                    picture: Some((
+                        icon.asset.to_owned(),
+                        icon.url.unwrap_or_default().to_owned(),
+                    )),
+                });
+                match icon.filter(|icon| self.images.avatar(icon, edge).is_some()) {
+                    Some(icon) => {
+                        let view = crate::images::AvatarView::new(40, false);
+                        view.root.add_css_class("space-icon");
+                        view.set(&self.images, &icon);
+                        button.set_child(Some(&view.root));
+                        button.add_css_class("icon");
+                    }
+                    None => show_text(&button, &caper_client::space_initial(&space.name)),
+                }
+                button.set_tooltip_text(Some(&space.name));
+                if selected_space == Some(space.id.as_str()) {
+                    button.add_css_class("selected");
+                }
+                let overlay = gtk::Overlay::new();
+                overlay.set_child(Some(&button));
+                if space_unread(&space.id) {
+                    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    dot.add_css_class("unread-dot");
+                    dot.set_halign(gtk::Align::Start);
+                    dot.set_valign(gtk::Align::Center);
+                    dot.set_can_target(false);
+                    overlay.add_overlay(&dot);
+                }
+                if let Some(voice) = voice {
+                    let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    badge.add_css_class("rail-voice");
+                    if connected {
+                        badge.add_css_class("connected");
+                    }
+                    badge.append(&self.images.icon_image(Icon::Volume, "#f3f4f5", 12));
+                    badge.set_halign(gtk::Align::End);
+                    badge.set_valign(gtk::Align::Start);
+                    badge.set_can_target(false);
+                    overlay.add_overlay(&badge);
+                    button.set_tooltip_text(Some(&format!("{}\n{voice}", space.name)));
+                }
+                let app = self.clone();
+                let id = space.id.clone();
+                button.connect_clicked(move |_| app.select_space(id.clone()));
+                self.scope_menu_on(&button, Scope::Space(space.id.clone()));
+                ui.rail.append(&overlay);
+                buttons.push((space.id.clone(), button));
             }
-            let app = self.clone();
-            let id = space.id.clone();
-            button.connect_clicked(move |_| app.select_space(id.clone()));
-            self.scope_menu_on(&button, Scope::Space(space.id.clone()));
-            ui.rail.append(&overlay);
+            *self.rail_buttons.borrow_mut() = buttons;
+            self.render_rail_actions(&state);
+        } else {
+            self.sync_rail_selection(selected_space);
         }
         self.render_admin_sidebar(&state);
 

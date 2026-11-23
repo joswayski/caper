@@ -3226,7 +3226,7 @@ impl App {
     // The sidebar: the rail's create and join buttons, space invitations
     // and private channel invitations.
 
-    pub(super) fn render_admin_sidebar(self: &Rc<Self>, state: &State) {
+    pub(super) fn render_rail_actions(self: &Rc<Self>, state: &State) {
         let ui = &self.ui;
         for space in &state.admin.invitations {
             let tile: gtk::Button =
@@ -3282,7 +3282,10 @@ impl App {
             }
         });
         ui.rail.append(&join);
+    }
 
+    pub(super) fn render_admin_sidebar(self: &Rc<Self>, state: &State) {
+        let ui = &self.ui;
         let owner = state.owner();
         ui.space_header.set_visible(state.detail.is_some());
         ui.space_header

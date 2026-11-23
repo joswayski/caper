@@ -20,7 +20,7 @@ import {
   useRole,
 } from "@floating-ui/react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
-import { ChatClient, initialChatView } from "./client.ts";
+import { ChatClient, initialChatView, rememberedAccountSession } from "./client.ts";
 import { subscribeProfiles } from "../account/profiles.ts";
 import { shellPoll } from "../account/shell-poll.ts";
 import type { ReactionSave } from "./MessageReactions.tsx";
@@ -70,7 +70,14 @@ import JumpToLatest from "./JumpToLatest.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import type { ChatEmbed } from "./embeds.ts";
-import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings, UploadError } from "./uploads.ts";
+import {
+  MAX_ATTACHMENTS,
+  AttachmentUpload,
+  loadUploadSettings,
+  refreshAttachmentUrls,
+  rememberedUploadSettings,
+  UploadError,
+} from "./uploads.ts";
 import {
   getVoiceSendOnStop,
   isVoiceAttachment,
@@ -100,6 +107,7 @@ const INITIAL_ITEM_INDEX = 1_000_000_000;
 const SEND_RETRY_DELAYS_MS = [3_000, 10_000, 30_000];
 
 const NO_CANDIDATES: MentionCandidate[] = [];
+const noSubscribe = () => () => {};
 
 /** Where to open a conversation: a loaded message or just its identity (a notification, a feedback report). */
 export type FocusTarget = Pick<GeneralChatHistory["messages"][number], "id" | "channelId" | "threadRootId">;
@@ -321,7 +329,13 @@ export default function Chat({
   /** After one of the viewer's messages (or thread replies) is accepted. */
   onSent?: () => void;
 }) {
-  const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
+  const [state, setState] = useState(() =>
+    initialChatView(
+      initialHistory,
+      initialHistoryError,
+      signedIn ? rememberedAccountSession(accountId, name)?.author : undefined,
+    ),
+  );
   useEffect(() => {
     // Start code/data and opening-grid artwork together, without waiting for a
     // sending session or a pointer hover (which touch clients never provide).
@@ -651,9 +665,13 @@ export default function Chat({
   };
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
-  // Virtuoso needs browser APIs; the server and first client render use the plain list.
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => setHydrated(true), []);
+  // Virtuoso needs browser APIs; the server and initial hydration use the plain list,
+  // while client-side channel and space switches start hydrated on the first render.
+  const hydrated = useSyncExternalStore(
+    noSubscribe,
+    () => true,
+    () => false,
+  );
   useEffect(() => {
     if (!state.author || readOnly) return;
     // Warm the code/data after chat settles, without mounting the picker or
@@ -679,7 +697,9 @@ export default function Chat({
   }, []);
   const objectUrls = useRef(new Set<string>());
   // undefined is checking; null means unavailable. Neither removes the attach button.
-  const [compression, setCompression] = useState<CompressionSettings | null>();
+  const [compression, setCompression] = useState<CompressionSettings | null | undefined>(() =>
+    signedIn ? rememberedUploadSettings(accountId) : undefined,
+  );
   const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<FreshUrls>({});
   // Keep sender previews through processing and confirmation without reloading images.
@@ -887,7 +907,7 @@ export default function Chat({
         setState(next);
       },
       channelId,
-      { sounds: messageSounds },
+      { sounds: messageSounds, initialSession: signedIn ? rememberedAccountSession(accountId, name) : undefined },
     );
     clientRef.current = client;
     client.setSilencedAuthors(blockedIdsRef.current);
@@ -960,14 +980,19 @@ export default function Chat({
       setCompression(undefined);
       return;
     }
+    const remembered = rememberedUploadSettings(accountId);
+    if (remembered) {
+      setCompression((current) => (current === remembered ? current : remembered));
+      return;
+    }
     let active = true;
-    void uploadSettings().then((settings) => {
-      if (active) setCompression(settings ?? null);
+    void loadUploadSettings(accountId).then((settings) => {
+      if (active) setCompression((current) => (current === settings ? current : settings));
     });
     return () => {
       active = false;
     };
-  }, [signedIn]);
+  }, [signedIn, accountId]);
 
   const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
     setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...change } : item)));

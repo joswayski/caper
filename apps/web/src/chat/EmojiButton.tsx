@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type RefObject } from "react";
+import { useId, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import {
   autoUpdate,
   flip,
@@ -19,6 +19,16 @@ import { preloadReactionPicker } from "./MessageActions.tsx";
 import ReactionPicker from "./LazyReactionPicker.tsx";
 import GifButton, { GifPicker, useKlipy } from "./GifButton.tsx";
 import type { ChatGif } from "./klipy.ts";
+
+const DRAWER_QUERY = "(max-width: 760px), (pointer: coarse)";
+const subscribeDrawer = (listener: () => void) => {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
+  const query = window.matchMedia(DRAWER_QUERY);
+  query.addEventListener("change", listener);
+  return () => query.removeEventListener("change", listener);
+};
+const isDrawerLayout = () =>
+  typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(DRAWER_QUERY).matches;
 
 /**
  * Mobile composers share one Emojis / GIFs / Stickers drawer. Desktop keeps
@@ -45,14 +55,7 @@ export default function EmojiButton({
   label?: string;
 }) {
   const [open, setOpenState] = useState(false);
-  const [drawer, setDrawer] = useState(false);
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 760px), (pointer: coarse)");
-    const update = () => setDrawer(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
+  const drawer = useSyncExternalStore(subscribeDrawer, isDrawerLayout, () => false);
   const setOpen = (next: boolean) => {
     setOpenState(next);
     onOpenChange?.(next);
@@ -142,10 +145,7 @@ export default function EmojiButton({
           // Keep the textarea focused (and its caret visible) until the picker opens.
           onMouseDown={(event) => event.preventDefault()}
           {...getReferenceProps({
-            onClick: () => {
-              setDrawer(window.matchMedia("(max-width: 760px), (pointer: coarse)").matches);
-              setOpen(!open);
-            },
+            onClick: () => setOpen(!open),
           })}
         >
           <Smile size={18} aria-hidden="true" />

@@ -689,7 +689,10 @@ export default function Call({
     mediaChannelId && !demo ? `/api/channels/${encodeURIComponent(mediaChannelId)}/media` : "/api/media";
   const channelJoined = channel?.joined !== false;
   const voiceJoined = voiceless ? !!voiceChannels?.length : channelJoined;
-  const available = voiceJoined ? availability[mediaRoot] : false;
+  const [accountVoiceEnabled, setAccountVoiceEnabled] = useState<{ accountId: string; enabled: boolean }>();
+  const knownVoice =
+    !demo && account?.id && accountVoiceEnabled?.accountId === account.id ? accountVoiceEnabled.enabled : undefined;
+  const available = voiceJoined ? (availability[mediaRoot] ?? knownVoice) : false;
   const clientRoot = useRef(mediaRoot);
   const rootFor = (channelId?: string) =>
     !channelId || demo ? "/api/media" : `/api/channels/${encodeURIComponent(channelId)}/media`;
@@ -760,10 +763,19 @@ export default function Call({
     if (engaged) void preloadSoundEffects();
   }, [engaged]);
 
+  const presenceAccount = useRef(account?.id);
   useEffect(() => {
-    setSelfPresence(undefined);
-    setPresenceLive(false);
-    if (!account || !spaceId || demo) return;
+    const accountChanged = presenceAccount.current !== account?.id;
+    presenceAccount.current = account?.id;
+    if (!account || !spaceId || demo) {
+      setSelfPresence(undefined);
+      setPresenceLive(false);
+      return;
+    }
+    if (accountChanged) {
+      setSelfPresence(undefined);
+      setPresenceLive(false);
+    }
     return watchAccountPresence(
       spaceId,
       [account.id],
@@ -989,6 +1001,7 @@ export default function Call({
   useEffect(() => {
     if (!voiceJoined) return;
     const controller = new AbortController();
+    const accountId = account?.id;
     fetch(`${mediaRoot}/status`, {
       credentials: "same-origin",
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
@@ -996,13 +1009,22 @@ export default function Call({
       .then(async (response) => (response.ok ? (response.json() as Promise<{ enabled: boolean }>) : { enabled: false }))
       .then((result) => {
         if (controller.signal.aborted) return;
-        setAvailability((previous) => ({ ...previous, [mediaRoot]: result.enabled }));
+        setAvailability((previous) =>
+          previous[mediaRoot] === result.enabled ? previous : { ...previous, [mediaRoot]: result.enabled },
+        );
+        if (!demo && accountId && result.enabled)
+          setAccountVoiceEnabled((previous) =>
+            previous?.accountId === accountId && previous.enabled ? previous : { accountId, enabled: true },
+          );
       })
       .catch(() => {
-        if (!controller.signal.aborted) setAvailability((previous) => ({ ...previous, [mediaRoot]: false }));
+        if (!controller.signal.aborted)
+          setAvailability((previous) =>
+            previous[mediaRoot] === false ? previous : { ...previous, [mediaRoot]: false },
+          );
       });
     return () => controller.abort();
-  }, [mediaRoot, voiceJoined]);
+  }, [mediaRoot, voiceJoined, demo, account?.id]);
 
   useEffect(() => {
     if (

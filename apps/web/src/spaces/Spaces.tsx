@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -168,6 +169,17 @@ function canonicalJson(value: unknown) {
 /** A state setter's update that keeps the held value when a poll brings the same data, so nothing re-renders. */
 function unlessSame<T>(next: T) {
   return (current: T) => (canonicalJson(current) === canonicalJson(next) ? current : next);
+}
+
+/** Keeps a cached space view's identity when background revalidation returns the exact same metadata and history. */
+function samePreparedSpace(current: PreparedSpace | undefined, next: PreparedSpace) {
+  return (
+    !!current &&
+    current.channelId === next.channelId &&
+    current.history === next.history &&
+    current.historyError === next.historyError &&
+    canonicalJson(current.detail) === canonicalJson(next.detail)
+  );
 }
 
 /** Closes a disclosure menu and focuses its summary, so a dialog opened from it returns focus there. */
@@ -1766,6 +1778,408 @@ function LeaveChannelDialog({
   );
 }
 
+const SpaceRailItem = memo(function SpaceRailItem({
+  space,
+  active,
+  busy,
+  muted,
+  unread,
+  mentionCount,
+  connected,
+  voiceActive,
+  onChoose,
+  onPrefetch,
+}: {
+  space: Space;
+  active: boolean;
+  busy: boolean;
+  muted: boolean;
+  unread: boolean;
+  mentionCount: number;
+  connected: boolean;
+  voiceActive: boolean;
+  onChoose: (spaceId: string) => void;
+  onPrefetch: (spaceId: string) => void;
+}) {
+  const label = [
+    space.name,
+    unread && "unread messages",
+    mentionCount > 0 && `${mentionCount} ${mentionCount === 1 ? "mention" : "mentions"}`,
+    muted && "muted",
+    voiceActive && (connected ? "connected to voice" : "voice active"),
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return (
+    <div
+      className="space-rail-item"
+      data-active={active}
+      data-muted={muted ? "" : undefined}
+      data-voice={voiceActive ? "" : undefined}
+    >
+      {unread && <i className="space-unread" aria-hidden="true" />}
+      <button
+        type="button"
+        title={label}
+        aria-label={label}
+        aria-current={active ? "page" : undefined}
+        aria-busy={busy}
+        onMouseEnter={() => onPrefetch(space.id)}
+        onFocus={() => onPrefetch(space.id)}
+        onClick={() => onChoose(space.id)}
+      >
+        <SpaceIcon space={space} />
+        {mentionCount > 0 && (
+          <i className="space-mentions" aria-hidden="true">
+            {mentionCount > 99 ? "99+" : mentionCount}
+          </i>
+        )}
+        {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
+        {voiceActive && (
+          <Volume2 className="space-rail-voice" data-connected={connected ? "" : undefined} aria-hidden="true" />
+        )}
+      </button>
+    </div>
+  );
+});
+
+const SpaceRail = memo(function SpaceRail({
+  spaces,
+  invitations,
+  unreadSpaces,
+  notifications,
+  voiceActivity,
+  connectedSpaceId,
+  activeSpaceId,
+  busySpaceId,
+  signedIn,
+  canCreateSpace,
+  limits,
+  onChoose,
+  onPrefetch,
+  onOpenInvitation,
+  onCreateSpace,
+}: {
+  spaces: Space[];
+  invitations: Space[];
+  unreadSpaces: UnreadSpace[];
+  notifications: ReturnType<typeof useNotificationSettings>;
+  voiceActivity: string[];
+  connectedSpaceId: string | undefined;
+  activeSpaceId: string;
+  busySpaceId: string | undefined;
+  signedIn: boolean;
+  canCreateSpace: boolean;
+  limits: SpaceLimits | undefined;
+  onChoose: (spaceId: string) => void;
+  onPrefetch: (spaceId: string) => void;
+  onOpenInvitation: (space: Space) => void;
+  onCreateSpace: () => void;
+}) {
+  return (
+    <nav className="space-rail" aria-label="Spaces">
+      {spaces.map((space) => {
+        const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
+        const unread = unreadSpaces.find((item) => item.id === space.id);
+        // The dot means anything new; the count is only mentions and replies to you.
+        const mentionCount = unread?.channels.reduce((total, channel) => total + (channel.mentionCount ?? 0), 0) ?? 0;
+        const connected = connectedSpaceId === space.id;
+        const voiceActive = connected || voiceActivity.includes(space.id);
+        return (
+          <SpaceRailItem
+            key={space.id}
+            space={space}
+            active={space.id === activeSpaceId}
+            busy={busySpaceId === space.id}
+            muted={muted}
+            unread={!!unread}
+            mentionCount={mentionCount}
+            connected={connected}
+            voiceActive={voiceActive}
+            onChoose={onChoose}
+            onPrefetch={onPrefetch}
+          />
+        );
+      })}
+      {invitations.map((space) => (
+        <button
+          key={space.id}
+          className="invited-space"
+          type="button"
+          title={`Invitation to ${space.name}`}
+          aria-label={`Invitation to ${space.name}`}
+          onClick={() => onOpenInvitation(space)}
+        >
+          {/* The space's initial (or icon) in a dashed tile, as on Apple, Android and desktop. */}
+          <SpaceIcon space={space} />
+        </button>
+      ))}
+      <button
+        className="add-space"
+        type="button"
+        title={
+          !signedIn
+            ? "Sign in to create a space"
+            : canCreateSpace
+              ? "Create space"
+              : `Space limit reached (${limits?.ownedSpaces ?? 20} owned, ${limits?.totalSpaces ?? 100} total)`
+        }
+        aria-label="Create space"
+        disabled={signedIn && !canCreateSpace}
+        onClick={onCreateSpace}
+      >
+        <Plus aria-hidden="true" />
+      </button>
+      {busySpaceId && (
+        <span className="sr-only" role="status">
+          Opening {spaces.find((space) => space.id === busySpaceId)?.name}…
+        </span>
+      )}
+    </nav>
+  );
+});
+
+const DirectNavigation = memo(function DirectNavigation({
+  account,
+  directs,
+  activeDirectId,
+  pendingDirect,
+  selfDirectPending,
+  requestsShown,
+  blockedIds,
+  notifications,
+  notificationError,
+  directError,
+  onStartDirect,
+  onOpenSelfDirect,
+  onToggleRequests,
+  onOpenDirect,
+  onPrefetchDirect,
+  onSaveNotifications,
+  onDismissNotificationError,
+  onRefreshDirects,
+}: {
+  account: Account | undefined;
+  directs: DirectConversation[];
+  activeDirectId: string | undefined;
+  pendingDirect: string | undefined;
+  selfDirectPending: boolean;
+  requestsShown: boolean;
+  blockedIds: ReadonlySet<string>;
+  notifications: ReturnType<typeof useNotificationSettings>;
+  notificationError: string | undefined;
+  directError: string | undefined;
+  onStartDirect: () => void;
+  onOpenSelfDirect: () => void;
+  onToggleRequests: () => void;
+  onOpenDirect: (conversation: DirectConversation) => void;
+  onPrefetchDirect: (conversation?: DirectConversation) => void;
+  onSaveNotifications: (key: string, save: () => Promise<void>) => void;
+  onDismissNotificationError: () => void;
+  onRefreshDirects: () => void;
+}) {
+  const selfDirect = directs.find((conversation) => conversation.peer.id === account?.id);
+  const incomingRequests = directs.filter((conversation) => directStatus(conversation) === "incoming");
+  return (
+    <section className="direct-section" aria-label="Direct messages">
+      <div className="channel-section-heading">
+        <span className="direct-section-title">
+          <MessageCircle aria-hidden="true" />
+          Direct messages
+        </span>
+        <span className="channel-section-actions">
+          <button type="button" aria-label="New direct message" title="New direct message" onClick={onStartDirect}>
+            <Plus aria-hidden="true" />
+          </button>
+        </span>
+      </div>
+      <ul>
+        {account && (
+          <li>
+            <button
+              type="button"
+              className="channel-select direct-select direct-self"
+              data-unread={selfDirect && directUnread(selfDirect) ? "" : undefined}
+              disabled={selfDirectPending}
+              aria-busy={selfDirectPending || (!!selfDirect && pendingDirect === selfDirect.id)}
+              aria-current={selfDirect && selfDirect.id === activeDirectId ? "page" : undefined}
+              title="Your private notes"
+              onMouseEnter={() => onPrefetchDirect(selfDirect)}
+              onFocus={() => onPrefetchDirect(selfDirect)}
+              onClick={onOpenSelfDirect}
+            >
+              <span className="direct-avatar">
+                <Avatar person={account} name={account.displayName ?? account.username ?? "You"} />
+              </span>
+              <span>{account.displayName ?? account.username ?? "You"}</span>
+              <small>you</small>
+              {selfDirect && directUnread(selfDirect) && (
+                <span className="direct-unread" aria-label="Unread messages" />
+              )}
+            </button>
+          </li>
+        )}
+        {incomingRequests.length > 0 && (
+          <li>
+            <button
+              type="button"
+              className="channel-select direct-select direct-requests"
+              aria-expanded={requestsShown}
+              aria-controls="direct-request-list"
+              onClick={onToggleRequests}
+            >
+              {/* Turns like the Channels chevron instead of swapping icons. */}
+              <ChevronDown aria-hidden="true" />
+              <span>Message requests</span>
+              <span
+                className="direct-request-count"
+                aria-label={`${incomingRequests.length} ${incomingRequests.length === 1 ? "request" : "requests"}`}
+              >
+                {incomingRequests.length}
+              </span>
+            </button>
+          </li>
+        )}
+        {requestsShown && incomingRequests.length > 0 && (
+          <li className="direct-request-group">
+            <ul id="direct-request-list" aria-label="Message requests">
+              {incomingRequests.map((conversation) => (
+                <li key={conversation.id}>
+                  <button
+                    type="button"
+                    className="channel-select direct-select"
+                    aria-current={conversation.id === activeDirectId ? "page" : undefined}
+                    aria-busy={pendingDirect === conversation.id}
+                    onMouseEnter={() => onPrefetchDirect(conversation)}
+                    onFocus={() => onPrefetchDirect(conversation)}
+                    onClick={() => onOpenDirect(conversation)}
+                  >
+                    <span className="direct-avatar">
+                      <Avatar person={conversation.peer} name={conversation.peer.displayName} />
+                    </span>
+                    <span>{conversation.peer.displayName}</span>
+                    <small>@{conversation.peer.username}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </li>
+        )}
+        {directs
+          .filter((conversation) => conversation.peer.id !== account?.id && directStatus(conversation) !== "incoming")
+          .map((conversation) => {
+            const conversationNotifications = overrideFor(notifications, { conversationId: conversation.id });
+            const muted = isMuted(conversationNotifications?.mutedUntil);
+            const unread = !muted && !blockedIds.has(conversation.peer.id) && directUnread(conversation);
+            const errorKey = `dm:${conversation.id}`;
+            return (
+              <li key={conversation.id} data-muted={muted ? "" : undefined}>
+                <div className="direct-line">
+                  <button
+                    type="button"
+                    className="channel-select direct-select"
+                    data-unread={unread ? "" : undefined}
+                    aria-current={conversation.id === activeDirectId ? "page" : undefined}
+                    title={`@${conversation.peer.username}`}
+                    aria-busy={pendingDirect === conversation.id}
+                    onMouseEnter={() => onPrefetchDirect(conversation)}
+                    onFocus={() => onPrefetchDirect(conversation)}
+                    onClick={() => onOpenDirect(conversation)}
+                  >
+                    <span className="direct-avatar" aria-hidden="true">
+                      <Avatar person={conversation.peer} name={conversation.peer.displayName} />
+                    </span>
+                    <span>{conversation.peer.displayName}</span>
+                    {blockedIds.has(conversation.peer.id) ? (
+                      <small>Blocked</small>
+                    ) : (
+                      directStatus(conversation) === "outgoing" && <small>Request sent</small>
+                    )}
+                    {/* Muted DMs keep their quiet presentation. */}
+                    {muted ? (
+                      <>
+                        <BellOff className="muted-icon" aria-hidden="true" />
+                        <span className="sr-only">, muted</span>
+                      </>
+                    ) : (
+                      unread && (
+                        <span
+                          className={conversation.unreadCount === undefined ? "direct-unread" : "direct-unread-count"}
+                          aria-label={
+                            conversation.unreadCount === undefined
+                              ? "Unread messages"
+                              : `${conversation.unreadCount} unread ${conversation.unreadCount === 1 ? "message" : "messages"}`
+                          }
+                        >
+                          {conversation.unreadCount === undefined
+                            ? null
+                            : conversation.unreadCount > 99
+                              ? "99+"
+                              : conversation.unreadCount}
+                        </span>
+                      )
+                    )}
+                  </button>
+                  <details
+                    className="channel-menu direct-menu"
+                    onToggle={(event) => trackMenu(event.currentTarget)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape" && event.currentTarget.open) {
+                        // Handled here, so an open thread does not also close.
+                        event.preventDefault();
+                        event.currentTarget.open = false;
+                        event.currentTarget.querySelector("summary")?.focus();
+                      }
+                    }}
+                    onBlur={leaveMenu}
+                  >
+                    <summary
+                      className="channel-manage"
+                      aria-label={`Options for ${conversation.peer.displayName}`}
+                      title={`Conversation options for ${conversation.peer.displayName}`}
+                    >
+                      <MoreHorizontal aria-hidden="true" />
+                    </summary>
+                    <div className="space-actions" popover="manual">
+                      <DirectNotificationItems
+                        loaded={notifications.loaded}
+                        off={conversationNotifications?.level === "nothing"}
+                        mutedUntil={conversationNotifications?.mutedUntil ?? null}
+                        onChange={(change) =>
+                          onSaveNotifications(errorKey, () => changeDirectNotifications(conversation.id, change))
+                        }
+                      />
+                    </div>
+                  </details>
+                </div>
+                {notificationError === errorKey && (
+                  <p className="space-sidebar-error notification-error" role="alert">
+                    That change wasn’t saved. Try again.
+                    <button type="button" onClick={onDismissNotificationError}>
+                      Dismiss
+                    </button>
+                  </p>
+                )}
+              </li>
+            );
+          })}
+      </ul>
+      <button type="button" className="channel-select direct-action" onClick={onStartDirect}>
+        <Plus aria-hidden="true" />
+        <span>New message</span>
+      </button>
+      {directError && (
+        <p className="space-sidebar-error" role="alert">
+          {directError}
+          <button type="button" onClick={onRefreshDirects}>
+            Retry direct messages
+          </button>
+        </p>
+      )}
+    </section>
+  );
+});
+
 export default function Spaces({
   embedded = false,
   initialAccount,
@@ -1895,10 +2309,14 @@ export default function Spaces({
   const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace | undefined>(initialView);
   const [directSnapshots, setDirects] = useState<DirectConversation[]>(initialDirects ?? []);
-  const directs = directSnapshots.map((conversation) => ({
-    ...conversation,
-    peer: withLatestProfile(conversation.peer, account, profiles),
-  }));
+  const directs = useMemo(
+    () =>
+      directSnapshots.map((conversation) => {
+        const peer = withLatestProfile(conversation.peer, account, profiles);
+        return peer === conversation.peer ? conversation : { ...conversation, peer };
+      }),
+    [directSnapshots, account, profiles],
+  );
   const [directsLoading, setDirectsLoading] = useState(!initialDirects);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
@@ -1908,10 +2326,11 @@ export default function Spaces({
   const notifications = useNotificationSettings();
   // Shown under the row whose notification change failed; the store has already reverted it.
   const [notificationError, setNotificationError] = useState<string>();
-  const saveNotifications = (key: string, save: () => Promise<void>) => {
+  const saveNotifications = useCallback((key: string, save: () => Promise<void>) => {
     setNotificationError(undefined);
     void save().catch(() => setNotificationError(key));
-  };
+  }, []);
+  const dismissNotificationError = useCallback(() => setNotificationError(undefined), []);
   const notificationAlert = (key: string) =>
     notificationError === key && (
       <p className="space-sidebar-error notification-error" role="alert">
@@ -2204,6 +2623,16 @@ export default function Spaces({
     setBrowseOpen(false);
     setChannelInvitation(undefined);
     setLeavingChannel(undefined);
+    if (spaceId && !dmId && !visit && !invitations.some((item) => item.id === spaceId)) {
+      const cached = navigation.current.peek(spaceId, channelId);
+      if (cached) {
+        setError(undefined);
+        setPending(false);
+        setView(cached);
+        setDirectView(undefined);
+        if (channelId) setNavigationOpen(false);
+      }
+    }
     const query = new URLSearchParams();
     if (spaceId) query.set("space", spaceId);
     if (channelId) query.set("channel", channelId);
@@ -2558,15 +2987,21 @@ export default function Spaces({
     }
     let current = true;
     setError(undefined);
-    setPending(true);
     const cached = navigation.current.peek(selected.spaceId, selected.channelId);
     // Space tiles switch the channel list in Browse; revealing a conversation
     // requires an explicit channel/DM/visit selection, including cached loads.
     const openConversation = !!(selected.channelId || selected.dmId || selected.visit);
+    let busyTimer: ReturnType<typeof setTimeout> | undefined;
     if (cached) {
-      setView(cached);
+      setPending(false);
+      setView((shown) => (shown === cached ? shown : cached));
       if (!selected.dmId) setDirectView(undefined);
       if (openConversation) setNavigationOpen(false);
+    } else {
+      // Show the busy tile only when opening takes a moment, so fast switches never flash dim.
+      busyTimer = setTimeout(() => {
+        if (current) setPending(true);
+      }, 150);
     }
     // A report prepares its own context; only the surrounding space metadata
     // is needed here, never a competing latest-page conversation.
@@ -2576,11 +3011,12 @@ export default function Spaces({
         : navigation.current.take(selected.spaceId, selected.channelId)
     )
       .then((next) => {
+        clearTimeout(busyTimer);
         if (!current) return;
         // Commit the channel list and first history together. Until this point,
         // the existing Call (including its draft and live connections) stays put.
         navigation.current.remember(next);
-        setView(next);
+        setView((shown) => (samePreparedSpace(shown, next) ? shown : next));
         if (!selected.dmId) setDirectView(undefined);
         setPending(false);
         if (openConversation) setNavigationOpen(false);
@@ -2594,6 +3030,7 @@ export default function Spaces({
         if (!embedded) window.history.replaceState({}, "", `/spaces?${query}`);
       })
       .catch((reason) => {
+        clearTimeout(busyTimer);
         if (current) {
           if (
             (reason instanceof SpacesApiError || reason instanceof ChatHistoryError) &&
@@ -2627,6 +3064,7 @@ export default function Spaces({
       });
     return () => {
       current = false;
+      clearTimeout(busyTimer);
     };
   }, [selected, loading, invitation?.id]);
 
@@ -2665,6 +3103,10 @@ export default function Spaces({
   // Membership can change in another account/tab while this page is open.
   // Reconcile the rail on focus and on the shell poll; transport authorization
   // still enforces access independently of this UI refresh.
+  const latestInvitationId = useRef(invitation?.id);
+  latestInvitationId.current = invitation?.id;
+  const latestChoose = useRef(choose);
+  latestChoose.current = choose;
   useEffect(() => {
     if (loading || !account) return;
     let current = true;
@@ -2680,17 +3122,22 @@ export default function Spaces({
         for (const space of latestSpaces.current) if (!available.has(space.id)) navigation.current.forget(space.id);
         setSpaces(unlessSame(result.spaces));
         setInvitations(unlessSame(result.invitations ?? []));
-        if (detail?.space.id && !available.has(detail.space.id)) {
+        const currentDetailId = shownDetail.current?.space.id;
+        const currentSelection = latestSelected.current;
+        if (currentDetailId && !available.has(currentDetailId)) {
           setView(undefined);
           setDialog(undefined);
           setManageChannel(undefined);
           setNotice("This space is no longer available.");
-          choose(result.spaces[0]?.id, undefined, true, selected.dmId, latestSelected.current.visit);
+          latestChoose.current(result.spaces[0]?.id, undefined, true, currentSelection.dmId, currentSelection.visit);
         }
-        if (invitation && !(result.invitations ?? []).some((item) => item.id === invitation.id))
-          choose(result.spaces[0]?.id, undefined, true, selected.dmId, latestSelected.current.visit);
-        if (detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
-          const next = await getSpace(detail.space.id);
+        if (
+          latestInvitationId.current &&
+          !(result.invitations ?? []).some((item) => item.id === latestInvitationId.current)
+        )
+          latestChoose.current(result.spaces[0]?.id, undefined, true, currentSelection.dmId, currentSelection.visit);
+        if (currentDetailId && available.has(currentDetailId) && !membershipSubmitting.current) {
+          const next = await getSpace(currentDetailId);
           // Replacing forgets every visited channel's saved history in the
           // space, so an unchanged poll result must not cost a refetch later.
           if (
@@ -2702,12 +3149,12 @@ export default function Spaces({
             const shown = shownChannel.current;
             replaceDetail(next);
             // Behind an open DM the sidebar just updates: nothing on screen changed.
-            if (shown && !selected.dmId && !next.channels.some((item) => item.id === shown)) {
+            if (shown && !latestSelected.current.dmId && !next.channels.some((item) => item.id === shown)) {
               // The open channel was deleted or closed to this account: say
               // so, and stop the address naming a channel that is gone.
               setNotice("This channel is no longer available.");
               setManageChannel((managed) => (managed?.id === shown ? undefined : managed));
-              choose(next.space.id, undefined, true, undefined, latestSelected.current.visit);
+              latestChoose.current(next.space.id, undefined, true, undefined, latestSelected.current.visit);
             }
           }
         }
@@ -2728,7 +3175,7 @@ export default function Spaces({
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [loading, account?.id, detail?.space.id, selected.spaceId, selected.dmId, invitation?.id]);
+  }, [loading, account?.id]);
 
   // The list is polled and updated on accept, so read the latest status from it.
   const currentDirect = directView
@@ -2911,202 +3358,68 @@ export default function Spaces({
       onRetry={() => void refreshFeedback()}
     />
   );
+  const sidebarActions = useRef({
+    chooseSpace: (spaceId: string) => choose(spaceId),
+    prefetchSpace: (spaceId: string) => prefetch(spaceId),
+    openInvitation: (space: Space) => (detail ? setRailInvitation(space) : choose(space.id)),
+    createSpace: () => (account ? setDialog("space") : window.location.assign("/login")),
+    startDirect: () => setDialog("direct"),
+    openSelfDirect: () => void openSelfDirect(),
+    toggleRequests: () => setRequestsOpen(!requestsShown),
+    openDirect: (conversation: DirectConversation) => openDirect(conversation),
+    prefetchDirect: (conversation?: DirectConversation) => prefetchDirect(conversation),
+    refreshDirects: () => void refreshDirects(),
+  });
+  sidebarActions.current = {
+    chooseSpace: (spaceId: string) => choose(spaceId),
+    prefetchSpace: (spaceId: string) => prefetch(spaceId),
+    openInvitation: (space: Space) => (detail ? setRailInvitation(space) : choose(space.id)),
+    createSpace: () => (account ? setDialog("space") : window.location.assign("/login")),
+    startDirect: () => setDialog("direct"),
+    openSelfDirect: () => void openSelfDirect(),
+    toggleRequests: () => setRequestsOpen(!requestsShown),
+    openDirect: (conversation: DirectConversation) => openDirect(conversation),
+    prefetchDirect: (conversation?: DirectConversation) => prefetchDirect(conversation),
+    refreshDirects: () => void refreshDirects(),
+  };
+  const onChooseSpace = useCallback((spaceId: string) => sidebarActions.current.chooseSpace(spaceId), []);
+  const onPrefetchSpace = useCallback((spaceId: string) => sidebarActions.current.prefetchSpace(spaceId), []);
+  const onOpenInvitation = useCallback((space: Space) => sidebarActions.current.openInvitation(space), []);
+  const onCreateSpace = useCallback(() => sidebarActions.current.createSpace(), []);
+  const onStartDirect = useCallback(() => sidebarActions.current.startDirect(), []);
+  const onOpenSelfDirect = useCallback(() => sidebarActions.current.openSelfDirect(), []);
+  const onToggleRequests = useCallback(() => sidebarActions.current.toggleRequests(), []);
+  const onOpenDirect = useCallback(
+    (conversation: DirectConversation) => sidebarActions.current.openDirect(conversation),
+    [],
+  );
+  const onPrefetchDirect = useCallback(
+    (conversation?: DirectConversation) => sidebarActions.current.prefetchDirect(conversation),
+    [],
+  );
+  const onRefreshDirects = useCallback(() => sidebarActions.current.refreshDirects(), []);
+
   const directNavigation = (
-    <section className="direct-section" aria-label="Direct messages">
-      <div className="channel-section-heading">
-        <span className="direct-section-title">
-          <MessageCircle aria-hidden="true" />
-          Direct messages
-        </span>
-        <span className="channel-section-actions">
-          <button
-            type="button"
-            aria-label="New direct message"
-            title="New direct message"
-            onClick={() => setDialog("direct")}
-          >
-            <Plus aria-hidden="true" />
-          </button>
-        </span>
-      </div>
-      <ul>
-        {account && (
-          <li>
-            <button
-              type="button"
-              className="channel-select direct-select direct-self"
-              data-unread={selfDirect && directUnread(selfDirect) ? "" : undefined}
-              disabled={selfDirectPending}
-              aria-busy={selfDirectPending || (!!selfDirect && pendingDirect === selfDirect.id)}
-              aria-current={selfDirect && selfDirect.id === directView?.conversation.id ? "page" : undefined}
-              title="Your private notes"
-              onMouseEnter={() => prefetchDirect(selfDirect)}
-              onFocus={() => prefetchDirect(selfDirect)}
-              onClick={() => void openSelfDirect()}
-            >
-              <span className="direct-avatar">
-                <Avatar person={account} name={account.displayName ?? account.username ?? "You"} />
-              </span>
-              <span>{account.displayName ?? account.username ?? "You"}</span>
-              <small>you</small>
-              {selfDirect && directUnread(selfDirect) && (
-                <span className="direct-unread" aria-label="Unread messages" />
-              )}
-            </button>
-          </li>
-        )}
-        {incomingRequests.length > 0 && (
-          <li>
-            <button
-              type="button"
-              className="channel-select direct-select direct-requests"
-              aria-expanded={requestsShown}
-              aria-controls="direct-request-list"
-              onClick={() => setRequestsOpen(!requestsShown)}
-            >
-              {/* Turns like the Channels chevron instead of swapping icons. */}
-              <ChevronDown aria-hidden="true" />
-              <span>Message requests</span>
-              <span
-                className="direct-request-count"
-                aria-label={`${incomingRequests.length} ${incomingRequests.length === 1 ? "request" : "requests"}`}
-              >
-                {incomingRequests.length}
-              </span>
-            </button>
-          </li>
-        )}
-        {requestsShown && incomingRequests.length > 0 && (
-          <li className="direct-request-group">
-            <ul id="direct-request-list" aria-label="Message requests">
-              {incomingRequests.map((conversation) => (
-                <li key={conversation.id}>
-                  <button
-                    type="button"
-                    className="channel-select direct-select"
-                    aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
-                    aria-busy={pendingDirect === conversation.id}
-                    onMouseEnter={() => prefetchDirect(conversation)}
-                    onFocus={() => prefetchDirect(conversation)}
-                    onClick={() => openDirect(conversation)}
-                  >
-                    <span className="direct-avatar">
-                      <Avatar person={conversation.peer} name={conversation.peer.displayName} />
-                    </span>
-                    <span>{conversation.peer.displayName}</span>
-                    <small>@{conversation.peer.username}</small>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </li>
-        )}
-        {directs
-          .filter((conversation) => conversation.peer.id !== account?.id && directStatus(conversation) !== "incoming")
-          .map((conversation) => {
-            const conversationNotifications = overrideFor(notifications, { conversationId: conversation.id });
-            const muted = isMuted(conversationNotifications?.mutedUntil);
-            const unread = !muted && !blockedIds.has(conversation.peer.id) && directUnread(conversation);
-            return (
-              <li key={conversation.id} data-muted={muted ? "" : undefined}>
-                <div className="direct-line">
-                  <button
-                    type="button"
-                    className="channel-select direct-select"
-                    data-unread={unread ? "" : undefined}
-                    aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
-                    title={`@${conversation.peer.username}`}
-                    aria-busy={pendingDirect === conversation.id}
-                    onMouseEnter={() => prefetchDirect(conversation)}
-                    onFocus={() => prefetchDirect(conversation)}
-                    onClick={() => openDirect(conversation)}
-                  >
-                    <span className="direct-avatar" aria-hidden="true">
-                      <Avatar person={conversation.peer} name={conversation.peer.displayName} />
-                    </span>
-                    <span>{conversation.peer.displayName}</span>
-                    {blockedIds.has(conversation.peer.id) ? (
-                      <small>Blocked</small>
-                    ) : (
-                      directStatus(conversation) === "outgoing" && <small>Request sent</small>
-                    )}
-                    {/* Muted DMs keep their quiet presentation. */}
-                    {muted ? (
-                      <>
-                        <BellOff className="muted-icon" aria-hidden="true" />
-                        <span className="sr-only">, muted</span>
-                      </>
-                    ) : (
-                      unread && (
-                        <span
-                          className={conversation.unreadCount === undefined ? "direct-unread" : "direct-unread-count"}
-                          aria-label={
-                            conversation.unreadCount === undefined
-                              ? "Unread messages"
-                              : `${conversation.unreadCount} unread ${conversation.unreadCount === 1 ? "message" : "messages"}`
-                          }
-                        >
-                          {conversation.unreadCount === undefined
-                            ? null
-                            : conversation.unreadCount > 99
-                              ? "99+"
-                              : conversation.unreadCount}
-                        </span>
-                      )
-                    )}
-                  </button>
-                  <details
-                    className="channel-menu direct-menu"
-                    onToggle={(event) => trackMenu(event.currentTarget)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && event.currentTarget.open) {
-                        // Handled here, so an open thread does not also close.
-                        event.preventDefault();
-                        event.currentTarget.open = false;
-                        event.currentTarget.querySelector("summary")?.focus();
-                      }
-                    }}
-                    onBlur={leaveMenu}
-                  >
-                    <summary
-                      className="channel-manage"
-                      aria-label={`Options for ${conversation.peer.displayName}`}
-                      title={`Conversation options for ${conversation.peer.displayName}`}
-                    >
-                      <MoreHorizontal aria-hidden="true" />
-                    </summary>
-                    <div className="space-actions" popover="manual">
-                      <DirectNotificationItems
-                        loaded={notifications.loaded}
-                        off={conversationNotifications?.level === "nothing"}
-                        mutedUntil={conversationNotifications?.mutedUntil ?? null}
-                        onChange={(change) =>
-                          saveNotifications(`dm:${conversation.id}`, () =>
-                            changeDirectNotifications(conversation.id, change),
-                          )
-                        }
-                      />
-                    </div>
-                  </details>
-                </div>
-                {notificationAlert(`dm:${conversation.id}`)}
-              </li>
-            );
-          })}
-      </ul>
-      <button type="button" className="channel-select direct-action" onClick={() => setDialog("direct")}>
-        <Plus aria-hidden="true" />
-        <span>New message</span>
-      </button>
-      {directError && (
-        <p className="space-sidebar-error" role="alert">
-          {directError}
-          <button type="button" onClick={() => void refreshDirects()}>
-            Retry direct messages
-          </button>
-        </p>
-      )}
-    </section>
+    <DirectNavigation
+      account={account}
+      directs={directs}
+      activeDirectId={directView?.conversation.id}
+      pendingDirect={pendingDirect}
+      selfDirectPending={selfDirectPending}
+      requestsShown={requestsShown}
+      blockedIds={blockedIds}
+      notifications={notifications}
+      notificationError={notificationError}
+      directError={directError}
+      onStartDirect={onStartDirect}
+      onOpenSelfDirect={onOpenSelfDirect}
+      onToggleRequests={onToggleRequests}
+      onOpenDirect={onOpenDirect}
+      onPrefetchDirect={onPrefetchDirect}
+      onSaveNotifications={saveNotifications}
+      onDismissNotificationError={dismissNotificationError}
+      onRefreshDirects={onRefreshDirects}
+    />
   );
   // Opened from messages, profiles and Members too, so they must not live in
   // the sidebar: phones hide it, which left a modal no one could see or close.
@@ -3362,91 +3675,23 @@ export default function Spaces({
   );
 
   const rail = (connectedSpaceId: string | undefined) => (
-    <nav className="space-rail" aria-label="Spaces">
-      {spaces.map((space) => {
-        const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
-        const unread = unreadSpaces.find((item) => item.id === space.id);
-        // The dot means anything new; the count is only mentions and replies to you.
-        const mentionCount = unread?.channels.reduce((total, channel) => total + (channel.mentionCount ?? 0), 0) ?? 0;
-        const connected = connectedSpaceId === space.id;
-        const voiceActive = connected || voiceActivity.includes(space.id);
-        const label = [
-          space.name,
-          unread && "unread messages",
-          mentionCount > 0 && `${mentionCount} ${mentionCount === 1 ? "mention" : "mentions"}`,
-          muted && "muted",
-          voiceActive && (connected ? "connected to voice" : "voice active"),
-        ]
-          .filter(Boolean)
-          .join(", ");
-        return (
-          <div
-            className="space-rail-item"
-            key={space.id}
-            data-active={space.id === detail.space.id}
-            data-muted={muted ? "" : undefined}
-            data-voice={voiceActive ? "" : undefined}
-          >
-            {unread && <i className="space-unread" aria-hidden="true" />}
-            <button
-              type="button"
-              title={label}
-              aria-label={label}
-              aria-current={space.id === detail.space.id ? "page" : undefined}
-              aria-busy={pending && space.id === selected.spaceId}
-              onMouseEnter={() => prefetch(space.id)}
-              onFocus={() => prefetch(space.id)}
-              onClick={() => choose(space.id)}
-            >
-              <SpaceIcon space={space} />
-              {mentionCount > 0 && (
-                <i className="space-mentions" aria-hidden="true">
-                  {mentionCount > 99 ? "99+" : mentionCount}
-                </i>
-              )}
-              {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
-              {voiceActive && (
-                <Volume2 className="space-rail-voice" data-connected={connected ? "" : undefined} aria-hidden="true" />
-              )}
-            </button>
-          </div>
-        );
-      })}
-      {invitations.map((space) => (
-        <button
-          key={space.id}
-          className="invited-space"
-          type="button"
-          title={`Invitation to ${space.name}`}
-          aria-label={`Invitation to ${space.name}`}
-          onClick={() => (detail ? setRailInvitation(space) : choose(space.id))}
-        >
-          {/* The space's initial (or icon) in a dashed tile, as on Apple, Android and desktop. */}
-          <SpaceIcon space={space} />
-        </button>
-      ))}
-      <button
-        className="add-space"
-        type="button"
-        title={
-          !account
-            ? "Sign in to create a space"
-            : canCreateSpace
-              ? "Create space"
-              : `Space limit reached (${limits?.ownedSpaces ?? 20} owned, ${limits?.totalSpaces ?? 100} total)`
-        }
-        aria-label="Create space"
-        disabled={!!account && !canCreateSpace}
-        onClick={() => (account ? setDialog("space") : window.location.assign("/login"))}
-      >
-        <Plus aria-hidden="true" />
-      </button>
-      {pending && (
-        <span className="sr-only" role="status">
-          Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…
-        </span>
-      )}
-    </nav>
+    <SpaceRail
+      spaces={spaces}
+      invitations={invitations}
+      unreadSpaces={unreadSpaces}
+      notifications={notifications}
+      voiceActivity={voiceActivity}
+      connectedSpaceId={connectedSpaceId}
+      activeSpaceId={detail.space.id}
+      busySpaceId={pending ? selected.spaceId : undefined}
+      signedIn={!!account}
+      canCreateSpace={canCreateSpace}
+      limits={limits}
+      onChoose={onChooseSpace}
+      onPrefetch={onPrefetchSpace}
+      onOpenInvitation={onOpenInvitation}
+      onCreateSpace={onCreateSpace}
+    />
   );
   // Outside the rail: phones hide the rail, and its tile styles must not apply.
   const accessNotice = notice && (

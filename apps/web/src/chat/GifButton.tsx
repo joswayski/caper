@@ -20,6 +20,7 @@ import {
   gifLabel,
   klipyConfig,
   klipyPage,
+  rememberedKlipyConfig,
   type ChatGif,
   type KlipyConfig,
   type KlipyItem,
@@ -30,10 +31,15 @@ const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coars
 
 /** Whether this account has GIFs; re-checked on mount so a key added later appears. */
 export function useKlipy() {
-  const [config, setConfig] = useState<KlipyConfig | null>(null);
+  const [config, setConfig] = useState<KlipyConfig | null>(rememberedKlipyConfig);
   useEffect(() => {
     let live = true;
-    void klipyConfig().then((value) => live && setConfig(value));
+    void klipyConfig().then((value) => {
+      if (!live) return;
+      setConfig((current) =>
+        current?.appKey === value?.appKey && current?.customerId === value?.customerId ? current : value,
+      );
+    });
     return () => {
       live = false;
     };
