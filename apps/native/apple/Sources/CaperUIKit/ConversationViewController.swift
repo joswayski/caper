@@ -439,6 +439,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let width = shownMembersWidth
         if membersSideWidth.constant != width { membersSideWidth.constant = width }
         members.handle.accessibilityValue = "\(Int(width)) points"
+        // A phone list left open over a channel (Message from a member's
+        // profile opens their DM) closes once the live conversation has none.
+        if narrow, isLive, !membersAvailable, members.isOpen {
+            membersPreference = false
+            members.close(report: false)
+        }
         var visible = members.isOpen
         if wide {
             visible = (membersPreference ?? membersTiled) && membersAvailable

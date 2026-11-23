@@ -990,6 +990,14 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(member.waitForExistence(timeout: 10))
         member.tap()
         XCTAssertTrue(card.waitForExistence(timeout: 10), "A member opens their card")
+
+        // Open conversation from that card leaves the channel's member list behind.
+        app.buttons["mention-card-message"].tap()
+        XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "label == %@", "Message Maya")).firstMatch.waitForExistence(timeout: 10),
+                      "Maya's DM opens")
+        XCTAssertTrue(app.descendants(matching: .any)["members-panel"].waitForNonExistence(timeout: 5),
+                      "The DM has no member list, so it closes")
     }
 
     /// `@` and `:` open the shared autocomplete above the composer; a picked
