@@ -774,8 +774,10 @@ mod tests {
         for (source, shown) in [
             ("**bold**", "bold"),
             ("_it_", "it"),
+            ("a*it*b", "aitb"),
+            ("`code`", "code"),
             ("snake_case_name", "snake_case_name"),
-            ("2*3*4", "2*3*4"),
+            ("2 * 3 * 4", "2 * 3 * 4"),
             ("a ** b", "a ** b"),
         ] {
             let mut typing = Typing::new("");

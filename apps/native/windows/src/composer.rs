@@ -1311,7 +1311,7 @@ mod tests {
         for (typed, shown) in [
             ("**bold**", "bold"),
             ("_it_", "it"),
-            ("*it*", "it"),
+            ("a*it*b", "aitb"),
             ("`code`", "code"),
             ("snake_case_name", "snake_case_name"),
             ("2 * 3 * 4", "2 * 3 * 4"),
