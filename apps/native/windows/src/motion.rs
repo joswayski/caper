@@ -11,7 +11,6 @@ use windows_numerics::Matrix3x2;
 
 pub const FAST: f64 = 0.14;
 pub const BASE: f64 = 0.2;
-pub const SLOW: f64 = 0.26;
 pub const TIMER_ARRIVAL: usize = 45;
 
 #[derive(Clone, Copy)]
