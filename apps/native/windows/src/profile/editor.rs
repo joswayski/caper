@@ -20,6 +20,8 @@ type Answer<T> = mpsc::Receiver<std::result::Result<T, String>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
+    /// The picture itself, with its pencil badge: opens the picture menu.
+    Picture,
     Choose,
     Edit,
     Remove,
@@ -38,6 +40,7 @@ impl Control {
             Self::Regenerate => 3,
             Self::Gallery => 4,
             Self::More => 5,
+            Self::Picture => 6,
             Self::Previous(k) => 10 + k,
         }
     }
@@ -56,6 +59,8 @@ pub struct Editor {
     editing: Option<Answer<Arc<Scratch>>>,
     history: Vec<pictures::PreviousPicture>,
     history_open: bool,
+    /// The picture menu under the picture: Edit, Choose, Previous, Remove.
+    menu_open: bool,
     history_loading: Option<Answer<pictures::History>>,
     cursor: Option<String>,
     history_error: Option<String>,
@@ -104,6 +109,23 @@ fn take<T>(pending: &mut Option<Answer<T>>) -> Option<std::result::Result<T, Str
     Some(result)
 }
 
+const USERNAME_HINT: &str =
+    "Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.";
+/// The picture's side, and the control around it with room for the badge
+/// that overhangs its bottom-right corner.
+const PICTURE: f32 = 112.0;
+const PICTURE_CONTROL: f32 = PICTURE + 6.0;
+const BADGE: f32 = 34.0;
+const MENU_ITEM: f32 = 34.0;
+
+/// The picture menu's items, in its order.
+fn menu_item(c: Control) -> bool {
+    matches!(
+        c,
+        Control::Edit | Control::Choose | Control::Gallery | Control::Remove
+    )
+}
+
 fn body_part(p: Part) -> bool {
     !matches!(p, Part::Title | Part::Close | Part::Cancel | Part::Primary)
 }
@@ -140,6 +162,7 @@ impl Editor {
             editing: None,
             history: Vec::new(),
             history_open: false,
+            menu_open: false,
             history_loading: None,
             cursor: None,
             history_error: None,
@@ -180,9 +203,8 @@ impl Dialog {
             Part::Close => "Close Edit profile".into(),
             Part::Field | Part::Line(0) => "Username".into(),
             Part::Number(0) | Part::Line(2) => "Display name".into(),
-            Part::Line(1) => {
-                "3–32 lowercase letters, numbers, or underscores. Unique across Caper.".into()
-            }
+            Part::Line(1) => USERNAME_HINT.into(),
+            Part::Line(6) => "This is what people see in conversations.".into(),
             Part::Line(3) => "Previous pictures".into(),
             Part::Line(4) => if e.history_loading.is_some() {
                 "Loading pictures…"
@@ -216,7 +238,8 @@ impl Dialog {
             }
             .into(),
             Part::Profile(c) => match c {
-                Control::Choose => "Choose profile picture".into(),
+                Control::Picture => "Change profile picture".into(),
+                Control::Choose => "Choose a new picture".into(),
                 Control::Edit => "Edit picture".into(),
                 Control::Remove => "Remove picture".into(),
                 Control::Regenerate => "Regenerate avatar".into(),
@@ -292,8 +315,10 @@ impl Dialog {
     }
 
     pub fn profile_hit(&self, x: f32, y: f32) -> Option<Part> {
+        // Reversed, so the floating picture menu wins over the fields it covers.
         self.parts
             .iter()
+            .rev()
             .find(|(p, r)| {
                 focusable(*p) && contains(*r, x, y) && (!body_part(*p) || contains(self.body, x, y))
             })
@@ -372,26 +397,39 @@ impl Dialog {
         let mut y = 0.0;
         let e = self.profile_edit.as_mut().unwrap();
         if let Some(draft) = &e.draft {
-            parts.push((Part::Preview, (0.0, y, 96.0, 96.0)));
-            y += 108.0;
-            for control in [
-                Control::Choose,
-                Control::Edit,
-                Control::Remove,
-                Control::Regenerate,
-                Control::Gallery,
-            ] {
-                if matches!(control, Control::Edit | Control::Remove)
-                    && draft.preview.avatar_asset.is_none()
-                {
-                    continue;
+            // The picture is the control, as on web: its pencil badge
+            // overhangs the bottom-right corner, and Regenerate sits beneath
+            // it only for a generated avatar.
+            let has_picture = draft.preview.avatar_asset.is_some();
+            parts.push((
+                Part::Profile(Control::Picture),
+                (0.0, y, PICTURE_CONTROL, PICTURE_CONTROL),
+            ));
+            // The picture menu floats over the fields below; its parts follow
+            // them, so they draw on top and take clicks first.
+            let mut menu = Vec::new();
+            if e.menu_open {
+                let mut my = y + PICTURE_CONTROL + 4.0 + 4.0;
+                for control in [
+                    Control::Edit,
+                    Control::Choose,
+                    Control::Gallery,
+                    Control::Remove,
+                ] {
+                    if matches!(control, Control::Edit | Control::Remove) && !has_picture {
+                        continue;
+                    }
+                    menu.push((Part::Profile(control), (4.0, my, 212.0, MENU_ITEM)));
+                    my += MENU_ITEM;
                 }
-                if control == Control::Regenerate && draft.preview.avatar_asset.is_some() {
-                    continue;
-                }
-                parts.push((Part::Profile(control), (0.0, y, inner, 34.0)));
-                y += 40.0;
             }
+            y += PICTURE_CONTROL;
+            if !has_picture {
+                y += 12.0;
+                parts.push((Part::Profile(Control::Regenerate), (0.0, y, 168.0, 36.0)));
+                y += 36.0;
+            }
+            y += 24.0;
             if e.history_open {
                 parts.push((Part::Line(3), (0.0, y, inner, 24.0)));
                 y += 28.0;
@@ -428,18 +466,28 @@ impl Dialog {
                 .relayout_with(g, &g.formats.composer, 15.0, inner - 20.0)?;
             e.name
                 .relayout_with(g, &g.formats.composer, 15.0, inner - 20.0)?;
+            // Each field reads label, field, then its muted hint, 8 DIPs
+            // apart; a wider gap separates the two fields.
             parts.push((Part::Line(0), (0.0, y, inner, 22.0)));
-            y += 26.0;
+            y += 30.0;
             parts.push((Part::Field, (0.0, y, inner, 42.0)));
-            y += 48.0;
-            let hint = "3–32 lowercase letters, numbers, or underscores. Unique across Caper.";
-            let hh = height(&layout(g, hint, &g.formats.dialog_note, inner)?);
+            y += 50.0;
+            let hh = height(&layout(g, USERNAME_HINT, &g.formats.dialog_note, inner)?);
             parts.push((Part::Line(1), (0.0, y, inner, hh)));
-            y += hh + 14.0;
+            y += hh + 22.0;
             parts.push((Part::Line(2), (0.0, y, inner, 22.0)));
-            y += 26.0;
+            y += 30.0;
             parts.push((Part::Number(0), (0.0, y, inner, 42.0)));
             y += 50.0;
+            let nh = height(&layout(
+                g,
+                "This is what people see in conversations.",
+                &g.formats.dialog_note,
+                inner,
+            )?);
+            parts.push((Part::Line(6), (0.0, y, inner, nh)));
+            y += nh + 14.0;
+            parts.extend(menu);
         } else if e.loading.is_none() {
             parts.push((Part::Retry, (0.0, y, inner, 36.0)));
             y += 44.0;
@@ -480,6 +528,18 @@ impl Dialog {
 
     pub fn draw_profile(&self, g: &Gfx, dc: &ID2D1DeviceContext) -> Result<()> {
         let e = self.profile_edit.as_ref().unwrap();
+        // The picture menu's panel, behind its first item.
+        let menu = self
+            .parts
+            .iter()
+            .filter(|(p, _)| matches!(p, Part::Profile(c) if menu_item(*c)))
+            .map(|(_, r)| *r)
+            .reduce(|a, b| (a.0, a.1, a.2, b.1 + b.3 - a.1));
+        let first_menu_item = self
+            .parts
+            .iter()
+            .find(|(p, _)| matches!(p, Part::Profile(c) if menu_item(*c)))
+            .map(|(p, _)| *p);
         for &(p, (x, y, w, h)) in &self.parts {
             let r = rect(x, y, x + w, y + h);
             unsafe {
@@ -513,10 +573,76 @@ impl Dialog {
                     let (ox, oy) = self.profile_field_origin(p);
                     self.field_for(p).draw_text(g, dc, ox, oy, None);
                     dc.PopAxisAlignedClip();
-                } else if p == Part::Preview {
+                } else if p == Part::Profile(Control::Picture) {
+                    let enabled = self.profile_enabled(p);
+                    let picture = rect(x, y, x + PICTURE, y + PICTURE);
                     if let Some(d) = &e.draft {
-                        avatars::draw(dc, &d.preview.avatar(), r, RADIUS);
+                        avatars::draw(dc, &d.preview.avatar(), picture, RADIUS);
                     }
+                    if e.focus == p || e.menu_open {
+                        let ring = rect(x - 3.0, y - 3.0, x + PICTURE + 3.0, y + PICTURE + 3.0);
+                        stroke_round(dc, ring, RADIUS + 3.0, &g.brushes.terracotta);
+                    } else if enabled && self.hover == Some(p) {
+                        stroke_round(dc, picture, RADIUS, &g.solid(crate::theme::text_muted())?);
+                    }
+                    // The badge, cut out from the card by a 3-DIP ring of its surface.
+                    let (bx, by) = (x + w - BADGE, y + h - BADGE);
+                    fill_round(
+                        dc,
+                        rect(bx, by, bx + BADGE, by + BADGE),
+                        8.0,
+                        &g.brushes.surface,
+                    );
+                    let fill = if !enabled {
+                        crate::theme::border()
+                    } else if self.hover == Some(p) {
+                        crate::theme::action_hover()
+                    } else {
+                        crate::theme::action()
+                    };
+                    let inner = rect(bx + 3.0, by + 3.0, bx + BADGE - 3.0, by + BADGE - 3.0);
+                    fill_round(dc, inner, 6.0, &g.solid(fill)?);
+                    let icon = BADGE / 2.0 - 7.5;
+                    crate::icons::draw(
+                        dc,
+                        crate::icons::Icon::Pencil,
+                        rect(bx + icon, by + icon, bx + icon + 15.0, by + icon + 15.0),
+                        if enabled {
+                            crate::theme::on_action()
+                        } else {
+                            crate::theme::text_muted()
+                        },
+                        1.0,
+                    );
+                } else if let Part::Profile(c) = p
+                    && menu_item(c)
+                {
+                    if Some(p) == first_menu_item
+                        && let Some((mx, my, mw, mh)) = menu
+                    {
+                        let panel = rect(mx - 4.0, my - 4.0, mx + mw + 4.0, my + mh + 4.0);
+                        fill_round(dc, panel, RADIUS, &g.brushes.raised);
+                        stroke_round(dc, panel, RADIUS, &g.brushes.border);
+                    }
+                    let enabled = self.profile_enabled(p);
+                    if enabled && (self.hover == Some(p) || e.focus == p) {
+                        fill_round(dc, r, 6.0, &g.brushes.hover);
+                    }
+                    let l = layout(g, &self.profile_name(p), &g.formats.button, w - 24.0)?;
+                    let color = if !enabled {
+                        crate::theme::text_muted()
+                    } else if c == Control::Remove {
+                        crate::theme::error()
+                    } else {
+                        crate::theme::text()
+                    };
+                    crate::text::draw(
+                        dc,
+                        &l,
+                        x + 12.0,
+                        y + (h - height(&l)) / 2.0,
+                        &g.solid(color)?,
+                    );
                 } else if let Part::Profile(Control::Previous(k)) = p {
                     let photo = &e.history[k];
                     avatars::draw(
@@ -581,7 +707,7 @@ impl Dialog {
                         g.solid(crate::theme::on_action())?
                     } else if matches!(p, Part::Error | Part::Line(5)) {
                         g.solid(crate::theme::error())?
-                    } else if action && !enabled {
+                    } else if matches!(p, Part::Line(1) | Part::Line(6)) || (action && !enabled) {
                         g.solid(crate::theme::text_muted())?
                     } else {
                         g.solid(crate::theme::text())?
@@ -651,6 +777,12 @@ impl App {
         let username = d.draft();
         let e = d.profile_edit.as_mut().unwrap();
         let (api, token) = (e.api.clone(), e.token.clone());
+        // The picture toggles its menu; anything else, including a menu
+        // item, closes it, and a menu item hands focus back to the picture.
+        e.menu_open = p == Part::Profile(Control::Picture) && !e.menu_open;
+        if matches!(p, Part::Profile(c) if menu_item(c)) {
+            e.focus = Part::Profile(Control::Picture);
+        }
         match p {
             Part::Close => return self.close_profile_editor(),
             Part::Cancel if e.confirm() => {
@@ -951,6 +1083,15 @@ impl App {
             }
             WM_LBUTTONDOWN => {
                 let hit = d.profile_hit(x, y);
+                let e = d.profile_edit.as_mut().unwrap();
+                if e.menu_open
+                    && !matches!(hit, Some(Part::Profile(c)) if c == Control::Picture || menu_item(c))
+                {
+                    e.menu_open = false;
+                    if matches!(e.focus, Part::Profile(c) if menu_item(c)) {
+                        e.focus = Part::Profile(Control::Picture);
+                    }
+                }
                 if let Some(p) = hit.filter(|p| d.profile_enabled(*p)) {
                     d.profile_focus(p);
                     d.pressed = Some(p);
@@ -1002,6 +1143,11 @@ impl App {
                     }
                 }
                 match vk {
+                    // Escape closes the picture menu first, then the editor.
+                    VK_ESCAPE if d.profile_edit.as_ref().unwrap().menu_open => {
+                        d.profile_edit.as_mut().unwrap().menu_open = false;
+                        d.profile_focus(Part::Profile(Control::Picture));
+                    }
                     VK_ESCAPE => self.close_profile_editor(),
                     VK_TAB => {
                         let choices: Vec<_> = d.parts().filter(|p| d.profile_enabled(*p)).collect();
