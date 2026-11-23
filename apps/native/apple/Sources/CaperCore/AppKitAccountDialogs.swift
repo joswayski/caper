@@ -124,6 +124,7 @@ import AppKit
     static func heading(_ text: String) -> NSTextField { AppKitKit.label(text, size: 13, weight: .bold) }
     static func note(_ text: String, error: Bool = false, identifier: String? = nil) -> NSTextField {
         let label = AppKitKit.label(text, size: 12, color: error ? AppKitKit.error : AppKitKit.muted)
+        label.isSelectable = true
         if let identifier { label.setAccessibilityIdentifier(identifier) }
         return label
     }

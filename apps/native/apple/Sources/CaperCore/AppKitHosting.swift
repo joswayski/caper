@@ -155,7 +155,18 @@ import SwiftUI
         }
     }
 
-    private func show(_ state: AppKitWorkspaceDialogState, in parent: NSViewController) {
+    /// Swaps the open dialog for another in place (Create a space → Join with
+    /// invite link): the backdrop stays, nothing behind it takes focus in
+    /// between, and closing the new dialog restores the original focus.
+    private func replace(with item: WorkspaceSheet, in parent: NSViewController) {
+        let responder = previousResponder, context = previousContext
+        close(handingOff: true)
+        show(AppKitWorkspaceDialogState(item: .workspace(item)), in: parent, animated: false)
+        guard host != nil else { model.whatsNew.workspaceModalOpen = false; focusComposer?(); return }
+        previousResponder = responder; previousContext = context
+    }
+
+    private func show(_ state: AppKitWorkspaceDialogState, in parent: NSViewController, animated: Bool = true) {
         guard host == nil, let container = parent.view as? AppKitWorkspaceContainer, container.dialogView == nil else { return }
         let dismiss: () -> Void = { [weak self] in
             guard let self, self.state === state else { return }
@@ -164,7 +175,7 @@ import SwiftUI
         guard let content = nativeContent(state.item, close: dismiss) else { return }
         let host = NSViewController()
             if let profile { host.addChild(profile) }
-            host.view = AppKitDialogFrame(content: content, width: state.item.width, requestClose: { [weak self] in
+            host.view = AppKitDialogFrame(content: content, width: state.item.width, animated: animated, requestClose: { [weak self] in
                 if let profile = self?.profile { profile.requestClose() } else { dismiss() }
             })
             // As the SwiftUI dialog: message dialogs end with their conversation,
@@ -257,7 +268,7 @@ import SwiftUI
             let managing = item.id == "manage-space"
             return AppKitSpaceEditor(model: model, managing: managing, close: close) { [weak self] in
                 guard let self, let parent = self.host?.parent else { return }
-                self.close(); self.show(.joinInvite(nil), in: parent)
+                self.replace(with: .joinInvite(nil), in: parent)
             }
         case .workspace(.invitePeople(let spaceID, let channelID)):
             guard model.detail?.space.id == spaceID else { return nil }
@@ -278,7 +289,7 @@ import SwiftUI
         }
     }
 
-    private func close() {
+    private func close(handingOff: Bool = false) {
         guard let host, let state else { return }
         closeDialogMedia()
         profile?.stop(); profile?.removeFromParent(); profile = nil
@@ -302,6 +313,7 @@ import SwiftUI
             if model.chat.forwardConversationTarget?.id == message.id { model.chat.forwardConversationTarget = nil }
         default: break
         }
+        if handingOff { return }
         // Opening an inbox destination can replace the old conversation/root.
         // Never put focus back into a detached or different conversation editor.
         var restoreComposer = false

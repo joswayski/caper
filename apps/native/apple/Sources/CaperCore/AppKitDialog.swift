@@ -17,12 +17,15 @@ extension AppKitDialogContent { var initialFocus: NSView? { nil } }
     private let requestClose: () -> Void
     private let card = NSView()
     private let width: CGFloat
+    private let animated: Bool
     private var top: NSLayoutConstraint?
     private var cardWidth: NSLayoutConstraint?
     private var maxHeight: NSLayoutConstraint?
 
-    init(content: AppKitDialogContent, width: CGFloat, requestClose: @escaping () -> Void) {
-        self.content = content; self.width = width; self.requestClose = requestClose
+    /// `animated: false` for a dialog that replaces another in place, so the
+    /// backdrop stays put instead of fading in again from nothing.
+    init(content: AppKitDialogContent, width: CGFloat, animated: Bool = true, requestClose: @escaping () -> Void) {
+        self.content = content; self.width = width; self.animated = animated; self.requestClose = requestClose
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
@@ -78,7 +81,7 @@ extension AppKitDialogContent { var initialFocus: NSView? { nil } }
         super.viewDidMoveToWindow()
         guard let window else { return }
         window.invalidateCursorRects(for: self)
-        guard !CaperAccessibility.reduceMotion else { alphaValue = 1; return }
+        guard animated, !CaperAccessibility.reduceMotion else { alphaValue = 1; return }
         alphaValue = 0
         NSAnimationContext.runAnimationGroup { context in
             context.duration = CaperMotion.fast
@@ -99,6 +102,8 @@ extension AppKitDialogContent { var initialFocus: NSView? { nil } }
         titleLabel = AppKitKit.label(title, size: 20, weight: .bold)
         detailLabel = detail.map { AppKitKit.label($0, size: 12, color: AppKitKit.muted) }
         super.init(frame: .zero)
+        // Dialog text can be selected and copied, as on web.
+        titleLabel.isSelectable = true; detailLabel?.isSelectable = true
         translatesAutoresizingMaskIntoConstraints = false
         close.setAccessibilityLabel(closeLabel)
         var rows: [NSView] = [titleLabel]

@@ -58,9 +58,11 @@ import CaperCore
     private lazy var selfNotes = NativeDirectRow { [weak self] in
         guard let self else { return }; Task { await self.model.openSelfDirectMessage() }
     }
-    private lazy var newMessage = NativeButton("New message") { [weak self] in self?.show?(.newDirectMessage) }
+    private lazy var newMessage = NativeNewMessageRow { [weak self] in self?.show?(.newDirectMessage) }
     private lazy var directAdd = NativeButton.icon("New direct message", symbol: "plus") { [weak self] in self?.show?(.newDirectMessage) }
-    private lazy var directHeading = NativeSidebarHeading(title: NativeStyle.label("Direct messages", size: 12, bold: true), actions: [directAdd], hoverActions: true)
+    // As on web: a chat bubble in the rows' avatar column, the text on their names' edge.
+    private lazy var directHeading = NativeSidebarHeading(title: NativeStyle.label("Direct messages", size: 12, bold: true), actions: [directAdd],
+                                                          hoverActions: true, symbol: "bubble.left")
     private var refreshingDirects = false
     private lazy var directFailure = NativeDirectFailure { [weak self] in
         guard let self, !self.refreshingDirects else { return }
@@ -164,11 +166,6 @@ import CaperCore
         accountName.usesSingleLineMode = true
         accountName.maximumNumberOfLines = 1
         accountName.alignment = .left
-        newMessage.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
-        newMessage.imagePosition = .imageLeft; newMessage.alignment = .left
-        newMessage.font = NativeStyle.font(13); newMessage.profileFeedback = true
-        newMessage.layer?.backgroundColor = NSColor.clear.cgColor
-        newMessage.setAccessibilityIdentifier("new-message")
         directAdd.setAccessibilityIdentifier("new-direct-message")
         feedbackNote.textColor = NativeStyle.muted; feedbackNote.setAccessibilityIdentifier("feedback-empty")
         for (button, symbol, id) in [(feedbackMore, "chevron.down", "feedback-load-older"), (feedbackArchived, "archivebox", "feedback-show-archived")] {
@@ -420,7 +417,7 @@ import CaperCore
                 selected: conversation.map { model.selectedDirectMessageID == $0.id } == true, unread: conversation?.unread == true,
                 count: conversation?.unreadCount, muted: false, isSelf: true, busy: model.busy)
             selfNotes.open.setAccessibilityIdentifier("dm-self")
-            directs.append(selfNotes, height: 28)
+            directs.append(selfNotes, height: NativeDirectRow.height)
         }
         var nextDirects: [String: NativeDirectRow] = [:]
         for conversation in model.visibleDirectMessages where conversation.peer.id != model.account?.id {
@@ -456,10 +453,10 @@ import CaperCore
                 self.popup(items, at: row.options)
             }
             nextDirects[conversation.id] = row
-            directs.append(row, height: 28)
+            directs.append(row, height: NativeDirectRow.height)
         }
         directRows = nextDirects
-        directs.append(newMessage, height: 28)
+        directs.append(newMessage, height: NativeDirectRow.height)
         if let failure = model.directMessagesError {
             directFailure.update(failure, pending: refreshingDirects)
             directs.append(directFailure)
@@ -743,16 +740,27 @@ private final class NativeSidebarHeading: NativeView {
     private let title: NSView
     private let actions: [NativeButton]
     private let hoverActions: Bool
+    private let icon: NSImageView?
     private let chevron: CAShapeLayer?
     private var expanded = true
     private var hovered = false
     private var focusedActions: Set<ObjectIdentifier> = []
     private var tracking: NSTrackingArea?
-    init(title: NSView, actions: [NativeButton], disclosure: Bool = false, hoverActions: Bool = false) {
+    /// `symbol` sits in the DM rows' avatar column, with the title on their names' edge.
+    init(title: NSView, actions: [NativeButton], disclosure: Bool = false, hoverActions: Bool = false, symbol: String? = nil) {
         self.title = title; self.actions = actions; self.hoverActions = hoverActions
         chevron = disclosure ? CAShapeLayer() : nil
+        icon = symbol.map { name in
+            let view = NSImageView()
+            view.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+            view.imageScaling = .scaleNone; view.contentTintColor = NativeStyle.muted
+            view.setAccessibilityElement(false)
+            return view
+        }
         super.init()
         addSubview(title)
+        if let icon { addSubview(icon) }
         for action in actions {
             addSubview(action)
             action.focusChanged = { [weak self, weak action] focused in
@@ -771,6 +779,10 @@ private final class NativeSidebarHeading: NativeView {
         updateActions()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func applyTheme() {
+        super.applyTheme()
+        icon?.contentTintColor = NativeStyle.muted
+    }
     func setExpanded(_ value: Bool) {
         guard value != expanded else { return }
         let from = expanded ? 0.0 : -Double.pi / 2
@@ -794,7 +806,9 @@ private final class NativeSidebarHeading: NativeView {
             action.frame = NSRect(x: right, y: (bounds.height - 28) / 2, width: 28, height: 28)
             right -= 2
         }
-        let left: CGFloat = chevron == nil ? 0 : 20
+        let left: CGFloat = chevron != nil ? 20 : icon != nil ? NativeDirectRow.nameX : 0
+        icon?.frame = NSRect(x: NativeDirectRow.avatarX, y: ((bounds.height - NativeDirectRow.avatarSide) / 2).rounded(),
+                             width: NativeDirectRow.avatarSide, height: NativeDirectRow.avatarSide)
         title.frame = NSRect(x: left, y: title is NSButton ? 0 : (bounds.height - 18) / 2,
             width: max(0, right - left), height: title is NSButton ? bounds.height : 18)
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -824,6 +838,14 @@ private final class NativeSidebarHeading: NativeView {
 /// Avatars, badges and the self marker are decorative; one native button owns
 /// their hit target and accessible name. Options stay a separate focus stop.
 private final class NativeDirectRow: NativeView {
+    /// The leading column every DM-section row shares: the 20-point avatar (or
+    /// New message's plus) inset as far from the row's left edge as from its
+    /// top and bottom, so the hover and selected wash pads it evenly, and the
+    /// name's frame 8 points after it.
+    static let height: CGFloat = 30
+    static let avatarSide: CGFloat = 20
+    static let avatarX: CGFloat = (height - avatarSide) / 2
+    static let nameX: CGFloat = avatarX + avatarSide + 8
     let open: NativeButton
     let options = NativeButton.icon("Options", symbol: "ellipsis") {}
     var openMenu: (() -> Void)?
@@ -885,15 +907,19 @@ private final class NativeDirectRow: NativeView {
         super.layout()
         let end = bounds.width - (options.isHidden ? 6 : 32)
         open.frame = NSRect(x: 0, y: 0, width: max(0, end), height: bounds.height)
-        avatar.frame = NSRect(x: 9, y: (bounds.height - 20) / 2, width: 20, height: 20)
+        avatar.frame = NSRect(x: Self.avatarX, y: ((bounds.height - Self.avatarSide) / 2).rounded(), width: Self.avatarSide, height: Self.avatarSide)
         let badgeWidth: CGFloat = badge.isHidden ? 0 : badge.stringValue.isEmpty ? 8 : (badge.cell?.cellSize.width ?? 0) + 12
         badge.frame = NSRect(x: end - badgeWidth, y: (bounds.height - (badge.stringValue.isEmpty ? 8 : 18)) / 2,
             width: badgeWidth, height: badge.stringValue.isEmpty ? 8 : 18)
         let youWidth: CGFloat = you.isHidden ? 0 : 23
         let bellWidth: CGFloat = bell.isHidden ? 0 : 18
-        let textWidth = max(0, end - 40 - badgeWidth - youWidth - bellWidth - 4)
-        name.frame = NSRect(x: 38, y: (bounds.height - 18) / 2, width: min(textWidth, name.cell?.cellSize.width ?? 0), height: 18)
-        you.frame = NSRect(x: name.frame.maxX + 4, y: (bounds.height - 16) / 2, width: youWidth, height: 16)
+        let textWidth = max(0, end - Self.nameX - 2 - badgeWidth - youWidth - bellWidth - 4)
+        let nameHeight = ceil(name.cell?.cellSize.height ?? 18)
+        name.frame = NSRect(x: Self.nameX, y: ((bounds.height - nameHeight) / 2).rounded(), width: min(textWidth, name.cell?.cellSize.width ?? 0), height: nameHeight)
+        // On the name's baseline, not centered: the smaller text would ride high.
+        let youHeight = ceil(you.cell?.cellSize.height ?? 14)
+        let youTop = name.frame.minY + (name.font?.ascender ?? 0) - (you.font?.ascender ?? 0)
+        you.frame = NSRect(x: name.frame.maxX + 4, y: youTop.rounded(), width: youWidth, height: youHeight)
         bell.frame = NSRect(x: name.frame.maxX + 4, y: (bounds.height - 14) / 2, width: bellWidth > 0 ? 14 : 0, height: 14)
         options.frame = NSRect(x: bounds.width - 28, y: 0, width: 28, height: bounds.height)
     }
@@ -913,6 +939,61 @@ private final class NativeDirectRow: NativeView {
     private func updateHover() {
         layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : hovered ? NativeStyle.hoverWash : .clear).cgColor
         options.layer?.opacity = hovered || optionsFocused ? 1 : 0
+    }
+}
+
+/// "+ New message" under the DMs: the plus centered in the avatar column and
+/// the label on the names' edge, with the same hover wash as a DM row.
+private final class NativeNewMessageRow: NativeView {
+    private let open: NativeButton
+    private let plus = NSImageView()
+    private let label = NativeStyle.label("New message", size: 13)
+    private var hovered = false
+    private var tracking: NSTrackingArea?
+
+    init(action: @escaping () -> Void) {
+        open = NativeButton("", action: action)
+        super.init()
+        layer?.cornerRadius = 6
+        open.layer?.backgroundColor = NSColor.clear.cgColor
+        open.showsDefaultHover = false
+        open.setAccessibilityLabel("New message")
+        open.setAccessibilityIdentifier("new-message")
+        plus.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        plus.imageScaling = .scaleNone
+        [plus, label].forEach { $0.setAccessibilityElement(false) }
+        [open, plus, label].forEach { addSubview($0) }
+        updateHover()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func applyTheme() { super.applyTheme(); updateHover() }
+    override func layout() {
+        super.layout()
+        open.frame = bounds
+        let side = NativeDirectRow.avatarSide
+        plus.frame = NSRect(x: NativeDirectRow.avatarX, y: ((bounds.height - side) / 2).rounded(), width: side, height: side)
+        let height = ceil(label.cell?.cellSize.height ?? 18)
+        label.frame = NSRect(x: NativeDirectRow.nameX, y: ((bounds.height - height) / 2).rounded(),
+                             width: max(0, bounds.width - NativeDirectRow.nameX - 6), height: height)
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : open }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; updateHover() }
+    override func mouseExited(with event: NSEvent) { hovered = false; updateHover() }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { hovered = false; updateHover() }
+    }
+    private func updateHover() {
+        layer?.backgroundColor = (hovered ? NativeStyle.hoverWash : .clear).cgColor
+        let color = hovered ? NativeStyle.text : NativeStyle.muted
+        plus.contentTintColor = color; label.textColor = color
     }
 }
 
@@ -1174,8 +1255,8 @@ private final class NativeFeedbackRow: NativeView {
     }
 }
 
-/// A rail tile, as on web: the space's icon over its initial, a terracotta
-/// ring and halo while selected, a lift and edge pill on hover, the unread dot in
+/// A rail tile, as on web: the space's icon over its initial, a green ring and
+/// chalk edge pill while selected, a lift and short edge pill on hover, the unread dot in
 /// the rail margin, and the mention, muted and voice badges. The NativeButton
 /// around it spans the rail, so the dot and badges stay inside its bounds.
 @MainActor final class NativeRailFace: NativeView {
@@ -1192,6 +1273,9 @@ private final class NativeFeedbackRow: NativeView {
     private let symbol = NSImageView()
     private let dash = CAShapeLayer()
     private let dot = CALayer()
+    /// The pill at the rail's edge: full height in chalk beside the selected
+    /// space, a short muted one on hover, each in the unread dot's place.
+    private let pill = CALayer()
     /// Offset outer ring around the tile: subtle neutral halo on hover,
     /// upgrading smoothly to botanical green when selected.
     private let ring = CALayer()
@@ -1212,6 +1296,7 @@ private final class NativeFeedbackRow: NativeView {
         [mutedBadge, voiceBadge, mentionBadge].forEach { addSubview($0) }
         mentionBadge.addSubview(mentionText)
         layer?.addSublayer(dot)
+        layer?.addSublayer(pill)
         tile.layer?.addSublayer(dash)
         tile.layer?.cornerRadius = 13
         tile.layer?.cornerCurve = .continuous
@@ -1228,6 +1313,7 @@ private final class NativeFeedbackRow: NativeView {
         symbol.imageScaling = .scaleNone
         dash.fillColor = nil; dash.lineWidth = 1; dash.lineDashPattern = [4, 4]; dash.isHidden = true
         dot.backgroundColor = NativeStyle.text.cgColor; dot.cornerRadius = 2.5; dot.isHidden = true
+        pill.cornerRadius = 2; pill.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]; pill.isHidden = true
         mentionBadge.layer?.cornerRadius = 9; mentionBadge.isHidden = true
         mentionBadge.layer?.borderWidth = 2; mentionBadge.layer?.borderColor = NativeStyle.blackout.cgColor
         mentionText.alignment = .center
@@ -1335,7 +1421,22 @@ private final class NativeFeedbackRow: NativeView {
         layer.backgroundColor = ((hovered || selected) ? NativeStyle.raised : NativeStyle.surface).cgColor
         if isSpace { initial.textColor = selected || hovered ? NativeStyle.text : NativeStyle.muted }
         if case .symbol = face { dash.strokeColor = (hovered ? NativeStyle.muted : NativeStyle.border).cgColor }
+        let pillHeight: CGFloat? = !isSpace ? nil : selected ? 20 : hovered ? 10 : nil
+        let arriving = pillHeight != nil && (pill.isHidden || pill.bounds.height != pillHeight)
+        pill.isHidden = pillHeight == nil
+        dot.opacity = pillHeight == nil ? 1 : 0
+        if let pillHeight {
+            pill.backgroundColor = (selected ? NativeStyle.text : NativeStyle.muted).cgColor
+            pill.frame = NSRect(x: 0, y: Self.inset + Self.side / 2 - pillHeight / 2, width: 4, height: pillHeight)
+        }
         CATransaction.commit()
+        // It grows in from the edge; leaving is instant.
+        if arriving, window != nil, !CaperAccessibility.reduceMotion {
+            let grow = CABasicAnimation(keyPath: "transform.scale.y")
+            grow.fromValue = 0.4; grow.toValue = 1; grow.duration = 0.15
+            grow.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+            pill.add(grow, forKey: "arrive")
+        }
     }
 
     override func layout() {

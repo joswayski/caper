@@ -319,6 +319,7 @@ import CaperCore
         composer.updateDragTypeRegistration()
         // One line sits centred in the field's 40-point inner row.
         composer.textContainerInset = NSSize(width: 0, height: max(4, floor((40 - draftLineHeight) / 2)))
+        composer.composerGlyphs.fixedLine = draftLine
         composer.isHorizontallyResizable = false
         composer.isVerticallyResizable = true
         composer.autoresizingMask = [.width]
@@ -730,8 +731,10 @@ import CaperCore
         composerScroll.frame = NSRect(x: editorX, y: composerField.frame.minY + 1, width: max(0, editorRight - editorX), height: fieldHeight - 2 - toolRows)
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: composerScroll.contentSize.height)
-        // Bottom-aligned, so a growing draft leaves them on its last line.
-        let toolY = fieldBottom - 37
+        // Centered in a one-line field; bottom-aligned once the draft wraps, so
+        // they stay on its last line.
+        let oneLine = editorHeight < draftLineHeight * 2 + composer.textContainerInset.height * 2
+        let toolY = stackedActions || !oneLine ? fieldBottom - 37 : (fieldBottom - fieldHeight / 2 - toolSide / 2).rounded()
         let toolSize = NSSize(width: toolSide, height: toolSide)
         send.frame.origin.y = toolY; send.frame.size = toolSize
         voiceComposer.button.frame.origin.y = toolY; voiceComposer.button.frame.size = toolSize
@@ -760,7 +763,12 @@ import CaperCore
         // a thread, or a row holding Retry, keeps a 22pt row.
         let roomyStatus = inThread || !retry.isHidden
         let statusHeight: CGFloat = roomyStatus ? 22 : 16
-        let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - (roomyStatus ? 24 : 18) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
+        // Directly over the field, the row overlaps the shell's 4-point ring, as
+        // web's typing row sits 2 above the field: the field then has as much
+        // room above it as below.
+        let stackTop = quoteBottom - quoteHeight - recoveryHeight
+        let ringOverlap: CGFloat = stackTop == composerShell.frame.minY && !composerShell.isHidden ? 4 : 0
+        let statusY = directBar.isHidden ? stackTop + ringOverlap - (roomyStatus ? 24 : 18) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
         let top: CGFloat = 48
         timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - top))
         layoutEmptyState()
@@ -1214,14 +1222,17 @@ import CaperCore
     /// taller than the font's nominal line height. The empty editor is sized
     /// with it, so the field (and the history resting on it) does not move
     /// when the first character arrives.
-    private lazy var draftLineHeight: CGFloat = {
+    private var draftLineHeight: CGFloat { draftLine.height }
+    /// Its height and baseline; emoji lines keep both (ComposerGlyphs.fixedLine).
+    private lazy var draftLine: (height: CGFloat, baseline: CGFloat) = {
         let font = NativeStyle.font(14)
         let storage = NSTextStorage(string: "M", attributes: [.font: font])
         let manager = DraftLinkLayoutManager()
         let container = NSTextContainer(size: NSSize(width: 1000, height: CGFloat.greatestFiniteMagnitude))
         manager.addTextContainer(container); storage.addLayoutManager(manager)
         manager.ensureLayout(for: container)
-        return max(manager.defaultLineHeight(for: font), manager.usedRect(for: container).height)
+        let height = max(manager.defaultLineHeight(for: font), manager.usedRect(for: container).height)
+        return (height, manager.location(forGlyphAt: 0).y)
     }()
     private func editorContentHeight() -> CGFloat {
         guard let manager = composer.layoutManager, let container = composer.textContainer else { return 40 }

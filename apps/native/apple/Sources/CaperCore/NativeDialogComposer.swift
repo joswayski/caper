@@ -53,7 +53,8 @@ import AppKit
         layer?.cornerRadius = 8; layer?.borderWidth = 1; layer?.borderColor = AppKitKit.border.cgColor
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            // The editor's 5-point line padding then starts its text 10 in, as the dialogs' fields.
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 6), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
         changes = controller.objectWillChange.sink { [weak self] in

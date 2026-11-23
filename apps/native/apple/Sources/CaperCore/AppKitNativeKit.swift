@@ -205,7 +205,26 @@ import SwiftUI
 /// Caper's button: secondary (raised, bordered) or primary (eggshell). The
 /// terracotta focus ring shows only on the control that has keyboard focus,
 /// which Tab gives it and a click does not.
+/// Draws a button's title and image inside a horizontal inset; the layer's
+/// fill (hover, selection) still covers the whole bounds.
+private final class AppKitKitButtonCell: NSButtonCell {
+    var inset: CGFloat = 0
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: cellFrame.insetBy(dx: min(inset, cellFrame.width / 2), dy: 0), in: controlView)
+    }
+}
+
 @MainActor final class AppKitKitButton: NSButton {
+    override class var cellClass: AnyClass? { get { AppKitKitButtonCell.self } set {} }
+    /// A left-aligned button is a list row (a destination, a device, an emoji):
+    /// its title and image sit 10 points inside the row's hover and selected
+    /// fill, so its text starts where the search field above starts its text.
+    override var alignment: NSTextAlignment {
+        didSet {
+            (cell as? AppKitKitButtonCell)?.inset = alignment == .left ? 10 : 0
+            invalidateIntrinsicContentSize(); needsDisplay = true
+        }
+    }
     /// `text`: no fill, in the normal text colour, such as the copyable version.
     enum Kind { case primary, secondary, plain, destructive, text }
     private let handler: () -> Void
@@ -277,7 +296,8 @@ import SwiftUI
         let bare = kind == .plain || kind == .text
         let horizontal: CGFloat = bare ? 4 : 24
         let vertical: CGFloat = bare ? 4 : 16
-        return NSSize(width: ceil(text.width) + horizontal, height: max(ceil(text.height) + vertical, minimumHeight))
+        let inset = 2 * ((cell as? AppKitKitButtonCell)?.inset ?? 0)
+        return NSSize(width: ceil(text.width) + horizontal + inset, height: max(ceil(text.height) + vertical, minimumHeight))
     }
 
     private var focused: Bool { window?.firstResponder === self && window?.isKeyWindow == true }

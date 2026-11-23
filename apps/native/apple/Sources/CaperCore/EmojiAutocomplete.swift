@@ -251,6 +251,31 @@ extension NSAttributedString.Key {
 /// TextKit keeps the original string (and native selection/IME/undo coordinates),
 /// but recognized Markdown delimiters have no drawn glyph or advance.
 public final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
+    /// One plain line's height and baseline. When set, a line an emoji (or
+    /// another fallback font) would make taller keeps them instead, so a draft
+    /// never grows or jumps when an emoji arrives and every line is evenly
+    /// spaced. The emoji draws over the line's leading. Formatted paragraphs
+    /// (quotes, code blocks) keep their own metrics.
+    public var fixedLine: (height: CGFloat, baseline: CGFloat)?
+
+    public func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<CGRect>,
+                              lineFragmentUsedRect: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
+                              in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
+        guard let fixedLine, let storage = layoutManager.textStorage,
+              lineFragmentUsedRect.pointee.height > fixedLine.height else { return false }
+        let characters = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        var formatted = false
+        storage.enumerateAttribute(.paragraphStyle, in: characters) { value, _, stop in
+            if value != nil { formatted = true; stop.pointee = true }
+        }
+        guard !formatted else { return false }
+        let extra = lineFragmentUsedRect.pointee.height - fixedLine.height
+        lineFragmentRect.pointee.size.height -= extra
+        lineFragmentUsedRect.pointee.size.height = fixedLine.height
+        baselineOffset.pointee = fixedLine.baseline
+        return true
+    }
+
     public func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
                        properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
                        characterIndexes charIndexes: UnsafePointer<Int>, font: PlatformComposerFont,

@@ -84,7 +84,8 @@ import AppKit
     private func render() {
         field.isEditable = !state.pending; field.isHidden = state.preview != nil
         header.close.isEnabled = !state.pending; cancel.isHidden = state.preview == nil; cancel.isEnabled = !state.pending
-        submit.title = state.label; submit.isEnabled = !state.pending && !state.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Continue waits for a real invite link (or code), not just any text.
+        submit.title = state.label; submit.isEnabled = !state.pending && (state.preview != nil || InviteLinks.code(from: state.link) != nil)
         submit.setAccessibilityIdentifier(state.preview == nil ? "invite-link-continue" : "invite-link-join")
         failure.stringValue = state.error ?? ""; failure.isHidden = state.error == nil; preview.isHidden = state.preview == nil
         // A previewed link is titled with its space, as on web's invite page.
@@ -94,6 +95,8 @@ import AppKit
         let avatar = AppKitAvatar(); avatar.update(name: value.inviter.displayName, avatarId: value.inviter.avatarId, picture: value.inviter.avatarPicture)
         avatar.widthAnchor.constraint(equalToConstant: 28).isActive = true; avatar.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let invited = AppKitKit.label("", size: 13, color: AppKitKit.muted)
+        // Selectable, keeping its bold runs when clicked.
+        invited.isSelectable = true; invited.allowsEditingTextAttributes = true
         invited.attributedStringValue = NativeJoinInvite.runs(value).reduce(into: NSMutableAttributedString()) { line, run in
             line.append(NSAttributedString(string: run.text, attributes: [
                 .font: AppKitKit.font(13, weight: run.strong ? .bold : .regular),
@@ -103,6 +106,7 @@ import AppKit
         let by = NSStackView(views: [avatar, invited]); by.spacing = 10; by.alignment = .centerY
         preview.addArrangedSubview(by); AppKitKit.fillWidth(by, of: preview)
         let members = AppKitKit.label(InviteLinks.membersLine(value), size: 12, color: AppKitKit.muted)
+        members.isSelectable = true
         preview.addArrangedSubview(members); AppKitKit.fillWidth(members, of: preview)
     }
 }
@@ -144,7 +148,8 @@ import UIKit
     override func render() {
         field.isHidden = state.preview != nil; failure.text = state.error; failure.isHidden = state.error == nil
         submit.configuration?.title = state.label
-        submit.isEnabled = !state.pending && !state.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Continue waits for a real invite link (or code), not just any text.
+        submit.isEnabled = !state.pending && (state.preview != nil || InviteLinks.code(from: state.link) != nil)
         submit.accessibilityIdentifier = state.preview == nil ? "invite-link-continue" : "invite-link-join"
         preview.isHidden = state.preview == nil; hint.isHidden = state.preview != nil
         // A previewed link is titled with its space, as on web's invite page.

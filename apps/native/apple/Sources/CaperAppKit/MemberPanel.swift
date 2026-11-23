@@ -91,7 +91,8 @@ import CaperCore
         super.layout()
         let width = bounds.width
         let titleWidth = ceil(title.cell?.cellSize.width ?? 60)
-        title.frame = NSRect(x: 12, y: 17, width: titleWidth, height: 18)
+        // Text fields draw 2 points inside their frame: the text starts 16 past the divider, over the avatars.
+        title.frame = NSRect(x: 16, y: 17, width: titleWidth, height: 18)
         count.frame = NSRect(x: title.frame.maxX + 4, y: 19, width: max(0, width - title.frame.maxX - 80), height: 16)
         searchButton.frame = NSRect(x: width - 72, y: 9, width: 28, height: 32)
         closeButton.frame = NSRect(x: width - 36, y: 9, width: 28, height: 32)
@@ -100,7 +101,8 @@ import CaperCore
         search.frame = NSRect(x: 12, y: 58, width: max(0, width - 52), height: 26)
         clearButton.frame = NSRect(x: width - 36, y: 55, width: 28, height: 32)
         let top: CGFloat = searching ? 92 : 50
-        scroll.frame = NSRect(x: 0, y: top, width: width, height: max(0, bounds.height - top))
+        // Right of the 1-point divider, so rows pad evenly from the visible edge.
+        scroll.frame = NSRect(x: 1, y: top, width: max(0, width - 1), height: max(0, bounds.height - top))
         realize()
     }
 
@@ -174,10 +176,14 @@ import CaperCore
         realize()
     }
 
-    private func append(_ text: String, height: CGFloat = 28, member: Member? = nil,
+    private func append(_ text: String, height: CGFloat = MemberHeading.height, member: Member? = nil,
                         status: PresenceStatus = .unknown, quiet: Bool = false, raised: Bool = false) {
         let y = entries.last.map { $0.y + $0.height } ?? 4
-        entries.append(Entry(y: y, height: height, text: text, member: member, status: status, quiet: quiet, raised: raised))
+        // A heading after member rows starts a new group 12 points below them,
+        // as web's sections; the gap belongs to the heading, so a raised group's
+        // wash stays continuous.
+        let gap: CGFloat = member == nil && entries.last?.member != nil ? MemberHeading.gap : 0
+        entries.append(Entry(y: y, height: height + gap, text: text, member: member, status: status, quiet: quiet, raised: raised))
     }
 
     private func appendSections(_ members: [Member], quiet: Bool = false, raised: Bool = false) {
@@ -191,7 +197,7 @@ import CaperCore
             append("\(label)  \(rows.count)", raised: raised)
             for snapshot in rows {
                 let member = model.profiled(snapshot)
-                append(member.displayName, height: 38, member: member, status: model.presence.status(for: member),
+                append(member.displayName, height: MemberRow.height, member: member, status: model.presence.status(for: member),
                     quiet: quiet, raised: raised)
             }
         }
@@ -230,21 +236,44 @@ import CaperCore
                         self?.openProfile?(member, view)
                     }
                 } else {
-                    let label = NativeStyle.label(entry.text, size: 11, bold: true)
-                    label.textColor = NativeStyle.muted
-                    label.wantsLayer = true
-                    label.layer?.backgroundColor = (entry.raised ? NativeStyle.sidebarRaised : .clear).cgColor
-                    row = label
+                    row = MemberHeading(entry.text, raised: entry.raised)
                 }
                 realized[index] = row
                 document.addSubview(row)
             }
-            row.frame = NSRect(x: 12, y: entry.y, width: max(0, clip.width - 24), height: entry.height)
+            // Web's list: 8 points in, each row's content 8 further, so headings,
+            // avatars and the panel title share one left edge.
+            row.frame = NSRect(x: 8, y: entry.y, width: max(0, clip.width - 16), height: entry.height)
         }
     }
 }
 
+/// A section heading (or a note such as "Loading members…"), centered in the
+/// bottom `height` points of its entry; any group gap sits above it.
+private final class MemberHeading: NativeView {
+    static let height: CGFloat = 28
+    static let gap: CGFloat = 12
+    private let label: NSTextField
+    init(_ text: String, raised: Bool) {
+        label = NativeStyle.label(text, size: 11, bold: true)
+        super.init(raised ? NativeStyle.sidebarRaised : .clear)
+        label.textColor = NativeStyle.muted
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 0
+        addSubview(label)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layout() {
+        super.layout()
+        let width = max(0, bounds.width - 16)
+        let textHeight = ceil(label.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 1000)).height ?? 16)
+        let slot = min(bounds.height, max(Self.height, textHeight))
+        label.frame = NSRect(x: 7, y: bounds.height - slot + ((slot - textHeight) / 2).rounded(), width: width, height: textHeight)
+    }
+}
+
 private final class MemberRow: NativeView {
+    static let height: CGFloat = 44
     private let avatar = NativeAvatar()
     private let name: NSTextField
     private let badge = CALayer()
@@ -292,11 +321,16 @@ private final class MemberRow: NativeView {
     }
     override func layout() {
         super.layout()
-        avatar.frame = NSRect(x: 6, y: 4, width: 30, height: 30)
-        name.frame = NSRect(x: 46, y: 10, width: max(0, bounds.width - 52), height: 18)
+        // Web's row: the 30-point avatar 8 in and centered, the name 10 after it
+        // (its text field draws 2 points inside its frame).
+        let side: CGFloat = 30, inset: CGFloat = 8
+        avatar.frame = NSRect(x: inset, y: ((bounds.height - side) / 2).rounded(), width: side, height: side)
+        let nameHeight = ceil(name.cell?.cellSize.height ?? 16)
+        name.frame = NSRect(x: avatar.frame.maxX + 8, y: ((bounds.height - nameHeight) / 2).rounded(),
+                            width: max(0, bounds.width - avatar.frame.maxX - 8 - inset), height: nameHeight)
         action.frame = bounds
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        badge.frame = NSRect(x: 26, y: 24, width: 10, height: 10)
+        badge.frame = NSRect(x: avatar.frame.maxX - 10, y: avatar.frame.maxY - 10, width: 10, height: 10)
         CATransaction.commit()
     }
 }
