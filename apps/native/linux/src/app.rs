@@ -6795,11 +6795,20 @@ pub fn popup_at(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget, at: Opti
         glib::Propagation::Proceed
     });
     popover.add_controller(keys);
+    let message_row = std::iter::successors(Some(anchor.clone()), gtk::Widget::parent)
+        .find(|widget| widget.has_css_class("message"))
+        .map(|widget| {
+            widget.add_css_class("menu-open");
+            widget.downgrade()
+        });
     let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
     let once = handler.clone();
     let id = popover.connect_closed(move |popover| {
         if let Some(id) = once.borrow_mut().take() {
             popover.disconnect(id);
+        }
+        if let Some(widget) = message_row.as_ref().and_then(|widget| widget.upgrade()) {
+            widget.remove_css_class("menu-open");
         }
         if let Some(widget) = previous
             .as_ref()

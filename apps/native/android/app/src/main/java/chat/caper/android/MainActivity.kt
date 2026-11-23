@@ -2769,6 +2769,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         dismissPinError = viewModel::dismissPinError,
                         onAttachmentFailed = viewModel::reportAttachmentFailure,
                         grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, focusedId),
+                        highlighted = actionTarget?.id == message.id || pickerTarget?.id == message.id,
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                         val summary = message.thread?.takeIf { message.threadRootId == null }
@@ -3182,6 +3183,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
     inPins: Boolean = false,
+    /** Kept highlighted while the message's action sheet or reaction picker is open. */
+    highlighted: Boolean = false,
     /** Only pinned cards opt in; nested links and controls consume their own taps. */
     openMessage: (() -> Unit)? = null,
     openActions: (ChatMessage) -> Unit,
@@ -3190,6 +3193,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val canReact = state.canParticipate && own != null
     val interaction = remember(message.id) { MutableInteractionSource() }
     val pressing by interaction.collectIsPressedAsState()
+    val hovered by interaction.collectIsHoveredAsState()
+    val hoverWash = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
     // A deleted message keeps its header and place, without its content, quote, forward, pin or reactions.
     val deleted = message.deletedAt != null
     // Pin ownership takes precedence over the mention wash; inline mention pills remain visible.
@@ -3199,8 +3204,9 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     Column((if (!mentioned && !replyToMe) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = if (replyToMe) 0.12f else 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
-    }).drawBehind {
+    }).hoverable(interaction).drawBehind {
         if (pressing) drawRect(Text.copy(alpha = 0.08f))
+        else if (hovered || highlighted) drawRect(hoverWash)
     }) {
         message.pin?.takeIf { !deleted }?.let { pin ->
             val pinInteraction = remember(message.id) { MutableInteractionSource() }

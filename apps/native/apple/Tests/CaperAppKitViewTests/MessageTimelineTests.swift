@@ -817,4 +817,35 @@ import XCTest
         layout.ensureLayout(for: container)
         XCTAssertGreaterThanOrEqual(edited.frame.height, ceil(layout.usedRect(for: container).height), "Updated text must not clip")
     }
+
+    func testMessageRowHighlightsForActiveActionAndExcludesDateDivider() throws {
+        _ = NSApplication.shared
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        let first = message(0, author: "alex")
+        let second = message(1, author: "alex")
+        timeline.update([first, second], conversationID: "channel", canInteract: true)
+        timeline.layoutSubtreeIfNeeded()
+        let firstBody = try XCTUnwrap(bodies(in: timeline).first { $0.string == first.content.text })
+        let secondBody = try XCTUnwrap(bodies(in: timeline).first { $0.string == second.content.text })
+        let firstRow = try XCTUnwrap(firstBody.superview as? MessageCell)
+        let secondRow = try XCTUnwrap(secondBody.superview as? MessageCell)
+        let day = try XCTUnwrap(firstRow.subviews.compactMap { $0 as? NSTextField }
+            .first { $0.accessibilityIdentifier() == "date-message-0" })
+
+        XCTAssertTrue(firstRow.hoverTint.isHidden)
+        XCTAssertTrue(secondRow.hoverTint.isHidden)
+        XCTAssertGreaterThanOrEqual(firstRow.hoverTint.frame.minY, day.frame.maxY,
+            "Hover highlight must start below the date divider")
+        XCTAssertEqual(secondRow.hoverTint.frame.minY, 0, accuracy: 0.5)
+        XCTAssertEqual(secondRow.hoverTint.frame.height, secondRow.bounds.height, accuracy: 0.5)
+
+        timeline.setActiveMessageID(second.id)
+        XCTAssertTrue(firstRow.hoverTint.isHidden)
+        XCTAssertFalse(secondRow.hoverTint.isHidden, "Active reaction picker keeps the target message highlighted")
+        XCTAssertTrue(secondRow.isRowHighlighted)
+
+        timeline.setActiveMessageID(nil)
+        XCTAssertTrue(secondRow.hoverTint.isHidden)
+        XCTAssertFalse(secondRow.isRowHighlighted)
+    }
 }

@@ -565,7 +565,9 @@ listview.messages > row {
 }
 
 /* Over any wash, not instead of it. */
-listview.messages > row:hover .message > overlay > .body {
+listview.messages > row:hover .message > overlay > .body,
+listview.messages > row:focus-within .message > overlay > .body,
+.message.menu-open > overlay > .body {
   background-image: linear-gradient(@caper_surface_hover, @caper_surface_hover);
 }
 
@@ -786,7 +788,8 @@ button.replies {
 }
 
 listview.messages > row:hover .tools,
-.tools:focus-within {
+.tools:focus-within,
+.message.menu-open .tools {
   opacity: 1;
 }
 
@@ -801,7 +804,8 @@ listview.messages > row:hover .tools,
 }
 
 listview.messages > row:hover .grouped-time,
-listview.messages > row:focus-within .grouped-time {
+listview.messages > row:focus-within .grouped-time,
+.message.menu-open .grouped-time {
   opacity: 1;
 }
 

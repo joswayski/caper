@@ -575,9 +575,19 @@ impl Pane {
                 }
             }
         }
+        let active_row = self.bar.as_ref().map(|(row, _)| *row).or(self.hover_row);
         for (i, y) in rows {
             let h = self.rows.height(i);
             if y + off < HEADER_H + vh && y + h + off > HEADER_H {
+                let lead = self.rows.row(i).map_or(0.0, |r| r.lead);
+                if active_row == Some(i) {
+                    unsafe {
+                        dc.FillRectangle(
+                            &rect(0.0, y + off + lead, w, y + off + h),
+                            &g.brushes.hover,
+                        );
+                    }
+                }
                 let sel = self
                     .rows
                     .row(i)
@@ -592,6 +602,9 @@ impl Pane {
                     sel,
                     media.as_deref_mut(),
                 )?;
+                if active_row == Some(i) {
+                    list::draw_grouped_time(g, dc, &self.c, &self.rows, i, y + off)?;
+                }
             }
         }
         if let (Some(y), Some(n)) = (s.count, self.count) {

@@ -2063,6 +2063,15 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     if !row.beginning && !row.unread && row.day.is_none() {
         classes.push("flush");
     }
+    if widgets
+        .row
+        .borrow()
+        .as_ref()
+        .is_some_and(|prev| prev.id == row.id)
+        && widgets.root.has_css_class("menu-open")
+    {
+        classes.push("menu-open");
+    }
     widgets.root.set_css_classes(&classes);
     widgets.beginning.set_visible(row.beginning);
     widgets.blocked.set_visible(row.blocked_run.is_some());

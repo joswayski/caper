@@ -18547,6 +18547,7 @@ impl CaperApp {
         );
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
+        let hover_tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref().filter(|_| !deleted);
         let pinned_by_viewer = self.pinned_by_viewer(message);
         let mut view_thread = None;
@@ -18979,7 +18980,6 @@ impl CaperApp {
                 let menu_open =
                     egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
                 let picker_open = self.reaction_picker.as_deref() == Some(message.id.as_str());
-                actions_open = menu_open || picker_open;
                 let visible = ui.rect_contains_pointer(message_rect)
                     || ui.rect_contains_pointer(actions_rect)
                     || menu_open
@@ -18990,6 +18990,7 @@ impl CaperApp {
                         .into_iter()
                         .flatten()
                         .any(egui::Response::has_focus);
+                actions_open = visible;
                 if visible {
                     // One shared surface; only the hovered/selected control is lit.
                     ui.painter().rect(
@@ -19539,39 +19540,27 @@ impl CaperApp {
                     .thread_view
                     .as_ref()
                     .is_some_and(|thread| thread.root == message.id));
-        if (mentioned || incoming_reply) && pinned.is_none() && !selected && !in_pins {
-            // Messages that mention you: an 8% terracotta row with a 2px edge.
+        if !in_pins {
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
                 message_rect.top()..=controls.response.rect.bottom(),
             );
-            ui.painter().set(
-                tint,
-                egui::Shape::rect_filled(
-                    rect,
+            if (mentioned || incoming_reply) && pinned.is_none() && !selected {
+                // Messages that mention you: an 8% terracotta row with a 2px edge.
+                ui.painter().set(
+                    tint,
+                    egui::Shape::rect_filled(
+                        rect,
+                        0.0,
+                        TERRACOTTA.gamma_multiply(if incoming_reply { 0.12 } else { 0.08 }),
+                    ),
+                );
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
                     0.0,
-                    TERRACOTTA.gamma_multiply(if incoming_reply { 0.12 } else { 0.08 }),
-                ),
-            );
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
-                0.0,
-                TERRACOTTA,
-            );
-        } else if !in_pins {
-            // Pins owns the whole card's wash. Thread and jump tints win here.
-            let rect = egui::Rect::from_x_y_ranges(
-                ui.max_rect().x_range(),
-                message_rect.top()..=controls.response.rect.bottom(),
-            );
-            let highlighted = (!in_pins && self.focused_message.as_deref() == Some(&message.id))
-                || (!in_pins
-                    && !in_thread
-                    && self
-                        .thread_view
-                        .as_ref()
-                        .is_some_and(|thread| thread.root == message.id));
-            if !highlighted && pinned.is_some() {
+                    TERRACOTTA,
+                );
+            } else if !selected && pinned.is_some() {
                 ui.painter().set(
                     tint,
                     egui::Shape::rect_filled(
@@ -19584,7 +19573,7 @@ impl CaperApp {
                         },
                     ),
                 );
-            } else if !highlighted && message.reply_to.is_some() {
+            } else if !selected && message.reply_to.is_some() {
                 ui.painter().set(
                     tint,
                     egui::Shape::rect_filled(
@@ -19598,10 +19587,11 @@ impl CaperApp {
                     0.0,
                     BORDER,
                 );
-            } else if !in_pins && !highlighted && (actions_open || ui.rect_contains_pointer(rect)) {
+            }
+            if actions_open || ui.rect_contains_pointer(rect) {
                 ui.painter().set(
-                    tint,
-                    egui::Shape::rect_filled(rect, 0.0, Color32::from_white_alpha(5)),
+                    hover_tint,
+                    egui::Shape::rect_filled(rect, 0.0, SURFACE_HOVER),
                 );
             }
         }

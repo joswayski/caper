@@ -39,6 +39,8 @@ enum PendingAction { case retry, edit, dismiss }
     private var selection: [String: (text: String, range: NSRange)] = [:]
     private var focusedID: String?
     private var pendingFocus: String?
+    private var activeMessageID: String?
+    private weak var observedWindow: NSWindow?
     var inThread = false
     /// The first unread message of this visit: it wears the "New messages"
     /// line and starts a new author group, as on every other client. Set it
@@ -90,6 +92,38 @@ enum PendingAction { case retry, edit, dismiss }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let observedWindow {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: observedWindow)
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: observedWindow)
+        }
+        observedWindow = window
+        if let window {
+            NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey),
+                name: NSWindow.didBecomeKeyNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowDidResignKey),
+                name: NSWindow.didResignKeyNotification, object: window)
+        }
+    }
+
+    @objc private func windowDidBecomeKey() { refreshHover() }
+    @objc private func windowDidResignKey() { rows.values.forEach { $0.clearHover() } }
+
+    func refreshHover() { rows.values.forEach { $0.refreshHover() } }
+
+    /// Keeps a message row highlighted while an anchored reaction picker is open.
+    func setActiveMessageID(_ id: String?) {
+        guard activeMessageID != id else { return }
+        let previous = activeMessageID
+        activeMessageID = id
+        if let previous { rows[previous]?.setActionActive(false) }
+        if let id { rows[id]?.setActionActive(true) }
+        if id == nil {
+            DispatchQueue.main.async { [weak self] in self?.refreshHover() }
+        }
+    }
 
     @objc private func handleThemeChange() {
         backgroundColor = NativeStyle.conversation
@@ -449,6 +483,7 @@ enum PendingAction { case retry, edit, dismiss }
             row.messageMenu = { [weak self] message, view in self?.messageMenu?(message, view) }
             row.messageAction = { [weak self] message, action, view in self?.messageAction?(message, action, view) }
             row.hoverReaction = { [weak self] message, emoji, entered, view in self?.hoverReaction?(message, emoji, entered, view) }
+            row.menuClosed = { [weak self] in self?.refreshHover() }
             row.heightChanged = { [weak self, weak row] in
                 guard let self, let row, self.rows[id] === row else { return }
                 let anchor = self.geometry.anchor(at: self.contentView.bounds.minY)
@@ -490,6 +525,7 @@ enum PendingAction { case retry, edit, dismiss }
                 continued: continues(at: index, in: entries, pending: activePending, author: pendingAuthor), day: revealedBlocked ? nil : day, newMessages: newMessages,
                 viewerID: viewerID, revealedBlocked: revealedBlocked, canInteract: canInteract, inThread: inThread,
                 reactionError: reactionErrors[message.id], pinError: pinErrors[message.id], pinPending: pendingPins.contains(message.id), react: react)
+            row.setActionActive(message.id == activeMessageID)
         case .blocked(let run):
             row.configure(run, day: day) { [weak self] in
                 guard let self else { return }
@@ -569,9 +605,14 @@ enum PendingAction { case retry, edit, dismiss }
     var messageAction: ((ChatMessage, MessageAction, NSView) -> Void)?
     var pendingAction: ((PendingMessage, PendingAction) -> Void)?
     var hoverReaction: ((ChatMessage, String, Bool, NSView) -> Void)?
+    var menuClosed: (() -> Void)?
     private let controls = MessageActionBar()
     private var tracking: NSTrackingArea?
+    private var trackingRect: NSRect?
     private var hovered = false
+    private var menuOpen = false
+    private var actionActive = false
+    private weak var activeMenu: CaperMenu?
     private var canInteract = false
     private lazy var edited = NativeButton("(edited)") { [weak self] in
         guard let self, let message = self.message else { return }
@@ -653,6 +694,7 @@ enum PendingAction { case retry, edit, dismiss }
     private let unreadLeading = CALayer()
     private let unreadTrailing = CALayer()
     private let mentionTint = CALayer()
+    let hoverTint = CALayer()
     private let mentionBar = CALayer()
     private let blockedBar = CALayer()
     private var blockedRun: BlockedRun?
@@ -677,6 +719,9 @@ enum PendingAction { case retry, edit, dismiss }
     private var unreadHeight: CGFloat { unread.isHidden ? 0 : ceil(unread.cell?.cellSize.height ?? 15) + 16 }
     /// The dividers above the message: its day, then the unread line.
     private var dividerHeight: CGFloat { dayHeight + unreadHeight }
+    private var messageBounds: NSRect {
+        NSRect(x: 0, y: dividerHeight, width: bounds.width, height: max(0, bounds.height - dividerHeight))
+    }
     var textTop: CGFloat {
         // A grouped row sits right under its author's previous one, as on
         // web; its hover actions float over the row's top edge.
@@ -702,6 +747,8 @@ enum PendingAction { case retry, edit, dismiss }
         unreadLeading.backgroundColor = NativeStyle.accent.cgColor
         unreadTrailing.backgroundColor = NativeStyle.accent.cgColor
         mentionTint.backgroundColor = NativeStyle.accent.withAlphaComponent(0.08).cgColor
+        hoverTint.backgroundColor = NativeStyle.hoverWash.cgColor
+        hoverTint.isHidden = true
         mentionBar.backgroundColor = NativeStyle.accent.cgColor
         blockedBar.backgroundColor = NativeStyle.border.cgColor
         blockedBar.isHidden = true
@@ -710,7 +757,7 @@ enum PendingAction { case retry, edit, dismiss }
         blockedToggle.layer?.backgroundColor = NSColor.clear.cgColor
         blockedToggle.setAccessibilityIdentifier("blocked-run-toggle")
         blockedToggle.isHidden = true
-        [blockedBar, mentionTint, mentionBar, dayLeading, dayTrailing, unreadLeading, unreadTrailing].forEach { layer?.addSublayer($0) }
+        [blockedBar, mentionTint, hoverTint, mentionBar, dayLeading, dayTrailing, unreadLeading, unreadTrailing].forEach { layer?.addSublayer($0) }
         body.isEditable = false; body.isSelectable = true
         body.isRichText = true; body.drawsBackground = false
         body.textContainerInset = .zero
@@ -760,11 +807,13 @@ enum PendingAction { case retry, edit, dismiss }
             guard let self, let message = self.message else { return nil }
             return self.messageMenu?(message, anchor)
         }
+        controls.menuOpened = { [weak self] menu in self?.trackMenu(menu) }
         controls.focusChanged = { [weak self] in self?.updateControlsVisibility() }
         body.messageMenu = { [weak self] in
             guard let self, let message = self.message else { return nil }
             return self.messageMenu?(message, self)
         }
+        body.menuOpened = { [weak self] menu in self?.trackMenu(menu) }
         body.revealSpoilers = { [weak self] in self?.revealSpoilers($0) }
         setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Message actions") { [weak self] in
             guard let self, self.message != nil else { return false }
@@ -860,6 +909,7 @@ enum PendingAction { case retry, edit, dismiss }
         dayTrailing.backgroundColor = NativeStyle.border.cgColor
         unreadLeading.backgroundColor = NativeStyle.accent.cgColor
         unreadTrailing.backgroundColor = NativeStyle.accent.cgColor
+        hoverTint.backgroundColor = NativeStyle.hoverWash.cgColor
         mentionBar.backgroundColor = NativeStyle.accent.cgColor
         blockedBar.backgroundColor = NativeStyle.border.cgColor
         adminBadge.applyTheme()
@@ -920,6 +970,8 @@ enum PendingAction { case retry, edit, dismiss }
         blockedToggle.isHidden = true
         body.isHidden = false
         controls.isHidden = true
+        hovered = false; menuOpen = false; actionActive = false; activeMenu = nil
+        controls.setMenuOpen(false); controls.setReactionPickerOpen(false)
         edited.isHidden = true
         thread.isHidden = true
         pinnedBy.isHidden = true
@@ -935,6 +987,7 @@ enum PendingAction { case retry, edit, dismiss }
         layer?.backgroundColor = NSColor.clear.cgColor
         blockedBar.isHidden = true
         mentionTint.isHidden = true
+        hoverTint.isHidden = true
         mentionBar.isHidden = true
         CATransaction.commit()
         self.author.stringValue = author?.name ?? "Guest"
@@ -1180,6 +1233,8 @@ enum PendingAction { case retry, edit, dismiss }
         adminBadge.isHidden = true; guestBadge.isHidden = true
         avatar.update(name: "", avatarId: nil, picture: nil)
         controls.isHidden = true; edited.isHidden = true
+        hovered = false; menuOpen = false; actionActive = false; activeMenu = nil
+        controls.setMenuOpen(false); controls.setReactionPickerOpen(false)
         reactionFailure.isHidden = true; retryReaction.isHidden = true; dismissReaction.isHidden = true
         pinnedBy.isHidden = true; pinFailure.isHidden = true; retryPin.isHidden = true; dismissPin.isHidden = true
         pendingFailure.isHidden = true; retrySend.isHidden = true; editPending.isHidden = true; dismissPending.isHidden = true
@@ -1193,7 +1248,7 @@ enum PendingAction { case retry, edit, dismiss }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         layer?.backgroundColor = run.revealed ? NativeStyle.surface.cgColor : NSColor.clear.cgColor
         blockedBar.isHidden = !run.revealed
-        mentionTint.isHidden = true; mentionBar.isHidden = true
+        mentionTint.isHidden = true; hoverTint.isHidden = true; mentionBar.isHidden = true
         CATransaction.commit()
         needsLayout = true
     }
@@ -1246,11 +1301,14 @@ enum PendingAction { case retry, edit, dismiss }
         let unreadLine = dayInset + floor((inset - dayInset) / 2)
         unreadLeading.frame = NSRect(x: 16, y: unreadLine, width: max(0, unread.frame.minX - 24), height: 1)
         unreadTrailing.frame = NSRect(x: unread.frame.maxX + 8, y: unreadLine, width: max(0, bounds.width - unread.frame.maxX - 24), height: 1)
-        // Date dividers remain neutral even when the following message mentions you.
-        mentionTint.frame = NSRect(x: 0, y: inset, width: bounds.width, height: max(0, bounds.height - inset))
+        // Date dividers remain neutral even when the following message mentions you or is hovered.
+        let messageRect = messageBounds
+        mentionTint.frame = messageRect
+        hoverTint.frame = messageRect
         mentionBar.frame = NSRect(x: 0, y: inset, width: 3, height: max(0, bounds.height - inset))
         blockedBar.frame = NSRect(x: 0, y: inset, width: 2, height: max(0, bounds.height - inset))
         CATransaction.commit()
+        if trackingRect != messageRect { updateTrackingAreas() }
         avatar.isHidden = grouped; author.isHidden = grouped; timestamp.isHidden = grouped
         adminBadge.isHidden = grouped || !showsAdmin
         guestBadge.isHidden = grouped || !showsGuest
@@ -1334,26 +1392,87 @@ enum PendingAction { case retry, edit, dismiss }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let tracking { removeTrackingArea(tracking) }
-        let tracking = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        let rect = messageBounds
+        trackingRect = rect
+        let hasDivider = dividerHeight > 0
+        let options: NSTrackingArea.Options = hasDivider
+            ? [.mouseEnteredAndExited, .activeInKeyWindow]
+            : [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow]
+        let tracking = NSTrackingArea(rect: hasDivider ? rect : .zero, options: options, owner: self, userInfo: nil)
         self.tracking = tracking; addTrackingArea(tracking)
     }
     override func mouseEntered(with event: NSEvent) { refreshHover() }
-    override func mouseExited(with event: NSEvent) { refreshHover() }
+    override func mouseExited(with event: NSEvent) {
+        if let window, window.isKeyWindow {
+            refreshHover()
+        } else {
+            clearHover()
+        }
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            hovered = false; menuOpen = false; actionActive = false; activeMenu = nil
+            controls.setMenuOpen(false); controls.setReactionPickerOpen(false)
+            updateControlsVisibility()
+        }
+    }
+    func clearHover() {
+        guard hovered else { return }
+        hovered = false; updateControlsVisibility()
+    }
+    func setActionActive(_ active: Bool) {
+        guard actionActive != active else { return }
+        actionActive = active
+        controls.setReactionPickerOpen(active)
+        updateControlsVisibility()
+    }
+    /// Keeps the row highlighted while a context or options menu is open over it.
+    private func trackMenu(_ menu: CaperMenu) {
+        activeMenu = menu
+        menuOpen = true
+        controls.setMenuOpen(true)
+        updateControlsVisibility()
+        let previous = menu.onClose
+        menu.onClose = { [weak self, weak menu] in
+            previous?()
+            guard let self else { return }
+            if self.activeMenu === menu || self.activeMenu == nil {
+                self.activeMenu = nil
+                self.menuOpen = false
+                self.controls.setMenuOpen(false)
+                self.updateControlsVisibility()
+                if let menuClosed = self.menuClosed { menuClosed() } else { self.refreshHover() }
+            }
+        }
+    }
     /// AppKit sends no mouseExited when scrolling moves a row out from under a
     /// still pointer, so its scroll view re-reads the pointer after each move.
-    /// Like the tracking area, it waits while another window (a picker) is key.
     func refreshHover() {
         guard let window, window.isKeyWindow else { return }
+        guard message != nil else { clearHover(); return }
         // A row's visibleRect can be the whole visible history (views need
-        // not clip to their bounds), so keep to the row itself.
-        let inside = bounds.intersection(visibleRect).contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        // not clip to their bounds), so keep to the message area itself.
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        let inside = messageBounds.intersection(visibleRect).contains(point)
+            || (hovered && !controls.isHidden && controls.frame.contains(point))
         guard inside != hovered else { return }
         hovered = inside; updateControlsVisibility()
     }
-    private func updateControlsVisibility() { controls.alphaValue = hovered || controls.hasFocus ? 1 : 0 }
+    /// Exposed for view tests; true when hover, focus, menu or reaction picker marks this row.
+    var isRowHighlighted: Bool { message != nil && (hovered || controls.hasFocus || menuOpen || actionActive) }
+    private func updateControlsVisibility() {
+        let lit = isRowHighlighted
+        controls.alphaValue = lit ? 1 : 0
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        hoverTint.isHidden = !lit
+        CATransaction.commit()
+    }
     override func rightMouseDown(with event: NSEvent) {
         guard let message, let menu = messageMenu?(message, self) else { super.rightMouseDown(with: event); return }
-        CaperMenu.show(menu, at: convert(event.locationInWindow, from: nil), in: self)
+        if let shown = CaperMenu.show(menu, at: convert(event.locationInWindow, from: nil), in: self) {
+            trackMenu(shown)
+        }
     }
 }
 
@@ -1362,6 +1481,7 @@ enum PendingAction { case retry, edit, dismiss }
 @MainActor final class MessageTextView: NSTextView {
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
     var messageMenu: (() -> NSMenu?)?
+    var menuOpened: ((CaperMenu) -> Void)?
     var typeToCompose: ((NSEvent) -> Bool)?
     /// Reveals hidden spoiler groups (a click, or VoiceOver's "Spoiler, reveal").
     var revealSpoilers: ((Set<Int>) -> Void)?
@@ -1383,7 +1503,9 @@ enum PendingAction { case retry, edit, dismiss }
                 NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selected, forType: .string)
             }, .separator]
         }
-        CaperMenu.show(items + CaperMenuItem.items(from: actions), at: convert(event.locationInWindow, from: nil), in: self)
+        if let shown = CaperMenu.show(items + CaperMenuItem.items(from: actions), at: convert(event.locationInWindow, from: nil), in: self) {
+            menuOpened?(shown)
+        }
     }
 
     func configureMentions(_ mentions: [MessageMention]) {
@@ -1498,7 +1620,10 @@ enum PendingAction { case retry, edit, dismiss }
 @MainActor private final class MessageActionBar: NativeView {
     var action: ((MessageAction, NSView) -> Void)?
     var messageMenu: ((NSView) -> NSMenu?)?
+    var menuOpened: ((CaperMenu) -> Void)?
     var focusChanged: (() -> Void)?
+    private var menuOpen = false
+    private var reactionPickerOpen = false
     private var quick: [NativeButton] = []
     private lazy var add: NativeButton = NativeButton.icon("Add reaction", symbol: "face.smiling") { [weak self] in
         guard let self else { return }; self.action?(.addReaction, self.add)
@@ -1546,6 +1671,28 @@ enum PendingAction { case retry, edit, dismiss }
     override func applyTheme() {
         super.applyTheme()
         layer?.borderColor = NativeStyle.border.cgColor
+        applyTriggerStates()
+    }
+
+    func setMenuOpen(_ open: Bool) {
+        guard menuOpen != open else { return }
+        menuOpen = open
+        applyTriggerStates()
+    }
+
+    func setReactionPickerOpen(_ open: Bool) {
+        guard reactionPickerOpen != open else { return }
+        reactionPickerOpen = open
+        applyTriggerStates()
+    }
+
+    private func applyTriggerStates() {
+        for (button, active) in [(more, menuOpen), (add, reactionPickerOpen)] {
+            button.layer?.backgroundColor = (active ? NativeStyle.accent.withAlphaComponent(0.16) : .clear).cgColor
+            button.layer?.borderWidth = active ? 1 : 0
+            button.layer?.borderColor = (active ? NativeStyle.accent : .clear).cgColor
+            button.contentTintColor = active ? NativeStyle.text : NativeStyle.muted
+        }
     }
 
     func configure(_ message: ChatMessage, canInteract: Bool, viewerID: String?) {
@@ -1565,8 +1712,8 @@ enum PendingAction { case retry, edit, dismiss }
         needsLayout = true
     }
     func showMenu() {
-        guard let menu = messageMenu?(more) else { return }
-        CaperMenu.show(menu, below: more)
+        guard let menu = messageMenu?(more), let shown = CaperMenu.show(menu, below: more) else { return }
+        menuOpened?(shown)
     }
     override func layout() {
         super.layout()

@@ -388,6 +388,9 @@ import CaperCore
             self.reactionTooltip.hover(message, emoji: emoji, entered: entered, from: anchor, in: self.stage)
         }
         timeline.dismissHover = { [weak self] in self?.reactionTooltip.close() }
+        picker.onReactionTargetChanged = { [weak self] id in
+            self?.timeline.setActiveMessageID(id)
+        }
         timeline.react = { [weak self] id, emoji in
             guard let self,
                   let message = self.model.chat.displayedMessages.first(where: { $0.id == id }) else { return }

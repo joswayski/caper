@@ -52,6 +52,8 @@ public extension CaperMenuItem {
     /// Screen y of the edge the menu hangs from, and whether it grows upward.
     private var edgeY: CGFloat = 0
     private var growsUp = false
+    /// Called once when this menu closes.
+    public var onClose: (() -> Void)?
     private var monitors: [Any] = []
     private var closed = false
 
@@ -194,6 +196,9 @@ public extension CaperMenuItem {
         panel.orderOut(nil)
         NSCursor.arrow.set()
         if Self.current === self { Self.current = nil }
+        let closeHandler = onClose
+        onClose = nil
+        closeHandler?()
     }
 
     // MARK: Tests

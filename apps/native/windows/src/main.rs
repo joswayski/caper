@@ -357,6 +357,8 @@ pub struct App {
     scroll_top: f64,
     at_end: bool,
     hover_row: Option<usize>,
+    /// The row currently drawn with the hover highlight (active menu/picker, else hovered).
+    lit_row: Option<usize>,
     hover_space: Option<usize>,
     hover_channel: Option<usize>,
     /// Whether the pointer is on the hovered channel's options button, or
@@ -717,6 +719,7 @@ impl App {
                 scroll_top: 0.0,
                 at_end: true,
                 hover_row: None,
+                lit_row: None,
                 hover_space: None,
                 hover_channel: None,
                 hover_channel_options: false,
@@ -858,6 +861,7 @@ impl App {
         self.member_layouts = members;
         self.sel = None;
         self.hover_row = None;
+        self.lit_row = None;
         self.menu = None;
         self.picker = None;
         self.gifs = None;
@@ -3739,7 +3743,7 @@ impl App {
             self.rows.ensure(&self.g, &self.c, i)?;
         }
         let lw = self.list_w();
-        let (hover, sel) = (self.hover_row, self.sel);
+        let (hover, sel) = (self.bar_row(), self.sel);
         let tops: Vec<(usize, f32, f32, Option<(u32, u32)>)> = range
             .map(|i| {
                 (
@@ -3883,9 +3887,13 @@ impl App {
         }
         let hover = self.history_hover();
         if hover != self.hover_row {
-            self.redraw.extend(self.hover_row);
-            self.redraw.extend(hover);
             self.hover_row = hover;
+        }
+        let lit = self.bar_row();
+        if lit != self.lit_row {
+            self.redraw.extend(self.lit_row);
+            self.redraw.extend(lit);
+            self.lit_row = lit;
         }
 
         // Keep a quarter viewport drawn beyond each edge; when that runs out,

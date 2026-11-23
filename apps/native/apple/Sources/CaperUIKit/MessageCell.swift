@@ -331,6 +331,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let column = UIStackView()
     private let accent = UIView()
     private let tint = UIView()
+    /// Pointer hover highlight on iPadOS/trackpad, layered over mention/pin tints.
+    private let hover = UIView()
     /// SwiftUI's press highlight: a faint wash while a finger is down on the row.
     private let press = UIView()
     private let pinBadge = UIKitStyle.label(size: 10, weight: .medium, color: UIKitStyle.muted)
@@ -355,6 +357,11 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         accent.translatesAutoresizingMaskIntoConstraints = false
         accent.backgroundColor = UIKitStyle.terracotta
         self.addSubview(tint)
+        hover.translatesAutoresizingMaskIntoConstraints = false
+        hover.backgroundColor = UIKitStyle.text.withAlphaComponent(0.06)
+        hover.isUserInteractionEnabled = false
+        hover.isHidden = true
+        self.addSubview(hover)
         press.translatesAutoresizingMaskIntoConstraints = false
         press.backgroundColor = UIKitStyle.text.withAlphaComponent(0.08)
         press.isUserInteractionEnabled = false
@@ -401,6 +408,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
                 && self.gestureRecognizerShouldBegin(hold))
         }
         addGestureRecognizer(hold)
+        addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(pointerHovered(_:))))
         // "(edited)" opens the history; "Pinned by" the pinner's card.
         for (view, action) in [(edited, #selector(openHistory)), (pinBadge, #selector(openPinner))] as [(UIView, Selector)] {
             view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: action))
@@ -464,6 +472,10 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             tint.trailingAnchor.constraint(equalTo: self.trailingAnchor),
             tint.topAnchor.constraint(equalTo: self.topAnchor),
             tint.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            hover.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            hover.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            hover.topAnchor.constraint(equalTo: self.topAnchor),
+            hover.bottomAnchor.constraint(equalTo: self.bottomAnchor),
             press.leadingAnchor.constraint(equalTo: self.leadingAnchor),
             press.trailingAnchor.constraint(equalTo: self.trailingAnchor),
             press.topAnchor.constraint(equalTo: self.topAnchor),
@@ -496,6 +508,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     func configure(_ row: MessageRowState) {
         // Another message, or new text, hides its spoilers again.
         if state?.id != row.id || state?.text != row.text { revealedSpoilers = [] }
+        if state?.id != row.id || row.pending { hover.isHidden = true }
         state = row
         authorTaps.forEach { $0.isEnabled = row.authorProfile && !row.pending }
         // SwiftUI's grouped rows read about 4pt further apart than their 2pt padding.
@@ -691,6 +704,12 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     @objc private func openAuthor() {
         guard let state, state.authorProfile, !state.messageID.isEmpty else { return }
         host?.openAuthor(state.messageID)
+    }
+
+    @objc private func pointerHovered(_ gesture: UIHoverGestureRecognizer) {
+        let canHighlight = state.map { !$0.pending && !$0.messageID.isEmpty } == true
+        let active = canHighlight && (gesture.state == .began || gesture.state == .changed)
+        hover.isHidden = !active
     }
 
     @objc private func held(_ gesture: UILongPressGestureRecognizer) {

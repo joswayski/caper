@@ -864,15 +864,24 @@ public enum AppKitComposerCounter {
     private let inThread: Bool
     private var popover: NSPopover?
     private var restoreFocus: (() -> Void)?
+    /// The message whose reaction picker is open, so its row can stay highlighted.
+    public private(set) var activeReactionMessageID: String?
+    public var onReactionTargetChanged: ((String?) -> Void)?
 
     public init(model: AppModel, inThread: Bool = false) {
         self.model = model; self.inThread = inThread; super.init()
     }
 
+    private func setActiveReactionMessageID(_ id: String?) {
+        guard activeReactionMessageID != id else { return }
+        activeReactionMessageID = id
+        onReactionTargetChanged?(id)
+    }
+
     public func reaction(to message: ChatMessage, from anchor: NSView, composer: ComposerTextView) {
         let chat = model.chat, context = model.chat.editingContext
         guard chat.canInteract, !message.isDeleted, chat.channelID == message.channelId else { return }
-        showController(from: anchor, composer: composer) { close in
+        showController(from: anchor, composer: composer, reactionMessageID: message.id) { close in
             AppKitReactionPicker(close: close) { emoji in
                 close()
                 Task {
@@ -924,6 +933,7 @@ public enum AppKitComposerCounter {
     }
 
     private func showController(from anchor: NSView, composer: ComposerTextView,
+                                reactionMessageID: String? = nil,
                                 content: (@escaping () -> Void) -> NSViewController) {
         guard let window = anchor.window, window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
         close(restoringFocus: false)
@@ -940,13 +950,16 @@ public enum AppKitComposerCounter {
         popover.animates = !CaperAccessibility.reduceMotion
         popover.delegate = self
         popover.contentViewController = content { [weak self] in self?.close() }
+        setActiveReactionMessageID(reactionMessageID)
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
     }
 
     public func close(restoringFocus: Bool = true) {
         if !restoringFocus { restoreFocus = nil }
+        let hadPopover = popover != nil
         popover?.animates = false
         popover?.close()
+        if !hadPopover { setActiveReactionMessageID(nil) }
     }
     public func closeIfUnavailable(composer: ComposerTextView) {
         if !composer.isEditable || model.whatsNew.workspaceModalOpen { close(restoringFocus: false) }
@@ -957,6 +970,7 @@ public enum AppKitComposerCounter {
         closed.contentViewController = nil
         guard popover === closed else { return }
         popover = nil
+        setActiveReactionMessageID(nil)
         let restore = restoreFocus; restoreFocus = nil
         restore?()
     }
