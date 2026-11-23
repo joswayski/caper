@@ -161,9 +161,14 @@ final class MessageFormattingTests: XCTestCase {
     /// second `*` of `**Release check**`) the text is unchanged, so the system
     /// applies it and places the caret after the markers; the style typing
     /// carries must survive that, or the next space reopens bold on every word.
+    /// When a key changes the text (`*the narrow layout*` becomes
+    /// `_the narrow layout_`) the coordinator applies it and refuses the key.
     @MainActor func testEditorCoordinatorTypesAFormattedDraftExactly() {
         let draft = "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 "
             + "and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? "
+            + "**Done** when _history loading_ and **link previews** look right."
+        let expected = "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 "
+            + "and www.example.org/specs/17. @maya can you confirm **both _builds_** and _the narrow layout_? "
             + "**Done** when _history loading_ and **link previews** look right."
         let coordinator = NativeMessageTextEditor.Coordinator(
             NativeMessageTextEditor(text: .constant(""), placeholder: "Message", controller: ComposerAutocompleteController(),
@@ -171,6 +176,11 @@ final class MessageFormattingTests: XCTestCase {
         #if os(macOS)
         let view = ComposerTextView()
         view.delegate = coordinator; coordinator.view = view
+        // Keys reach the focused field. A view that isn't first responder ends
+        // editing after the coordinator's own insert, which ends the style.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView?.addSubview(view)
+        XCTAssertTrue(window.makeFirstResponder(view))
         for key in draft.map(String.init) {
             let range = view.selectedRange()
             guard coordinator.textView(view, shouldChangeTextIn: range, replacementString: key) else { continue }
@@ -178,7 +188,7 @@ final class MessageFormattingTests: XCTestCase {
             view.setSelectedRange(NSRange(location: range.location + key.utf16.count, length: 0))
             coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view))
         }
-        XCTAssertEqual(view.string, draft)
+        XCTAssertEqual(view.string, expected)
         #else
         let view = ComposerTextView(frame: .zero, textContainer: nil)
         view.delegate = coordinator; coordinator.view = view
@@ -190,7 +200,7 @@ final class MessageFormattingTests: XCTestCase {
             coordinator.textViewDidChangeSelection(view)
             coordinator.textViewDidChange(view)
         }
-        XCTAssertEqual(view.text, draft)
+        XCTAssertEqual(view.text, expected)
         #endif
     }
 
