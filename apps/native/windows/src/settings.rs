@@ -1275,7 +1275,7 @@ impl Settings {
                 }
                 text::draw(dc, &l, x, y, &g.brushes.text);
             }
-            SPart::ThemeObsidian | SPart::ThemePaper => {
+            part @ (SPart::ThemeObsidian | SPart::ThemePaper) => {
                 let is_paper = part == SPart::ThemePaper;
                 let selected = if is_paper {
                     self.snap.theme_id == "paper"
