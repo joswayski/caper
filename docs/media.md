@@ -4758,7 +4758,9 @@ rest, unlabelled lines show everywhere, and older updaters show the label as tex
 TestFlight's What to Test and Play's release notes come from
 `scripts/release_notes.py`: the drafted highlights for iOS or Android, else the
 release commit's pull request title when that commit ships in the app (or in no
-client), else a generic line.
+client), else the platform's five newest earlier highlights from
+`whats-new-<platform>/latest.json` under a "Nothing new for iPhone/Android in this
+build" heading, else a generic line.
 
 The homepage's Latest changes shows the newest eight highlights from
 `whats-new-web/latest.json`, cached per web pod for 60 seconds (stale-while-

@@ -4,7 +4,8 @@
 Prefers this release's drafted highlights (whats_new.py --save-answer) that
 list the platform. Otherwise uses the commit's pull request title, else its
 subject, when the commit ships in that platform's app or in none (server
-changes); a change for other apps only gets a generic line. Needs GH_TOKEN and
+changes). A change for other apps only gets the platform's most recent What's
+New highlights under a "nothing new" heading, else a generic line. Needs GH_TOKEN and
 GITHUB_REPOSITORY.
 """
 
@@ -34,19 +35,43 @@ def drafted(answer, sha, platform):
         return []
 
 
-def notes(platform, sha, highlights, subject, paths, limit):
+def recent(feed, sha):
+    """The five newest highlights of the platform's earlier What's New releases."""
+    try:
+        releases = json.loads(feed)["releases"]
+        return [
+            f"{item['title']}: {item['body']}"
+            for release in reversed(releases)
+            if release["revision"] != sha
+            for item in release["highlights"]
+        ][:5]
+    except (ValueError, TypeError, KeyError):
+        return []
+
+
+def fit(lines, limit):
+    """Whole lines only, so a store's length limit never cuts one off."""
+    kept = []
+    for line in lines:
+        if len("\n".join([*kept, line])) > limit:
+            break
+        kept.append(line)
+    return "\n".join(kept) or lines[0][:limit]
+
+
+def notes(platform, sha, highlights, subject, paths, limit, earlier=()):
     if highlights:
-        # Whole highlights only, so a store's length limit never cuts one off.
-        kept = []
-        for line in highlights:
-            if len("\n".join([*kept, line])) > limit:
-                break
-            kept.append(line)
-        return "\n".join(kept) or highlights[0][:limit]
+        return fit(highlights, limit)
     platforms = set().union(*(path_platforms(path) for path in paths if is_product_path(path)))
     if subject and (not platforms or platform in platforms):
         return subject[:limit]
+    heading = f"Nothing new for {NAMES.get(platform, platform)} in this build. Recent changes:"
+    if earlier and len(heading) < limit:
+        return f"{heading}\n{fit(earlier, limit - len(heading) - 1)}"
     return f"Latest Caper build from {sha[:7]}."
+
+
+NAMES = {"ios": "iPhone", "android": "Android"}
 
 
 def gh(*args):
@@ -69,7 +94,14 @@ def main():
             f"repos/{repo}/commits/{args.sha}", "--jq", '.commit.message | split("\\n")[0]'
         )
         paths = gh(f"repos/{repo}/commits/{args.sha}", "--paginate", "--jq", ".files[].filename").splitlines()
-    print(notes(args.platform, args.sha, highlights, subject, paths or [], args.limit))
+    earlier = []
+    if not highlights:
+        feed = subprocess.run(
+            ["gh", "release", "download", f"whats-new-{args.platform}", "--repo", repo, "-p", "latest.json", "-O", "-"],
+            capture_output=True,
+        )
+        earlier = recent(feed.stdout, args.sha) if feed.returncode == 0 else []
+    print(notes(args.platform, args.sha, highlights, subject, paths or [], args.limit, earlier))
 
 
 if __name__ == "__main__":

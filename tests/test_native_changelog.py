@@ -161,6 +161,27 @@ class ChangelogTests(unittest.TestCase):
         phone = ["apps/native/apple/Sources/CaperUIKit/Browse.swift"]
         self.assertEqual(release_notes.notes("ios", sha, [], "Browse", phone, 4000), "Browse")
         self.assertEqual(release_notes.notes("android", sha, [], "Fix API", ["apps/api/src/lib.rs"], 4000), "Fix API")
+        # A build with nothing for this platform repeats its What's New history, newest first.
+        feed = json.dumps(
+            {
+                "releases": [
+                    {"revision": "c" * 40, "highlights": [highlight("Old", ["ios"])]},
+                    {"revision": "b" * 40, "highlights": [highlight("Newer", ["ios"])]},
+                    {"revision": sha, "highlights": [highlight("Current", ["ios"])]},
+                ]
+            }
+        ).encode()
+        earlier = release_notes.recent(feed, sha)
+        self.assertEqual(earlier, ["Newer: Body.", "Old: Body."])
+        self.assertEqual(release_notes.recent(b"not json", sha), [])
+        self.assertEqual(
+            release_notes.notes("ios", sha, [], "Tray menu", windows, 4000, earlier),
+            "Nothing new for iPhone in this build. Recent changes:\nNewer: Body.\nOld: Body.",
+        )
+        self.assertEqual(
+            release_notes.notes("android", sha, [], "Tray menu", windows, 62, earlier),
+            "Nothing new for Android in this build. Recent changes:\nNewer: Body.",
+        )
 
     def test_test_paths_do_not_hide_mixed_product_changes(self):
         first = self.commit("Initial feature")
