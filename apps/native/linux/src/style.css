@@ -1395,6 +1395,16 @@ window.caper .embed-title link:hover {
   text-decoration-line: underline;
 }
 
+window.caper .embed .author link {
+  color: @caper_text;
+  text-decoration-line: none;
+}
+
+window.caper .embed .author link:hover {
+  color: @caper_text;
+  text-decoration-line: underline;
+}
+
 .embed-text {
   font-size: 13.6px;
 }

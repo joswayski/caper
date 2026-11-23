@@ -1,0 +1,31 @@
+{
+  "id": "117666713950631493",
+  "created_at": "2026-11-23T16:32:47.849Z",
+  "content": "<p>Big news<br>today &amp; tomorrow</p><p>Second</p>",
+  "replies_count": 1061,
+  "reblogs_count": 1272,
+  "favourites_count": 5809,
+  "reblog": null,
+  "quote": null,
+  "account": {
+    "username": "realDonaldTrump",
+    "display_name": "Donald J. Trump",
+    "avatar": "https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/accounts/avatars/107/780/257/626/128/497/original/454286ac07a6f6e6.jpeg"
+  },
+  "media_attachments": [
+    {
+      "type": "image",
+      "url": "https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/media_attachments/files/117/666/713/778/218/112/original/559ca2f2d433a2ad.jpg",
+      "preview_url": "https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/media_attachments/files/117/666/713/778/218/112/small/559ca2f2d433a2ad.jpg",
+      "description": null,
+      "meta": {
+        "original": {
+          "aspect": 1,
+          "height": 1408,
+          "size": "1408x1408",
+          "width": 1408
+        }
+      }
+    }
+  ]
+}

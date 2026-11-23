@@ -2695,6 +2695,7 @@ Site readers (`apps/embed/sites.mjs`):
 | Twitch | page tags | title, `player` (clip, VOD or channel) |
 | Instagram (posts, reels, carousels) | the logged-out query Instagram's own web app makes for a post, unofficial; page tags as Meta's crawler if refused | author, caption, video or photos (re-resolved on each view), likes and comments |
 | Facebook, Threads | page tags as Meta's crawler | title, description, image |
+| Truth Social | its Mastodon status API (`/api/v1/statuses/{id}`); the pages refuse crawlers | author, text, video or photos, quote, likes, ReTruths and replies |
 | Wikipedia | the REST page summary for title and lead; the page's `og:image` | title, lead, image |
 | everything else | OpenGraph / Twitter Card / `<title>`, including OpenGraph/Twitter tags a page writes into `<body>` | site, title, description, image or direct video |
 

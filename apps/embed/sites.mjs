@@ -329,6 +329,83 @@ async function readTwitch(url) {
   ]);
 }
 
+// Truth Social. Its pages refuse crawlers, but it runs Mastodon, whose public
+// status API answers them.
+
+const TRUTH_STATUS = /^\/@[A-Za-z0-9_]{1,30}\/(?:posts\/)?(\d{6,25})(?:\/|$)/;
+
+// Mastodon status HTML to plain text: paragraphs and line breaks kept.
+export function statusText(html) {
+  return decodeEntities(
+    String(html ?? "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>\s*<p\b[^>]*>/gi, "\n\n")
+      .replace(/<[^>]*>/g, ""),
+  );
+}
+
+export function truthBlocks(status) {
+  const shown = status.reblog ?? status;
+  const person = shown.account ?? {};
+  const blocks = [
+    author(person.display_name || person.username, {
+      handle: person.username ? `@${person.username}` : undefined,
+      url: person.username ? `https://truthsocial.com/@${encodeURIComponent(person.username)}` : undefined,
+      icon: httpsUrl(person.avatar) ?? undefined,
+    }),
+    text(statusText(shown.content), LIMITS.description),
+  ];
+  const media = shown.media_attachments ?? [];
+  const video = media.find((item) => (item.type === "video" || item.type === "gifv") && httpsUrl(item.url));
+  const photos = media.filter((item) => item.type === "image" && httpsUrl(item.url));
+  if (video) {
+    blocks.push({
+      type: "video",
+      url: video.url,
+      poster: httpsUrl(video.preview_url) ?? undefined,
+      width: dimension(video.meta?.original?.width),
+      height: dimension(video.meta?.original?.height),
+      durationMs: milliseconds(Number(video.meta?.original?.duration) * 1000),
+      gif: video.type === "gifv" || undefined,
+    });
+  } else if (photos.length) {
+    blocks.push(
+      images(
+        photos.map((photo) => ({
+          url: photo.url,
+          width: dimension(photo.meta?.original?.width),
+          height: dimension(photo.meta?.original?.height),
+          alt: photo.description,
+        })),
+      ),
+    );
+  }
+  const quoted = shown.quote;
+  if (quoted?.account) {
+    blocks.push(
+      text(
+        `Quoting ${quoted.account.display_name || quoted.account.username} (@${quoted.account.username})\n${statusText(quoted.content)}`,
+        LIMITS.description,
+      ),
+    );
+  }
+  const counts = [
+    compactNumber(shown.favourites_count) && `${compactNumber(shown.favourites_count)} likes`,
+    compactNumber(shown.reblogs_count) && `${compactNumber(shown.reblogs_count)} ReTruths`,
+    compactNumber(shown.replies_count) && `${compactNumber(shown.replies_count)} replies`,
+  ].filter(Boolean);
+  blocks.push(footer(counts.join(" · "), shown.created_at));
+  return blocks;
+}
+
+async function readTruthSocial(url) {
+  const id = TRUTH_STATUS.exec(url.pathname)?.[1];
+  if (!id) return null;
+  const status = await json(`https://truthsocial.com/api/v1/statuses/${id}`);
+  if (!status?.id) return null;
+  return embed(url.href, site(url, "Truth Social"), truthBlocks(status));
+}
+
 // Wikipedia. Its pages carry og:title and og:image but no description, so the
 // article's lead comes from the REST summary; the page's own og:image stays,
 // being sized for previews.
@@ -650,6 +727,7 @@ const READERS = [
   { domains: ["twitch.tv"], read: readTwitch },
   { domains: ["instagram.com"], read: readInstagram },
   { domains: ["wikipedia.org"], read: readWikipedia },
+  { domains: ["truthsocial.com"], read: readTruthSocial },
 ];
 
 // Never throws: a site that fails or refuses simply gets no preview.

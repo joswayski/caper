@@ -341,7 +341,8 @@ private enum NativeEmbedSource {
         backgroundColor = UIColor(CaperTheme.surface); layer.borderColor = UIColor(CaperTheme.border).cgColor; layer.borderWidth = 1; layer.cornerRadius = 8
         isLayoutMarginsRelativeArrangement = true; directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 12, bottom: 12, trailing: 12)
         let body = UIStackView(); body.axis = .vertical; body.spacing = 6; addArrangedSubview(body)
-        body.addArrangedSubview(link(embed.site.name == embed.site.domain ? embed.site.name : "\(embed.site.name)  \(embed.site.domain)", url: embed.url, size: 11))
+        body.addArrangedSubview(link(embed.site.name == embed.site.domain ? embed.site.name : "\(embed.site.name)  \(embed.site.domain)", url: embed.url, size: 11,
+                                     color: UIColor(CaperTheme.muted)))
         for block in embed.blocks {
             let row: UIView?
             switch block {
@@ -368,9 +369,11 @@ private enum NativeEmbedSource {
         accessibilityLabel = "\(embed.site.name): \(embed.heading)"; isAccessibilityElement = false
     }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    private func link(_ text: String, url: String?, size: CGFloat, bold: Bool = false) -> UIView {
-        let view = UIKitMessageBody(), value = NSMutableAttributedString(string: text, attributes: [.font: UIFont(name: bold ? "Figtree-Bold" : "Figtree-Regular", size: size) ?? .systemFont(ofSize: size), .foregroundColor: UIColor(CaperTheme.text)])
+    /// Web's card links keep their text's colour, not the green link tint.
+    private func link(_ text: String, url: String?, size: CGFloat, bold: Bool = false, color: UIColor = UIColor(CaperTheme.text)) -> UIView {
+        let view = UIKitMessageBody(), value = NSMutableAttributedString(string: text, attributes: [.font: UIFont(name: bold ? "Figtree-Bold" : "Figtree-Regular", size: size) ?? .systemFont(ofSize: size), .foregroundColor: color])
         if let url = LinkEmbeds.openableURL(url) { value.addAttribute(.link, value: url, range: NSRange(location: 0, length: value.length)) }
+        view.linkTextAttributes = [.foregroundColor: color]
         view.update(value); return view
     }
     private func gallery(_ items: [EmbedImage]) -> UIView {

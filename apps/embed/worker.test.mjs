@@ -164,6 +164,28 @@ test("a page slow to answer Caperbot is asked again in parallel", async () => {
   }
 });
 
+test("Truth Social posts come from its Mastodon status API", async () => {
+  const seen = serve({
+    "https://truthsocial.com/api/v1/statuses/117666713950631493": jsonResponse(fixture("truth-status.json")),
+  });
+  const embed = await unfurl(new URL("https://truthsocial.com/@realDonaldTrump/117666713950631493"));
+  assert.equal(seen[0].url, "https://truthsocial.com/api/v1/statuses/117666713950631493");
+  assert.deepEqual(embed.site, { name: "Truth Social", domain: "truthsocial.com" });
+  const [person, body, pictures, foot] = embed.blocks;
+  assert.deepEqual([person.name, person.handle], ["Donald J. Trump", "@realDonaldTrump"]);
+  assert.equal(body.text, "Big news\ntoday & tomorrow\n\nSecond");
+  assert.deepEqual(pictures.items[0], {
+    url: "https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/media_attachments/files/117/666/713/778/218/112/original/559ca2f2d433a2ad.jpg",
+    width: 1408,
+    height: 1408,
+  });
+  assert.deepEqual(foot, {
+    type: "footer",
+    text: "5.8K likes · 1.3K ReTruths · 1.1K replies",
+    timestamp: "2026-11-23T16:32:47.849Z",
+  });
+});
+
 test("Wikipedia articles take their title and lead from the summary API, image from the page", async () => {
   const seen = serve({
     "https://en.wikipedia.org/api/rest_v1/page/summary/Capybara": jsonResponse(

@@ -33,6 +33,12 @@ const CASES = [
   { url: "https://en.wikipedia.org/wiki/Capers", expect: ["title", "text", "images"] },
   { url: "https://www.youtube.com/@YouTube", expect: ["title", "images"] },
   { url: "https://www.reddit.com/r/rust/", expect: ["title"] },
+  // Truth Social answers Cloudflare but refuses some runners by their connection.
+  {
+    url: "https://truthsocial.com/@realDonaldTrump/117666713950631493",
+    expect: ["author", "images"],
+    optional: !process.env.EMBED_ORIGIN,
+  },
   { url: "https://www.instagram.com/p/BsOGulcndj-/", expect: ["author", "images"] },
   { url: "https://www.instagram.com/p/DaQanvRgP-q/", expect: ["author", "video"] },
 ];
