@@ -1271,23 +1271,36 @@ impl App {
                         dc.PopAxisAlignedClip();
                     }
                     PPart::Send => {
+                        // As web: a chalk wash and ring rather than a solid fill.
                         if on {
+                            let wash = if hover { 0.15 } else { 0.09 };
                             fill_round(
                                 dc,
                                 r,
                                 7.0,
-                                &g.solid(if hover { ACTION_HOVER } else { ACTION }),
+                                &dc.CreateSolidColorBrush(&crate::gfx::color(TEXT, wash), None)?,
+                            );
+                            stroke_round(
+                                dc,
+                                r,
+                                7.0,
+                                &dc.CreateSolidColorBrush(&crate::gfx::color(TEXT, 0.24), None)?,
                             );
                         }
+                        let retry = self.profile_draft().is_some_and(|d| d.retry.is_some());
+                        // The paper plane's weight sits up and right of its
+                        // box: nudge it to look centred.
+                        let (dx, dy) = if retry { (0.0, 0.0) } else { (-1.0, 1.0) };
                         icons::draw(
                             dc,
-                            if self.profile_draft().is_some_and(|d| d.retry.is_some()) {
-                                Icon::Retry
-                            } else {
-                                Icon::Send
-                            },
-                            rect(x + 8.0, y + 8.0, x + pw - 8.0, y + ph - 8.0),
-                            if on { BLACKOUT } else { TEXT_MUTED },
+                            if retry { Icon::Retry } else { Icon::Send },
+                            rect(
+                                x + 8.0 + dx,
+                                y + 8.0 + dy,
+                                x + pw - 8.0 + dx,
+                                y + ph - 8.0 + dy,
+                            ),
+                            if on { TEXT } else { TEXT_MUTED },
                             if on { 1.0 } else { 0.6 },
                         );
                     }

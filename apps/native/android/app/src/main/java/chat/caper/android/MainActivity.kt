@@ -747,7 +747,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             containerColor = Text.copy(alpha = 0.09f), contentColor = Text,
             disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
         ),
-    ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+    // The paper plane's weight sits up and right of its box: nudge it to look centred.
+    ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.offset(x = (-1).dp, y = 1.dp).size(20.dp)) }
 }
 
 @Composable private fun SpaceRail(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {

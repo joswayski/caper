@@ -547,7 +547,9 @@ impl Pane {
         icons::draw(
             dc,
             Icon::Send,
-            rect(sx + 9.0, sy + 9.0, sx + sw - 9.0, sy + sh - 9.0),
+            // The paper plane's weight sits up and right of its box: nudge it
+            // to look centred.
+            rect(sx + 8.0, sy + 10.0, sx + sw - 10.0, sy + sh - 8.0),
             color,
             alpha,
         );

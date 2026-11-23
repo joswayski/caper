@@ -210,6 +210,11 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         send.layer.cornerCurve = .continuous
         send.layer.borderWidth = 1
         send.accessibilityIdentifier = "send-message"
+        // The paper plane's weight sits up and right of its box: nudge it to look centred.
+        if let plane = send.image(for: .normal) {
+            send.setImage(UIGraphicsImageRenderer(size: plane.size).image { _ in plane.draw(at: CGPoint(x: -1, y: 1)) }
+                .withRenderingMode(.alwaysTemplate), for: .normal)
+        }
         // Its own disabled image, so UIKit doesn't darken the glyph: disabled
         // reads as SwiftUI's muted icon on raised chrome.
         send.setImage(send.image(for: .normal), for: .disabled)

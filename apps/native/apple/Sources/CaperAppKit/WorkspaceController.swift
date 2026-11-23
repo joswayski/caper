@@ -342,7 +342,14 @@ import CaperCore
             object: nil
         )
         send.setAccessibilityIdentifier(inThread ? "thread-send" : "send-message")
-        send.image = NSImage(systemSymbolName: "paperplane.fill", accessibilityDescription: nil)
+        // The paper plane's weight sits up and right of its box: nudge it to look centred.
+        if let plane = NSImage(systemSymbolName: "paperplane.fill", accessibilityDescription: nil) {
+            let nudged = NSImage(size: plane.size, flipped: false) { rect in
+                plane.draw(in: rect.offsetBy(dx: -1, dy: -1)); return true
+            }
+            nudged.isTemplate = true
+            send.image = nudged
+        }
         send.imagePosition = .imageOnly
         send.layer?.cornerRadius = 16; send.layer?.masksToBounds = false
         retry.setAccessibilityIdentifier(inThread ? "thread-retry" : "conversation-retry")
