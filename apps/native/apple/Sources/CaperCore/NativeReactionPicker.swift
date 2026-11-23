@@ -70,6 +70,10 @@ import AppKit
         grid.register(AppKitEmojiItem.self, forItemWithIdentifier: NSUserInterfaceItemIdentifier("emoji"))
         scroll.setAccessibilityIdentifier("reaction-picker-grid")
         scroll.documentView = grid; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        // Only the cell under the pointer stays lit while the grid scrolls beneath it.
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(gridScrolled),
+                                               name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         let stack = AppKitKit.stack([header, tabs, search, heading, empty, scroll], spacing: 10)
         view.addSubview(stack)
         for child in [header, tabs, search, heading, empty, scroll] { AppKitKit.fillWidth(child, of: stack) }
@@ -83,6 +87,9 @@ import AppKit
     }
     override func viewDidAppear() { super.viewDidAppear(); view.window?.makeFirstResponder(search) }
     func controlTextDidChange(_ notification: Notification) { reload() }
+    @objc private func gridScrolled() {
+        for item in grid.visibleItems() { (item as? AppKitEmojiItem)?.syncHover() }
+    }
     private func reload() {
         let searching = !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         choices = NativeEmojiPickerCatalog.choices(query: search.stringValue, category: category)
@@ -107,6 +114,7 @@ import AppKit
     private var pick: (() -> Void)?
     private lazy var button = AppKitKitButton("", kind: .plain) { [weak self] in self?.pick?() }
     override func loadView() { view = button }
+    func syncHover() { button.syncHover() }
     func configure(_ entry: EmojiCatalogEntry, select: @escaping (String) -> Void) {
         _ = view
         // No title: AppKitKitButton redraws it over the emoji on hover, as on

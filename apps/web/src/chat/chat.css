@@ -1971,28 +1971,31 @@ button.chat-mention-card-avatar {
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid var(--btn-primary-border);
+  border: 1px solid transparent;
   border-radius: var(--radius-pill);
-  background: var(--btn-primary-bg);
-  box-shadow: var(--btn-primary-shadow);
-  color: var(--on-action);
+  background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
   transition:
     transform var(--motion-fast) var(--ease-out),
     box-shadow var(--motion-fast) var(--ease-out),
-    filter var(--motion-fast) var(--ease-out);
+    background-color var(--motion-fast) var(--ease-out);
+}
+/* Ready to send: a soft chalk glow rather than a solid fill. */
+.chat-composer-send:not(:disabled) {
+  border-color: color-mix(in srgb, var(--text) 24%, transparent);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--text) 22%, transparent);
+  color: var(--text);
 }
 @media (hover: hover) {
   .chat-composer-send:hover:not(:disabled) {
-    filter: brightness(1.04);
-    box-shadow: var(--btn-primary-shadow-hover);
-    transform: translateY(-1px);
+    background: color-mix(in srgb, var(--text) 15%, transparent);
+    box-shadow: 0 0 16px color-mix(in srgb, var(--text) 34%, transparent);
   }
 }
 .chat-composer-send:active:not(:disabled) {
-  background: var(--action-press);
-  box-shadow: var(--btn-primary-shadow-active);
-  transform: translateY(1px) scale(0.95);
+  transform: scale(0.95);
 }
 @media (pointer: coarse) {
   .chat-profile-header-actions button,
@@ -2009,8 +2012,6 @@ button.chat-mention-card-avatar {
   }
 }
 .chat-composer-send:disabled {
-  background: transparent;
-  color: var(--text-muted);
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -2123,7 +2124,6 @@ button.chat-mention-card-avatar {
    screen after a tap and would keep the brighter fill. */
 @media (hover: hover) {
   .chat-mention-card-message:hover:not(:disabled),
-  .chat-thread-send-row button[type="submit"]:hover:not(:disabled),
   .chat-forward-body .chat-forward-send:hover:not(:disabled),
   .chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
     border-color: var(--action-hover);
@@ -2134,12 +2134,9 @@ button.chat-mention-card-avatar {
     background: var(--danger-hover);
   }
 }
-:is(
-    .chat-mention-card-message,
-    .chat-thread-send-row button,
-    .chat-forward-body .chat-forward-send,
-    .chat-edit-dialog .chat-edit-save
-  ):active:not(:disabled) {
+:is(.chat-mention-card-message, .chat-forward-body .chat-forward-send, .chat-edit-dialog .chat-edit-save):active:not(
+    :disabled
+  ) {
   border-color: var(--action-press);
   background: var(--action-press);
 }
@@ -5072,13 +5069,25 @@ a.chat-draft-preview {
   flex-shrink: 0;
   width: 42px;
   height: 42px;
-  border: 0;
+  border: 1px solid color-mix(in srgb, var(--text) 24%, transparent);
   border-radius: 8px;
-  background: var(--action);
-  color: var(--on-action);
+  /* As the composer's Send: a soft chalk glow rather than a solid fill. */
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--text) 22%, transparent);
+  color: var(--text);
   cursor: pointer;
 }
+@media (hover: hover) {
+  .chat-thread-send-row button[type="submit"]:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--text) 15%, transparent);
+    box-shadow: 0 0 16px color-mix(in srgb, var(--text) 34%, transparent);
+  }
+}
+.chat-thread-send-row button[type="submit"]:active:not(:disabled) {
+  transform: scale(0.95);
+}
 .chat-thread-send-row button[type="submit"]:disabled {
+  box-shadow: none;
   /* The shared neutral disabled primary above, not dimmed a second time. */
   cursor: not-allowed;
 }

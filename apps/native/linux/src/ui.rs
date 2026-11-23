@@ -427,15 +427,11 @@ impl Composer {
             root.set_hexpand(true);
             input.append(&root);
             let button: gtk::Button = crate::app::named("GtkButton", "Send reply");
-            // Dark on eggshell once there is something to send, else muted.
-            let icon = |color| {
-                let image = images.icon_image(Icon::Send, color, 16);
-                image.set_halign(gtk::Align::Center);
-                image.set_valign(gtk::Align::Center);
-                image
-            };
-            let (dark, dim) = (icon("#0c0d0f"), icon("#b9bcbe"));
-            button.set_child(Some(&dim));
+            // A soft glow once there is something to send (CSS `.ready`), else muted.
+            let icon = images.icon_image(Icon::Send, "#b9bcbe", 16);
+            icon.set_halign(gtk::Align::Center);
+            icon.set_valign(gtk::Align::Center);
+            button.set_child(Some(&icon));
             button.set_tooltip_text(Some("Send reply"));
             button.add_css_class("send-reply");
             button.set_valign(gtk::Align::End);
@@ -450,10 +446,8 @@ impl Composer {
                     }
                     if some {
                         button.add_css_class("ready");
-                        button.set_child(Some(&dark));
                     } else {
                         button.remove_css_class("ready");
-                        button.set_child(Some(&dim));
                     }
                 }
             };

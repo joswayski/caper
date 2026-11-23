@@ -347,9 +347,22 @@ import SwiftUI
         if let tracking { removeTrackingArea(tracking) }
         let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(area); tracking = area
+        syncHover()
     }
-    override func mouseEntered(with event: NSEvent) { hovered = true; refresh() }
-    override func mouseExited(with event: NSEvent) { hovered = false; refresh() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); syncHover() }
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+    /// Hover from where the pointer is now. Content scrolling under a still
+    /// pointer, or a recycled grid cell, can skip mouseExited and leave
+    /// several buttons lit at once.
+    func syncHover() {
+        guard let window, window.isKeyWindow, !isHiddenOrHasHiddenAncestor else { setHovered(false); return }
+        setHovered(visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)))
+    }
+    private func setHovered(_ value: Bool) {
+        guard hovered != value else { return }
+        hovered = value; refresh()
+    }
     override func mouseDown(with event: NSEvent) {
         guard isEnabled else { return }
         pressed = true; refresh()

@@ -161,7 +161,7 @@ import CaperCore
     private var formattingDraft = false
     /// The style web carries between typed keys (shared/messages/composer.rs).
     private var typing = ComposerTyping()
-    private lazy var send = NativeButton("Send", primary: true) { [weak self] in self?.submit() }
+    private lazy var send = NativeButton("Send") { [weak self] in self?.submit() }
     private var joiningChannelID: String?
     private lazy var join = NativeButton("Join channel", primary: true) { [weak self] in
         guard let self, self.joiningChannelID == nil, let channel = self.model.selectedChannel else { return }
@@ -347,6 +347,7 @@ import CaperCore
         send.setAccessibilityIdentifier(inThread ? "thread-send" : "send-message")
         send.image = NSImage(systemSymbolName: "paperplane.fill", accessibilityDescription: nil)
         send.imagePosition = .imageOnly
+        send.layer?.cornerRadius = 16; send.layer?.masksToBounds = false
         retry.setAccessibilityIdentifier(inThread ? "thread-retry" : "conversation-retry")
         timeline.loadOlder = { [weak self] in
             guard let self else { return }
@@ -679,18 +680,20 @@ import CaperCore
         let fieldX: CGFloat = 20, fieldWidth = max(0, center - 40), fieldRight = fieldX + fieldWidth
         let toolRows: CGFloat = stackedActions ? 74 : 0
         var editorX = fieldX + 44, editorRight = fieldRight - 1
+        // Only a thread has Send reply; the channel's microphone takes its place.
+        let voiceX = inThread ? fieldRight - 75 : fieldRight - 41
         if stackedActions {
             attach.frame.origin.x = fieldX + 4
             gif.frame.origin.x = fieldX + 42
             emoji.frame.origin.x = gif.isHidden ? fieldX + 42 : fieldX + 76
             send.frame.origin.x = fieldRight - 37
-            voiceComposer.button.frame.origin.x = send.frame.minX - 38
+            voiceComposer.button.frame.origin.x = voiceX
             // The draft starts in line with the attach glyph below it.
             editorX = fieldX + 10; editorRight = fieldRight - 6
         } else {
             attach.frame.origin.x = fieldX + 4
             send.frame.origin.x = fieldRight - 37
-            voiceComposer.button.frame.origin.x = send.frame.minX - 38
+            voiceComposer.button.frame.origin.x = voiceX
             emoji.frame.origin.x = voiceComposer.button.frame.minX - 34
             gif.frame.origin.x = emoji.frame.minX - 34
             editorRight = (gif.isHidden ? emoji.frame.minX : gif.frame.minX) - 4
@@ -800,8 +803,14 @@ import CaperCore
         let sendLabel = chat.sending ? "Sending…" : inThread ? "Send reply" : "Send"
         send.title = ""
         send.setAccessibilityLabel(sendLabel); send.toolTip = sendLabel
-        send.layer?.backgroundColor = (send.isEnabled ? NativeStyle.action : NativeStyle.composer).cgColor
-        send.contentTintColor = send.isEnabled ? NativeStyle.onAction : NativeStyle.muted
+        // As web: a soft chalk glow when there is something to send, not a solid fill.
+        let glow = NativeStyle.text
+        send.layer?.backgroundColor = (send.isEnabled ? glow.withAlphaComponent(0.09) : .clear).cgColor
+        send.layer?.borderWidth = send.isEnabled ? 1 : 0
+        send.layer?.borderColor = glow.withAlphaComponent(0.24).cgColor
+        send.layer?.shadowColor = glow.cgColor; send.layer?.shadowOffset = .zero; send.layer?.shadowRadius = 6
+        send.layer?.shadowOpacity = send.isEnabled ? 0.3 : 0
+        send.contentTintColor = send.isEnabled ? NativeStyle.text : NativeStyle.muted
         composerScroll.isHidden = hidden || recording
         if composerField.isHidden != composerScroll.isHidden {
             composerField.isHidden = composerScroll.isHidden
@@ -812,7 +821,9 @@ import CaperCore
         }
         voiceComposer.button.isHidden = hidden
         voiceComposer.bar.isHidden = !recording
-        send.isHidden = composerScroll.isHidden
+        // Return sends in the channel's composer, as on web, Windows and Linux,
+        // so it has no Send button; a thread keeps Send reply.
+        send.isHidden = composerScroll.isHidden || !inThread
         attach.isHidden = composerScroll.isHidden
         attach.isEnabled = chat.canAttach && composer.isEditable
         attach.toolTip = chat.canAttach ? "Attach files" : chat.attachUnavailableReason

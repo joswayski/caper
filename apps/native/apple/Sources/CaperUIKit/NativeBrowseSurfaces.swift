@@ -28,6 +28,9 @@ final class NativeSpaceTile: UIButton {
     private let space: Space
     private let avatar = AvatarView(side: 44, corner: 12)
     private let unread = UIView()
+    /// A pointer's hover pill at the rail's edge, in the unread dot's place, as web's rail.
+    private let pill = UIView()
+    private var hovered = false
     private let mentions = UIKitStyle.label(size: 11, weight: .bold)
     private let muted = UIImageView(image: UIKitStyle.icon("bell-off"))
     private let voice = UIImageView(image: UIKitStyle.icon("volume-2"))
@@ -38,7 +41,9 @@ final class NativeSpaceTile: UIButton {
         translatesAutoresizingMaskIntoConstraints = false
         avatar.isUserInteractionEnabled = false; addSubview(avatar)
         NSLayoutConstraint.activate([avatar.centerXAnchor.constraint(equalTo: centerXAnchor), avatar.centerYAnchor.constraint(equalTo: centerYAnchor)])
-        [unread, mentions, muted, voice].forEach { $0.isUserInteractionEnabled = false; addSubview($0) }
+        [unread, pill, mentions, muted, voice].forEach { $0.isUserInteractionEnabled = false; addSubview($0) }
+        pill.backgroundColor = UIKitStyle.text; pill.layer.cornerRadius = 2; pill.alpha = 0
+        addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(hover(_:))))
         mentions.translatesAutoresizingMaskIntoConstraints = true; mentions.textAlignment = .center
         mentions.backgroundColor = UIKitStyle.terracotta; mentions.layer.cornerRadius = 9; mentions.clipsToBounds = true
         unread.backgroundColor = UIKitStyle.text; unread.layer.cornerRadius = 3
@@ -51,10 +56,16 @@ final class NativeSpaceTile: UIButton {
         render()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func hover(_ recognizer: UIHoverGestureRecognizer) {
+        let next = recognizer.state == .began || recognizer.state == .changed
+        guard next != hovered else { return }
+        hovered = next; render()
+    }
     override func didMoveToWindow() { super.didMoveToWindow(); if window != nil { observer.start { [weak self] in self?.render() } } else { observer.stop() } }
     override func layoutSubviews() {
         super.layoutSubviews()
         unread.frame = CGRect(x: -7, y: 19, width: 6, height: 6)
+        pill.bounds = CGRect(x: 0, y: 0, width: 4, height: 20); pill.center = CGPoint(x: -6, y: bounds.midY)
         let width = max(18, mentions.intrinsicContentSize.width + 8)
         mentions.frame = CGRect(x: bounds.width - width + 3, y: bounds.height - 15, width: width, height: 18)
         muted.frame = CGRect(x: -3, y: -3, width: 18, height: 18)
@@ -72,7 +83,23 @@ final class NativeSpaceTile: UIButton {
         unread.isHidden = activity == nil; mentions.isHidden = count == 0; mentions.text = count > 99 ? "99+" : "\(count)"
         muted.isHidden = !isMuted; voice.isHidden = !voiceActive
         voice.backgroundColor = connected ? UIColor(CaperTheme.voiceSessionGreen) : UIKitStyle.blackout
-        layer.borderWidth = selected ? 1 : 0; layer.borderColor = UIKitStyle.terracotta.cgColor; layer.shadowOpacity = selected ? 0.36 : 0
+        // A hovered space gets a brighter ring and the edge pill; the pill
+        // eases in and leaves at once.
+        let lifted = hovered && !selected
+        layer.borderWidth = selected || lifted ? 1 : 0
+        layer.borderColor = (selected ? UIKitStyle.terracotta : UIKitStyle.text.withAlphaComponent(0.26)).cgColor
+        layer.shadowOpacity = selected ? 0.36 : 0
+        unread.alpha = lifted ? 0 : 1
+        if lifted, pill.alpha == 0 {
+            if UIKitStyle.reduceMotion { pill.alpha = 1 } else {
+                pill.transform = CGAffineTransform(scaleX: 1, y: 0.3)
+                UIView.animate(withDuration: 0.14, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) { [pill] in
+                    pill.alpha = 1; pill.transform = .identity
+                }
+            }
+        } else if !lifted {
+            pill.layer.removeAllAnimations(); pill.alpha = 0; pill.transform = .identity
+        }
         accessibilityLabel = name
         accessibilityValue = [model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : "",
             activity != nil ? "Unread messages" : "", count > 0 ? "\(count) \(count == 1 ? "mention" : "mentions")" : "",

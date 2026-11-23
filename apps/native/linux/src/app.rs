@@ -6312,7 +6312,15 @@ impl App {
                     button.add_css_class("selected");
                 }
                 let overlay = gtk::Overlay::new();
+                overlay.add_css_class("rail-item");
                 overlay.set_child(Some(&button));
+                // Hover's pill at the rail's edge, over the unread dot (CSS).
+                let pill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                pill.add_css_class("rail-hover-pill");
+                pill.set_halign(gtk::Align::Start);
+                pill.set_valign(gtk::Align::Center);
+                pill.set_can_target(false);
+                overlay.add_overlay(&pill);
                 if space_unread(&space.id) {
                     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                     dot.add_css_class("unread-dot");

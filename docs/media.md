@@ -4432,7 +4432,7 @@ Blocking prevents DMs/requests and invitations and collapses the blocked
 person's text; it does not remove membership or mute voice.
 
 Below a divider, each card has an independent per-person composer with the
-channel composer's shell (Attach, field, Emoji, eggshell Send): text, emoji and up
+channel composer's shell (Attach, field, Emoji, glowing Send): text, emoji and up
 to 10 files, including file-only messages. Send resolves the DM, uploads through
 the normal pipeline, and on confirmed delivery clears that draft and opens the
 conversation. Known incoming requests stay read-only until accepted; block and

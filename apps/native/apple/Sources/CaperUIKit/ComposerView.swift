@@ -218,11 +218,14 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         send.accessibilityValue = sending ? "Sending" : nil
         // Disabled steps back to raised neutral chrome (below), not IconButton's fade.
         send.alpha = 1
-        // Eggshell when there is something to send; otherwise the raised
-        // neutral chrome of SwiftUI's PrimaryActionFill.
-        send.backgroundColor = send.isEnabled ? UIKitStyle.action : UIKitStyle.raised
-        send.tintColor = send.isEnabled ? UIKitStyle.blackout : UIKitStyle.muted
-        send.layer.borderColor = (send.isEnabled ? UIKitStyle.action : UIKitStyle.border).cgColor
+        // As web: a soft chalk glow when there is something to send, not a
+        // solid fill; otherwise the raised neutral chrome.
+        send.backgroundColor = send.isEnabled ? UIKitStyle.text.withAlphaComponent(0.09) : UIKitStyle.raised
+        send.tintColor = send.isEnabled ? UIKitStyle.text : UIKitStyle.muted
+        send.layer.borderColor = (send.isEnabled ? UIKitStyle.text.withAlphaComponent(0.24) : UIKitStyle.border).cgColor
+        send.layer.shadowColor = UIKitStyle.text.cgColor
+        send.layer.shadowOffset = .zero; send.layer.shadowRadius = 6
+        send.layer.shadowOpacity = send.isEnabled ? 0.3 : 0
         attach.isEnabled = enabled && canAttach
         attach.accessibilityValue = attachReason
         emoji.isEnabled = enabled && canPickExpressions

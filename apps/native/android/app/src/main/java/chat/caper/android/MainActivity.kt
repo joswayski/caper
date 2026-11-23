@@ -17,6 +17,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.core.Animatable
@@ -90,6 +91,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -733,6 +735,21 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     }
 }
 
+/** Web's Send icon button: a soft chalk glow once there is something to send,
+ *  not a solid fill; disabled, it steps back to neutral chrome. */
+@Composable internal fun ComposerSendButton(onClick: () -> Unit, modifier: Modifier, enabled: Boolean) {
+    val shape = MaterialTheme.shapes.small
+    FilledIconButton(
+        onClick,
+        if (enabled) modifier.shadow(8.dp, shape, clip = false, ambientColor = Text, spotColor = Text).border(1.dp, Text.copy(alpha = 0.24f), shape) else modifier,
+        enabled = enabled, shape = shape,
+        colors = IconButtonDefaults.filledIconButtonColors(
+            containerColor = Text.copy(alpha = 0.09f), contentColor = Text,
+            disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
+        ),
+    ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+}
+
 @Composable private fun SpaceRail(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
     val now = rememberMuteClock(state.notificationSettings)
     Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -759,8 +776,14 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 // New messages: a small dot in the rail margin, beside the tile.
-                Box(Modifier.width(6.dp), contentAlignment = Alignment.Center) {
-                    androidx.compose.animation.AnimatedVisibility(unread, enter = fadeIn(tween(200)) + slideInHorizontally(tween(200)) { -it }, exit = ExitTransition.None) {
+                // Hovering another space grows a pill there instead, as web's rail;
+                // it eases in and leaves at once.
+                val lifted = hovered && !selected
+                Box(Modifier.width(6.dp), contentAlignment = Alignment.CenterStart) {
+                    androidx.compose.animation.AnimatedVisibility(lifted, enter = fadeIn(tween(140)) + expandVertically(tween(140), expandFrom = Alignment.CenterVertically), exit = ExitTransition.None) {
+                        Box(Modifier.size(4.dp, 20.dp).background(Text, RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp)))
+                    }
+                    if (!lifted) androidx.compose.animation.AnimatedVisibility(unread, Modifier.align(Alignment.Center), enter = fadeIn(tween(200)) + slideInHorizontally(tween(200)) { -it }, exit = ExitTransition.None) {
                         Box(Modifier.size(6.dp).background(Text, CircleShape))
                     }
                 }
@@ -769,7 +792,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     val shape = MaterialTheme.shapes.medium
                     Surface(
                         Modifier.size(48.dp)
-                            // Selected: a terracotta ring and soft outer glow. Hover: a quiet outline.
+                            // Selected: a terracotta ring and soft outer glow. Hover: a lift and brighter outline.
                             .drawBehind {
                                 val g = glow.value
                                 if (g > 0f) {
@@ -780,14 +803,14 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                     }
                                     drawRoundRect(Terracotta.copy(alpha = 0.9f * g.coerceAtMost(1f)), topLeft = Offset(-1.dp.toPx(), -1.dp.toPx()), size = Size(size.width + 2.dp.toPx(), size.height + 2.dp.toPx()), cornerRadius = CornerRadius(radius + 1.dp.toPx()))
                                 } else if (hovered) {
-                                    drawRoundRect(Border, topLeft = Offset(-0.5.dp.toPx(), -0.5.dp.toPx()), size = Size(size.width + 1.dp.toPx(), size.height + 1.dp.toPx()), cornerRadius = CornerRadius(12.5.dp.toPx()), style = Stroke(1.dp.toPx()))
+                                    drawRoundRect(Text.copy(alpha = 0.26f), topLeft = Offset(-0.5.dp.toPx(), -0.5.dp.toPx()), size = Size(size.width + 1.dp.toPx(), size.height + 1.dp.toPx()), cornerRadius = CornerRadius(12.5.dp.toPx()), style = Stroke(1.dp.toPx()))
                                 }
                             }
-                            .background(Surface, shape)
+                            .background(if (lifted) SurfaceRaised else Surface, shape)
                             .alpha(if (muted) MUTED_ALPHA else 1f).clip(shape).hoverable(interaction).clickable(interactionSource = interaction, indication = null, role = Role.Button) { viewModel.selectSpace(space.id) }
                             .semantics { contentDescription = space.name; if (selected) this.selected = true; stateDescription = listOfNotNull(if (unread) "Unread messages" else null, mentionLabel, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
-                        color = Surface, shape = MaterialTheme.shapes.medium,
-                    ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, TextMuted) }
+                        color = if (lifted) SurfaceRaised else Surface, shape = MaterialTheme.shapes.medium,
+                    ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, if (lifted) Text else TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                     if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
                         Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)
@@ -1832,16 +1855,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 },
                                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors(),
                                 below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } })
-                            // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
-                            FilledIconButton(
-                                sendReply, modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
+                            ComposerSendButton(
+                                sendReply, Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
                                 enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true && (draft.text.isNotBlank() || files.isNotEmpty()),
-                                shape = MaterialTheme.shapes.small,
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = Action, contentColor = OnAction,
-                                    disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
-                                ),
-                            ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+                            )
                         }
                         if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
                     }
@@ -2179,16 +2196,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } },
                             )
                             }
-                            FilledIconButton(
+                            ComposerSendButton(
                                 { sendDraft() },
                                 // Centred on a one-line field (56dp), and near the bottom as the field grows.
-                                modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null,
-                                shape = MaterialTheme.shapes.small,
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = Action, contentColor = OnAction,
-                                    disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
-                                ),
-                            ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+                                Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null,
+                            )
                         }
                         if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
                     }

@@ -343,15 +343,11 @@ import kotlinx.coroutines.launch
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                 enabled = editable, colors = composerFieldColors(),
             )
-            FilledIconButton(
+            ComposerSendButton(
                 send,
                 Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else sendLabel },
-                enabled = writable && draft.canSend, shape = MaterialTheme.shapes.small,
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = Action, contentColor = OnAction,
-                    disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
-                ),
-            ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+                enabled = writable && draft.canSend,
+            )
         }
         if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
     }

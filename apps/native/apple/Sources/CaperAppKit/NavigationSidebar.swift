@@ -1175,7 +1175,7 @@ private final class NativeFeedbackRow: NativeView {
 }
 
 /// A rail tile, as on web: the space's icon over its initial, a terracotta
-/// ring and halo while selected, a quiet outline on hover, the unread dot in
+/// ring and halo while selected, a lift and edge pill on hover, the unread dot in
 /// the rail margin, and the mention, muted and voice badges. The NativeButton
 /// around it spans the rail, so the dot and badges stay inside its bounds.
 @MainActor final class NativeRailFace: NativeView {
@@ -1192,6 +1192,8 @@ private final class NativeFeedbackRow: NativeView {
     private let symbol = NSImageView()
     private let dash = CAShapeLayer()
     private let dot = CALayer()
+    /// Hover's pill at the rail's edge, in the unread dot's place.
+    private let pill = CALayer()
     private let mentionBadge = NativeView(NativeStyle.accent)
     private let mentionText = NativeStyle.label("", size: 11, bold: true)
     private let mutedBadge = NSImageView()
@@ -1208,6 +1210,7 @@ private final class NativeFeedbackRow: NativeView {
         [mutedBadge, voiceBadge, mentionBadge].forEach { addSubview($0) }
         mentionBadge.addSubview(mentionText)
         layer?.addSublayer(dot)
+        layer?.addSublayer(pill)
         tile.layer?.addSublayer(dash)
         tile.layer?.cornerRadius = 12
         tile.layer?.shadowColor = NativeStyle.accent.cgColor
@@ -1218,6 +1221,8 @@ private final class NativeFeedbackRow: NativeView {
         symbol.imageScaling = .scaleNone
         dash.fillColor = nil; dash.lineWidth = 1; dash.lineDashPattern = [4, 4]; dash.isHidden = true
         dot.backgroundColor = NativeStyle.text.cgColor; dot.cornerRadius = 3; dot.isHidden = true
+        pill.backgroundColor = NativeStyle.text.cgColor; pill.cornerRadius = 2; pill.opacity = 0
+        pill.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
         mentionBadge.layer?.cornerRadius = 9; mentionBadge.isHidden = true
         mentionBadge.layer?.borderWidth = 2; mentionBadge.layer?.borderColor = NativeStyle.blackout.cgColor
         mentionText.alignment = .center
@@ -1248,6 +1253,7 @@ private final class NativeFeedbackRow: NativeView {
     override func applyTheme() {
         super.applyTheme()
         dot.backgroundColor = NativeStyle.text.cgColor
+        pill.backgroundColor = NativeStyle.text.cgColor
         mentionBadge.layer?.borderColor = NativeStyle.blackout.cgColor
         mutedBadge.layer?.backgroundColor = NativeStyle.blackout.cgColor
         refreshRing()
@@ -1276,7 +1282,6 @@ private final class NativeFeedbackRow: NativeView {
         icon.update(name: "", avatarId: nil, picture: picture)
         // A muted space's initial or icon steps back; its badges don't.
         initial.alphaValue = muted ? 0.5 : 1; icon.alphaValue = muted ? 0.5 : 1
-        if case .space = face { initial.textColor = selected ? NativeStyle.text : NativeStyle.muted }
         mutedBadge.isHidden = !muted
         voiceBadge.isHidden = voice == nil
         voiceBadge.layer?.backgroundColor = (voice == .connected ? NativeStyle.voiceSessionGreen : NativeStyle.blackout).cgColor
@@ -1312,14 +1317,31 @@ private final class NativeFeedbackRow: NativeView {
         } else if selected {
             layer.borderWidth = 1; layer.borderColor = NativeStyle.accent.withAlphaComponent(0.9).cgColor
         } else if hovered && isSpace {
-            layer.borderWidth = 1; layer.borderColor = NativeStyle.border.cgColor
+            layer.borderWidth = 1; layer.borderColor = NativeStyle.text.withAlphaComponent(0.26).cgColor
         } else {
             layer.borderWidth = 0
         }
         layer.shadowOpacity = selected ? 0.36 : 0
-        // Create, join and invitation tiles lift on hover, as web's rail controls.
-        layer.backgroundColor = (hovered && !isSpace ? NativeStyle.raised : NativeStyle.surface).cgColor
+        // Every tile but the selected space lifts on hover, as web's rail.
+        layer.backgroundColor = (hovered && !selected ? NativeStyle.raised : NativeStyle.surface).cgColor
+        if isSpace { initial.textColor = selected || hovered ? NativeStyle.text : NativeStyle.muted }
         if case .symbol = face { dash.strokeColor = (hovered ? NativeStyle.muted : NativeStyle.border).cgColor }
+        // A hovered space grows a pill at the rail's edge over its unread dot;
+        // it arrives briefly and leaves at once.
+        let showPill = hovered && isSpace && !selected
+        if showPill, pill.opacity == 0, window != nil, !CaperAccessibility.reduceMotion {
+            let grow = CABasicAnimation(keyPath: "transform.scale.y")
+            grow.fromValue = 0.3; grow.toValue = 1
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0; fade.toValue = 1
+            let group = CAAnimationGroup()
+            group.animations = [grow, fade]; group.duration = 0.14
+            group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            pill.add(group, forKey: "arrive")
+        }
+        if !showPill { pill.removeAnimation(forKey: "arrive") }
+        pill.opacity = showPill ? 1 : 0
+        dot.opacity = showPill ? 0 : 1
         CATransaction.commit()
     }
 
@@ -1347,6 +1369,7 @@ private final class NativeFeedbackRow: NativeView {
         dash.frame = tile.bounds
         dash.path = CGPath(roundedRect: tile.bounds.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 11.5, cornerHeight: 11.5, transform: nil)
         dot.frame = NSRect(x: 3, y: y + side / 2 - 3, width: 6, height: 6)
+        pill.frame = NSRect(x: 0, y: y + side / 2 - 10, width: 4, height: 20)
         mutedBadge.layer?.cornerRadius = 8; voiceBadge.layer?.cornerRadius = 9
         CATransaction.commit()
         initial.frame = NSRect(x: 0, y: (side - 20) / 2, width: side, height: 20)

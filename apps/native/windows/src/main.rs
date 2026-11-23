@@ -4070,6 +4070,17 @@ impl App {
                     }
                     // An uploaded icon fills the tile in place of the initial.
                     let icon = avatars::draw(dc, &space.icon, r, 12.0);
+                    // As web: a hovered space lifts with a brighter ring and
+                    // grows a pill at the rail's edge in its unread dot's place.
+                    let lifted = hover == Some(i) && i != c.space;
+                    if lifted {
+                        stroke_round(
+                            dc,
+                            r,
+                            12.0,
+                            &dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.26), None)?,
+                        );
+                    }
                     // egui's initial: a whole grapheme, an emoji as Twemoji.
                     let initial = if icon {
                         String::new()
@@ -4135,7 +4146,14 @@ impl App {
                     // terracotta mention count on the tile's corner.
                     let (unread, mentions) = space_badges.get(i).copied().unwrap_or_default();
                     let cy = r.top + h / 2.0;
-                    if unread {
+                    if lifted {
+                        fill_round(
+                            dc,
+                            rect(-2.0, cy - 10.0, 4.0, cy + 10.0),
+                            2.0,
+                            &g.brushes.text,
+                        );
+                    } else if unread {
                         fill_round(
                             dc,
                             rect(r.left - 7.0, cy - 3.0, r.left - 1.0, cy + 3.0),

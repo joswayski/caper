@@ -70,11 +70,42 @@
   background: var(--surface);
   transition: none;
 }
-/* Hover gains a quiet outline; leaving it is instant. */
+/* Hover lifts the tile and grows a short pill at the rail's edge, taking the
+   unread dot's place; leaving is instant. */
+.space-rail-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 4px;
+  height: 20px;
+  margin-top: -10px;
+  border-radius: 0 4px 4px 0;
+  background: var(--text);
+  opacity: 0;
+  transform: scaleY(0.3);
+  pointer-events: none;
+}
 @media (hover: hover) {
+  .space-rail-item:not([data-active="true"]):has(button:hover)::before {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity var(--motion-fast) var(--ease-out),
+      transform var(--motion-fast) var(--ease-out);
+  }
+  .space-rail-item:not([data-active="true"]):has(button:hover) .space-unread {
+    opacity: 0;
+  }
   .space-rail-item:not([data-active="true"]) button:hover {
-    box-shadow: 0 0 0 1px var(--border);
-    transition: box-shadow var(--motion-fast) var(--ease-out);
+    color: var(--text);
+    background: var(--surface-raised);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--text) 26%, transparent),
+      0 4px 12px rgb(0 0 0 / 28%);
+    transition:
+      background-color var(--motion-fast) var(--ease-out),
+      box-shadow var(--motion-fast) var(--ease-out);
   }
 }
 /* The selected space glows: a terracotta bloom that settles to a soft halo. */
@@ -98,7 +129,8 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .space-rail-item button {
+  .space-rail-item button,
+  .space-rail-item::before {
     animation: none !important;
     transition: none !important;
   }

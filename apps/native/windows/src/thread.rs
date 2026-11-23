@@ -519,20 +519,28 @@ impl Pane {
             check_y + (CHECK_H - lh) / 2.0,
             &g.brushes.muted,
         );
-        // Send beside the box, eggshell while there is something to send.
+        // Send beside the box: as web, a chalk wash and ring rather than a
+        // solid fill while there is something to send.
         let (sx, sy, sw, sh) = send_local(w, h, self.box_h);
         let r = rect(sx, sy, sx + sw, sy + sh);
         let enabled = self.can_send();
         if enabled {
-            let fill = if self.hover == Some(Part::Send) {
-                ACTION_HOVER
+            let wash = if self.hover == Some(Part::Send) {
+                0.15
             } else {
-                ACTION
+                0.09
             };
-            fill_round(dc, r, 8.0, &g.solid(fill));
+            let (fill, ring) = unsafe {
+                (
+                    dc.CreateSolidColorBrush(&gfx::color(TEXT, wash), None)?,
+                    dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.24), None)?,
+                )
+            };
+            fill_round(dc, r, 8.0, &fill);
+            stroke_round(dc, r, 8.0, &ring);
         }
         let (color, alpha) = if enabled {
-            (BLACKOUT, 1.0)
+            (TEXT, 1.0)
         } else {
             (TEXT_MUTED, 0.5)
         };

@@ -338,6 +338,35 @@ button.remove:hover {
   background: @caper_surface_raised;
 }
 
+/* As web: a hovered space lifts with a brighter ring, and a short pill grows
+   at the rail's edge in its unread dot's place. Arriving eases in; leaving is
+   instant. */
+.rail-item > button:not(.selected):hover {
+  box-shadow: 0 0 0 1px alpha(@caper_text, 0.26);
+}
+
+.rail-item > .rail-hover-pill {
+  min-width: 4px;
+  min-height: 20px;
+  margin-left: -12px;
+  border-radius: 0 4px 4px 0;
+  background: @caper_text;
+  opacity: 0;
+  transform: scale(1, 0.3);
+}
+
+.rail-item:hover > button:not(.selected) ~ .rail-hover-pill {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 140ms ease-out,
+    transform 140ms ease-out;
+}
+
+.rail-item:hover > button:not(.selected) ~ .unread-dot {
+  opacity: 0;
+}
+
 /* As desktop: the open space is outlined, not filled: a 1 px terracotta
    ring and a soft glow, which bloom in (past their rest, then settle) when
    it opens. Leaving it is instant; GTK skips the bloom when animations are
@@ -969,12 +998,19 @@ button.send-reply:not(.ready) image {
   opacity: 0.5;
 }
 
+/* As web: a soft glow, not a solid fill, once there is something to send. */
 button.send-reply.ready:not(:disabled) {
-  background: @caper_action;
+  background: alpha(@caper_text, 0.09);
+  box-shadow:
+    inset 0 0 0 1px alpha(@caper_text, 0.24),
+    0 0 12px alpha(@caper_text, 0.22);
 }
 
 button.send-reply.ready:not(:disabled):hover {
-  background: @caper_action_hover;
+  background: alpha(@caper_text, 0.15);
+  box-shadow:
+    inset 0 0 0 1px alpha(@caper_text, 0.24),
+    0 0 16px alpha(@caper_text, 0.34);
 }
 
 button.send:not(:disabled) {
