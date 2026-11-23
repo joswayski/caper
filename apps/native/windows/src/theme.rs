@@ -249,9 +249,18 @@ pub const HEADER_H: f32 = 54.0;
 pub const LIP_H: f32 = 8.0;
 pub const SECTION_TOP: f32 = 66.0;
 pub const CHANNEL_TOP: f32 = 96.0;
-pub const CHANNEL_H: f32 = 32.0;
-pub const MEMBER_TOP: f32 = 96.0;
-pub const MEMBER_H: f32 = 41.0;
+/// A channel row's pitch: 6 DIPs around its 20 DIP line inside the
+/// 32 DIP highlight, and 2 between rows.
+pub const CHANNEL_H: f32 = 34.0;
+/// The first member row: 16 DIPs under the section heading's line, as
+/// the heading is under the header's border.
+pub const MEMBER_TOP: f32 = 95.0;
+/// A member row: 8 DIPs around its 30 DIP avatar inside the highlight.
+pub const MEMBER_H: f32 = 46.0;
+/// The Offline heading's band above the first offline row: its line with
+/// the same 16 DIPs above and below as the first heading's (8 here, plus
+/// the 8 a row keeps around its avatar).
+pub const OFFLINE_H: f32 = 33.0;
 pub const RAIL_ITEM: f32 = 40.0;
 pub const RAIL_PITCH: f32 = 47.0;
 pub const RAIL_TOP: f32 = 12.0;

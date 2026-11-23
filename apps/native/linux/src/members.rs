@@ -168,6 +168,8 @@ impl App {
             ),
         );
         view.set_presence(status);
+        // Centred, so the highlight keeps 8px above and below it.
+        view.root.set_valign(gtk::Align::Center);
         line.append(&view.root);
         let name = label(
             &member.display_name,

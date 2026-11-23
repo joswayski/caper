@@ -377,6 +377,9 @@ impl Composer {
         overlay.set_child(Some(&field));
         overlay.add_overlay(&placeholder);
         overlay.set_hexpand(true);
+        // A single line sits centred on the buttons; taller text fills the
+        // row and the buttons stay at its foot.
+        overlay.set_valign(gtk::Align::Center);
         line.append(&overlay);
         let gif: gtk::Button = crate::app::named("GtkButton", "Send a GIF");
         let badge = gtk::Label::new(Some("GIF"));

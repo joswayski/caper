@@ -238,6 +238,8 @@ impl App {
         body.append(&search);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
         list.add_css_class("forward-list");
+        // Hover stays inside the list's rounded corners.
+        list.set_overflow(gtk::Overflow::Hidden);
         body.append(&list);
         let empty = label("Join a channel or start a DM to forward here.", &["muted"]);
         empty.set_visible(false);

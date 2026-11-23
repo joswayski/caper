@@ -1728,8 +1728,12 @@ impl App {
                 self.build_member_row(&body, &mut widgets, "Invite");
             }
             Dialog::JoinInvite => {
+                // Its words can be selected and copied, as web's.
+                widgets.title.set_selectable(true);
                 let input = gtk::Box::new(gtk::Orientation::Vertical, 8);
-                input.append(&hint("Paste it below to join!"));
+                let intro = hint("Paste it below to join!");
+                intro.set_selectable(true);
+                input.append(&intro);
                 let entry: gtk::Entry = crate::app::named("GtkEntry", "Invite link");
                 entry.set_placeholder_text(Some("it looks like → caper.chat/invite/AbCdE12345"));
                 input.append(&entry);
@@ -2483,8 +2487,10 @@ impl App {
                         (None, _, true) => "Checking…",
                         (None, _, false) => "Continue",
                     });
+                    // Only a link the shared parser accepts can continue.
                     submit.set_sensitive(
-                        !join.busy && (join.preview.is_some() || !text.trim().is_empty()),
+                        !join.busy
+                            && (join.preview.is_some() || invites::invite_code(&text).is_some()),
                     );
                 }
                 if let Some(cancel) = &widgets.cancel {
@@ -2923,9 +2929,12 @@ impl App {
         sentence.set_markup(&markup);
         sentence.set_wrap(true);
         sentence.set_hexpand(true);
+        sentence.set_selectable(true);
         by.append(&sentence);
         root.append(&by);
-        root.append(&label(&invites::members_line(preview), &["muted", "small"]));
+        let members = label(&invites::members_line(preview), &["muted", "small"]);
+        members.set_selectable(true);
+        root.append(&members);
     }
 
     // ---------------------------------------------------------------------

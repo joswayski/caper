@@ -6618,7 +6618,11 @@ impl App {
         // As desktop: a quiet "New message" row ends the list.
         if state.account.is_some() {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            line.append(&self.images.icon_image(Icon::Plus, "#b9bcbe", 14));
+            // The + centred in the 22px avatar column, so the label starts
+            // on the names' edge.
+            let plus = self.images.icon_image(Icon::Plus, "#b9bcbe", 14);
+            plus.set_size_request(22, -1);
+            line.append(&plus);
             line.append(&label("New message", &["muted"]));
             // An action, not a place: choosing it keeps the open DM selected.
             let row: gtk::ListBoxRow = named("GtkListBoxRow", "New message");

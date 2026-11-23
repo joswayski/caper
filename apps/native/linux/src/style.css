@@ -309,7 +309,14 @@ button.remove:hover {
 /* Space rail */
 .rail {
   background: @caper_blackout;
-  padding: 12px 12px;
+  padding: 12px 0;
+}
+
+/* The tiles' 12px sides are their own, so a space's row spans the rail and
+   its edge pill and unread dot sit at the rail's edge. */
+.rail > button,
+.rail-item > button {
+  margin: 0 12px;
 }
 
 .rail button {
@@ -329,15 +336,41 @@ button.remove:hover {
   background: @caper_surface_raised;
 }
 
-/* Hover lifts the tile with an offset neutral ring that upgrades seamlessly
-   into the botanical green selection ring on click, with no jumping edge bar. */
+/* Hover lifts the tile with an offset neutral ring that upgrades into the
+   botanical green selection ring on click. */
 .rail-item > button:not(.selected):hover {
   box-shadow:
     0 0 0 2px @caper_blackout,
     0 0 0 3.5px alpha(@caper_text, 0.26);
 }
 
+/* As web: a pill at the rail's edge, centred on the tile. The open space's
+   is tall; a hovered space grows a short one in its unread dot's place.
+   Arriving eases in; leaving is instant. */
 .rail-item > .rail-hover-pill {
+  min-width: 4px;
+  min-height: 20px;
+  border-radius: 0 4px 4px 0;
+  background: @caper_text;
+  opacity: 0;
+  transform: scale(1, 0.3);
+}
+
+.rail-item > button.selected ~ .rail-hover-pill {
+  opacity: 1;
+  transform: none;
+}
+
+.rail-item:hover > button:not(.selected) ~ .rail-hover-pill {
+  opacity: 1;
+  transform: scale(1, 0.5);
+  transition:
+    opacity 140ms ease-out,
+    transform 140ms ease-out;
+}
+
+.rail-item > button.selected ~ .unread-dot,
+.rail-item:hover > button:not(.selected) ~ .unread-dot {
   opacity: 0;
 }
 
@@ -410,10 +443,12 @@ list.member-list {
   color: @caper_text_muted;
 }
 
+/* Equal insets around a row's content inside its highlight: its leading
+   icon or avatar then sits on the section heading's 16px edge. */
 list.channels > row {
   border-radius: 8px;
   margin: 1px 10px;
-  padding: 6px 10px;
+  padding: 6px;
 }
 
 list.channels > row:hover {
@@ -474,10 +509,11 @@ list.channels > row button.row-options:focus-visible {
   margin-right: 20px;
 }
 
+/* The history ends at the typing band, so the composer has the same 18px
+   above it (band and margin) as below it. */
 listview.messages {
   background: transparent;
   color: @caper_text;
-  padding-bottom: 12px;
 }
 
 listview.messages > row {
@@ -883,7 +919,6 @@ popover.emoji-picker image.mine {
   min-height: 8px;
   border-radius: 0 4px 4px 0;
   background: @caper_text;
-  margin-left: -12px;
 }
 
 /* As desktop: the account panel is a raised card. Notifications and, for
@@ -1085,8 +1120,14 @@ list.member-list > row {
   padding: 12px 8px 2px;
 }
 
+/* The same space above a section's heading as below it: 4px here plus the
+   8px a row keeps around its avatar, or the list's top padding. */
+list.member-list {
+  padding-top: 8px;
+}
+
 .member-section {
-  padding: 8px 8px 4px;
+  padding: 4px 8px;
 }
 
 .member-heading {
@@ -1106,7 +1147,8 @@ list.member-list > row {
 }
 
 .member {
-  min-height: 44px;
+  /* 8px around the 30px avatar on every side of the highlight. */
+  min-height: 46px;
   padding: 0 8px;
   border-radius: 8px;
 }
@@ -2195,7 +2237,8 @@ checkbutton.broadcast {
 
 /* Someone is in voice in this space; green while you're connected there. */
 .rail-voice {
-  margin: 0 2px 0 0;
+  /* On the tile's top-right corner, inside the item's 12px side. */
+  margin: 0 14px 0 0;
   padding: 3px;
   border-radius: 9999px;
   background: @caper_blackout;

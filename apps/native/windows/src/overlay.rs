@@ -911,8 +911,10 @@ impl Dialog {
                         Kind::Delete | Kind::Block | Kind::LeaveSpace | Kind::LeaveChannel => true,
                         Kind::History | Kind::Browse | Kind::Reactions => false,
                         Kind::StartDirect => self.draft().len() >= 3,
+                        // Only a link the shared parser accepts can continue.
                         Kind::JoinInvite => {
-                            self.invite.is_some() || !self.draft().trim().is_empty()
+                            self.invite.is_some()
+                                || caper_client::invites::invite_code(&self.draft()).is_some()
                         }
                         Kind::Invitation => true,
                         Kind::CreateSpace | Kind::CreateChannel => !self.create_name().is_empty(),
