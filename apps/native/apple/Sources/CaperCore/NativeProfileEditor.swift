@@ -184,18 +184,122 @@ private final class NonInteractiveLabel: NSTextField {
     }
 }
 
+/// One picture in the Previous pictures grid: the whole thumbnail selects it,
+/// with a ring and check on the selected one. The current picture is labelled
+/// and can't be chosen again.
+@MainActor private final class AppKitPictureTile: NSControl {
+    static let side: CGFloat = 92
+    private let handler: () -> Void
+    private let avatar = AppKitAvatar(corner: ProfilePicturePolicy.cornerRadius(side: AppKitPictureTile.side - 10))
+    private let ring = CALayer()
+    private let check = NSImageView()
+    private let current: Bool
+    private var hovered = false
+    private var tracking: NSTrackingArea?
+
+    init(picture: AvatarHistoryPicture, number: Int, current: Bool, action: @escaping () -> Void) {
+        handler = action; self.current = current
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false; wantsLayer = true
+        ring.cornerRadius = ProfilePicturePolicy.cornerRadius(side: Self.side - 10) + 5; ring.borderWidth = 2
+        layer?.addSublayer(ring)
+        avatar.translatesAutoresizingMaskIntoConstraints = false
+        avatar.update(name: "", avatarId: nil, picture: picture.avatarPicture)
+        check.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 20, weight: .semibold))
+        check.translatesAutoresizingMaskIntoConstraints = false; check.setAccessibilityElement(false)
+        check.wantsLayer = true; check.layer?.cornerRadius = 10
+        addSubview(avatar); addSubview(check)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: Self.side), heightAnchor.constraint(equalToConstant: Self.side),
+            avatar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5), avatar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
+            avatar.topAnchor.constraint(equalTo: topAnchor, constant: 5), avatar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            check.topAnchor.constraint(equalTo: topAnchor, constant: 1), check.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
+        ])
+        if current {
+            let badge = AppKitKit.label("Current", size: 11, weight: .bold, wraps: false)
+            badge.textColor = .white; badge.alignment = .center; badge.setAccessibilityElement(false)
+            let pill = NSView(); pill.wantsLayer = true; pill.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.68).cgColor
+            pill.layer?.cornerRadius = 9; pill.translatesAutoresizingMaskIntoConstraints = false; badge.translatesAutoresizingMaskIntoConstraints = false
+            pill.addSubview(badge); addSubview(pill)
+            NSLayoutConstraint.activate([
+                badge.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 8), badge.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -8),
+                badge.centerYAnchor.constraint(equalTo: pill.centerYAnchor), pill.heightAnchor.constraint(equalToConstant: 18),
+                pill.centerXAnchor.constraint(equalTo: centerXAnchor), pill.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -11),
+            ])
+        }
+        setAccessibilityElement(true); setAccessibilityRole(.radioButton)
+        setAccessibilityLabel("\(current ? "Current picture" : "Previous picture") \(number)")
+        if current { setAccessibilityHelp("This is your picture now.") }
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var isSelected = false { didSet { if isSelected != oldValue { refresh() } } }
+    override var isEnabled: Bool { didSet { refresh() } }
+    private var choosable: Bool { isEnabled && !current }
+    override var acceptsFirstResponder: Bool { choosable && KeyboardTabOrder.keyboardFocusAllowed }
+    override var canBecomeKeyView: Bool { acceptsFirstResponder && !isHiddenOrHasHiddenAncestor && window != nil }
+    override func becomeFirstResponder() -> Bool { let became = super.becomeFirstResponder(); refresh(); return became }
+    override func resignFirstResponder() -> Bool { let resigned = super.resignFirstResponder(); refresh(); return resigned }
+
+    private func refresh() {
+        let focused = window?.firstResponder === self
+        let accent = AppKitKit.terracottaBright
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        ring.frame = bounds
+        ring.borderColor = (isSelected || focused ? accent : hovered && choosable ? AppKitKit.muted.withAlphaComponent(0.6) : .clear).cgColor
+        CATransaction.commit()
+        check.isHidden = !isSelected; check.contentTintColor = accent; check.layer?.backgroundColor = AppKitKit.surface.cgColor
+        setAccessibilityValue(isSelected ? 1 : 0)
+        window?.invalidateCursorRects(for: self)
+    }
+    override func layout() { super.layout(); refresh() }
+
+    private func fire() { if choosable { handler() } }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { fire() }
+    }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 48 { KeyboardTabOrder.step(in: window, forward: !event.modifierFlags.contains(.shift), from: self) }
+        else if [" ", "\r"].contains(event.charactersIgnoringModifiers) { fire() } else { super.keyDown(with: event) }
+    }
+    override func accessibilityPerformPress() -> Bool { fire(); return choosable }
+    override func resetCursorRects() { if choosable { addCursorRect(bounds, cursor: .pointingHand) } }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; refresh() }
+    override func mouseExited(with event: NSEvent) { hovered = false; refresh() }
+}
+
 @MainActor final class AppKitProfileHistory: AppKitSettingsDialog {
+    private static let columns = 3
     private let state: NativeProfileHistory
-    private let pictures = AppKitKit.stack([], spacing: 8)
+    private let pictures = AppKitKit.stack([], spacing: 12)
     private let status = AppKitKit.label("", size: 12)
+    private let hint = AppKitKit.label("Select a picture to use it again.", size: 12, color: AppKitKit.muted, wraps: false)
     private var more: AppKitKitButton!
     private var use: AppKitKitButton!
-    private var rows: [AppKitKitButton] = []
+    private var tiles: [AppKitPictureTile] = []
     init(state: NativeProfileHistory, close: @escaping () -> Void) {
         self.state = state
         super.init(title: "Previous pictures", detail: "", closeLabel: "Cancel", identifier: "profile-picture-history", close: close)
-        more = AppKitKitButton("Load more") { state.load() }; use = AppKitKitButton("Use picture", kind: .primary) { state.use() }
-        setRows([pictures, status, more, use]); preferHeight(560); state.load()
+        pictures.setAccessibilityElement(true); pictures.setAccessibilityRole(.group); pictures.setAccessibilityLabel("Previous pictures")
+        more = AppKitKitButton("Load more") { state.load() }
+        use = AppKitKitButton("Use previous picture", kind: .primary) { state.use() }
+        use.setAccessibilityIdentifier("use-previous-picture")
+        // The action row stays put below the grid; the button appears once a
+        // previous picture is selected, in place of the hint.
+        let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let bar = NSStackView(views: [hint, spacer, use]); bar.orientation = .horizontal; bar.alignment = .centerY; bar.spacing = 12
+        bar.edgeInsets = NSEdgeInsets(top: 12, left: 22, bottom: 16, right: 22)
+        bar.heightAnchor.constraint(greaterThanOrEqualToConstant: 70).isActive = true
+        setRows([pictures, status, more]); setFooter(bar); preferHeight(560); state.load()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidMoveToWindow() {
@@ -204,22 +308,22 @@ private final class NonInteractiveLabel: NSTextField {
     }
     func stop() { observation.stop(); state.stop() }
     private func render() {
-        if rows.count != state.pictures.count {
-            pictures.arrangedSubviews.forEach { $0.removeFromSuperview() }; rows = []
-            for item in state.pictures {
-                let avatar = AppKitAvatar(); avatar.translatesAutoresizingMaskIntoConstraints = false
-                NSLayoutConstraint.activate([avatar.widthAnchor.constraint(equalToConstant: 76), avatar.heightAnchor.constraint(equalToConstant: 76)])
-                avatar.update(name: "", avatarId: nil, picture: item.avatarPicture)
-                let button = AppKitKitButton(item.avatarAsset == state.expected ? "Current picture" : "Previous picture") { [state] in state.selected = item }
-                rows.append(button)
-                let row = NSStackView(views: [avatar, button]); row.spacing = 12; pictures.addArrangedSubview(row)
+        if tiles.count != state.pictures.count {
+            pictures.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            tiles = state.pictures.enumerated().map { index, item in
+                AppKitPictureTile(picture: item, number: index + 1, current: item.avatarAsset == state.expected) { [state] in state.selected = item }
+            }
+            for start in stride(from: 0, to: tiles.count, by: Self.columns) {
+                let row = NSStackView(views: Array(tiles[start..<min(start + Self.columns, tiles.count)])); row.spacing = 12
+                pictures.addArrangedSubview(row)
             }
         }
-        for (button, item) in zip(rows, state.pictures) { button.showsSelection = item == state.selected; button.setAccessibilityValue(item == state.selected ? "Selected" : "Not selected") }
+        for (tile, item) in zip(tiles, state.pictures) { tile.isSelected = item == state.selected }
         status.stringValue = state.error ?? (state.loading ? "Loading…" : state.loaded && state.pictures.isEmpty ? "No previous pictures yet." : "")
         status.isHidden = status.stringValue.isEmpty
         more.title = state.error == nil ? "Load more" : "Retry"; more.isEnabled = !state.loading
-        more.isHidden = state.error == nil && state.cursor == nil; use.isEnabled = state.canUse
+        more.isHidden = state.error == nil && state.cursor == nil
+        use.isHidden = !state.canUse; hint.isHidden = state.canUse || state.pictures.isEmpty
     }
 }
 #elseif os(iOS)
@@ -340,38 +444,110 @@ struct NativeProfileHistoryForm: UIViewControllerRepresentable {
     static func dismantleUIViewController(_ controller: UIKitProfileHistory, coordinator: ()) { controller.stop() }
 }
 
+/// One picture in the Previous pictures grid: tapping the thumbnail selects
+/// it, with a ring and check on the selected one. The current picture is
+/// labelled and can't be chosen again.
+@MainActor private final class UIKitPictureTile: UIControl {
+    static let side: CGFloat = 92
+    private let ring = UIView()
+    private let check = UIImageView(image: UIImage(systemName: "checkmark.circle.fill"))
+    private let current: Bool
+
+    init(picture: AvatarHistoryPicture, number: Int, current: Bool, action: @escaping () -> Void) {
+        self.current = current
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let inner = Self.side - 10
+        let avatar = UIKitAvatar(side: inner, corner: ProfilePicturePolicy.cornerRadius(side: inner))
+        avatar.show(name: "", avatarID: nil, picture: picture.avatarPicture); avatar.isUserInteractionEnabled = false
+        ring.layer.cornerRadius = ProfilePicturePolicy.cornerRadius(side: inner) + 5; ring.layer.cornerCurve = .continuous
+        ring.layer.borderWidth = 2; ring.isUserInteractionEnabled = false
+        check.preferredSymbolConfiguration = .init(pointSize: 20, weight: .semibold)
+        check.backgroundColor = UIColor(CaperTheme.surface); check.layer.cornerRadius = 10; check.clipsToBounds = true
+        check.tintColor = UIColor(CaperTheme.terracottaBright); check.isUserInteractionEnabled = false
+        for child in [ring, avatar, check] as [UIView] { child.translatesAutoresizingMaskIntoConstraints = false; addSubview(child) }
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: Self.side), heightAnchor.constraint(equalToConstant: Self.side),
+            ring.leadingAnchor.constraint(equalTo: leadingAnchor), ring.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ring.topAnchor.constraint(equalTo: topAnchor), ring.bottomAnchor.constraint(equalTo: bottomAnchor),
+            avatar.centerXAnchor.constraint(equalTo: centerXAnchor), avatar.centerYAnchor.constraint(equalTo: centerYAnchor),
+            check.topAnchor.constraint(equalTo: topAnchor, constant: 1), check.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
+        ])
+        if current {
+            let badge = UIKitMessageDialog.label("Current", size: 11, bold: true)
+            badge.textColor = .white; badge.textAlignment = .center; badge.numberOfLines = 1
+            let pill = UIView(); pill.backgroundColor = UIColor.black.withAlphaComponent(0.68); pill.layer.cornerRadius = 9
+            pill.isUserInteractionEnabled = false
+            for child in [pill, badge] { child.translatesAutoresizingMaskIntoConstraints = false }
+            pill.addSubview(badge); addSubview(pill)
+            NSLayoutConstraint.activate([
+                badge.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 8), badge.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -8),
+                badge.topAnchor.constraint(equalTo: pill.topAnchor, constant: 2), badge.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -2),
+                pill.centerXAnchor.constraint(equalTo: centerXAnchor), pill.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -11),
+            ])
+        }
+        isAccessibilityElement = true
+        accessibilityLabel = "\(current ? "Current picture" : "Previous picture") \(number)"
+        if current { accessibilityHint = "This is your picture now." }
+        addAction(UIAction { [weak self] _ in if let self, !self.current { action() } }, for: .touchUpInside)
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isSelected: Bool { didSet { if isSelected != oldValue { refresh() } } }
+    override var isEnabled: Bool { didSet { refresh() } }
+    private func refresh() {
+        ring.layer.borderColor = (isSelected ? UIColor(CaperTheme.terracottaBright) : .clear).cgColor
+        check.isHidden = !isSelected
+        var traits: UIAccessibilityTraits = .button
+        if isSelected { traits.insert(.selected) }
+        if current || !isEnabled { traits.insert(.notEnabled) }
+        accessibilityTraits = traits
+    }
+}
+
 @MainActor final class UIKitProfileHistory: UIKitMessageDialog {
+    private static let columns = 3
     private let state: NativeProfileHistory
     private let pictures = UIStackView()
     private let status = UIKitMessageDialog.label("")
+    private let hint = UIKitMessageDialog.label("Select a picture to use it again.")
     private var more: UIButton!
     private var use: UIButton!
-    private var rows: [UIButton] = []
+    private var tiles: [UIKitPictureTile] = []
     init(state: NativeProfileHistory, close: @escaping () -> Void) { self.state = state; super.init(title: "Previous pictures", close: close) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
-        super.viewDidLoad(); pictures.axis = .vertical; pictures.spacing = 8
-        more = Self.button("Load more") { [state] in state.load() }; use = Self.button("Use picture", primary: true) { [state] in state.use() }
-        [pictures, status, more!, use!].forEach { body.addArrangedSubview($0) }; observe(); state.load()
+        super.viewDidLoad(); pictures.axis = .vertical; pictures.spacing = 12; pictures.alignment = .center
+        pictures.accessibilityLabel = "Previous pictures"
+        hint.textColor = UIColor(CaperTheme.muted)
+        more = Self.button("Load more") { [state] in state.load() }
+        use = Self.button("Use previous picture", primary: true) { [state] in state.use() }
+        use.accessibilityIdentifier = "use-previous-picture"
+        // The action row stays put below the grid; the button appears once a
+        // previous picture is selected, in place of the hint.
+        let bar = UIStackView(arrangedSubviews: [hint, use]); bar.axis = .vertical; bar.spacing = 8
+        bar.isLayoutMarginsRelativeArrangement = true; bar.layoutMargins = UIEdgeInsets(top: 12, left: 16, bottom: 16, right: 16)
+        bar.heightAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
+        [pictures, status, more!].forEach { body.addArrangedSubview($0) }; setFooter(bar); observe(); state.load()
     }
     override func render() {
-        if rows.count != state.pictures.count {
-            pictures.arrangedSubviews.forEach { $0.removeFromSuperview() }; rows = []
-            for item in state.pictures {
-                let avatar = UIKitAvatar(side: 76); avatar.show(name: "", avatarID: nil, picture: item.avatarPicture)
-                let button = Self.button(item.avatarAsset == state.expected ? "Current picture" : "Previous picture") { [state] in state.selected = item }
-                rows.append(button)
-                let row = UIStackView(arrangedSubviews: [avatar, button]); row.spacing = 12; row.alignment = .center; pictures.addArrangedSubview(row)
+        if tiles.count != state.pictures.count {
+            pictures.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            tiles = state.pictures.enumerated().map { index, item in
+                UIKitPictureTile(picture: item, number: index + 1, current: item.avatarAsset == state.expected) { [state] in state.selected = item }
+            }
+            for start in stride(from: 0, to: tiles.count, by: Self.columns) {
+                let row = UIStackView(arrangedSubviews: Array(tiles[start..<min(start + Self.columns, tiles.count)])); row.spacing = 12
+                pictures.addArrangedSubview(row)
             }
         }
-        for (button, item) in zip(rows, state.pictures) {
-            button.isSelected = item == state.selected; button.accessibilityTraits = button.isSelected ? [.button, .selected] : .button
-            button.layer.borderWidth = button.isSelected ? 2 : 0; button.layer.borderColor = UIColor(CaperTheme.terracotta).cgColor; button.layer.cornerRadius = 8
-        }
+        for (tile, item) in zip(tiles, state.pictures) { tile.isSelected = item == state.selected }
         status.text = state.error ?? (state.loading ? "Loading…" : state.loaded && state.pictures.isEmpty ? "No previous pictures yet." : nil)
         status.isHidden = status.text == nil
         more.configuration?.title = state.error == nil ? "Load more" : "Retry"; more.isEnabled = !state.loading
-        more.isHidden = state.error == nil && state.cursor == nil; use.isEnabled = state.canUse
+        more.isHidden = state.error == nil && state.cursor == nil
+        use.isHidden = !state.canUse; hint.isHidden = state.canUse || state.pictures.isEmpty
     }
     override func stop() { super.stop(); state.stop() }
 }

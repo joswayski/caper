@@ -532,7 +532,7 @@ private struct AvatarHistoryChooser: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 12) {
                     ForEach(pictures.indices, id: \.self) { index in
                         let item = pictures[index]
-                        Button { selected = item } label: {
+                        Button { if item.avatarAsset != expected { selected = item } } label: {
                             VStack(spacing: 4) {
                                 PictureImage(picture: item.avatarPicture, size: 76) { Color.clear }
                                     .frame(width: 76, height: 76).clipShape(RoundedRectangle(cornerRadius: 20))
@@ -555,10 +555,15 @@ private struct AvatarHistoryChooser: View {
             HStack {
                 Button("Cancel") { dismiss() }.disabled(saving)
                 Spacer()
-                Button(saving ? "Using picture…" : "Use picture") { Task { await save() } }
-                    .buttonStyle(.borderedProminent).tint(CaperTheme.action)
-                    .foregroundStyle(CaperTheme.blackout)
-                    .disabled(saving || loading || stale || selected == nil || selected?.avatarAsset == expected)
+                // Appears once a previous picture is selected.
+                if let selected, selected.avatarAsset != expected {
+                    Button(saving ? "Using picture…" : "Use previous picture") { Task { await save() } }
+                        .buttonStyle(.borderedProminent).tint(CaperTheme.action)
+                        .foregroundStyle(CaperTheme.blackout)
+                        .disabled(saving || loading || stale)
+                } else if !pictures.isEmpty {
+                    Text("Select a picture to use it again.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                }
             }
         }.padding(20).frame(idealWidth: 360, idealHeight: 560)
             .background(CaperTheme.surface).interactiveDismissDisabled(saving)
