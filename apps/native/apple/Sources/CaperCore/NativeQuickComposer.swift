@@ -323,7 +323,7 @@ import UIKit
     /// never takes a filled or hover-like wash.
     private static func tool(symbol: String? = nil, title: String? = nil, label: String, action: @escaping () -> Void) -> UIButton {
         var config = UIButton.Configuration.plain()
-        if let symbol { config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)) }
+        if let symbol { config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)) }
         if let title {
             let font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Bold", size: 13) ?? .boldSystemFont(ofSize: 13))
             config.attributedTitle = AttributedString(title, attributes: AttributeContainer([.font: font]))

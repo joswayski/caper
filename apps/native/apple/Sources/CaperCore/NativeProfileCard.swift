@@ -281,18 +281,23 @@ import Observation
             body.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -16),
             body.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32),
         ])
-        // The phone sheet is as tall as the card (a tap above it closes it),
-        // dragged up for full height; the profile editor takes full height.
+        // The phone sheet is as tall as the card (a tap above it closes it)
+        // and rides up above the keyboard at that height; a longer card
+        // scrolls. Only one detent, so focusing the field never jumps it to
+        // full height. The profile editor takes the full height.
         if let sheet = sheetPresentationController {
             sheet.detents = [.custom(identifier: .init("caper.profile")) { [weak self] context in
                 let maximum = context.maximumDetentValue
                 return MainActor.assumeIsolated {
-                    guard let self, self.editor == nil else { return nil }
+                    guard let self, self.editor == nil else { return maximum }
                     return min(self.cardHeight(width: self.view.bounds.width > 0 ? self.view.bounds.width : self.view.window?.bounds.width ?? 390), maximum)
                 }
-            }, .large()]
+            }]
             sheet.prefersGrabberVisible = true
         }
+        // The composer is in place before the sheet first measures, so it
+        // opens once at its final height instead of growing in a second step.
+        render()
     }
     private var sheetHeight: CGFloat = 0
     private func cardHeight(width: CGFloat) -> CGFloat {
@@ -309,7 +314,8 @@ import Observation
             let height = cardHeight(width: view.bounds.width)
             guard abs(height - sheetHeight) > 0.5 else { return }
             let first = sheetHeight == 0; sheetHeight = height
-            if first || CaperAccessibility.reduceMotion { sheet.invalidateDetents() } else { sheet.animateChanges { sheet.invalidateDetents() } }
+            if first || CaperAccessibility.reduceMotion || view.window == nil { sheet.invalidateDetents() }
+            else { view.layoutIfNeeded(); sheet.animateChanges { sheet.invalidateDetents() } }
             return
         }
         let width: CGFloat = 360
@@ -395,7 +401,7 @@ import Observation
         editor = host; addChild(host)
         view.subviews.forEach { $0.isHidden = true }; host.view.frame = view.bounds; host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(host.view); host.didMove(toParent: self); fitToContent()
-        if let sheet = sheetPresentationController { sheet.animateChanges { sheet.invalidateDetents(); sheet.selectedDetentIdentifier = .large } }
+        if let sheet = sheetPresentationController { sheet.animateChanges { sheet.invalidateDetents() } }
     }
     @objc private func openPicture() {
         guard let request = profilePictureRequest(person) else { return }
