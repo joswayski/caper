@@ -44,7 +44,7 @@ impl Textures for D2d {
     type Texture = ID2D1Bitmap1;
     type Id = usize;
 
-    fn create(&mut self, _key: &str, image: &caper_client::Rgba) -> ID2D1Bitmap1 {
+    fn create(&mut self, _key: &str, image: &caper_client::Rgba) -> Option<ID2D1Bitmap1> {
         let (w, h) = (image.size[0].max(1) as u32, image.size[1].max(1) as u32);
         let props = D2D1_BITMAP_PROPERTIES1 {
             pixelFormat: D2D1_PIXEL_FORMAT {
@@ -77,7 +77,8 @@ impl Textures for D2d {
                         &props,
                     )
                 })
-                .expect("a 1×1 bitmap")
+                // Neither: the device is lost; the image shows as failed.
+                .ok()
         }
     }
 

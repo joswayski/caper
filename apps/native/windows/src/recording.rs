@@ -633,7 +633,7 @@ impl App {
         };
         unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
         let body = rect(0.5, 0.5, bw - 0.5, BAR_H - 0.5);
-        fill_round(dc, body, 8.0, &g.solid(crate::theme::surface_composer()));
+        fill_round(dc, body, 8.0, &g.solid(crate::theme::surface_composer())?);
         stroke_round(dc, body, 8.0, &g.brushes.border);
         let parts = self.rec_layout(bw);
         let at = |p: RPart| parts.iter().find(|(q, _)| *q == p).map(|(_, r)| *r);
@@ -676,7 +676,7 @@ impl App {
                 } else {
                     crate::theme::text_muted()
                 };
-                unsafe { dc.FillEllipse(&dot, &g.solid(color)) };
+                unsafe { dc.FillEllipse(&dot, &g.solid(color)?) };
                 let timer = voice_note::duration_label(r.elapsed().as_millis() as u64);
                 let t = g.layout(&gfx::wide(&timer), &g.formats.menu_title, 1e6)?;
                 let tm = gfx::metrics(&t);
@@ -731,7 +731,7 @@ impl App {
                         } else {
                             crate::theme::terracotta_bright()
                         };
-                        fill_round(dc, d, 8.0, &g.solid(fill));
+                        fill_round(dc, d, 8.0, &g.solid(fill)?);
                     }
                     let k = DONE * 0.25;
                     icons::draw(

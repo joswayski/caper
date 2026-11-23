@@ -384,8 +384,8 @@ impl Dialog {
                         (crate::theme::surface_raised(), crate::theme::border())
                     };
                     let body = rect(x, y, x + w, y + h);
-                    fill_round(dc, body, 7.0, &g.solid(fill));
-                    stroke_round(dc, body, 7.0, &g.solid(border));
+                    fill_round(dc, body, 7.0, &g.solid(fill)?);
+                    stroke_round(dc, body, 7.0, &g.solid(border)?);
                     let l = layout(g, &self.history_text(*part), &g.formats.picker, w - 20.0)?;
                     crate::text::draw(
                         dc,
@@ -443,7 +443,7 @@ fn draw_column(g: &Gfx, dc: &ID2D1DeviceContext, c: &Column, x: f32, y: f32, w: 
     ty += 4.0;
     let bh = height(text) + 2.0 * BOX_PAD;
     let body = rect(x, ty, x + w, ty + bh);
-    fill_round(dc, body, RADIUS, &g.solid(crate::theme::surface_raised()));
+    fill_round(dc, body, RADIUS, &g.solid(crate::theme::surface_raised())?);
     stroke_round(dc, body, RADIUS, &g.brushes.border);
     let (ox, oy) = (x + BOX_PAD, ty + BOX_PAD);
     if !c.marks.is_empty() {

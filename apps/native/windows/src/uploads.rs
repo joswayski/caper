@@ -98,8 +98,8 @@ impl Draft {
         if self.bitmap.is_none()
             && let Some(image) = &self.thumb
         {
-            self.bitmap = Some(tex.create("draft", image));
-            self.cover = Some(tex.create("draft-cover", &caper_client::media::blur(image)));
+            self.bitmap = tex.create("draft", image);
+            self.cover = tex.create("draft-cover", &caper_client::media::blur(image));
         }
     }
 }
@@ -392,7 +392,7 @@ fn chip(
         radiusX: 14.0,
         radiusY: 14.0,
     };
-    unsafe { dc.FillEllipse(&disc, &g.solid(crate::theme::action())) };
+    unsafe { dc.FillEllipse(&disc, &g.solid(crate::theme::action())?) };
     let nudge = if playing { 0.0 } else { 1.0 };
     icons::draw(
         dc,

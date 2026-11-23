@@ -483,14 +483,14 @@ impl Dialog {
             fill_round(dc, body, 7.0, &g.brushes.composer);
             stroke_round(dc, body, 7.0, stroke);
         };
-        let border = |focused: bool| {
-            if focused {
-                g.solid(crate::theme::terracotta())
+        let border = |focused: bool| -> Result<ID2D1SolidColorBrush> {
+            Ok(if focused {
+                g.solid(crate::theme::terracotta())?
             } else if lit {
-                g.solid(crate::theme::terracotta_bright())
+                g.solid(crate::theme::terracotta_bright())?
             } else {
                 g.brushes.border.clone()
-            }
+            })
         };
         match part {
             Part::Custom => {
@@ -508,7 +508,7 @@ impl Dialog {
             }
             Part::Number(k) => {
                 let f = &ip.numbers[k as usize];
-                boxed(&border(f.focused));
+                boxed(&border(f.focused)?);
                 unsafe {
                     dc.PushAxisAlignedClip(
                         &rect(x + 2.0, y + 2.0, x + w - 2.0, y + h - 2.0),
@@ -544,7 +544,7 @@ impl Dialog {
                     &g.brushes.composer
                 };
                 fill_round(dc, body, 7.0, fill);
-                stroke_round(dc, body, 7.0, &border(selected));
+                stroke_round(dc, body, 7.0, &border(selected)?);
                 let label = EXPIRY_UNITS.get(k as usize).map_or("", |(_, l)| *l);
                 let l = layout(g, label, &g.formats.button, w)?;
                 let brush = if selected {
@@ -561,7 +561,7 @@ impl Dialog {
                 );
             }
             Part::Landing => {
-                boxed(&border(ip.landing_open));
+                boxed(&border(ip.landing_open)?);
                 let l = layout(
                     g,
                     &ip.landing_label(),

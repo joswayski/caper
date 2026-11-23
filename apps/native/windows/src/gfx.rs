@@ -491,17 +491,15 @@ impl Gfx {
         self.solids.borrow_mut().clear();
     }
 
-    /// An opaque brush of colour c, created once.
-    pub fn solid(&self, c: u32) -> ID2D1SolidColorBrush {
-        self.solids
-            .borrow_mut()
-            .entry(c)
-            .or_insert_with(|| unsafe {
-                self.dc
-                    .CreateSolidColorBrush(&color(c, 1.0), None)
-                    .expect("solid brush")
-            })
-            .clone()
+    /// An opaque brush of colour c, created once. Fails only with the
+    /// device (a lost GPU), which the frame reports instead of aborting.
+    pub fn solid(&self, c: u32) -> Result<ID2D1SolidColorBrush> {
+        if let Some(brush) = self.solids.borrow().get(&c) {
+            return Ok(brush.clone());
+        }
+        let brush = unsafe { self.dc.CreateSolidColorBrush(&color(c, 1.0), None)? };
+        self.solids.borrow_mut().insert(c, brush.clone());
+        Ok(brush)
     }
 
     pub fn layout(

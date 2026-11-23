@@ -484,7 +484,7 @@ impl Settings {
         let v = g.layout(&gfx::wide(&shown), &g.formats.dialog_note, 1e6)?;
         let vw = gfx::metrics(&v).widthIncludingTrailingWhitespace;
         let accent = if item.part == SPart::Enhancement && enabled {
-            g.solid(crate::theme::terracotta_bright())
+            g.solid(crate::theme::terracotta_bright())?
         } else {
             g.brushes.muted.clone()
         };
@@ -504,7 +504,7 @@ impl Settings {
         } else {
             crate::theme::text_muted()
         };
-        fill_round(dc, rect(left, cy - 2.0, at, cy + 2.0), 2.0, &g.solid(fill));
+        fill_round(dc, rect(left, cy - 2.0, at, cy + 2.0), 2.0, &g.solid(fill)?);
         // The default's mark, where the knob is drawn to.
         let hx = left + span * f32::from(home) / f32::from(max);
         unsafe {
@@ -523,12 +523,12 @@ impl Settings {
                     0xFFFFFF
                 } else {
                     crate::theme::text_muted()
-                }),
+                })?,
             );
             if lit {
                 dc.DrawEllipse(
                     &knob,
-                    &g.solid(crate::theme::terracotta_bright()),
+                    &g.solid(crate::theme::terracotta_bright())?,
                     2.0,
                     None,
                 );
@@ -581,13 +581,14 @@ impl Settings {
         Ok(())
     }
 
-    pub(super) fn draw_frames(&self, g: &Gfx, dc: &ID2D1DeviceContext) {
+    pub(super) fn draw_frames(&self, g: &Gfx, dc: &ID2D1DeviceContext) -> Result<()> {
         for &(r, border) in &self.frames {
             let (x, y, w, h) = self.client(r);
             let r = rect(x, y, x + w, y + h);
-            fill_round(dc, r, 8.0, &g.solid(crate::theme::blackout()));
-            stroke_round(dc, r, 8.0, &g.solid(border));
+            fill_round(dc, r, 8.0, &g.solid(crate::theme::blackout())?);
+            stroke_round(dc, r, 8.0, &g.solid(border)?);
         }
+        Ok(())
     }
 
     /// A shown sample's button reads Play or Stop.

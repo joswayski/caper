@@ -194,7 +194,7 @@ impl App {
         self.card_p.draw(s, |dc| unsafe {
             dc.Clear(None);
             let r = rect(0.5, 0.5, card.w - 0.5, card.h - 0.5);
-            fill_round(dc, r, 8.0, &g.solid(crate::theme::surface_raised()));
+            fill_round(dc, r, 8.0, &g.solid(crate::theme::surface_raised())?);
             stroke_round(dc, r, 8.0, &g.brushes.border);
             let e = rect(PAD, PAD, PAD + EMOJI, PAD + EMOJI);
             match emoji::find(&card.emoji) {

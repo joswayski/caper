@@ -378,7 +378,7 @@ pub fn circle(
                 radiusX: r,
                 radiusY: r,
             },
-            &g.solid(color),
+            &g.solid(color)?,
         );
     }
     if initials.is_empty() {

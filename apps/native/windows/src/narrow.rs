@@ -642,7 +642,7 @@ impl App {
                 unsafe {
                     dc.FillRectangle(
                         &rect(0.0, HEADER_H, self.w, HEADER_H + STRIP_H),
-                        &self.g.solid(crate::theme::accent_surface()),
+                        &self.g.solid(crate::theme::accent_surface())?,
                     );
                 }
                 let (label, detail, icon) = match self.voice_card() {
@@ -729,7 +729,7 @@ impl App {
                 if calling {
                     self.narrow_button(dc, Part::VoiceAction, icon, None)?;
                 } else if let Some((x, y, w, h)) = self.narrow_rect(Part::VoiceAction) {
-                    let action = self.g.solid(crate::theme::action());
+                    let action = self.g.solid(crate::theme::action())?;
                     fill_round(
                         dc,
                         rect(x, y, x + w, y + h),

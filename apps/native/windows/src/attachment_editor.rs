@@ -573,13 +573,13 @@ impl Editor {
             &shown,
         ) {
             let image = image.to_rgba8();
-            self.bitmap = Some(D2d(g.dc.clone()).create(
+            self.bitmap = D2d(g.dc.clone()).create(
                 "attachment-editor",
                 &caper_client::Rgba {
                     size: [image.width() as usize, image.height() as usize],
                     pixels: image.into_raw(),
                 },
-            ));
+            );
         } else {
             self.error = Some(edit::FAILED.into());
         }

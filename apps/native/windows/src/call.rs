@@ -137,7 +137,7 @@ fn label(
         &l,
         x,
         y + (h - gfx::metrics(&l).height) / 2.0,
-        &g.solid(color),
+        &g.solid(color)?,
     );
     unsafe {
         dc.PopAxisAlignedClip();
@@ -174,7 +174,7 @@ pub fn face(
             } else {
                 size / 2.0 + 2.0
             },
-            &g.solid(crate::theme::voice_green()),
+            &g.solid(crate::theme::voice_green())?,
         );
     }
     Ok(())
@@ -1048,8 +1048,8 @@ impl App {
                 }
             }
             Card::Call(call) => {
-                fill_round(dc, r, 10.0, &g.solid(live_card()));
-                stroke_round(dc, r, 10.0, &g.solid(live_card_border()));
+                fill_round(dc, r, 10.0, &g.solid(live_card())?);
+                stroke_round(dc, r, 10.0, &g.solid(live_card_border())?);
                 let Some((tx, ty, tw, _)) = local(VPart::Status) else {
                     return Ok(());
                 };
@@ -1068,7 +1068,7 @@ impl App {
                 };
                 let sl = g.layout(&gfx::wide(&state), &g.formats.direct_note, 1e6)?;
                 let sw = gfx::metrics(&sl).widthIncludingTrailingWhitespace;
-                text::draw(dc, &sl, tx + tw - sw, ty + 2.0, &g.solid(tone));
+                text::draw(dc, &sl, tx + tw - sw, ty + 2.0, &g.solid(tone)?);
                 let name = format!("#{}", call.channel);
                 let nl = g.layout(
                     &gfx::wide(&name),
@@ -1111,9 +1111,9 @@ impl App {
                     let hover = self.voice_hover == Some(p);
                     // A toggle that is on shows terracotta, as egui's.
                     let fill = if on {
-                        g.solid(crate::theme::terracotta())
+                        g.solid(crate::theme::terracotta())?
                     } else {
-                        g.solid(call_button_fill(hover))
+                        g.solid(call_button_fill(hover))?
                     };
                     fill_round(dc, b, 8.0, &fill);
                     icons::draw(
@@ -1135,7 +1135,7 @@ impl App {
                             crate::theme::terracotta()
                         } else {
                             LEAVE
-                        }),
+                        })?,
                     );
                     icons::draw(
                         dc,
@@ -1152,7 +1152,7 @@ impl App {
                         &l,
                         bx + 32.0,
                         by + (bh - m.height) / 2.0,
-                        &g.solid(0xFFFFFF),
+                        &g.solid(0xFFFFFF)?,
                     );
                 }
             }

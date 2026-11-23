@@ -573,9 +573,9 @@ impl SignIn {
         let focused = self.field().focused;
         let hovered = self.hover == Some(Part::Field);
         let stroke = if focused {
-            g.solid(crate::theme::terracotta())
+            g.solid(crate::theme::terracotta())?
         } else if hovered && enabled {
-            g.solid(crate::theme::terracotta_bright())
+            g.solid(crate::theme::terracotta_bright())?
         } else {
             g.brushes.border.clone()
         };
@@ -654,11 +654,11 @@ impl SignIn {
             (p.action, p.action, p.on_action)
         };
         let (x, y, w, h) = r;
-        let label_brush = g.solid(label);
+        let label_brush = g.solid(label)?;
         unsafe {
             let body = rect(x, y, x + w, y + h);
-            fill_round(dc, body, 7.0, &g.solid(fill));
-            stroke_round(dc, body, 7.0, &g.solid(border));
+            fill_round(dc, body, 7.0, &g.solid(fill)?);
+            stroke_round(dc, body, 7.0, &g.solid(border)?);
             let l = layout(g, self.primary_label(), &g.formats.action, w)?;
             crate::text::draw(dc, &l, x + 21.0, y + (h - height(&l)) / 2.0, &label_brush);
             let (cx, cy) = (x + w - 22.0, y + h / 2.0);

@@ -1032,7 +1032,7 @@ impl Settings {
                     &g.brushes.border,
                 );
             }
-            self.draw_frames(g, dc);
+            self.draw_frames(g, dc)?;
             for item in &self.items {
                 let r = self.client(item.rect);
                 if r.1 + r.3 < by || r.1 > by + bh {
@@ -1134,7 +1134,7 @@ impl Settings {
                     enabled,
                     on,
                     hover,
-                );
+                )?;
             }
             SPart::UnreadOnly => {
                 let l = g.layout(&gfx::wide(&item.text), &g.formats.dialog_note, w - 52.0)?;
@@ -1148,7 +1148,7 @@ impl Settings {
                     enabled,
                     on,
                     hover,
-                );
+                )?;
             }
             SPart::Filter(_) => {
                 let r = rect(x, y, x + w, y + h);
@@ -1228,7 +1228,7 @@ impl Settings {
                         radiusX: 7.5,
                         radiusY: 7.5,
                     };
-                    unsafe { dc.DrawEllipse(&e, &g.solid(ring), 1.5, None) };
+                    unsafe { dc.DrawEllipse(&e, &g.solid(ring)?, 1.5, None) };
                     if on {
                         let dot = D2D1_ELLIPSE {
                             radiusX: 4.0,
@@ -1236,13 +1236,13 @@ impl Settings {
                             ..e
                         };
                         unsafe {
-                            dc.FillEllipse(&dot, &g.solid(crate::theme::terracotta_bright()))
+                            dc.FillEllipse(&dot, &g.solid(crate::theme::terracotta_bright())?)
                         };
                     }
                 } else {
                     let b = rect(mx - 8.0, my - 8.0, mx + 8.0, my + 8.0);
                     if on {
-                        fill_round(dc, b, 4.0, &g.solid(crate::theme::terracotta()));
+                        fill_round(dc, b, 4.0, &g.solid(crate::theme::terracotta())?);
                         icons::draw(
                             dc,
                             Icon::Check,
@@ -1251,7 +1251,7 @@ impl Settings {
                             1.0,
                         );
                     } else {
-                        stroke_round(dc, b, 4.0, &g.solid(ring));
+                        stroke_round(dc, b, 4.0, &g.solid(ring)?);
                     }
                 }
                 let l = g.layout(&gfx::wide(&item.text), &g.formats.dialog_note, w - 26.0)?;
@@ -1381,7 +1381,7 @@ fn draw_theme_card(
     } else {
         crate::theme::surface_raised()
     };
-    fill_round(dc, card, 13.0, &g.solid(fill));
+    fill_round(dc, card, 13.0, &g.solid(fill)?);
     if selected {
         let halo = rect(x - 1.5, y - 1.5, x + w + 1.5, y + h + 1.5);
         let halo_brush = unsafe {
@@ -1400,14 +1400,14 @@ fn draw_theme_card(
     } else {
         crate::theme::border()
     };
-    stroke_round(dc, card, 13.0, &g.solid(border));
+    stroke_round(dc, card, 13.0, &g.solid(border)?);
 
     let sx = x + 10.0;
     let sy = y + 10.0;
     let sw = w - 20.0;
     let sh = 52.0;
     let swatch = rect(sx, sy, sx + sw, sy + sh);
-    fill_round(dc, swatch, 9.0, &g.solid(palette.frame));
+    fill_round(dc, swatch, 9.0, &g.solid(palette.frame)?);
     let swatch_border = unsafe { dc.CreateSolidColorBrush(&gfx::color(0x808080, 0.24), None)? };
     stroke_round(dc, swatch, 9.0, &swatch_border);
 
@@ -1420,7 +1420,7 @@ fn draw_theme_card(
         dc,
         rect(ix, iy, ix + sb_w, iy + ih),
         5.0,
-        &g.solid(palette.sidebar),
+        &g.solid(palette.sidebar)?,
     );
     let cv_x = ix + sb_w + 5.0;
     let cv_w = (iw - sb_w - 5.0).max(16.0);
@@ -1428,7 +1428,7 @@ fn draw_theme_card(
         dc,
         rect(cv_x, iy, cv_x + cv_w, iy + ih),
         6.0,
-        &g.solid(palette.convo),
+        &g.solid(palette.convo)?,
     );
 
     let sb_bar_w = (sb_w - 10.0).max(6.0);
@@ -1436,7 +1436,7 @@ fn draw_theme_card(
         dc,
         rect(ix + 5.0, iy + 6.0, ix + 5.0 + sb_bar_w * 0.78, iy + 10.5),
         2.25,
-        &g.solid(palette.brand),
+        &g.solid(palette.brand)?,
     );
     let muted_brush = unsafe { dc.CreateSolidColorBrush(&gfx::color(palette.muted, 0.72), None)? };
     fill_round(
@@ -1486,7 +1486,7 @@ fn draw_theme_card(
             iy + ih - 6.0,
         ),
         4.25,
-        &g.solid(palette.action),
+        &g.solid(palette.action)?,
     );
 
     let meta_y = sy + sh + 9.0;
@@ -1513,16 +1513,21 @@ pub(crate) fn switch(
     enabled: bool,
     on: bool,
     hover: bool,
-) {
+) -> Result<()> {
     let track = rect(x, y, x + 40.0, y + 22.0);
     let fill = match (enabled, on) {
         (false, _) => crate::theme::surface_raised(),
         (true, true) => crate::theme::terracotta(),
         (true, false) => crate::theme::border(),
     };
-    fill_round(dc, track, 11.0, &g.solid(fill));
+    fill_round(dc, track, 11.0, &g.solid(fill)?);
     if hover {
-        stroke_round(dc, track, 11.0, &g.solid(crate::theme::terracotta_bright()));
+        stroke_round(
+            dc,
+            track,
+            11.0,
+            &g.solid(crate::theme::terracotta_bright())?,
+        );
     }
     let e = D2D1_ELLIPSE {
         point: windows_numerics::Vector2 {
@@ -1537,7 +1542,8 @@ pub(crate) fn switch(
     } else {
         crate::theme::text_muted()
     };
-    unsafe { dc.FillEllipse(&e, &g.solid(knob)) };
+    unsafe { dc.FillEllipse(&e, &g.solid(knob)?) };
+    Ok(())
 }
 
 fn style(g: &Gfx, s: Style) -> (&IDWriteTextFormat, &ID2D1SolidColorBrush) {
@@ -2429,7 +2435,7 @@ impl App {
         unsafe {
             dc.FillRectangle(
                 &rect(0.0, card_top, width, h),
-                &g.solid(crate::theme::surface_sidebar()),
+                &g.solid(crate::theme::surface_sidebar())?,
             );
         }
         let card = rect(12.0, card_top, width - 12.0, top + FOOT_CARD_H);

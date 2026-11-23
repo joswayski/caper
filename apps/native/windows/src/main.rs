@@ -4175,7 +4175,19 @@ impl App {
         self.signin_p.draw(s, |dc| form.draw(g, dc, w, h))
     }
 
+    /// Draws the panels the damage flags name, taking them. A failed draw
+    /// (such as a lost GPU device) keeps them, so the next frame tries again.
     fn draw_panels(&mut self) -> Result<()> {
+        let d = std::mem::take(&mut self.dirty);
+        let drawn = self.draw_dirty_panels(d);
+        if drawn.is_err() {
+            // Nothing below sets flags while drawing: these are all of them.
+            self.dirty = d;
+        }
+        drawn
+    }
+
+    fn draw_dirty_panels(&mut self, d: Dirty) -> Result<()> {
         let s = self.scale;
         let preview_thumb = self.preview_thumb(false);
         let (space_badges, channel_badges) = self.badges();
@@ -4184,7 +4196,6 @@ impl App {
             .collect();
         let g = &self.g;
         let c = &self.c;
-        let d = std::mem::take(&mut self.dirty);
         // Invitations: the rail's tiles and Join with invite link (while
         // signed in), and the sidebar's private channel invitations.
         let (rail_invites, side_invites) = self.invite_names();
@@ -4268,7 +4279,7 @@ impl App {
                             &dc.CreateSolidColorBrush(&gfx::color(theme::text(), 0.5), None)?,
                         );
                         let b = rect(r.left - 6.0, r.top - 6.0, r.left + 12.0, r.top + 12.0);
-                        fill_round(dc, b, 9.0, &g.solid(theme::blackout()));
+                        fill_round(dc, b, 9.0, &g.solid(theme::blackout())?);
                         icons::draw(
                             dc,
                             icons::Icon::BellOff,
@@ -4289,7 +4300,7 @@ impl App {
                                 dc,
                                 rect(b.left + 2.0, b.top + 2.0, b.right - 2.0, b.bottom - 2.0),
                                 7.0,
-                                &g.solid(theme::voice_green()),
+                                &g.solid(theme::voice_green())?,
                             );
                         }
                         icons::draw(
@@ -4339,12 +4350,12 @@ impl App {
                             r.right + 3.0,
                             r.bottom + 3.0,
                         );
-                        fill_round(dc, b, 10.0, &g.solid(theme::blackout()));
+                        fill_round(dc, b, 10.0, &g.solid(theme::blackout())?);
                         let inner = rect(b.left + 2.0, b.top + 2.0, b.right - 2.0, b.bottom - 2.0);
                         fill_round(dc, inner, 8.0, &g.brushes.terracotta);
                         n.SetMaxWidth(inner.right - inner.left)?;
                         n.SetMaxHeight(inner.bottom - inner.top)?;
-                        text::draw(dc, &n, inner.left, inner.top, &g.solid(0xFFFFFF));
+                        text::draw(dc, &n, inner.left, inner.top, &g.solid(0xFFFFFF)?);
                     }
                 }
                 if let Some(names) = &rail_invites {
@@ -4687,7 +4698,7 @@ impl App {
                     dc,
                     rect(0.0, 0.0, mw, self.members_h()),
                     if self.is_narrow() { 16.0 } else { 0.0 },
-                    &g.solid(theme::surface_sidebar()),
+                    &g.solid(theme::surface_sidebar())?,
                 );
                 dc.FillRectangle(&rect(0.0, 0.0, 1.0, 100_000.0), &g.brushes.border);
                 if self.panes.focus == Some(panes::Pane::Members) {
@@ -4756,7 +4767,7 @@ impl App {
                     let m = &c.members[i];
                     let av = rect(16.0, top + 8.0, 46.0, top + 38.0);
                     if !avatars::draw(dc, &m.avatar, av, 30.0 * 0.3) {
-                        fill_round(dc, av, 15.0, &g.solid(m.color));
+                        fill_round(dc, av, 15.0, &g.solid(m.color)?);
                     }
                     if m.online {
                         let e = D2D1_ELLIPSE {
@@ -5194,7 +5205,7 @@ fn draw_typing(
         if names.is_empty() {
             return Ok(());
         }
-        let brush = g.solid(theme::text_muted());
+        let brush = g.solid(theme::text_muted())?;
         for i in 0..3 {
             let (rise, opacity) = lift.map_or((0.0, 1.0), |l| (3.0 * l[i], 0.45 + 0.55 * l[i]));
             brush.SetOpacity(opacity);

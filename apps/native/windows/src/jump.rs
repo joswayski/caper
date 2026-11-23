@@ -144,7 +144,7 @@ fn paint(g: &gfx::Gfx, dc: &ID2D1DeviceContext, t: &Toast, look: Drawn) -> Resul
         crate::theme::action_hover()
     } else {
         crate::theme::action()
-    });
+    })?;
     gfx::fill_round(dc, b, RADIUS, &fill);
     let th = gfx::metrics(&t.button).height;
     text::draw(

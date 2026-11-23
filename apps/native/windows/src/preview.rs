@@ -80,7 +80,7 @@ pub fn draw(
     card: D2D_RECT_F,
     remove_hover: bool,
 ) -> Result<()> {
-    fill_round(dc, card, 8.0, &g.solid(crate::theme::surface_raised()));
+    fill_round(dc, card, 8.0, &g.solid(crate::theme::surface_raised())?);
     stroke_round(dc, card, 8.0, &g.brushes.border);
     let mut x = card.left + 8.0;
     if image(embed).is_some() {
@@ -133,7 +133,7 @@ pub fn draw(
         y += gfx::metrics(&l).height + 2.0;
     }
     let r = remove_rect(card);
-    fill_round(dc, r, 8.0, &g.solid(crate::theme::surface_raised()));
+    fill_round(dc, r, 8.0, &g.solid(crate::theme::surface_raised())?);
     stroke_round(dc, r, 8.0, &g.brushes.border);
     icons::draw(
         dc,

@@ -232,7 +232,7 @@ pub fn draw(
         radiusX: 16.0,
         radiusY: 16.0,
     };
-    unsafe { dc.FillEllipse(&disc, &g.solid(crate::theme::action())) };
+    unsafe { dc.FillEllipse(&disc, &g.solid(crate::theme::action())?) };
     let nudge = if playing { 0.0 } else { 1.0 };
     icons::draw(
         dc,

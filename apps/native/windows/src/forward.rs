@@ -755,13 +755,13 @@ impl Dialog {
                         },
                     )?;
                     let brush = if primary {
-                        g.solid(crate::theme::on_action())
+                        g.solid(crate::theme::on_action())?
                     } else if p == Part::Error {
-                        g.solid(crate::theme::error())
+                        g.solid(crate::theme::error())?
                     } else if action && enabled {
-                        g.solid(crate::theme::text())
+                        g.solid(crate::theme::text())?
                     } else {
-                        g.solid(crate::theme::text_muted())
+                        g.solid(crate::theme::text_muted())?
                     };
                     // A destination's text starts where the search field's
                     // does, 10 DIPs in, matching its checkbox's 10 DIP inset.

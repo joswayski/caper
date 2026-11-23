@@ -1188,7 +1188,7 @@ impl App {
             }
             if let (Some((y, _)), Some(e)) = (geo.error, &v.error) {
                 let l = layout(g, e, &g.formats.error, inner)?;
-                crate::text::draw(dc, &l, cx + PAD, y, &g.solid(crate::theme::error()));
+                crate::text::draw(dc, &l, cx + PAD, y, &g.solid(crate::theme::error())?);
             }
             if let Some(y) = geo.divider {
                 dc.FillRectangle(
@@ -1246,7 +1246,7 @@ impl App {
                         );
                         stroke_round(dc, r, 7.0, &g.brushes.border);
                         let l = layout(g, label, &g.formats.button, pw - 24.0)?;
-                        let brush = g.solid(tint);
+                        let brush = g.solid(tint)?;
                         brush.SetOpacity(alpha);
                         crate::text::draw(dc, &l, x + 12.0, y + (ph - height(&l)) / 2.0, &brush);
                     }
@@ -1338,7 +1338,7 @@ impl App {
                         fill_round(dc, rect(x, y, x + pw, y + ph), 4.0, &g.brushes.border);
                     }
                     let l = layout(g, &v.part_name(part), &g.formats.menu_item, pw - 16.0)?;
-                    let brush = g.solid(crate::theme::text());
+                    let brush = g.solid(crate::theme::text())?;
                     brush.SetOpacity(if on { 1.0 } else { 0.5 });
                     crate::text::draw(dc, &l, x + 8.0, y + (ph - height(&l)) / 2.0, &brush);
                 }

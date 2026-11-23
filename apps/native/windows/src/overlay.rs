@@ -286,7 +286,7 @@ impl Menu {
                     alpha,
                 );
                 let l = layout(g, item.label(), &g.formats.menu_item, iw - 40.0)?;
-                let brush = g.solid(color);
+                let brush = g.solid(color)?;
                 brush.SetOpacity(alpha);
                 crate::text::draw(dc, &l, ix + 32.0, cy - height(&l) / 2.0, &brush);
                 brush.SetOpacity(1.0);
@@ -1441,9 +1441,9 @@ impl Dialog {
     ) -> Result<()> {
         let body = rect(x, y, x + pw, y + ph);
         let stroke = if self.field.focused {
-            g.solid(crate::theme::terracotta())
+            g.solid(crate::theme::terracotta())?
         } else if self.hover == Some(Part::Field) {
-            g.solid(crate::theme::terracotta_bright())
+            g.solid(crate::theme::terracotta_bright())?
         } else {
             g.brushes.border.clone()
         };
@@ -1488,7 +1488,7 @@ impl Dialog {
         };
         let r = rect(x, y, x + w, y + h);
         if self.selected == k {
-            fill_round(dc, r, 6.0, &g.solid(crate::theme::accent_surface()));
+            fill_round(dc, r, 6.0, &g.solid(crate::theme::accent_surface())?);
         } else if self.hover == Some(Part::Suggest(k)) {
             fill_round(dc, r, 6.0, &g.brushes.hover);
         }
@@ -1577,7 +1577,7 @@ pub(crate) fn draw_button(
         _ => 9.0,
     };
     let body = rect(x, y, x + w, y + h);
-    fill_round(dc, body, radius, &g.solid(fill));
+    fill_round(dc, body, radius, &g.solid(fill)?);
     // Tactile top specular rim highlight for non-disabled buttons.
     if state != 0 && state != 3 {
         let rim = rect(x + 1.0, y + 1.0, x + w - 1.0, y + h - 1.0);
@@ -1602,14 +1602,14 @@ pub(crate) fn draw_button(
             unsafe { dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, rim_alpha), None)? };
         stroke_round(dc, rim, (radius - 1.0).max(2.0), &rim_brush);
     }
-    stroke_round(dc, body, radius, &g.solid(border));
+    stroke_round(dc, body, radius, &g.solid(border)?);
     let l = layout(g, label, &g.formats.button, w)?;
     crate::text::draw(
         dc,
         &l,
         x + (w - width(&l)) / 2.0,
         y + (h - height(&l)) / 2.0,
-        &g.solid(text),
+        &g.solid(text)?,
     );
     Ok(())
 }

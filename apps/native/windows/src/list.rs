@@ -734,7 +734,7 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
                     text.SetDrawingEffect(&g.brushes.muted, r)?;
                 }
                 SpanKind::CodeToken(tok) => {
-                    let brush = g.solid(syntax_color(tok));
+                    let brush = g.solid(syntax_color(tok))?;
                     text.SetDrawingEffect(&brush, r)?;
                 }
                 SpanKind::Spoiler => gfx::join_range(&mut spoiled, s, l),
@@ -1620,7 +1620,7 @@ fn draw_content(
                 hy + (QUOTE_HEADING + QUOTE_AVATAR) / 2.0,
             );
             if !crate::avatars::draw(dc, &q.avatar, a, QUOTE_AVATAR * 0.3) {
-                fill_round(dc, a, QUOTE_AVATAR * 0.3, &g.solid(q.color));
+                fill_round(dc, a, QUOTE_AVATAR * 0.3, &g.solid(q.color)?);
                 crate::text::draw(dc, &q.initials, a.left, a.top, &g.brushes.text);
             }
             crate::text::draw(dc, &q.name, a.right + 6.0, hy + 2.0, &g.brushes.muted);
@@ -1651,7 +1651,7 @@ fn draw_content(
             let a = rect(PAD_X, hy, PAD_X + AVATAR, hy + AVATAR);
             let author = &c.members[m.author];
             if !crate::avatars::draw(dc, &author.avatar, a, AVATAR * 0.3) {
-                fill_round(dc, a, AVATAR * 0.3, &g.solid(author.color));
+                fill_round(dc, a, AVATAR * 0.3, &g.solid(author.color)?);
                 crate::text::draw(dc, &h.initials, a.left, a.top, &g.brushes.text);
             }
             crate::text::draw(dc, &h.name, BODY_X, hy, &g.brushes.text);

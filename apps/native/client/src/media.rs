@@ -66,8 +66,9 @@ fn owner(key: &str) -> &str {
 pub trait Textures {
     type Texture;
     type Id: Copy + PartialEq + std::fmt::Debug;
-    /// Make a texture for cache key `key` (an attachment id, or a spoiler-cover key).
-    fn create(&mut self, key: &str, image: &Rgba) -> Self::Texture;
+    /// Make a texture for cache key `key` (an attachment id, or a spoiler-cover key);
+    /// `None` when the GPU cannot (a lost device), which shows as a failed image.
+    fn create(&mut self, key: &str, image: &Rgba) -> Option<Self::Texture>;
     /// Replace a texture's pixels (the next GIF frame); same size as created.
     fn update(&mut self, texture: &mut Self::Texture, image: &Rgba);
     fn id(texture: &Self::Texture) -> Self::Id;
@@ -297,8 +298,9 @@ impl<T: Textures> Media<T> {
 
     pub fn local_spoiler(&mut self, textures: &mut T, id: &str, image: &Rgba) -> ImageState<T::Id> {
         let cover_id = spoiler_key(id);
-        if !self.images.contains_key(&cover_id) {
-            let texture = textures.create(&cover_id, &blur(image));
+        if !self.images.contains_key(&cover_id)
+            && let Some(texture) = textures.create(&cover_id, &blur(image))
+        {
             self.images.insert(
                 cover_id.clone(),
                 Entry::Ready {
@@ -326,7 +328,9 @@ impl<T: Textures> Media<T> {
         ) {
             return;
         }
-        let texture = textures.create(id, &image);
+        let Some(texture) = textures.create(id, &image) else {
+            return;
+        };
         self.local.insert(id.to_owned());
         self.images.insert(
             id.to_owned(),
@@ -497,7 +501,17 @@ impl<T: Textures> Media<T> {
             let gif = *gif;
             match fetched.result {
                 Ok(frames) if !frames.is_empty() => {
-                    let texture = textures.create(&fetched.id, &frames[0].0);
+                    let Some(texture) = textures.create(&fetched.id, &frames[0].0) else {
+                        // No texture without the GPU: failed, not fetched again.
+                        self.images.insert(
+                            fetched.id,
+                            Entry::Failed {
+                                url: Some(url),
+                                awaiting_refresh: false,
+                            },
+                        );
+                        continue;
+                    };
                     self.images.insert(
                         fetched.id,
                         Entry::Ready {
@@ -655,13 +669,13 @@ mod tests {
     impl Textures for Counting {
         type Texture = Texture;
         type Id = u64;
-        fn create(&mut self, key: &str, image: &Rgba) -> Texture {
+        fn create(&mut self, key: &str, image: &Rgba) -> Option<Texture> {
             self.next += 1;
             self.creates.push(key.to_owned());
-            Texture {
+            Some(Texture {
                 id: self.next,
                 image: image.clone(),
-            }
+            })
         }
         fn update(&mut self, texture: &mut Texture, image: &Rgba) {
             assert_eq!(texture.image.size, image.size);

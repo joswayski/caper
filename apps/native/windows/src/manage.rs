@@ -196,7 +196,7 @@ impl Dialog {
                     self.enabled(Part::Toggle),
                     self.private,
                     self.hover == Some(Part::Toggle),
-                );
+                )?;
             }
             _ => {}
         }

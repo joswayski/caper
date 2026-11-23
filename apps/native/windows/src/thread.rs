@@ -483,7 +483,7 @@ impl Pane {
         let reply_rect = self.reply_rect(h);
         if let (Some(r), Some((x, y, w, _))) = (&mut self.reply, reply_rect) {
             r.cancel_hover = self.hover == Some(Part::CancelReply);
-            r.draw(g, dc, x, y, w);
+            r.draw(g, dc, x, y, w)?;
         }
         // "Also send to #channel" in its own row above the box.
         let check_y = h - 16.0 - self.box_h - 8.0 - CHECK_H;

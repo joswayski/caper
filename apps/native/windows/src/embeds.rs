@@ -528,7 +528,7 @@ fn picture(
     } else {
         6.0
     };
-    fill_round(dc, r, radius, &g.solid(crate::theme::surface_raised()));
+    fill_round(dc, r, radius, &g.solid(crate::theme::surface_raised())?);
     if let (Some(c), Some(source)) = (ctx, &p.source)
         && matches!(c.media.image(&p.key, Some(source)), ImageState::Ready(_))
         && let Some(bmp) = c.media.texture(&p.key)

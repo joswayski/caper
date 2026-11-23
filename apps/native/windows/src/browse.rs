@@ -213,9 +213,9 @@ impl Dialog {
                 Part::Field => {
                     let body = rect(x, y, x + w, y + h);
                     let stroke = if self.field.focused {
-                        g.solid(crate::theme::terracotta())
+                        g.solid(crate::theme::terracotta())?
                     } else if self.hover == Some(Part::Field) {
-                        g.solid(crate::theme::terracotta_bright())
+                        g.solid(crate::theme::terracotta_bright())?
                     } else {
                         g.brushes.border.clone()
                     };

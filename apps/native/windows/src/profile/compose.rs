@@ -477,7 +477,7 @@ impl App {
                             crate::theme::error()
                         } else {
                             crate::theme::text_muted()
-                        }),
+                        })?,
                     );
                     unsafe {
                         dc.PopAxisAlignedClip();

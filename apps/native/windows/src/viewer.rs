@@ -1045,7 +1045,7 @@ fn show_frame(
     let mut tex = D2d(dc.clone());
     match frame {
         Some(b) if same => tex.update(b, &image),
-        _ => *frame = Some(tex.create("viewer-video", &image)),
+        _ => *frame = tex.create("viewer-video", &image),
     }
 }
 

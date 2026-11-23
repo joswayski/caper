@@ -420,7 +420,7 @@ impl App {
         };
         let x = x - RAIL_W;
         let r = rect(x, y, x + w, y + h);
-        fill_round(dc, r, RADIUS, &g.solid(crate::theme::surface_raised()));
+        fill_round(dc, r, RADIUS, &g.solid(crate::theme::surface_raised())?);
         if self.update_dock_hover {
             fill_round(dc, r, RADIUS, &g.brushes.hover);
         }

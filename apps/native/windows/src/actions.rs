@@ -531,7 +531,7 @@ impl ReplyBar {
         })
     }
 
-    pub fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32) {
+    pub fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32) -> Result<()> {
         // A card: 1px border, 8px corners, 3% white over the conversation,
         // and a 2px terracotta accent along its rounded left edge.
         let h = self.height;
@@ -541,7 +541,7 @@ impl ReplyBar {
             dc,
             rect(x + 3.0, y + 1.0, x + w - 1.0, y + h - 1.0),
             7.0,
-            &g.solid(crate::theme::surface_raised()),
+            &g.solid(crate::theme::surface_raised())?,
         );
         crate::text::draw(dc, &self.name, x + 10.0, y + 8.0, &g.brushes.muted);
         if let Some(t) = &self.text {
@@ -568,6 +568,7 @@ impl ReplyBar {
             },
             1.0,
         );
+        Ok(())
     }
 }
 
@@ -1246,8 +1247,7 @@ impl App {
                     self.reply_p.offset((x * s).round(), (y * s).round())?;
                     self.reply_p.draw(s, |dc| {
                         unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
-                        r.draw(g, dc, 0.0, 0.0, w);
-                        Ok(())
+                        r.draw(g, dc, 0.0, 0.0, w)
                     })?;
                 }
                 _ => self.reply_p.offset(-10_000.0, 0.0)?,
