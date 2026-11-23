@@ -9,7 +9,7 @@ use crate::{App, EV_SCREEN};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use windows::Win32::UI::WindowsAndMessaging::{
-    IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    ASFW_ANY, AllowSetForegroundWindow, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
 };
 
 /// egui's handoff file (eframe's storage directory, `%APPDATA%\Caper\data`).
@@ -24,7 +24,12 @@ pub fn launch_code() -> Option<String> {
 }
 
 /// Gives `code` to an already-running Caper. False when none accepted it.
+/// Windows lets only the process the browser just started take the
+/// foreground, so this launch first passes that right on; otherwise the
+/// running window's `SetForegroundWindow` only flashes its taskbar button.
 pub fn hand_off(code: &str) -> bool {
+    // SAFETY: takes no pointers; failing only leaves focus as it was.
+    let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
     handoff_path().is_some_and(|path| caper_client::app_link::hand_off_at(&path, code))
 }
 

@@ -86,7 +86,7 @@ wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", 
 # system runtime at run time.
 caper-web-player = { path = "web-player", features = ["engine"] }
 wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "dx12"] }
-windows = { version = "0.61.3", features = ["UI_ViewManagement"] }
+windows = { version = "0.61.3", features = ["UI_ViewManagement", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.55"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
@@ -107,7 +107,9 @@ strip = "debuginfo"
 lto = "thin"
 
 [lints.rust]
-unsafe_code = "forbid"
+# Only the Windows invite link handoff's foreground grant needs it (see
+# src/app_link.rs).
+unsafe_code = "deny"
 
 [lints.clippy]
 all = "deny"
