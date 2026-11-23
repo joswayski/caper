@@ -378,11 +378,11 @@ try {
   waitCentered(target);
   assert.equal(evaluate(`!!document.querySelector('${target} .chat-pin-marker')`), false);
   assert.equal(
-    evaluate('!![...document.querySelectorAll("button")].find(b => b.textContent === "Back to latest")'),
+    evaluate('document.querySelector(".chat-jump-latest")?.textContent.startsWith("You’re viewing older messages")'),
     true,
   );
   screenshot("pins-jump-context");
-  action("Back to latest");
+  action("Jump to latest");
   wait(`!document.querySelector('${target}') && !document.querySelector('.chat-initial-messages')`);
   wait(`(() => {
     const row = [...document.querySelectorAll('.chat-message p')].find(p => p.textContent === 'TEST FIXTURE — Context message 159');
@@ -396,7 +396,7 @@ try {
   browser("fill", "#chat-message", "Sent from pinned context");
   browser("press", "Enter");
   wait(
-    `!document.querySelector('${target}') && ![...document.querySelectorAll('button')].some(b => b.textContent === 'Back to latest') && [...document.querySelectorAll('.chat-message:not(.chat-message-pending) p')].some(p => p.textContent.includes('Sent from pinned context'))`,
+    `!document.querySelector('${target}') && !document.querySelector('.chat-jump-latest') && [...document.querySelectorAll('.chat-message:not(.chat-message-pending) p')].some(p => p.textContent.includes('Sent from pinned context'))`,
   );
 
   // Touch-sized browser layout: visible actions and outside dismissal, not a physical-device test.

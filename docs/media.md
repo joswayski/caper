@@ -2097,18 +2097,20 @@ channel/thread; others return 404. `after=<sequence>` returns the next 50 rows
 ascending. Clients scroll to and highlight the target, expose older/newer paging
 and keep a bounded window so latest rows are never spliced across a history gap.
 Context snapshots merge independently of the replay cursor. Pinned non-broadcast
-replies navigate into their thread. Back to latest, and sends from historical
+replies navigate into their thread. Jump to latest, and sends from historical
 context, reload the latest page. A target deleted before its context loads is
 answered with "That message was deleted." on web, Android, Apple and the egui
 desktop, which hide deleted rows; Linux and Windows land on its "This message
 was deleted." row.
 
 On every client, a channel, DM or thread scrolled more than half a screen above
-its newest loaded message shows a floating **Jump to latest** button over the list's
-bottom corner. It counts messages other people post meanwhile ("3 new
+its newest loaded message shows a floating toast centered just above the
+composer, as in Discord: "You're viewing older messages" and a **Jump to latest**
+button. It counts messages other people post meanwhile (the label becomes "3 new
 messages", terracotta border), scrolls back to the newest message and resumes
-following. It is hidden while a history window is detached from the live end;
-Load newer and Back to latest cover that case.
+following. A channel's history window detached from the live end (after Go to
+message) shows the toast wherever the reader is, and its Jump to latest reloads
+the latest page; Load newer sits at the end of that window's list.
 
 A send whose outcome is unknown (a network error, a timeout or a 5xx) keeps its
 pending row and is sent again with the same `clientMessageId`, so it is stored

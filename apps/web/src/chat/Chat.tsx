@@ -118,6 +118,8 @@ interface HistoryContext {
   olderError?: string;
   loadOlder: () => void;
   onListReady?: () => void;
+  /** A jump's window that stops short of the live end; Jump to latest returns to it. */
+  newer?: { loading?: boolean; error?: string; load: () => void };
 }
 
 function HistoryHeader({ context }: { context?: HistoryContext }) {
@@ -157,7 +159,21 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
   );
 }
 
-const listComponents = { Header: HistoryHeader, List: MessageList };
+/** Pages a detached window toward the live end, clear of the Jump to latest toast over it. */
+function HistoryFooter({ context }: { context?: HistoryContext }) {
+  const newer = context?.newer;
+  if (!newer) return null;
+  return (
+    <div className="chat-history chat-history-newer" role="status">
+      {newer.error && <span>{newer.error}</span>}
+      <button type="button" disabled={newer.loading} onClick={newer.load}>
+        {newer.loading ? "Loading…" : newer.error ? "Retry newer messages" : "Load newer messages"}
+      </button>
+    </div>
+  );
+}
+
+const listComponents = { Header: HistoryHeader, List: MessageList, Footer: HistoryFooter };
 // Computed border-box sizes retain subpixels without the homepage window's
 // transform scale. Rounded offsets accumulate error between the preview and list.
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") =>
@@ -2205,6 +2221,13 @@ export default function Chat({
                   olderError: state.olderError,
                   loadOlder,
                   onListReady: listReady ? undefined : () => setListReady(true),
+                  newer: state.hasNewer
+                    ? {
+                        loading: state.loadingNewer,
+                        error: state.newerError,
+                        load: () => void clientRef.current?.loadNewer(),
+                      }
+                    : undefined,
                 }}
                 className="chat-scroller"
                 aria-hidden={!listReady}
@@ -2264,13 +2287,20 @@ export default function Chat({
             <p className="chat-action-status" aria-hidden="true" key={actionStatus?.key}>
               {actionStatus?.text}
             </p>
-            {state.phase === "ready" && listReady && !state.hasNewer && (
+            {state.phase === "ready" && listReady && (
               <JumpToLatest
                 scroller={scroller}
                 messages={messages}
                 viewerId={viewerId}
                 blockedIds={blockedIds}
+                detached={state.hasNewer}
                 onJump={(smooth) => {
+                  if (state.hasNewer) {
+                    setJumpMessage(undefined);
+                    setScrollTarget("latest");
+                    clientRef.current?.retryLoad();
+                    return;
+                  }
                   followUpdatedRows.current = false;
                   listRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: smooth ? "smooth" : "auto" });
                 }}
@@ -2278,24 +2308,6 @@ export default function Chat({
             )}
           </div>
         </div>
-        {state.hasNewer && (
-          <div className="chat-history" role="status">
-            {state.newerError && <span>{state.newerError}</span>}
-            <button type="button" disabled={state.loadingNewer} onClick={() => void clientRef.current?.loadNewer()}>
-              {state.loadingNewer ? "Loading…" : state.newerError ? "Retry newer messages" : "Load newer messages"}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setJumpMessage(undefined);
-                setScrollTarget("latest");
-                clientRef.current?.retryLoad();
-              }}
-            >
-              Back to latest
-            </button>
-          </div>
-        )}
 
         {mentionCard && (
           <MentionCard

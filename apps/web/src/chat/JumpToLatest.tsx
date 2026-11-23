@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown } from "lucide-react";
 
 interface TimelineEntry {
   clientMessageId: string;
@@ -13,22 +12,27 @@ const position =
     gap(scroller) > scroller.clientHeight / 2 ? (current ?? { key: latest }) : undefined;
 
 /**
- * A floating way back to the newest message, shown once the reader is more than
- * half a screen above it. Counts what other people post meanwhile. It keeps its
- * own scroll state, so scrolling never re-renders the conversation around it.
+ * A floating toast above the composer: "You're viewing older messages" with a
+ * way back to the newest message, shown once the reader is more than half a
+ * screen above it, or always while `detached` (a jump's history window that
+ * stops short of the live end). Counts what other people post meanwhile. It
+ * keeps its own scroll state, so scrolling never re-renders the conversation.
  */
 export default function JumpToLatest({
   scroller,
   messages,
   viewerId,
   blockedIds,
+  detached,
   onJump,
 }: {
   scroller: HTMLElement | null;
-  /** The loaded messages, oldest first, reaching the live end. */
+  /** The loaded messages, oldest first, reaching the live end unless `detached`. */
   messages: readonly TimelineEntry[];
   viewerId?: string;
   blockedIds?: ReadonlySet<string>;
+  /** The loaded window stops short of the live end; jumping reloads the latest page. */
+  detached?: boolean;
   /** Scroll to the newest message and follow new ones again. */
   onJump: (smooth: boolean) => void;
 }) {
@@ -57,6 +61,7 @@ export default function JumpToLatest({
     const frame = requestAnimationFrame(() => setLeftAt(position(scroller, latestRef.current)));
     return () => cancelAnimationFrame(frame);
   }, [scroller, latest, messages.length]);
+  if (detached) return <JumpToast onJump={() => onJump(false)} />;
   if (!leftAt || !scroller) return null;
 
   const since = messages.findIndex((message) => message.clientMessageId === leftAt.key);
@@ -66,22 +71,27 @@ export default function JumpToLatest({
     const author = message.author?.id;
     if (author && author !== viewerId && !blockedIds?.has(author)) count++;
   }
-  const label = count ? `${count > 99 ? "99+" : count} new ${count === 1 ? "message" : "messages"}` : undefined;
   return (
-    <button
-      type="button"
-      className="chat-jump-latest"
-      data-new={count > 0 || undefined}
-      aria-label={label ? `Jump to latest, ${label}` : "Jump to latest"}
-      title="Jump to latest"
-      onClick={() =>
+    <JumpToast
+      count={count}
+      onJump={() =>
         onJump(
           gap(scroller) <= scroller.clientHeight * 3 && !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         )
       }
-    >
-      <ArrowDown size={16} aria-hidden="true" />
-      {label}
-    </button>
+    />
+  );
+}
+
+/** The toast itself, shared with the homepage simulation. */
+export function JumpToast({ count = 0, onJump }: { count?: number; onJump: () => void }) {
+  const label = count ? `${count > 99 ? "99+" : count} new ${count === 1 ? "message" : "messages"}` : undefined;
+  return (
+    <div className="chat-jump-latest" data-new={count > 0 || undefined}>
+      <span>{label ?? "You’re viewing older messages"}</span>
+      <button type="button" aria-label={label ? `Jump to latest, ${label}` : "Jump to latest"} onClick={onJump}>
+        Jump to latest
+      </button>
+    </div>
   );
 }

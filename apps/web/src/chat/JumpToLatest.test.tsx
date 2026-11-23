@@ -25,6 +25,7 @@ test("appears half a screen above the live end, counts other people's new messag
   const jumped = vi.fn();
   const message = (id: number, author: string) => ({ clientMessageId: `m${id}`, author: { id: author } });
   let messages = [message(1, "other"), message(2, "viewer")];
+  let detached = false;
   const render = () =>
     act(async () =>
       root.render(
@@ -33,11 +34,13 @@ test("appears half a screen above the live end, counts other people's new messag
           messages={messages}
           viewerId="viewer"
           blockedIds={new Set(["blocked"])}
+          detached={detached}
           onJump={jumped}
         />,
       ),
     );
-  const button = () => container.querySelector<HTMLButtonElement>(".chat-jump-latest");
+  const button = () => container.querySelector<HTMLButtonElement>(".chat-jump-latest button");
+  const toast = () => container.querySelector(".chat-jump-latest > span")?.textContent;
 
   await render();
   expect(button()).toBeNull();
@@ -46,7 +49,7 @@ test("appears half a screen above the live end, counts other people's new messag
   expect(button()).toBeNull();
   await scrollTo(1399);
   expect(button()?.getAttribute("aria-label")).toBe("Jump to latest");
-  expect(button()?.textContent).toBe("");
+  expect(toast()).toBe("You’re viewing older messages");
 
   // Older history loading above, the viewer's own messages and blocked people are not new.
   messages = [message(0, "other"), ...messages, message(3, "viewer"), message(4, "blocked")];
@@ -54,11 +57,11 @@ test("appears half a screen above the live end, counts other people's new messag
   expect(button()?.getAttribute("aria-label")).toBe("Jump to latest");
   messages = [...messages, message(5, "other")];
   await render();
-  expect(button()?.textContent).toBe("1 new message");
+  expect(toast()).toBe("1 new message");
   messages = [...messages, message(6, "other")];
   await render();
   expect(button()?.getAttribute("aria-label")).toBe("Jump to latest, 2 new messages");
-  expect(button()?.hasAttribute("data-new")).toBe(true);
+  expect(container.querySelector(".chat-jump-latest")?.hasAttribute("data-new")).toBe(true);
 
   // Three screens or fewer away scrolls smoothly; farther jumps.
   await act(async () => button()!.click());
@@ -71,7 +74,7 @@ test("appears half a screen above the live end, counts other people's new messag
   await scrollTo(1600);
   expect(button()).toBeNull();
   await scrollTo(1000);
-  expect(button()?.textContent).toBe("");
+  expect(toast()).toBe("You’re viewing older messages");
 
   // Messages that arrive under a reader who is not scrolling can push the live end away too.
   await scrollTo(1500);
@@ -81,6 +84,15 @@ test("appears half a screen above the live end, counts other people's new messag
   await render();
   await act(async () => void (await new Promise((resolve) => requestAnimationFrame(resolve))));
   expect(button()).not.toBeNull();
+
+  // A jump's window short of the live end shows the toast even at its bottom, and jumps without a glide.
+  await scrollTo(2000);
+  expect(button()).toBeNull();
+  detached = true;
+  await render();
+  expect(toast()).toBe("You’re viewing older messages");
+  await act(async () => button()!.click());
+  expect(jumped).toHaveBeenLastCalledWith(false);
 
   act(() => root.unmount());
   container.remove();

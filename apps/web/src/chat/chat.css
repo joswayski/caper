@@ -296,51 +296,75 @@
   pointer-events: none;
   transform: translate(-50%, 0);
 }
-/* The way back to the newest message, over the list's corner while the reader is away from it. */
+/* "You're viewing older messages", floating over the timeline just above the
+   composer while the reader is away from the newest message, as in Discord. */
 .chat-jump-latest {
   position: absolute;
   z-index: 3;
-  right: 16px;
-  bottom: 16px;
-  display: inline-flex;
+  right: 0;
+  bottom: 12px;
+  left: 0;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin-inline: auto;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-width: 36px;
-  min-height: 36px;
-  padding: 0 10px;
+  gap: 14px;
+  padding: 6px 6px 6px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-card);
   color: var(--text);
-  background: var(--surface);
+  background: var(--surface-raised);
   box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 700;
-  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+/* A narrow thread panel wraps the label rather than cutting it off. */
+.chat-jump-latest > span {
+  min-width: 0;
+  line-height: 1.25;
 }
 .chat-jump-latest[data-new] {
   border-color: var(--terracotta);
 }
-.chat-jump-latest:focus-visible {
+.chat-jump-latest button {
+  flex: none;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--btn-primary-border);
+  border-radius: 10px;
+  color: var(--on-action);
+  background: var(--btn-primary-bg);
+  box-shadow: var(--btn-primary-shadow);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.chat-jump-latest button:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 @media (hover: hover) {
-  .chat-jump-latest:hover {
-    background: var(--surface-raised);
+  .chat-jump-latest button:hover {
+    box-shadow: var(--btn-primary-shadow-hover);
   }
+}
+.chat-jump-latest button:active {
+  box-shadow: var(--btn-primary-shadow-active);
 }
 @media (max-width: 760px), (pointer: coarse) {
-  .chat-jump-latest {
-    min-width: 44px;
-    min-height: 44px;
+  .chat-jump-latest button {
+    min-height: 40px;
   }
 }
-/* The thread's list is its panel's second grid row; the button sits over that row.
+/* The thread's list is its panel's second grid row; the toast sits over that row.
    An absolutely positioned grid child needs both end lines: "auto" means the panel's edge. */
 .chat-thread-panel > .chat-jump-latest {
   grid-area: 2 / 1 / 3 / 2;
+}
+/* Brief confirmations rise above the toast rather than under it. */
+.chat-timeline:has(> .chat-jump-latest) > .chat-action-status {
+  bottom: 68px;
 }
 .chat-action-status:empty {
   display: none;
@@ -362,7 +386,7 @@
    stranded at the top of the pane. Virtuoso lays out its viewport as a column
    when aligned to the bottom; MessageList drops the list's own auto margin. */
 .chat-initial-messages > .chat-history,
-.chat-scroller [data-viewport-type] > :has(> .chat-history) {
+.chat-scroller [data-viewport-type] > :has(> .chat-history:not(.chat-history-newer)) {
   margin-top: auto;
 }
 .chat-scroller {
@@ -404,6 +428,11 @@
   padding: 0 14px;
   color: var(--text-muted);
   font-size: 0.72rem;
+}
+/* Load newer, at the end of a jump's window: clear of the toast floating over it. */
+.chat-history-newer {
+  height: auto;
+  padding: 8px 14px 68px;
 }
 .chat-history button {
   padding: 6px 10px;

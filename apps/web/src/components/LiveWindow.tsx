@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
-  ArrowDown,
   AudioLines,
   Bell,
   ChevronDown,
@@ -23,6 +22,7 @@ import {
 } from "lucide-react";
 import { avatarUrl } from "../account/avatar";
 import LinkedText from "../chat/LinkedText";
+import { JumpToast } from "../chat/JumpToLatest";
 import { liveNames } from "../media/live-now";
 import { sessionDuration } from "../media/session-duration";
 import PresenceDot from "./PresenceDot";
@@ -865,12 +865,9 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                   </div>
                 </div>
                 {awayFrom !== undefined && (
-                  <button
-                    type="button"
-                    className="chat-jump-latest"
-                    data-new={newWhileAway > 0 || undefined}
-                    title="Jump to latest"
-                    onClick={() => {
+                  <JumpToast
+                    count={newWhileAway}
+                    onJump={() => {
                       const viewport = messagesRef.current;
                       if (!viewport) return;
                       jumping.current = true;
@@ -878,10 +875,7 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                       setAwayFrom(undefined);
                       viewport.scrollTo({ top: viewport.scrollHeight, behavior: reducedMotion ? "auto" : "smooth" });
                     }}
-                  >
-                    <ArrowDown size={16} aria-hidden="true" />
-                    {newWhileAway > 0 && `${newWhileAway} new ${newWhileAway === 1 ? "message" : "messages"}`}
-                  </button>
+                  />
                 )}
               </div>
               <div className="sim-typing chat-typing">

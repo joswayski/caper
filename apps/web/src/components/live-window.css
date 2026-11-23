@@ -533,7 +533,7 @@
 .sim-demo * {
   pointer-events: none;
 }
-.sim-demo :is(.sim-channel-list, .sim-messages, .chat-jump-latest, .chat-text-spoiler) {
+.sim-demo :is(.sim-channel-list, .sim-messages, .chat-jump-latest button, .chat-text-spoiler) {
   pointer-events: auto;
 }
 /* Use the real sidebar/channel/voice CSS, not a second imitation of its roster. */
