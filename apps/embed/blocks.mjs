@@ -30,7 +30,7 @@ export function clean(value, limit) {
   const text = value
     .replace(/\r\n?/g, "\n")
     // oxlint-disable-next-line no-control-regex -- stripping them is the point
-    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g, "")
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   if (!text) return null;
