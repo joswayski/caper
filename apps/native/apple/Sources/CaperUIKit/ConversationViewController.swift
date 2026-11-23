@@ -38,6 +38,19 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private lazy var back = IconButton(icon: "arrow-left", label: "Back to Browse", size: 20) { [weak self] in self?.browse?() }
     /// In place of an empty timeline: loading, a failed first load with Try
     /// again, or SwiftUI's "No messages yet." with its note.
+    private let emptyCaper: UIImageView = {
+        let view = UIImageView()
+        view.contentMode = .scaleAspectFit
+        view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            view.widthAnchor.constraint(equalToConstant: 88),
+            view.heightAnchor.constraint(equalToConstant: 88),
+        ])
+        view.isAccessibilityElement = false
+        view.isHidden = true
+        return view
+    }()
+    private var shownEmptyCaperIndex: Int?
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let statusTitle = UIKitStyle.label(size: 14, weight: .medium)
     private lazy var tryAgain: CaperButton = {
@@ -48,7 +61,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         button.accessibilityIdentifier = "chat-try-again"
         return button
     }()
-    private lazy var statusStack = UIStackView(arrangedSubviews: [statusTitle, status, tryAgain])
+    private lazy var statusStack = UIStackView(arrangedSubviews: [emptyCaper, statusTitle, status, tryAgain])
     private let skeleton = MessageSkeletonView(rows: 5, label: "Loading messages")
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
@@ -767,10 +780,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
         let viewer = model.account?.id ?? cached?.accountID
         var emptyTitle: String?, note: String?, titleColor = UIKitStyle.text
+        var emptyCaperIndex: Int?
         if live, chat.loadFailed, let error = chat.error { note = error }
         else if live, let error = chat.error, messages.isEmpty { note = error }
         else if live, chat.loading && messages.isEmpty {}
         else if live, messages.isEmpty, pending == nil {
+            emptyCaperIndex = channelID.map(CaperDailyIcon.conversationIndex(for:)) ?? CaperDailyIcon.current()
             if let conversation = model.selectedDirectMessage, conversation.peer.id == model.account?.id {
                 emptyTitle = "You can message yourself here to keep notes, reminders, and ideas."
                 titleColor = UIKitStyle.muted
@@ -779,6 +794,15 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                 note = model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())."
                     : FeedbackInbox.emptyDirectNote(peer: model.selectedDirectMessage?.peer, name: chat.channelName)
             }
+        }
+        if let emptyCaperIndex {
+            if shownEmptyCaperIndex != emptyCaperIndex {
+                shownEmptyCaperIndex = emptyCaperIndex
+                emptyCaper.image = CaperDailyIcon.brandingImage(for: emptyCaperIndex)
+            }
+            emptyCaper.isHidden = emptyCaper.image == nil
+        } else {
+            emptyCaper.isHidden = true
         }
         statusTitle.text = emptyTitle
         statusTitle.textColor = titleColor

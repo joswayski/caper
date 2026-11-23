@@ -22,6 +22,18 @@ final class AvatarTests: XCTestCase {
         XCTAssertEqual(CaperDailyIcon.utcDay(containing: Date(timeIntervalSince1970: 86_400)), "1970-01-02")
     }
 
+    func testConversationIndexMatchesSharedVectorsAndSpreads() {
+        XCTAssertEqual(CaperDailyIcon.conversationIndex(for: "general"), 315)
+        XCTAssertEqual(CaperDailyIcon.conversationIndex(for: "random"), 700)
+        XCTAssertEqual(CaperDailyIcon.conversationIndex(for: "dm-alice"), 161)
+        XCTAssertEqual(CaperDailyIcon.conversationIndex(for: "dm-bob"), 480)
+        XCTAssertEqual(CaperDailyIcon.conversationIndex(for: "0194b1e0-0000-7000-8000-000000000001"), 639)
+        XCTAssertEqual(CaperDailyIcon.conversationIndex(for: "0194b1e0-0000-7000-8000-000000000002"), 334)
+        let spread = Set((0..<100).map { CaperDailyIcon.conversationIndex(for: "conv-\($0)") })
+        XCTAssertGreaterThan(spread.count, 85)
+        XCTAssertTrue(spread.allSatisfy { (0..<CaperDailyIcon.count).contains($0) })
+    }
+
     func testIllustrationReusesThePersistedChoiceAcrossRollover() throws {
         let suite = "caper-daily-icon-test-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

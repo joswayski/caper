@@ -1489,12 +1489,23 @@ impl App {
     /// centred in the history.
     pub fn draw_empty(&mut self) -> Result<()> {
         let shown = self.live.is_some() && self.c.is_live() && self.c.messages.is_empty();
-        let key = shown.then(|| (self.c.empty_text(), self.list_w(), self.vh()));
+        let caper = if shown && self.c.has_conversation() {
+            Some(
+                self.live
+                    .as_ref()
+                    .and_then(Live::channel_id)
+                    .map(caper_client::daily_icon::conversation_index)
+                    .unwrap_or(0),
+            )
+        } else {
+            None
+        };
+        let key = shown.then(|| (self.c.empty_text(), caper, self.list_w(), self.vh()));
         if key == self.empty_drawn {
             return Ok(());
         }
         self.empty_drawn = key.clone();
-        let Some(((title, note), lw, vh)) = key else {
+        let Some(((title, note), caper, lw, vh)) = key else {
             return self.empty_p.offset(-10_000.0, 0.0);
         };
         let s = self.scale;
@@ -1507,8 +1518,14 @@ impl App {
         for l in t.iter().chain([&n]) {
             unsafe { l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)? };
         }
+        const CAPER_SIZE: f32 = 88.0;
+        let caper_h = if caper.is_some() {
+            CAPER_SIZE + 14.0
+        } else {
+            0.0
+        };
         let th = t.as_ref().map_or(0.0, |l| gfx::metrics(l).height + 4.0);
-        let h = th + gfx::metrics(&n).height;
+        let h = caper_h + th + gfx::metrics(&n).height;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         self.empty_p.ensure(g, px(w), px(h))?;
         self.empty_p.offset(
@@ -1517,10 +1534,18 @@ impl App {
         )?;
         self.empty_p.draw(s, |dc| {
             unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
-            if let Some(t) = &t {
-                text::draw(dc, t, 0.0, 0.0, &g.brushes.text);
+            if let Some(index) = caper {
+                let left = ((w - CAPER_SIZE) / 2.0).max(0.0);
+                crate::avatars::draw_branding(
+                    dc,
+                    index,
+                    gfx::rect(left, 0.0, left + CAPER_SIZE, CAPER_SIZE),
+                );
             }
-            text::draw(dc, &n, 0.0, th, &g.brushes.muted);
+            if let Some(t) = &t {
+                text::draw(dc, t, 0.0, caper_h, &g.brushes.text);
+            }
+            text::draw(dc, &n, 0.0, caper_h + th, &g.brushes.muted);
             Ok(())
         })
     }

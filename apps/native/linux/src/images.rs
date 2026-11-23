@@ -186,6 +186,7 @@ pub struct Images {
     signals: async_channel::Sender<Signal>,
     icons: RefCell<HashMap<(Icon, &'static str), gdk::Texture>>,
     mascots: RefCell<HashMap<u16, gdk::Texture>>,
+    branding: RefCell<HashMap<u16, gdk::Texture>>,
     pictures: RefCell<Pictures>,
     /// The Twemoji sheet decoded last (`caper_client::emoji::sheet`), by its
     /// index. A decoded sheet is 16 MiB, so only one stays: runs of emoji
@@ -208,6 +209,7 @@ impl Images {
             signals,
             icons: RefCell::default(),
             mascots: RefCell::default(),
+            branding: RefCell::default(),
             pictures: RefCell::default(),
             emoji_sheet: RefCell::default(),
             emoji: RefCell::default(),
@@ -325,6 +327,18 @@ impl Images {
             AVATAR_EDGE,
         )?;
         self.mascots.borrow_mut().insert(index, texture.clone());
+        Some(texture)
+    }
+
+    /// Transparent branding Caper character for empty conversations.
+    pub fn branding(&self, index: usize) -> Option<gdk::Texture> {
+        let key = u16::try_from(index).ok()?;
+        if let Some(texture) = self.branding.borrow().get(&key) {
+            return Some(texture.clone());
+        }
+        let svg = caper_client::avatar_images::BRANDING.get(index)?;
+        let texture = render_svg(svg, 176)?;
+        self.branding.borrow_mut().insert(key, texture.clone());
         Some(texture)
     }
 

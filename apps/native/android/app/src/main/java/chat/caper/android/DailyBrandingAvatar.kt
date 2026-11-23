@@ -60,3 +60,14 @@ internal class DailyBrandingAvatar(
 }
 
 internal const val BRANDING_AVATAR_COUNT = 800
+
+internal fun conversationBrandingAvatar(seed: String): Int {
+    var hash = 0x811c9dc5u
+    for (byte in seed.encodeToByteArray()) {
+        hash = (hash xor byte.toUByte().toUInt()) * 0x01000193u
+    }
+    hash = (hash xor (hash shr 16)) * 0x85ebca6bu
+    hash = (hash xor (hash shr 13)) * 0xc2b2ae35u
+    hash = hash xor (hash shr 16)
+    return (hash % BRANDING_AVATAR_COUNT.toUInt()).toInt()
+}

@@ -2041,6 +2041,11 @@ impl Live {
         })
     }
 
+    /// The open channel's or DM's id.
+    pub fn channel_id(&self) -> Option<&str> {
+        self.channel.as_deref()
+    }
+
     /// Asks for KLIPY's key while GIFs are unavailable, at most once a
     /// minute (egui's rule).
     fn check_klipy(&mut self) {

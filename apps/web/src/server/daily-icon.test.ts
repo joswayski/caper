@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dailyIcon, dailyIconUrl } from "../components/daily-icon.ts";
+import { conversationCaperIndex, dailyIcon, dailyIconUrl } from "../components/daily-icon.ts";
 
 test("wordmark exports preserve the original lettering and omit the static dot", () => {
   execFileSync(process.execPath, [
@@ -97,4 +97,16 @@ test("invalid saved IDs do not pin an invalid icon on the current day", () => {
       dailyIcon({ day: 0, index }, 0, () => 0),
       { day: 0, index: 0 },
     );
+});
+
+test("conversationCaperIndex maps conversations deterministically across the 800 branding characters", () => {
+  assert.equal(conversationCaperIndex("general"), 315);
+  assert.equal(conversationCaperIndex("random"), 700);
+  assert.equal(conversationCaperIndex("dm-alice"), 161);
+  assert.equal(conversationCaperIndex("dm-bob"), 480);
+  assert.equal(conversationCaperIndex("0194b1e0-0000-7000-8000-000000000001"), 639);
+  assert.equal(conversationCaperIndex("0194b1e0-0000-7000-8000-000000000002"), 334);
+  const spread = new Set(Array.from({ length: 100 }, (_, i) => conversationCaperIndex(`conv-${i}`)));
+  assert.ok(spread.size > 85);
+  for (const value of spread) assert.ok(Number.isInteger(value) && value >= 0 && value < 800);
 });

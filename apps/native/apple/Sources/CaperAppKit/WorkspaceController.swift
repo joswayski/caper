@@ -93,6 +93,11 @@ import CaperCore
     }
     private lazy var stage = AppKitFileDropView(model: model, inThread: inThread)
     private let timeline = MessageTimeline(frame: .zero)
+    private let emptyState = NativeView(.clear)
+    private let emptyCaper = NSImageView()
+    private let emptyTitle = NativeStyle.label("", size: 16, bold: true)
+    private let emptyNote = NativeStyle.label("", size: 12)
+    private var shownEmptyCaperIndex: Int?
     private let lip = AppKitComposerLip()
     private let header = NativeStyle.label("", size: 16, bold: true)
     private let status = NativeStyle.label("", size: 12)
@@ -200,7 +205,19 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerShell, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, emptyState, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerShell, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        emptyState.isHidden = true
+        emptyState.setAccessibilityElement(false)
+        emptyCaper.imageScaling = .scaleProportionallyUpOrDown
+        emptyCaper.setAccessibilityElement(false)
+        emptyTitle.alignment = .center
+        emptyTitle.lineBreakMode = .byWordWrapping
+        emptyTitle.maximumNumberOfLines = 0
+        emptyNote.alignment = .center
+        emptyNote.textColor = NativeStyle.muted
+        emptyNote.lineBreakMode = .byWordWrapping
+        emptyNote.maximumNumberOfLines = 0
+        [emptyCaper, emptyTitle, emptyNote].forEach { emptyState.addSubview($0) }
         browse.setAccessibilityIdentifier("open-navigation")
         pinsButton.setAccessibilityIdentifier("channel-pins")
         pinsButton.isHidden = inThread
@@ -446,6 +463,7 @@ import CaperCore
                 pendingError: pendingError, sendRejected: sendRejected,
                 sendUploadFailed: sendUploadFailed, canEditPending: canEditPending,
                 canInteract: chat.canInteract, reactionErrors: chat.reactionErrors, pinErrors: chat.pinErrors, pendingPins: chat.pendingPins)
+            self.updateEmptyState(visible: visible, pending: pending)
             if let id = chat.focusedMessageID, self.focusedRevision != chat.focusRevision || self.focusedConversation != identity,
                visible.contains(where: { $0.id == id }) {
                 self.focusedRevision = chat.focusRevision; self.focusedConversation = identity
@@ -742,6 +760,7 @@ import CaperCore
         let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - (roomyStatus ? 24 : 18) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
         let top: CGFloat = 48
         timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - top))
+        layoutEmptyState()
         lip.frame = NSRect(x: 0, y: max(top, timeline.frame.maxY - 8), width: center, height: min(8, timeline.frame.height))
         status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: statusHeight)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
@@ -755,6 +774,66 @@ import CaperCore
         layoutJumpToLatest()
         editRejected.frame = NSRect(x: 20, y: quoteBottom - quoteHeight - recoveryHeight, width: min(200, center - 40), height: 30)
         focusComposerIfRequested()
+    }
+
+    private func updateEmptyState(visible: [ChatMessage], pending: PendingMessage?) {
+        let chat = model.chat
+        guard !inThread, visible.isEmpty, pending == nil, !chat.loading, !chat.loadFailed, chat.error == nil,
+              !chat.hasMore, !chat.hasNewer, let channelID = chat.channelID else {
+            emptyState.isHidden = true
+            return
+        }
+        let caperIndex = CaperDailyIcon.conversationIndex(for: channelID)
+        if shownEmptyCaperIndex != caperIndex {
+            shownEmptyCaperIndex = caperIndex
+            emptyCaper.image = CaperDailyIcon.brandingImage(for: caperIndex)
+        }
+        emptyCaper.isHidden = emptyCaper.image == nil
+        if let conversation = model.selectedDirectMessage, conversation.peer.id == model.account?.id {
+            emptyTitle.stringValue = ""
+            emptyTitle.isHidden = true
+            emptyNote.stringValue = "You can message yourself here to keep notes, reminders, and ideas."
+            emptyNote.isHidden = false
+        } else {
+            emptyTitle.stringValue = "No messages yet."
+            emptyTitle.textColor = NativeStyle.text
+            emptyTitle.isHidden = false
+            emptyNote.stringValue = model.selectedDirectMessageID == nil
+                ? "Start the conversation in #\(chat.channelName.lowercased())."
+                : FeedbackInbox.emptyDirectNote(peer: model.selectedDirectMessage?.peer, name: chat.channelName)
+            emptyNote.textColor = NativeStyle.muted
+            emptyNote.isHidden = false
+        }
+        emptyState.isHidden = false
+        layoutEmptyState()
+    }
+
+    private func layoutEmptyState() {
+        guard !emptyState.isHidden else { return }
+        let area = timeline.frame
+        let maxTextWidth = max(120, min(360, area.width - 48))
+        let caperSide: CGFloat = emptyCaper.isHidden ? 0 : 88
+        let titleHeight: CGFloat = emptyTitle.isHidden ? 0 : ceil(emptyTitle.sizeThatFits(NSSize(width: maxTextWidth, height: 200)).height)
+        let noteHeight: CGFloat = emptyNote.isHidden ? 0 : ceil(emptyNote.sizeThatFits(NSSize(width: maxTextWidth, height: 200)).height)
+        let caperGap: CGFloat = caperSide > 0 ? 12 : 0
+        let titleGap: CGFloat = !emptyTitle.isHidden && !emptyNote.isHidden ? 6 : 0
+        let totalHeight = caperSide + caperGap + titleHeight + titleGap + noteHeight
+        let boxWidth = max(caperSide, maxTextWidth)
+        let boxX = area.minX + floor((area.width - boxWidth) / 2)
+        let boxY = area.minY + floor(max(0, (area.height - totalHeight) / 2))
+        emptyState.frame = NSRect(x: boxX, y: boxY, width: boxWidth, height: totalHeight)
+        var y: CGFloat = 0
+        if !emptyCaper.isHidden {
+            emptyCaper.frame = NSRect(x: floor((boxWidth - caperSide) / 2), y: y, width: caperSide, height: caperSide)
+            y += caperSide + caperGap
+        }
+        if !emptyTitle.isHidden {
+            emptyTitle.frame = NSRect(x: 0, y: y, width: boxWidth, height: titleHeight)
+            y += titleHeight + titleGap
+        }
+        if !emptyNote.isHidden {
+            emptyNote.frame = NSRect(x: 0, y: y, width: boxWidth, height: noteHeight)
+        }
     }
 
     private func updateComposer() {
@@ -1254,6 +1333,8 @@ import CaperCore
 
     @objc private func handleThemeChange() {
         applyComposerChrome()
+        emptyTitle.textColor = NativeStyle.text
+        emptyNote.textColor = NativeStyle.muted
         updateComposer()
     }
 

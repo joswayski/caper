@@ -2168,7 +2168,11 @@ export default function Chat({
             )}
             {state.phase === "ready" && !messages.length && !state.hasMore && !state.hasNewer && (
               <div className="chat-state chat-empty">
-                <DailyCaper className="chat-empty-caper" />
+                <DailyCaper
+                  key={state.channelId || channelId || "empty"}
+                  className="chat-empty-caper"
+                  seed={state.channelId || channelId}
+                />
                 {direct && viewerId && directPeerId === viewerId ? (
                   <p>You can message yourself here to keep notes, reminders, and ideas.</p>
                 ) : (

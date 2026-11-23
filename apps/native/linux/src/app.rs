@@ -5266,7 +5266,23 @@ impl App {
         } else {
             (String::new(), String::new(), false)
         };
-        ui.empty.set_visible(!title.is_empty() || !note.is_empty());
+        let empty_visible = !title.is_empty() || !note.is_empty();
+        ui.empty.set_visible(empty_visible);
+        if empty_visible && !stage {
+            let caper_index = state
+                .channel
+                .as_deref()
+                .map(caper_client::daily_icon::conversation_index)
+                .unwrap_or(0);
+            if let Some(texture) = self.images.branding(caper_index) {
+                ui.empty_caper.set_paintable(Some(&texture));
+                ui.empty_caper.set_visible(true);
+            } else {
+                ui.empty_caper.set_visible(false);
+            }
+        } else {
+            ui.empty_caper.set_visible(false);
+        }
         ui.empty_title.set_label(&title);
         ui.empty_title.set_visible(!title.is_empty());
         ui.empty_note.set_label(&note);

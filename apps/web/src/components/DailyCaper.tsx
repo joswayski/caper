@@ -1,10 +1,11 @@
 import { useContext } from "react";
 import { DailyIconContext } from "./DailyIconProvider";
-import { dailyIconUrl } from "./daily-icon";
+import { conversationCaperIndex, dailyIconUrl } from "./daily-icon";
 
-/** Today's Caper character as a decorative illustration. */
-export default function DailyCaper({ className }: { className?: string }) {
-  const index = useContext(DailyIconContext);
+/** Today's Caper character, or a conversation-specific one when seeded. */
+export default function DailyCaper({ className, seed }: { className?: string; seed?: string }) {
+  const daily = useContext(DailyIconContext);
+  const index = seed ? conversationCaperIndex(seed) : daily;
   return (
     <img
       className={className}

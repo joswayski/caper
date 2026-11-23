@@ -3,6 +3,21 @@ use std::time::{Duration, Instant};
 
 pub const AVATAR_COUNT: usize = 800;
 
+/// Deterministic branding character for an empty DM or channel (matches web/Apple/Android).
+pub fn conversation_index(seed: &str) -> usize {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &byte in seed.as_bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x85eb_ca6b);
+    hash ^= hash >> 13;
+    hash = hash.wrapping_mul(0xc2b2_ae35);
+    hash ^= hash >> 16;
+    (hash as usize) % AVATAR_COUNT
+}
+
 pub fn select(
     day: &str,
     saved_day: Option<&str>,
@@ -93,5 +108,26 @@ mod tests {
         assert!(icon.refresh(after));
         assert_eq!(icon.day, "1970-01-02");
         assert_ne!(icon.index, 42);
+    }
+
+    #[test]
+    fn conversation_index_matches_shared_vectors_and_spreads() {
+        assert_eq!(conversation_index("general"), 315);
+        assert_eq!(conversation_index("random"), 700);
+        assert_eq!(conversation_index("dm-alice"), 161);
+        assert_eq!(conversation_index("dm-bob"), 480);
+        assert_eq!(
+            conversation_index("0194b1e0-0000-7000-8000-000000000001"),
+            639
+        );
+        assert_eq!(
+            conversation_index("0194b1e0-0000-7000-8000-000000000002"),
+            334
+        );
+        let spread: std::collections::BTreeSet<_> = (0..100)
+            .map(|i| conversation_index(&format!("conv-{i}")))
+            .collect();
+        assert!(spread.len() > 85);
+        assert!(spread.iter().all(|&index| index < AVATAR_COUNT));
     }
 }

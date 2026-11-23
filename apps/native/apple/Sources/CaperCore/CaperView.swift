@@ -3596,6 +3596,20 @@ extension CaperAvatar {
     #endif
 }
 
+extension CaperDailyIcon {
+    #if os(iOS)
+    @MainActor public static func brandingImage(for index: Int) -> UIImage? {
+        guard (0..<count).contains(index) else { return nil }
+        return UIImage(named: "caper-branding-\(index)", in: caperResourceBundle, compatibleWith: nil)
+    }
+    #else
+    @MainActor public static func brandingImage(for index: Int) -> NSImage? {
+        guard (0..<count).contains(index) else { return nil }
+        return caperResourceBundle.image(forResource: NSImage.Name("caper-branding-\(index)"))
+    }
+    #endif
+}
+
 #if os(iOS)
 private struct ConversationStage: View {
     @Bindable var model: AppModel
@@ -4161,7 +4175,14 @@ private struct ChatView: View {
                                     .accessibilityIdentifier("chat-try-again")
                             }.padding(.top, 80).padding(.horizontal, 24)
                         } else if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
+                            let caperIndex = chat.channelID.map(CaperDailyIcon.conversationIndex(for:)) ?? CaperDailyIcon.current()
                             VStack(spacing: 7) {
+                                Image("caper-branding-\(caperIndex)", bundle: caperResourceBundle)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 88, height: 88)
+                                    .padding(.bottom, 6)
+                                    .accessibilityHidden(true)
                                 if let conversation = model.selectedDirectMessage, conversation.peer.id == model.account?.id {
                                     Text("You can message yourself here to keep notes, reminders, and ideas.")
                                         .font(CaperTheme.font(14, weight: .medium)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)

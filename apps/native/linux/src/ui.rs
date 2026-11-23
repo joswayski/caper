@@ -705,6 +705,7 @@ pub struct Ui {
     /// Over an empty conversation: "No messages yet." and its note, or
     /// "No joined channels" with Create channel for owners.
     pub empty: gtk::Box,
+    pub empty_caper: gtk::Image,
     pub empty_icon: gtk::Image,
     pub empty_title: gtk::Label,
     pub empty_note: gtk::Label,
@@ -1238,6 +1239,12 @@ impl Ui {
         empty.set_halign(gtk::Align::Center);
         empty.set_valign(gtk::Align::Center);
         empty.set_visible(false);
+        let empty_caper = gtk::Image::builder()
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .build();
+        empty_caper.set_pixel_size(88);
+        empty_caper.set_margin_bottom(6);
+        empty_caper.set_visible(false);
         let empty_icon = images.icon_image(Icon::Hash, "#db6849", 32);
         empty_icon.set_visible(false);
         let empty_title = label("", &["empty-title"]);
@@ -1252,6 +1259,7 @@ impl Ui {
         empty_action.add_css_class("primary");
         empty_action.set_halign(gtk::Align::Center);
         empty_action.set_visible(false);
+        empty.append(&empty_caper);
         empty.append(&empty_icon);
         empty.append(&empty_title);
         empty.append(&empty_note);
@@ -1576,6 +1584,7 @@ impl Ui {
             error,
             error_retry,
             empty,
+            empty_caper,
             empty_icon,
             empty_title,
             empty_note,

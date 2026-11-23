@@ -36,4 +36,19 @@ public enum CaperDailyIcon {
         }
         return Int(random % UInt64(count))
     }
+
+    /// Deterministic branding character for an empty DM or channel (matches web/Rust/Android).
+    public static func conversationIndex(for seed: String) -> Int {
+        var hash: UInt32 = 0x811c9dc5
+        for byte in seed.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* 0x01000193
+        }
+        hash ^= hash >> 16
+        hash = hash &* 0x85ebca6b
+        hash ^= hash >> 13
+        hash = hash &* 0xc2b2ae35
+        hash ^= hash >> 16
+        return Int(hash % UInt32(count))
+    }
 }

@@ -56,6 +56,7 @@ struct Cache {
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
     mascots: HashMap<u16, Option<ID2D1Bitmap1>>,
+    branding: HashMap<u16, Option<ID2D1Bitmap1>>,
     /// Decoded pictures awaiting their bitmap, then the bitmaps.
     decoded: HashMap<String, caper_client::Rgba>,
     pictures: HashMap<String, ID2D1Bitmap1>,
@@ -72,6 +73,7 @@ impl Default for Cache {
             tx,
             rx,
             mascots: HashMap::new(),
+            branding: HashMap::new(),
             decoded: HashMap::new(),
             pictures: HashMap::new(),
             loading: HashSet::new(),
@@ -161,15 +163,14 @@ fn premultiplied(rgba: &[u8]) -> Vec<u8> {
     out
 }
 
-fn mascot(dc: &ID2D1DeviceContext, index: u16) -> Option<ID2D1Bitmap1> {
-    let svg = caper_client::avatar_images::SVG.get(usize::from(index))?;
+fn svg_bitmap(dc: &ID2D1DeviceContext, svg: &[u8], edge: u32) -> Option<ID2D1Bitmap1> {
     let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(MASCOT_EDGE, MASCOT_EDGE)?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(edge, edge)?;
     resvg::render(
         &tree,
         resvg::tiny_skia::Transform::from_scale(
-            MASCOT_EDGE as f32 / tree.size().width(),
-            MASCOT_EDGE as f32 / tree.size().height(),
+            edge as f32 / tree.size().width(),
+            edge as f32 / tree.size().height(),
         ),
         &mut pixmap.as_mut(),
     );
@@ -178,7 +179,42 @@ fn mascot(dc: &ID2D1DeviceContext, index: u16) -> Option<ID2D1Bitmap1> {
     for p in pixels.as_chunks_mut::<4>().0 {
         p.swap(0, 2);
     }
-    crate::gfx::bitmap_on(dc, MASCOT_EDGE, MASCOT_EDGE, &pixels).ok()
+    crate::gfx::bitmap_on(dc, edge, edge, &pixels).ok()
+}
+
+fn mascot(dc: &ID2D1DeviceContext, index: u16) -> Option<ID2D1Bitmap1> {
+    let svg = caper_client::avatar_images::SVG.get(usize::from(index))?;
+    svg_bitmap(dc, svg, MASCOT_EDGE)
+}
+
+/// Draws transparent branding Caper `index` in `r` (DIPs) for empty conversations.
+pub fn draw_branding(dc: &ID2D1DeviceContext, index: usize, r: D2D_RECT_F) -> bool {
+    let Ok(key) = u16::try_from(index) else {
+        return false;
+    };
+    let bitmap = CACHE.with_borrow_mut(|c| {
+        c.branding
+            .entry(key)
+            .or_insert_with(|| {
+                let svg = caper_client::avatar_images::BRANDING.get(index)?;
+                svg_bitmap(dc, svg, 176)
+            })
+            .clone()
+    });
+    let Some(bitmap) = bitmap else {
+        return false;
+    };
+    unsafe {
+        dc.DrawBitmap(
+            &bitmap,
+            Some(&r),
+            1.0,
+            D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+            None,
+            None,
+        );
+    }
+    true
 }
 
 /// The bitmap `avatar` shows now and whether it is an uploaded picture

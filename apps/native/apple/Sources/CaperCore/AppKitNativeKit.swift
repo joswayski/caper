@@ -257,7 +257,11 @@ import SwiftUI
     override var title: String {
         // A custom accessibility label (e.g. "Close What’s new") stays; one that
         // mirrors the title follows it, e.g. "Leave channel" → "Leaving…".
-        didSet { if accessibilityLabel() == oldValue { setAccessibilityLabel(title) }; refresh() }
+        didSet {
+            if accessibilityLabel() == oldValue { setAccessibilityLabel(title) }
+            refresh()
+            invalidateIntrinsicContentSize()
+        }
     }
     override var isEnabled: Bool { didSet { refresh() } }
 
@@ -346,7 +350,6 @@ import SwiftUI
             layer?.shadowOpacity = 0
         }
         alphaValue = (kind == .secondary || kind == .plain) && !isEnabled ? 0.45 : 1
-        invalidateIntrinsicContentSize()
     }
 
     override func layout() {

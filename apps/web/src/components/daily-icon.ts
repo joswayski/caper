@@ -8,6 +8,20 @@ export function dailyIconUrl(index: number | null): string {
   return index === null ? "/caper-face.svg?v=4" : `/images/branding/v1/${index}.svg`;
 }
 
+export function conversationCaperIndex(seed: string): number {
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(seed)) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  hash ^= hash >>> 16;
+  return (hash >>> 0) % 800;
+}
+
 /** Installation-local choice; saved profile avatars are unrelated. */
 export function dailyIcon(previous: Partial<DailyIcon> | null, now: number, random = Math.random): DailyIcon {
   const day = Math.floor(now / 86_400_000);

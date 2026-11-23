@@ -29,4 +29,16 @@ class DailyBrandingAvatarTest {
         val fromLast = brandingAvatarAssignment(BrandingAvatarAssignment(20_001, 799), 20_002) { 798 }
         assertEquals(798, fromLast.avatarIndex)
     }
+
+    @Test fun `conversation branding avatar matches shared vectors and spreads`() {
+        assertEquals(315, conversationBrandingAvatar("general"))
+        assertEquals(700, conversationBrandingAvatar("random"))
+        assertEquals(161, conversationBrandingAvatar("dm-alice"))
+        assertEquals(480, conversationBrandingAvatar("dm-bob"))
+        assertEquals(639, conversationBrandingAvatar("0194b1e0-0000-7000-8000-000000000001"))
+        assertEquals(334, conversationBrandingAvatar("0194b1e0-0000-7000-8000-000000000002"))
+        val spread = (0 until 100).map { conversationBrandingAvatar("conv-$it") }.toSet()
+        assert(spread.size > 85)
+        assert(spread.all { it in 0 until BRANDING_AVATAR_COUNT })
+    }
 }

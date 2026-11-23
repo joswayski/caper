@@ -47,3 +47,33 @@ test("daily illustrations rotate without changing favicons across space navigati
     localStorage.clear();
   }
 });
+
+test("seeded DailyCaper picks a distinct stable illustration per conversation", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(
+        <>
+          <DailyCaper seed="dm-alice" />
+          <DailyCaper seed="dm-bob" />
+          <DailyCaper seed="general" />
+          <DailyCaper seed="random" />
+        </>,
+      );
+    });
+    const srcs = [...host.querySelectorAll("img")].map((img) => img.getAttribute("src"));
+    expect(srcs).toEqual([
+      "/images/branding/v1/161.svg",
+      "/images/branding/v1/480.svg",
+      "/images/branding/v1/315.svg",
+      "/images/branding/v1/700.svg",
+    ]);
+    expect(new Set(srcs).size).toBe(4);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});

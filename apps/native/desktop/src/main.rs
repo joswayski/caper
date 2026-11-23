@@ -17896,8 +17896,22 @@ impl CaperApp {
                         let self_direct = self.selected_direct_conversation().is_some_and(|direct| {
                             self.account.as_ref().is_some_and(|account| account.id == direct.peer.id)
                         });
+                        let empty_caper_index = self
+                            .selected_channel
+                            .as_deref()
+                            .map(caper_client::daily_icon::conversation_index)
+                            .or_else(|| self.daily_icon.as_ref().map(|icon| icon.index))
+                            .unwrap_or(0);
                         ui.centered_and_justified(|ui| {
                             ui.vertical_centered(|ui| {
+                                ui.add(
+                                    egui::Image::from_bytes(
+                                        format!("bytes://caper-branding-v1/{empty_caper_index}.svg"),
+                                        avatar_images::BRANDING[empty_caper_index],
+                                    )
+                                    .fit_to_exact_size(egui::vec2(88.0, 88.0)),
+                                );
+                                ui.add_space(10.0);
                                 if self_direct {
                                     ui.label(RichText::new("You can message yourself here to keep notes, reminders, and ideas.").color(MUTED));
                                 } else {

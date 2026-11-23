@@ -2781,8 +2781,21 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         } }
         if (empty) item(contentType = "empty") { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+            val emptyConversationId = state.selectedChannel?.id ?: state.selectedDirectId
+            val emptyCaperIndex = if (emptyConversationId != null) {
+                conversationBrandingAvatar(emptyConversationId)
+            } else {
+                LocalBrandAvatar.current.coerceIn(0, caperBrandingResources.lastIndex)
+            }
             // Inset like messages, so longer notes wrap clear of the edges on phones.
             Column(Modifier.padding(horizontal = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                if (!inThread) {
+                    Image(
+                        painterResource(caperBrandingResources[emptyCaperIndex]),
+                        contentDescription = null,
+                        modifier = Modifier.padding(bottom = 6.dp).size(88.dp),
+                    )
+                }
                 if (emptyNotes) {
                     Text("You can message yourself here to keep notes, reminders, and ideas.", color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 } else {

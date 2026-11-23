@@ -479,7 +479,7 @@ pub struct App {
     pub rec_hover: Option<recording::RPart>,
     /// An empty conversation's "No messages yet." and what it last drew.
     empty_p: Panel,
-    empty_drawn: Option<((Option<&'static str>, String), f32, f32)>,
+    empty_drawn: Option<((Option<&'static str>, String), Option<usize>, f32, f32)>,
     pub reply: Option<actions::ReplyBar>,
     reply_p: Panel,
     /// "Waiting for @x to accept" above your own request's composer: its
