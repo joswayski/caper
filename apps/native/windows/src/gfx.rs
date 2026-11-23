@@ -65,6 +65,10 @@ pub struct Brushes {
     /// Quote panels: `--surface` with a softened border.
     pub surface: ID2D1SolidColorBrush,
     pub border_soft: ID2D1SolidColorBrush,
+    /// A quote panel under the pointer: `raised` washed with 7% text and a
+    /// text border at 18%, as web.
+    pub quote_wash: ID2D1SolidColorBrush,
+    pub quote_edge: ID2D1SolidColorBrush,
     pub terracotta_bright: ID2D1SolidColorBrush,
     /// A hidden spoiler's text: at opacity 0, which `text::draw` skips.
     pub hidden: ID2D1SolidColorBrush,
@@ -240,6 +244,8 @@ impl Gfx {
                 own: brush(theme::ACCENT_SOFT_TEXT, 1.0)?,
                 surface: brush(theme::SURFACE, 1.0)?,
                 border_soft: brush(theme::BORDER, 0.7)?,
+                quote_wash: brush(theme::TEXT, 0.07)?,
+                quote_edge: brush(theme::TEXT, 0.18)?,
                 terracotta_bright: brush(theme::TERRACOTTA_BRIGHT, 1.0)?,
                 hidden: {
                     let b = brush(theme::TEXT, 1.0)?;

@@ -2578,6 +2578,7 @@ impl App {
                 }
                 self.track_tool_hover();
                 self.track_reply_hover();
+                self.track_quote_hover();
                 self.track_head_hover();
                 self.track_foot_hover();
                 self.track_jump_hover();
@@ -2604,6 +2605,7 @@ impl App {
                 self.track_jump_hover();
                 self.track_tool_hover();
                 self.track_reply_hover();
+                self.track_quote_hover();
                 self.track_card();
                 self.need = true;
             }
@@ -3898,6 +3900,8 @@ impl App {
         if hover != self.hover_row {
             self.hover_row = hover;
         }
+        // Scrolling carries the quote panels under a still pointer too.
+        self.track_quote_hover();
         let lit = self.bar_row();
         if lit != self.lit_row {
             self.redraw.extend(self.lit_row);

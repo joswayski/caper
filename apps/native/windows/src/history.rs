@@ -282,7 +282,9 @@ impl App {
 }
 
 impl App {
-    /// The channel row `i`'s "View original" under client point (x, y).
+    /// The channel row `i`'s quote panel under client point (x, y): the
+    /// whole card opens the original, as web, except its author's avatar and
+    /// name, which open their profile.
     pub fn quote_link_at(&self, x: f32, y: f32) -> Option<usize> {
         if !self.in_history(x, y) || self.live.is_none() {
             return None;
@@ -290,9 +292,26 @@ impl App {
         let ay = self.scroll_top + (y - self.history_y()) as f64;
         let i = self.rows.row_at(ay)?;
         let ry = (ay - self.rows.top[i]) as f32;
-        let r = self.rows.quote_link(i)?;
+        let r = self.rows.quote_panel(i)?;
         let lx = x - self.list_x();
-        (lx >= r.left && lx < r.right && ry >= r.top && ry < r.bottom).then_some(i)
+        let grouped = self.c.messages.get(i)?.grouped;
+        (lx >= r.left
+            && lx < r.right
+            && ry >= r.top
+            && ry < r.bottom
+            && self.rows.who_at(i, grouped, lx, ry) != Some(list::Who::Quote))
+        .then_some(i)
+    }
+
+    /// Lifts the quote panel under the pointer and settles the one it left.
+    pub fn track_quote_hover(&mut self) {
+        let hover = self.pointer.and_then(|(x, y)| self.quote_link_at(x, y));
+        if hover != self.rows.quote_hover {
+            self.redraw.extend(self.rows.quote_hover);
+            self.redraw.extend(hover);
+            self.rows.quote_hover = hover;
+            self.need = true;
+        }
     }
 
     /// Row `i`'s View original in client DIPs, while the row is laid out.

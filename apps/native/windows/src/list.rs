@@ -437,6 +437,8 @@ pub struct Rows {
     pub anchor_bottom: f64,
     pictures: HashMap<usize, ID2D1Bitmap1>,
     pub arrivals: crate::motion::Arrivals,
+    /// The row whose quote panel is under the pointer: drawn lifted.
+    pub quote_hover: Option<usize>,
 }
 
 impl Rows {
@@ -450,6 +452,7 @@ impl Rows {
             anchor_bottom: 0.0,
             pictures: HashMap::new(),
             arrivals: Default::default(),
+            quote_hover: None,
         }
     }
 
@@ -1313,6 +1316,14 @@ impl Rows {
         })
     }
 
+    /// Row `i`'s quote panel, when it opens an original (a deleted one cannot).
+    pub fn quote_panel(&self, i: usize) -> Option<Common::D2D_RECT_F> {
+        let row = self.row(i)?;
+        let q = row.quote.as_ref().filter(|q| q.view_w > 0.0)?;
+        let y = row.lead + 4.0;
+        Some(rect(BODY_X, y, BODY_X + row.width, y + q.height))
+    }
+
     pub fn quote_link(&self, i: usize) -> Option<Common::D2D_RECT_F> {
         let row = self.row(i)?;
         let q = row.quote.as_ref()?;
@@ -1522,11 +1533,12 @@ pub fn draw_row(
         return Ok(());
     };
     let progress = rows.arrivals.progress(&m.id);
+    let quote_lit = rows.quote_hover == Some(i);
     crate::motion::row(
         dc,
         rect(0.0, y, BODY_X + row.width + PAD_X, y + row.height),
         progress,
-        |rise| draw_content(g, dc, c, row, i, i, y + rise, sel, bitmap, files),
+        |rise| draw_content(g, dc, c, row, i, i, y + rise, sel, bitmap, files, quote_lit),
     )
 }
 
@@ -1541,6 +1553,7 @@ fn draw_content(
     sel: Option<(u32, u32)>,
     bitmap: Option<ID2D1Bitmap1>,
     mut files: Option<&mut crate::files::Ctx>,
+    quote_lit: bool,
 ) -> Result<()> {
     let m = &c.messages[i];
     let top = y + content_top(m.grouped);
@@ -1574,8 +1587,17 @@ fn draw_content(
         if let Some(q) = &row.quote {
             let qy = y + row.lead + 4.0;
             let p = rect(BODY_X, qy, BODY_X + row.width, qy + q.height);
-            fill_round(dc, p, 8.0, &g.brushes.surface);
-            stroke_round(dc, p, 8.0, &g.brushes.border_soft);
+            // Under the pointer the panel lifts and its text brightens, as web.
+            let ink = if quote_lit {
+                fill_round(dc, p, 8.0, &g.brushes.raised);
+                fill_round(dc, p, 8.0, &g.brushes.quote_wash);
+                stroke_round(dc, p, 8.0, &g.brushes.quote_edge);
+                &g.brushes.text
+            } else {
+                fill_round(dc, p, 8.0, &g.brushes.surface);
+                stroke_round(dc, p, 8.0, &g.brushes.border_soft);
+                &g.brushes.muted
+            };
             let (x, hy) = (p.left + QUOTE_PAD_X, p.top + QUOTE_PAD_Y);
             let a = rect(
                 x,
@@ -1588,14 +1610,8 @@ fn draw_content(
                 crate::text::draw(dc, &q.initials, a.left, a.top, &g.brushes.text);
             }
             crate::text::draw(dc, &q.name, a.right + 6.0, hy + 2.0, &g.brushes.muted);
-            crate::text::draw(
-                dc,
-                &q.view,
-                p.right - QUOTE_PAD_X - q.view_w,
-                hy + 3.0,
-                &g.brushes.muted,
-            );
-            crate::text::draw(dc, &q.text, x, hy + QUOTE_HEADING + 2.0, &g.brushes.muted);
+            crate::text::draw(dc, &q.view, p.right - QUOTE_PAD_X - q.view_w, hy + 3.0, ink);
+            crate::text::draw(dc, &q.text, x, hy + QUOTE_HEADING + 2.0, ink);
         }
         if let Some(l) = &row.pin {
             // egui's muted pin icon, drawn: a head and its needle.
@@ -1779,7 +1795,8 @@ fn draw_content(
                 inset.M31 += FORWARD_X * transform.M11;
                 inset.M32 += FORWARD_X * transform.M12;
                 dc.SetTransform(&inset);
-                let drawn = draw_content(g, dc, c, nested, 0, media_row, sy, None, None, files);
+                let drawn =
+                    draw_content(g, dc, c, nested, 0, media_row, sy, None, None, files, false);
                 dc.SetTransform(&transform);
                 dc.PopAxisAlignedClip();
                 drawn?;

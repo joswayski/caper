@@ -639,6 +639,20 @@ label.body {
   border-radius: 8px;
   padding: 10px 12px;
   margin: 4px 0 8px 44px;
+  transition:
+    background-color 140ms ease-out,
+    border-color 140ms ease-out;
+}
+
+/* Under the pointer the whole card lifts and brightens, as web and macOS. */
+.quote.lit {
+  background: mix(@caper_surface_raised, @caper_text, 0.07);
+  border-color: alpha(@caper_text, 0.18);
+}
+
+.quote.lit .quote-view,
+.quote.lit .quote-text {
+  color: @caper_text;
 }
 
 .quote-author {

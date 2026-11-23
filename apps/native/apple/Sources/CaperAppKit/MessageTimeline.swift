@@ -523,8 +523,6 @@ enum PendingAction { case retry, edit, dismiss }
             let grouped = NativePresentation.grouped(pending, author: pendingAuthor, after: prior, inThread: inThread)
             row.configure(pending, author: pendingAuthor, grouped: grouped, day: day, error: pendingError,
                 rejected: sendRejected, uploadFailed: sendUploadFailed, canEdit: canEditPending)
-            row.layer?.borderColor = NativeStyle.accent.cgColor
-            row.layer?.borderWidth = 0
             return row
         }
         let entry = entries[index]
@@ -559,8 +557,7 @@ enum PendingAction { case retry, edit, dismiss }
                     pinErrors: self.pinErrors, pendingPins: self.pendingPins)
             }
         }
-        row.layer?.borderColor = NativeStyle.accent.cgColor
-        row.layer?.borderWidth = focused ? 1 : 0
+        if focused { row.markJumpTarget() }
         if let saved = selection.removeValue(forKey: id), saved.text == row.body.string,
            NSMaxRange(saved.range) <= row.body.string.utf16.count {
             row.body.setSelectedRange(saved.range)
@@ -1442,6 +1439,15 @@ enum PendingAction { case retry, edit, dismiss }
             controls.setMenuOpen(false); controls.setReactionPickerOpen(false)
             updateControlsVisibility()
         }
+    }
+    /// The message a link, quote or search opened: a selection, as on web —
+    /// a 12% accent wash and 3pt edge under its date divider, never an outline.
+    func markJumpTarget() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        mentionTint.backgroundColor = NativeStyle.accent.withAlphaComponent(0.12).cgColor
+        mentionTint.isHidden = false
+        mentionBar.isHidden = false
+        CATransaction.commit()
     }
     func clearHover() {
         guard hovered else { return }

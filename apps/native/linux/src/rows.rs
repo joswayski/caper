@@ -1895,30 +1895,40 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
         target.set_cursor_from_name(Some("pointer"));
     }
     widgets.body.connect_link(profile_link(handler));
+    // The whole card opens the original, as on web and macOS; Show more
+    // claims its own clicks.
     let click = gtk::GestureClick::new();
     let (weak, jump) = (Rc::downgrade(widgets), handler.clone());
     click.connect_released(move |_, _, _, _| {
         let target = weak
             .upgrade()
+            .filter(|widgets| widgets.quote_heading.is_sensitive())
             .and_then(|widgets| widgets.row.borrow().as_ref()?.reply_target.clone());
         if let Some((id, root)) = target {
             jump(Action::Quote { id, root });
         }
     });
-    widgets.quote_heading.add_controller(click);
-    widgets.quote_heading.set_cursor_from_name(Some("pointer"));
-    let click = gtk::GestureClick::new();
-    let (weak, jump) = (Rc::downgrade(widgets), handler.clone());
-    click.connect_released(move |_, _, _, _| {
-        let target = weak
-            .upgrade()
-            .and_then(|widgets| widgets.row.borrow().as_ref()?.reply_target.clone());
-        if let Some((id, root)) = target {
-            jump(Action::Quote { id, root });
+    widgets.reply.add_controller(click);
+    // Under the pointer the card lifts and its string to the reply
+    // brightens (`draw_connector`), so the link reads as one control.
+    let motion = gtk::EventControllerMotion::new();
+    let weak = Rc::downgrade(widgets);
+    motion.connect_enter(move |_, _, _| {
+        if let Some(widgets) = weak.upgrade()
+            && widgets.quote_heading.is_sensitive()
+        {
+            widgets.reply.add_css_class("lit");
+            widgets.connector.queue_draw();
         }
     });
-    widgets.quote_text.add_controller(click);
-    widgets.quote_text.set_cursor_from_name(Some("pointer"));
+    let weak = Rc::downgrade(widgets);
+    motion.connect_leave(move |_| {
+        if let Some(widgets) = weak.upgrade() {
+            widgets.reply.remove_css_class("lit");
+            widgets.connector.queue_draw();
+        }
+    });
+    widgets.reply.add_controller(motion);
     let (weak, toggle) = (Rc::downgrade(widgets), handler.clone());
     widgets.quote_more.connect_clicked(move |_| {
         if let Some(id) = weak.upgrade().and_then(|widgets| id(&widgets)) {
@@ -1945,6 +1955,8 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
 /// appears once the text runs past three lines.
 fn fill_quote(widgets: &Widgets, images: &Rc<Images>, row: &Row) {
     widgets.connector.queue_draw();
+    // A recycled row never saw the pointer leave its previous message.
+    widgets.reply.remove_css_class("lit");
     let Some(quote) = &row.reply else {
         widgets.reply.set_visible(false);
         return;
@@ -1962,6 +1974,9 @@ fn fill_quote(widgets: &Widgets, images: &Rc<Images>, row: &Row) {
     let opens = row.reply_target.is_some() && !quote.deleted;
     widgets.quote_view.set_visible(opens);
     widgets.quote_heading.set_sensitive(opens);
+    widgets
+        .reply
+        .set_cursor_from_name(opens.then_some("pointer"));
     let text = match &quote.text {
         Some(text) => Some(text.as_str()),
         None if quote.deleted && quote.avatar.is_some() => Some("Original message was deleted."),
@@ -2342,8 +2357,12 @@ fn draw_connector(
         end.0,
         end.1,
     );
-    // Muted text (#B9BCBE) at 75%.
-    cr.set_source_rgba(185.0 / 255.0, 188.0 / 255.0, 190.0 / 255.0, 0.75);
+    // Muted text (#B9BCBE) at 75%; chalk text while the card is lit.
+    if quote.has_css_class("lit") {
+        cr.set_source_rgba(244.0 / 255.0, 244.0 / 255.0, 246.0 / 255.0, 1.0);
+    } else {
+        cr.set_source_rgba(185.0 / 255.0, 188.0 / 255.0, 190.0 / 255.0, 0.75);
+    }
     cr.set_line_width(1.1);
     cr.set_line_cap(gtk::cairo::LineCap::Round);
     let _ = cr.stroke();

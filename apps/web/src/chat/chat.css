@@ -758,12 +758,57 @@ button.chat-reply-source {
   text-decoration-color: var(--border);
   text-underline-offset: 3px;
 }
+/* The whole card answers its pointer: it lifts, its edge and text brighten,
+   and the string to the reply tightens, so the link reads as one control. */
+.chat-reply-body:has(> .chat-reply-source:focus-visible) {
+  border-color: color-mix(in srgb, var(--text) 18%, transparent);
+  background: color-mix(in srgb, var(--surface-raised) 93%, var(--text) 7%);
+}
 .chat-reply-source:focus-visible {
   color: var(--text);
 }
+.chat-reply-source:focus-visible .chat-reply-view {
+  text-decoration-color: currentcolor;
+}
+.chat-reply-context:has(.chat-reply-source:focus-visible) .chat-reply-line {
+  stroke: var(--text);
+  opacity: 1;
+}
 @media (hover: hover) {
+  .chat-reply-body:has(> button.chat-reply-source:hover) {
+    border-color: color-mix(in srgb, var(--text) 18%, transparent);
+    background: color-mix(in srgb, var(--surface-raised) 93%, var(--text) 7%);
+  }
   button.chat-reply-source:hover {
     color: var(--text);
+  }
+  button.chat-reply-source:hover .chat-reply-view {
+    text-decoration-color: currentcolor;
+  }
+  .chat-reply-context:has(button.chat-reply-source:hover) .chat-reply-line {
+    stroke: var(--text);
+    opacity: 1;
+  }
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .chat-reply-body,
+  .chat-reply-source,
+  .chat-reply-view,
+  .chat-reply-line {
+    transition-duration: var(--motion-fast);
+    transition-timing-function: var(--ease-out);
+  }
+  .chat-reply-body {
+    transition-property: background-color, border-color;
+  }
+  .chat-reply-source {
+    transition-property: color;
+  }
+  .chat-reply-view {
+    transition-property: text-decoration-color;
+  }
+  .chat-reply-line {
+    transition-property: stroke, opacity;
   }
 }
 .chat-reply-source:focus-visible,

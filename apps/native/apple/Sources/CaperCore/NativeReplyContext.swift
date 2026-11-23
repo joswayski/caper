@@ -57,6 +57,14 @@ import SwiftUI
         draw()
     }
     func stop() { motion?.cancel(); motion = nil; displacement = 0; velocity = 0; y = nil }
+    #if os(macOS)
+    /// The string tightens to the text colour while its card is under the pointer, as on web.
+    func setLit(_ lit: Bool) {
+        CATransaction.begin(); CATransaction.setAnimationDuration(CaperAccessibility.reduceMotion ? 0 : 0.14)
+        wire.strokeColor = (lit ? AppKitKit.text : AppKitKit.muted.withAlphaComponent(0.75)).cgColor
+        CATransaction.commit()
+    }
+    #endif
     private func draw() {
         CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
         let angle = displacement * 0.025, dx = 12 * cos(angle), dy = 12 * sin(angle)
@@ -89,7 +97,8 @@ import AppKit
     private var loads: [Task<Void, Never>] = []
     private let observation = AppKitObservation()
     private var scrolling: NSKeyValueObservation?
-    private var expanded = false, blocked = false, lastHeight: CGFloat = 0
+    private var expanded = false, blocked = false, lit = false, lastHeight: CGFloat = 0
+    private var hoverArea: NSTrackingArea?
     override var isFlipped: Bool { true }
     init(reference: MessageReply, motionKey: String, chat: ChatModel) {
         self.reference = reference; self.chat = chat; wire = NativeReplyWire(key: motionKey)
@@ -101,7 +110,7 @@ import AppKit
         thumbnails.orientation = .horizontal; thumbnails.alignment = .centerY; thumbnails.spacing = 4
         for view in [avatar, name, hint, excerpt, thumbnails, open, expand!] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = true }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(motionChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
-        render()
+        render(); paint()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { loads.forEach { $0.cancel() }; NSWorkspace.shared.notificationCenter.removeObserver(self) }
@@ -111,9 +120,37 @@ import AppKit
             observation.start(reading: { [weak self] in self?.render() }, apply: { _ in })
             makeThumbnails()
             scrolling = enclosingScrollView?.contentView.observe(\.bounds, options: []) { [weak self] _, _ in MainActor.assumeIsolated { self?.moveWire() } }
-        } else { observation.stop(); wire.stop(); loads.forEach { $0.cancel() } }
+        } else { observation.stop(); wire.stop(); loads.forEach { $0.cancel() }; lit = false; paint() }
     }
     @objc private func motionChanged() { wire.stop(); moveWire() }
+    // The whole card answers the pointer, as on web: it lifts, its edge and
+    // text brighten and the string tightens, so it reads as one link.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: open.frame, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self)
+        addTrackingArea(area); hoverArea = area
+    }
+    override func mouseEntered(with event: NSEvent) { refreshHover() }
+    override func mouseExited(with event: NSEvent) { refreshHover() }
+    /// AppKit sends no mouseExited when scrolling carries the card away from a still pointer.
+    private func refreshHover() {
+        let inside = window.map { window in
+            window.isKeyWindow && open.frame.intersection(visibleRect).contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        } ?? false
+        let next = inside && open.isEnabled
+        guard next != lit else { return }
+        lit = next; paint()
+    }
+    private func paint() {
+        CATransaction.begin(); CATransaction.setAnimationDuration(CaperAccessibility.reduceMotion ? 0 : 0.14)
+        panel.backgroundColor = (lit ? AppKitKit.raised.blended(withFraction: 0.07, of: AppKitKit.text) ?? AppKitKit.raised : AppKitKit.surface).cgColor
+        panel.borderColor = (lit ? AppKitKit.text.withAlphaComponent(0.18) : AppKitKit.border.withAlphaComponent(0.7)).cgColor
+        CATransaction.commit()
+        excerpt.textColor = lit ? AppKitKit.text : AppKitKit.muted
+        hint.textColor = lit ? AppKitKit.text : AppKitKit.muted
+        wire.setLit(lit)
+    }
     private func render() {
         let wasHidden = blocked; blocked = chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID
         name.stringValue = blocked ? "Blocked message" : reference.author.name + (reference.hasAttachments && reference.deleted != true ? (reference.hasVoice ? "  ◉" : "  📎") : "")
@@ -164,9 +201,10 @@ import AppKit
         let bottom = m.height - 13 - (m.expand ? 32 : 0)
         open.frame = CGRect(x: 44, y: 0, width: max(1, bounds.width - 44), height: bottom)
         expand.isHidden = !m.expand; expand.frame = CGRect(x: 56, y: bottom - 4, width: width, height: 32)
+        if hoverArea?.rect != open.frame { updateTrackingAreas() }
         moveWire(); if lastHeight != m.height { lastHeight = m.height; invalidateIntrinsicContentSize(); heightChanged?() }
     }
-    private func moveWire() { wire.update(y: convert(NSPoint.zero, to: nil).y, height: intrinsicContentSize.height, hidden: blocked) }
+    private func moveWire() { wire.update(y: convert(NSPoint.zero, to: nil).y, height: intrinsicContentSize.height, hidden: blocked); refreshHover() }
 }
 #elseif os(iOS)
 import UIKit
