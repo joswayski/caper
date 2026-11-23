@@ -154,9 +154,16 @@ object CaperThemeStore {
     fun init(context: Context) {
         if (initialized) return
         initialized = true
-        val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(PREF_KEY, null)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val saved = prefs.getString(PREF_KEY, null)
         if (!saved.isNullOrBlank()) {
-            parsePreference(saved).onSuccess { active = it }
+            parsePreference(saved).onSuccess { parsed ->
+                val normalized = if (parsed.id == "paper" || parsed.isLight) paper else obsidian
+                active = normalized
+                if (saved != normalized.id) {
+                    prefs.edit().putString(PREF_KEY, normalized.id).apply()
+                }
+            }
         }
     }
 

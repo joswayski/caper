@@ -167,13 +167,19 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
     public var allThemes: [CaperThemeDocument] { [.obsidian, .paper] + savedThemes }
 
     private init() {
-        if let rawSaved = UserDefaults.standard.data(forKey: Self.savedThemesKey),
-           let decoded = try? JSONDecoder().decode([CaperThemeDocument].self, from: rawSaved) {
-            savedThemes = decoded.filter { $0.id != "obsidian" && $0.id != "paper" }
-        }
         if let raw = UserDefaults.standard.string(forKey: Self.defaultsKey),
            let parsed = try? Self.decode(raw) {
-            active = parsed
+            if parsed.id == "paper" || parsed.isLight {
+                active = .paper
+                if parsed.id != "paper" {
+                    UserDefaults.standard.set("paper", forKey: Self.defaultsKey)
+                }
+            } else {
+                active = .obsidian
+                if parsed.id != "obsidian" {
+                    UserDefaults.standard.set("obsidian", forKey: Self.defaultsKey)
+                }
+            }
         } else {
             active = .obsidian
         }
@@ -186,15 +192,9 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
     }
 
     public func selectPreset(_ id: String) {
-        if id == "obsidian" {
-            active = .obsidian
-            UserDefaults.standard.set("obsidian", forKey: Self.defaultsKey)
-        } else if id == "paper" {
+        if id == "paper" {
             active = .paper
             UserDefaults.standard.set("paper", forKey: Self.defaultsKey)
-        } else if let found = savedThemes.first(where: { $0.id == id }) {
-            active = found
-            persistActiveDocument(found)
         } else {
             active = .obsidian
             UserDefaults.standard.set("obsidian", forKey: Self.defaultsKey)

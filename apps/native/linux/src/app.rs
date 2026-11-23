@@ -771,10 +771,13 @@ pub fn start(
     prefs.follow_window(&ui.window);
     let zoom = crate::zoom::valid(prefs.get::<f64>("zoom").unwrap_or(1.0));
     style.load_from_data(&crate::zoom::scale_css(STYLE, zoom));
-    let active_theme = prefs
+    let active_theme = match prefs
         .get::<String>(caper_client::themes::THEME_PREF_KEY)
         .and_then(|raw| caper_client::themes::parse_theme_preference(&raw).ok())
-        .unwrap_or_else(caper_client::themes::obsidian);
+    {
+        Some(doc) if doc.id == "paper" || doc.is_light() => caper_client::themes::paper(),
+        _ => caper_client::themes::obsidian(),
+    };
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_application_prefer_dark_theme(!active_theme.is_light());
     }

@@ -340,10 +340,7 @@ export function loadSavedTheme(): CaperThemeDocument {
     const stored = JSON.parse(raw) as StoredTheme;
     if (stored.preset === "paper") return PAPER_THEME;
     if (stored.preset === "obsidian") return OBSIDIAN_THEME;
-    if (stored.custom) {
-      const checked = validateThemeDocument(stored.custom);
-      if (checked.ok) return checked.theme;
-    }
+    if (stored.custom?.appearance === "light") return PAPER_THEME;
   } catch {
     // Ignore corrupt local storage and fall back to Obsidian.
   }
@@ -463,7 +460,7 @@ export function deleteCustomTheme(id: string) {
 }
 
 /**
- * Tiny inline bootstrap script for __root.tsx so saved Paper Light or custom
- * .capertheme.json themes paint before first frame with zero dark flash.
+ * Tiny inline bootstrap script for __root.tsx so saved Paper Light paints
+ * before first frame with zero dark flash.
  */
-export const themeInitScript = `try{var r=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});if(r){var d=JSON.parse(r),p=${JSON.stringify({ obsidian: themeToCssVars(OBSIDIAN_THEME), paper: themeToCssVars(PAPER_THEME) })},e=document.documentElement;if(d.preset==="paper"){e.dataset.appearance="light";e.dataset.themeId="paper";for(var k in p.paper)e.style.setProperty(k,p.paper[k]);}else if(d.custom&&d.custom.schema==="caper.theme.v1"){var c=d.custom;e.dataset.appearance=c.appearance==="light"?"light":"dark";e.dataset.themeId=c.id||"custom";var hex=function(h){var n=parseInt(h.slice(1),16);return((n>>16)&255)+" "+((n>>8)&255)+" "+(n&255)};var m={"--blackout":c.surfaces.frame,"--surface":c.surfaces.base,"--surface-raised":c.surfaces.raised,"--surface-sidebar":c.surfaces.sidebar,"--surface-conversation":c.surfaces.conversation,"--surface-composer":c.surfaces.composer,"--surface-hover":c.surfaces.hover,"--border":c.borders.translucent,"--border-solid":c.borders.default,"--border-subtle":c.borders.subtle,"--surface-rim":c.borders.rim,"--text":c.text.primary,"--text-message":c.text.message,"--text-muted":c.text.muted,"--link":c.text.link,"--link-hover":c.text.linkHover,"--accent":c.accent.primary,"--accent-bright":c.accent.bright,"--accent-soft-text":c.accent.softText,"--accent-surface":c.accent.surface,"--accent-border":c.accent.border,"--accent-rgb":hex(c.accent.primary),"--accent-bright-rgb":hex(c.accent.bright),"--action":c.action.primary,"--action-hover":c.action.primaryHover,"--action-press":c.action.primaryPress,"--on-action":c.action.onPrimary,"--caper":c.brand.caper,"--caper-bright":c.brand.caperBright,"--voice-session-green":c.status.voice,"--pin-gold":c.status.pin,"--pin-wash":c.status.pinWash,"--error-text":c.status.errorText,"--danger":c.status.danger,"--danger-hover":c.status.dangerHover,"--danger-wash":c.status.dangerWash,"--on-danger":c.status.onDanger,"--voice-off":c.status.voiceOff,"--voice-off-wash":c.status.voiceOffWash};for(var j in m)if(m[j])e.style.setProperty(j,m[j]);}}}catch{}`;
+export const themeInitScript = `try{var r=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});if(r){var d=JSON.parse(r),p=${JSON.stringify(themeToCssVars(PAPER_THEME))},e=document.documentElement;if(d.preset==="paper"||(d.custom&&d.custom.appearance==="light")){e.dataset.appearance="light";e.dataset.themeId="paper";for(var k in p)e.style.setProperty(k,p[k]);}}}catch{}`;

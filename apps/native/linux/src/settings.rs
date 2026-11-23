@@ -32,6 +32,8 @@ pub(super) struct AccountSettings {
 
 pub(super) struct SettingsDialog {
     window: gtk::Window,
+    obsidian_card: gtk::Button,
+    paper_card: gtk::Button,
     startup_error: gtk::Label,
     sounds: gtk::Switch,
     voice_send: gtk::Switch,
@@ -45,6 +47,65 @@ pub(super) struct SettingsDialog {
     blocked_shown: Option<Vec<String>>,
     /// The Updates section.
     pub(super) updates: super::updates::UpdatesRow,
+}
+
+fn theme_preset_card(id: &str, title: &str, mode: &str) -> gtk::Button {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let swatch = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+    swatch.add_css_class("theme-swatch");
+    swatch.add_css_class(&format!("theme-swatch-{id}"));
+    swatch.set_height_request(54);
+
+    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    sidebar.add_css_class("theme-swatch-sidebar");
+    sidebar.set_width_request(44);
+    for classes in [
+        &["theme-swatch-bar", "brand"][..],
+        &["theme-swatch-bar", "muted", "short"][..],
+        &["theme-swatch-bar", "muted", "med"][..],
+    ] {
+        let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        for class in classes {
+            bar.add_css_class(class);
+        }
+        sidebar.append(&bar);
+    }
+    swatch.append(&sidebar);
+
+    let canvas = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    canvas.add_css_class("theme-swatch-canvas");
+    canvas.set_hexpand(true);
+    let top_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    top_bar.add_css_class("theme-swatch-bar");
+    top_bar.add_css_class("primary");
+    canvas.append(&top_bar);
+    let sub_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    sub_bar.add_css_class("theme-swatch-bar");
+    sub_bar.add_css_class("muted");
+    sub_bar.add_css_class("short");
+    canvas.append(&sub_bar);
+    let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    spacer.set_vexpand(true);
+    canvas.append(&spacer);
+    let pill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    pill.add_css_class("theme-swatch-pill");
+    pill.set_halign(gtk::Align::End);
+    canvas.append(&pill);
+    swatch.append(&canvas);
+    card.append(&swatch);
+
+    let meta = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let name = label(title, &["theme-card-name"]);
+    name.set_hexpand(true);
+    meta.append(&name);
+    meta.append(&label(mode, &["muted", "small"]));
+    card.append(&meta);
+
+    let button: gtk::Button = named("GtkButton", &format!("{title} ({mode})"));
+    button.add_css_class("theme-card");
+    button.set_hexpand(true);
+    button.set_child(Some(&card));
+    button
 }
 
 fn section(root: &gtk::Box, title: &str, first: bool) {
@@ -115,160 +176,35 @@ impl App {
 
         section(&root, "Appearance", true);
         let theme_note = label(
-            "Switch between Obsidian Dark and Paper Light, or import a custom .capertheme.json file.",
+            "Choose between Obsidian Dark and Paper Light.",
             &["muted", "small"],
         );
         theme_note.set_wrap(true);
         root.append(&theme_note);
-        let theme_status = label("", &["small"]);
-        theme_status.set_wrap(true);
-        theme_status.set_visible(false);
-        let preset_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let obsidian_btn = gtk::Button::with_label("Obsidian (Dark)");
-        let paper_btn = gtk::Button::with_label("Paper (Light)");
-        let import_btn = gtk::Button::with_label("Import .capertheme.json");
-        let export_btn = gtk::Button::with_label("Export theme");
-        preset_row.append(&obsidian_btn);
-        preset_row.append(&paper_btn);
+        let preset_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        preset_row.set_homogeneous(true);
+        let obsidian_card = theme_preset_card("obsidian", "Obsidian", "Dark");
+        let paper_card = theme_preset_card("paper", "Paper", "Light");
+        preset_row.append(&obsidian_card);
+        preset_row.append(&paper_card);
         root.append(&preset_row);
-        let file_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        file_row.append(&import_btn);
-        file_row.append(&export_btn);
-        root.append(&file_row);
-        root.append(&theme_status);
 
         {
             let app = Rc::downgrade(self);
-            let theme_status = theme_status.clone();
-            obsidian_btn.connect_clicked(move |_| {
+            obsidian_card.connect_clicked(move |_| {
                 if let Some(app) = app.upgrade() {
-                    match app.apply_theme_preference("obsidian") {
-                        Ok(_) => status(&theme_status, Some("Switched to Obsidian (Dark)."), false),
-                        Err(err) => status(&theme_status, Some(&err), true),
-                    }
+                    app.apply_theme_preset("obsidian");
+                    app.render_settings();
                 }
             });
         }
         {
             let app = Rc::downgrade(self);
-            let theme_status = theme_status.clone();
-            paper_btn.connect_clicked(move |_| {
+            paper_card.connect_clicked(move |_| {
                 if let Some(app) = app.upgrade() {
-                    match app.apply_theme_preference("paper") {
-                        Ok(_) => status(&theme_status, Some("Switched to Paper (Light)."), false),
-                        Err(err) => status(&theme_status, Some(&err), true),
-                    }
+                    app.apply_theme_preset("paper");
+                    app.render_settings();
                 }
-            });
-        }
-        let theme_chooser: Rc<std::cell::RefCell<Option<gtk::FileChooserNative>>> =
-            Rc::new(std::cell::RefCell::new(None));
-        {
-            let app = Rc::downgrade(self);
-            let parent = window.clone();
-            let theme_status = theme_status.clone();
-            let chooser_slot = theme_chooser.clone();
-            import_btn.connect_clicked(move |_| {
-                if chooser_slot.borrow().is_some() {
-                    return;
-                }
-                #[allow(deprecated)]
-                let dialog = gtk::FileChooserNative::new(
-                    Some("Import .capertheme.json"),
-                    Some(&parent),
-                    gtk::FileChooserAction::Open,
-                    Some("Import"),
-                    Some("Cancel"),
-                );
-                let app = app.clone();
-                let theme_status = theme_status.clone();
-                let slot = chooser_slot.clone();
-                #[allow(deprecated)]
-                dialog.connect_response(move |dialog, response| {
-                    #[allow(deprecated)]
-                    let path = (response == gtk::ResponseType::Accept)
-                        .then(|| dialog.file().and_then(|file| file.path()))
-                        .flatten();
-                    dialog.destroy();
-                    slot.replace(None);
-                    let Some(path) = path else {
-                        return;
-                    };
-                    match std::fs::read_to_string(&path) {
-                        Ok(raw) => {
-                            if let Some(app) = app.upgrade() {
-                                match app.apply_theme_preference(&raw) {
-                                    Ok(doc) => status(
-                                        &theme_status,
-                                        Some(&format!("Applied \"{}\".", doc.name)),
-                                        false,
-                                    ),
-                                    Err(err) => status(&theme_status, Some(&err), true),
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            status(
-                                &theme_status,
-                                Some(&format!("Could not read file: {err}")),
-                                true,
-                            );
-                        }
-                    }
-                });
-                #[allow(deprecated)]
-                dialog.show();
-                chooser_slot.replace(Some(dialog));
-            });
-        }
-        {
-            let app = Rc::downgrade(self);
-            let parent = window.clone();
-            let theme_status = theme_status.clone();
-            let chooser_slot = theme_chooser.clone();
-            export_btn.connect_clicked(move |_| {
-                if chooser_slot.borrow().is_some() {
-                    return;
-                }
-                let Some(app_ref) = app.upgrade() else {
-                    return;
-                };
-                let current = app_ref.current_theme();
-                #[allow(deprecated)]
-                let dialog = gtk::FileChooserNative::new(
-                    Some("Export Caper theme"),
-                    Some(&parent),
-                    gtk::FileChooserAction::Save,
-                    Some("Export"),
-                    Some("Cancel"),
-                );
-                #[allow(deprecated)]
-                dialog.set_current_name(&format!("{}.capertheme.json", current.id));
-                let theme_status = theme_status.clone();
-                let slot = chooser_slot.clone();
-                #[allow(deprecated)]
-                dialog.connect_response(move |dialog, response| {
-                    #[allow(deprecated)]
-                    let path = (response == gtk::ResponseType::Accept)
-                        .then(|| dialog.file().and_then(|file| file.path()))
-                        .flatten();
-                    dialog.destroy();
-                    slot.replace(None);
-                    let Some(path) = path else {
-                        return;
-                    };
-                    match std::fs::write(&path, current.to_pretty_json()) {
-                        Ok(()) => status(&theme_status, Some("Exported theme JSON."), false),
-                        Err(err) => status(
-                            &theme_status,
-                            Some(&format!("Could not write file: {err}")),
-                            true,
-                        ),
-                    }
-                });
-                #[allow(deprecated)]
-                dialog.show();
-                chooser_slot.replace(Some(dialog));
             });
         }
 
@@ -462,6 +398,8 @@ impl App {
         window.add_controller(keys);
         *self.settings.borrow_mut() = Some(SettingsDialog {
             window: window.clone(),
+            obsidian_card,
+            paper_card,
             startup_error,
             sounds,
             voice_send,
@@ -487,28 +425,28 @@ impl App {
     }
 
     pub(super) fn current_theme(&self) -> caper_client::themes::ThemeDocument {
-        self.prefs
+        let parsed = self
+            .prefs
             .get::<String>(caper_client::themes::THEME_PREF_KEY)
-            .and_then(|raw| caper_client::themes::parse_theme_preference(&raw).ok())
-            .unwrap_or_else(caper_client::themes::obsidian)
+            .and_then(|raw| caper_client::themes::parse_theme_preference(&raw).ok());
+        match parsed {
+            Some(doc) if doc.id == "paper" || doc.is_light() => caper_client::themes::paper(),
+            _ => caper_client::themes::obsidian(),
+        }
     }
 
-    pub(super) fn apply_theme_preference(
-        &self,
-        raw: &str,
-    ) -> Result<caper_client::themes::ThemeDocument, String> {
-        let doc = caper_client::themes::parse_theme_preference(raw)?;
-        let stored = if doc.id == "obsidian" || doc.id == "paper" {
-            doc.id.clone()
+    pub(super) fn apply_theme_preset(&self, id: &str) {
+        let doc = if id == "paper" {
+            caper_client::themes::paper()
         } else {
-            doc.to_pretty_json()
+            caper_client::themes::obsidian()
         };
-        self.prefs.set(caper_client::themes::THEME_PREF_KEY, stored);
+        self.prefs
+            .set(caper_client::themes::THEME_PREF_KEY, doc.id.clone());
         if let Some(settings) = gtk::Settings::default() {
             settings.set_gtk_application_prefer_dark_theme(!doc.is_light());
         }
         self.theme_style.load_from_data(&doc.to_gtk_css());
-        Ok(doc)
     }
 
     pub(super) fn sound_effects(&self) -> bool {
@@ -604,6 +542,14 @@ impl App {
             return;
         };
         let settings = &state.settings;
+        let is_paper = self.current_theme().id == "paper";
+        if is_paper {
+            dialog.obsidian_card.remove_css_class("selected");
+            dialog.paper_card.add_css_class("selected");
+        } else {
+            dialog.obsidian_card.add_css_class("selected");
+            dialog.paper_card.remove_css_class("selected");
+        }
         dialog.sounds.set_active(self.sound_effects());
         dialog.voice_send.set_active(self.voice_send_on_stop());
         // Notifications: only enabled once loaded.

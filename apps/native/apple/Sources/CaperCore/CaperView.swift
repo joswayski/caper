@@ -8020,13 +8020,90 @@ struct BlockConfirmation: ViewModifier {
     }
 }
 
+/// Clickable miniature app preview card for choosing Obsidian (Dark) or Paper (Light).
+private struct ThemePresetCardView: View {
+    let preset: CaperThemeDocument
+    let selected: Bool
+    let action: () -> Void
+
+    private var frameColor: Color { CaperThemeStore.color(fromHex: preset.surfaces.frame) ?? CaperTheme.blackout }
+    private var sidebarColor: Color { CaperThemeStore.color(fromHex: preset.surfaces.sidebar) ?? frameColor }
+    private var convoColor: Color { CaperThemeStore.color(fromHex: preset.surfaces.conversation) ?? frameColor }
+    private var brandColor: Color { CaperThemeStore.color(fromHex: preset.brand.caper) ?? CaperTheme.terracotta }
+    private var primaryText: Color { CaperThemeStore.color(fromHex: preset.text.primary) ?? CaperTheme.text }
+    private var mutedText: Color { CaperThemeStore.color(fromHex: preset.text.muted) ?? CaperTheme.muted }
+    private var actionColor: Color { CaperThemeStore.color(fromHex: preset.action.primary) ?? primaryText }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 10) {
+                GeometryReader { proxy in
+                    let innerW = max(0, proxy.size.width - 12)
+                    let sidebarW = max(24, floor(innerW * 0.28))
+                    HStack(spacing: 5) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Capsule().fill(brandColor.opacity(0.9)).frame(maxWidth: .infinity, maxHeight: 4.5).padding(.trailing, 4)
+                            Capsule().fill(mutedText.opacity(0.72)).frame(maxWidth: .infinity, maxHeight: 4.5).padding(.trailing, 10)
+                            Capsule().fill(mutedText.opacity(0.72)).frame(maxWidth: .infinity, maxHeight: 4.5).padding(.trailing, 6)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(5)
+                        .frame(width: sidebarW)
+                        .frame(maxHeight: .infinity)
+                        .background(sidebarColor, in: RoundedRectangle(cornerRadius: 5))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Capsule().fill(primaryText.opacity(0.78)).frame(maxWidth: .infinity, maxHeight: 4.5).padding(.trailing, 16)
+                            Capsule().fill(mutedText.opacity(0.68)).frame(maxWidth: .infinity, maxHeight: 4.5).padding(.trailing, 32)
+                            Spacer(minLength: 0)
+                            HStack {
+                                Spacer(minLength: 0)
+                                Capsule().fill(actionColor).frame(width: 26, height: 8.5)
+                            }
+                        }
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(convoColor, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .padding(6)
+                }
+                .frame(height: 54)
+                .background(frameColor, in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.gray.opacity(0.24), lineWidth: 1))
+
+                HStack(spacing: 6) {
+                    Text(preset.name)
+                        .font(CaperTheme.font(13, weight: .bold))
+                        .foregroundStyle(CaperTheme.text)
+                    Spacer(minLength: 0)
+                    Text(preset.isLight ? "Light" : "Dark")
+                        .font(CaperTheme.font(11.5, weight: .medium))
+                        .foregroundStyle(CaperTheme.muted)
+                }
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CaperTheme.raised, in: RoundedRectangle(cornerRadius: 13))
+            .overlay(
+                RoundedRectangle(cornerRadius: 13)
+                    .stroke(selected ? CaperTheme.terracottaBright : CaperTheme.border, lineWidth: selected ? 1.5 : 1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(selected ? CaperTheme.terracottaBright.opacity(0.26) : .clear, lineWidth: 3)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(preset.name) (\(preset.isLight ? "Light" : "Dark"))")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
 /// Account privacy: who can start a DM with you, blocked accounts, and how to delete your account.
 private struct PrivacySheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
     @State private var themeStore = CaperThemeStore.shared
-    @State private var themeStatus: String?
-    @State private var themeError: String?
     @State private var unblocking: Set<String> = []
     @State private var unblockError: String?
     var body: some View {
@@ -8035,83 +8112,22 @@ private struct PrivacySheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Appearance").font(CaperTheme.font(13, weight: .bold))
-                    Text("Switch between Obsidian Dark and Paper Light, or import a .capertheme.json theme.")
+                    Text("Choose between Obsidian Dark and Paper Light.")
                         .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                         .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 8) {
-                        if themeStore.active.id == "obsidian" {
-                            Button("Obsidian (Dark)") {
-                                themeStore.selectPreset("obsidian")
-                                themeError = nil
-                                themeStatus = "Switched to Obsidian (Dark)."
-                            }
-                            .buttonStyle(CaperPrimaryButton())
-                        } else {
-                            Button("Obsidian (Dark)") {
-                                themeStore.selectPreset("obsidian")
-                                themeError = nil
-                                themeStatus = "Switched to Obsidian (Dark)."
-                            }
-                            .buttonStyle(CaperSecondaryButton())
+                    HStack(spacing: 10) {
+                        ThemePresetCardView(
+                            preset: .obsidian,
+                            selected: themeStore.active.id != "paper"
+                        ) {
+                            themeStore.selectPreset("obsidian")
                         }
-                        if themeStore.active.id == "paper" {
-                            Button("Paper (Light)") {
-                                themeStore.selectPreset("paper")
-                                themeError = nil
-                                themeStatus = "Switched to Paper (Light)."
-                            }
-                            .buttonStyle(CaperPrimaryButton())
-                        } else {
-                            Button("Paper (Light)") {
-                                themeStore.selectPreset("paper")
-                                themeError = nil
-                                themeStatus = "Switched to Paper (Light)."
-                            }
-                            .buttonStyle(CaperSecondaryButton())
+                        ThemePresetCardView(
+                            preset: .paper,
+                            selected: themeStore.active.id == "paper"
+                        ) {
+                            themeStore.selectPreset("paper")
                         }
-                    }
-                    HStack(spacing: 8) {
-                        Button("Import from Clipboard") {
-                            #if os(iOS)
-                            let raw = UIPasteboard.general.string ?? ""
-                            #elseif os(macOS)
-                            let raw = NSPasteboard.general.string(forType: .string) ?? ""
-                            #else
-                            let raw = ""
-                            #endif
-                            if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                themeStatus = nil
-                                themeError = "Clipboard is empty. Copy a .capertheme.json first."
-                            } else {
-                                do {
-                                    try themeStore.importThemeJSON(raw)
-                                    themeError = nil
-                                    themeStatus = "Applied \"\(themeStore.active.name)\"."
-                                } catch {
-                                    themeStatus = nil
-                                    themeError = error.localizedDescription
-                                }
-                            }
-                        }
-                        .buttonStyle(CaperSecondaryButton())
-                        Button("Copy Theme JSON") {
-                            let json = themeStore.exportCurrentJSON()
-                            #if os(iOS)
-                            UIPasteboard.general.string = json
-                            #elseif os(macOS)
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(json, forType: .string)
-                            #endif
-                            themeError = nil
-                            themeStatus = "Copied \(themeStore.active.name) theme JSON."
-                        }
-                        .buttonStyle(CaperSecondaryButton())
-                    }
-                    if let themeStatus {
-                        Text(themeStatus).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
-                    }
-                    if let themeError {
-                        Text(themeError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                     }
                     Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.vertical, 6)
                     Text("Who can start a DM with you").font(CaperTheme.font(13, weight: .bold))

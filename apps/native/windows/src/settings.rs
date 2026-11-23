@@ -140,8 +140,6 @@ pub enum SPart {
     FeedbackArchive(usize),
     ThemeObsidian,
     ThemePaper,
-    ThemeImport,
-    ThemeExport,
 }
 
 impl SPart {
@@ -204,8 +202,6 @@ impl SPart {
             Self::Changes => 56,
             Self::ThemeObsidian => 57,
             Self::ThemePaper => 58,
-            Self::ThemeImport => 59,
-            Self::ThemeExport => 60,
             Self::FeedbackOpen(k) => 2_000_000 + 2 * k,
             Self::FeedbackArchive(k) => 2_000_001 + 2 * k,
             Self::ReleaseRevision(k) => 4000 + k,
@@ -270,8 +266,6 @@ impl SPart {
                 | Self::FeedbackArchive(_)
                 | Self::ThemeObsidian
                 | Self::ThemePaper
-                | Self::ThemeImport
-                | Self::ThemeExport
         )
     }
 }
@@ -335,7 +329,6 @@ pub struct Snapshot {
     /// The version was just copied: it reads "Copied".
     pub version_copied: bool,
     pub theme_id: String,
-    pub theme_status: Option<(String, bool)>,
 }
 
 /// What the inbox shows (`Live::inbox_snapshot`).
@@ -409,7 +402,6 @@ pub struct Settings {
     pub notice: String,
     /// The version reads "Copied" until `TIMER_VERSION_COPIED`.
     pub version_copied: bool,
-    pub theme_status: Option<(String, bool)>,
 }
 
 impl Settings {
@@ -432,7 +424,6 @@ impl Settings {
             startup_error,
             notice: String::new(),
             version_copied: false,
-            theme_status: None,
         }
     }
 
@@ -672,53 +663,30 @@ impl Builder<'_> {
         b.text("Appearance", Style::Section)?;
         b.y += 4.0;
         b.text(
-            "Switch between Obsidian Dark and Paper Light, or import a .capertheme.json theme from your clipboard.",
+            "Choose between Obsidian Dark and Paper Light.",
             Style::Detail,
         )?;
-        b.y += 8.0;
-        let mut x = 0.0;
-        for (part, label) in [
+        b.y += 10.0;
+        let card_gap = 10.0;
+        let card_w = (inner - card_gap) / 2.0;
+        let card_h = 98.0;
+        for (i, (part, label)) in [
             (SPart::ThemeObsidian, "Obsidian (Dark)"),
             (SPart::ThemePaper, "Paper (Light)"),
-        ] {
-            let w = b.width(label, Style::Label)? + 24.0;
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let x = i as f32 * (card_w + card_gap);
             b.items.push(Item {
                 part,
-                rect: (x, b.y, w, BUTTON_H),
+                rect: (x, b.y, card_w, card_h),
                 text: label.into(),
                 style: Style::Label,
                 face: None,
             });
-            x += w + 8.0;
         }
-        b.y += BUTTON_H + 8.0;
-        let mut x = 0.0;
-        for (part, label) in [
-            (SPart::ThemeImport, "Import from clipboard"),
-            (SPart::ThemeExport, "Copy theme JSON"),
-        ] {
-            let w = b.width(label, Style::Label)? + 24.0;
-            b.items.push(Item {
-                part,
-                rect: (x, b.y, w, BUTTON_H),
-                text: label.into(),
-                style: Style::Label,
-                face: None,
-            });
-            x += w + 8.0;
-        }
-        b.y += BUTTON_H;
-        if let Some((msg, is_error)) = &snap.theme_status {
-            b.y += 6.0;
-            b.text(
-                msg,
-                if *is_error {
-                    Style::Error
-                } else {
-                    Style::Detail
-                },
-            )?;
-        }
+        b.y += card_h;
         b.separator();
         b.text("Startup", Style::Section)?;
         b.y += 6.0;
@@ -1307,6 +1275,16 @@ impl Settings {
                 }
                 text::draw(dc, &l, x, y, &g.brushes.text);
             }
+            SPart::ThemeObsidian | SPart::ThemePaper => {
+                let is_paper = part == SPart::ThemePaper;
+                let selected = if is_paper {
+                    self.snap.theme_id == "paper"
+                } else {
+                    self.snap.theme_id != "paper"
+                };
+                let pressed = self.pressed == Some(part) && hover;
+                draw_theme_card(g, dc, r, is_paper, selected, hover, pressed)?;
+            }
             part if part.is_button() => {
                 let state = if !enabled {
                     0
@@ -1320,12 +1298,6 @@ impl Settings {
                 let (label, tone) = match part {
                     SPart::Sample(e) => (self.sample_label(e), Tone::Secondary),
                     SPart::MicTest => (item.text.as_str(), Tone::Primary),
-                    SPart::ThemeObsidian if self.snap.theme_id == "obsidian" => {
-                        (item.text.as_str(), Tone::Primary)
-                    }
-                    SPart::ThemePaper if self.snap.theme_id == "paper" => {
-                        (item.text.as_str(), Tone::Primary)
-                    }
                     _ => (item.text.as_str(), Tone::Secondary),
                 };
                 crate::overlay::draw_button(g, dc, label, r, tone, state)?;
@@ -1334,6 +1306,179 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+/// Clickable miniature app preview card for Obsidian (Dark) or Paper (Light).
+fn draw_theme_card(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    (x, y, w, h): Rect,
+    is_paper: bool,
+    selected: bool,
+    hover: bool,
+    pressed: bool,
+) -> Result<()> {
+    struct Palette {
+        frame: u32,
+        sidebar: u32,
+        convo: u32,
+        brand: u32,
+        primary: u32,
+        muted: u32,
+        action: u32,
+        name: &'static str,
+        mode: &'static str,
+    }
+    let palette = if is_paper {
+        Palette {
+            frame: 0xEFEFF2,
+            sidebar: 0xEFEFF2,
+            convo: 0xFFFFFF,
+            brand: 0x5A7E3A,
+            primary: 0x111114,
+            muted: 0x666672,
+            action: 0x111114,
+            name: "Paper",
+            mode: "Light",
+        }
+    } else {
+        Palette {
+            frame: 0x0B0B0C,
+            sidebar: 0x0F0F11,
+            convo: 0x131316,
+            brand: 0x6F9948,
+            primary: 0xF4F3EF,
+            muted: 0x9A99A2,
+            action: 0xF4F3EF,
+            name: "Obsidian",
+            mode: "Dark",
+        }
+    };
+
+    let card = rect(x, y, x + w, y + h);
+    let fill = if pressed {
+        SURFACE_COMPOSER
+    } else if hover {
+        0x212126
+    } else {
+        SURFACE_RAISED
+    };
+    fill_round(dc, card, 13.0, &g.solid(fill));
+    if selected {
+        let halo = rect(x - 1.5, y - 1.5, x + w + 1.5, y + h + 1.5);
+        let halo_brush =
+            unsafe { dc.CreateSolidColorBrush(&gfx::color(TERRACOTTA_BRIGHT, 0.28), None)? };
+        stroke_round(dc, halo, 14.5, &halo_brush);
+    }
+    let border = if selected {
+        TERRACOTTA_BRIGHT
+    } else if hover {
+        0x3F3F48
+    } else {
+        BORDER
+    };
+    stroke_round(dc, card, 13.0, &g.solid(border));
+
+    let sx = x + 10.0;
+    let sy = y + 10.0;
+    let sw = w - 20.0;
+    let sh = 52.0;
+    let swatch = rect(sx, sy, sx + sw, sy + sh);
+    fill_round(dc, swatch, 9.0, &g.solid(palette.frame));
+    let swatch_border = unsafe { dc.CreateSolidColorBrush(&gfx::color(0x808080, 0.24), None)? };
+    stroke_round(dc, swatch, 9.0, &swatch_border);
+
+    let ix = sx + 6.0;
+    let iy = sy + 6.0;
+    let iw = sw - 12.0;
+    let ih = sh - 12.0;
+    let sb_w = (iw * 0.28).floor();
+    fill_round(
+        dc,
+        rect(ix, iy, ix + sb_w, iy + ih),
+        5.0,
+        &g.solid(palette.sidebar),
+    );
+    let cv_x = ix + sb_w + 5.0;
+    let cv_w = (iw - sb_w - 5.0).max(16.0);
+    fill_round(
+        dc,
+        rect(cv_x, iy, cv_x + cv_w, iy + ih),
+        6.0,
+        &g.solid(palette.convo),
+    );
+
+    let sb_bar_w = (sb_w - 10.0).max(6.0);
+    fill_round(
+        dc,
+        rect(ix + 5.0, iy + 6.0, ix + 5.0 + sb_bar_w * 0.78, iy + 10.5),
+        2.25,
+        &g.solid(palette.brand),
+    );
+    let muted_brush = unsafe { dc.CreateSolidColorBrush(&gfx::color(palette.muted, 0.72), None)? };
+    fill_round(
+        dc,
+        rect(ix + 5.0, iy + 14.5, ix + 5.0 + sb_bar_w * 0.56, iy + 19.0),
+        2.25,
+        &muted_brush,
+    );
+    fill_round(
+        dc,
+        rect(ix + 5.0, iy + 23.0, ix + 5.0 + sb_bar_w * 0.66, iy + 27.5),
+        2.25,
+        &muted_brush,
+    );
+
+    let cv_bar_w = (cv_w - 12.0).max(12.0);
+    let primary_brush =
+        unsafe { dc.CreateSolidColorBrush(&gfx::color(palette.primary, 0.78), None)? };
+    fill_round(
+        dc,
+        rect(
+            cv_x + 6.0,
+            iy + 6.0,
+            cv_x + 6.0 + cv_bar_w * 0.68,
+            iy + 10.5,
+        ),
+        2.25,
+        &primary_brush,
+    );
+    fill_round(
+        dc,
+        rect(
+            cv_x + 6.0,
+            iy + 14.5,
+            cv_x + 6.0 + cv_bar_w * 0.48,
+            iy + 19.0,
+        ),
+        2.25,
+        &muted_brush,
+    );
+    fill_round(
+        dc,
+        rect(
+            cv_x + cv_w - 32.0,
+            iy + ih - 14.5,
+            cv_x + cv_w - 6.0,
+            iy + ih - 6.0,
+        ),
+        4.25,
+        &g.solid(palette.action),
+    );
+
+    let meta_y = sy + sh + 9.0;
+    let title_l = g.layout(&gfx::wide(palette.name), &g.formats.direct_unread, sw)?;
+    text::draw(dc, &title_l, sx + 2.0, meta_y, &g.brushes.text);
+    let mode_l = g.layout(&gfx::wide(palette.mode), &g.formats.direct_note, sw)?;
+    let mode_w = gfx::metrics(&mode_l).widthIncludingTrailingWhitespace;
+    text::draw(
+        dc,
+        &mode_l,
+        sx + sw - mode_w - 2.0,
+        meta_y + 1.0,
+        &g.brushes.muted,
+    );
+    Ok(())
 }
 
 /// A switch at (x, y): terracotta while on, its knob at the end.
@@ -1654,13 +1799,12 @@ impl App {
 
     fn settings_snapshot(&self) -> Snapshot {
         let s = self.settings.as_ref();
-        let active_theme = self
-            .live
-            .as_ref()
-            .and_then(|l| {
-                caper_client::themes::parse_theme_preference(l.preferences.theme_preference()).ok()
-            })
-            .unwrap_or_else(caper_client::themes::obsidian);
+        let active_theme = match self.live.as_ref().and_then(|l| {
+            caper_client::themes::parse_theme_preference(l.preferences.theme_preference()).ok()
+        }) {
+            Some(doc) if doc.id == "paper" || doc.is_light() => caper_client::themes::paper(),
+            _ => caper_client::themes::obsidian(),
+        };
         let mut snap = Snapshot {
             launch: launch_allowed().then(|| s.is_some_and(|s| s.launch)),
             startup_error: s.and_then(|s| s.startup_error.clone()),
@@ -1673,7 +1817,6 @@ impl App {
             highlights: self.live.as_ref().map(|l| l.highlights.clone()),
             version_copied: s.is_some_and(|s| s.version_copied),
             theme_id: active_theme.id,
-            theme_status: s.and_then(|s| s.theme_status.clone()),
             ..Snapshot::default()
         };
         if let Some(live) = self.live.as_ref().filter(|_| self.c.is_live()) {
@@ -1788,56 +1931,12 @@ impl App {
                     live.preferences
                         .set(caper_client::themes::THEME_PREF_KEY, "obsidian".into());
                 }
-                s.theme_status = Some(("Saved Obsidian (Dark) theme.".into(), false));
             }
             SPart::ThemePaper => {
                 if let Some(live) = &mut self.live {
                     live.preferences
                         .set(caper_client::themes::THEME_PREF_KEY, "paper".into());
                 }
-                s.theme_status = Some(("Saved Paper (Light) theme.".into(), false));
-            }
-            SPart::ThemeImport => {
-                let raw = String::from_utf16_lossy(&crate::get_clipboard(self.hwnd));
-                if raw.trim().is_empty() {
-                    s.theme_status = Some((
-                        "Clipboard is empty. Copy a .capertheme.json first.".into(),
-                        true,
-                    ));
-                } else {
-                    match caper_client::themes::parse_theme_preference(&raw) {
-                        Ok(doc) => {
-                            let stored = if doc.id == "obsidian" || doc.id == "paper" {
-                                doc.id.clone()
-                            } else {
-                                doc.to_pretty_json()
-                            };
-                            if let Some(live) = &mut self.live {
-                                live.preferences
-                                    .set(caper_client::themes::THEME_PREF_KEY, stored);
-                            }
-                            s.theme_status = Some((format!("Saved \"{}\".", doc.name), false));
-                        }
-                        Err(err) => {
-                            s.theme_status = Some((err, true));
-                        }
-                    }
-                }
-            }
-            SPart::ThemeExport => {
-                let doc = self
-                    .live
-                    .as_ref()
-                    .and_then(|l| {
-                        caper_client::themes::parse_theme_preference(
-                            l.preferences.theme_preference(),
-                        )
-                        .ok()
-                    })
-                    .unwrap_or_else(caper_client::themes::obsidian);
-                let json = doc.to_pretty_json();
-                crate::set_clipboard(self.hwnd, &crate::gfx::wide(&json));
-                s.theme_status = Some((format!("Copied {} theme JSON.", doc.name), false));
             }
             SPart::Sounds => {
                 if let Some(live) = &mut self.live {

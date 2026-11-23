@@ -2,11 +2,13 @@ package chat.caper.android
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -14,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -168,91 +171,30 @@ import kotlinx.coroutines.launch
 @Composable internal fun PrivacySettingsDialog(state: AppUiState, viewModel: CaperViewModel, close: () -> Unit) = CaperDialog("Settings & Privacy", close) {
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val activeTheme = CaperThemeStore.active
-    var themeJson by remember { mutableStateOf("") }
-    var themeStatus by remember { mutableStateOf<String?>(null) }
-    var themeError by remember { mutableStateOf<String?>(null) }
 
     SettingLabel("Appearance")
     Text(
-        "Switch between Obsidian Dark and Paper Light, or paste a custom .capertheme.json theme.",
+        "Choose between Obsidian Dark and Paper Light.",
         color = activeTheme.textMuted,
         fontSize = 12.sp,
     )
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (activeTheme.id == "obsidian") {
-            Button(
-                { CaperThemeStore.selectPreset(context, "obsidian"); themeError = null; themeStatus = "Switched to Obsidian (Dark)." },
-                Modifier.weight(1f).heightIn(min = 44.dp),
-                shape = PillShape,
-                colors = primaryButtonColors(),
-            ) { Text("Obsidian", fontSize = 13.sp) }
-        } else {
-            OutlinedButton(
-                { CaperThemeStore.selectPreset(context, "obsidian"); themeError = null; themeStatus = "Switched to Obsidian (Dark)." },
-                Modifier.weight(1f).heightIn(min = 44.dp),
-                shape = PillShape,
-                border = BorderStroke(1.dp, activeTheme.border),
-                colors = neutralOutlinedButtonColors(),
-            ) { Text("Obsidian", fontSize = 13.sp) }
-        }
-        if (activeTheme.id == "paper") {
-            Button(
-                { CaperThemeStore.selectPreset(context, "paper"); themeError = null; themeStatus = "Switched to Paper (Light)." },
-                Modifier.weight(1f).heightIn(min = 44.dp),
-                shape = PillShape,
-                colors = primaryButtonColors(),
-            ) { Text("Paper", fontSize = 13.sp) }
-        } else {
-            OutlinedButton(
-                { CaperThemeStore.selectPreset(context, "paper"); themeError = null; themeStatus = "Switched to Paper (Light)." },
-                Modifier.weight(1f).heightIn(min = 44.dp),
-                shape = PillShape,
-                border = BorderStroke(1.dp, activeTheme.border),
-                colors = neutralOutlinedButtonColors(),
-            ) { Text("Paper", fontSize = 13.sp) }
-        }
+    Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        ThemePresetCard(
+            preset = CaperThemeStore.obsidian,
+            selected = activeTheme.id != "paper",
+            activeTheme = activeTheme,
+            modifier = Modifier.weight(1f),
+            onClick = { CaperThemeStore.selectPreset(context, "obsidian") },
+        )
+        ThemePresetCard(
+            preset = CaperThemeStore.paper,
+            selected = activeTheme.id == "paper",
+            activeTheme = activeTheme,
+            modifier = Modifier.weight(1f),
+            onClick = { CaperThemeStore.selectPreset(context, "paper") },
+        )
     }
-    OutlinedTextField(
-        value = themeJson,
-        onValueChange = { themeJson = it; themeError = null },
-        modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text("Paste .capertheme.json…", fontSize = 12.sp) },
-        singleLine = true,
-        shape = MaterialTheme.shapes.small,
-    )
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(
-            {
-                val raw = themeJson.ifBlank { clipboard.getText()?.text.orEmpty() }
-                if (raw.isBlank()) {
-                    themeStatus = null; themeError = "Paste or copy a .capertheme.json first."
-                } else {
-                    CaperThemeStore.importThemeJson(context, raw)
-                        .onSuccess { themeError = null; themeStatus = "Applied \"${it.name}\"."; themeJson = "" }
-                        .onFailure { themeStatus = null; themeError = it.message ?: "Invalid theme JSON." }
-                }
-            },
-            Modifier.weight(1f).heightIn(min = 44.dp),
-            shape = MaterialTheme.shapes.small,
-            border = BorderStroke(1.dp, activeTheme.border),
-            colors = neutralOutlinedButtonColors(),
-        ) { Text("Apply JSON", fontSize = 12.sp) }
-        OutlinedButton(
-            {
-                clipboard.setText(androidx.compose.ui.text.AnnotatedString(CaperThemeStore.exportCurrentJson()))
-                themeError = null
-                themeStatus = "Copied ${activeTheme.name} JSON."
-            },
-            Modifier.weight(1f).heightIn(min = 44.dp),
-            shape = MaterialTheme.shapes.small,
-            border = BorderStroke(1.dp, activeTheme.border),
-            colors = neutralOutlinedButtonColors(),
-        ) { Text("Copy JSON", fontSize = 12.sp) }
-    }
-    themeStatus?.let { Text(it, color = activeTheme.accentBright, fontSize = 12.sp) }
-    themeError?.let { Text(it, color = activeTheme.errorText, fontSize = 12.sp) }
     HorizontalDivider(color = activeTheme.border)
 
     var setting by remember { mutableStateOf<String?>(null) }
@@ -334,3 +276,83 @@ import kotlinx.coroutines.launch
         Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.size(12.dp))
     }
 }
+
+@Composable private fun ThemePresetCard(
+    preset: CaperThemePalette,
+    selected: Boolean,
+    activeTheme: CaperThemePalette,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val cardShape = RoundedCornerShape(13.dp)
+    val swatchShape = RoundedCornerShape(9.dp)
+    val convoColor = if (preset.isLight) Color.White else preset.surface
+    val sidebarColor = if (preset.isLight) preset.blackout else Color(0xFF0F0F11)
+    val borderColor = if (selected) activeTheme.accentBright else activeTheme.border
+    val borderWidth = if (selected) 1.5.dp else 1.dp
+
+    Column(
+        modifier
+            .clip(cardShape)
+            .background(activeTheme.surfaceRaised, cardShape)
+            .border(borderWidth, borderColor, cardShape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics(mergeDescendants = true) {
+                contentDescription = "${preset.name} (${if (preset.isLight) "Light" else "Dark"})"
+                this.selected = selected
+            }
+            .padding(11.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+                .clip(swatchShape)
+                .background(preset.blackout, swatchShape)
+                .border(1.dp, Color(0x3D808080), swatchShape)
+                .padding(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Column(
+                Modifier
+                    .weight(0.28f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(sidebarColor)
+                    .padding(5.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Box(Modifier.fillMaxWidth(0.78f).height(4.5.dp).clip(CircleShape).background(preset.caperGreen.copy(alpha = 0.9f)))
+                Box(Modifier.fillMaxWidth(0.56f).height(4.5.dp).clip(CircleShape).background(preset.textMuted.copy(alpha = 0.72f)))
+                Box(Modifier.fillMaxWidth(0.66f).height(4.5.dp).clip(CircleShape).background(preset.textMuted.copy(alpha = 0.72f)))
+            }
+            Column(
+                Modifier
+                    .weight(0.72f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(convoColor)
+                    .padding(6.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(Modifier.fillMaxWidth(0.68f).height(4.5.dp).clip(CircleShape).background(preset.text.copy(alpha = 0.78f)))
+                    Box(Modifier.fillMaxWidth(0.48f).height(4.5.dp).clip(CircleShape).background(preset.textMuted.copy(alpha = 0.68f)))
+                }
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                    Box(Modifier.width(26.dp).height(8.5.dp).clip(CircleShape).background(preset.action))
+                }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(preset.name, color = activeTheme.text, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(if (preset.isLight) "Light" else "Dark", color = activeTheme.textMuted, fontSize = 11.5.sp)
+        }
+    }
+}
+

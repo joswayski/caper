@@ -2926,3 +2926,123 @@ button.jump-latest.unread {
 button.jump-latest.arriving {
   animation: caper-rise-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+button.theme-card {
+  padding: 11px;
+  border-radius: 13px;
+  border: 1px solid @caper_border;
+  background-color: @caper_surface_raised;
+  background-image: none;
+  color: @caper_text;
+  box-shadow: none;
+}
+
+button.theme-card:hover {
+  border-color: alpha(@caper_text, 0.24);
+}
+
+button.theme-card.selected {
+  border: 1.5px solid @caper_terracotta_bright;
+  box-shadow: 0 0 0 2px alpha(@caper_terracotta_bright, 0.28);
+}
+
+.theme-card-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: @caper_text;
+}
+
+.theme-swatch {
+  padding: 6px;
+  border-radius: 9px;
+  border: 1px solid rgba(128, 128, 128, 0.24);
+}
+
+.theme-swatch-obsidian {
+  background-color: #0b0b0c;
+}
+
+.theme-swatch-paper {
+  background-color: #efeff2;
+}
+
+.theme-swatch-sidebar {
+  padding: 5px;
+  border-radius: 5px;
+}
+
+.theme-swatch-obsidian .theme-swatch-sidebar {
+  background-color: #0f0f11;
+}
+
+.theme-swatch-paper .theme-swatch-sidebar {
+  background-color: #efeff2;
+}
+
+.theme-swatch-canvas {
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.theme-swatch-obsidian .theme-swatch-canvas {
+  background-color: #131316;
+}
+
+.theme-swatch-paper .theme-swatch-canvas {
+  background-color: #ffffff;
+}
+
+.theme-swatch-bar {
+  min-height: 4px;
+  border-radius: 999px;
+}
+
+.theme-swatch-bar.short {
+  margin-right: 16px;
+}
+
+.theme-swatch-bar.med {
+  margin-right: 8px;
+}
+
+.theme-swatch-obsidian .theme-swatch-bar.brand {
+  background-color: #6f9948;
+  margin-right: 4px;
+}
+
+.theme-swatch-paper .theme-swatch-bar.brand {
+  background-color: #5a7e3a;
+  margin-right: 4px;
+}
+
+.theme-swatch-obsidian .theme-swatch-bar.primary {
+  background-color: rgba(244, 243, 239, 0.78);
+  margin-right: 18px;
+}
+
+.theme-swatch-paper .theme-swatch-bar.primary {
+  background-color: rgba(17, 17, 20, 0.78);
+  margin-right: 18px;
+}
+
+.theme-swatch-obsidian .theme-swatch-bar.muted {
+  background-color: rgba(154, 153, 162, 0.72);
+}
+
+.theme-swatch-paper .theme-swatch-bar.muted {
+  background-color: rgba(102, 102, 114, 0.72);
+}
+
+.theme-swatch-pill {
+  min-width: 26px;
+  min-height: 8px;
+  border-radius: 999px;
+}
+
+.theme-swatch-obsidian .theme-swatch-pill {
+  background-color: #f4f3ef;
+}
+
+.theme-swatch-paper .theme-swatch-pill {
+  background-color: #111114;
+}
