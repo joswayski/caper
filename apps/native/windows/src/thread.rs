@@ -2438,11 +2438,18 @@ impl App {
                 if t.gif {
                     let (x, y, w, h) = gif_local(t.width);
                     let y = y + t.composer.inset.1;
+                    let r = rect(x, y, x + w, y + h);
+                    if t.hover == Some(Part::Gif) {
+                        fill_round(dc, r, 6.0, &g.brushes.hover);
+                    }
                     let color = if lit { TEXT } else { TEXT_MUTED };
-                    crate::uploads::gif_button(g, dc, rect(x, y, x + w, y + h), color)?;
+                    crate::uploads::gif_button(g, dc, r, color)?;
                 }
                 let (x, y, w, h) = emoji_local(t.width);
                 let y = y + t.composer.inset.1;
+                if t.hover == Some(Part::Emoji) {
+                    fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
+                }
                 icons::draw(
                     dc,
                     Icon::Smile,

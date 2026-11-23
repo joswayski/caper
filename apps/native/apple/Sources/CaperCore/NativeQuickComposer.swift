@@ -149,11 +149,15 @@ import AppKit
         emoji = AppKitKitButton("", kind: .plain) { state.openEmoji() }; emoji.setAccessibilityIdentifier("mention-card-emoji")
         for (button, symbol, label) in [(attach!, "plus", "Attach files"), (emoji!, "face.smiling", "Insert emoji")] {
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.imagePosition = .imageOnly
-            button.setAccessibilityLabel(label); button.toolTip = label; button.widthAnchor.constraint(equalToConstant: 36).isActive = true
+            button.setAccessibilityLabel(label); button.toolTip = label; button.minimumHeight = 32
+            button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 32).isActive = true
         }
         gif = AppKitKitButton("GIF", kind: .plain) { state.showingGIF = true; state.synchronizePresentation() }; gif.setAccessibilityIdentifier("mention-card-gif")
+        gif.minimumHeight = 32; gif.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        gif.widthAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
         send = AppKitKitButton("Send", kind: .primary) { state.send() }; send.setAccessibilityIdentifier("mention-card-send")
-        let row = NSStackView(views: [attach, emoji, gif, NSView(), voice, send]); row.spacing = 4
+        let row = NSStackView(views: [attach, emoji, gif, NSView(), voice, send]); row.spacing = 6
         for child in [incoming, files, editor!, recordingBar, row, voiceNotice, voiceRetry, status] { addArrangedSubview(child); AppKitKit.fillWidth(child, of: self) }
         voiceRetryButton = AppKitKitButton("Retry") { state.retryVoice() }; voiceRetryButton.setAccessibilityIdentifier("mention-card-voice-retry")
         let discardVoice = AppKitKitButton("Discard") { state.draft.discardVoice() }; discardVoice.setAccessibilityIdentifier("mention-card-voice-discard")

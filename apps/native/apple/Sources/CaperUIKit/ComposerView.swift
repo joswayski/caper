@@ -240,7 +240,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             send.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
             send.bottomAnchor.constraint(equalTo: field.bottomAnchor),
             fieldRow.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 4),
-            fieldRow.trailingAnchor.constraint(equalTo: microphone.leadingAnchor),
+            fieldRow.trailingAnchor.constraint(equalTo: microphone.leadingAnchor, constant: -4),
             fieldRow.topAnchor.constraint(equalTo: field.topAnchor),
             linkPreview.topAnchor.constraint(equalTo: fieldRow.bottomAnchor),
             linkPreview.leadingAnchor.constraint(equalTo: field.leadingAnchor),

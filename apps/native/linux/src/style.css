@@ -2362,7 +2362,7 @@ button.quote-more {
 /* "Send a GIF" and its picker. */
 .gif-badge {
   padding: 0 3px;
-  border: 1.4px solid @caper_text_muted;
+  border: 1.4px solid currentColor;
   border-radius: 3px;
   font-size: 8.5px;
   font-weight: 700;
@@ -2370,9 +2370,17 @@ button.quote-more {
 
 button.gif-tab {
   min-height: 36px;
-  border-radius: 0;
+  border-radius: 8px 8px 0 0;
   background: none;
+  color: @caper_text_muted;
+  font-weight: 700;
   border-bottom: 2px solid transparent;
+  box-shadow: none;
+}
+
+button.gif-tab:hover {
+  background: @caper_surface_hover;
+  color: @caper_text;
 }
 
 button.gif-tab:checked {
@@ -2382,8 +2390,20 @@ button.gif-tab:checked {
 
 button.gif-tile {
   padding: 0;
-  border-radius: 6px;
+  border-radius: 8px;
+  border: 2px solid transparent;
   background: @caper_surface_raised;
+  box-shadow: none;
+}
+
+button.gif-tile.sticker {
+  background: transparent;
+}
+
+button.gif-tile:hover,
+button.gif-tile:focus-visible {
+  border-color: @caper_terracotta_bright;
+  background: @caper_surface_hover;
 }
 
 /* The notifications inbox: its sidebar button and rows. */

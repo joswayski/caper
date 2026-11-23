@@ -33,6 +33,7 @@ import AppKit
     private var category = "smileys_people"
     private var choices: [EmojiCatalogEntry] = []
     private var categories: [AppKitKitButton] = []
+    private var themeObserver: NSObjectProtocol?
 
     init(title: String = "Add reaction", close: @escaping () -> Void, select: @escaping (String) -> Void) {
         pickerTitle = title; self.close = close; self.select = select
@@ -40,13 +41,16 @@ import AppKit
         preferredContentSize = NSSize(width: 352, height: 420)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+    }
     override func loadView() {
         view = NSView(); view.wantsLayer = true; view.layer?.backgroundColor = AppKitKit.surface.cgColor
         view.setAccessibilityIdentifier("reaction-picker"); view.setAccessibilityLabel(pickerTitle)
         let title = AppKitKit.label(pickerTitle, size: 14, weight: .bold)
         let cancel = AppKitKitButton("Cancel", action: close); cancel.keyEquivalent = "\u{1b}"
         let header = NSStackView(views: [title, NSView(), cancel]); header.spacing = 8
-        let tabs = NSStackView(); tabs.distribution = .fillEqually; tabs.spacing = 0
+        let tabs = NSStackView(); tabs.distribution = .fillEqually; tabs.spacing = 4
         for item in NativeEmojiPickerCatalog.categories {
             // The category name is the accessibility label and tooltip; as a
             // title AppKitKitButton would draw it over the emoji.
@@ -57,7 +61,7 @@ import AppKit
             if let entry = EmojiArtwork.entry(for: item.2), let image = EmojiArtwork.image(for: entry) {
                 button.image = NSImage(cgImage: image, size: NSSize(width: 22, height: 22))
             }
-            button.minimumHeight = 44; button.setAccessibilityLabel(item.1)
+            button.minimumHeight = 40; button.setAccessibilityLabel(item.1)
             button.setAccessibilityIdentifier("emoji-category-\(item.0)"); button.toolTip = item.1
             tabs.addArrangedSubview(button); categories.append(button)
         }
@@ -83,6 +87,13 @@ import AppKit
             stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
             stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
         ])
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: CaperThemeStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.view.layer?.backgroundColor = AppKitKit.surface.cgColor }
+        }
         reload()
     }
     override func viewDidAppear() { super.viewDidAppear(); view.window?.makeFirstResponder(search) }
@@ -101,6 +112,7 @@ import AppKit
         heading.stringValue = searching ? "Search results" : NativeEmojiPickerCatalog.categories.first { $0.0 == category }?.1 ?? ""
         empty.isHidden = !choices.isEmpty
         grid.reloadData(); scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
+        DispatchQueue.main.async { [weak self] in self?.gridScrolled() }
     }
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { choices.count }
     func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {

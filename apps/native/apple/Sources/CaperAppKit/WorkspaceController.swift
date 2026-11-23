@@ -238,7 +238,11 @@ import CaperCore
         emoji.setAccessibilityIdentifier("composer-emoji")
         gif.setAccessibilityIdentifier("composer-gif")
         gif.setAccessibilityLabel("Send a GIF"); gif.toolTip = "GIFs and stickers"
-        gif.font = NativeStyle.font(11, bold: true)
+        gif.title = ""
+        gif.image = Self.gifBadgeImage()
+        gif.imagePosition = .imageOnly
+        gif.mutesAtRest = true
+        gif.contentTintColor = NativeStyle.muted
         gif.layer?.backgroundColor = NSColor.clear.cgColor
         counter.setAccessibilityIdentifier("composer-counter")
         counter.alignment = .center
@@ -290,6 +294,7 @@ import CaperCore
             self?.profiles.show(mention: mention, relativeTo: rect, of: view)
         }
         membersToggle.setAccessibilityIdentifier("toggle-members")
+        membersToggle.mutesAtRest = false
         closeVisit.setAccessibilityIdentifier("feedback-visit-close"); closeVisit.isHidden = true
         status.textColor = NativeStyle.muted
         composer.textContainer?.replaceLayoutManager(DraftLinkLayoutManager())
@@ -684,26 +689,28 @@ import CaperCore
         // tools inside its bottom edge. A very narrow split wraps them into two
         // rows under the editor instead.
         let fieldBottom = base - (counter.isHidden ? 16 : 28)
+        let toolSide: CGFloat = 32, toolGap: CGFloat = 6, toolStep = toolSide + toolGap
         let fieldX: CGFloat = 20, fieldWidth = max(0, center - 40), fieldRight = fieldX + fieldWidth
         let toolRows: CGFloat = stackedActions ? 74 : 0
-        var editorX = fieldX + 44, editorRight = fieldRight - 1
+        var editorX = fieldX + 43, editorRight = fieldRight - 1
         // Only a thread has Send reply; the channel's microphone takes its place.
-        let voiceX = inThread ? fieldRight - 75 : fieldRight - 41
+        let rightEdge = fieldRight - 6 - toolSide
+        let voiceX = inThread ? rightEdge - toolStep : rightEdge
         if stackedActions {
-            attach.frame.origin.x = fieldX + 4
-            gif.frame.origin.x = fieldX + 42
-            emoji.frame.origin.x = gif.isHidden ? fieldX + 42 : fieldX + 76
-            send.frame.origin.x = fieldRight - 37
+            attach.frame.origin.x = fieldX + 6
+            gif.frame.origin.x = fieldX + 6 + toolStep
+            emoji.frame.origin.x = gif.isHidden ? fieldX + 6 + toolStep : fieldX + 6 + toolStep * 2
+            send.frame.origin.x = rightEdge
             voiceComposer.button.frame.origin.x = voiceX
             // The draft starts in line with the attach glyph below it.
             editorX = fieldX + 10; editorRight = fieldRight - 6
         } else {
-            attach.frame.origin.x = fieldX + 4
-            send.frame.origin.x = fieldRight - 37
+            attach.frame.origin.x = fieldX + 5
+            send.frame.origin.x = rightEdge
             voiceComposer.button.frame.origin.x = voiceX
-            emoji.frame.origin.x = voiceComposer.button.frame.minX - 34
-            gif.frame.origin.x = emoji.frame.minX - 34
-            editorRight = (gif.isHidden ? emoji.frame.minX : gif.frame.minX) - 4
+            emoji.frame.origin.x = voiceComposer.button.frame.minX - toolStep
+            gif.frame.origin.x = emoji.frame.minX - toolStep
+            editorRight = (gif.isHidden ? emoji.frame.minX : gif.frame.minX) - 8
         }
         composerScroll.frame = NSRect(x: editorX, y: composerScroll.frame.minY, width: max(0, editorRight - editorX), height: max(1, composerScroll.frame.height))
         composer.frame.size.width = composerScroll.contentSize.width
@@ -717,14 +724,13 @@ import CaperCore
         composer.minSize = NSSize(width: 0, height: composerScroll.contentSize.height)
         // Bottom-aligned, so a growing draft leaves them on its last line.
         let toolY = fieldBottom - 37
-        send.frame.origin.y = toolY; send.frame.size = NSSize(width: 32, height: 32)
-        voiceComposer.button.frame.origin.y = toolY; voiceComposer.button.frame.size = NSSize(width: 36, height: 32)
+        let toolSize = NSSize(width: toolSide, height: toolSide)
+        send.frame.origin.y = toolY; send.frame.size = toolSize
+        voiceComposer.button.frame.origin.y = toolY; voiceComposer.button.frame.size = toolSize
         if stackedActions {
-            for tool in [gif, emoji] { tool.frame.origin.y = toolY - 36; tool.frame.size = NSSize(width: 32, height: 32) }
-            attach.frame.origin.y = toolY - 36; attach.frame.size = NSSize(width: 36, height: 32)
+            for tool in [attach, gif, emoji] { tool.frame.origin.y = toolY - 36; tool.frame.size = toolSize }
         } else {
-            for tool in [gif, emoji] { tool.frame.origin.y = toolY; tool.frame.size = NSSize(width: 32, height: 32) }
-            attach.frame.origin.y = fieldBottom - 41; attach.frame.size = NSSize(width: 40, height: 40)
+            for tool in [attach, gif, emoji] { tool.frame.origin.y = toolY; tool.frame.size = toolSize }
         }
         let recordingHeight: CGFloat = center - 40 < 300 ? 126 : 42
         voiceComposer.bar.frame = NSRect(x: fieldX, y: fieldBottom - recordingHeight, width: fieldWidth, height: recordingHeight)
@@ -1293,6 +1299,25 @@ import CaperCore
             guard dialogs.messageContext == context, !inThread || model.chat.threadRootID == root else { return }
             await model.chat.send(inThread: inThread)
         }
+    }
+
+    private static func gifBadgeImage() -> NSImage {
+        let size = NSSize(width: 24, height: 17)
+        let label = NSAttributedString(string: "GIF", attributes: [
+            .font: NativeStyle.font(9.5, bold: true),
+            .foregroundColor: NSColor.black,
+        ])
+        let textSize = label.size()
+        let image = NSImage(size: size, flipped: false) { rect in
+            let stroke = NSBezierPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), xRadius: 4, yRadius: 4)
+            stroke.lineWidth = 1.5
+            NSColor.black.setStroke()
+            stroke.stroke()
+            label.draw(at: NSPoint(x: (rect.width - textSize.width) / 2, y: (rect.height - textSize.height) / 2))
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 }
 

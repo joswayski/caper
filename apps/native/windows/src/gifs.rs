@@ -38,9 +38,9 @@ const GRID_Y: f32 = SEARCH_Y + SEARCH_H + 8.0;
 const CAPTION_H: f32 = 22.0;
 const GRID_BOTTOM: f32 = H - M - CAPTION_H;
 const COLUMNS: usize = 3;
-const GAP: f32 = 4.0;
+const GAP: f32 = 6.0;
 /// egui's cell: the width of three columns and two gaps, floored.
-const CELL: f32 = 114.0;
+const CELL: f32 = 113.0;
 /// Below the tiles: the next page loading, or why it failed with Retry.
 const FOOT_H: f32 = 60.0;
 const RETRY_W: f32 = 80.0;
@@ -438,7 +438,8 @@ impl Picker {
             );
             for (k, (kind, name)) in KINDS.iter().enumerate() {
                 let (x, y, w, h) = self.local(GPart::Tab(k));
-                if self.hover == Some(GPart::Tab(k)) {
+                let hovered = self.hover == Some(GPart::Tab(k));
+                if hovered {
                     fill_round(
                         dc,
                         rect(x + 2.0, y + 2.0, x + w - 2.0, y + h - 2.0),
@@ -454,7 +455,7 @@ impl Picker {
                     &l,
                     x + (w - m.widthIncludingTrailingWhitespace) / 2.0,
                     y + (h - m.height) / 2.0,
-                    if selected {
+                    if selected || hovered {
                         &g.brushes.text
                     } else {
                         &g.brushes.muted
@@ -495,7 +496,15 @@ impl Picker {
             for i in self.visible() {
                 let (x, y, w, h) = self.local(GPart::Tile(i));
                 let r = rect(x, y, x + w, y + h);
-                fill_round(dc, r, 8.0, &g.brushes.raised);
+                let hovered = self.hover == Some(GPart::Tile(i));
+                let sticker = self.items[i].1.kind == Kind::Sticker;
+                if sticker {
+                    if hovered {
+                        fill_round(dc, r, 8.0, &g.brushes.hover);
+                    }
+                } else {
+                    fill_round(dc, r, 8.0, &g.brushes.raised);
+                }
                 if let Some(media) = media.as_deref_mut() {
                     let due = paint(
                         dc,
@@ -511,12 +520,16 @@ impl Picker {
                         (a, b) => a.or(b),
                     };
                 }
-                if self.hover == Some(GPart::Tile(i)) {
-                    stroke_round(
-                        dc,
-                        rect(x + 0.5, y + 0.5, x + w - 0.5, y + h - 0.5),
-                        8.0,
-                        &g.brushes.terracotta,
+                if hovered {
+                    dc.DrawRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: rect(x + 1.0, y + 1.0, x + w - 1.0, y + h - 1.0),
+                            radiusX: 8.0,
+                            radiusY: 8.0,
+                        },
+                        &g.brushes.terracotta_bright,
+                        2.0,
+                        None,
                     );
                 }
             }

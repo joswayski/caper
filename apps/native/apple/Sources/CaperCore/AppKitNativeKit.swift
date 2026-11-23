@@ -82,6 +82,12 @@ import SwiftUI
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -(stack.edgeInsets.left + stack.edgeInsets.right)).isActive = true
     }
+
+    /// True when the view's window, or the parent window hosting an NSPopover, is key.
+    static func windowActive(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return window.isKeyWindow || window.parent?.isKeyWindow == true
+    }
 }
 
 /// Re-runs `apply` with fresh values whenever observed model state it read
@@ -298,6 +304,9 @@ import SwiftUI
         attributedTitle = NSAttributedString(string: title, attributes: [
             .font: AppKitKit.font(size, weight: weight), .foregroundColor: color,
         ])
+        if image != nil {
+            contentTintColor = color
+        }
         let resolvedFill: NSColor
         if (kind == .secondary || kind == .destructive) && hovered && isEnabled {
             resolvedFill = fill.blended(withFraction: isLight ? 0.06 : 0.12, of: isLight ? .black : .white) ?? fill
@@ -320,6 +329,9 @@ import SwiftUI
                 : NSColor.white.withAlphaComponent(hovered ? 0.24 : 0.14)
             layer?.borderColor = rim.cgColor
             layer?.borderWidth = 1
+        } else if kind == .plain && hovered && isEnabled && !showsSelection && bounds.height >= 24 {
+            layer?.borderColor = AppKitKit.border.cgColor
+            layer?.borderWidth = 0.5
         } else {
             layer?.borderColor = stroke.cgColor
             layer?.borderWidth = stroke == .clear ? 0 : 1
@@ -333,7 +345,7 @@ import SwiftUI
         } else {
             layer?.shadowOpacity = 0
         }
-        alphaValue = kind == .secondary && !isEnabled ? 0.45 : 1
+        alphaValue = (kind == .secondary || kind == .plain) && !isEnabled ? 0.45 : 1
         invalidateIntrinsicContentSize()
     }
 
@@ -345,18 +357,21 @@ import SwiftUI
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
         addTrackingArea(area); tracking = area
         syncHover()
     }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); syncHover() }
-    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseEntered(with event: NSEvent) {
+        guard AppKitKit.windowActive(window) else { return }
+        setHovered(true)
+    }
     override func mouseExited(with event: NSEvent) { setHovered(false) }
     /// Hover from where the pointer is now. Content scrolling under a still
     /// pointer, or a recycled grid cell, can skip mouseExited and leave
     /// several buttons lit at once.
     func syncHover() {
-        guard let window, window.isKeyWindow, !isHiddenOrHasHiddenAncestor else { setHovered(false); return }
+        guard let window, AppKitKit.windowActive(window), !isHiddenOrHasHiddenAncestor else { setHovered(false); return }
         setHovered(visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)))
     }
     private func setHovered(_ value: Bool) {
@@ -483,6 +498,8 @@ import SwiftUI
     private let height: CGFloat
     private let customFill: NSColor?
     private var themeObserver: NSObjectProtocol?
+    private var tracking: NSTrackingArea?
+    private var hovered = false
 
     /// `height`: 42 in dialogs, as on web; pickers use a shorter search field.
     /// `fill` replaces the composer fill, e.g. surface on the sign-in page.
@@ -510,10 +527,23 @@ import SwiftUI
         if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
     }
 
+    private func updateBorder() {
+        let color: NSColor
+        if currentEditor() != nil {
+            color = AppKitKit.terracotta
+        } else if hovered && isEnabled {
+            let isLight = CaperThemeStore.shared.active.isLight
+            color = isLight ? NSColor.black.withAlphaComponent(0.24) : NSColor.white.withAlphaComponent(0.24)
+        } else {
+            color = AppKitKit.border
+        }
+        layer?.borderColor = color.cgColor
+    }
+
     private func applyTheme() {
         textColor = AppKitKit.text
         layer?.backgroundColor = (customFill ?? AppKitKit.composer).cgColor
-        layer?.borderColor = (currentEditor() != nil ? AppKitKit.terracotta : AppKitKit.border).cgColor
+        updateBorder()
         needsDisplay = true
     }
 
@@ -522,6 +552,19 @@ import SwiftUI
         set {}
     }
     public override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height) }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    public override func mouseEntered(with event: NSEvent) {
+        guard AppKitKit.windowActive(window) else { return }
+        hovered = true; updateBorder()
+    }
+    public override func mouseExited(with event: NSEvent) { hovered = false; updateBorder() }
+    public override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window == nil { hovered = false; updateBorder() } }
 
     public override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
@@ -535,8 +578,7 @@ import SwiftUI
     /// Read once the field editor has settled: Return ends editing and starts it again.
     private func syncFocus() {
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.layer?.borderColor = (self.currentEditor() != nil ? AppKitKit.terracotta : AppKitKit.border).cgColor
+            self?.updateBorder()
         }
     }
 }

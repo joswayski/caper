@@ -14,6 +14,9 @@ import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
@@ -133,14 +136,17 @@ private fun klipyRequest(context: Context, url: String, animate: Boolean): Image
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = Surface, contentColor = Text) {
         Column(Modifier.fillMaxWidth().height(height).navigationBarsPadding().semantics { paneTitle = "Emojis, GIFs and stickers" }) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("Emojis", "GIFs", "Stickers").forEachIndexed { index, label ->
                     val active = index == tab
+                    val hover = remember { MutableInteractionSource() }
+                    val hovered by hover.collectIsHoveredAsState()
                     Box(Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
-                        .background(if (active) SurfaceRaised else Color.Transparent)
+                        .background(if (active) SurfaceRaised else if (hovered) SurfaceRaised.copy(alpha = 0.55f) else Color.Transparent)
+                        .hoverable(hover)
                         .clickable { focus.clearFocus(); tab = index }
                         .semantics { selected = active; role = Role.Tab }, contentAlignment = Alignment.Center) {
-                        Text(label, color = if (active) Text else TextMuted, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
+                        Text(label, color = if (active || hovered) Text else TextMuted, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
                         if (active) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth(0.4f).height(2.dp).background(TerracottaBright))
                     }
                 }
@@ -284,10 +290,15 @@ private fun adRequest(context: Context, gridWidth: Int): KlipyAdRequest {
     val url = if (still) item.tile.still ?: item.tile.url else item.tile.url
     val request = remember(url, still) { klipyRequest(context, url, animate = !still) }
     var failed by remember(url) { mutableStateOf(false) }
+    val hover = remember { MutableInteractionSource() }
+    val hovered by hover.collectIsHoveredAsState()
     val ratio = (item.tile.width.toFloat() / item.tile.height).coerceIn(0.5f, 2f)
+    val shape = MaterialTheme.shapes.small
     Box(
-        Modifier.fillMaxWidth().aspectRatio(ratio).clip(MaterialTheme.shapes.small)
-            .background(if (sticker) Color.Transparent else SurfaceRaised)
+        Modifier.fillMaxWidth().aspectRatio(ratio).clip(shape)
+            .background(if (sticker) (if (hovered) SurfaceRaised.copy(alpha = 0.55f) else Color.Transparent) else SurfaceRaised)
+            .then(if (hovered) Modifier.border(2.dp, TerracottaBright, shape) else Modifier)
+            .hoverable(hover)
             .clickable(role = Role.Button, onClickLabel = "Send", onClick = onClick)
             .semantics { contentDescription = item.gif.label },
         contentAlignment = Alignment.Center,

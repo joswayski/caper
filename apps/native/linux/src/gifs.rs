@@ -214,7 +214,7 @@ impl App {
         close.add_css_class("flat");
         top.append(&close);
         body.append(&top);
-        let tab_line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let tab_line = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         tab_line.set_homogeneous(true);
         let gifs = gtk::ToggleButton::with_label("GIFs");
         let stickers = gtk::ToggleButton::with_label("Stickers");
@@ -230,8 +230,8 @@ impl App {
         search.set_search_delay(300);
         body.append(&search);
         let grid = gtk::Grid::new();
-        grid.set_column_spacing(4);
-        grid.set_row_spacing(4);
+        grid.set_column_spacing(6);
+        grid.set_row_spacing(6);
         grid.set_valign(gtk::Align::Start);
         let status = label("", &["muted"]);
         status.set_visible(false);
@@ -446,10 +446,18 @@ impl App {
             .clamp(60, 180);
             let button: gtk::Button = super::named("GtkButton", gif.alt());
             button.add_css_class("gif-tile");
+            if gif.kind == Kind::Sticker {
+                button.add_css_class("sticker");
+            }
+            button.set_overflow(gtk::Overflow::Hidden);
             button.set_tooltip_text(Some(gif.alt()));
             let picture = gtk::Picture::new();
             picture.set_size_request(TILE, height);
-            picture.set_content_fit(gtk::ContentFit::Cover);
+            picture.set_content_fit(if gif.kind == Kind::Sticker {
+                gtk::ContentFit::Contain
+            } else {
+                gtk::ContentFit::Cover
+            });
             picture.set_can_shrink(true);
             button.set_child(Some(&picture));
             picker

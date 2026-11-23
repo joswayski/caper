@@ -117,7 +117,9 @@ import AppKit
             if VoiceMessageRecorder.shared.isActive(session.current.owner) { session.finish() } else { session.begin(handsFree: true) }
         }
         record.image = NSImage(systemSymbolName: "mic", accessibilityDescription: VoiceMessage.dictateLabel)
-        record.imagePosition = .imageOnly; record.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        record.imagePosition = .imageOnly; record.minimumHeight = 32
+        record.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        record.heightAnchor.constraint(equalToConstant: 32).isActive = true
         discard = AppKitKitButton("Discard", kind: .plain) { VoiceMessageRecorder.shared.cancel() }
         discard.keyEquivalent = "\u{1b}"
         note = AppKitKitButton(VoiceMessage.asVoiceNoteLabel) { [session] in session.finish(asVoice: true) }

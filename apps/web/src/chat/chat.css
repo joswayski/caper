@@ -1966,8 +1966,8 @@ button.chat-mention-card-avatar {
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 2px;
-  margin: 5px 5px 5px 0;
+  gap: 6px;
+  margin: 5px 6px 5px 0;
 }
 .chat-composer-send {
   display: grid;
@@ -2013,10 +2013,11 @@ button.chat-mention-card-avatar {
     height: 40px;
   }
   .chat-composer-tools {
-    margin: 1px 1px 1px 0;
+    gap: 4px;
+    margin: 1px 2px 1px 0;
   }
   .chat-profile-composer form .chat-rich-input {
-    padding-right: 92px;
+    padding-right: 96px;
   }
 }
 .chat-composer-send:disabled {
@@ -2462,40 +2463,40 @@ button.chat-mention-card-avatar {
 }
 .chat-profile-composer form .chat-rich-input {
   max-height: 160px;
-  padding-right: 84px;
+  padding-right: 88px;
 }
 /* Emoji, microphone and send. */
 .chat-profile-composer form[data-voice] .chat-rich-input {
-  padding-right: 120px;
+  padding-right: 126px;
 }
 @media (pointer: coarse) {
   .chat-profile-composer form[data-voice] .chat-rich-input {
-    padding-right: 134px;
+    padding-right: 140px;
   }
 }
 .chat-composer-send-touch {
   display: none;
 }
 .chat-composer form[data-voice] .chat-rich-input {
-  padding-right: 84px;
+  padding-right: 88px;
 }
 @media (max-width: 760px), (pointer: coarse) {
   .chat-composer-send-touch {
     display: grid;
   }
   .chat-composer form .chat-rich-input {
-    padding-right: 84px;
+    padding-right: 88px;
   }
   .chat-composer form[data-voice] .chat-rich-input {
-    padding-right: 120px;
+    padding-right: 126px;
   }
 }
 @media (pointer: coarse) {
   .chat-composer form .chat-rich-input {
-    padding-right: 92px;
+    padding-right: 96px;
   }
   .chat-composer form[data-voice] .chat-rich-input {
-    padding-right: 136px;
+    padding-right: 140px;
   }
 }
 .chat-mention-input {
@@ -5030,7 +5031,7 @@ a.chat-draft-preview {
   padding-right: 48px;
 }
 .chat-thread-composer form[data-voice] .chat-rich-input {
-  padding-right: 92px;
+  padding-right: 96px;
 }
 .chat-thread-send-row > .chat-thread-tools {
   justify-self: end;
@@ -5038,7 +5039,7 @@ a.chat-draft-preview {
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin: 1px 4px 1px 0;
 }
 .chat-thread-tools > .chat-composer-tool {
@@ -5059,14 +5060,15 @@ a.chat-draft-preview {
     padding-left: 42px;
   }
   .chat-thread-send-row > .chat-thread-tools {
-    margin: 5px 5px 5px 0;
+    gap: 6px;
+    margin: 5px 6px 5px 0;
   }
   .chat-thread-tools > .chat-composer-tool {
     width: 32px;
     height: 32px;
   }
   .chat-thread-composer form[data-voice] .chat-rich-input {
-    padding-right: 80px;
+    padding-right: 88px;
   }
 }
 .chat-thread-send-row button[type="submit"] {
@@ -6604,32 +6606,32 @@ a.chat-draft-preview {
   line-height: 1;
 }
 :is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) .chat-rich-input {
-  padding-right: 82px;
+  padding-right: 88px;
 }
 .chat-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
-  padding-right: 118px;
+  padding-right: 126px;
 }
 .chat-profile-composer form:has(.chat-gif-tool) .chat-rich-input {
-  padding-right: 118px;
+  padding-right: 126px;
 }
 /* GIF, emoji, microphone and send. */
 .chat-profile-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
-  padding-right: 150px;
+  padding-right: 164px;
 }
 @media (max-width: 760px), (pointer: coarse) {
   .chat-composer form:has(.chat-gif-tool) .chat-rich-input {
-    padding-right: 118px;
+    padding-right: 126px;
   }
   .chat-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
-    padding-right: 154px;
+    padding-right: 164px;
   }
 }
 @media (pointer: coarse) {
   :is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) .chat-rich-input {
-    padding-right: 134px;
+    padding-right: 140px;
   }
   :is(.chat-composer, .chat-profile-composer) form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
-    padding-right: 178px;
+    padding-right: 184px;
   }
 }
 /* The profile card is too narrow for four tools inside its field, so, as on
@@ -6637,7 +6639,7 @@ a.chat-draft-preview {
    on a row beneath: attach, GIF, emoji and microphone, then Send. */
 .chat-mention-card .chat-profile-composer form {
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 6px 2px;
+  gap: 6px 6px;
 }
 .chat-mention-card .chat-profile-composer form > :is(.chat-mention-input, .chat-voice-recorder) {
   grid-column: 1 / -1;
@@ -6669,25 +6671,25 @@ a.chat-draft-preview {
   }
 }
 .chat-thread-composer form:has(.chat-gif-tool) .chat-rich-input {
-  padding-right: 92px;
+  padding-right: 96px;
 }
 .chat-thread-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
-  padding-right: 136px;
+  padding-right: 140px;
 }
 @media (min-width: 761px) and (hover: hover) and (pointer: fine) {
   .chat-thread-composer form:has(.chat-gif-tool) .chat-rich-input {
-    padding-right: 82px;
+    padding-right: 88px;
   }
   .chat-thread-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
-    padding-right: 114px;
+    padding-right: 126px;
   }
 }
 @media (max-width: 760px), (pointer: coarse) {
   .chat-thread-composer form:has(.chat-gif-tool) .chat-rich-input {
-    padding-right: 96px;
+    padding-right: 100px;
   }
   .chat-thread-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
-    padding-right: 146px;
+    padding-right: 150px;
   }
 }
 .chat-gif-picker:not(.chat-reaction-picker-drawer) {
@@ -6716,7 +6718,7 @@ a.chat-draft-preview {
 .chat-gif-tabs {
   display: flex;
   flex: 0 0 auto;
-  gap: 4px;
+  gap: 6px;
   padding: 0 12px;
 }
 .chat-gif-tabs button {
@@ -6730,11 +6732,25 @@ a.chat-draft-preview {
   font-size: 0.82rem;
   font-weight: 700;
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
 }
 .chat-gif-tabs button[aria-selected="true"] {
   border-color: var(--border);
   background: var(--surface-raised);
   color: var(--text);
+}
+@media (hover: hover) {
+  .chat-gif-tabs button:hover:not([aria-selected="true"]) {
+    color: var(--text);
+    background: var(--hover-pill-bg);
+    box-shadow: var(--hover-pill-shadow);
+  }
+  .chat-gif-tabs button[aria-selected="true"]:hover {
+    border-color: color-mix(in srgb, var(--text) 18%, transparent);
+  }
 }
 .chat-gif-tabs button:focus-visible,
 .chat-gif-tile:focus-visible,
@@ -6769,6 +6785,10 @@ a.chat-draft-preview {
   border-radius: 8px;
   background: var(--surface-raised);
   cursor: pointer;
+  transition:
+    outline-color var(--motion-fast) var(--ease-out),
+    background-color var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
 .chat-gif-tile:disabled {
   opacity: 0.45;
@@ -6797,12 +6817,28 @@ a.chat-draft-preview {
   inset: 0;
 }
 @media (hover: hover) {
-  .chat-gif-tile:hover {
-    outline: 2px solid var(--border);
+  .chat-gif-tile:hover:not(:disabled) {
+    outline: 2px solid var(--terracotta-bright);
     outline-offset: -2px;
   }
+  .chat-gif-grid[data-kind="sticker"] .chat-gif-tile:hover:not(:disabled) {
+    background: var(--hover-pill-bg);
+  }
+  .chat-gif-error button:hover {
+    text-decoration: underline;
+  }
+}
+.chat-gif-tile:active:not(:disabled) {
+  transform: scale(0.97);
 }
 @media (prefers-reduced-motion: reduce) {
+  .chat-gif-tabs button,
+  .chat-gif-tile {
+    transition: none;
+  }
+  .chat-gif-tile:active:not(:disabled) {
+    transform: none;
+  }
   .chat-gif-tile-media[data-still] .chat-gif {
     visibility: hidden;
   }

@@ -232,6 +232,7 @@ impl Picker {
                 for (kind, name) in [(Kind::Gif, "GIFs"), (Kind::Sticker, "Stickers")] {
                     let (rect, response) =
                         ui.allocate_exact_size(egui::vec2(tab_width, 36.0), egui::Sense::click());
+                    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                     let selected = self.kind == kind;
                     response.widget_info(|| {
                         egui::WidgetInfo::selected(egui::Role::Button, true, selected, name)
@@ -245,7 +246,11 @@ impl Picker {
                         egui::Align2::CENTER_CENTER,
                         name,
                         egui::FontId::proportional(13.0),
-                        if selected { crate::TEXT } else { crate::MUTED },
+                        if selected || response.hovered() {
+                            crate::TEXT
+                        } else {
+                            crate::MUTED
+                        },
                     );
                     if selected {
                         ui.painter().line_segment(
@@ -286,7 +291,7 @@ impl Picker {
             let caption_height = 22.0;
             let grid_height = (ui.available_height() - caption_height).max(40.0);
             let columns = 3;
-            let gap = 4.0;
+            let gap = 6.0;
             let cell = ((ui.available_width() - gap * (columns - 1) as f32) / columns as f32)
                 .floor()
                 .max(1.0);
@@ -334,7 +339,9 @@ impl Picker {
                                         egui::vec2(cell, cell),
                                         egui::Sense::click(),
                                     );
-                                    let response = response.on_hover_text(gif.alt());
+                                    let response = response
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .on_hover_text(gif.alt());
                                     response.widget_info(|| {
                                         egui::WidgetInfo::labeled(
                                             egui::Role::Button,
@@ -342,16 +349,27 @@ impl Picker {
                                             gif.alt(),
                                         )
                                     });
-                                    ui.painter().rect_filled(rect, 8.0, crate::SURFACE);
+                                    let highlighted = response.hovered() || response.has_focus();
+                                    if gif.kind == Kind::Sticker {
+                                        if highlighted {
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                8.0,
+                                                crate::SURFACE_HOVER,
+                                            );
+                                        }
+                                    } else {
+                                        ui.painter().rect_filled(rect, 8.0, crate::SURFACE);
+                                    }
                                     if ui.is_rect_visible(rect) {
                                         let sources = tile_sources(tile, playing);
                                         paint(ui, media, rect, &sources, playing, 8);
                                     }
-                                    if response.hovered() || response.has_focus() {
+                                    if highlighted {
                                         ui.painter().rect_stroke(
                                             rect,
                                             8.0,
-                                            egui::Stroke::new(1.0_f32, crate::TERRACOTTA),
+                                            egui::Stroke::new(2.0_f32, crate::TERRACOTTA_BRIGHT),
                                             egui::StrokeKind::Inside,
                                         );
                                     }

@@ -570,33 +570,52 @@ pub fn draw(
     emoji: bool,
     mic: (f32, bool),
     voice: Option<&crate::playback::View>,
+    hover: Option<Part>,
 ) -> Result<()> {
     let (bw, recordable) = mic;
     let m = mic_rect(top, bw);
+    let mic_hover = recordable && hover == Some(Part::Mic);
+    if mic_hover {
+        fill_round(dc, m, 6.0, &g.brushes.hover);
+    }
     centered_icon(
         dc,
         Icon::Mic,
         (m.left + m.right) / 2.0,
         (m.top + m.bottom) / 2.0,
         16.0,
-        if recordable { TEXT_MUTED } else { BORDER },
+        if mic_hover {
+            TEXT
+        } else if recordable {
+            TEXT_MUTED
+        } else {
+            BORDER
+        },
     );
     let e = emoji_rect(top, bw);
+    let emoji_hover = hover == Some(Part::Emoji);
+    if emoji_hover {
+        fill_round(dc, e, 6.0, &g.brushes.hover);
+    }
     centered_icon(
         dc,
         Icon::Smile,
         (e.left + e.right) / 2.0,
         (e.top + e.bottom) / 2.0,
         16.0,
-        if emoji { TEXT } else { TEXT_MUTED },
+        if emoji || emoji_hover {
+            TEXT
+        } else {
+            TEXT_MUTED
+        },
     );
     if let Some((bw, open)) = gif {
-        gif_button(
-            g,
-            dc,
-            gif_rect(top, bw),
-            if open { TEXT } else { TEXT_MUTED },
-        )?;
+        let r = gif_rect(top, bw);
+        let gif_hover = hover == Some(Part::Gif);
+        if gif_hover {
+            fill_round(dc, r, 6.0, &g.brushes.hover);
+        }
+        gif_button(g, dc, r, if open || gif_hover { TEXT } else { TEXT_MUTED })?;
     }
     for (d, t) in drafts.iter().zip(tiles) {
         match d.upload.voice() {
@@ -619,8 +638,18 @@ pub fn draw(
         );
     }
     let a = attach_rect(top);
+    let attach_hover = can_attach && hover == Some(Part::Attach);
+    if attach_hover {
+        fill_round(dc, a, 6.0, &g.brushes.hover);
+    }
     let (cx, cy) = ((a.left + a.right) / 2.0, (a.top + a.bottom) / 2.0);
-    let color = if can_attach { TEXT_MUTED } else { BORDER };
+    let color = if attach_hover {
+        TEXT
+    } else if can_attach {
+        TEXT_MUTED
+    } else {
+        BORDER
+    };
     centered_icon(dc, Icon::Plus, cx, cy, 18.0, color);
     Ok(())
 }

@@ -379,6 +379,8 @@ pub struct App {
     /// The request bar's hovered and pressed buttons.
     bar_hover: Option<directs::BarPart>,
     bar_pressed: Option<directs::BarPart>,
+    /// The channel composer's hovered control (Attach, GIF, Emoji, Dictate).
+    box_hover: Option<uploads::Part>,
     /// Settings, the account footer's menu and whether its gear is
     /// hovered, and their surface.
     pub settings: Option<settings::Settings>,
@@ -732,6 +734,7 @@ impl App {
                 hover_invite: None,
                 bar_hover: None,
                 bar_pressed: None,
+                box_hover: None,
                 settings: None,
                 account_menu: None,
                 dm_menu: None,
@@ -2150,6 +2153,12 @@ impl App {
         self.track_bar_hover();
         self.track_rec_hover();
         self.track_voice_hover();
+        let box_hover = self.pointer.and_then(|(x, y)| self.box_part_at(x, y));
+        if box_hover != self.box_hover {
+            self.box_hover = box_hover;
+            self.dirty.composer = true;
+            self.need = true;
+        }
         let toggle = self
             .pointer
             .is_some_and(|(x, y)| self.on_members_toggle(x, y));
@@ -4633,6 +4642,7 @@ impl App {
             let voice = self.playback.view();
             let card = self.preview_card().cloned();
             let (bar_hover, bar_pressed) = (self.bar_hover, self.bar_pressed);
+            let box_hover = self.box_hover;
             if let Some((note, _)) = &self.note {
                 self.note_p.draw(s, |dc| Self::draw_note(g, dc, note, bw))?;
             }
@@ -4657,6 +4667,7 @@ impl App {
                         emoji,
                         mic,
                         voice.as_ref(),
+                        box_hover,
                     )?;
                 }
                 if let Some(embed) = &card {

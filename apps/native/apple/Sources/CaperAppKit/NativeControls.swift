@@ -110,6 +110,10 @@ final class NativeButton: NSButton {
     var showsDefaultHover = true {
         didSet { needsLayout = true }
     }
+    /// Muted icons and badges brighten to primary text on hover, as web's composer tools.
+    var mutesAtRest = false {
+        didSet { if mutesAtRest != oldValue { needsLayout = true } }
+    }
     var profileFeedback = false {
         didSet {
             guard profileFeedback != oldValue else { return }
@@ -157,6 +161,8 @@ final class NativeButton: NSButton {
             layer?.borderColor = (CaperThemeStore.shared.active.isLight
                 ? NSColor.black.withAlphaComponent(0.24)
                 : NSColor.white.withAlphaComponent(0.55)).cgColor
+        } else if mutesAtRest {
+            contentTintColor = (hovered && isEnabled) ? NativeStyle.text : NativeStyle.muted
         } else if imagePosition != .imageOnly && layer?.backgroundColor != NSColor.clear.cgColor {
             layer?.backgroundColor = NativeStyle.composer.cgColor
             contentTintColor = NativeStyle.text
@@ -212,6 +218,9 @@ final class NativeButton: NSButton {
             hoverWash.backgroundColor = NSColor.clear.cgColor
         } else {
             hoverWash.backgroundColor = (hovered && showsDefaultHover ? NativeStyle.hoverWash : .clear).cgColor
+            if mutesAtRest {
+                contentTintColor = (hovered && isEnabled) ? NativeStyle.text : NativeStyle.muted
+            }
         }
         hoverWash.borderColor = (focused ? NativeStyle.accentBright : NativeStyle.border).cgColor
         hoverWash.borderWidth = focused ? 2 : (hovered && showsDefaultHover && !isPrimary && bounds.height >= 24 ? 0.5 : 0)
@@ -224,6 +233,17 @@ final class NativeButton: NSButton {
         if let tracking { removeTrackingArea(tracking) }
         let tracking = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
         self.tracking = tracking; addTrackingArea(tracking)
+        syncHover()
+    }
+    private func syncHover() {
+        let next: Bool
+        if let window, window.isKeyWindow, !isHiddenOrHasHiddenAncestor {
+            next = visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        } else {
+            next = false
+        }
+        guard hovered != next else { return }
+        hovered = next; needsLayout = true; hoverChanged?(next)
     }
     override func mouseEntered(with event: NSEvent) { hovered = true; needsLayout = true; hoverChanged?(true) }
     override func mouseExited(with event: NSEvent) { hovered = false; needsLayout = true; hoverChanged?(false) }
@@ -248,6 +268,7 @@ final class NativeButton: NSButton {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         button.imagePosition = .imageOnly
         button.layer?.backgroundColor = NSColor.clear.cgColor
+        button.mutesAtRest = true
         button.contentTintColor = NativeStyle.muted
         button.toolTip = label
         return button
