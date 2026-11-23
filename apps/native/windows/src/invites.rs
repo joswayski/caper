@@ -369,7 +369,8 @@ pub fn draw_sidebar(
         return Ok(());
     }
     let label = g.layout(&gfx::wide("Invitations"), &g.formats.section, 10_000.0)?;
-    text::draw(dc, &label, 20.0, top + GAP + 4.0, &g.brushes.muted);
+    // On the channel rows' leading edges: heading and lock at 18, names at 40.
+    text::draw(dc, &label, 18.0, top + GAP + 4.0, &g.brushes.muted);
     let invited = g.layout(&gfx::wide("Invited"), &g.formats.direct_note, 10_000.0)?;
     let iw = gfx::metrics(&invited).widthIncludingTrailingWhitespace;
     for (k, name) in names.iter().enumerate() {
@@ -382,7 +383,7 @@ pub fn draw_sidebar(
         icons::draw(
             dc,
             Icon::Lock,
-            rect(24.0, cy - 7.0, 38.0, cy + 7.0),
+            rect(18.0, cy - 7.0, 32.0, cy + 7.0),
             crate::theme::text_muted(),
             1.0,
         );
@@ -390,13 +391,13 @@ pub fn draw_sidebar(
         let l = g.layout(
             &gfx::wide(name),
             &g.formats.direct_name,
-            (right - 46.0).max(1.0),
+            (right - 40.0).max(1.0),
         )?;
         unsafe { l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
         text::draw(
             dc,
             &l,
-            46.0,
+            40.0,
             cy - gfx::metrics(&l).height / 2.0,
             &g.brushes.text,
         );
@@ -612,6 +613,16 @@ mod tests {
         assert_eq!(d.invite_title(), "Join with invite link");
         assert_eq!(d.invite_note(), "Paste it below to join!");
         assert_eq!(d.invite_primary(), "Continue");
+        // Continue waits for a link the shared parser accepts.
+        for (draft, ready) in [
+            ("", false),
+            ("hello there", false),
+            ("caper.chat/invite/", false),
+            ("caper.chat/invite/AbCdE12345", true),
+        ] {
+            d.field.set_text(draft.encode_utf16().collect());
+            assert_eq!(d.enabled(crate::overlay::Part::Primary), ready, "{draft:?}");
+        }
         d.busy = true;
         assert_eq!(d.invite_primary(), "Checking\u{2026}");
         d.busy = false;

@@ -118,8 +118,34 @@ impl App {
         }
     }
 
-    /// The listed members that show, in order (indices into `c.members`).
+    /// The listed members that show, in order (indices into `c.members`):
+    /// with presence, online ones first, as web's Online and Offline.
     pub fn shown_members(&self) -> Vec<usize> {
+        let mut shown = self.matching_members();
+        if self.c.presence {
+            shown.sort_by_key(|&i| !self.c.members[i].online);
+        }
+        shown
+    }
+
+    /// How many of `shown` (from `shown_members`) are online.
+    pub fn shown_online(&self, shown: &[usize]) -> usize {
+        shown.iter().filter(|&&i| self.c.members[i].online).count()
+    }
+
+    /// The top of the `slot`th shown member's row in the member list, with
+    /// `online` of them online: the Offline heading's band sits above the
+    /// first offline row when online ones precede it.
+    pub fn member_slot_top(&self, slot: usize, online: usize) -> f32 {
+        let band = if self.c.presence && online > 0 && slot >= online {
+            OFFLINE_H
+        } else {
+            0.0
+        };
+        MEMBER_TOP + self.members_top() + MEMBER_H * slot as f32 + band
+    }
+
+    fn matching_members(&self) -> Vec<usize> {
         let all = 0..self.c.listed_members;
         let Some(s) = &self.member_search else {
             return all.collect();

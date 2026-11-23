@@ -1434,17 +1434,21 @@ impl App {
     /// Member `i`'s row, at its place among the shown members; empty
     /// while a search hides it.
     pub fn member_rect(&self, i: usize) -> (f32, f32, f32, f32) {
-        self.shown_members()
+        let shown = self.shown_members();
+        let online = self.shown_online(&shown);
+        shown
             .iter()
             .position(|&k| k == i)
-            .map_or((0.0, 0.0, 0.0, 0.0), |slot| self.member_slot_rect(slot))
+            .map_or((0.0, 0.0, 0.0, 0.0), |slot| {
+                self.member_slot_rect(slot, online)
+            })
     }
 
-    /// The `slot`th shown member's row.
-    pub fn member_slot_rect(&self, slot: usize) -> (f32, f32, f32, f32) {
+    /// The `slot`th shown member's row, with `online` of them online.
+    pub fn member_slot_rect(&self, slot: usize, online: usize) -> (f32, f32, f32, f32) {
         (
             self.members_x() + 8.0,
-            self.members_y() + MEMBER_TOP + self.members_top() + MEMBER_H * slot as f32,
+            self.members_y() + self.member_slot_top(slot, online),
             self.member_width() - 16.0,
             MEMBER_H,
         )
@@ -2171,8 +2175,9 @@ impl App {
             // A hidden member list leaves its column to the conversation.
             if self.members_w() > 0.0 {
                 let shown = self.shown_members();
+                let online = self.shown_online(&shown);
                 member = (0..shown.len())
-                    .find(|&k| inside(self.member_slot_rect(k), x, y))
+                    .find(|&k| inside(self.member_slot_rect(k, online), x, y))
                     .map(|k| shown[k]);
             }
             // The call card covers the DM rows under it.
@@ -4231,7 +4236,19 @@ impl App {
                     // terracotta mention count on the tile's corner.
                     let (unread, mentions) = space_badges.get(i).copied().unwrap_or_default();
                     let cy = r.top + h / 2.0;
-                    if unread {
+                    // As web: a chalk pill at the rail's edge, centred on the
+                    // tile: tall for the open space, short for a hovered one,
+                    // in its unread dot's place. Its rounded left end sits
+                    // off the rail, leaving 4 DIPs.
+                    if i == c.space || lifted {
+                        let half = if i == c.space { 10.0 } else { 5.0 };
+                        fill_round(
+                            dc,
+                            rect(-2.0, cy - half, 4.0, cy + half),
+                            2.0,
+                            &g.brushes.text,
+                        );
+                    } else if unread {
                         fill_round(
                             dc,
                             rect(r.left - 7.0, cy - 3.0, r.left - 1.0, cy + 3.0),
@@ -4354,7 +4371,8 @@ impl App {
                     &g.formats.section,
                     10_000.0,
                 )?;
-                text::draw(dc, &label, 20.0, SECTION_TOP + 4.0, &g.brushes.muted);
+                // On the rows' 18 DIP leading edge, as Direct messages.
+                text::draw(dc, &label, 18.0, SECTION_TOP + 4.0, &g.brushes.muted);
                 for (i, l) in layouts.iter().enumerate() {
                     let (_, y, w, h) = self.channel_rect(i);
                     let r = rect(12.0, y, 12.0 + w, y + h);
@@ -4440,11 +4458,12 @@ impl App {
                         15.0,
                         0.9,
                     )?;
+                    // 6 DIPs in from the highlight on every side.
                     text::draw(
                         dc,
                         &mark,
-                        24.0,
-                        y + 5.0,
+                        18.0,
+                        y + 6.0,
                         if i == c.channel && !*muted {
                             &g.brushes.terracotta
                         } else {
@@ -4452,20 +4471,20 @@ impl App {
                         },
                     );
                     dc.PushAxisAlignedClip(
-                        &rect(46.0, y, right.max(46.0), y + h),
+                        &rect(40.0, y, right.max(40.0), y + h),
                         D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                     );
                     text::draw(
                         dc,
                         l,
-                        46.0,
-                        y + 5.0,
+                        40.0,
+                        y + 6.0,
                         if i == c.channel { bright } else { quiet },
                     );
                     dc.PopAxisAlignedClip();
                     // A failed notification change, after the name.
                     if let Some(e) = error {
-                        let nx = 46.0 + gfx::metrics(l).widthIncludingTrailingWhitespace + 6.0;
+                        let nx = 40.0 + gfx::metrics(l).widthIncludingTrailingWhitespace + 6.0;
                         if nx < right {
                             let el = g.layout(&gfx::wide(e), &g.formats.direct_note, right - nx)?;
                             el.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
@@ -4624,14 +4643,28 @@ impl App {
                 dc.PopAxisAlignedClip();
                 dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, mw, HEADER_H), &g.brushes.border);
                 member_search::draw(g, dc, this, x0)?;
-                let online = shown.iter().filter(|&&i| c.members[i].online).count();
-                let label = if c.presence {
+                // As web: Online, then Offline under its own heading. Each
+                // heading's text starts on the avatars' 16 DIP edge.
+                let online = this.shown_online(&shown);
+                let offline = shown.len() - online;
+                let label = if !c.presence {
+                    "Everyone".to_owned()
+                } else if online > 0 || offline == 0 {
                     format!("Online  {online}")
                 } else {
-                    "Everyone".to_owned()
+                    format!("Offline  {offline}")
                 };
                 let o = g.layout(&gfx::wide(&label), &g.formats.section, 10_000.0)?;
-                text::draw(dc, &o, 12.0, SECTION_TOP + top0 + 4.0, &g.brushes.muted);
+                text::draw(dc, &o, 16.0, SECTION_TOP + top0 + 4.0, &g.brushes.muted);
+                if c.presence && online > 0 && offline > 0 {
+                    let o = g.layout(
+                        &gfx::wide(&format!("Offline  {offline}")),
+                        &g.formats.section,
+                        10_000.0,
+                    )?;
+                    let top = this.member_slot_top(online, online) - OFFLINE_H;
+                    text::draw(dc, &o, 16.0, top + 8.0, &g.brushes.muted);
+                }
                 if searching && shown.is_empty() {
                     let l = g.layout(
                         &gfx::wide(member_search::NO_MATCH),
@@ -4642,17 +4675,18 @@ impl App {
                 }
                 for (slot, &i) in shown.iter().enumerate() {
                     let Some(l) = layouts.get(i) else { continue };
-                    let top = MEMBER_TOP + top0 + MEMBER_H * slot as f32;
+                    let top = this.member_slot_top(slot, online);
+                    // 8 DIPs around the avatar on every side.
                     if hover == Some(i) {
                         fill_round(
                             dc,
-                            rect(8.0, top, mw - 8.0, top + MEMBER_H - 2.0),
+                            rect(8.0, top, mw - 8.0, top + MEMBER_H),
                             RADIUS,
                             &g.brushes.hover,
                         );
                     }
                     let m = &c.members[i];
-                    let av = rect(16.0, top + 5.0, 46.0, top + 35.0);
+                    let av = rect(16.0, top + 8.0, 46.0, top + 38.0);
                     if !avatars::draw(dc, &m.avatar, av, 30.0 * 0.3) {
                         fill_round(dc, av, 15.0, &g.solid(m.color));
                     }
@@ -4677,7 +4711,7 @@ impl App {
                         dc,
                         l,
                         56.0,
-                        top + 11.0,
+                        top + 14.0,
                         if m.online {
                             &g.brushes.text
                         } else {

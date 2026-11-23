@@ -763,10 +763,18 @@ impl Dialog {
                     } else {
                         g.solid(crate::theme::text_muted())
                     };
+                    // A destination's text starts where the search field's
+                    // does, 10 DIPs in, matching its checkbox's 10 DIP inset.
                     crate::text::draw(
                         dc,
                         &l,
-                        x + if action { 8.0 } else { 0.0 },
+                        x + if check {
+                            10.0
+                        } else if action {
+                            8.0
+                        } else {
+                            0.0
+                        },
                         y + if action { (h - height(&l)) / 2.0 } else { 0.0 },
                         &brush,
                     );

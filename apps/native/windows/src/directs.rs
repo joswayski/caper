@@ -31,13 +31,20 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
 /// A row and its pitch, egui's 28 + 2.
-const ROW_H: f32 = 28.0;
-const PITCH: f32 = 30.0;
+/// A row: 6 DIPs around its 20 DIP avatar inside the highlight.
+const ROW_H: f32 = 32.0;
+const PITCH: f32 = 34.0;
 /// The gap between the waiting note and what is under it.
 const NOTE_GAP: f32 = 6.0;
 /// The gap above the section and its label's height.
 const GAP: f32 = 14.0;
 const LABEL_H: f32 = 28.0;
+/// The avatar's inset in its row, equal to the row's top and bottom ones.
+const INSET: f32 = 6.0;
+/// The heading's text, on the avatars' left edge (rows start 12 DIPs in).
+const LEAD: f32 = 12.0 + INSET;
+/// Names, after the avatar column and an 8 DIP gap.
+const NAME_X: f32 = INSET + 20.0 + 8.0;
 
 /// What the pointer is over in the section: its heading, the heading's
 /// "New direct message" button, a row, or a row's options button.
@@ -398,7 +405,8 @@ pub fn draw(
         return Ok(());
     }
     let label = g.layout(&gfx::wide("Direct messages"), &g.formats.section, 10_000.0)?;
-    text::draw(dc, &label, 20.0, top + GAP + 4.0, &g.brushes.muted);
+    // On the avatars' leading edge.
+    text::draw(dc, &label, LEAD, top + GAP + 4.0, &g.brushes.muted);
     // The heading's "+" shows while the heading is hovered, as in egui.
     if matches!(hover, Some(Spot::Heading | Spot::New)) {
         let y = top + GAP;
@@ -429,7 +437,7 @@ pub fn draw(
         } else if lit {
             fill_round(dc, r, 6.0, &g.brushes.hover);
         }
-        let (cx, cy) = (r.left + 17.5, y + ROW_H / 2.0);
+        let (cx, cy) = (r.left + INSET + 10.0, y + ROW_H / 2.0);
         if let RowKind::Requests { open } = row.kind {
             draw_requests(g, dc, row, r, open, lit)?;
             continue;
@@ -476,7 +484,7 @@ pub fn draw(
             );
             right -= 20.0;
         }
-        let x = r.left + 32.0;
+        let x = r.left + NAME_X;
         let format = if row.unread {
             &g.formats.direct_unread
         } else {
@@ -592,7 +600,7 @@ fn draw_requests(
     open: bool,
     lit: bool,
 ) -> Result<()> {
-    let (cx, cy) = (r.left + 17.5, (r.top + r.bottom) / 2.0);
+    let (cx, cy) = (r.left + INSET + 10.0, (r.top + r.bottom) / 2.0);
     let brush = if lit {
         &g.brushes.text
     } else {
@@ -630,7 +638,7 @@ fn draw_requests(
         cy - cm.height / 2.0,
         &g.brushes.muted,
     );
-    let x = r.left + 32.0;
+    let x = r.left + NAME_X;
     let name = g.layout(&gfx::wide(&row.name), &g.formats.direct_name, 1e6)?;
     let m = gfx::metrics(&name);
     text::draw(dc, &name, x, cy - 1.0 - m.height / 2.0, brush);
@@ -1066,7 +1074,7 @@ impl App {
     /// Row `k`'s options button (client DIPs), shown while it is hovered.
     pub fn direct_options_rect(&self, k: usize) -> Rect {
         let (x, y, w, _) = self.direct_rect(k);
-        (x + w - 32.0, y + 2.0, 24.0, 24.0)
+        (x + w - 32.0, y + (ROW_H - 24.0) / 2.0, 24.0, 24.0)
     }
 
     /// The row whose options menu is open.
