@@ -244,14 +244,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             broadcast.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
         ComposerLipView.attach(to: collection, in: view)
-        // Centered 12 points above the replies' bottom edge, just above the
-        // reply box (and its broadcast toggle and notices).
-        view.addSubview(jump)
-        NSLayoutConstraint.activate([
-            jump.centerXAnchor.constraint(equalTo: collection.centerXAnchor),
-            jump.bottomAnchor.constraint(equalTo: collection.bottomAnchor, constant: -12),
-            jump.widthAnchor.constraint(lessThanOrEqualTo: collection.widthAnchor, constant: -24),
-        ])
+        // Just above the reply box (and its broadcast toggle and notices).
+        jump.attach(over: collection, in: view)
         // As SwiftUI's ThreadBackSwipe: a swipe right from anywhere follows
         // the finger back to the channel.
         let swipeBack = DirectionalSwipe(direction: 1)
@@ -496,13 +490,11 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             collection.contentSize.height + collection.adjustedContentInset.bottom - collection.bounds.height)
     }
 
-    /// Shows more than half a screen above the newest loaded reply of a live
-    /// thread; closer hides it and clears its count. A window detached from
+    /// Shows from ten replies above the newest loaded one of a live thread; closer hides it and clears its count. A window detached from
     /// the newest replies shows it wherever the reader is, without a count.
     private func refreshJump() {
         let detached = chat.threadHasNewer
-        let shows = detached || !followingTail && JumpToLatest.shows(distanceFromEnd: tailOffset - collection.contentOffset.y,
-                                                                     viewport: collection.bounds.height, live: true)
+        let shows = detached || !followingTail && JumpToLatest.shows(below: collection.itemsBelowViewport, live: true)
         if !shows || detached { jumpCount = 0 }
         jump.update(shows: shows, count: jumpCount)
     }

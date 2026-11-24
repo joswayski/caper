@@ -1,6 +1,6 @@
 //! "You’re viewing older messages" over the message list and the thread
-//! (`caper_client::jump`): a toast shown more than half a screen from the
-//! newest message, counting others' messages that land meanwhile, and always
+//! (`caper_client::jump`): a toast shown from ten messages above the
+//! newest one, counting others' messages that land meanwhile, and always
 //! while the main list shows a jump's window short of the live end. Its
 //! "Jump to latest" glides back to the live end and follows new messages
 //! again, or in that window reloads the latest page. A child of `app`.
@@ -37,6 +37,14 @@ impl App {
         let adjustment = list.scroller.vadjustment();
         let page = adjustment.page_size();
         let distance = (adjustment.upper() - page - adjustment.value()).max(0.0);
+        // The view lays out only rows near the viewport: estimate the rows
+        // below it from the list's average row height.
+        let rows = list.store.n_items() as f64;
+        let below = if rows > 0.0 && adjustment.upper() > 0.0 {
+            (distance * rows / adjustment.upper()).floor() as usize
+        } else {
+            0
+        };
         // Following is the list's own "read at the end" (48px of slack).
         let at_end = if thread {
             self.thread_follow.get()
@@ -44,7 +52,7 @@ impl App {
             self.follow.get()
         };
         let mut state = list.jump.state();
-        if state.scrolled(distance, page, at_end, live) {
+        if state.scrolled(below, at_end, live) {
             list.jump.show(state);
         }
     }

@@ -332,12 +332,12 @@ enum PendingAction { case retry, edit, dismiss }
         jumpAnimation = nil
     }
 
-    /// Shows the toast more than half a screen above the newest loaded message
-    /// of a live history; anywhere closer hides it and clears its count. A
+    /// Shows the toast from ten messages above the newest loaded one of a live
+    /// history; anywhere closer hides it and clears its count. A
     /// detached window shows it wherever the reader is, without a count.
     private func refreshJump() {
         let shows = !live || (jumpAnimation == nil && !followEnd && JumpToLatest.shows(
-            distanceFromEnd: contentEnd - contentView.bounds.maxY, viewport: contentSize.height, live: true))
+            below: max(0, geometry.ids.count - 1 - geometry.index(at: contentView.bounds.maxY)), live: true))
         let next = (shows: shows, count: shows && live ? jump.count : 0)
         guard next != jump else { return }
         jump = next

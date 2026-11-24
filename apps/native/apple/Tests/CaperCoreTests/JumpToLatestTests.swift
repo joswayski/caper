@@ -7,11 +7,11 @@ final class JumpToLatestTests: XCTestCase {
                     content: ChatContent(version: 1, type: "text", text: id), createdAt: "2026-01-01T00:00:00Z", clientMessageId: "c-\(id)")
     }
 
-    func testShowsBeyondHalfAScreenOfALiveHistoryAndAlwaysInADetachedWindow() {
-        XCTAssertFalse(JumpToLatest.shows(distanceFromEnd: 300, viewport: 600, live: true))
-        XCTAssertTrue(JumpToLatest.shows(distanceFromEnd: 301, viewport: 600, live: true))
-        XCTAssertTrue(JumpToLatest.shows(distanceFromEnd: 5000, viewport: 600, live: false))
-        XCTAssertTrue(JumpToLatest.shows(distanceFromEnd: 0, viewport: 600, live: false), "a detached window shows it even at its end")
+    func testShowsFromTenMessagesBelowALiveHistoryAndAlwaysInADetachedWindow() {
+        XCTAssertFalse(JumpToLatest.shows(below: 9, live: true))
+        XCTAssertTrue(JumpToLatest.shows(below: 10, live: true))
+        XCTAssertTrue(JumpToLatest.shows(below: 50, live: false))
+        XCTAssertTrue(JumpToLatest.shows(below: 0, live: false), "a detached window shows it even at its end")
     }
 
     func testLabelsCountAndCapAtNinetyNine() {

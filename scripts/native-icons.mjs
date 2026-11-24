@@ -11,6 +11,7 @@ const icons = { ...lucide, Reply, Thread };
 const names = {
   archive: "Archive",
   "archive-restore": "ArchiveRestore",
+  "arrow-down": "ArrowDown",
   "arrow-left": "ArrowLeft",
   "arrow-right": "ArrowRight",
   "audio-lines": "AudioLines",

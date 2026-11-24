@@ -2,8 +2,8 @@ import Foundation
 
 /// "You’re viewing older messages": a toast floating over a timeline just
 /// above the composer, as in Discord, with a Jump to latest button. A history
-/// that reaches the live end shows it while the reader is more than half a
-/// screen above the newest loaded message, and counts other people's messages
+/// that reaches the live end shows it once `after` or more loaded messages
+/// lie below the viewport, and counts other people's messages
 /// arriving at the live end meanwhile. A detached window (one that stops short
 /// of the live end) shows it wherever the reader is, without a count.
 public enum JumpToLatest {
@@ -12,11 +12,14 @@ public enum JumpToLatest {
     /// The toast's button.
     public static let button = "Jump to latest"
 
-    /// In a live history, shows when the newest loaded message is more than
-    /// half a viewport below the bottom of what the reader sees; in a detached
-    /// window (`live` false), always.
-    public static func shows(distanceFromEnd: CGFloat, viewport: CGFloat, live: Bool) -> Bool {
-        !live || (viewport > 0 && distanceFromEnd > viewport / 2)
+    /// How many loaded messages below the viewport show the toast: reading the
+    /// last few is still reading the newest messages.
+    public static let after = 10
+
+    /// In a live history, shows once `below` (messages wholly below the
+    /// viewport) reaches `after`; in a detached window (`live` false), always.
+    public static func shows(below: Int, live: Bool) -> Bool {
+        !live || below >= after
     }
 
     /// "1 new message", "3 new messages", capped at "99+ new messages"; nil without new messages.

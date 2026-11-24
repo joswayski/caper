@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { avatarUrl } from "../account/avatar";
 import LinkedText from "../chat/LinkedText";
-import { JumpToast } from "../chat/JumpToLatest";
+import { JUMP_AFTER, JumpToast, rowsBelow } from "../chat/JumpToLatest";
 import { liveNames } from "../media/live-now";
 import { sessionDuration } from "../media/session-duration";
 import PresenceDot from "./PresenceDot";
@@ -728,8 +728,9 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                       jumping.current = false;
                     }
                     following.current = gap < 48;
-                    if (gap <= viewport.clientHeight / 2) setAwayFrom(undefined);
-                    else setAwayFrom((current) => current ?? latestKey.current);
+                    if (gap < 48) setAwayFrom(undefined);
+                    else if (rowsBelow(viewport, "article") >= JUMP_AFTER)
+                      setAwayFrom((current) => current ?? latestKey.current);
                   }}
                 >
                   <div className="sim-message-list">

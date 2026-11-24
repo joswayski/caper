@@ -28,14 +28,14 @@ class JumpToLatestTest {
         assertEquals(1, liveArrivals(ids, listOf(known[0], message("m3")), me.id, emptySet()))
     }
 
-    @Test fun `shows past half a viewport at the live end and hides back at the bottom`() {
-        assertFalse(jumpToLatestShown(shown = false, live = true, distance = 400, viewport = 800, threshold = 80))
-        assertTrue(jumpToLatestShown(shown = false, live = true, distance = 401, viewport = 800, threshold = 80))
-        // Once shown it stays until the reader is near the bottom again.
-        assertTrue(jumpToLatestShown(shown = true, live = true, distance = 200, viewport = 800, threshold = 80))
-        assertFalse(jumpToLatestShown(shown = true, live = true, distance = 80, viewport = 800, threshold = 80))
+    @Test fun `shows from ten rows below the viewport and hides back at the bottom`() {
+        assertFalse(jumpToLatestShown(shown = false, live = true, below = 9, distance = 4_000, threshold = 80))
+        assertTrue(jumpToLatestShown(shown = false, live = true, below = 10, distance = 600, threshold = 80))
+        // Once shown it stays until the reader is near the bottom again, however few rows are left.
+        assertTrue(jumpToLatestShown(shown = true, live = true, below = 1, distance = 200, threshold = 80))
+        assertFalse(jumpToLatestShown(shown = true, live = true, below = 0, distance = 80, threshold = 80))
         // A detached history window doesn't count; it shows its own toast (below).
-        assertFalse(jumpToLatestShown(shown = true, live = false, distance = 5_000, viewport = 800, threshold = 80))
+        assertFalse(jumpToLatestShown(shown = true, live = false, below = 50, distance = 5_000, threshold = 80))
     }
 
     @Test fun `a detached window always shows the toast, uncounted`() {

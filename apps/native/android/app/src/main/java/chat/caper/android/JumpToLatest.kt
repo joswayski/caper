@@ -1,6 +1,17 @@
 package chat.caper.android
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.Icon
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
@@ -51,13 +62,16 @@ internal class JumpToLatest {
     fun hide() { shown = false; unseen = 0 }
 }
 
+/** How many rows below the viewport show a live list's toast: reading the last few is still reading the newest. */
+internal const val JUMP_AFTER_ROWS = 10
+
 /**
- * Whether a live list's Jump to latest toast shows: from more than half a viewport away from the newest row; once shown
- * it stays until the reader is back within [threshold] of the bottom. A detached window ([live] false) shows its own,
- * uncounted toast instead (see [jumpToastCount]).
+ * Whether a live list's Jump to latest toast shows: once [below] (rows wholly below the viewport) reaches
+ * [JUMP_AFTER_ROWS]; once shown it stays until the reader is back within [threshold] of the bottom. A detached window
+ * ([live] false) shows its own, uncounted toast instead (see [jumpToastCount]).
  */
-internal fun jumpToLatestShown(shown: Boolean, live: Boolean, distance: Int, viewport: Int, threshold: Int): Boolean =
-    live && if (shown) distance > threshold else distance > viewport / 2
+internal fun jumpToLatestShown(shown: Boolean, live: Boolean, below: Int, distance: Int, threshold: Int): Boolean =
+    live && if (shown) distance > threshold else below >= JUMP_AFTER_ROWS
 
 /**
  * Of [now], the messages from other people (not you or anyone blocked) after the newest message [known] already had:
@@ -69,6 +83,14 @@ internal fun liveArrivals(known: Set<String>, now: List<ChatMessage>, selfId: St
     return (newest + 1 until now.size).count { index ->
         now[index].author.id != selfId && !chat.caper.android.data.collapsesFor(now[index], blocked, selfId)
     }
+}
+
+/** The rows that start below the viewport: laid out ones past its end, and every row not yet laid out after them. */
+internal fun LazyListLayoutInfo.rowsBelow(): Int {
+    val visible = visibleItemsInfo
+    val last = visible.lastOrNull() ?: return 0
+    val end = viewportEndOffset - afterContentPadding
+    return visible.count { it.offset >= end } + (totalItemsCount - 1 - last.index).coerceAtLeast(0)
 }
 
 /** How far the list's content end lies below the viewport, estimating rows not laid out from the visible ones. */
@@ -105,9 +127,43 @@ internal fun jumpToastCount(detached: Boolean, shown: Boolean, unseen: Int): Int
  * Its own scope, so showing it or a new count recomposes only the toast, not the timeline's rows. In a [detached]
  * window its button reloads the latest page ([onReturn]); otherwise it glides back to the newest row ([onJump]).
  */
-@Composable internal fun JumpToLatestOverlay(jump: JumpToLatest, detached: Boolean, onJump: () -> Unit, onReturn: () -> Unit, modifier: Modifier) {
+@Composable internal fun BoxScope.JumpToLatestOverlay(jump: JumpToLatest, detached: Boolean, onJump: () -> Unit, onReturn: () -> Unit) {
     val count = jumpToastCount(detached, jump.shown, jump.unseen) ?: return
-    JumpToLatestToast(count, if (detached) onReturn else onJump, modifier)
+    // Phones get Discord's arrow at the right edge: the full toast covers too much of a short conversation.
+    if (LocalConfiguration.current.screenWidthDp < 600) {
+        JumpToLatestArrow(count, if (detached) onReturn else onJump, Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp))
+    } else {
+        JumpToLatestToast(count, if (detached) onReturn else onJump,
+            Modifier.align(Alignment.BottomCenter).padding(start = 12.dp, end = 12.dp, bottom = 12.dp))
+    }
+}
+
+/** The phone form: a 44dp raised arrow, its border terracotta and a count badge on its corner once others write. */
+@Composable internal fun JumpToLatestArrow(unseen: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(10.dp)
+    val name = jumpToLatestName(unseen)
+    Box(modifier.entrance(MOTION_FAST, dy = 6.dp)) {
+        Box(
+            Modifier.size(44.dp)
+                .dropShadow(shape, Shadow(24.dp, color = Color.Black.copy(alpha = 0.35f), offset = DpOffset(0.dp, 8.dp)))
+                .clip(shape).background(SurfaceRaised)
+                .border(1.dp, if (unseen > 0) Terracotta else BorderSubtle, shape)
+                .clickable(onClick = onClick)
+                .clearAndSetSemantics {
+                    role = Role.Button
+                    contentDescription = name
+                    onClick { onClick(); true }
+                },
+            contentAlignment = Alignment.Center,
+        ) { Icon(painterResource(R.drawable.lucide_arrow_down), null, Modifier.size(20.dp), tint = chat.caper.android.ui.Text) }
+        if (unseen > 0) Text(
+            if (unseen > 99) "99+" else unseen.toString(),
+            Modifier.align(Alignment.TopEnd).offset(x = 5.dp, y = (-7).dp).heightIn(min = 18.dp).widthIn(min = 18.dp)
+                .background(Terracotta, RoundedCornerShape(50)).padding(horizontal = 5.dp).clearAndSetSemantics { },
+            color = chat.caper.android.ui.Text, fontSize = 10.sp, fontWeight = FontWeight.Bold, lineHeight = 18.sp,
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 /**

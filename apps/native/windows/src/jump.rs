@@ -1,8 +1,8 @@
 //! "You're viewing older messages" over the history (`caper_client::jump`),
 //! as Discord and web: a floating toast centered 12 px above the history's
 //! bottom, just over the composer, with its label and a primary "Jump to
-//! latest" button. Over live history it shows more than half a screen from
-//! the newest message and counts others' messages landing meanwhile; the
+//! latest" button. Over live history it shows once ten or more messages lie
+//! below the viewport and counts others' messages landing meanwhile; the
 //! button glides to the newest message (instantly with reduced motion or
 //! from far away) and follows new messages again. In a detached window
 //! (after View original or a pin's Go) it always shows, and the button
@@ -228,9 +228,9 @@ impl App {
         self.jump_button_rect().is_some_and(|r| contains(r, x, y))
     }
 
-    /// After the history moved or changed: `distance` from the newest
-    /// message, the viewport's height `page`.
-    pub fn sync_jump(&mut self, distance: f64, page: f64) {
+    /// After the history moved or changed: `below`, the messages wholly
+    /// below the viewport.
+    pub fn sync_jump(&mut self, below: usize) {
         if self.jump_glide.is_some() {
             return;
         }
@@ -240,7 +240,7 @@ impl App {
             .is_some_and(|l| !crate::live::Live::has_newer(l));
         let was = self.jump.shown;
         let mut next = self.jump;
-        if next.scrolled(distance, page, self.at_end, live) {
+        if next.scrolled(below, self.at_end, live) {
             self.set_jump(next);
         }
         if was && !self.jump.shown {
@@ -435,10 +435,13 @@ impl App {
         if t.jump_glide.is_some() {
             return;
         }
-        let max = (t.content_h() - vh).max(0.0);
-        if t.jump
-            .scrolled((max - t.scroll) as f64, vh as f64, t.at_end, true)
-        {
+        // Replies that start below the viewport.
+        let fold = t.scroll + vh;
+        let below = (0..t.rows.len())
+            .rev()
+            .take_while(|&i| t.row_y(i).is_some_and(|y| y >= fold))
+            .count();
+        if t.jump.scrolled(below, t.at_end, true) {
             self.dirty.thread = true;
             self.events |= EV_ROWS;
             self.need = true;

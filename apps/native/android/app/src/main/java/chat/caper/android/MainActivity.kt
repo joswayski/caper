@@ -528,7 +528,7 @@ internal data class VoiceJoinIntent(
     }
 }
 
-private val LocalBrandAvatar = compositionLocalOf { 0 }
+internal val LocalBrandAvatar = compositionLocalOf { 0 }
 /** The account bar's User Settings button, which takes focus back when settings close. */
 private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { null }
 
@@ -2640,7 +2640,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val atLiveEnd by rememberUpdatedState(if (inThread) state.thread?.let { !it.loading && !it.hasNewer } == true else !state.hasNewerMessages && !state.loadingNewer)
     val jumpThreshold = with(LocalDensity.current) { 80.dp.roundToPx() }
     LaunchedEffect(jump, jumpThreshold) {
-        snapshotFlow { listState.layoutInfo.let { jumpToLatestShown(jump.shown, atLiveEnd, it.distanceFromEnd(), it.viewportSize.height, jumpThreshold) } }
+        snapshotFlow { listState.layoutInfo.let { jumpToLatestShown(jump.shown, atLiveEnd, it.rowsBelow(), it.distanceFromEnd(), jumpThreshold) } }
             .collect { away -> if (!away) jump.hide() else if (!jump.jumping) jump.shown = true }
     }
     LaunchedEffect(jump, messages) {
@@ -2836,10 +2836,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
     }
-        // Centred over the list just above the composer, taking no space. A detached window's button reloads the
-        // latest page and lands at its end.
-        JumpToLatestOverlay(jump, newer, jumpToLatest, viewModel::retryMessages,
-            Modifier.align(Alignment.BottomCenter).padding(start = 12.dp, end = 12.dp, bottom = 12.dp))
+        // Over the list just above the composer, taking no space: centred, or an arrow at the right on a phone. A
+        // detached window's button reloads the latest page and lands at its end.
+        JumpToLatestOverlay(jump, newer, jumpToLatest, viewModel::retryMessages)
     } }
     actionTarget?.let { target ->
         val presented = state.displayedMessages.firstOrNull { it.id == target.id } ?: target

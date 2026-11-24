@@ -656,15 +656,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         ])
     }
 
-    /// Centered 12 points above the timeline's bottom edge, just above the
-    /// composer and its notices, and at most the timeline's width less 24.
+    /// Above the timeline's bottom edge, just above the composer and its
+    /// notices (`JumpToLatestToast.attach`).
     private func buildJump() {
-        view.addSubview(jump)
-        NSLayoutConstraint.activate([
-            jump.centerXAnchor.constraint(equalTo: collection.centerXAnchor),
-            jump.bottomAnchor.constraint(equalTo: collection.bottomAnchor, constant: -12),
-            jump.widthAnchor.constraint(lessThanOrEqualTo: collection.widthAnchor, constant: -24),
-        ])
+        jump.attach(over: collection, in: view)
     }
 
     // MARK: Rendering
@@ -913,13 +908,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     private var jumpCount = 0
 
-    /// Shows more than half a screen above the newest loaded message of a live
-    /// history; closer hides it and clears its count. A window detached from
+    /// Shows from ten messages above the newest loaded one of a live history; closer hides it and clears its count. A window detached from
     /// the live end shows it wherever the reader is, without a count.
     private func refreshJump() {
         let detached = model.chat.hasNewer
         let shows = live && (detached || !followingTail
-            && JumpToLatest.shows(distanceFromEnd: tailOffset - collection.contentOffset.y, viewport: collection.bounds.height, live: true))
+            && JumpToLatest.shows(below: collection.itemsBelowViewport, live: true))
         if !shows || detached { jumpCount = 0 }
         jump.update(shows: shows, count: jumpCount)
     }

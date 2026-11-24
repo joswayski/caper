@@ -337,7 +337,7 @@ impl Pane {
     }
 
     /// Row `i`'s top in content coordinates.
-    fn row_y(&self, i: usize) -> Option<f32> {
+    pub(crate) fn row_y(&self, i: usize) -> Option<f32> {
         let s = self.sections();
         match (s.root, s.replies) {
             (Some((r, y)), _) if r == i => Some(y),

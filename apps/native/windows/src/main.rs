@@ -4024,7 +4024,13 @@ impl App {
         self.scroll_top = self.scroll_top.clamp(min, max);
         self.at_end = self.scroll_top >= max - 0.5;
         self.older_armed |= self.at_end;
-        self.sync_jump(max - self.scroll_top, vh);
+        // Rows that start below the viewport; [lo, len) is measured from the bottom up.
+        let fold = self.scroll_top + vh;
+        let below = (self.rows.lo..self.rows.len())
+            .rev()
+            .take_while(|&i| self.rows.top[i] >= fold)
+            .count();
+        self.sync_jump(below);
         // Reaching the start loads the previous page, as on web; a failed
         // page waits for Retry instead of looping.
         if self.older_armed

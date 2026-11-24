@@ -365,7 +365,72 @@
 .chat-jump-latest button:active {
   box-shadow: var(--btn-primary-shadow-active);
 }
-@media (max-width: 760px), (pointer: coarse) {
+/* The arrow and count badge belong to the phone layout below. */
+.chat-jump-latest button > :is(svg, small) {
+  display: none;
+}
+/* Phones: Discord's arrow at the right edge rather than a toast across the
+   conversation. The label stays as the button's accessible name. */
+@media (max-width: 760px) {
+  .chat-jump-latest {
+    left: auto;
+    right: 12px;
+    max-width: none;
+    padding: 0;
+    gap: 0;
+    border: 0;
+    border-radius: var(--radius);
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+  .chat-jump-latest > span,
+  .chat-jump-latest button > span {
+    display: none;
+  }
+  .chat-jump-latest button {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    background: var(--surface-glass-bg);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    box-shadow: var(--popover-shadow);
+  }
+  .chat-jump-latest[data-new] button {
+    border-color: var(--accent-border);
+  }
+  .chat-jump-latest button > svg {
+    display: block;
+    width: 20px;
+    height: 20px;
+  }
+  .chat-jump-latest button > small {
+    position: absolute;
+    top: -7px;
+    right: -5px;
+    display: block;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--radius-pill);
+    color: var(--text);
+    background: var(--terracotta);
+    font-size: 0.66rem;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+}
+@media (min-width: 761px) and (pointer: coarse) {
   .chat-jump-latest button {
     min-height: 40px;
   }
