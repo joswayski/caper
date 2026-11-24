@@ -20,7 +20,7 @@ import Observation
     private var notice: String?
     private let panel = UIView()
     private let scrim = UIButton()
-    private let titleLabel = UIKitMessageDialog.label("", size: 15, bold: true)
+    private let titleLabel = UIKitMessageDialog.label("", size: 17, bold: true)
     private let hint = UIKitMessageDialog.label("")
     private let access = UIKitMessageDialog.label("")
     private let grid: UICollectionView
@@ -39,6 +39,7 @@ import Observation
     private var displayedFull = false
     private var gridWidth: CGFloat = 0
     private var appeared = false
+    private var sendShown = false
     private var draft: AttachDrawerDraft? { if case .attach(let draft) = mode { return draft }; return nil }
     private var picking: Bool { draft == nil }
     private var used: Int { (draft?.files().count ?? 0) + queue.order.count }
@@ -47,7 +48,7 @@ import Observation
 
     init(mode: AttachDrawerMode, close: @escaping () -> Void) {
         self.mode = mode; self.close = close
-        let layout = UICollectionViewFlowLayout(); layout.minimumInteritemSpacing = 2; layout.minimumLineSpacing = 2
+        let layout = UICollectionViewFlowLayout(); layout.minimumInteritemSpacing = Self.spacing; layout.minimumLineSpacing = Self.spacing
         grid = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(nibName: nil, bundle: nil); modalPresentationStyle = .overFullScreen
     }
@@ -58,41 +59,56 @@ import Observation
         scrim.backgroundColor = UIColor.black.withAlphaComponent(0.55)
         scrim.isAccessibilityElement = false; scrim.addAction(UIAction { [weak self] _ in self?.close() }, for: .touchUpInside)
         scrim.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(scrim)
-        panel.backgroundColor = UIColor(CaperTheme.surface); panel.layer.cornerRadius = 16
+        panel.backgroundColor = UIColor(CaperTheme.surface); panel.layer.cornerRadius = 18
         panel.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]; panel.translatesAutoresizingMaskIntoConstraints = false
         panel.accessibilityIdentifier = picking ? "picture-drawer" : "attach-drawer"; view.addSubview(panel)
         let name = picking ? "picture chooser" : "attachment drawer"
-        let cancel = UIKitMessageDialog.button("Close") { [weak self] in self?.close() }; cancel.accessibilityLabel = "Close \(name)"
-        resize = UIButton(type: .system); resize.setTitle("━", for: .normal); resize.tintColor = UIColor(CaperTheme.muted)
-        resize.accessibilityIdentifier = "attach-drawer-resize"; resize.accessibilityLabel = "Expand \(name)"
+        // The handle: a short capsule across the top; tapping it expands the drawer.
+        resize = UIButton(type: .custom); resize.accessibilityIdentifier = "attach-drawer-resize"; resize.accessibilityLabel = "Expand \(name)"
         resize.addAction(UIAction { [weak self] _ in guard let self else { return }; self.expanded.toggle(); self.resizePanel(animated: true) }, for: .touchUpInside)
-        // A 44pt touch target; the title row follows with no extra gap.
-        resize.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        let titleRow = UIStackView(arrangedSubviews: [titleLabel, cancel]); titleRow.spacing = 12
+        let grabber = UIView(); grabber.backgroundColor = UIColor(CaperTheme.muted).withAlphaComponent(0.6); grabber.layer.cornerRadius = 2.5
+        grabber.isUserInteractionEnabled = false; grabber.translatesAutoresizingMaskIntoConstraints = false; resize.addSubview(grabber)
+        let cancel = UIButton(type: .system); cancel.setImage(attachIcon("x", size: 18), for: .normal); cancel.tintColor = UIColor(CaperTheme.muted)
+        cancel.accessibilityLabel = "Close \(name)"; cancel.addAction(UIAction { [weak self] _ in self?.close() }, for: .touchUpInside)
+        hint.textColor = UIColor(CaperTheme.muted)
+        let titles = UIStackView(arrangedSubviews: [titleLabel, hint]); titles.axis = .vertical; titles.spacing = 2
+        let titleRow = UIStackView(arrangedSubviews: [titles, cancel]); titleRow.alignment = .center; titleRow.spacing = 12
         // The title takes the slack so Close keeps its own width at the trailing edge.
-        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal); cancel.setContentHuggingPriority(.required, for: .horizontal)
-        let header = UIStackView(arrangedSubviews: [resize, titleRow, hint]); header.axis = .vertical; header.spacing = 4
-        header.setCustomSpacing(0, after: resize)
+        titles.setContentHuggingPriority(.defaultLow, for: .horizontal); cancel.setContentHuggingPriority(.required, for: .horizontal)
+        let header = UIStackView(arrangedSubviews: [resize, titleRow]); header.axis = .vertical
         header.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(pan)))
         grid.backgroundColor = .clear; grid.dataSource = self; grid.delegate = self
-        grid.register(UIKitAttachTile.self, forCellWithReuseIdentifier: "photo"); grid.accessibilityIdentifier = "attach-drawer-grid"
-        grid.contentInset.bottom = 72
+        grid.register(UIKitAttachTile.self, forCellWithReuseIdentifier: "photo"); grid.register(UIKitAttachCameraTile.self, forCellWithReuseIdentifier: "camera")
+        grid.accessibilityIdentifier = "attach-drawer-grid"
+        // Keep the last row clear of the floating Send button.
+        grid.contentInset.bottom = 76
         manage = UIKitMessageDialog.button("Manage") { [library] in library.manageLimitedAccess() }
         settings = UIKitMessageDialog.button("Open Settings") {
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
         }
-        let photos = UIKitMessageDialog.button("Photos") { [weak self] in self?.choosePhotos() }; photos.accessibilityIdentifier = "attach-drawer-photos"
-        let files = UIKitMessageDialog.button("Files") { [weak self] in self?.chooseFiles() }; files.accessibilityIdentifier = "attach-drawer-files"
-        let camera = UIKitMessageDialog.button(picking ? "Take a photo" : "Camera") { [weak self] in self?.chooseCamera() }
-        camera.accessibilityIdentifier = "attach-drawer-camera"; camera.isHidden = !cameraAvailable
-        let tools = UIStackView(arrangedSubviews: [photos, files, camera]); tools.distribution = .fillEqually; tools.spacing = 8
-        let stack = UIStackView(arrangedSubviews: [header, access, manage, settings, grid, tools]); stack.axis = .vertical; stack.spacing = 8
+        // Tabs, as on Android: Photos is the grid above (tap for the whole
+        // library), Files opens the document picker. The camera is the grid's first tile.
+        let photos = Self.tab("Photos", icon: "images", selected: true) { [weak self] in self?.choosePhotos() }; photos.accessibilityIdentifier = "attach-drawer-photos"
+        let files = Self.tab("Files", icon: "paperclip", selected: false) { [weak self] in self?.chooseFiles() }; files.accessibilityIdentifier = "attach-drawer-files"
+        let tools = UIStackView(arrangedSubviews: [photos, files]); tools.distribution = .fillEqually
+        let divider = UIView(); divider.backgroundColor = UIColor(CaperTheme.border)
+        let stack = UIStackView(arrangedSubviews: [header, access, manage, settings, grid, divider, tools]); stack.axis = .vertical; stack.spacing = 8
+        stack.setCustomSpacing(4, after: header); stack.setCustomSpacing(4, after: divider)
         stack.translatesAutoresizingMaskIntoConstraints = false; panel.addSubview(stack)
-        send = UIKitMessageDialog.button("Send", primary: true) { [weak self] in
+        var sendConfig = UIButton.Configuration.filled(); sendConfig.image = attachIcon("send", size: 20); sendConfig.cornerStyle = .capsule
+        send = UIButton(configuration: sendConfig, primaryAction: UIAction { [weak self] _ in
             guard let self, let draft = self.draft, draft.valid(), draft.canSend(), self.queue.order.isEmpty else { return }
             draft.send(); self.close()
+        })
+        // Chalk white once everything is in; neutral chrome while items copy or upload.
+        send.configurationUpdateHandler = { button in
+            var config = button.configuration
+            config?.baseBackgroundColor = UIColor(button.isEnabled ? CaperTheme.action : CaperTheme.raised)
+            config?.baseForegroundColor = UIColor(button.isEnabled ? CaperTheme.onAction : CaperTheme.muted)
+            config?.background.strokeColor = button.isEnabled ? .clear : UIColor(CaperTheme.border); config?.background.strokeWidth = 1
+            button.configuration = config
         }
-        send.accessibilityIdentifier = "attach-drawer-send"; send.translatesAutoresizingMaskIntoConstraints = false; panel.addSubview(send)
+        send.accessibilityIdentifier = "attach-drawer-send"; send.translatesAutoresizingMaskIntoConstraints = false; send.isHidden = true; panel.addSubview(send)
         panelHeight = panel.heightAnchor.constraint(equalToConstant: 400)
         NSLayoutConstraint.activate([
             scrim.leadingAnchor.constraint(equalTo: view.leadingAnchor), scrim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -100,8 +116,14 @@ import Observation
             panel.leadingAnchor.constraint(equalTo: view.leadingAnchor), panel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             panel.bottomAnchor.constraint(equalTo: view.bottomAnchor), panelHeight,
             stack.leadingAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.leadingAnchor, constant: 12), stack.trailingAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: panel.topAnchor, constant: 4), stack.bottomAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            send.trailingAnchor.constraint(equalTo: stack.trailingAnchor), send.bottomAnchor.constraint(equalTo: tools.topAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: panel.topAnchor), stack.bottomAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.bottomAnchor, constant: -4),
+            resize.heightAnchor.constraint(equalToConstant: 28),
+            grabber.widthAnchor.constraint(equalToConstant: 36), grabber.heightAnchor.constraint(equalToConstant: 5),
+            grabber.centerXAnchor.constraint(equalTo: resize.centerXAnchor), grabber.centerYAnchor.constraint(equalTo: resize.centerYAnchor),
+            cancel.widthAnchor.constraint(equalToConstant: 44), cancel.heightAnchor.constraint(equalToConstant: 44),
+            divider.heightAnchor.constraint(equalToConstant: 1),
+            send.widthAnchor.constraint(equalToConstant: 52), send.heightAnchor.constraint(equalToConstant: 52),
+            send.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -4), send.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -16),
         ])
         changes = library.objectWillChange.sink { [weak self] in DispatchQueue.main.async { [weak self] in self?.render() } }
         foreground = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
@@ -149,9 +171,19 @@ import Observation
             : library.status == .denied ? "Caper can’t see your photos. Allow access in Settings, or choose items one at a time."
             : library.assets?.count == 0 ? (picking ? "No photos yet." : "No photos or videos yet.") : nil
         access.isHidden = access.text == nil; manage.isHidden = library.status != .limited; settings.isHidden = library.status != .denied
-        send.isHidden = picking || (draft?.files().isEmpty != false && queue.order.isEmpty)
+        let shows = !picking && (draft?.files().isEmpty == false || !queue.order.isEmpty)
         send.isEnabled = draft?.canSend() == true && queue.order.isEmpty
         send.accessibilityLabel = send.isEnabled ? "Send message" : "Uploading attachments"
+        if shows != sendShown {
+            sendShown = shows; send.isHidden = !shows
+            // Send pops in with the first pick, as attached files do in the composer.
+            if shows, appeared, !CaperAccessibility.reduceMotion {
+                send.alpha = 0; send.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
+                UIViewPropertyAnimator(duration: CaperMotion.base, controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1)) {
+                    self.send.alpha = 1; self.send.transform = .identity
+                }.startAnimation()
+            }
+        }
         let files = draft?.files() ?? []
         if displayedAssets !== library.assets {
             displayedAssets = library.assets; displayedFiles = files; displayedPending = queue.order; displayedFull = full; grid.reloadData()
@@ -184,26 +216,52 @@ import Observation
         } else { resizePanel(animated: false) }
     }
     private func nudge() { notice = AttachCapacity.hint(AttachmentPolicy.maxAttachments); UINotificationFeedbackGenerator().notificationOccurred(.warning); render() }
-    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { library.assets?.count ?? 0 }
+    private static let spacing: CGFloat = 3
+    /// The camera leads the grid when the device has one.
+    private var cameraTiles: Int { cameraAvailable ? 1 : 0 }
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { (library.assets?.count ?? 0) + cameraTiles }
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
-        let columns = max(1, floor((collectionView.bounds.width + 2) / 90)), side = floor((collectionView.bounds.width - (columns - 1) * 2) / columns)
+        // Three large tiles across a phone, more on wider screens.
+        let width = collectionView.bounds.width
+        let columns = max(3, floor((width + Self.spacing) / 124)), side = floor((width - (columns - 1) * Self.spacing) / columns)
         return CGSize(width: side, height: side)
     }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "photo", for: indexPath) as! UIKitAttachTile
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: indexPath.item < cameraTiles ? "camera" : "photo", for: indexPath)
         configure(cell, at: indexPath)
         return cell
     }
     // A prefetched tile missed the in-place update while offscreen.
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
-        if let cell = cell as? UIKitAttachTile { configure(cell, at: indexPath) }
+        configure(cell, at: indexPath)
     }
-    private func configure(_ cell: UIKitAttachTile, at indexPath: IndexPath) {
-        guard let asset = library.assets?.object(at: indexPath.item) else { return }
+    private func configure(_ cell: UICollectionViewCell, at indexPath: IndexPath) {
+        if let camera = cell as? UIKitAttachCameraTile {
+            camera.configure(label: picking ? "Take a photo" : "Camera", dimmed: full) { [weak self] in self?.chooseCamera() }
+            return
+        }
+        let index = indexPath.item - cameraTiles
+        guard let cell = cell as? UIKitAttachTile, let assets = library.assets, index >= 0, index < assets.count else { return }
+        let asset = assets.object(at: index)
         let source = AttachDrawer.source(asset.localIdentifier), files = draft?.files() ?? []
         // A tap shows its place at once; the copy joins the draft in tap order.
         let order = files.firstIndex { $0.source == source }.map { $0 + 1 } ?? queue.order.firstIndex(of: source).map { files.count + $0 + 1 }
-        cell.configure(asset, order: order, pending: queue.isPending(source), full: full) { [weak self] in self?.choose(asset.localIdentifier) }
+        cell.configure(asset, order: order, pending: queue.isPending(source), full: full, selectable: !picking) { [weak self] in self?.choose(asset.localIdentifier) }
+    }
+    /// A toolbar tab: its icon over its name, bright and bold when selected.
+    private static func tab(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        config.image = attachIcon(icon, size: 20); config.imagePlacement = .top; config.imagePadding = 4; config.title = title
+        config.baseForegroundColor = UIColor(selected ? CaperTheme.text : CaperTheme.muted)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attributes = incoming
+            attributes.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: UIFont(name: selected ? "Figtree-Bold" : "Figtree-Regular", size: 11) ?? .systemFont(ofSize: 11))
+            return attributes
+        }
+        let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        if selected { button.accessibilityTraits.insert(.selected) }
+        return button
     }
     private func choose(_ identifier: String) {
         if picking {
@@ -317,22 +375,61 @@ import Observation
     }
 }
 
+/// A Lucide icon from the app's catalog (CaperIcons.xcassets), drawn at `size` as a template.
+@MainActor private func attachIcon(_ name: String, size: CGFloat) -> UIImage? {
+    guard let image = UIImage(named: "caper-\(name)") ?? UIImage(named: "caper-\(name)", in: caperResourceBundle, compatibleWith: nil) else { return nil }
+    return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
+        image.draw(in: CGRect(x: 0, y: 0, width: size, height: size))
+    }.withRenderingMode(.alwaysTemplate)
+}
+
+/// The grid's first tile opens the camera.
+@MainActor private final class UIKitAttachCameraTile: UICollectionViewCell {
+    private let button = UIButton(type: .custom)
+    private var take: (() -> Void)?
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.backgroundColor = UIColor(CaperTheme.raised); contentView.layer.cornerRadius = 8; contentView.clipsToBounds = true
+        button.setImage(attachIcon("camera", size: 26), for: .normal); button.tintColor = UIColor(CaperTheme.muted)
+        button.accessibilityIdentifier = "attach-drawer-camera"
+        button.addAction(UIAction { [weak self] _ in self?.take?() }, for: .touchUpInside)
+        contentView.addSubview(button)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() { super.layoutSubviews(); button.frame = contentView.bounds }
+    func configure(label: String, dimmed: Bool, take: @escaping () -> Void) {
+        button.accessibilityLabel = label; button.alpha = dimmed ? 0.4 : 1; self.take = take
+    }
+}
+
+/// A library tile: an empty ring to tap, then a green numbered ring over a
+/// darkened, green-edged photo once it's in the draft (in tap order).
 @MainActor private final class UIKitAttachTile: UICollectionViewCell {
     private let button = UIButton(type: .custom)
     private let picture = UIImageView()
+    private let shade = UIView()
+    private let ring = UILabel()
     private let badge = UILabel()
     private var request: PHImageRequestID?
     private var animation: Task<Void, Never>?
     private var motion: NSObjectProtocol?
     private var asset: PHAsset?
+    private var order: Int?
     private var pick: (() -> Void)?
     override init(frame: CGRect) {
-        super.init(frame: frame); contentView.addSubview(button); button.addSubview(picture); button.addSubview(badge)
-        picture.contentMode = .scaleAspectFill; picture.clipsToBounds = true; picture.isUserInteractionEnabled = false
-        badge.textColor = .white; badge.backgroundColor = UIColor.black.withAlphaComponent(0.7); badge.textAlignment = .center
-        badge.layer.cornerRadius = 8; badge.clipsToBounds = true; badge.isUserInteractionEnabled = false
+        super.init(frame: frame)
+        contentView.backgroundColor = UIColor(CaperTheme.raised); contentView.layer.cornerRadius = 8; contentView.clipsToBounds = true
+        contentView.addSubview(button); [picture, shade, ring, badge].forEach { $0.isUserInteractionEnabled = false; button.addSubview($0) }
+        picture.contentMode = .scaleAspectFill; picture.clipsToBounds = true
+        shade.backgroundColor = UIColor(CaperTheme.blackout).withAlphaComponent(0.3)
+        shade.layer.borderColor = UIColor(CaperTheme.terracotta).cgColor; shade.layer.borderWidth = 3; shade.layer.cornerRadius = 8
+        ring.font = UIFont(name: "Figtree-Bold", size: 12) ?? .boldSystemFont(ofSize: 12); ring.textColor = UIColor(CaperTheme.text)
+        ring.textAlignment = .center; ring.layer.cornerRadius = 12; ring.clipsToBounds = true
+        badge.font = (UIFont(name: "Figtree-Bold", size: 11) ?? .boldSystemFont(ofSize: 11)); badge.textColor = UIColor(CaperTheme.text)
+        badge.backgroundColor = UIColor(CaperTheme.blackout).withAlphaComponent(0.7); badge.textAlignment = .center
+        badge.layer.cornerRadius = 4; badge.clipsToBounds = true
         // The tile button already speaks the attach order and duration.
-        badge.isAccessibilityElement = false
+        ring.isAccessibilityElement = false; badge.isAccessibilityElement = false
         button.addAction(UIAction { [weak self] _ in self?.pick?() }, for: .touchUpInside)
         motion = NotificationCenter.default.addObserver(forName: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { guard let self else { return }; self.clear(); if self.window != nil, let asset = self.asset { self.load(asset) } }
@@ -340,25 +437,45 @@ import Observation
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { motion.map(NotificationCenter.default.removeObserver) }
-    override func layoutSubviews() { super.layoutSubviews(); button.frame = contentView.bounds; picture.frame = button.bounds; badge.frame = CGRect(x: max(0, bounds.width - 54), y: 4, width: 50, height: 24) }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        button.frame = contentView.bounds; picture.frame = button.bounds; shade.frame = button.bounds
+        ring.frame = CGRect(x: bounds.width - 30, y: 6, width: 24, height: 24)
+        let width = badge.sizeThatFits(CGSize(width: bounds.width, height: 18)).width + 10
+        badge.frame = CGRect(x: 5, y: bounds.height - 23, width: min(bounds.width - 10, width), height: 18)
+    }
     override func prepareForReuse() { super.prepareForReuse(); clear() }
     override func didMoveToWindow() { super.didMoveToWindow(); if window == nil { clear() } else if let asset { load(asset) } }
     private func clear() {
         if let request { PHImageManager.default().cancelImageRequest(request) }; request = nil
         animation?.cancel(); animation = nil; picture.layer.removeAllAnimations(); picture.image = nil
     }
-    func configure(_ asset: PHAsset, order: Int?, pending: Bool, full: Bool, pick: @escaping () -> Void) {
+    func configure(_ asset: PHAsset, order: Int?, pending: Bool, full: Bool, selectable: Bool, pick: @escaping () -> Void) {
         // The same photo keeps its thumbnail, request and GIF frames.
         let same = self.asset.map(AttachGalleryCache.key) == AttachGalleryCache.key(asset)
         if !same { clear() }
-        self.asset = asset; self.pick = pick
+        let arrives = same && self.order == nil && order != nil
+        self.asset = asset; self.order = order; self.pick = pick
         let date = asset.creationDate?.formatted(date: .abbreviated, time: .omitted) ?? ""
         button.accessibilityIdentifier = "attach-drawer-tile"
         button.accessibilityLabel = "\(asset.mediaType == .video ? "Video, \(Int(asset.duration)) seconds" : AttachGalleryCache.isGIF(asset) ? "GIF" : "Photo"), \(date)"
         button.accessibilityValue = pending ? "Adding" : order.map { "Attached \($0)" } ?? (full ? "Attachment limit reached" : "")
         button.accessibilityTraits = order == nil ? .button : [.button, .selected]
-        badge.text = order.map(String.init) ?? (asset.mediaType == .video ? VoiceDuration.format(ms: Int(asset.duration * 1000)) : AttachGalleryCache.isGIF(asset) ? "GIF" : nil)
-        badge.isHidden = badge.text == nil; picture.alpha = full && order == nil && !pending ? 0.4 : 1
+        shade.isHidden = order == nil
+        ring.isHidden = !selectable
+        ring.text = order.map(String.init)
+        ring.backgroundColor = order == nil ? UIColor(CaperTheme.blackout).withAlphaComponent(0.35) : UIColor(CaperTheme.terracotta)
+        ring.layer.borderWidth = order == nil ? 1.5 : 0; ring.layer.borderColor = UIColor(CaperTheme.text).withAlphaComponent(0.9).cgColor
+        badge.text = asset.mediaType == .video ? "\u{25B6}\u{FE0E} \(VoiceDuration.format(ms: Int(asset.duration * 1000)))" : AttachGalleryCache.isGIF(asset) ? "GIF" : nil
+        badge.isHidden = badge.text == nil; setNeedsLayout()
+        button.alpha = full && order == nil && !pending ? 0.4 : 1
+        // The number and edge pop in as an attached file does in the composer.
+        if arrives, !CaperAccessibility.reduceMotion {
+            ring.transform = CGAffineTransform(scaleX: 0.94, y: 0.94); ring.alpha = 0; shade.alpha = 0
+            UIViewPropertyAnimator(duration: CaperMotion.base, controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1)) {
+                self.ring.transform = .identity; self.ring.alpha = 1; self.shade.alpha = 1
+            }.startAnimation()
+        } else if !arrives { ring.transform = .identity; ring.alpha = 1; shade.alpha = 1 }
         load(asset)
     }
     private func load(_ asset: PHAsset) {
