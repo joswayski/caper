@@ -1526,8 +1526,12 @@ library and files; desktop web, the Mac and Rust desktop offer one unfiltered
   (`presentLimitedLibraryPicker`; the automatic limited-access alert is off);
   denied access offers Settings, the system Photos picker and the camera
   (`UIImagePickerController`, `NSCameraUsageDescription`).
-- **Android** (`AttachDrawer.kt`): the same drawer as a bottom sheet over
-  MediaStore. It asks when first opened: `READ_MEDIA_IMAGES` and
+- **Android** (`AttachDrawer.kt`): channel and thread composers dock the drawer
+  below the message box in the keyboard's place (`AttachDock`), as on iPhone: it
+  takes the last keyboard's height and shrinks as the keyboard returns, picks
+  queue as chips and the composer's Send sends, `+` becomes ✕ (back to typing),
+  and Back closes it. The profile composer and picture choosers use a bottom
+  sheet. Both read MediaStore. It asks when first opened: `READ_MEDIA_IMAGES` and
   `READ_MEDIA_VIDEO`, plus `READ_MEDIA_VISUAL_USER_SELECTED` on Android 14+
   (partial access, with \"Manage\"), or `READ_EXTERNAL_STORAGE` up to Android 12.
   Without access it offers Settings, the system photo picker and the camera. The

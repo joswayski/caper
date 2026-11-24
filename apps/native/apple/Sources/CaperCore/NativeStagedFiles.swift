@@ -315,6 +315,7 @@ import UIKit
     private let thumbnail = StagedThumbnail()
     private let waveform = NativeVoiceWaveform(playedColor: UIColor(CaperTheme.text).cgColor, unplayedColor: UIColor(CaperTheme.muted).withAlphaComponent(0.45).cgColor)
     private let preview = UIButton(type: .custom), remove = UIButton(type: .system), edit = UIButton(type: .system), retry = UIButton(type: .system)
+    private let removeFace = CALayer(), editFace = CALayer()
     private let time = UIKitMessageDialog.label("", size: 11)
     private let progress = CAShapeLayer()
     init(_ file: NativeStagedFile) {
@@ -328,6 +329,13 @@ import UIKit
         edit.addAction(UIAction { [weak self] _ in if self?.file.editable == true { self?.file.preview() } }, for: .touchUpInside)
         retry.addAction(UIAction { [weak self] _ in self?.file.retry?() }, for: .touchUpInside)
         for button in [remove, edit, retry] { button.tintColor = UIColor(CaperTheme.text) }
+        // Remove and Edit sit on small dark faces, as on Android, so they read over pale pictures.
+        for (button, face) in [(remove, removeFace), (edit, editFace)] {
+            face.backgroundColor = UIColor(CaperTheme.blackout).withAlphaComponent(0.78).cgColor; face.cornerRadius = 11
+            face.borderWidth = 1; face.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+            button.layer.insertSublayer(face, at: 0)
+            button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 10, weight: .bold), forImageIn: .normal)
+        }
         progress.fillColor = nil; progress.strokeColor = UIColor(CaperTheme.terracottaBright).cgColor; progress.lineWidth = 2; remove.layer.addSublayer(progress)
         preview.addInteraction(UIContextMenuInteraction(delegate: self)); update(file)
     }
@@ -362,6 +370,7 @@ import UIKit
         retry.frame = CGRect(x: bounds.midX - 22, y: bounds.midY - 22, width: 44, height: 44)
         time.frame = CGRect(x: 6, y: bounds.height - 24, width: max(0, bounds.width - 12), height: 20)
         progress.frame = remove.bounds; progress.path = CGPath(ellipseIn: remove.bounds.insetBy(dx: 11, dy: 11), transform: nil)
+        removeFace.frame = remove.bounds.insetBy(dx: 11, dy: 11); editFace.frame = edit.bounds.insetBy(dx: 11, dy: 11)
     }
     private func menu() -> UIMenu {
         guard file.removable else { return UIMenu() }; var actions: [UIAction] = []

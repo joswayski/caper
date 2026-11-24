@@ -1796,6 +1796,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             }
             // Its own scope: a keystroke recomposes the composer, not the thread's timeline.
+            val dock = remember(thread.rootId) { AttachDock() }
             if (state.canParticipate) Column(Modifier.composerLip().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
@@ -1847,7 +1848,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                     leadingIcon = {
                                         AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
                                             drawer = AttachDrawerHost(files, viewModel::removeDraft,
-                                                canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true, send = sendReply))
+                                                canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true, send = sendReply), dock = dock)
                                     },
                                     trailingIcon = {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1878,6 +1879,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 direct -> "You can’t reply in this conversation."
                 else -> "Join the channel to reply."
             }, Modifier.padding(18.dp), color = TextMuted)
+            if (state.canParticipate) AttachDockPanel(dock)
         }
         if (dropping.value && canAttach) {
             val (_, detail) = FileDrop.text(channel.name, channel.direct, files.size)
@@ -2093,6 +2095,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             // Phones show the conversation alone, so voice errors from the dock (behind Browse) come with it, above the composer.
             (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error -> VoiceErrorBanner(error, dismissVoiceError) }
             val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
+            val dock = remember(channel.id) { AttachDock() }
             // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
             if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
@@ -2177,7 +2180,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 leadingIcon = {
                                     AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
                                         drawer = AttachDrawerHost(state.drafts, viewModel::removeDraft,
-                                            canSend = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null, send = ::sendDraft))
+                                            canSend = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null, send = ::sendDraft), dock = dock)
                                 },
                                 // The `:name:` shortcut still works; this is the visible way in.
                                 trailingIcon = {
@@ -2211,6 +2214,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 DraftCounter(draft.text)
             } }
+            if (joined && request == null && direct?.blocked != true) AttachDockPanel(dock)
         }
         if (dropping.value && canAttach) {
             val (title, detail) = FileDrop.text(channel.name, channel.direct, state.drafts.size)
@@ -3971,7 +3975,10 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     /** Conversation launchers live outside transient thread panels and retain their original target. */
     pick: ((Boolean) -> Unit)? = null,
     drawer: AttachDrawerHost? = null,
+    /** Docks the drawer below the composer instead of a sheet over it. */
+    dock: AttachDock? = null,
 ) {
+    val keyboard = LocalSoftwareKeyboardController.current
     val limitReason = "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files."
     val enabled = disabledReason == null || (drawer != null && disabledReason == limitReason)
     var open by remember { mutableStateOf(false) }
@@ -4014,25 +4021,39 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
                 if (it is PressInteraction.Press || it is FocusInteraction.Focus) scope.launch { AttachDrawerCache.warm(context) }
             }
         }
-        IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
-            contentDescription = "Attach files"
+        val docked = dock?.open == true
+        IconButton({
+            when {
+                dock == null -> { open = true; interaction(true) }
+                // The ✕ goes back to typing.
+                dock.open -> { dock.open = false; keyboard?.show() }
+                else -> { keyboard?.hide(); dock.open = true }
+            }
+        }, Modifier.size(48.dp).semantics {
+            contentDescription = if (docked) "Close attachments" else "Attach files"
             (disabledReason?.takeIf { it != limitReason } ?: AttachCapacity.hint(drawer.files.size))?.let { stateDescription = it }
         }, enabled = enabled, interactionSource = attachInteractions) {
-            Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp),
-                tint = if (!enabled) TextMuted.copy(alpha = 0.4f) else if (open) Text else TextMuted)
+            Icon(painterResource(if (docked) R.drawable.lucide_x else R.drawable.lucide_plus), null, Modifier.size(20.dp),
+                tint = if (!enabled) TextMuted.copy(alpha = 0.4f) else if (open || docked) Text else TextMuted)
         }
-        if (open && enabled) AttachDrawer(
+        val camera: (Boolean) -> Unit = { video ->
+            val uri = cameraCaptureUri(context, video)
+            if (uri != null) {
+                capture = uri.toString(); picking = true
+                runCatching { if (video) recordVideo.launch(uri) else takePhoto.launch(uri) }
+                    .onFailure { capture = null; picking = false }
+            }
+        }
+        // Docked, pickers and the camera leave the drawer open behind them, as on iPhone.
+        if (dock != null) SideEffect {
+            dock.content = AttachDockContent(drawer, add, gallery = { launch(true) }, files = { launch(false) }, camera = camera)
+            if (!enabled) dock.open = false
+        }
+        else if (open && enabled) AttachDrawer(
             drawer, add,
             gallery = { open = false; launch(true) },
             files = { open = false; launch(false) },
-            camera = { video ->
-                val uri = cameraCaptureUri(context, video)
-                if (uri != null) {
-                    capture = uri.toString(); picking = true
-                    runCatching { if (video) recordVideo.launch(uri) else takePhoto.launch(uri) }
-                        .onFailure { capture = null; picking = false }
-                }
-            },
+            camera = camera,
             onDismiss = { open = false; interaction(picking) },
         )
         return

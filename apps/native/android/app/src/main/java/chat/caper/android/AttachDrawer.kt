@@ -17,11 +17,13 @@ import android.provider.Settings
 import android.util.LruCache
 import android.util.Size
 import android.view.HapticFeedbackConstants
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -53,6 +55,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
@@ -90,6 +93,53 @@ internal class AttachDrawerHost(
     val canSend: Boolean,
     val send: () -> Unit,
 )
+
+/**
+ * The composer's attach drawer docked below it, in the keyboard's place (as on iPhone and in
+ * Discord): the message box stays above it with picked files as chips, and the composer's Send
+ * sends them. [AttachButton] opens it and hands over its launchers; [AttachDockPanel] draws it.
+ */
+@Stable internal class AttachDock {
+    var open by mutableStateOf(false)
+    var content by mutableStateOf<AttachDockContent?>(null)
+    companion object {
+        /** The last software keyboard's height (px, above the navigation bar), shared by every composer. */
+        var keyboardPx = 0
+    }
+}
+
+internal class AttachDockContent(
+    val host: AttachDrawerHost, val add: (List<Uri>) -> Unit,
+    val gallery: () -> Unit, val files: () -> Unit, val camera: (Boolean) -> Unit,
+)
+
+/**
+ * The docked drawer, below the composer. It takes the keyboard's height and shrinks as the keyboard
+ * rises (tapping the field), so the composer never jumps; it closes once the keyboard is fully up.
+ */
+@Composable internal fun AttachDockPanel(dock: AttachDock) {
+    val density = LocalDensity.current
+    val ime = (WindowInsets.ime.getBottom(density) - WindowInsets.navigationBars.getBottom(density)).coerceAtLeast(0)
+    val software = with(density) { 200.dp.roundToPx() }
+    LaunchedEffect(ime) { if (ime > software) AttachDock.keyboardPx = ime }
+    val content = dock.content
+    if (!dock.open || content == null) return
+    val screen = LocalWindowInfo.current.containerSize.height
+    val target = if (AttachDock.keyboardPx > 0) AttachDock.keyboardPx else (screen * 0.38f).toInt()
+    // Closes only once the keyboard went away for the drawer and then came fully back.
+    var keyboardGone by remember { mutableStateOf(false) }
+    LaunchedEffect(ime, target) {
+        if (ime < software / 4) keyboardGone = true
+        else if (keyboardGone && ime >= target - 1) dock.open = false
+    }
+    val still = reducedMotion()
+    // From a closed keyboard the drawer rises; from the keyboard it simply takes its place.
+    val grow = remember { Animatable(if (still || ime > 0) 1f else 0f) }
+    LaunchedEffect(Unit) { grow.animateTo(1f, tween(MOTION_SLOW)) }
+    BackHandler { dock.open = false }
+    val height = with(density) { ((target - ime).coerceAtLeast(0) * grow.value).toDp() }
+    AttachDrawer(content.host, content.add, content.gallery, content.files, content.camera, onDismiss = { dock.open = false }, docked = height)
+}
 
 internal data class LibraryItem(val id: Long, val uri: Uri, val video: Boolean, val durationMs: Long, val mime: String? = null, val modified: Long = 0) {
     val gif: Boolean get() = !video && mime.equals("image/gif", ignoreCase = true)
@@ -219,6 +269,8 @@ private fun formatDuration(ms: Long): String {
     camera: (video: Boolean) -> Unit,
     onDismiss: () -> Unit,
     purpose: AttachDrawerPurpose = AttachDrawerPurpose.ATTACH,
+    /** Docked below the composer at this height: no title, no Send (the composer sends). */
+    docked: Dp? = null,
 ) {
     val single = purpose.single
     val context = LocalContext.current
@@ -292,16 +344,22 @@ private fun formatDuration(ms: Long): String {
     val hasCamera = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY) }
     val height = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.7f
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        sheetMaxWidth = androidx.compose.ui.unit.Dp.Unspecified,
-        containerColor = Surface, contentColor = Text,
-    ) {
-        Box(Modifier.fillMaxWidth().height(height).semantics { paneTitle = purpose.title }) {
+    val frame: @Composable (@Composable () -> Unit) -> Unit = { inner ->
+        if (docked != null) Box(
+            Modifier.fillMaxWidth().height(docked).clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)).background(Surface).padding(top = 12.dp),
+        ) { CompositionLocalProvider(LocalContentColor provides Text) { inner() } }
+        else ModalBottomSheet(
+            onDismissRequest = onDismiss,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            sheetMaxWidth = androidx.compose.ui.unit.Dp.Unspecified,
+            containerColor = Surface, contentColor = Text,
+        ) { inner() }
+    }
+    frame {
+        Box(Modifier.fillMaxWidth().then(if (docked != null) Modifier.fillMaxHeight() else Modifier.height(height)).semantics { paneTitle = purpose.title }) {
             Column(Modifier.fillMaxSize()) {
                 // Header: the title, and only once full the limit line, which shakes when it refuses a file.
-                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (docked == null) Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(purpose.title, Modifier.semantics { heading() }, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
                 AttachCapacity.hint(used)?.let {
@@ -351,7 +409,7 @@ private fun formatDuration(ms: Long): String {
                                 GridCells.Adaptive(88.dp), Modifier.fillMaxSize().semantics { testTag = "attach-drawer-grid" },
                                 state = libraryGrid,
                                 // Keep the last row clear of the floating Send button.
-                                contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = if (single) 2.dp else 76.dp),
+                                contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = if (single || docked != null) 2.dp else 76.dp),
                                 horizontalArrangement = Arrangement.spacedBy(2.dp), verticalArrangement = Arrangement.spacedBy(2.dp),
                             ) {
                                 if (hasCamera) item(key = "camera") { CameraTile(full, ::refuse, camera, video = purpose.videos) }
@@ -386,7 +444,7 @@ private fun formatDuration(ms: Long): String {
                     DrawerTab("Files", R.drawable.lucide_paperclip, selected = false, Modifier.weight(1f)) { if (full) refuse() else files() }
                 }
             }
-            if (!single && host.files.isNotEmpty()) {
+            if (!single && docked == null && host.files.isNotEmpty()) {
                 FilledIconButton(
                     { host.send(); onDismiss() },
                     Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 76.dp).navigationBarsPadding().size(52.dp)
