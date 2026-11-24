@@ -1702,6 +1702,89 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** The quick switcher (Ctrl+K) or the keyboard shortcuts sheet (Ctrl+/), while one is open. */
+    internal val keyboardSheet = MutableStateFlow<KeyboardSheet?>(null)
+
+    /** Its key opens a sheet, or closes it again; the other sheet gives way. */
+    internal fun toggleKeyboardSheet(sheet: KeyboardSheet) { keyboardSheet.value = if (keyboardSheet.value == sheet) null else sheet }
+
+    /** Listed in the sidebar with an unread dot: not muted, not blocked. */
+    private fun listedUnread(direct: DirectConversation, state: AppUiState, now: Instant) =
+        directUnread(direct) && direct.peer.id !in state.blockedIds && state.notificationSettings?.directMuted(direct.id, now) != true
+
+    /** Every quick switcher destination: the open space's joined channels, DMs (requests count as unread), spaces, then people without a DM. */
+    internal fun switcherItems(): List<SwitcherItem> {
+        val state = mutable.value
+        val now = Instant.now()
+        val unreadChannels = state.unreadSpaces.flatMapTo(HashSet()) { space -> space.channels.map { it.id } }
+        val items = mutableListOf<SwitcherItem>()
+        state.selectedSpace?.takeIf { it.space.id.isNotEmpty() }?.let { detail ->
+            detail.channels.filter { it.joined }.forEach { channel ->
+                items += SwitcherItem("channel:${channel.id}", channel.name, emptyList(), detail.space.name, channel.id in unreadChannels, SwitcherItem.Target.OpenChannel(channel))
+            }
+        }
+        state.directConversations.forEach { direct ->
+            val own = direct.peer.id == state.account?.id
+            items += SwitcherItem("dm:${direct.id}", if (own) "${direct.peer.displayName} (you)" else direct.peer.displayName, listOf(direct.peer.username),
+                "@${direct.peer.username}", direct.incoming || listedUnread(direct, state, now), SwitcherItem.Target.Direct(direct.id))
+        }
+        state.spaces.filter { !it.demo }.forEach { space ->
+            items += SwitcherItem("space:${space.id}", space.name, emptyList(), "Space", state.unreadSpaces.any { it.id == space.id }, SwitcherItem.Target.OpenSpace(space.id))
+        }
+        val peers = state.directConversations.mapTo(HashSet()) { it.peer.id }
+        val blocked = state.blockedIds
+        state.people.orEmpty().filter { it.id != state.account?.id && it.id !in peers && it.id !in blocked }.forEach { person ->
+            items += SwitcherItem("person:${person.id}", person.displayName, listOf(person.username), "@${person.username}", false, SwitcherItem.Target.Person(person.username))
+        }
+        return items
+    }
+
+    internal fun rankSwitcherItems(items: List<SwitcherItem>, query: String): List<SwitcherItem> =
+        KeyboardNavigation.rank(items.map { (listOf(it.name) + it.alternates) to it.unread }, query).take(50).map { items[it] }
+
+    internal fun openSwitcherItem(item: SwitcherItem) {
+        val state = mutable.value
+        when (val target = item.target) {
+            is SwitcherItem.Target.OpenChannel -> state.selectedSpace?.channels?.firstOrNull { it.id == target.channel.id }?.let { selectChannel(it) }
+            is SwitcherItem.Target.Direct -> state.directConversations.firstOrNull { it.id == target.id }?.let(::selectDirect)
+            is SwitcherItem.Target.OpenSpace -> selectSpace(target.id)
+            is SwitcherItem.Target.Person -> startDirect(target.username)
+        }
+    }
+
+    /**
+     * Alt+Up/Down: the previous or next conversation in the sidebar's order (the open space's
+     * joined channels, then your notes and DMs); with [unreadOnly], the previous or next unread one.
+     */
+    fun stepConversation(forward: Boolean, unreadOnly: Boolean) {
+        val state = mutable.value
+        val now = Instant.now()
+        val unreadChannels = state.unreadSpaces.flatMapTo(HashSet()) { space -> space.channels.map { it.id } }
+        val channels = state.selectedSpace?.takeIf { it.space.id.isNotEmpty() }?.channels?.filter { it.joined }.orEmpty()
+        val directs = mainDirects(state.directConversations).sortedBy { it.peer.id != state.account?.id }
+        val unread = channels.map { it.id in unreadChannels } + directs.map { listedUnread(it, state, now) }
+        val current = state.selectedDirectId?.let { id -> directs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.plus(channels.size) }
+            ?: state.selectedChannel?.id?.takeIf { state.selectedDirectId == null }?.let { id -> channels.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
+        val next = KeyboardNavigation.adjacent(unread, current, forward, unreadOnly) ?: return
+        if (next < channels.size) selectChannel(channels[next]) else selectDirect(directs[next - channels.size])
+    }
+
+    /** Esc: the open conversation read up to its latest message, even while scrolled back. True when it was unread. */
+    fun markOpenConversationRead(): Boolean {
+        val state = mutable.value
+        if (state.account == null || state.visit != null || state.thread != null) return false
+        state.selectedDirectId?.let { id ->
+            val direct = state.directConversations.firstOrNull { it.id == id }?.takeIf(::directUnread) ?: return false
+            markDirectRead(id, direct.lastSeq)
+            return true
+        }
+        val space = state.selectedSpace?.space?.id?.takeIf { it.isNotEmpty() } ?: return false
+        val id = state.selectedChannel?.id ?: return false
+        val entry = state.unreadSpaces.firstOrNull { it.id == space }?.channels?.firstOrNull { it.id == id } ?: return false
+        sendChannelRead(space, id, entry.lastSeq)
+        return true
+    }
+
     fun setConversationVisible(visible: Boolean) {
         conversationVisible = visible
         if (visible && !mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { markConversationRead(it, durableReplayCursor) }
@@ -1718,6 +1801,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (current.hasNewerMessages) return
         if (current.selectedDirectId == id) { markDirectRead(id, seq); return }
         val space = current.selectedSpace?.space?.id?.takeIf { it.isNotEmpty() } ?: return
+        sendChannelRead(space, id, seq)
+    }
+
+    private fun sendChannelRead(space: String, id: String, seq: String) {
         val token = accountToken ?: return
         if ((channelReads[id] ?: "0").toBigInteger() >= seq.toBigInteger()) return
         val account = accountGeneration

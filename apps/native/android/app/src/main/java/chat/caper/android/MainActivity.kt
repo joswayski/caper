@@ -135,6 +135,7 @@ import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.isShiftPressed
@@ -263,6 +264,8 @@ class MainActivity : ComponentActivity() {
     // click on the history) types into the composer. Activity only calls onKeyDown for keys no
     // view consumed (overriding dispatchKeyEvent trips lint's RestrictedApi check).
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        // The navigation keys and Escape, when no Compose node has focus to take them.
+        if (navigationKey(event, viewModel, this) || escapeMarksRead(event, viewModel)) return true
         if (!event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed) {
             val character = event.unicodeChar
             if (character != 0 && !Character.isISOControl(character) &&
@@ -358,6 +361,8 @@ internal data class VoiceJoinIntent(
     val whatsNew by viewModel.whatsNew.state.collectAsStateWithLifecycle()
     var overlay by remember { mutableStateOf<Overlay?>(null) }
     SideEffect { viewModel.overlayShown = overlay != null }
+    val keyboardSheet by viewModel.keyboardSheet.collectAsStateWithLifecycle()
+    val keyContext = LocalContext.current
     // Startup's "fully drawn" (macrobenchmarks, Android vitals): past the brand screen and the first history page.
     androidx.activity.compose.ReportDrawnWhen { state.screen != SessionScreen.Loading && !state.restoring && !state.messagesLoading }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -426,7 +431,9 @@ internal data class VoiceJoinIntent(
     Scaffold(containerColor = Blackout) { padding ->
         // The bottom inset Scaffold pads for is part of the keyboard's, so only the rest is added.
         // A finger that slides off a button, row or image never presses it, on every screen.
-        Box(Modifier.fillMaxSize().swipeCancelsPresses().padding(padding).consumeWindowInsets(padding).imePadding()) {
+        // Navigation keys go ahead of the focused field; Escape only once nothing else took it.
+        Box(Modifier.fillMaxSize().onPreviewKeyEvent { navigationKey(it.nativeKeyEvent, viewModel, keyContext) }
+            .onKeyEvent { escapeMarksRead(it.nativeKeyEvent, viewModel) }.swipeCancelsPresses().padding(padding).consumeWindowInsets(padding).imePadding()) {
             CompositionLocalProvider(LocalSettingsFocus provides settingsFocus) { when (val screen = state.screen) {
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
@@ -463,6 +470,11 @@ internal data class VoiceJoinIntent(
         }
     }
 
+    if (homeVisible && overlay == null) when (keyboardSheet) {
+        KeyboardSheet.SWITCHER -> QuickSwitcherDialog(state, viewModel, { viewModel.keyboardSheet.value = null }) { navigationOpen = false }
+        KeyboardSheet.SHORTCUTS -> ShortcutHelpDialog { viewModel.keyboardSheet.value = null }
+        null -> {}
+    }
     when (val shown = overlay) {
         Overlay.CreateSpace -> CreateSpaceDialog(state.busy, state.error, viewModel::clearError, viewModel, { overlay = null }) { viewModel.createSpace(it) { overlay = null } }
         Overlay.JoinInvite -> if (state.account != null) JoinInviteDialog(state.busy, viewModel) { overlay = null }
