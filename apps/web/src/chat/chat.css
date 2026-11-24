@@ -1107,12 +1107,8 @@ button.chat-reply-source {
   display: flex;
   gap: 1px;
   padding: 3px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 10px;
-  background: var(--surface-glass-bg);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  box-shadow: var(--popover-shadow);
 }
 .chat-message-grouped > div > .chat-message-tools {
   top: -2px;
@@ -1150,7 +1146,17 @@ button.chat-reply-source {
 .chat-reply-message:disabled > svg {
   opacity: 0.5;
 }
+/* Only a hovering mouse gets the floating glass bar: it shows on one row at a
+   time. A wide window without one (pointer: none, as in headless browsers)
+   shows the bare buttons on every row, so they must not overlap neighbours. */
 @media (hover: hover) and (pointer: fine) {
+  .chat-message-tools {
+    border-color: var(--border);
+    background: var(--surface-glass-bg);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    box-shadow: var(--popover-shadow);
+  }
   .chat-message-tools,
   .chat-pinned-message > .chat-message-actions-trigger {
     opacity: 0;
@@ -1164,9 +1170,10 @@ button.chat-reply-source {
     opacity: 1;
   }
 }
-/* Compact follow-ups have no header line for the hover actions to sit beside:
-   wrap their first text line around the actions instead of under them. */
-@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+/* Compact follow-ups have no header line for the actions to sit beside: wrap
+   their first text line around the actions instead of under them. Every wide
+   non-touch layout, since one without hover shows the actions on every row. */
+@media (min-width: 761px) and (pointer: fine), (min-width: 761px) and (pointer: none) {
   .chat-message-grouped > .chat-grouped-time + div::before {
     content: "";
     float: right;
