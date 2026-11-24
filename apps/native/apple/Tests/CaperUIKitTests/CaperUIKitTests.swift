@@ -35,6 +35,8 @@ final class CaperUIKitTests: XCTestCase {
         if let openURL { app.launchEnvironment["CAPER_TEST_OPEN_URL"] = openURL }
         if let fixture { app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture }
         app.launchArguments += ["-caper.space-landing.owner0000001", ""]
+        // Every run starts without the drafts earlier runs left saved.
+        app.launchArguments += ["-caper.drafts.owner0000001", ""]
         // Browse's Channels/DMs split starts even in every run.
         app.launchArguments += ["-caper.channelSidebarChannelsShare", "0.5"]
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
@@ -57,6 +59,20 @@ final class CaperUIKitTests: XCTestCase {
     }
 
     private func row(_ id: String) -> XCUIElement { app.cells["message-row-\(id)"] }
+
+    /// Jump to latest's toast says `text` beside its button on a wide layout.
+    /// A phone folds it into Discord's arrow at the timeline's right edge: the
+    /// label goes, and the button's name carries any count.
+    private func assertJumpToast(_ jump: XCUIElement, says text: String) {
+        if app.windows.firstMatch.horizontalSizeClass == .regular {
+            XCTAssertTrue(app.staticTexts[text].exists)
+        } else {
+            XCTAssertFalse(app.staticTexts[text].exists, "A phone shows the arrow, not the label")
+            XCTAssertEqual(jump.frame.width, 44, accuracy: 1)
+            XCTAssertEqual(jump.frame.maxX, app.collectionViews["message-timeline"].frame.maxX - 12, accuracy: 1,
+                           "The arrow sits at the timeline's right edge")
+        }
+    }
 
     func testSignInWithEmailCode() {
         let app = launch(signedIn: false)
@@ -267,7 +283,7 @@ final class CaperUIKitTests: XCTestCase {
         let latest = app.buttons["jump-to-latest"]
         XCTAssertTrue(latest.waitForExistence(timeout: 10))
         XCTAssertEqual(latest.label, "Jump to latest", "A detached window counts nothing")
-        XCTAssertTrue(app.staticTexts["You’re viewing older messages"].exists)
+        assertJumpToast(latest, says: "You’re viewing older messages")
         XCTAssertFalse(app.buttons["back-to-latest"].exists)
         screenshot("uikit-jump-detached-window")
         latest.tap()
@@ -320,11 +336,13 @@ final class CaperUIKitTests: XCTestCase {
         let jump = app.buttons["jump-to-latest"]
         XCTAssertFalse(jump.exists, "Hidden at the live end")
         let timeline = app.collectionViews["message-timeline"]
-        timeline.swipeDown(velocity: .slow)
-        timeline.swipeDown(velocity: .slow)
+        // It shows once ten messages lie below the viewport.
+        for _ in 0..<8 where !jump.exists {
+            timeline.swipeDown(velocity: .slow)
+        }
         XCTAssertTrue(jump.waitForExistence(timeout: 10))
         XCTAssertEqual(jump.label, "Jump to latest")
-        XCTAssertTrue(app.staticTexts["You’re viewing older messages"].exists)
+        assertJumpToast(jump, says: "You’re viewing older messages")
         screenshot("uikit-jump-to-latest")
         for text in ["first while away", "second while away", "third while away"] {
             control(["incomingMessage": ["channelId": "chan00000001", "text": text]])
@@ -332,7 +350,7 @@ final class CaperUIKitTests: XCTestCase {
         let counted = NSPredicate(format: "label == %@", "Jump to latest, 3 new messages")
         expectation(for: counted, evaluatedWith: jump)
         waitForExpectations(timeout: 10)
-        XCTAssertTrue(app.staticTexts["3 new messages"].exists, "The count replaces the toast's label")
+        assertJumpToast(jump, says: "3 new messages")
         XCTAssertGreaterThanOrEqual(jump.frame.height, 40)
         screenshot("uikit-jump-to-latest-count")
         jump.tap()
@@ -539,7 +557,8 @@ final class CaperUIKitTests: XCTestCase {
         badge.tap()
         let profile = app.descendants(matching: .any)["mention-card"]
         XCTAssertTrue(profile.waitForExistence(timeout: 10), "Pinned by opens the pinner's profile")
-        app.swipeDown(velocity: .fast)
+        // The sheet fits the card, so the swipe starts on the card.
+        profile.swipeDown(velocity: .fast)
         XCTAssertTrue(profile.waitForNonExistence(timeout: 10))
 
         app.buttons["channel-title-menu"].tap()
@@ -1558,7 +1577,8 @@ final class CaperUIKitParityTests: XCTestCase {
 
     private func configured(_ bundle: String, signedIn: Bool = true, cache: Bool = false, fixture: String? = nil) -> XCUIApplication {
         let app = XCUIApplication(bundleIdentifier: bundle)
-        app.launchArguments += ["-caper.space-landing.owner0000001", "", "-caper.channelSidebarChannelsShare", "0.5"]
+        app.launchArguments += ["-caper.space-landing.owner0000001", "", "-caper.drafts.owner0000001", "",
+                                "-caper.channelSidebarChannelsShare", "0.5"]
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
         if signedIn {

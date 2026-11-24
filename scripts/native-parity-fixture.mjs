@@ -1494,15 +1494,24 @@ export async function startFixture({
           state.messages.set(channelId, messages);
           created(message);
         }
+        const notify = (event) => {
+          event.seq = String(state.notificationEvents.length + 1);
+          state.notificationEvents.push(event);
+          for (const client of sockets)
+            for (const [id, sub] of client.subscriptions)
+              if (sub.kind === "notifications" && client.userId === ids.owner) {
+                client.send({ type: "event", id, event });
+                client.send({ type: "event", id, event: { type: "ready", cursor: event.seq } });
+              }
+        };
         if (body.notification) {
           // `kind: "space.invitation"` announces the pending space invitation
           // (control `spaceInvitation`) instead of a channel message.
           const invitation = body.notification.kind === "space.invitation";
           const channel = invitation ? null : channelFor(body.notification.channelId ?? ids.design);
           if (!invitation && !channel) return reject(response, 404, "Fixture channel not found.");
-          const event = {
+          notify({
             type: "notification.created",
-            seq: String(state.notificationEvents.length + 1),
             messageId: randomUUID().replaceAll("-", "").slice(0, 15),
             kind: invitation ? "space.invitation" : "channel.message",
             title: invitation ? "TEST FIXTURE — Maya invited you" : `TEST FIXTURE — Alex · #${channel.name}`,
@@ -1513,14 +1522,7 @@ export async function startFixture({
             createdAt: new Date().toISOString(),
             spaceId: invitation ? ids.invitedSpace : channel.spaceId,
             ...(invitation ? {} : { channelId: channel.id }),
-          };
-          state.notificationEvents.push(event);
-          for (const client of sockets)
-            for (const [id, sub] of client.subscriptions)
-              if (sub.kind === "notifications" && client.userId === ids.owner) {
-                client.send({ type: "event", id, event });
-                client.send({ type: "event", id, event: { type: "ready", cursor: event.seq } });
-              }
+          });
         }
         if (body.messageRequest) {
           // Jordan, who shares no space with the owner, sends a request.
@@ -1533,6 +1535,19 @@ export async function startFixture({
               status: "incoming",
             });
             state.messages.set(ids.request, []);
+            // The API's one request alert, without message content.
+            notify({
+              type: "notification.created",
+              kind: "direct.request",
+              notificationId: String(state.notificationEvents.length + 1),
+              title: "Message request",
+              body: `${stranger.displayName} wants to message you.`,
+              sender: stranger.displayName,
+              senderId: stranger.id,
+              senderAvatarId: stranger.avatarId,
+              createdAt: new Date().toISOString(),
+              conversationId: ids.request,
+            });
           }
           const messages = state.messages.get(ids.request);
           const message = {
