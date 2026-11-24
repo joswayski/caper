@@ -36,6 +36,8 @@ mod account;
 mod admin;
 #[path = "audio.rs"]
 mod audio;
+#[path = "background.rs"]
+mod background;
 #[path = "bench.rs"]
 mod bench;
 #[path = "call.rs"]
@@ -640,6 +642,10 @@ pub struct App {
     wakes: Wakes,
     settings: RefCell<Option<settings::SettingsDialog>>,
     prefs: Rc<crate::prefs::Prefs>,
+    /// Quit Caper was chosen: the window's close quits.
+    quitting: Cell<bool>,
+    /// Closing minimized the window, which hasn't been active since.
+    closed_away: Cell<bool>,
     /// A redraw is waiting for the next timed mute to end.
     mute_timer: Cell<bool>,
     /// The voice call, and what the call card last showed.
@@ -885,6 +891,8 @@ pub fn start(
         admin_window: RefCell::default(),
         confirm_window: RefCell::default(),
         prefs,
+        quitting: Cell::new(false),
+        closed_away: Cell::new(false),
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
     for composer in [&app.ui.composer, &app.ui.thread_composer] {
@@ -932,6 +940,7 @@ pub fn start(
     app.install_shortcuts();
     app.install_notification_actions();
     app.install_admin_actions();
+    app.follow_close();
     app.render();
     app.connect_bench(process_start);
     crate::ui::watch_toplevels();
@@ -1341,6 +1350,10 @@ impl App {
                 gdk::Key::comma if control => {
                     let app = app.clone();
                     glib::idle_add_local_once(move || app.open_settings());
+                    glib::Propagation::Stop
+                }
+                gdk::Key::q if control => {
+                    app.quit_app();
                     glib::Propagation::Stop
                 }
                 gdk::Key::End if !control => {
@@ -3988,8 +4001,11 @@ impl App {
     /// profile, as on egui.
     fn poll_invite_links(self: &Rc<Self>) {
         if let Some(links) = &*self.invite_links.borrow() {
+            // A launch without a link only brought the window back.
             while let Ok(code) = links.try_recv() {
-                *self.pending_invite.borrow_mut() = Some(code);
+                if code != caper_client::app_link::OPEN {
+                    *self.pending_invite.borrow_mut() = Some(code);
+                }
             }
         }
         let ready = {

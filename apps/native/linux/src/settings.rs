@@ -1,4 +1,5 @@
-//! Settings, as on the egui desktop: Startup (launch at login), Sounds,
+//! Settings, as on the egui desktop: Startup (launch at login, and keeping
+//! Caper running when its window closes), Sounds,
 //! Notifications ("Notify me about" and voice starting), Privacy (who can
 //! start a DM, blocked accounts) and Delete account. Account choices save as
 //! soon as they change and revert with an inline error. A child of `app`.
@@ -227,6 +228,16 @@ impl App {
             ),
         }
 
+        let keep_running = switch_row(
+            &root,
+            caper_client::background::SETTING_TITLE,
+            caper_client::background::SETTING_DETAIL,
+        );
+        keep_running.set_active(self.keep_running());
+        if let Some(row) = keep_running.parent() {
+            row.set_margin_top(8);
+        }
+
         section(&root, "Voice messages", false);
         let voice_send = switch_row(
             &root,
@@ -347,6 +358,12 @@ impl App {
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
+        });
+        let weak = Rc::downgrade(self);
+        keep_running.connect_active_notify(move |switch| {
+            if let Some(app) = weak.upgrade() {
+                app.set_keep_running(switch.is_active());
+            }
         });
         let weak = Rc::downgrade(self);
         voice_send.connect_active_notify(move |switch| {

@@ -56,6 +56,16 @@ fn main() -> glib::ExitCode {
     {
         return glib::ExitCode::SUCCESS;
     }
+    // Opening Caper again brings back the running one, which may be
+    // minimized after its window closed. Development and test runs open
+    // their own window.
+    if launch_invite.is_none()
+        && !cfg!(debug_assertions)
+        && base == "https://caper.chat"
+        && caper_client::app_link::hand_off_at(&app::link_handoff(), caper_client::app_link::OPEN)
+    {
+        return glib::ExitCode::SUCCESS;
+    }
     if !cfg!(debug_assertions)
         && let Err(error) = caper_client::app_link::register()
     {

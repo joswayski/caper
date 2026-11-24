@@ -10,6 +10,7 @@ pub mod attachment_edit;
 pub mod attachments;
 pub mod avatar_images;
 pub mod avif;
+pub mod background;
 pub mod bench;
 pub mod blocking;
 pub mod compress;

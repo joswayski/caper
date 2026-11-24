@@ -2,13 +2,19 @@
 //! (the web invite page's "Open in the Caper app") to whichever program the OS
 //! registered for the scheme, starting it with the link as an argument. When
 //! Caper is already open, that new process hands the code to the running app
-//! over loopback and exits, so a click never opens a second copy.
+//! over loopback and exits, so a click never opens a second copy. A launch
+//! without a link hands over [`OPEN`] instead, bringing back the running
+//! window, which may be hidden in the tray or minimized.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
+
+/// Handed over by a launch without a link: show the running window. Never an
+/// invite code, which is longer.
+pub const OPEN: &str = "open";
 
 /// The invite code in launch arguments. Only URL-shaped arguments count, so
 /// option values such as a fixture name are never read as codes.
@@ -70,7 +76,7 @@ pub fn listen_at(path: &Path, wake: impl Fn() + Send + 'static) -> Option<mpsc::
                 let Some((given, code)) = line.trim().split_once(' ') else {
                     continue;
                 };
-                if given != token || !crate::invites::valid_code(code) {
+                if given != token || !(code == OPEN || crate::invites::valid_code(code)) {
                     continue;
                 }
                 let _ = (&stream).write_all(b"ok\n");
@@ -225,6 +231,10 @@ mod tests {
             "AbCdE12345"
         );
         wakes.recv_timeout(Duration::from_secs(5)).unwrap();
+        // A launch without a link brings the window back; other words don't.
+        assert!(hand_off_at(&path, OPEN));
+        assert_eq!(codes.recv_timeout(Duration::from_secs(5)).unwrap(), OPEN);
+        assert!(!hand_off_at(&path, "close"));
         // Without the token from the file, nothing is accepted.
         let contents = std::fs::read_to_string(&path).unwrap();
         let (port, _) = contents.trim().split_once(' ').unwrap();

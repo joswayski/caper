@@ -611,7 +611,8 @@ pub(super) struct ReportDialog {
 
 impl App {
     /// The account bar's settings button: Settings…, Audio test,
-    /// Connection details during a call, and Log out, as on the desktop.
+    /// Connection details during a call, Log out, as on the desktop, and
+    /// Quit Caper, since closing the window keeps it running.
     pub(super) fn settings_menu(self: &Rc<Self>, anchor: &gtk::Button) {
         let popover = gtk::Popover::new();
         popover.add_css_class("menu");
@@ -629,6 +630,7 @@ impl App {
             ("Connection details", 2, connection),
             ("Audio diagnostics", 3, debug),
             ("Log out", 4, true),
+            ("Quit Caper", 5, true),
         ] {
             if !shown {
                 continue;
@@ -652,6 +654,7 @@ impl App {
                             0 => app.open_settings(),
                             1 => app.open_audio(),
                             4 => app.sign_out(),
+                            5 => app.quit_app(),
                             other => app.open_report(other == 2),
                         }
                     }
