@@ -44,7 +44,10 @@ impl Control {
 
     pub fn stop_and_wait(&self) -> bool {
         self.stop();
-        self.finished.recv_timeout(Duration::from_secs(1)).is_ok()
+        // A lone socket notices the stop only after its current read times out.
+        self.finished
+            .recv_timeout(IDLE_POLL + Duration::from_secs(1))
+            .is_ok()
     }
 
     pub fn activity(&self) {
