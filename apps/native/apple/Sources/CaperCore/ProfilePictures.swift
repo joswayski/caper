@@ -77,14 +77,15 @@ public enum ProfilePicturePolicy {
     /// The largest edge decoded while preparing a still.
     static let maxPrepareDecode = 4_096
 
-    /// Display decoding: at most 300 frames and 16 MiB of frame pixels per
-    /// picture (fewer than inline attachments' 600 frames and 32 MiB); an
-    /// animation over either shows one still. Pictures on screen stay findable
+    /// Display decoding: at most 600 frames (as inline attachments and the
+    /// Rust clients) in 16 MiB of frame pixels per picture. A longer
+    /// animation's frames decode smaller to fit (600 frames at 83 px); one
+    /// over 600 frames shows one still. Pictures on screen stay findable
     /// while shown, so the cache only keeps recently scrolled-away ones: 48 MiB
     /// on a Mac window, 32 MiB (about a dozen animated or 400 still pictures)
     /// on an iPhone screen. An evicted picture decodes again from the file
     /// cache below, off the main thread, without downloading.
-    static let maxAnimationFrames = 300
+    static let maxAnimationFrames = 600
     static let maxAnimationBytes = 16 * 1_024 * 1_024
     #if os(iOS)
     static let cacheBytes = 32 * 1_024 * 1_024

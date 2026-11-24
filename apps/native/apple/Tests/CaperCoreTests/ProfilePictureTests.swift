@@ -366,6 +366,11 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(frames.images.first?.width, 128, "aspect-fill: the short edge covers 64 px")
         XCTAssertEqual(frames.images.first?.height, 64)
         XCTAssertEqual(frames.cost, frames.images.reduce(0) { $0 + $1.bytesPerRow * $1.height })
+        // A long GIF (a 12 s clip at 30 fps) keeps every frame, decoded smaller to fit the budget.
+        let long = try ProfilePictureDecoder.decode(try animatedGIF(width: 160, height: 160, frames: 360), pixelSize: 128)
+        XCTAssertEqual(long.images.count, 360)
+        XCTAssertLessThan(long.images[0].width, 128)
+        XCTAssertLessThanOrEqual(long.cost, ProfilePicturePolicy.maxAnimationBytes)
 
         let source = try XCTUnwrap(CGImageSourceCreateWithData(gif as CFData, nil))
         XCTAssertEqual(try AttachmentImageLoader.decodeAnimation(source, maxPixelSize: 64, maxFrames: 10, byteLimit: .max)?.images.count, 3)
@@ -1030,9 +1035,9 @@ final class ProfilePictureTests: XCTestCase {
         let output = NSMutableData()
         let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output as CFMutableData, UTType.gif.identifier as CFString, frames, nil))
         CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        let colours = [image(width: width, height: height) { _, _ in [255, 0, 0] }, image(width: width, height: height) { _, _ in [0, 0, 255] }]
         for index in 0..<frames {
-            let frame = image(width: width, height: height) { _, _ in index % 2 == 0 ? [255, 0, 0] : [0, 0, 255] }
-            CGImageDestinationAddImage(destination, frame, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.1]] as CFDictionary)
+            CGImageDestinationAddImage(destination, colours[index % 2], [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.1]] as CFDictionary)
         }
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return output as Data
