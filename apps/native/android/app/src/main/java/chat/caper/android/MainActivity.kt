@@ -274,9 +274,10 @@ class MainActivity : ComponentActivity() {
         return super.onKeyDown(keyCode, event)
     }
 
-    /** A notification tap, or an invite link from the manifest's VIEW filters. */
+    /** A notification tap, an invite link from the manifest's VIEW filters, or a share from [ShareActivity]. */
     private fun openFromIntent(intent: Intent) {
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        if (intent.action == IncomingShare.ACTION) { IncomingShare.from(intent, packageName)?.let(viewModel::receiveShare); return }
         openFromNotification(intent)
         if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let(viewModel::openInviteLink)
     }
@@ -428,6 +429,9 @@ internal data class VoiceJoinIntent(
     LaunchedEffect(openedInviteLink) {
         openedInviteLink?.let { overlay = Overlay.OpenedInviteLink(it); viewModel.inviteLinkShown(it) }
     }
+    // Something shared from another app asks which conversation it goes to.
+    val share by viewModel.shareToPlace.collectAsStateWithLifecycle()
+    share?.let { shown -> key(shown) { SharePickerSheet(shown, state, viewModel) } }
     Scaffold(containerColor = Blackout) { padding ->
         // The bottom inset Scaffold pads for is part of the keyboard's, so only the rest is added.
         // A finger that slides off a button, row or image never presses it, on every screen.

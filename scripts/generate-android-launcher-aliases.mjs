@@ -10,6 +10,8 @@ const end = "        <!-- END generated launcher aliases -->";
 
 // Retain old component names so enabled aliases and pinned shortcuts survive upgrades.
 // Every entry uses the original mascot; the app no longer switches components.
+// Each carries the Sharing Shortcuts share target (res/xml/shortcuts.xml), which
+// Android reads from whichever launcher entry is enabled.
 const aliases = [
   `        <activity-alias
             android:name="chat.caper.android.launcher.Default"
@@ -22,6 +24,7 @@ const aliases = [
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity-alias>`,
   ...Array.from(
     { length: 800 },
@@ -36,6 +39,7 @@ const aliases = [
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity-alias>`,
   ),
 ].join("\n");

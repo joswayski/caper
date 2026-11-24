@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -379,6 +380,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     val inviteLinkToOpen: StateFlow<InviteLinkRequest?> =
         combine(pendingInviteLink, state) { link, current -> link?.takeIf { opensInviteLinks(current) } }
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** What another app shared, until it goes into a conversation or is cancelled; in memory only. */
+    private val pendingShare = MutableStateFlow<IncomingShare?>(null)
+    /** The share whose conversation picker to show, once someone with a finished profile is home. */
+    internal val shareToPlace: StateFlow<IncomingShare?> =
+        combine(pendingShare, state) { share, current -> share?.takeIf { opensInviteLinks(current) } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    private var shortcutsRefreshedAt = 0L
 
     init {
         loadHome()
@@ -453,6 +461,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (requestAccountGeneration != accountGeneration) return@launch
                 checkUploads(requestAccountGeneration)
                 checkKlipy(requestAccountGeneration)
+                shortcutsRefreshedAt = 0L
+                refreshShareShortcuts()
                 startDirectRefresh()
                 if (PushRegistration.enabled(getApplication())) viewModelScope.launch {
                     runCatching { PushRegistration.enable(getApplication()) }
@@ -616,6 +626,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         pendingInvitationIntent = null
         pendingChannelIntent = null
         pendingDirectIntent = null
+        pendingShare.value = null
+        ShareShortcuts.clear(getApplication())
         // Local cleanup only: the server already revoked this session's push address.
         if (token != null) viewModelScope.launch { PushRegistration.disable(getApplication(), token) }
         loadHome()
@@ -714,6 +726,81 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun openInviteLink(url: String) {
         val code = inviteCode(url) ?: return
         pendingInviteLink.value = InviteLinkRequest(url.trim(), code, ++inviteLinkSequence)
+    }
+
+    /**
+     * Files, text or links shared from another app ([ShareActivity]). A Sharing Shortcut names its
+     * conversation and goes straight there; otherwise [shareToPlace] asks which one. A newer
+     * share replaces one still waiting.
+     */
+    internal fun receiveShare(share: IncomingShare) {
+        val target = share.target
+        if (target == null) { pendingShare.value = share; return }
+        pendingShare.value = null
+        placeShare(share, target)
+    }
+
+    internal fun cancelShare(share: IncomingShare) { pendingShare.compareAndSet(share, null) }
+
+    /** Recent channels and DMs first (`GET /api/chat/forward-destinations` orders them). */
+    internal suspend fun shareDestinations(): List<ForwardDestination> {
+        val destinations = forwardDestinations()
+        publishShareShortcuts(destinations)
+        return destinations
+    }
+
+    /**
+     * Opens [target]'s conversation with the shared files staged in its composer, where the
+     * attachment editor, spoilers and removal work as for picked files, and the shared text after
+     * its draft. Nothing is sent until you press Send.
+     */
+    internal fun placeShare(share: IncomingShare, target: ShareTarget) {
+        pendingShare.compareAndSet(share, null)
+        val epoch = accountGeneration
+        val selected = mutable.value.selectedChannel?.id == target.channelId && mutable.value.thread == null
+        if (share.text.isNotEmpty()) {
+            // An open composer takes the text at its cursor; another conversation's draft gets it appended.
+            if (selected) mutable.value = mutable.value.copy(composerFocusRequest = chat.caper.android.model.ComposerFocusRequest(
+                target.channelId, null, UUID.randomUUID().toString(), typed = share.text))
+            else drafts[target.channelId] = Sharing.appendText(drafts[target.channelId], share.text)
+        }
+        if (target.direct) openFromNotification(target.channelId, null, null)
+        else openFromNotification(null, target.spaceId, target.channelId)
+        if (share.uris.isEmpty()) return
+        val draftTarget = AttachmentDraftTarget(target.channelId)
+        viewModelScope.launch {
+            // The upload check answers shortly after home loads.
+            val ready = withTimeoutOrNull(15_000) { state.first { it.uploadsChecked || epoch != accountGeneration } }
+            if (epoch != accountGeneration) return@launch
+            if (ready?.uploadsEnabled != true) {
+                setAttachmentDrafts(draftTarget, mutable.value.attachmentDrafts[draftTarget].orEmpty(), "File uploads are unavailable right now. The shared files weren’t attached.")
+                return@launch
+            }
+            addAttachments(share.uris, draftTarget, epoch)
+        }
+    }
+
+    /**
+     * Sharing Shortcuts for the most recent conversations ([ShareShortcuts]). Refreshed when home
+     * loads and when you leave the app (at most once a minute), so recent sends rise to the top.
+     */
+    private fun refreshShareShortcuts() {
+        if (accountToken == null || System.currentTimeMillis() - shortcutsRefreshedAt < 60_000) return
+        shortcutsRefreshedAt = System.currentTimeMillis()
+        val epoch = accountGeneration
+        viewModelScope.launch {
+            val destinations = try { forwardDestinations() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { return@launch }
+            if (epoch == accountGeneration) publishShareShortcuts(destinations)
+        }
+    }
+
+    private fun publishShareShortcuts(destinations: List<ForwardDestination>) {
+        val epoch = accountGeneration
+        val avatars = mutable.value.directConversations.associate { it.id to it.peer.avatarId }
+        viewModelScope.launch {
+            try { if (epoch == accountGeneration) ShareShortcuts.publish(getApplication(), destinations, avatars) }
+            catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) {}
+        }
     }
 
     /** The dialog opened for [request]; a newer link that arrived meanwhile still waits. */
@@ -1886,7 +1973,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         foreground = active
         publishForegroundConversation()
         syncProfileFeed()
-        if (!active) return
+        if (!active) { refreshShareShortcuts(); return }
         refreshDirectConversations()
         refreshExpiringUrls()
         mutable.value.selectedChannel?.id?.let { renewDraftUploads(it) }

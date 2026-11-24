@@ -372,7 +372,7 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 @Serializable data class ReactorList(val messageId: String, val reactionSeq: String, val reactions: List<ReactorGroup>)
 @Serializable data class MessagePin(val author: ChatAuthor, val createdAt: String)
 @Serializable data class MessageForward(val message: ChatMessage?, val seq: String)
-@Serializable data class ForwardDestination(val id: String, val name: String, val spaceName: String, val direct: Boolean)
+@Serializable data class ForwardDestination(val id: String, val name: String, val spaceName: String, val direct: Boolean, val spaceId: String? = null)
 @Serializable data class ForwardDestinations(val destinations: List<ForwardDestination>)
 @Serializable data class ForwardSource(val spaceId: String? = null, val message: ChatMessage)
 @Serializable data class ForwardConversation(val root: ChatMessage?, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val source: ForwardSource? = null)
