@@ -399,12 +399,6 @@ app = Path(os.environ["TEST_APP"])
 if tool == "plutil" and args[0] == "-extract":
     with open(target, "rb") as source:
         print(plistlib.load(source)[args[1]])
-elif tool == "plutil" and args[0] == "-insert":
-    with open(target, "rb") as source:
-        entitlements = plistlib.load(source)
-    entitlements[args[1]] = json.loads(args[3])
-    with open(target, "wb") as output:
-        plistlib.dump(entitlements, output)
 elif tool == "codesign" and "-d" in args:
     print("<key>com.apple.security.device.audio-input</key><true/><string>ABCDE12345.chat.caper.fixture</string>")
 elif tool == "ditto":

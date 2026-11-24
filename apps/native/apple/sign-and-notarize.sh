@@ -38,9 +38,10 @@ trap 'rm -rf "$work"' EXIT
 team="$(sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p' <<<"$APPLE_SIGNING_IDENTITY")"
 [[ -n "$team" ]] || { echo "Couldn't read the team ID from APPLE_SIGNING_IDENTITY." >&2; exit 1; }
 group="$team.$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+# plutil reads the dots in the key as a key path, so write the key into the XML.
 with_group() {
-  cp "$1" "$2"
-  plutil -insert com.apple.security.application-groups -json "[\"$group\"]" "$2"
+  [[ "$(grep -c '</dict>' "$1")" == 1 ]] || { echo "$1 must have exactly one </dict>." >&2; exit 1; }
+  sed "s|</dict>|<key>com.apple.security.application-groups</key><array><string>$group</string></array></dict>|" "$1" >"$2"
 }
 with_group "$ENTITLEMENTS" "$work/app.entitlements"
 with_group "$ROOT/Configuration/Share-macOS.entitlements" "$work/share.entitlements"
