@@ -63,6 +63,10 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     var changed: ((String) -> Void)?
     var submitted: (() -> Void)?
     var attachTapped: (() -> Void)?
+    /// The attach drawer in the keyboard's place, and the last software keyboard's height it takes.
+    private var drawer: UIViewController?
+    private var keyboardHeight: CGFloat = 0
+    var showsDrawer: Bool { drawer != nil }
     var emojiTapped: (() -> Void)?
     /// Who `@` may suggest: the open conversation's context.
     weak var model: AppModel?
@@ -115,7 +119,11 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         let touchDown = TouchDownObserver(target: nil, action: nil)
         touchDown.cancelsTouchesInView = false
         touchDown.delaysTouchesEnded = false
-        touchDown.touched = { [weak textView] in textView?.touched() }
+        touchDown.touched = { [weak self, weak textView] in
+            textView?.touched()
+            // Tapping the field while the drawer is up brings the keyboard back.
+            if self?.drawer != nil { self?.hideDrawer(keyboard: true) }
+        }
         textView.addGestureRecognizer(touchDown)
         // Holding (or hovering) an emoji shows its :name:.
         let hold = UILongPressGestureRecognizer(target: textView, action: #selector(ComposerTextView.inspectEmojiHold(_:)))
@@ -126,6 +134,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         textView.addGestureRecognizer(hold)
         textView.addGestureRecognizer(UIHoverGestureRecognizer(target: textView, action: #selector(ComposerTextView.inspectEmojiHover(_:))))
         suggestions.accepted = { [weak self] in self?.accept($0) }
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillChange(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         textView.accessibilityIdentifier = "message-composer"
         // The text view's own label carries the prompt.
         placeholder.accessibilityElementsHidden = true
@@ -351,6 +360,9 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     func textViewDidBeginEditing(_ textView: UITextView) { render() }
     func textViewDidEndEditing(_ textView: UITextView) {
+        // Swiped away with the timeline. A camera or picker the drawer opened
+        // only covers it; the drawer comes back when that closes.
+        if drawer != nil, presentedByNothing { drawer = nil; textView.inputView = nil; showAttachState() }
         typing.end()
         self.textView.hideEmojiName()
         suggestions.show(nil)
@@ -509,6 +521,48 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             responder = next
         }
         return true
+    }
+
+    /// Puts the attach drawer where the keyboard is, at the keyboard's height,
+    /// with the message box (and its staged files) still above it.
+    func showDrawer(_ controller: UIViewController) {
+        let bounds = window?.bounds ?? UIScreen.main.bounds
+        let height = keyboardHeight > 0 ? keyboardHeight : max(300, (bounds.height * 0.42).rounded())
+        controller.view.frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)
+        controller.view.autoresizingMask = [.flexibleWidth]
+        drawer = controller
+        textView.inputView = controller.view
+        if textView.isFirstResponder { textView.reloadInputViews() } else { textView.becomeFirstResponder() }
+        showAttachState()
+    }
+
+    /// Takes the drawer down: back to the keyboard, or away entirely.
+    func hideDrawer(keyboard: Bool) {
+        guard drawer != nil else { return }
+        drawer = nil
+        if keyboard {
+            textView.inputView = nil
+            textView.reloadInputViews()
+        } else {
+            // Resign first, so the drawer slides away rather than turning into the keyboard.
+            textView.resignFirstResponder()
+            textView.inputView = nil
+        }
+        showAttachState()
+    }
+
+    /// While the drawer is up, `+` becomes an ✕ that closes it.
+    private func showAttachState() {
+        let open = drawer != nil
+        attach.setImage(UIKitStyle.icon(open ? "x" : "plus")?.resized(to: 18), for: .normal)
+        attach.accessibilityLabel = open ? "Close attachments" : "Attach files"
+    }
+
+    @objc private func keyboardWillChange(_ notification: Notification) {
+        // The drawer takes the software keyboard's height; a hardware keyboard's bar is far shorter.
+        guard drawer == nil, textView.isFirstResponder,
+              let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect, frame.height > 200 else { return }
+        keyboardHeight = frame.height
     }
 
     private func submit() {

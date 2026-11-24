@@ -202,8 +202,14 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             self.presentations.edit = message
         }
         composer.attachTapped = { [weak self] in
-            guard let self, let drawer = UIKitHosting.attachDrawer(chat: self.chat, inThread: true) else { return }
-            self.present(drawer, animated: false)
+            guard let self else { return }
+            let composer = self.composer
+            if composer.showsDrawer { composer.hideDrawer(keyboard: true); return }
+            // Docked below the message box, in the keyboard's place.
+            guard let drawer = UIKitHosting.attachDrawer(chat: self.chat, inThread: true, presenter: { [weak self] in self },
+                                                         dockInset: self.view.window?.safeAreaInsets.bottom ?? 0,
+                                                         close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
+            composer.showDrawer(drawer)
         }
         composer.emojiTapped = { [weak self] in
             guard let self else { return }

@@ -8,10 +8,18 @@ import Observation
 
 /// Edge-to-edge photo drawer. PhotoKit and file providers hand over original
 /// bytes; the draft still owns upload ordering, limits and cancellation.
+/// Docked (the composer's drawer), it replaces the keyboard below the message
+/// box, as Discord's does: picks queue in the composer, which sends them, and
+/// its emoji and microphone stay in reach. Otherwise (pictures, the quick
+/// composer) it is a modal sheet with its own Send.
 @MainActor final class UIKitAttachDrawer: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout,
     UIDocumentPickerDelegate, PHPickerViewControllerDelegate {
     private let mode: AttachDrawerMode
     private let close: () -> Void
+    /// Docked: who presents the camera and pickers, and the home indicator's inset.
+    private let presenter: (() -> UIViewController?)?
+    private let dockInset: CGFloat
+    private var docked: Bool { presenter != nil }
     private let library = AttachDrawerLibrary()
     private var changes: AnyCancellable?
     private var foreground: NSObjectProtocol?
@@ -46,8 +54,8 @@ import Observation
     private var full: Bool { !picking && used >= AttachmentPolicy.maxAttachments }
     private var cameraAvailable: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
 
-    init(mode: AttachDrawerMode, close: @escaping () -> Void) {
-        self.mode = mode; self.close = close
+    init(mode: AttachDrawerMode, presenter: (() -> UIViewController?)? = nil, dockInset: CGFloat = 0, close: @escaping () -> Void) {
+        self.mode = mode; self.close = close; self.presenter = presenter; self.dockInset = dockInset
         let layout = UICollectionViewFlowLayout(); layout.minimumInteritemSpacing = Self.spacing; layout.minimumLineSpacing = Self.spacing
         grid = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(nibName: nil, bundle: nil); modalPresentationStyle = .overFullScreen
@@ -55,17 +63,19 @@ import Observation
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { foreground.map(NotificationCenter.default.removeObserver); library.stop() }
     override func viewDidLoad() {
-        super.viewDidLoad(); overrideUserInterfaceStyle = .dark; view.backgroundColor = .clear; view.accessibilityViewIsModal = true
+        super.viewDidLoad(); overrideUserInterfaceStyle = .dark; view.backgroundColor = .clear; view.accessibilityViewIsModal = !docked
         scrim.backgroundColor = UIColor.black.withAlphaComponent(0.55)
         scrim.isAccessibilityElement = false; scrim.addAction(UIAction { [weak self] _ in self?.close() }, for: .touchUpInside)
-        scrim.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(scrim)
+        scrim.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(scrim); scrim.isHidden = docked
         panel.backgroundColor = UIColor(CaperTheme.surface); panel.layer.cornerRadius = 18
         panel.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]; panel.translatesAutoresizingMaskIntoConstraints = false
         panel.accessibilityIdentifier = picking ? "picture-drawer" : "attach-drawer"; view.addSubview(panel)
         let name = picking ? "picture chooser" : "attachment drawer"
         // The handle: a short capsule across the top; tapping it expands the drawer.
         resize = UIButton(type: .custom); resize.accessibilityIdentifier = "attach-drawer-resize"; resize.accessibilityLabel = "Expand \(name)"
-        resize.addAction(UIAction { [weak self] _ in guard let self else { return }; self.expanded.toggle(); self.resizePanel(animated: true) }, for: .touchUpInside)
+        resize.addAction(UIAction { [weak self] _ in guard let self, !self.docked else { return }; self.expanded.toggle(); self.resizePanel(animated: true) }, for: .touchUpInside)
+        // Docked, the handle only drags the drawer down; the composer's X closes it.
+        resize.isAccessibilityElement = !docked
         let grabber = UIView(); grabber.backgroundColor = UIColor(CaperTheme.muted).withAlphaComponent(0.6); grabber.layer.cornerRadius = 2.5
         grabber.isUserInteractionEnabled = false; grabber.translatesAutoresizingMaskIntoConstraints = false; resize.addSubview(grabber)
         let cancel = UIButton(type: .system); cancel.setImage(attachIcon("x", size: 18), for: .normal); cancel.tintColor = UIColor(CaperTheme.muted)
@@ -76,12 +86,14 @@ import Observation
         // The title takes the slack so Close keeps its own width at the trailing edge.
         titles.setContentHuggingPriority(.defaultLow, for: .horizontal); cancel.setContentHuggingPriority(.required, for: .horizontal)
         let header = UIStackView(arrangedSubviews: [resize, titleRow]); header.axis = .vertical
+        // Docked, the composer above says what it is and closes it; only the limit line shows.
+        titleLabel.isHidden = docked; cancel.isHidden = docked
         header.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(pan)))
         grid.backgroundColor = .clear; grid.dataSource = self; grid.delegate = self
         grid.register(UIKitAttachTile.self, forCellWithReuseIdentifier: "photo"); grid.register(UIKitAttachCameraTile.self, forCellWithReuseIdentifier: "camera")
         grid.accessibilityIdentifier = "attach-drawer-grid"
-        // Keep the last row clear of the floating Send button.
-        grid.contentInset.bottom = 76
+        // Keep the last row clear of the floating Send button (sheets only).
+        grid.contentInset.bottom = docked ? 8 : 76
         manage = UIKitMessageDialog.button("Manage") { [library] in library.manageLimitedAccess() }
         settings = UIKitMessageDialog.button("Open Settings") {
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -110,13 +122,20 @@ import Observation
         }
         send.accessibilityIdentifier = "attach-drawer-send"; send.translatesAutoresizingMaskIntoConstraints = false; send.isHidden = true; panel.addSubview(send)
         panelHeight = panel.heightAnchor.constraint(equalToConstant: 400)
+        NSLayoutConstraint.activate(docked ? [
+            panel.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -(dockInset + 4)),
+        ] : [
+            panelHeight,
+            stack.bottomAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.bottomAnchor, constant: -4),
+        ])
         NSLayoutConstraint.activate([
             scrim.leadingAnchor.constraint(equalTo: view.leadingAnchor), scrim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrim.topAnchor.constraint(equalTo: view.topAnchor), scrim.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             panel.leadingAnchor.constraint(equalTo: view.leadingAnchor), panel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            panel.bottomAnchor.constraint(equalTo: view.bottomAnchor), panelHeight,
+            panel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.leadingAnchor, constant: 12), stack.trailingAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: panel.topAnchor), stack.bottomAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.bottomAnchor, constant: -4),
+            stack.topAnchor.constraint(equalTo: panel.topAnchor),
             resize.heightAnchor.constraint(equalToConstant: 28),
             grabber.widthAnchor.constraint(equalToConstant: 36), grabber.heightAnchor.constraint(equalToConstant: 5),
             grabber.centerXAnchor.constraint(equalTo: resize.centerXAnchor), grabber.centerYAnchor.constraint(equalTo: resize.centerYAnchor),
@@ -139,14 +158,14 @@ import Observation
     // before the first frame so it never shows in place first. Closing stays instant.
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        guard !appeared, !CaperAccessibility.reduceMotion else { return }
+        guard !appeared, !docked, !CaperAccessibility.reduceMotion else { return }
         view.layoutIfNeeded()
         scrim.alpha = 0; panel.transform = CGAffineTransform(translationX: 0, y: panelHeight.constant)
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         guard !appeared else { return }; appeared = true
-        guard !CaperAccessibility.reduceMotion else { return }
+        guard !docked, !CaperAccessibility.reduceMotion else { return }
         UIViewPropertyAnimator(duration: CaperMotion.slow, controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1)) {
             self.scrim.alpha = 1; self.panel.transform = .identity
         }.startAnimation()
@@ -171,7 +190,7 @@ import Observation
             : library.status == .denied ? "Caper can’t see your photos. Allow access in Settings, or choose items one at a time."
             : library.assets?.count == 0 ? (picking ? "No photos yet." : "No photos or videos yet.") : nil
         access.isHidden = access.text == nil; manage.isHidden = library.status != .limited; settings.isHidden = library.status != .denied
-        let shows = !picking && (draft?.files().isEmpty == false || !queue.order.isEmpty)
+        let shows = !picking && !docked && (draft?.files().isEmpty == false || !queue.order.isEmpty)
         send.isEnabled = draft?.canSend() == true && queue.order.isEmpty
         send.accessibilityLabel = send.isEnabled ? "Send message" : "Uploading attachments"
         if shows != sendShown {
@@ -195,7 +214,7 @@ import Observation
         }
     }
     private func resizePanel(animated: Bool) {
-        guard panelHeight != nil else { return }
+        guard panelHeight != nil, !docked else { return }
         let height = max(1, view.bounds.height - view.safeAreaInsets.top)
         // A landscape phone cannot fit the permission controls in half its
         // height. Keep them reachable rather than squeezing the gallery below zero.
@@ -211,9 +230,10 @@ import Observation
         if gesture.state == .ended || gesture.state == .cancelled {
             let travel = drag + gesture.velocity(in: view).y * 0.15
             if !expanded && travel > 80 { close(); return }
+            if docked { drag = 0; return }
             if abs(travel) > 40 { expanded = travel < 0 }
             drag = 0; resizePanel(animated: true)
-        } else { resizePanel(animated: false) }
+        } else if !docked { resizePanel(animated: false) }
     }
     private func nudge() { notice = AttachCapacity.hint(AttachmentPolicy.maxAttachments); UINotificationFeedbackGenerator().notificationOccurred(.warning); render() }
     private static let spacing: CGFloat = 3
@@ -305,7 +325,7 @@ import Observation
     private func chooseFiles() {
         guard !full else { nudge(); return }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: picking ? [.image] : [.item], asCopy: true)
-        picker.allowsMultipleSelection = !picking; picker.delegate = self; present(picker, animated: !CaperAccessibility.reduceMotion)
+        picker.allowsMultipleSelection = !picking; picker.delegate = self; show(picker)
     }
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         if picking {
@@ -326,7 +346,7 @@ import Observation
         var configuration = PHPickerConfiguration(photoLibrary: .shared())
         configuration.selectionLimit = picking ? 1 : max(1, AttachmentPolicy.maxAttachments - used)
         configuration.filter = picking ? .images : .any(of: [.images, .videos]); configuration.preferredAssetRepresentationMode = .current
-        let picker = PHPickerViewController(configuration: configuration); picker.delegate = self; present(picker, animated: !CaperAccessibility.reduceMotion)
+        let picker = PHPickerViewController(configuration: configuration); picker.delegate = self; show(picker)
     }
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: false) { [self] in
@@ -371,7 +391,12 @@ import Observation
                 else { AttachmentStaging.remove(file.url); self.nudge() }
             }
         }
-        picker.delegate = cameraDelegate; present(picker, animated: !CaperAccessibility.reduceMotion)
+        picker.delegate = cameraDelegate; show(picker)
+    }
+    /// A docked drawer lives in the keyboard's place, outside any controller, so
+    /// the conversation presents its camera and pickers.
+    private func show(_ controller: UIViewController) {
+        (presenter?() ?? self).present(controller, animated: !CaperAccessibility.reduceMotion)
     }
 }
 

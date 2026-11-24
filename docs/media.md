@@ -1497,14 +1497,22 @@ library and files; desktop web, the Mac and Rust desktop offer one unfiltered
   file to add another.\" The drawer and menu stay openable; choosing anything then
   shakes the line sideways (4 px, `--motion-slow`, none under reduced motion) and
   buzzes on phones instead of opening a picker.
-- **iPhone/iPad** (`AttachDrawer.swift`): an edge-to-edge drawer in a transparent
-  full-screen cover, initially half-height. Drag its header or tap the handle to
-  expand/collapse; drag down, tap outside, Close, or VoiceOver escape dismisses.
+- **iPhone** (`UIKitAttachDrawer.swift`): the composer's drawer docks in the
+  keyboard's place, at the last software keyboard's height, below the message box,
+  as Discord's does. Picks queue as chips above the box and the composer's Send
+  sends them; emoji and the microphone stay available. While it is up the `+` is
+  an ✕ that returns to the keyboard; tapping the field does too, and dragging the
+  handle or the timeline down hides it. The camera and pickers present from the
+  conversation. Picture choosers and the quick composer keep the modal sheet below.
+- **iPad and modal sheets** (`AttachDrawer.swift`, `UIKitAttachDrawer.swift`): an
+  edge-to-edge drawer in a transparent full-screen cover, initially half-height.
+  Drag its header or tap the handle to expand/collapse; drag down, tap outside,
+  Close, or VoiceOver escape dismisses.
   Camera tile and PhotoKit library show newest first. Tapping a tile copies the
   original (from iCloud if needed) and adds it to the draft at once. Numbered
   terracotta badges show draft order, which follows tap order
   (`AttachDrawerQueue`). Tapping again or removing the chip deselects. At the
-  limit other tiles dim. A floating Send sends once uploads settle. The bar holds
+  limit other tiles dim. In a sheet, a floating Send sends once uploads settle. The bar holds
   Photos and Files. Access is asked when the drawer first opens
   (`NSPhotoLibraryUsageDescription`); limited access shows \"Manage\"
   (`presentLimitedLibraryPicker`; the automatic limited-access alert is off);

@@ -473,15 +473,18 @@ final class CaperUIKitTests: XCTestCase {
         if allow.exists { allow.tap() }
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15), "The simulator's sample photos must appear")
         tiles.firstMatch.tap()
-        XCTAssertTrue(app.buttons["attach-drawer-send"].waitForExistence(timeout: 10))
-        screenshot("uikit-attach-drawer")
-        // A real drag: XCUITest's swipeDown travels too little for the close threshold.
-        let drawer = app.otherElements["attach-drawer"]
-        let handle = app.buttons["attach-drawer-resize"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        handle.press(forDuration: 0.05, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 300)), withVelocity: .fast, thenHoldForDuration: 0)
-        _ = drawer.waitForNonExistence(timeout: 3)
-        XCTAssertFalse(drawer.exists, "Swiping the handle down closes the drawer")
+        // Docked below the message box: the pick waits in the composer, which sends it.
         XCTAssertTrue(app.descendants(matching: .any)["Files to send"].waitForExistence(timeout: 10), "The photo waits above the composer")
+        XCTAssertFalse(app.buttons["attach-drawer-send"].exists, "The composer's Send sends; the drawer has none")
+        XCTAssertTrue(app.buttons["send-message"].isHittable, "The composer stays visible above the drawer")
+        screenshot("uikit-attach-drawer")
+        // While the drawer is up, the composer's + is an ✕ that closes it.
+        let drawer = app.otherElements["attach-drawer"]
+        XCTAssertEqual(attach.label, "Close attachments")
+        attach.tap()
+        _ = drawer.waitForNonExistence(timeout: 3)
+        XCTAssertFalse(drawer.exists, "The ✕ closes the drawer")
+        XCTAssertTrue(app.descendants(matching: .any)["Files to send"].exists, "The photo stays staged")
         XCTAssertTrue(app.buttons["send-message"].isEnabled)
         screenshot("uikit-attachment-staged")
     }
