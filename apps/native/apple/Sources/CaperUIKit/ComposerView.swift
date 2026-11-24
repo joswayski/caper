@@ -109,7 +109,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         textView.font = font
         textView.textColor = UIKitStyle.text
         textView.tintColor = UIKitStyle.terracottaBright
-        textView.keyboardAppearance = .dark
+        textView.keyboardAppearance = .default
         textView.textContainerInset = UIEdgeInsets(top: 12, left: 0, bottom: 12, right: 0)
         textView.textContainer.lineFragmentPadding = 5
         textView.showsHorizontalScrollIndicator = false

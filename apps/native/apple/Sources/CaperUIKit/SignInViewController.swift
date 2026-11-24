@@ -264,7 +264,7 @@ final class CaperTextField: UITextField {
         layer.cornerRadius = 8
         layer.borderWidth = 1
         layer.borderColor = UIKitStyle.border.cgColor
-        keyboardAppearance = .dark
+        keyboardAppearance = .default
         placeholder = "you@example.com"
         keyboardType = .emailAddress
         textContentType = .emailAddress

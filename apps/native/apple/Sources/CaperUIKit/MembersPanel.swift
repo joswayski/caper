@@ -126,7 +126,7 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         search.placeholder = "Name or username"
         search.font = UIKitStyle.font(12)
         search.textColor = UIKitStyle.text
-        search.keyboardAppearance = .dark
+        search.keyboardAppearance = .default
         search.autocorrectionType = .no
         search.autocapitalizationType = .none
         search.returnKeyType = .done
