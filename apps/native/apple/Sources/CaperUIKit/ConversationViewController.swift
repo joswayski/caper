@@ -630,8 +630,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             notices.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             notices.view.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             // The timeline runs on under its notices, the typing row and the
-            // composer, which float over its end (`layoutComposerOverlap`).
-            collection.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            // composer, which float over its end (`layoutComposerOverlap`),
+            // down to the keyboard rather than behind it.
+            collection.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
             collection.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             collection.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             statusStack.centerXAnchor.constraint(equalTo: collection.centerXAnchor),
