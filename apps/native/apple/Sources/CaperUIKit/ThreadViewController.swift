@@ -278,8 +278,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             visible.trailingAnchor.constraint(equalTo: collection.trailingAnchor),
             status.centerYAnchor.constraint(equalTo: visible.centerYAnchor),
             status.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
-            // The replies run on under the composer, which floats over their end.
-            collection.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            // The replies run on under the composer, which floats over their
+            // end, down to the keyboard rather than behind it.
+            collection.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
             bottom.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             // Below required: the docked attach drawer's edge (`drawerEdge`) wins over
