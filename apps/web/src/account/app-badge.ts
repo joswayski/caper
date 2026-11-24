@@ -1,10 +1,24 @@
 /** Installed-app badging is optional; the tab title remains useful without it. */
 let writes = Promise.resolve();
 let revision = 0;
+let badge = 0;
+let conversation: string | undefined;
+
+function writeTitle() {
+  document.title = `${badge ? `(${badge}) ` : ""}${conversation ? `${conversation} · ` : ""}Caper`;
+}
+
+/** Names the open conversation in the tab title, such as "#general · Weekend crew". */
+export function setConversationTitle(label: string | undefined) {
+  if (typeof document === "undefined") return;
+  conversation = label;
+  writeTitle();
+}
 
 export function setApplicationBadge(count: number) {
   if (typeof document === "undefined" || !Number.isSafeInteger(count) || count < 0) return;
-  document.title = count ? `(${count}) Caper` : "Caper";
+  badge = count;
+  writeTitle();
   const attempt = ++revision;
   // Serialize writes and skip superseded ones, including reads racing logout.
   writes = writes.then(async () => {

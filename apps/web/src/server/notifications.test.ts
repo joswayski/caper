@@ -10,7 +10,7 @@ import {
 } from "../spaces/client.ts";
 import { isMuted, muteLabel, muteUntil } from "../spaces/notifications.ts";
 import { notificationLocation, type MessageNotification } from "../account/browser-notifications.ts";
-import { setApplicationBadge } from "../account/app-badge";
+import { setApplicationBadge, setConversationTitle } from "../account/app-badge";
 import { feedbackPlace, feedbackPreview, feedbackThreads } from "../spaces/FeedbackInbox.tsx";
 import type { FeedbackReport } from "../spaces/client.ts";
 
@@ -44,6 +44,16 @@ test("app badges use absolute counts, clear after an in-flight write, and tolera
   setApplicationBadge(7);
   setApplicationBadge(-1);
   assert.equal(document.title, "(7) Caper");
+  // The open conversation sits between the count and the app name, and each
+  // keeps its part when the other changes.
+  setConversationTitle("#general · Weekend crew");
+  assert.equal(document.title, "(7) #general · Weekend crew · Caper");
+  setApplicationBadge(0);
+  assert.equal(document.title, "#general · Weekend crew · Caper");
+  setApplicationBadge(2);
+  setConversationTitle(undefined);
+  assert.equal(document.title, "(2) Caper");
+  setApplicationBadge(0);
   await new Promise((resolve) => setTimeout(resolve, 0));
 });
 

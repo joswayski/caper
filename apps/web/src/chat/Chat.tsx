@@ -22,6 +22,7 @@ import {
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView, rememberedAccountSession } from "./client.ts";
 import { subscribeProfiles } from "../account/profiles.ts";
+import { setConversationTitle } from "../account/app-badge.ts";
 import { shellPoll } from "../account/shell-poll.ts";
 import type { ReactionSave } from "./MessageReactions.tsx";
 import MessageActions, {
@@ -111,6 +112,18 @@ const INITIAL_ITEM_INDEX = 1_000_000_000;
 const SEND_RETRY_DELAYS_MS = [3_000, 10_000, 30_000];
 
 const NO_CANDIDATES: MentionCandidate[] = [];
+
+/** Whether keys at this element belong to something other than the composer:
+ * another field, a dialog, or an open menu. */
+function elsewhere(element: Element | null) {
+  if (document.querySelector("dialog[open], [aria-modal='true']")) return true;
+  if (!element || element === document.body) return false;
+  return (
+    element.matches("input, textarea, select, [contenteditable]:not([contenteditable='false'])") ||
+    !!element.closest("dialog, [role='dialog'], [role='menu'], [role='listbox'], details[open]")
+  );
+}
+
 const noSubscribe = () => () => {};
 
 /** Where to open a conversation: a loaded message or just its identity (a notification, a feedback report). */
@@ -507,6 +520,31 @@ export default function Chat({
       setShowPins(false);
     }
   }, [state.phase]);
+  // Desktop: opening a conversation puts the cursor in its composer, and typing
+  // anywhere that isn't another field (or a dialog) starts a message, as in
+  // Discord and Slack. Touch layouts are left alone so the keyboard stays down.
+  const composerReady = state.phase === "ready" && !readOnly && !!channelId;
+  useEffect(() => {
+    if (!composerReady || !matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    if (!elsewhere(document.activeElement)) composerRef.current?.focus();
+    const typeToFocus = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.key.length !== 1 ||
+        event.key === " " ||
+        elsewhere(event.target as Element | null)
+      )
+        return;
+      // Focus moves before the key's default action, so the character lands in the composer.
+      composerRef.current?.focus();
+    };
+    window.addEventListener("keydown", typeToFocus);
+    return () => window.removeEventListener("keydown", typeToFocus);
+  }, [composerReady]);
   const openActions = (messageId: string, anchor: HTMLElement, inThread: boolean) =>
     setActionTarget({
       messageId,
@@ -1380,6 +1418,13 @@ export default function Chat({
   const channelName = direct
     ? (expectedChannelName ?? state.channelName)
     : (expectedChannelName ?? state.channelName).toLowerCase();
+  // The space's name arrives with history; until then the title stays generic.
+  const conversationTitle =
+    !channelId || state.phase === "loading" ? undefined : direct ? channelName : `#${channelName} · ${state.spaceName}`;
+  useEffect(() => {
+    setConversationTitle(conversationTitle);
+    return () => setConversationTitle(undefined);
+  }, [conversationTitle]);
   // Kept between unrelated renders (typing, presence, the composer), like the rows built from them.
   const channelHistory = useMemo(
     () => state.channelMessages ?? state.messages.filter(isChannelMessage),
