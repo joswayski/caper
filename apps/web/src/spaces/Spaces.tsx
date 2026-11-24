@@ -35,6 +35,7 @@ import {
 import {
   getAccount,
   getRememberedAccount,
+  logout,
   normalizeUsername,
   subscribeAccount,
   usernameError,
@@ -550,6 +551,40 @@ function CreateSpaceForm({
     </Dialog>
   ) : (
     form
+  );
+}
+
+/** First-space setup's way out, as on the profile step and the native apps. */
+function FirstSpaceLogout() {
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [error, setError] = useState<string>();
+  return (
+    <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 border-t border-border pt-3 text-[.85rem]">
+      {error && (
+        <p className="m-0 text-[var(--error-text)]" role="alert">
+          {error}
+        </p>
+      )}
+      <button
+        className="-mr-2 min-h-11 cursor-pointer rounded-control border-0 bg-transparent px-2 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2 disabled:cursor-wait"
+        type="button"
+        disabled={loggingOut}
+        onClick={() => {
+          setLoggingOut(true);
+          setError(undefined);
+          logout().then(
+            () => window.location.assign("/"),
+            () => {
+              // Stay signed in and say so, instead of a click that silently did nothing.
+              setLoggingOut(false);
+              setError("Couldn’t log out. Check your connection and try again.");
+            },
+          );
+        }}
+      >
+        {loggingOut ? "Logging out…" : "Log out"}
+      </button>
+    </div>
   );
 }
 
@@ -3603,6 +3638,7 @@ export default function Spaces({
             }}
           />
           {!canCreateSpace && <small>You have reached your space limit.</small>}
+          <FirstSpaceLogout />
         </section>
       </main>
     );
