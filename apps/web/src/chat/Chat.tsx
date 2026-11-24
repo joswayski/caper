@@ -695,6 +695,8 @@ export default function Chat({
   // divider. Remember the top visible message so it can be held in place.
   const prependAnchor = useRef<{ key: string; offset: number } | undefined>(undefined);
   const lastScroll = useRef(0);
+  /** The reader has scrolled the history themselves (wheel, touch, scrollbar or keys). */
+  const readerScrolled = useRef(false);
   useEffect(() => {
     if (!scroller) return;
     const scrolled = () => {
@@ -2271,9 +2273,13 @@ export default function Chat({
                   if (!state.olderError) loadOlder();
                 }}
                 // Fetch the next page while the reader still has rows above them,
-                // so scrolling back through history doesn't stall at the top.
+                // so scrolling back through history doesn't stall at the top. Only
+                // once they scroll: the list's first ranges, before it settles at
+                // its opening position, start at the top, and opening a channel
+                // must not fetch a page nobody asked for.
                 rangeChanged={({ startIndex }) => {
-                  if (startIndex - firstItemIndex < OLDER_PREFETCH_ROWS && !state.olderError) loadOlder();
+                  if (readerScrolled.current && startIndex - firstItemIndex < OLDER_PREFETCH_ROWS && !state.olderError)
+                    loadOlder();
                 }}
                 components={listComponents}
                 context={{
@@ -2297,16 +2303,20 @@ export default function Chat({
                 aria-label={`Messages in ${channelName}`}
                 onWheel={() => {
                   followUpdatedRows.current = false;
+                  readerScrolled.current = true;
                 }}
                 onTouchMove={() => {
                   followUpdatedRows.current = false;
+                  readerScrolled.current = true;
                 }}
                 // Covers scrollbar drags, which send no wheel or touch events.
                 onPointerDown={() => {
                   followUpdatedRows.current = false;
+                  readerScrolled.current = true;
                 }}
                 onKeyDown={(event) => {
                   followUpdatedRows.current = false;
+                  readerScrolled.current = true;
                   if (event.target === event.currentTarget && event.key === "End") {
                     event.preventDefault();
                     listRef.current?.scrollToIndex({
