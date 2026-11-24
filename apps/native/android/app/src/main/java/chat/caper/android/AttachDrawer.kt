@@ -29,6 +29,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -58,6 +62,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -137,8 +143,22 @@ internal class AttachDockContent(
     val grow = remember { Animatable(if (still || ime > 0) 1f else 0f) }
     LaunchedEffect(Unit) { grow.animateTo(1f, tween(MOTION_SLOW)) }
     BackHandler { dock.open = false }
-    val height = with(density) { ((target - ime).coerceAtLeast(0) * grow.value).toDp() }
-    AttachDrawer(content.host, content.add, content.gallery, content.files, content.camera, onDismiss = { dock.open = false }, docked = height)
+    // Dragging the handle up grows it over the timeline (as on iPhone and in Discord), down shrinks
+    // or closes it; a tap toggles. `lift` is the height above the keyboard's.
+    val scope = rememberCoroutineScope()
+    val room = (screen - with(density) { 220.dp.roundToPx() } - target).coerceAtLeast(0).toFloat()
+    val closeAt = with(density) { 80.dp.toPx() }
+    val lift = remember { Animatable(0f) }
+    fun settle(to: Float) = scope.launch { if (still) lift.snapTo(to) else lift.animateTo(to, tween(MOTION_BASE)) }
+    val drag = rememberDraggableState { delta -> scope.launch { lift.snapTo((lift.value - delta).coerceIn(-target.toFloat(), room)) } }
+    val handle = Modifier
+        .draggable(drag, Orientation.Vertical, onDragStarted = { lift.stop() }, onDragStopped = { velocity ->
+            val travel = lift.value - velocity * 0.15f
+            if (travel < -closeAt) dock.open = false else settle(if (travel > room / 2) room else 0f)
+        })
+        .clickable(onClickLabel = if (lift.value > 0f) "Collapse attachment drawer" else "Expand attachment drawer") { settle(if (lift.value > 0f) 0f else room) }
+    val height = with(density) { ((target - ime).coerceAtLeast(0) * grow.value + lift.value).coerceAtLeast(0f).toDp() }
+    AttachDrawer(content.host, content.add, content.gallery, content.files, content.camera, onDismiss = { dock.open = false }, docked = height, dockHandle = handle)
 }
 
 internal data class LibraryItem(val id: Long, val uri: Uri, val video: Boolean, val durationMs: Long, val mime: String? = null, val modified: Long = 0) {
@@ -271,6 +291,8 @@ private fun formatDuration(ms: Long): String {
     purpose: AttachDrawerPurpose = AttachDrawerPurpose.ATTACH,
     /** Docked below the composer at this height: no title, no Send (the composer sends). */
     docked: Dp? = null,
+    /** Docked: the handle's drag and tap. */
+    dockHandle: Modifier = Modifier,
 ) {
     val single = purpose.single
     val context = LocalContext.current
@@ -343,11 +365,39 @@ private fun formatDuration(ms: Long): String {
     val shown = remember(library, purpose.videos) { if (purpose.videos) library else library?.filter { !it.video } }
     val hasCamera = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY) }
     val height = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.7f
+    fun pick(item: LibraryItem) {
+        val selection = selected[item.uri.toString()]
+        when {
+            single -> {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                add(listOf(item.uri))
+                onDismiss()
+            }
+            selection != null -> host.remove(selection.second)
+            full -> refuse()
+            else -> {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                add(listOf(item.uri))
+            }
+        }
+    }
+    // Holding a tile shows it large, with Attach or Remove under it.
+    var previewing by remember { mutableStateOf<LibraryItem?>(null) }
+    previewing?.let { item ->
+        val attached = selected[item.uri.toString()] != null
+        LibraryPreview(item, if (single) "Choose" else if (attached) "Remove" else if (full) null else "Attach",
+            onAction = { previewing = null; pick(item) }, onDismiss = { previewing = null })
+    }
 
     val frame: @Composable (@Composable () -> Unit) -> Unit = { inner ->
-        if (docked != null) Box(
-            Modifier.fillMaxWidth().height(docked).clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)).background(Surface).padding(top = 12.dp),
-        ) { CompositionLocalProvider(LocalContentColor provides Text) { inner() } }
+        if (docked != null) Column(
+            Modifier.fillMaxWidth().height(docked).clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)).background(Surface),
+        ) {
+            Box(Modifier.fillMaxWidth().height(24.dp).then(dockHandle).semantics { testTag = "attach-drawer-resize" }, contentAlignment = Alignment.Center) {
+                Box(Modifier.size(36.dp, 5.dp).background(TextMuted.copy(alpha = 0.6f), CircleShape))
+            }
+            Box(Modifier.weight(1f)) { CompositionLocalProvider(LocalContentColor provides Text) { inner() } }
+        }
         else ModalBottomSheet(
             onDismissRequest = onDismiss,
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -417,21 +467,8 @@ private fun formatDuration(ms: Long): String {
                                     val selection = selected[item.uri.toString()]
                                     LibraryTile(item, selection?.first, dimmed = full && selection == null,
                                         // Every GIF on screen plays, unless motion is reduced or the app is paused.
-                                        animate = resumed && !still, single = single) {
-                                        when {
-                                            single -> {
-                                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                                add(listOf(item.uri))
-                                                onDismiss()
-                                            }
-                                            selection != null -> host.remove(selection.second)
-                                            full -> refuse()
-                                            else -> {
-                                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                                add(listOf(item.uri))
-                                            }
-                                        }
-                                    }
+                                        animate = resumed && !still, single = single,
+                                        onLongClick = { view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); previewing = item }) { pick(item) }
                                 }
                             }
                             if (shown?.isEmpty() == true) Text(if (single) "No photos yet." else "No photos or videos yet.", Modifier.padding(16.dp), color = TextMuted, fontSize = 13.sp)
@@ -490,7 +527,33 @@ private fun formatDuration(ms: Long): String {
     }
 }
 
-@Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, animate: Boolean, single: Boolean = false, onClick: () -> Unit) {
+/** A held tile, large and at its own shape over a dimmed screen; a tap outside closes it. */
+@Composable private fun LibraryPreview(item: LibraryItem, action: String?, onAction: () -> Unit, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val window = LocalWindowInfo.current.containerSize
+    val px = with(density) { (window.width - 32.dp.roundToPx()).coerceAtLeast(1) }
+    val tallest = with(density) { (window.height * 0.6f).toDp() }
+    val bitmap by produceState(AttachDrawerCache.thumbnails.get(item.thumbnailKey), item.uri) {
+        withContext(Dispatchers.IO) { loadThumbnail(context, item, px)?.asImageBitmap() }?.let { value = it }
+    }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp).clickable(onClick = onDismiss), horizontalAlignment = Alignment.CenterHorizontally) {
+            bitmap?.let {
+                Image(it, if (item.video) "Video" else "Photo",
+                    Modifier.fillMaxWidth().heightIn(max = tallest)
+                        .aspectRatio(it.width.toFloat() / it.height.coerceAtLeast(1), matchHeightConstraintsFirst = it.height > it.width)
+                        .clip(RoundedCornerShape(16.dp)).semantics { testTag = "attach-drawer-preview" },
+                    contentScale = ContentScale.Crop)
+            }
+            if (action != null) Button(onAction, Modifier.padding(top = 12.dp), shape = MaterialTheme.shapes.small,
+                colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction)) { Text(action, fontWeight = FontWeight.Bold) }
+        }
+    }
+}
+
+@Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, animate: Boolean, single: Boolean = false,
+                                    onLongClick: () -> Unit = {}, onClick: () -> Unit) {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { AttachDrawerCache.TILE_DP.dp.roundToPx() }
     var failed by remember(item.uri) { mutableStateOf(false) }
@@ -500,7 +563,7 @@ private fun formatDuration(ms: Long): String {
     }
     Box(
         Modifier.aspectRatio(1f).background(SurfaceRaised).alpha(if (dimmed) 0.4f else 1f)
-            .clickable(onClick = onClick)
+            .combinedClickable(onLongClickLabel = "Preview", onLongClick = onLongClick, onClick = onClick)
             .semantics(mergeDescendants = true) {
                 contentDescription = if (item.video) "Video, ${item.durationMs / 1000} seconds" else if (item.gif) "GIF" else "Photo"
                 if (single) role = Role.Button else {

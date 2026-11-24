@@ -15,6 +15,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let composer = ComposerView()
+    /// While the attach drawer is docked, the message box sits on its edge
+    /// (`ComposerView.drawerMoved`): the keyboard guide doesn't follow it as it resizes.
+    private lazy var drawerEdge = composer.bottomAnchor.constraint(equalTo: view.bottomAnchor).withPriority(.required - 1)
     private lazy var composerPreview = UIKitNativeComposerPreview(chat: model.chat, inThread: true)
     private lazy var composerAccessories = UIKitNativeComposerAccessories(chat: model.chat, inThread: true) { [weak self] in
         if self?.presentedViewController == nil { self?.present($0, animated: false) }
@@ -207,9 +210,21 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             if composer.showsDrawer { composer.hideDrawer(keyboard: true); return }
             // Docked below the message box, in the keyboard's place.
             guard let drawer = UIKitHosting.attachDrawer(chat: self.chat, inThread: true, presenter: { [weak self] in self },
-                                                         dockInset: self.view.window?.safeAreaInsets.bottom ?? 0,
+                                                         dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
+                                                         // Grown, it lifts the message box up to the top of the timeline.
+                                                         dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
+                                                         dockMoved: { [weak composer] in composer?.drawerDidMove($0) },
+                                                         dockOverflow: { [weak composer] in composer?.drawerOverflow ?? 0 },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
             composer.showDrawer(drawer)
+        }
+        composer.drawerMoved = { [weak self] top in
+            // A grown attach drawer lifts the message box with it.
+            guard let self else { return }
+            let edge = top.flatMap { top in self.view.window.map { self.view.convert(CGPoint(x: 0, y: top), from: $0.screen.coordinateSpace).y - 8 } }
+            if let edge { self.drawerEdge.constant = edge - self.view.bounds.height }
+            self.drawerEdge.isActive = edge != nil
+            self.view.layoutIfNeeded()
         }
         composer.emojiTapped = { [weak self] in
             guard let self else { return }
@@ -250,7 +265,10 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             bottom.topAnchor.constraint(equalTo: collection.bottomAnchor, constant: 4),
             bottom.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            // Below required: the docked attach drawer's edge (`drawerEdge`) wins over
+            // it, and the timeline (never negative) over both; the drawer then gives room back.
+            bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 2),
+            collection.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
             // As short as its contents allow: the timeline takes the slack.
             bottom.heightAnchor.constraint(equalToConstant: 0).withPriority(.defaultLow),
             broadcast.topAnchor.constraint(equalTo: broadcastRow.topAnchor),

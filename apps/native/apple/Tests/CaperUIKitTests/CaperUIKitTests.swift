@@ -497,6 +497,21 @@ final class CaperUIKitTests: XCTestCase {
         let drawer = app.otherElements["attach-drawer"]
         XCTAssertLessThanOrEqual(app.buttons["send-message"].frame.maxY, drawer.frame.minY + 1, "The composer stays visible above the drawer")
         screenshot("uikit-attach-drawer")
+        // Dragging the handle up grows the drawer over the timeline and lifts the message box with it.
+        let handle = app.buttons["attach-drawer-resize"], rest = drawer.frame.minY
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)))
+        XCTAssertLessThan(drawer.frame.minY, rest - 100, "The drawer grows when dragged up")
+        XCTAssertLessThanOrEqual(app.buttons["send-message"].frame.maxY, drawer.frame.minY + 1, "The message box rises with the drawer")
+        handle.tap()
+        // Holding a photo shows it large, with Remove once it's attached.
+        tiles.firstMatch.press(forDuration: 0.8)
+        let remove = app.buttons["attach-drawer-preview-action"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5), "Holding a tile opens its preview")
+        XCTAssertEqual(remove.label, "Remove")
+        screenshot("uikit-attach-preview")
+        app.buttons["Close preview"].tap()
+        XCTAssertTrue(drawer.waitForExistence(timeout: 5), "The drawer returns after the preview")
         // While the drawer is up, the composer's + is an ✕ that closes it.
         XCTAssertEqual(attach.label, "Close attachments")
         attach.tap()

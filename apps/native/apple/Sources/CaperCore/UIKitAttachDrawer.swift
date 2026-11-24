@@ -16,9 +16,21 @@ import Observation
     UIDocumentPickerDelegate, PHPickerViewControllerDelegate {
     private let mode: AttachDrawerMode
     private let close: () -> Void
-    /// Docked: who presents the camera and pickers, and the home indicator's inset.
+    /// Docked: who presents the camera and pickers, the home indicator's inset,
+    /// the keyboard's height it rests at, and how much taller it may grow over
+    /// the timeline (read as it starts to grow).
     private let presenter: (() -> UIViewController?)?
     private let dockInset: CGFloat
+    private let dockRest: CGFloat
+    private let dockRoom: () -> CGFloat
+    /// The drawer's top edge in screen coordinates after each resize: the
+    /// keyboard layout guide doesn't follow a self-sized input view, so the
+    /// conversation keeps its message box above this.
+    private let dockMoved: (CGFloat) -> Void
+    /// How much taller the message box needs to be than a grown drawer leaves it.
+    private let dockOverflow: () -> CGFloat
+    private var dockView: UIKitAttachDockView? { view as? UIKitAttachDockView }
+    private var dockExpanded: CGFloat = 0
     private var docked: Bool { presenter != nil }
     private let library = AttachDrawerLibrary()
     private var changes: AnyCancellable?
@@ -54,14 +66,23 @@ import Observation
     private var full: Bool { !picking && used >= AttachmentPolicy.maxAttachments }
     private var cameraAvailable: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
 
-    init(mode: AttachDrawerMode, presenter: (() -> UIViewController?)? = nil, dockInset: CGFloat = 0, close: @escaping () -> Void) {
+    init(mode: AttachDrawerMode, presenter: (() -> UIViewController?)? = nil, dockInset: CGFloat = 0, dockHeight: CGFloat = 0,
+         dockRoom: @escaping () -> CGFloat = { 0 }, dockMoved: @escaping (CGFloat) -> Void = { _ in },
+         dockOverflow: @escaping () -> CGFloat = { 0 }, close: @escaping () -> Void) {
         self.mode = mode; self.close = close; self.presenter = presenter; self.dockInset = dockInset
+        self.dockRest = dockHeight; self.dockRoom = dockRoom; self.dockMoved = dockMoved; self.dockOverflow = dockOverflow
         let layout = UICollectionViewFlowLayout(); layout.minimumInteritemSpacing = Self.spacing; layout.minimumLineSpacing = Self.spacing
         grid = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(nibName: nil, bundle: nil); modalPresentationStyle = .overFullScreen
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { foreground.map(NotificationCenter.default.removeObserver); library.stop() }
+    /// Docked, the view is the field's input view. It sizes itself, so the
+    /// keyboard area (and the message box above it) follows the handle.
+    override func loadView() {
+        guard docked else { super.loadView(); return }
+        view = UIKitAttachDockView(height: dockRest)
+    }
     override func viewDidLoad() {
         super.viewDidLoad(); overrideUserInterfaceStyle = CaperTheme.interfaceStyle; view.backgroundColor = .clear; view.accessibilityViewIsModal = !docked
         scrim.backgroundColor = UIColor.black.withAlphaComponent(0.55)
@@ -73,9 +94,7 @@ import Observation
         let name = picking ? "picture chooser" : "attachment drawer"
         // The handle: a short capsule across the top; tapping it expands the drawer.
         resize = UIButton(type: .custom); resize.accessibilityIdentifier = "attach-drawer-resize"; resize.accessibilityLabel = "Expand \(name)"
-        resize.addAction(UIAction { [weak self] _ in guard let self, !self.docked else { return }; self.expanded.toggle(); CaperHaptics.tap(); self.resizePanel(animated: true) }, for: .touchUpInside)
-        // Docked, the handle only drags the drawer down; the composer's X closes it.
-        resize.isAccessibilityElement = !docked
+        resize.addAction(UIAction { [weak self] _ in guard let self else { return }; self.setExpanded(!self.expanded) }, for: .touchUpInside)
         let grabber = UIView(); grabber.backgroundColor = UIColor(CaperTheme.muted).withAlphaComponent(0.6); grabber.layer.cornerRadius = 2.5
         grabber.isUserInteractionEnabled = false; grabber.translatesAutoresizingMaskIntoConstraints = false; resize.addSubview(grabber)
         let cancel = UIButton(type: .system); cancel.setImage(attachIcon("x", size: 18), for: .normal); cancel.tintColor = UIColor(CaperTheme.muted)
@@ -94,6 +113,7 @@ import Observation
         grid.accessibilityIdentifier = "attach-drawer-grid"
         // Keep the last row clear of the floating Send button (sheets only).
         grid.contentInset.bottom = docked ? 8 : 76
+        grid.alwaysBounceVertical = true
         manage = UIKitMessageDialog.button("Manage") { [library] in library.manageLimitedAccess() }
         settings = UIKitMessageDialog.button("Open Settings") {
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -124,7 +144,8 @@ import Observation
         panelHeight = panel.heightAnchor.constraint(equalToConstant: 400)
         NSLayoutConstraint.activate(docked ? [
             panel.topAnchor.constraint(equalTo: view.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -(dockInset + 4)),
+            // The tabs sit just above the home indicator, as the keyboard's own bottom row does.
+            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -max(4, dockInset - 20)),
         ] : [
             panelHeight,
             stack.bottomAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.bottomAnchor, constant: -4),
@@ -174,7 +195,9 @@ import Observation
         super.viewDidDisappear(animated)
         // A camera or system picker temporarily covers the drawer. In-flight
         // copies still belong to the user's taps after the drawer is dismissed.
-        if presentingViewController == nil { active = false; library.stop() }
+        // Docked, a full-screen cover takes it off screen too; it stays live
+        // until the composer lets it go.
+        if presentingViewController == nil, !docked { active = false; library.stop() }
     }
     private func observe() {
         guard active else { return }
@@ -204,6 +227,8 @@ import Observation
             }
         }
         let files = draft?.files() ?? []
+        // A staged row (or one fewer) changes the message box's height: a grown drawer makes room.
+        if docked, expanded, files != displayedFiles { fitBox() }
         if displayedAssets !== library.assets {
             displayedAssets = library.assets; displayedFiles = files; displayedPending = queue.order; displayedFull = full; grid.reloadData()
         } else if displayedFiles != files || displayedPending != queue.order || displayedFull != full {
@@ -226,15 +251,59 @@ import Observation
         }
     }
     @objc private func pan(_ gesture: UIPanGestureRecognizer) {
-        drag = gesture.translation(in: view).y
+        if gesture.state == .began, docked, !expanded { dockExpanded = dockRest + max(0, dockRoom()) }
+        // Measured in the window: the docked drawer moves under the finger as it resizes.
+        drag = gesture.translation(in: nil).y
         if gesture.state == .ended || gesture.state == .cancelled {
-            let travel = drag + gesture.velocity(in: view).y * 0.15
+            let travel = drag + gesture.velocity(in: nil).y * 0.15
+            drag = 0
             if !expanded && travel > 80 { close(); return }
-            if docked { drag = 0; return }
-            // Snapping between half and full height taps once.
+            // Snapping between sizes taps once.
             if abs(travel) > 40, expanded != (travel < 0) { expanded = travel < 0; CaperHaptics.tap() }
-            drag = 0; resizePanel(animated: true)
-        } else if !docked { resizePanel(animated: false) }
+            if docked { resizeDock(animated: true) } else { resizePanel(animated: true) }
+        } else if docked { resizeDock(animated: false) } else { resizePanel(animated: false) }
+    }
+    /// Grown, the drawer gives back what the message box above it needs once
+    /// a staged file's row appears (measured after the box has updated), so the box stays in view.
+    private func fitBox() {
+        for delay in [0.05, 0.3] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.docked, self.expanded, self.drag == 0, let dockView = self.dockView else { return }
+                let overflow = self.dockOverflow()
+                guard overflow > 1 else { return }
+                self.dockExpanded = max(self.dockRest, dockView.height - overflow)
+                self.resizeDock(animated: true)
+            }
+        }
+    }
+    private func setExpanded(_ value: Bool) {
+        guard value != expanded else { return }
+        if docked, value { dockExpanded = dockRest + max(0, dockRoom()) }
+        expanded = value; drag = 0; CaperHaptics.tap()
+        if docked { resizeDock(animated: true) } else { resizePanel(animated: true) }
+    }
+    /// Docked, the drawer follows the finger: up over the timeline (as far as
+    /// the conversation has room), down toward closing.
+    private func resizeDock(animated: Bool) {
+        guard let dockView else { return }
+        let top = max(dockRest, dockExpanded)
+        dockView.height = min(top, max(120, (expanded ? top : dockRest) - drag))
+        resize.accessibilityLabel = "\(expanded ? "Collapse" : "Expand") attachment drawer"
+        let layout = {
+            self.view.superview?.layoutIfNeeded(); self.view.window?.layoutIfNeeded()
+            if let window = self.view.window { self.dockMoved(self.view.convert(self.view.bounds, to: window.screen.coordinateSpace).minY) }
+        }
+        if animated, !CaperAccessibility.reduceMotion {
+            UIViewPropertyAnimator(duration: CaperMotion.base, controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1), animations: layout).startAnimation()
+        } else { layout() }
+    }
+    // Docked, flicking the photos up opens the drawer out over the timeline, and
+    // pulling down past the top brings it back (or closes it), as Discord's does.
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        guard docked else { return }
+        let atTop = scrollView.contentOffset.y <= -scrollView.adjustedContentInset.top
+        if !expanded, velocity.y > 0.3 { setExpanded(true) }
+        else if atTop, velocity.y < -0.5 { if expanded { setExpanded(false) } else { close() } }
     }
     private func nudge() { notice = AttachCapacity.hint(AttachmentPolicy.maxAttachments); UINotificationFeedbackGenerator().notificationOccurred(.warning); render() }
     private static let spacing: CGFloat = 3
@@ -242,9 +311,9 @@ import Observation
     private var cameraTiles: Int { cameraAvailable ? 1 : 0 }
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { (library.assets?.count ?? 0) + cameraTiles }
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
-        // Three large tiles across a phone, more on wider screens.
+        // Four tiles across a phone (as on Android), more on wider screens.
         let width = collectionView.bounds.width
-        let columns = max(3, floor((width + Self.spacing) / 124)), side = floor((width - (columns - 1) * Self.spacing) / columns)
+        let columns = max(4, floor((width + Self.spacing) / 88)), side = floor((width - (columns - 1) * Self.spacing) / columns)
         return CGSize(width: side, height: side)
     }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
@@ -267,12 +336,22 @@ import Observation
         let source = AttachDrawer.source(asset.localIdentifier), files = draft?.files() ?? []
         // A tap shows its place at once; the copy joins the draft in tap order.
         let order = files.firstIndex { $0.source == source }.map { $0 + 1 } ?? queue.order.firstIndex(of: source).map { files.count + $0 + 1 }
-        cell.configure(asset, order: order, pending: queue.isPending(source), full: full) { [weak self] in self?.choose(asset.localIdentifier) }
+        cell.configure(asset, order: order, pending: queue.isPending(source), full: full,
+                       hold: { [weak self] in self?.preview(asset) }) { [weak self] in self?.choose(asset.localIdentifier) }
+    }
+    /// Holding a photo shows it large, with Attach (Remove once attached,
+    /// Choose for a picture) under it; closing the preview leaves the draft as it was.
+    private func preview(_ asset: PHAsset) {
+        let source = AttachDrawer.source(asset.localIdentifier)
+        let attached = draft?.files().contains { $0.source == source } == true || queue.isPending(source)
+        let action = picking ? "Choose" : attached ? "Remove" : full ? nil : "Attach"
+        show(UIKitAttachPreview(asset, action: action) { [weak self] in self?.choose(asset.localIdentifier) })
     }
     /// A toolbar tab: its icon over its name, bright and bold when selected.
     private static func tab(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> UIButton {
         var config = UIButton.Configuration.plain()
-        config.image = attachIcon(icon, size: 20); config.imagePlacement = .top; config.imagePadding = 4; config.title = title
+        config.image = attachIcon(icon, size: 20); config.imagePlacement = .top; config.imagePadding = 3; config.title = title
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 2, trailing: 8)
         config.baseForegroundColor = UIColor(selected ? CaperTheme.text : CaperTheme.muted)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attributes = incoming
@@ -280,7 +359,7 @@ import Observation
             return attributes
         }
         let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
-        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         if selected { button.accessibilityTraits.insert(.selected) }
         return button
     }
@@ -401,6 +480,88 @@ import Observation
     }
 }
 
+/// A held tile's large preview over the dark frame: the whole photo (or a
+/// video's frame) at its own shape, sharpening from the tile's thumbnail, with
+/// the tile's action under it. A tap anywhere else, ✕ or escape closes it.
+@MainActor private final class UIKitAttachPreview: UIViewController {
+    private let asset: PHAsset
+    private let action: String?
+    private let perform: () -> Void
+    private let picture = UIImageView()
+    private var request: PHImageRequestID?
+    init(_ asset: PHAsset, action: String?, perform: @escaping () -> Void) {
+        self.asset = asset; self.action = action; self.perform = perform
+        super.init(nibName: nil, bundle: nil)
+        // Full screen, so the docked drawer (in the keyboard's window) steps aside and returns after.
+        modalPresentationStyle = .fullScreen; modalTransitionStyle = .crossDissolve
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit { if let request { PHImageManager.default().cancelImageRequest(request) } }
+    override func viewDidLoad() {
+        super.viewDidLoad(); overrideUserInterfaceStyle = CaperTheme.interfaceStyle
+        view.backgroundColor = UIColor(CaperTheme.blackout); view.accessibilityViewIsModal = true
+        view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(dismissPreview)))
+        picture.contentMode = .scaleAspectFill; picture.clipsToBounds = true; picture.layer.cornerRadius = 16
+        picture.accessibilityIgnoresInvertColors = true; picture.isAccessibilityElement = true
+        picture.accessibilityLabel = asset.mediaType == .video ? "Video" : "Photo"
+        picture.image = AttachGalleryCache.thumbnail(AttachGalleryCache.key(asset))
+        picture.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(picture)
+        let close = UIButton(type: .system); close.setImage(attachIcon("x", size: 20), for: .normal); close.tintColor = UIColor(CaperTheme.text)
+        close.accessibilityLabel = "Close preview"; close.addAction(UIAction { [weak self] _ in self?.dismissPreview() }, for: .touchUpInside)
+        close.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(close)
+        let ratio = CGFloat(max(1, asset.pixelHeight)) / CGFloat(max(1, asset.pixelWidth))
+        var constraints = [
+            close.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
+            close.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            close.widthAnchor.constraint(equalToConstant: 44), close.heightAnchor.constraint(equalToConstant: 44),
+            picture.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            picture.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor, constant: action == nil ? 0 : -30),
+            picture.heightAnchor.constraint(equalTo: picture.widthAnchor, multiplier: ratio),
+            picture.widthAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.widthAnchor, constant: -32),
+            picture.heightAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.heightAnchor, multiplier: 0.7),
+            // As large as both limits allow.
+            { let fill = picture.widthAnchor.constraint(equalTo: view.widthAnchor); fill.priority = .defaultHigh; return fill }(),
+        ]
+        if let action {
+            let button = UIKitMessageDialog.button(action, primary: true) { [weak self] in
+                guard let self else { return }
+                let perform = self.perform
+                self.dismiss(animated: !CaperAccessibility.reduceMotion) { perform() }
+            }
+            button.accessibilityIdentifier = "attach-drawer-preview-action"
+            button.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(button)
+            constraints += [
+                button.topAnchor.constraint(equalTo: picture.bottomAnchor, constant: 16),
+                button.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                button.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
+            ]
+        }
+        NSLayoutConstraint.activate(constraints)
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic; options.resizeMode = .fast; options.isNetworkAccessAllowed = true
+        let side = max(view.bounds.width, view.bounds.height) * (view.window?.screen.scale ?? 3)
+        request = PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: side, height: side),
+                                                        contentMode: .aspectFit, options: options) { [weak self] result, _ in
+            Task { @MainActor in if let result { self?.picture.image = result } }
+        }
+    }
+    override func accessibilityPerformEscape() -> Bool { dismissPreview(); return true }
+    @objc private func dismissPreview() { dismiss(animated: !CaperAccessibility.reduceMotion) }
+}
+
+/// The docked drawer's input view: its height is the keyboard area's.
+@MainActor private final class UIKitAttachDockView: UIInputView {
+    var height: CGFloat { didSet { if height != oldValue { invalidateIntrinsicContentSize() } } }
+    init(height: CGFloat) {
+        self.height = height
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: height), inputViewStyle: .default)
+        allowsSelfSizing = true
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: height) }
+}
+
 /// A Lucide icon from the app's catalog (CaperIcons.xcassets), drawn at `size` as a template.
 @MainActor private func attachIcon(_ name: String, size: CGFloat) -> UIImage? {
     guard let image = UIImage(named: "caper-\(name)") ?? UIImage(named: "caper-\(name)", in: caperResourceBundle, compatibleWith: nil) else { return nil }
@@ -442,6 +603,7 @@ import Observation
     private var asset: PHAsset?
     private var order: Int?
     private var pick: (() -> Void)?
+    private var hold: (() -> Void)?
     override init(frame: CGRect) {
         super.init(frame: frame)
         contentView.backgroundColor = UIColor(CaperTheme.raised); contentView.layer.cornerRadius = 8; contentView.clipsToBounds = true
@@ -458,6 +620,10 @@ import Observation
         // The tile button already speaks the attach order and duration.
         ring.isAccessibilityElement = false; badge.isAccessibilityElement = false
         button.addAction(UIAction { [weak self] _ in self?.pick?() }, for: .touchUpInside)
+        // Holding opens the large preview instead of picking (the press cancels the tap).
+        let press = UILongPressGestureRecognizer(target: self, action: #selector(held(_:))); press.minimumPressDuration = 0.35
+        button.addGestureRecognizer(press)
+        button.accessibilityCustomActions = [UIAccessibilityCustomAction(name: "Preview") { [weak self] _ in self?.hold?(); return true }]
         motion = NotificationCenter.default.addObserver(forName: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { guard let self else { return }; self.clear(); if self.window != nil, let asset = self.asset { self.load(asset) } }
         }
@@ -477,12 +643,16 @@ import Observation
         if let request { PHImageManager.default().cancelImageRequest(request) }; request = nil
         animation?.cancel(); animation = nil; picture.layer.removeAllAnimations(); picture.image = nil
     }
-    func configure(_ asset: PHAsset, order: Int?, pending: Bool, full: Bool, pick: @escaping () -> Void) {
+    @objc private func held(_ press: UILongPressGestureRecognizer) {
+        guard press.state == .began else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred(); hold?()
+    }
+    func configure(_ asset: PHAsset, order: Int?, pending: Bool, full: Bool, hold: @escaping () -> Void, pick: @escaping () -> Void) {
         // The same photo keeps its thumbnail, request and GIF frames.
         let same = self.asset.map(AttachGalleryCache.key) == AttachGalleryCache.key(asset)
         if !same { clear() }
         let arrives = same && self.order == nil && order != nil
-        self.asset = asset; self.order = order; self.pick = pick
+        self.asset = asset; self.order = order; self.pick = pick; self.hold = hold
         let date = asset.creationDate?.formatted(date: .abbreviated, time: .omitted) ?? ""
         button.accessibilityIdentifier = "attach-drawer-tile"
         button.accessibilityLabel = "\(asset.mediaType == .video ? "Video, \(Int(asset.duration)) seconds" : AttachGalleryCache.isGIF(asset) ? "GIF" : "Photo"), \(date)"

@@ -65,6 +65,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let skeleton = MessageSkeletonView(rows: 5, label: "Loading messages")
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
+    /// While the attach drawer is docked, the message box sits on its edge
+    /// (`ComposerView.drawerMoved`): the keyboard guide doesn't follow it as it resizes.
+    private lazy var drawerEdge = composer.bottomAnchor.constraint(equalTo: view.bottomAnchor).withPriority(.required - 1)
     private lazy var composerPreview = UIKitNativeComposerPreview(chat: model.chat)
     private lazy var composerAccessories = UIKitNativeComposerAccessories(chat: model.chat, present: presentHosted)
     private lazy var members = MembersPanel(model: model)
@@ -660,9 +663,21 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             if composer.showsDrawer { composer.hideDrawer(keyboard: true); return }
             // Docked below the message box, in the keyboard's place.
             guard let drawer = UIKitHosting.attachDrawer(chat: self.model.chat, presenter: { [weak self] in self },
-                                                         dockInset: self.view.window?.safeAreaInsets.bottom ?? 0,
+                                                         dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
+                                                         // Grown, it lifts the message box up to the top of the timeline.
+                                                         dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
+                                                         dockMoved: { [weak composer] in composer?.drawerDidMove($0) },
+                                                         dockOverflow: { [weak composer] in composer?.drawerOverflow ?? 0 },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
             composer.showDrawer(drawer)
+        }
+        composer.drawerMoved = { [weak self] top in
+            // A grown attach drawer lifts the message box with it.
+            guard let self else { return }
+            let edge = top.flatMap { top in self.view.window.map { self.view.convert(CGPoint(x: 0, y: top), from: $0.screen.coordinateSpace).y - 8 } }
+            if let edge { self.drawerEdge.constant = edge - self.view.bounds.height }
+            self.drawerEdge.isActive = edge != nil
+            self.view.layoutIfNeeded()
         }
         composer.emojiTapped = { [weak self] in
             guard let self else { return }
@@ -673,7 +688,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             composer.topAnchor.constraint(equalTo: typing.bottomAnchor),
             composer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             composer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            // Below required: the docked attach drawer's edge (`drawerEdge`) wins over
+            // it, and the timeline (never negative) over both; the drawer then gives room back.
+            composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 2),
+            collection.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
         ])
         // An incoming request or a blocked peer replaces the composer.
         view.addSubview(directBar)

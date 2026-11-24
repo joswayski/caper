@@ -77,6 +77,21 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         return button
     }()
     var showsDrawer: Bool { drawer != nil }
+    /// The drawer's top edge in screen coordinates as it is dragged, nil once
+    /// it's gone: the owner keeps the message box above it.
+    var drawerMoved: ((CGFloat?) -> Void)?
+    private var drawerTop: CGFloat?
+    /// The docked drawer moved (nil: it's gone): remember its edge and let the owner follow.
+    func drawerDidMove(_ top: CGFloat?) { drawerTop = top; drawerMoved?(top) }
+    /// How much more height the box needs than a grown drawer leaves it: squeezed
+    /// under the header (a staged file's row), or reaching past the drawer's edge.
+    var drawerOverflow: CGFloat {
+        guard drawer != nil, let drawerTop, let window else { return 0 }
+        superview?.layoutIfNeeded()
+        let wanted = systemLayoutSizeFitting(CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height),
+                                             withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
+        return max(0, wanted - bounds.height) + convert(bounds, to: window.screen.coordinateSpace).maxY + 8 - drawerTop
+    }
     var emojiTapped: (() -> Void)?
     /// Who `@` may suggest: the open conversation's context.
     weak var model: AppModel?
@@ -368,7 +383,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     func textViewDidEndEditing(_ textView: UITextView) {
         // Swiped away with the timeline. A camera or picker the drawer opened
         // only covers it; the drawer comes back when that closes.
-        if drawer != nil, !presenting { drawer = nil; textView.inputView = nil; showAttachState() }
+        if drawer != nil, !presenting { drawer = nil; textView.inputView = nil; showAttachState(); drawerDidMove(nil) }
         typing.end()
         self.textView.hideEmojiName()
         suggestions.show(nil)
@@ -533,20 +548,51 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// with the message box (and its staged files) still above it.
     func showDrawer(_ controller: UIViewController) {
         let bounds = window?.bounds ?? UIScreen.main.bounds
-        // Before any keyboard has shown, about a phone keyboard's height (≈38% of the screen).
-        let height = Self.keyboardHeight > 0 ? Self.keyboardHeight : min(380, max(300, (bounds.height * 0.38).rounded()))
-        controller.view.frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)
-        controller.view.autoresizingMask = [.flexibleWidth]
+        controller.view.frame = CGRect(x: 0, y: 0, width: bounds.width, height: drawerHeight)
+        // The drawer sizes itself (it grows when dragged up); only a plain view keeps a fixed height.
+        if !(controller.view is UIInputView) { controller.view.autoresizingMask = [.flexibleWidth] }
         drawer = controller
         textView.inputView = controller.view
         if textView.isFirstResponder { textView.reloadInputViews() } else { textView.becomeFirstResponder() }
         showAttachState()
     }
 
+    /// The keyboard's height, which the drawer rests at. Before any keyboard
+    /// has shown, about a phone keyboard's height (≈38% of the screen).
+    var drawerHeight: CGFloat {
+        let bounds = window?.bounds ?? UIScreen.main.bounds
+        return Self.keyboardHeight > 0 ? Self.keyboardHeight : min(380, max(300, (bounds.height * 0.38).rounded()))
+    }
+
+    /// A full-screen camera or preview the drawer opened took the field off
+    /// screen, and it resigned; back on screen, the drawer comes back with it.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        restoreDrawer()
+    }
+
+    /// The field returns while the cover is still closing, so wait for its
+    /// dismissal to finish before taking focus back.
+    private func restoreDrawer(attempt: Int = 0) {
+        guard window != nil, drawer != nil, !textView.isFirstResponder else { return }
+        if let covering = presentedController {
+            if let coordinator = covering.transitionCoordinator {
+                coordinator.animate(alongsideTransition: nil) { [weak self] _ in DispatchQueue.main.async { self?.restoreDrawer() } }
+            } else if attempt < 20 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.restoreDrawer(attempt: attempt + 1) }
+            }
+            return
+        }
+        if !textView.becomeFirstResponder() {
+            drawer = nil; textView.inputView = nil; showAttachState(); drawerDidMove(nil)
+        }
+    }
+
     /// Takes the drawer down: back to the keyboard, or away entirely.
     func hideDrawer(keyboard: Bool) {
         guard drawer != nil else { return }
         drawer = nil
+        drawerDidMove(nil)
         if keyboard {
             textView.inputView = nil
             if textView.isFirstResponder { textView.reloadInputViews() } else { textView.becomeFirstResponder() }
@@ -574,13 +620,16 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     /// A camera or picker the drawer opened is up or still closing; the field
     /// gets its drawer back when it does.
-    private var presenting: Bool {
+    private var presenting: Bool { presentedController != nil }
+
+    /// Whatever the composer's screen presents: up, or still closing.
+    private var presentedController: UIViewController? {
         var responder: UIResponder? = self
         while let next = responder?.next {
-            if let controller = next as? UIViewController { return controller.presentedViewController != nil }
+            if let controller = next as? UIViewController { return controller.presentedViewController }
             responder = next
         }
-        return false
+        return nil
     }
 
     @objc private func keyboardWillChange(_ notification: Notification) {
