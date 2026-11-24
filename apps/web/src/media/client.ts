@@ -38,6 +38,7 @@ const DISCONNECT_GRACE_MS = 10_000;
 const MICROPHONE_RECOVERY_WINDOW_MS = 10_000;
 const MICROPHONE_DISCONNECTED =
   "Your microphone disconnected. Connect a microphone or choose another input and try again.";
+const LISTENING_STATUS = "Listening only · no microphone";
 /**
  * Re-checks for a listed source that cannot be pulled yet. A newcomer's track is
  * listed at publication but pullable only once its transport sends media, which
@@ -67,6 +68,45 @@ function message(error: unknown) {
     return "Your microphone could not be opened. Check whether another app is using it and try again.";
   }
   return error instanceof Error ? error.message : "The call could not continue.";
+}
+
+/**
+ * The browser could not open any microphone: none, permission denied, busy, or
+ * no capture API at all (an insecure page). Audio processing failures are not
+ * this; they fail the join rather than hide a broken selected enhancer.
+ */
+function microphoneUnavailable(error: unknown) {
+  if (typeof navigator === "undefined" || typeof navigator.mediaDevices?.getUserMedia !== "function") return true;
+  return (
+    error instanceof DOMException &&
+    ["NotAllowedError", "SecurityError", "NotFoundError", "OverconstrainedError", "NotReadableError"].includes(
+      error.name,
+    )
+  );
+}
+
+/** Why a join that could not open a microphone is listening, and how to talk. */
+function listeningMessage(error: unknown) {
+  const name = error instanceof DOMException ? error.name : undefined;
+  if (name === "NotAllowedError" || name === "SecurityError")
+    return "Microphone access is blocked, so you joined to listen. Allow microphone access, then unmute to talk.";
+  if (name === "NotFoundError" || name === "OverconstrainedError")
+    return "No microphone was found, so you joined to listen. Connect one, then unmute to talk.";
+  return "Your microphone could not be opened, so you joined to listen. Unmute to try again.";
+}
+
+/** Why an unmute without a microphone could not open one; the call keeps listening. */
+function stillListeningMessage(error: unknown) {
+  const name = error instanceof DOMException ? error.name : undefined;
+  const cause =
+    name === "NotAllowedError" || name === "SecurityError"
+      ? "Microphone access is still blocked. Allow it, then unmute again."
+      : name === "NotFoundError" || name === "OverconstrainedError"
+        ? "No microphone was found. Connect one, then unmute again."
+        : name === "NotReadableError"
+          ? "Your microphone could not be opened. Check whether another app is using it, then unmute again."
+          : message(error);
+  return `${cause} You’re still listening, muted.`;
 }
 
 /** A short, secret-free cause for diagnostics: an API status or an error name. */
@@ -140,7 +180,8 @@ export class PublicCallClient {
   private participants: Participant[] = [];
   private remoteMedia = new Map<string, RemoteMedia>();
   private localMedia?: MediaStream;
-  private senders = new Map<MediaKind, { sender: RTCRtpSender; mid: string; track: MediaStreamTrack }>();
+  /** `track` is absent while listening: the publication exists, but nothing captures or sends. */
+  private senders = new Map<MediaKind, { sender: RTCRtpSender; mid: string; track?: MediaStreamTrack }>();
   private subscriptions = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
   private mediaQueue: Promise<unknown> = Promise.resolve();
@@ -198,8 +239,13 @@ export class PublicCallClient {
   private latestRevision?: number;
   private events?: EventConnection;
   private microphoneDeviceId?: string;
-  /** The capture died and no input could replace it; the call stays muted. */
+  /**
+   * No input is open: none could be opened at join (listening) or the capture
+   * died and none replaced it. The call stays muted and others see it listening.
+   */
   private microphoneLost = false;
+  /** Why this join is listening, shown until a microphone opens or the call ends. */
+  private listeningReason?: string;
   private microphoneRecovery?: Promise<void>;
   private microphoneRecovered?: { track: MediaStreamTrack; at: number };
   private statsTimer?: number;
@@ -289,6 +335,8 @@ export class PublicCallClient {
       phase: this.phase,
       muted: this.muted,
       deafened: this.deafened,
+      listening: this.phase === "connected" && this.microphoneLost,
+      listeningReason: this.phase === "connected" && this.microphoneLost ? this.listeningReason : undefined,
       stateSyncPending: this.phase === "connected" && this.stateDirty,
       liveUpdatesPending: this.phase === "connected" && !this.events?.connected,
       inputVolume: this.inputVolume,
@@ -415,10 +463,22 @@ export class PublicCallClient {
 
   private async prepareJoin(started: number, joinStartedAt = Date.now()) {
     let microphoneMs = 0;
-    const capture = this.openMicrophone(this.microphoneDeviceId).then((track) => {
-      microphoneMs = performance.now() - started;
-      return track;
-    });
+    const signal = this.captureController.signal;
+    // A microphone that cannot be opened (none, permission denied, busy) does
+    // not stop the join: the call listens instead. Only a cancelled join fails.
+    let microphoneError: unknown;
+    const capture = this.openMicrophone(this.microphoneDeviceId).then(
+      (track): MediaStreamTrack | undefined => {
+        microphoneMs = performance.now() - started;
+        return track;
+      },
+      (error: unknown) => {
+        if (signal.aborted || !microphoneUnavailable(error)) throw error;
+        microphoneMs = performance.now() - started;
+        microphoneError = error;
+        return undefined;
+      },
+    );
     const issuedAt = performance.now();
     // A signed-in member's already-connected sessions, if any: Join then only
     // publishes and pulls. A refused ticket falls back to the ordinary join.
@@ -448,7 +508,7 @@ export class PublicCallClient {
     })();
     const [captureResult, joinResult] = await Promise.allSettled([capture, offering]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
-      if (captureResult.status === "fulfilled") this.stopMicrophone(captureResult.value);
+      if (captureResult.status === "fulfilled" && captureResult.value) this.stopMicrophone(captureResult.value);
       if (joinResult.status === "fulfilled") {
         joinResult.value.publication.pc.close();
         if (joinResult.value.warm) closeWarmVoice(joinResult.value.warm);
@@ -460,7 +520,7 @@ export class PublicCallClient {
           ? joinResult.reason
           : new Error("Join preparation failed.");
     }
-    return { microphone: captureResult.value, ...joinResult.value, microphoneMs, issuedAt };
+    return { microphone: captureResult.value, microphoneError, ...joinResult.value, microphoneMs, issuedAt };
   }
 
   /** Adds the microphone's transceiver, offers, and joins with that offer. Closes `pc` on failure. */
@@ -471,7 +531,7 @@ export class PublicCallClient {
       const offer = await pc.createOffer();
       const mid = audioMid(offer.sdp);
       if (!mid) throw new Error("The browser did not assign a media identifier.");
-      const initialState = { muted: this.muted, deafened: this.deafened };
+      const initialState = { muted: this.muted, deafened: this.deafened, listening: this.microphoneLost };
       const joined = await this.joinWithOffer(offer, mid, initialState, joinStartedAt, warmTicket);
       return {
         joined,
@@ -488,12 +548,12 @@ export class PublicCallClient {
   private async joinWithOffer(
     offer: RTCSessionDescriptionInit,
     mid: string,
-    initialState: { muted: boolean; deafened: boolean },
+    initialState: { muted: boolean; deafened: boolean; listening: boolean },
     joinStartedAt: number,
     warm?: string,
   ) {
-    const legacyBody = { name: this.name, ...initialState };
-    const body = { ...legacyBody, joinStartedAt };
+    const legacyBody = { name: this.name, muted: initialState.muted, deafened: initialState.deafened };
+    const body = { ...legacyBody, listening: initialState.listening, joinStartedAt };
     const publish = { mid, sessionDescription: { type: "offer", sdp: offer.sdp } };
     // The offer belongs to the warm connection: no fallback shape can reuse it.
     if (warm) return this.api<JoinResponse>("join", { ...body, publish, receive: true, warm }, undefined);
@@ -530,7 +590,7 @@ export class PublicCallClient {
       capturedMicrophone = prepared.microphone;
       if (generation !== this.generation || this.phase !== "joining") {
         prepared.publication.pc.close();
-        this.stopMicrophone(prepared.microphone);
+        if (prepared.microphone) this.stopMicrophone(prepared.microphone);
         void this.api("leave", {}, prepared.joined.token).catch(() => undefined);
         return;
       }
@@ -551,6 +611,7 @@ export class PublicCallClient {
   private async connectPrepared(
     {
       microphone,
+      microphoneError,
       joined,
       initialState,
       publication,
@@ -578,6 +639,9 @@ export class PublicCallClient {
     };
     pc.addEventListener("iceconnectionstatechange", iceChanged);
     pc.setConfiguration({ ...pc.getConfiguration(), iceServers: joined.iceServers });
+    // Join this call muted, with nothing captured; a later unmute asks again.
+    this.microphoneLost = !microphone;
+    if (!microphone) this.listen(listeningMessage(microphoneError));
     // Hearing the people already present needs the receive answer to reach
     // Cloudflare and a second handshake. Speaking does not: the call is joined
     // once the microphone's connection is up, and their audio follows (see
@@ -600,7 +664,10 @@ export class PublicCallClient {
       publishing,
       // Join already committed this state. Only repair intent changed while
       // waiting for its response/capture; later changes use the normal writer.
-      initialState.muted !== this.muted || initialState.deafened !== this.deafened || this.stateDirty
+      initialState.muted !== this.muted ||
+      initialState.deafened !== this.deafened ||
+      initialState.listening !== this.microphoneLost ||
+      this.stateDirty
         ? this.setState()
         : this.statePromise,
     ]);
@@ -616,7 +683,7 @@ export class PublicCallClient {
     if (this.stateDirty) await this.setState();
     if (this.pollAgain) await this.poll();
     signal.throwIfAborted();
-    if (generation !== this.generation || !events.connected || microphone.readyState !== "live") {
+    if (generation !== this.generation || !events.connected || (microphone && microphone.readyState !== "live")) {
       throw new Error("Voice setup changed before it was ready. Please join again.");
     }
     // Applying a subscription offer can legitimately move an established
@@ -629,17 +696,17 @@ export class PublicCallClient {
       generation !== this.generation ||
       !events.connected ||
       pc.connectionState !== "connected" ||
-      microphone.readyState !== "live"
+      (microphone && microphone.readyState !== "live")
     ) {
       throw new Error("Voice setup changed before it was ready. Please join again.");
     }
     this.phase = "connected";
     // Monitoring has already detached the public sender; only its private return uses audio.
-    microphone.enabled = this.monitoring || !this.muted;
+    if (microphone) microphone.enabled = this.monitoring || !this.muted;
     this.joinTiming = {
       join: `${label} in ${(performance.now() - started).toFixed(0)} ms${warm ? " · pre-connected" : ""}`,
       microphoneMs,
-      microphoneDetail: this.microphoneDetail(microphone),
+      microphoneDetail: microphone ? this.microphoneDetail(microphone) : undefined,
       sessionMs,
       signalingMs: signaled - prepared,
       transportMs: connected - signaled,
@@ -821,8 +888,8 @@ export class PublicCallClient {
       if (pc.connectionState === "connected") {
         window.clearTimeout(this.disconnectTimer);
         this.disconnectTimer = undefined;
-        const microphone = this.senders.get("microphone");
-        if (microphone) microphone.track.enabled = this.monitoring || !this.muted;
+        const microphone = this.senders.get("microphone")?.track;
+        if (microphone) microphone.enabled = this.monitoring || !this.muted;
       } else if (pc.connectionState === "failed") this.scheduleReconnect("connection failed");
       else if (this.disconnectTimer === undefined) {
         // Intermediate states must not cancel or extend an existing deadline.
@@ -835,7 +902,7 @@ export class PublicCallClient {
   }
 
   private async publishMicrophone(
-    track: MediaStreamTrack,
+    track: MediaStreamTrack | undefined,
     { pc, transceiver, offer, mid }: PreparedPublication,
     published: SessionDescriptionResponse | undefined,
     generation = this.generation,
@@ -846,8 +913,9 @@ export class PublicCallClient {
       const token = this.token;
       // Attach before the answer so the transport never connects without the
       // (still disabled) microphone, exactly as when the track was added first.
-      track.enabled = this.readyToTalk && !this.muted;
-      await transceiver.sender.replaceTrack(this.muted || this.monitoring ? null : track);
+      // Listening publishes the same MID with no track, so a later input only replaces it.
+      if (track) track.enabled = this.readyToTalk && !this.muted;
+      await transceiver.sender.replaceTrack(this.muted || this.monitoring || !track ? null : track);
       await pc.setLocalDescription(offer);
       if (generation !== this.generation) throw new Error("Call session changed.");
       this.senders.set(kind, { sender: transceiver.sender, mid, track });
@@ -866,10 +934,11 @@ export class PublicCallClient {
       if (!response.sessionDescription) throw new Error("The media service did not answer publication.");
       await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
       if (generation !== this.generation) throw new Error("Call session changed.");
+      if (!track) return;
       this.localMedia = new MediaStream([track]);
       if (this.muted || this.monitoring) track.enabled = this.readyToTalk && this.monitoring;
     }, generation).catch((error) => {
-      track.stop();
+      track?.stop();
       if (generation === this.generation && this.phase === "connected") {
         this.pc?.close();
         this.scheduleReconnect(reconnectReason("microphone publish", error));
@@ -881,10 +950,11 @@ export class PublicCallClient {
   async setMuted(muted: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
-    // Unmuting a lost microphone means opening one again first.
+    // Unmuting without a microphone (listening, or one that was lost) means
+    // opening one first; until that works the call stays muted and listening.
     if (!muted && this.microphoneLost && this.phase === "connected") {
-      await this.changeMicrophone("").catch((error) => {
-        if (generation === this.generation) throw error;
+      await this.changeMicrophone("").catch((error: Error) => {
+        if (generation === this.generation) throw new Error(stillListeningMessage(error.cause ?? error));
       });
     }
     if (!muted) {
@@ -892,12 +962,12 @@ export class PublicCallClient {
       this.mutedBeforeDeafen = undefined;
     }
     this.muted = muted;
-    const microphone = this.senders.get("microphone");
-    if (microphone) microphone.track.enabled = this.readyToTalk && !muted;
+    const microphone = this.senders.get("microphone")?.track;
+    if (microphone) microphone.enabled = this.readyToTalk && !muted;
     this.emit();
     await this.serializeMedia(async () => {
       const current = this.senders.get("microphone");
-      if (!current) return;
+      if (!current?.track) return;
       current.track.enabled = this.readyToTalk && !this.muted;
       await current.sender.replaceTrack(this.muted || !this.readyToTalk ? null : current.track);
     }).catch((error) => {
@@ -916,12 +986,12 @@ export class PublicCallClient {
     }
     if (deafened) this.muted = true;
     this.deafened = deafened;
-    const microphone = this.senders.get("microphone");
-    if (microphone) microphone.track.enabled = this.readyToTalk && !this.muted;
+    const microphone = this.senders.get("microphone")?.track;
+    if (microphone) microphone.enabled = this.readyToTalk && !this.muted;
     this.emit();
     await this.serializeMedia(async () => {
       const current = this.senders.get("microphone");
-      if (!current) return;
+      if (!current?.track) return;
       current.track.enabled = this.readyToTalk && !this.muted;
       await current.sender.replaceTrack(this.muted || !this.readyToTalk ? null : current.track);
     }).catch((error) => {
@@ -935,7 +1005,7 @@ export class PublicCallClient {
     if (monitoring && (this.phase !== "connected" || !this.token))
       throw new Error("Join voice before testing your microphone.");
     if (monitoring) {
-      const microphone = this.senders.get("microphone");
+      const microphone = this.senders.get("microphone")?.track;
       if (!microphone || this.microphoneLost) throw new Error("No microphone is available for testing.");
       this.stateBeforeMonitoring = { muted: this.muted, deafened: this.deafened };
       this.monitoring = true;
@@ -943,7 +1013,7 @@ export class PublicCallClient {
       this.deafened = true;
       // The test records the locally captured, noise-suppressed audio. It does
       // not need a round trip through the SFU and never publishes this stream.
-      this.monitorStream = new MediaStream([this.captures.get(microphone.track)?.naturalTrack ?? microphone.track]);
+      this.monitorStream = new MediaStream([this.captures.get(microphone)?.naturalTrack ?? microphone]);
     } else {
       this.monitorStream = undefined;
       this.monitoring = false;
@@ -952,13 +1022,13 @@ export class PublicCallClient {
       this.stateBeforeMonitoring = undefined;
     }
 
-    const microphone = this.senders.get("microphone");
+    const microphone = this.senders.get("microphone")?.track;
     // Silence immediately, before asynchronous sender detachment.
-    if (microphone && monitoring) microphone.track.enabled = false;
+    if (microphone && monitoring) microphone.enabled = false;
     this.emit();
     await this.serializeMedia(async () => {
       const current = this.senders.get("microphone");
-      if (!current) return;
+      if (!current?.track) return;
       await current.sender.replaceTrack(this.muted || this.monitoring ? null : current.track);
       current.track.enabled = this.monitoring || !this.muted;
     });
@@ -982,7 +1052,7 @@ export class PublicCallClient {
         try {
           await this.api(
             "state",
-            { muted: this.muted, deafened: this.deafened, sequence: revision },
+            { muted: this.muted, deafened: this.deafened, listening: this.microphoneLost, sequence: revision },
             token,
             SNAPSHOT_TIMEOUT_MS,
           );
@@ -1080,11 +1150,12 @@ export class PublicCallClient {
         ice: this.receivePc.iceConnectionState,
         signaling: this.receivePc.signalingState,
       },
+      listening: this.microphoneLost,
       microphoneSender: sender && {
         attached: !!sender.sender.track,
-        enabled: sender.track.enabled,
-        readyState: sender.track.readyState,
-        muted: sender.track.muted,
+        enabled: sender.track?.enabled,
+        readyState: sender.track?.readyState,
+        muted: sender.track?.muted,
       },
       participants: this.participants.length,
       otherTracks: others.reduce((count, participant) => count + participant.tracks.length, 0),
@@ -1143,12 +1214,10 @@ export class PublicCallClient {
     if (!publication) return;
     this.microphoneLost = true;
     this.microphoneStatus = "Microphone disconnected";
-    this.stopMicrophone(publication.track);
+    if (publication.track) this.stopMicrophone(publication.track);
+    publication.track = undefined;
     this.localMedia = undefined;
-    this.muted = true;
-    // Undeafening or ending a microphone test must not unmute a dead input.
-    if (this.deafened) this.mutedBeforeDeafen = true;
-    if (this.stateBeforeMonitoring) this.stateBeforeMonitoring.muted = true;
+    this.forceMuted();
     this.emit(reason);
     try {
       await this.serializeMedia(() => publication.sender.replaceTrack(null), generation);
@@ -1161,6 +1230,21 @@ export class PublicCallClient {
         if (generation === this.generation) this.emit(message(error));
       });
     }
+  }
+
+  /** Joined without an input: muted, with nothing captured, until an unmute opens one. */
+  private listen(reason: string) {
+    this.listeningReason = reason;
+    this.microphoneStatus = LISTENING_STATUS;
+    this.localMedia = undefined;
+    this.forceMuted();
+  }
+
+  private forceMuted() {
+    this.muted = true;
+    // Undeafening or ending a microphone test must not unmute a missing input.
+    if (this.deafened) this.mutedBeforeDeafen = true;
+    if (this.stateBeforeMonitoring) this.stateBeforeMonitoring.muted = true;
   }
 
   private stopMicrophone(track: MediaStreamTrack) {
@@ -1243,7 +1327,9 @@ export class PublicCallClient {
     const previous = this.noiseSuppression;
     this.noiseSuppression = mode;
     try {
-      if (this.phase === "connected") await this.changeMicrophone(this.microphoneDeviceId ?? "");
+      // Listening keeps every input closed; the next unmute opens one with this.
+      if (this.phase === "connected" && !this.microphoneLost)
+        await this.changeMicrophone(this.microphoneDeviceId ?? "");
     } catch (error) {
       this.noiseSuppression = previous;
       throw error;
@@ -1256,7 +1342,8 @@ export class PublicCallClient {
     const previous = this.audioSetup;
     this.audioSetup = setup;
     try {
-      if (this.phase === "connected") await this.changeMicrophone(this.microphoneDeviceId ?? "");
+      if (this.phase === "connected" && !this.microphoneLost)
+        await this.changeMicrophone(this.microphoneDeviceId ?? "");
     } catch (error) {
       this.audioSetup = previous;
       throw error;
@@ -1276,7 +1363,7 @@ export class PublicCallClient {
       // Without a publication the choice would not be in use; do not accept it.
       if (!microphone) throw new Error("Voice is still connecting. Choose your microphone once it has connected.");
       const old = microphone.track;
-      const oldCapture = this.captures.get(old);
+      const oldCapture = old && this.captures.get(old);
       let track: MediaStreamTrack | undefined;
       let senderReplaced = false;
       // Enhanced filters are CPU-heavy. Do not run two pipelines while preparing
@@ -1299,9 +1386,14 @@ export class PublicCallClient {
         microphone.track = track;
         this.localMedia = new MediaStream([track]);
         this.microphoneDeviceId = deviceId || undefined;
+        const wasListening = this.microphoneLost;
         this.microphoneLost = false;
-        this.stopMicrophone(old);
+        this.listeningReason = undefined;
+        if (this.microphoneStatus === LISTENING_STATUS) this.microphoneStatus = undefined;
+        if (old) this.stopMicrophone(old);
         this.emit();
+        // Others stop seeing this call as listening (the call itself stays muted).
+        if (wasListening && this.token) void this.setState().catch((error) => this.emit(message(error)));
       } catch (error) {
         if (generation !== this.generation) {
           if (track) this.stopMicrophone(track);
@@ -1315,8 +1407,8 @@ export class PublicCallClient {
         }
         if (senderReplaced && generation === this.generation && this.senders.get("microphone") === microphone) {
           try {
-            await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : old);
-            if (this.monitoring) this.monitorStream = new MediaStream([oldCapture?.naturalTrack ?? old]);
+            await microphone.sender.replaceTrack(this.muted || this.monitoring || !old ? null : old);
+            if (this.monitoring && old) this.monitorStream = new MediaStream([oldCapture?.naturalTrack ?? old]);
           } catch {
             rollbackFailed = true;
           }
@@ -1324,7 +1416,7 @@ export class PublicCallClient {
         if (track) this.stopMicrophone(track);
         if (rollbackFailed && generation === this.generation) this.scheduleReconnect("microphone change failed");
         // Callers show this text; a raw DOMException message is not for people.
-        throw new Error(message(error));
+        throw new Error(message(error), { cause: error });
       }
     }, generation);
   }
@@ -1802,16 +1894,16 @@ export class PublicCallClient {
       captured = prepared.microphone;
       if (generation !== this.generation) {
         prepared.publication.pc.close();
-        this.stopMicrophone(prepared.microphone);
+        if (prepared.microphone) this.stopMicrophone(prepared.microphone);
         void this.api("leave", {}, prepared.joined.token).catch(() => undefined);
         return;
       }
       await this.connectPrepared(prepared, generation, started, "Rejoined");
       this.reconnects = 0;
       if (this.monitoring) {
-        const microphone = this.senders.get("microphone");
+        const microphone = this.senders.get("microphone")?.track;
         if (microphone)
-          this.monitorStream = new MediaStream([this.captures.get(microphone.track)?.naturalTrack ?? microphone.track]);
+          this.monitorStream = new MediaStream([this.captures.get(microphone)?.naturalTrack ?? microphone]);
         this.emit();
       }
     } catch {
@@ -1847,7 +1939,7 @@ export class PublicCallClient {
     window.clearInterval(this.pollTimer);
     window.clearTimeout(this.reconnectTimer);
     const token = this.token;
-    for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();
+    for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track?.stop();
     this.stopEverything(preserve);
     return !skipLeave && token ? this.api("leave", {}, token).catch(() => undefined) : Promise.resolve();
   }
@@ -1883,6 +1975,7 @@ export class PublicCallClient {
     this.joinTiming = undefined;
     this.microphoneStatus = undefined;
     this.microphoneLost = false;
+    this.listeningReason = undefined;
     this.microphoneRecovery = undefined;
     this.microphoneRecovered = undefined;
     this.monitorStream = undefined;
@@ -1891,7 +1984,7 @@ export class PublicCallClient {
     this.pc?.getSenders().forEach((sender) => {
       if (sender.track !== preserve) sender.track?.stop();
     });
-    for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();
+    for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track?.stop();
     this.pc?.close();
     this.receivePc?.getReceivers().forEach((receiver) => receiver.track.stop());
     this.receivePc?.close();

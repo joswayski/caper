@@ -15,6 +15,8 @@ export interface Participant extends PersonPicture {
   name: string;
   muted: boolean;
   deafened: boolean;
+  /** Joined without a microphone: hears the call, sends nothing. Absent from older servers. */
+  listening?: boolean;
   tracks: CallTrack[];
 }
 
@@ -98,6 +100,10 @@ export interface CallViewState {
   phase: CallPhase;
   muted: boolean;
   deafened: boolean;
+  /** Connected with no microphone open: muted, and shown to others as listening. */
+  listening?: boolean;
+  /** Why the call joined listening (no microphone could be opened at join). */
+  listeningReason?: string;
   stateSyncPending?: boolean;
   liveUpdatesPending?: boolean;
   inputVolume: number;

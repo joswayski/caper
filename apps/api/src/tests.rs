@@ -1564,8 +1564,8 @@ async fn exercise_public_presence(a: &AppState, b: &AppState) {
     let person = snapshot["participants"][0].as_object().unwrap();
     assert_eq!(
         person.len(),
-        4,
-        "only id/name/muted/deafened, no tracks or secrets"
+        5,
+        "only id/name/muted/deafened/listening, no tracks or secrets"
     );
     assert_eq!(snapshot["participants"].as_array().unwrap().len(), 1);
     assert_eq!(monitor_joined(b, token, "sender").await.0, StatusCode::OK);
@@ -1596,7 +1596,7 @@ async fn exercise_public_presence(a: &AppState, b: &AppState) {
             "POST",
             "/api/media/state",
             Some(token),
-            json!({"muted":true,"deafened":true})
+            json!({"muted":true,"deafened":true,"listening":true})
         )
         .await
         .0,
@@ -1605,6 +1605,7 @@ async fn exercise_public_presence(a: &AppState, b: &AppState) {
     let updated = presence_snapshot_event(&mut spectator).await;
     assert_eq!(updated["participants"][0]["muted"], true);
     assert_eq!(updated["participants"][0]["deafened"], true);
+    assert_eq!(updated["participants"][0]["listening"], true);
     assert!(
         next_event(&mut authenticated)
             .await

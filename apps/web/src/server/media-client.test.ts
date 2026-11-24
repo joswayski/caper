@@ -161,6 +161,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   const joinedNames: string[] = [];
   const stateUpdates: Array<{ muted: boolean; deafened: boolean }> = [];
   const stateSequences: number[] = [];
+  const listeningUpdates: boolean[] = [];
   const states: CallViewState[] = [];
   const events: MediaFeed[] = [];
   const audioSinks: FakeAudio[] = [];
@@ -223,8 +224,9 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
     }
     if (op === "snapshot") return Response.json({ participants: [] });
     if (op === "state") {
-      const { muted, deafened, sequence } = JSON.parse(options.body as string);
+      const { muted, deafened, listening, sequence } = JSON.parse(options.body as string);
       stateUpdates.push({ muted, deafened });
+      listeningUpdates.push(listening);
       stateSequences.push(sequence);
     }
     return new Response(null, { status: 204 });
@@ -278,7 +280,19 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
     setAppGatewayForTests(undefined);
     restore.reverse().forEach((fn) => fn());
   });
-  return { client, track, calls, joinedNames, stateUpdates, stateSequences, states, install, events, audioSinks };
+  return {
+    client,
+    track,
+    calls,
+    joinedNames,
+    stateUpdates,
+    listeningUpdates,
+    stateSequences,
+    states,
+    install,
+    events,
+    audioSinks,
+  };
 }
 
 test("state requests carry increasing sequences across mute/deafen and retries", async (t) => {
@@ -1192,23 +1206,62 @@ test("join provisioning overlaps permission and leave cleans up both late result
   assert.equal(states.at(-1)?.sessionStartedAt, undefined);
 });
 
-test("denied microphone permission leaves the call and shows an actionable error", async (t) => {
-  const { client, calls, states, install } = setup(t);
-  install("navigator", {
-    mediaDevices: {
-      getUserMedia: async () => {
-        throw new DOMException("Permission denied", "NotAllowedError");
+for (const [name, explanation] of [
+  ["NotAllowedError", "Microphone access is blocked, so you joined to listen."],
+  ["NotFoundError", "No microphone was found, so you joined to listen."],
+  ["NotReadableError", "Your microphone could not be opened, so you joined to listen."],
+] as const)
+  test(`a microphone that cannot open (${name}) joins listening, sends nothing, and unmutes once one opens`, async (t) => {
+    const { client, calls, states, stateUpdates, listeningUpdates, install } = setup(t);
+    let attempts = 0;
+    const denied = {
+      mediaDevices: {
+        getUserMedia: async () => {
+          attempts++;
+          throw new DOMException("Browser error", name);
+        },
       },
-    },
+    };
+    install("navigator", denied);
+
+    await client.join("Guest");
+
+    assert.equal(calls.includes("leave"), false, "the join is kept");
+    const joined = states.at(-1)!;
+    assert.equal(joined.phase, "connected", "hearing the room does not need a microphone");
+    assert.equal(joined.muted, true);
+    assert.equal(joined.listening, true);
+    assert.equal(joined.localMedia, undefined);
+    assert.equal(Peer.latest.senders[0].track, null, "nothing is captured or sent");
+    assert.ok(joined.listeningReason?.startsWith(explanation), joined.listeningReason);
+    assert.equal(stateUpdates.at(-1)?.muted, true);
+    assert.equal(listeningUpdates.at(-1), true, "others see it listening");
+
+    // Settings and deafen do not open a microphone while listening.
+    await client.setAudioSetup("speakers");
+    await client.setDeafened(true);
+    await client.setDeafened(false);
+    assert.equal(attempts, 1);
+    assert.equal(states.at(-1)?.muted, true, "undeafening does not unmute a missing microphone");
+
+    // Unmute asks again, says why it failed, and stays listening.
+    await assert.rejects(client.setMuted(false), /You’re still listening, muted/);
+    assert.equal(attempts, 2);
+    assert.equal(states.at(-1)?.listening, true);
+    assert.equal(states.at(-1)?.muted, true);
+    assert.equal(Peer.latest.senders[0].track, null);
+
+    const microphone = new Track();
+    install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([microphone]) } });
+    await client.setMuted(false);
+    assert.equal(states.at(-1)?.listening, false);
+    assert.equal(states.at(-1)?.listeningReason, undefined);
+    assert.equal(states.at(-1)?.muted, false);
+    assert.equal(Peer.latest.senders[0].track, microphone, "the same publication now sends the microphone");
+    assert.equal(stateUpdates.at(-1)?.muted, false);
+    assert.equal(listeningUpdates.at(-1), false);
+    assert.equal(Peer.all.length, 1, "no rejoin");
   });
-
-  await client.join("Guest");
-
-  assert.deepEqual(calls, ["join", "leave"]);
-  assert.equal(states.at(-1)?.phase, "failed");
-  assert.equal(states.at(-1)?.sessionStartedAt, undefined);
-  assert.equal(states.at(-1)?.error, "Microphone permission was denied. Allow access and try again.");
-});
 
 for (const cleanupFails of [false, true])
   test(`leave releases local media and permits rejoin before old cleanup ${cleanupFails ? "fails" : "finishes"}`, async (t) => {
@@ -1464,7 +1517,12 @@ test("deafen changed during a warm Join is acknowledged before readiness", async
       });
     }
     if (url.endsWith("/state")) {
-      assert.deepEqual(JSON.parse(init.body as string), { muted: true, deafened: true, sequence: 1 });
+      assert.deepEqual(JSON.parse(init.body as string), {
+        muted: true,
+        deafened: true,
+        listening: false,
+        sequence: 1,
+      });
       return new Promise<Response>((resolve) => {
         acknowledge = () => resolve(new Response(null, { status: 204 }));
       });
@@ -2395,7 +2453,7 @@ test("draining with failed state writes retries latest intent without replacing 
   await Promise.all([client.setDeafened(false), client.setMuted(false)]);
   vi.advanceTimersByTime(300);
   await tick();
-  assert.deepEqual(updates.at(-1), { muted: false, deafened: false, sequence: 4 });
+  assert.deepEqual(updates.at(-1), { muted: false, deafened: false, listening: false, sequence: 4 });
   assert.equal(states.at(-1)?.stateSyncPending, false);
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(
@@ -2959,7 +3017,7 @@ test("a lost microphone that cannot be reopened mutes with a plain message until
   assert.equal(states.at(-1)?.noiseSuppressionStatus, "Microphone disconnected");
   assert.equal(Peer.latest.senders[0].track, null);
   assert.equal(stateUpdates.at(-1)?.muted, true, "the room sees the mute");
-  await assert.rejects(client.setMuted(false), /Connect a microphone/);
+  await assert.rejects(client.setMuted(false), /No microphone was found\. Connect one/);
   assert.equal(states.at(-1)?.muted, true, "unmute cannot claim a microphone that is not there");
 
   const replacement = new Track();
@@ -2972,13 +3030,13 @@ test("a lost microphone that cannot be reopened mutes with a plain message until
       },
     },
   });
-  // A settings change reopens the selected input, which is no longer the vanished one.
+  // Without an input the call listens: a settings change opens nothing.
   await client.setAudioSetup("speakers");
-  assert.deepEqual(deviceIds, [undefined], "the vanished device's exact ID is forgotten");
-  assert.equal(states.at(-1)?.muted, true, "a reopened microphone stays muted until the user unmutes");
+  assert.deepEqual(deviceIds, [], "a settings change does not open a microphone while listening");
+  assert.equal(states.at(-1)?.muted, true);
   assert.equal(Peer.latest.senders[0].track, null);
   await client.setMuted(false);
-  assert.deepEqual(deviceIds, [undefined]);
+  assert.deepEqual(deviceIds, [undefined], "the vanished device's exact ID is forgotten");
   assert.equal(states.at(-1)?.muted, false);
   assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], replacement);
   assert.equal(Peer.latest.senders[0].track, replacement);
@@ -3197,6 +3255,7 @@ test("join carries current mute/deafen intent without a redundant state write du
       name: "Laptop",
       muted: true,
       deafened: true,
+      listening: false,
       receive: true,
       publish: { mid: "0", sessionDescription: { type: "offer", sdp: "v=0\r\na=mid:0\r\n" } },
     });

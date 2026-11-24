@@ -19,6 +19,7 @@ import {
   ArrowLeft,
   AudioLines,
   ChevronDown,
+  Ear,
   Hash,
   LockKeyhole,
   HeadphoneOff,
@@ -760,6 +761,14 @@ export default function Call({
   useEffect(() => {
     if (state.error) setVoiceError(state.error);
   }, [state.error]);
+  // Joining without a microphone explains itself until one opens.
+  const listeningReason = useRef<string>(undefined);
+  useEffect(() => {
+    const previous = listeningReason.current;
+    listeningReason.current = state.listeningReason;
+    if (state.listeningReason) setVoiceError(state.listeningReason);
+    else if (previous) setVoiceError((current) => (current === previous ? undefined : current));
+  }, [state.listeningReason]);
   // Show "Connecting…" only if joining takes a moment; an immediate failure
   // (such as a denied microphone) should not flash it.
   const [joiningShown, setJoiningShown] = useState(false);
@@ -1223,6 +1232,13 @@ export default function Call({
       </button>
     </Tooltip>
   );
+  const muteTooltip = state.monitoring
+    ? "Stop mic test to change mute"
+    : state.listening
+      ? "Listening only · Unmute to use your microphone"
+      : state.muted
+        ? "Unmute"
+        : "Mute";
   const toggleMute = () => {
     if (state.monitoring) return;
     const muted = !state.muted;
@@ -1393,7 +1409,17 @@ export default function Call({
         const participantName = self ? (account?.displayName ?? participant.name) : participant.name;
         const participantMuted = self ? state.muted : participant.muted;
         const participantDeafened = self ? state.deafened : participant.deafened;
-        const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
+        // Listening: joined without a microphone, so muted until one opens.
+        const participantListening = self ? !!state.listening : !!participant.listening;
+        const participantStatus = participantDeafened
+          ? participantListening
+            ? "Deafened, listening only"
+            : "Deafened"
+          : participantListening
+            ? "Listening only"
+            : participantMuted
+              ? "Muted"
+              : undefined;
         const voice = [audible(participant)];
         return (
           <li
@@ -1427,7 +1453,11 @@ export default function Call({
                   </strong>
                   {participantStatus && (
                     <span className="participant-status" title={participantStatus}>
-                      {participantMuted && <MicOff aria-hidden="true" />}
+                      {participantListening ? (
+                        <Ear aria-hidden="true" />
+                      ) : (
+                        participantMuted && <MicOff aria-hidden="true" />
+                      )}
                       {participantDeafened && <HeadphoneOff aria-hidden="true" />}
                       <span className="sr-only">{participantStatus}</span>
                     </span>
@@ -1631,7 +1661,7 @@ export default function Call({
     );
   };
   const muteToggle = (
-    <Tooltip content={state.monitoring ? "Stop mic test to change mute" : state.muted ? "Unmute" : "Mute"}>
+    <Tooltip content={muteTooltip}>
       <button
         type="button"
         className={`voice-icon-button live-toggle${state.muted ? " active" : ""}`}
@@ -1676,7 +1706,9 @@ export default function Call({
   };
   const callStatusText = () =>
     connected
-      ? null
+      ? state.listening
+        ? "Listening only"
+        : null
       : state.phase === "joining"
         ? "Connecting…"
         : state.phase === "reconnecting"
@@ -1687,7 +1719,7 @@ export default function Call({
     const { startedAt } = callPeople();
     return (
       <span className="live-call-status">
-        {!connected && <span className="live-status">{callStatusText()}</span>}
+        {callStatusText() && <span className="live-status">{callStatusText()}</span>}
         {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
       </span>
     );
@@ -1774,7 +1806,7 @@ export default function Call({
               <span>{name}</span>
               {elsewhere && voiceSpaceName && <small>{voiceSpaceName}</small>}
             </button>
-            {!connected && <span className="live-status">{callStatusText()}</span>}
+            {callStatusText() && <span className="live-status">{callStatusText()}</span>}
             {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
           </div>
         )}
@@ -1788,11 +1820,12 @@ export default function Call({
               const self = participant.id === state.selfId;
               const muted = self ? state.muted : participant.muted;
               const deafened = self ? state.deafened : participant.deafened;
+              const listening = self ? !!state.listening : !!participant.listening;
               const label = (speaking: boolean) =>
                 [
                   `${personName(participant)}${self ? " (you)" : ""}`,
                   speaking && "speaking",
-                  deafened ? "deafened" : muted && "muted",
+                  deafened ? "deafened" : listening ? "listening only" : muted && "muted",
                 ]
                   .filter(Boolean)
                   .join(", ");
@@ -1805,7 +1838,13 @@ export default function Call({
                           {liveAvatar(participant, speaking)}
                           {(muted || deafened) && (
                             <span className="live-badge">
-                              {deafened ? <HeadphoneOff aria-hidden="true" /> : <MicOff aria-hidden="true" />}
+                              {deafened ? (
+                                <HeadphoneOff aria-hidden="true" />
+                              ) : listening ? (
+                                <Ear aria-hidden="true" />
+                              ) : (
+                                <MicOff aria-hidden="true" />
+                              )}
                             </span>
                           )}
                         </span>
@@ -2106,9 +2145,7 @@ export default function Call({
               {!narrow && (
                 <>
                   <div className={`voice-action-group${state.muted ? " active" : ""}`}>
-                    <Tooltip
-                      content={state.monitoring ? "Stop mic test to change mute" : state.muted ? "Unmute" : "Mute"}
-                    >
+                    <Tooltip content={muteTooltip}>
                       <button
                         type="button"
                         className={`voice-icon-button ${state.muted ? "active" : ""}`}

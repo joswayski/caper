@@ -1528,19 +1528,26 @@ async fn first_roster_contains_join_mute_and_deafen_intent() {
     let mut stream = presence_response(&s).await.into_body().into_data_stream();
     next_event(&mut stream).await;
     presence_snapshot_event(&mut stream).await;
-    for (muted, deafened) in [(true, false), (false, true), (true, true), (false, false)] {
+    for (muted, deafened, listening) in [
+        (true, false, false),
+        (false, true, false),
+        (true, true, false),
+        (false, false, false),
+        (true, false, true),
+    ] {
         let (status, joined) = call(
             app(s.clone()),
             "POST",
             "/api/media/join",
             None,
-            json!({"name":"phone","muted":muted,"deafened":deafened}),
+            json!({"name":"phone","muted":muted,"deafened":deafened,"listening":listening}),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         let first = presence_snapshot_event(&mut stream).await;
         assert_eq!(first["participants"][0]["muted"], muted);
         assert_eq!(first["participants"][0]["deafened"], deafened);
+        assert_eq!(first["participants"][0]["listening"], listening);
         assert_eq!(
             call(
                 app(s.clone()),

@@ -972,6 +972,10 @@ struct Participant {
     turn_attempts: VecDeque<Timestamp>,
     muted: bool,
     deafened: bool,
+    /// Joined without a microphone that could be opened: hears the room and
+    /// sends nothing until an unmute opens one.
+    #[serde(default)]
+    listening: bool,
     #[serde(default)]
     state_sequence: u64,
     lease: Timestamp,
@@ -1906,6 +1910,8 @@ struct Join {
     muted: bool,
     #[serde(default)]
     deafened: bool,
+    #[serde(default)]
+    listening: bool,
     /// Join-click time, shared with spectators once admission succeeds. Bound
     /// client clock skew/backdating to the same 30 s window as reservations.
     #[serde(default, rename = "joinStartedAt")]
@@ -2246,6 +2252,7 @@ async fn join(
         turn_attempts: VecDeque::new(),
         muted: input.muted,
         deafened: input.deafened,
+        listening: input.listening,
         state_sequence: 0,
         lease: Timestamp::now(),
         joined: joined_at,
@@ -3110,6 +3117,7 @@ struct View<'a> {
     name: &'a str,
     muted: bool,
     deafened: bool,
+    listening: bool,
     tracks: Vec<TrackView>,
 }
 #[derive(Serialize)]
@@ -3153,6 +3161,7 @@ fn public_snapshot(r: &Registry) -> Value {
                 name: &p.name,
                 muted: p.muted,
                 deafened: p.deafened,
+                listening: p.listening,
                 tracks,
             }
         })
@@ -3169,6 +3178,7 @@ struct PresenceView<'a> {
     name: &'a str,
     muted: bool,
     deafened: bool,
+    listening: bool,
 }
 async fn presence(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
@@ -3186,6 +3196,7 @@ fn presence_snapshot(r: &Registry) -> Value {
             name: &p.name,
             muted: p.muted,
             deafened: p.deafened,
+            listening: p.listening,
         })
         .collect();
     participants.sort_by_key(|p| p.id);
@@ -3916,6 +3927,9 @@ async fn close(
 struct StateBody {
     muted: bool,
     deafened: bool,
+    /// Older clients always had a microphone when they joined.
+    #[serde(default)]
+    listening: bool,
     sequence: Option<u64>,
 }
 async fn update_state(
@@ -3938,6 +3952,7 @@ async fn update_state(
         }
         p.muted = i.muted;
         p.deafened = i.deafened;
+        p.listening = i.listening;
         Ok(StatusCode::NO_CONTENT)
     })
     .await

@@ -17,6 +17,7 @@ export function callSnapshot(value: unknown, spectator: boolean): CallSnapshot &
         typeof item.name === "string" &&
         typeof item.muted === "boolean" &&
         typeof item.deafened === "boolean" &&
+        (item.listening === undefined || typeof item.listening === "boolean") &&
         (spectator
           ? !("tracks" in item)
           : Array.isArray(item.tracks) &&
