@@ -587,7 +587,16 @@ def main() -> None:
     # The gear opens one Settings screen: its sections in order, then Log out.
     tap(description="User Settings")
     settings = capture("caper-android-settings", "Voice & audio")
-    for section in ("Profile", "Edit profile", "Appearance", "Notifications", "Voice & audio", "Privacy & blocked accounts", "About", "Log out"):
+    for section in (
+        "Profile",
+        "Edit profile",
+        "Appearance",
+        "Notifications",
+        "Voice & audio",
+        "Privacy & blocked accounts",
+        "About",
+        "Log out",
+    ):
         assert find(settings, text=section) is not None, f"Missing Settings section: {section}"
     tap(text="Notifications")
     notifications = capture("caper-android-settings-notifications", "Do Not Disturb")
@@ -600,7 +609,9 @@ def main() -> None:
     wait_for(text="Voice & audio")
     tap(text="Voice & audio")
     audio_settings = capture("caper-android-audio-settings", "Audio test")
-    assert find(audio_settings, text="Connection details") is None, "Connection details are only offered while connected"
+    assert find(audio_settings, text="Connection details") is None, (
+        "Connection details are only offered while connected"
+    )
     tap(text="Audio test")
     audio = capture("caper-android-audio-prejoin", "Only you can hear these tests.")
     for label in ("Test microphone volume", "Voice processing", "Test speaker volume"):
