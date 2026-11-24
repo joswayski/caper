@@ -3093,7 +3093,7 @@ Cloudflare resources: Realtime SFU app `caper-voice-mvp`
 | `DATABASE_MAX_CONNECTIONS` | Optional pool size per API or gateway process, 1–100; default `5`. Keep replicas × size within the pooler limit. Invalid values stop startup. |
 | `DATABASE_ALLOW_INSECURE` | Local development only; set by Compose for the private `postgres` service. |
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas. |
-| `DEBUG_USERS` | Optional comma-separated username allowlist for client diagnostics. Exact case-insensitive matches; blank disables. Restart the API after changes; open tabs pick it up when refocused or when User Settings opens. |
+| `DEBUG_USERS` | Optional comma-separated username allowlist for client diagnostics. Exact case-insensitive matches; blank disables. Restart the API after changes; open tabs pick it up when refocused or when Settings opens. |
 | `RESERVED_USERNAMES` | Optional comma-separated additional usernames that `/api/account/profile` cannot newly assign. `caper`, `capers`, `admin`, `admins`, `administrator`, `administrators`, `mod`, `mods`, `moderator`, `moderators`, `support`, `feedback`, `security`, `staff`, `official`, `system`, `team`, `trust`, `safety`, `caper_support`, `caper_feedback`, `jose`, `caperchat`, `aaron`, `joswayski`, `everyone` and `here` are always reserved. Existing owners may keep a reserved username. Restart all API replicas after changes. |
 | `AUTH_REVIEW_EMAIL`, `AUTH_REVIEW_CODE` | Optional pair for App Store and Google Play reviewers. Set both or neither (startup fails otherwise). Requesting a code for that address emails nothing, and the fixed 6-character code (sign-in alphabet, no `0`, `O`, `1`, `I`, `L`, `U` or `V`) completes the normal single-use challenge with the usual limits. Keep that account to demo content; rotate the code if it leaks. |
 | `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
@@ -4103,7 +4103,7 @@ kubectl -n default rollout status deployment/caper-api --timeout=15m
 Open tabs re-read the own-account response when visible again or when **User
 Settings** opens. Never expose `DEBUG_USERS` through web configuration or `VITE_`.
 
-Eligible accounts see **User Settings → Audio diagnostics** and expandable
+Eligible accounts see **Settings → Voice & audio → Audio diagnostics** and expandable
 diagnostics inside **Mic test**: capture state (none, opening, failed, active,
 ended), processor/fallback status, capture settings, DPDFNet hop counts and
 mean/max processing time against its 10 ms budget, raw and processed track state,
@@ -4684,7 +4684,7 @@ Shared tokens: `--ease-out` `cubic-bezier(0.16, 1, 0.3, 1)`, `--motion-fast`
   (`modal_shells_do_not_recenter_for_errors_or_pending_content`). Backdrop clicks
   never discard unsaved Channel settings or a renamed space.
 - Touch targets are 44px/44pt/48dp; disclosure chevrons rotate; timers use
-  tabular digits; keyboard focus returns to User Settings after its dialogs.
+  tabular digits; keyboard focus returns to Settings after its dialogs.
   On macOS, native menu activation follows the system's Keyboard navigation
   setting: focus and Space activation require it; pointer reopening does not.
 - Every client hides **Copy text** for attachment-only messages and says
@@ -4818,7 +4818,7 @@ event for this.
 
 ## Release highlights (What’s new)
 
-Every client shows an after-update highlights view and a User Settings history.
+Every client shows an after-update highlights view and a Settings → About → What’s new history.
 The first successful fetch on a new installation records a baseline silently.
 Later builds show unread highlighted releases newest-first; maintenance-only
 releases advance the baseline without opening anything. Dismissal acknowledges

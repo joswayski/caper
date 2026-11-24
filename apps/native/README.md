@@ -68,6 +68,13 @@ against the parity fixture (`scripts/native-parity-fixture.mjs`).
 - Space invite, private-channel grant and **New direct message** username
   fields suggest known people; lookups stay exact-username with no directory.
   See [spaces and channel access](../../docs/media.md#spaces-and-channel-access).
+- One Settings screen from the account gear, with the same sections on every
+  client: Profile, Appearance, Notifications (Do Not Disturb first), Voice &
+  audio, Privacy & blocked accounts, About (version, What’s new) and Log out
+  (desktop adds Startup after Voice & audio). Phones push it full-screen, and
+  Back returns to it from its sub-pages. Do Not Disturb's quick toggle is a
+  moon button beside the gear on phones and macOS, and your avatar or name on
+  web, Windows and Linux; see [notifications](../../docs/notifications.md#do-not-disturb).
 - Each client reopens the last space and channel (per account and device, IDs
   only, joined channels only), falling back to the first joined channel.
 - Unsent conversation drafts and thread replies survive quitting, relaunching
@@ -97,7 +104,7 @@ iPadOS shows them when ⌘ is held and in the menu bar.
 
 ## Launch at login (desktop only)
 
-**Account gear → Settings… → Startup → Launch at login** (off by default) opens
+**Account gear → Settings → Startup → Launch at login** (off by default) opens
 the normal window at sign-in. macOS also exposes **Caper → Settings…** (⌘,)
 while signed out. Web, iOS and Android have no startup option.
 

@@ -69,13 +69,44 @@ Reactions appear in the inbox and badge but never send an OS push.
 | `mutedUntil` | space, channel, DM | `"forever"`, a time at most 365 days ahead, or `null` |
 | `mobile` | account | `whenInactive` (default) or `always` |
 | `voiceStarted` | account (default `true`); space override `true`/`false`/`null` | voice-start alerts only |
-| `paused_until` | account | stored and honoured by delivery; no client UI |
+| `pausedUntil` | account | Do Not Disturb: `"forever"`, a time at most 365 days ahead, or `null` (off) |
 
 A muted space mutes all its channels; a channel override cannot unmute it. Only
 direct @mentions and `feedback` break through a mute. Clients treat an unknown
 future level as `mentions`. Every client offers Notifications and Mute in the
 space, channel and DM menus, plus the account settings and the per-space
 voice-start Default/On/Off choice.
+
+### Do Not Disturb
+
+Do Not Disturb pauses every alert for the account on every device until
+`paused_until` passes (or forever): phone push, the gateway feed's banners on
+web and desktop, invitations, message requests and voice starts. Unread
+counts, badges and the inbox keep updating, and nothing is delivered later.
+
+- **Server:** expansion, delivery, the gateway feed and voice-start fanout all
+  read `notification_settings.paused_until > now()` (rule 4 above), so alerts
+  created while paused are never queued and queued ones are dropped at send time.
+- **Clients:** each also skips presenting a `notification.created` banner while
+  its own copy says paused (web `Notification`, macOS
+  `UNUserNotificationCenter`, Windows/Linux in the shared Rust core's account
+  worker, iPhone/Android foreground presentation). That covers events already in
+  flight when DND starts.
+- **Sync:** every successful `PUT /api/notifications/settings` publishes
+  `{"type":"notifications.updated","settings":{"level","mobile","voiceStarted","pausedUntil"}}`
+  to the account's own `profiles` subscriptions (no overrides, no replay;
+  clients reload settings after reconnecting). Clients apply it unless a change
+  of their own is still saving.
+- **Presets** (identical on every client): 30 minutes, 1 hour, 8 hours, Until
+  tomorrow morning (08:00 local time the next day, or 08:00 today between 00:00
+  and 04:59), and Until I turn it off (`forever`). Turn off sends `null`.
+- **Display:** Settings → Notifications starts with a Do Not Disturb group
+  (status, the presets, Turn off). The account bar opens the same choices: a
+  moon button beside the gear on iPhone, Android and macOS, and a click on
+  your avatar or name on web, Windows and Linux. While on, a moon replaces the presence dot on your own
+  avatar and "Do Not Disturb" shows under your name, with the end as `Until 3:45
+  PM`, `Until tomorrow at 8:00 AM`, `Until Thu 8:00 AM`, `Until Dec 3, 8:00 AM` or
+  `Until you turn it off`. Clients redraw when a timed pause ends.
 
 ### Phone hold (`mobile = whenInactive`)
 
@@ -203,7 +234,7 @@ download, OS timeout) keeps the caption/file description and sender artwork.
   `cursor`, including suppressed rows. The gateway rechecks session validity,
   access, blocks, consent, preferences, mutes and DM reads, and polls
   watched-account heads every two seconds.
-- Web uses the browser `Notification` API. **Edit profile → Notifications → On
+- Web uses the browser `Notification` API. **Settings → Notifications → On
   this browser** requests permission only after a click and offers a local
   toggle. Storage/Web Locks coordinate tabs and keep only bounded message IDs,
   never previews; cross-tab deduplication is best effort without them.
@@ -388,12 +419,16 @@ external IDs, and return errors as `{"error": "..."}`.
 - `DELETE /api/push/devices` (same body; any known platform) → 204, idempotent;
   revokes only the caller's matching device. Logout revokes the session's devices.
 - `GET /api/notifications/settings` →
-  `{"level","mobile","voiceStarted","overrides":[{"spaceId","level","mutedUntil"}, {"spaceId","channelId",...}, {"conversationId",...}]}`.
-  Overrides with nothing set (or an expired mute) are omitted, as are scopes the
-  caller can no longer read.
-- `PUT /api/notifications/settings` `{"level"?,"mobile"?,"voiceStarted"?}` → the
-  full settings. 400s: `level must be all, mentions or nothing`, `mobile must be
-  always or whenInactive`, `invalid notification settings` (unknown keys).
+  `{"level","mobile","voiceStarted","pausedUntil","overrides":[{"spaceId","level","mutedUntil"}, {"spaceId","channelId",...}, {"conversationId",...}]}`.
+  `pausedUntil` is `"forever"`, whole-second UTC, or `null` (also once it has
+  passed). Overrides with nothing set (or an expired mute) are omitted, as are
+  scopes the caller can no longer read.
+- `PUT /api/notifications/settings` `{"level"?,"mobile"?,"voiceStarted"?,"pausedUntil"?}`
+  → the full settings, and a `notifications.updated` event to the account's
+  sessions. A missing key keeps the field; `pausedUntil: null` turns Do Not
+  Disturb off. 400s: `level must be all, mentions or nothing`, `mobile must be
+  always or whenInactive`, `pausedUntil must be forever or a time within the
+  next year`, `invalid notification settings` (unknown keys).
 - `PUT /api/spaces/{spaceId}/notifications`,
   `PUT /api/spaces/{spaceId}/channels/{channelId}/notifications` and
   `PUT /api/dms/{conversationId}/notifications` take `{"level"?,"mutedUntil"?}`
