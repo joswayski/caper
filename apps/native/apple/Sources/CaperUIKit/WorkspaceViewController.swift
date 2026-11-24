@@ -192,8 +192,9 @@ final class WorkspaceViewController: UIViewController {
     override func viewWillTransition(to size: CGSize, with coordinator: any UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         // A swipe in progress must not leave the conversation partly translated.
+        // The keyboard stays: backgrounding (iOS 26's full-screen screenshot
+        // editor included) resizes the app for its snapshots.
         [toBrowse, back].forEach { $0.cancel() }
-        conversation.view.endEditing(false)
     }
 
     private var hasConversation: Bool {
@@ -329,11 +330,11 @@ final class WorkspaceViewController: UIViewController {
     }
 
     /// Where the current swipe took hold, so it follows from there rather
-    /// than jumping. Its first move also loads Browse and puts the keyboard away.
+    /// than jumping. Its first move also loads Browse; the keyboard stays up
+    /// until the swipe lands on Browse, so the composer never drops mid-swipe.
     private func grabSlide() -> CGFloat {
         if let grab { return grab }
         loadBrowse()
-        conversation.view.endEditing(true)
         let position = catchSlide()
         grab = position
         return position

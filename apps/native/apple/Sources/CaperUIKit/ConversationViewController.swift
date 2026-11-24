@@ -186,9 +186,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             guard let self else { return false }
             return self.narrow && self.membersAvailable && !self.members.isOpen && !self.presentations.presenting
         }
-        membersSwipe.moved = { [weak self] in self?.view.endEditing(true); self?.members.follow($0) }
+        // The keyboard stays up while the finger drags, and goes only once Members opens.
+        membersSwipe.moved = { [weak self] in self?.members.follow($0) }
         membersSwipe.ended = { [weak self] lift in
-            if self?.members.release(lift) == true { self?.membersPreference = true }
+            guard let self, self.members.release(lift) else { return }
+            self.membersPreference = true
+            self.view.endEditing(true)
         }
         collection.addGestureRecognizer(membersSwipe)
         // Files dragged onto the conversation stage for its composer.
