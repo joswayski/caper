@@ -1609,10 +1609,10 @@ enum PendingAction { case retry, edit, dismiss }
         return characters.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value) }
     }
 
-    override func clickedOnLink(_ link: Any, atIndex charIndex: Int) {
+    override func clicked(onLink link: Any, at charIndex: Int) {
         let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
         if let url, openMessageLink?(url) == true { return }
-        super.clickedOnLink(link, atIndex: charIndex)
+        super.clicked(onLink: link, at: charIndex)
     }
 
     override func mouseDown(with event: NSEvent) {
