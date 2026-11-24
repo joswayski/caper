@@ -76,6 +76,7 @@ enum PendingAction { case retry, edit, dismiss }
     var react: ((String, String) -> Void)?
     var openAuthor: ((ChatAuthor, NSView) -> Void)?
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
+    var openMessageLink: ((URL) -> Bool)?
     /// Text typed after a click in the history goes to the composer.
     var typeToCompose: ((NSEvent) -> Bool)?
     var makeAttachments: ((ChatMessage) -> AppKitAttachmentSurface?)?
@@ -495,6 +496,7 @@ enum PendingAction { case retry, edit, dismiss }
             row = MessageCell()
             row.openAuthor = { [weak self] author, view in self?.openAuthor?(author, view) }
             row.body.openMention = { [weak self] mention, view, rect in self?.openMention?(mention, view, rect) }
+            row.body.openMessageLink = { [weak self] url in self?.openMessageLink?(url) ?? false }
             row.body.typeToCompose = { [weak self] event in self?.typeToCompose?(event) ?? false }
             row.makeAttachments = { [weak self] in self?.makeAttachments?($0) }
             row.makeReply = { [weak self] in self?.makeReply?($0) }
@@ -1513,6 +1515,8 @@ enum PendingAction { case retry, edit, dismiss }
 /// single stationary click on an actual resolved-person glyph opens a card.
 @MainActor final class MessageTextView: NSTextView {
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
+    /// A Caper message link opens its message in the app; false: not one.
+    var openMessageLink: ((URL) -> Bool)?
     var messageMenu: (() -> NSMenu?)?
     var menuOpened: ((CaperMenu) -> Void)?
     var typeToCompose: ((NSEvent) -> Bool)?
@@ -1590,6 +1594,12 @@ enum PendingAction { case retry, edit, dismiss }
         // Control characters (Escape, Tab, Return, Delete) and the private-use
         // function-key range (arrows, Page Up) are not text.
         return characters.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value) }
+    }
+
+    override func clickedOnLink(_ link: Any, at charIndex: Int) {
+        let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
+        if let url, openMessageLink?(url) == true { return }
+        super.clickedOnLink(link, at: charIndex)
     }
 
     override func mouseDown(with event: NSEvent) {

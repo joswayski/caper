@@ -197,7 +197,10 @@ test("invite requests use the documented endpoints and reject malformed codes lo
 test("native apps verify caper.chat invite links and open caper:// links", async () => {
   const apple = await appleAppSiteAssociation().json();
   assert.deepEqual(apple.applinks.details[0].appIDs, ["NAUU43LATL.chat.caper.ios"]);
-  assert.deepEqual(apple.applinks.details[0].components[0]["/"], "/invite/*");
+  assert.deepEqual(
+    apple.applinks.details[0].components.map((component: { "/": string }) => component["/"]),
+    ["/invite/*", "/m/*"],
+  );
   const android = await androidAssetLinks().json();
   assert.equal(android[0].target.package_name, "chat.caper.android");
   for (const fingerprint of android[0].target.sha256_cert_fingerprints)

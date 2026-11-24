@@ -70,6 +70,11 @@ impl App {
         let Some(code) = self.pending_invite.take() else {
             return;
         };
+        // A message link opens its message once the API confirms access.
+        if let Some((channel, message)) = caper_client::app_link::message_target(&code) {
+            live.open_message_link(&channel, &message);
+            return;
+        }
         let mut d = Dialog::join_invite();
         if let Some(base) = crate::live::endpoint().and_then(|u| url::Url::parse(&u).ok()) {
             let link = caper_client::invites::invite_url(&base, &code);

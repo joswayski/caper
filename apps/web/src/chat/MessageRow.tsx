@@ -28,6 +28,7 @@ import type { PendingChatMessage } from "./client.ts";
 import { SendPendingContext } from "./SendPendingContext.ts";
 import { MessageAttachments, type LocalPreview } from "./Attachments.tsx";
 import { MessageEmbeds } from "./Embeds.tsx";
+import { MessageLinkCards } from "./MessageLinkCards.tsx";
 import { embedsOf } from "./embeds.ts";
 import MessageGif from "./MessageGif.tsx";
 import type { ViewAttachment } from "./MediaViewer.tsx";
@@ -577,6 +578,7 @@ function MessageRowView({
               onView={"content" in message ? actions.viewFile(message.id) : undefined}
             />
             <MessageEmbeds embeds={"content" in message ? embedsOf(message) : (message.embeds ?? [])} />
+            {"content" in message && !deleted && !pending && <MessageLinkCards text={message.content.text} />}
             {"content" in message && reportsFeedback(message) && (
               <p className="chat-feedback-note">Caper team has been notified 🫡</p>
             )}

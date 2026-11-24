@@ -174,8 +174,8 @@ class ReactionUiTest {
         compose.onNodeWithText("Copy text").performClick()
         assertClipboard(message.content.text)
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
-        compose.onNodeWithText("Copy message ID").performClick()
-        assertClipboard(message.id)
+        compose.onNodeWithText("Copy link").performClick()
+        assertClipboard("https://caper.chat/m/${message.channelId}/${message.id}")
 
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithText("Message actions").assertIsDisplayed()

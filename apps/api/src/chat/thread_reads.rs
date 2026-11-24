@@ -42,7 +42,7 @@ async fn list(
            SELECT reply.thread_root_id AS root_id,reply.channel_seq,author.user_id=$2 AS mine,
                   reply.deleted_at IS NULL AND author.user_id<>$2
                     AND EXISTS(SELECT 1 FROM public.users u WHERE u.id=author.user_id AND u.deleted_at IS NULL)
-                    AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$2 AND ir.item_id='m:' || reply.id)
+                    AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$2 AND ir.item_id='m:' || reply.id AND ir.revoked_at IS NULL)
                     AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2
                                    AND b.blocked_id=author.user_id AND b.deleted_at IS NULL) AS counts
            FROM public.messages reply JOIN public.chat_sessions author ON author.id=reply.session_id
@@ -70,9 +70,12 @@ async fn list(
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ReadInput {
     seq: String,
+    /// Mark unread: set the position to `seq` even when that moves it back.
+    #[serde(default)]
+    mark_unread: bool,
 }
 
 async fn read(
@@ -86,23 +89,38 @@ async fn read(
     let seq = cursor(&input.seq)?;
     let mut tx = pool.begin().await.map_err(database_error)?;
     let (channel, _, _) = editing::locked_channel(&mut tx, &channel, Some(user), false).await?;
-    let result = sqlx::query(
-        "INSERT INTO public.thread_reads(thread_root_id,user_id,seq)
-         SELECT root.id,$3,LEAST($4,COALESCE((SELECT max(reply.channel_seq)
+    let target: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT root.id,LEAST($3,COALESCE((SELECT max(reply.channel_seq)
                 FROM public.messages reply WHERE reply.thread_root_id=root.id),0))
          FROM public.messages root WHERE root.channel_id=$1 AND root.external_id=$2
-           AND root.thread_root_id IS NULL
-         ON CONFLICT(thread_root_id,user_id) DO UPDATE SET seq=GREATEST(thread_reads.seq,EXCLUDED.seq)",
+           AND root.thread_root_id IS NULL",
     )
     .bind(channel)
     .bind(root)
+    .bind(seq)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    let Some((root, seq)) = target else {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "thread not found"));
+    };
+    // Ordinary reads only ever advance; Mark unread sets the position exactly.
+    sqlx::query(
+        "INSERT INTO public.thread_reads(thread_root_id,user_id,seq) VALUES($1,$2,$3)
+         ON CONFLICT(thread_root_id,user_id) DO UPDATE SET seq=CASE WHEN $4 THEN EXCLUDED.seq
+           ELSE GREATEST(thread_reads.seq,EXCLUDED.seq) END",
+    )
+    .bind(root)
     .bind(user)
     .bind(seq)
+    .bind(input.mark_unread)
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;
-    if result.rows_affected() == 0 {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "thread not found"));
+    if input.mark_unread {
+        crate::push::inbox::marked_unread(&mut tx, user, channel, Some(root), seq, 0)
+            .await
+            .map_err(database_error)?;
     }
     tx.commit().await.map_err(database_error)?;
     Ok(StatusCode::NO_CONTENT)

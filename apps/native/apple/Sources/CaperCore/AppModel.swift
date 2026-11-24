@@ -326,6 +326,7 @@ public final class AppModel {
     }
     public var selectedSpaceID: String?
     public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue {
+        clearMarkedUnread()
         removeShownNotifications()
         beginChannelUnreadVisit()
     } } }
@@ -363,12 +364,127 @@ public final class AppModel {
     }
 
     public func channelNewMessagesDividerID() -> String? {
+        // Mark unread puts it above the message you chose, DMs included.
+        if let marked = markedUnread, marked.rootID == nil, visit == nil, chat.channelID == marked.channelID,
+           (selectedDirectMessageID ?? selectedChannelID) == marked.channelID {
+            return marked.messageID
+        }
         guard selectedDirectMessageID == nil, visit == nil, selectedChannelID == chat.channelID,
               let unreadVisit, let boundary = unreadVisit.readSeq else { return nil }
         return ChannelUnreadDivider.messageID(messages: chat.channelMessages, readSeq: boundary,
             lastSeq: unreadVisit.lastSeq, hasMore: chat.hasMore, viewerID: account?.id,
             blocked: chat.blockedAuthorIDs)
     }
+    /// Mark unread this visit: the conversation, the thread root (for a
+    /// reply) and the message "New messages" goes above. Reads there pause
+    /// until you leave the conversation.
+    public struct MarkedUnread: Equatable, Sendable {
+        public let channelID: String
+        public let rootID: String?
+        public let messageID: String
+    }
+    public private(set) var markedUnread: MarkedUnread?
+    /// You marked the open conversation (not a thread in it) unread.
+    private var markedHere: Bool {
+        guard let markedUnread, markedUnread.rootID == nil else { return false }
+        return (selectedDirectMessageID ?? selectedChannelID) == markedUnread.channelID
+    }
+    private func clearMarkedUnread() {
+        markedUnread = nil
+        chat.heldUnreadThread = nil
+    }
+
+    /// Mark unread is offered for a channel or DM message, and in a thread
+    /// only to people who started or replied in it (only they have thread
+    /// read state). A request stays unread anyway, and a feedback visit has
+    /// no read position.
+    public func canMarkUnread(_ message: ChatMessage) -> Bool {
+        guard let account, !message.isDeleted, !message.id.isEmpty, visit == nil,
+              message.channelId == chat.channelID,
+              selectedDirectMessage?.status != .incoming else { return false }
+        if let root = message.threadRootId {
+            return chat.messages.contains { ($0.id == root || $0.threadRootId == root) && $0.author.id == account.id }
+        }
+        if let direct = selectedDirectMessageID { return direct == message.channelId }
+        return detail?.space.id.isEmpty == false && selectedChannelID == message.channelId
+    }
+
+    /// Mark unread: moves the read position to just before `message`, synced
+    /// through the server, so the conversation (or thread) shows as unread
+    /// again everywhere with "New messages" above it.
+    public func markUnread(_ message: ChatMessage) {
+        guard canMarkUnread(message), let channel = chat.channelID,
+              let seq = UInt64(message.seq).map({ String($0 > 0 ? $0 - 1 : 0) }) else { return }
+        let root = message.threadRootId
+        let previous = markedUnread
+        markedUnread = MarkedUnread(channelID: channel, rootID: root, messageID: message.id)
+        if let root { chat.heldUnreadThread = root }
+        let attempt = generation, api = api
+        let spaceID = detail?.space.id, direct = selectedDirectMessageID
+        Task {
+            do {
+                if let root { try await api.markThreadRead(channelID: channel, rootID: root, seq: seq, markUnread: true) }
+                else if let direct { try await api.markDirectMessageRead(id: direct, seq: seq, markUnread: true) }
+                else if let spaceID { try await api.markChannelRead(spaceID: spaceID, channelID: channel, seq: seq, markUnread: true) }
+                guard generation == attempt else { return }
+                // Unread counts, thread dots, the DM list, the inbox and the badge follow the server.
+                if root == nil, direct == nil { channelReads[channel] = seq }
+                unreadRevision += 1
+                if root != nil { await chat.refreshUnreadThreads() }
+                if direct != nil { await refreshDirectMessages() }
+                await refreshUnreadSpaces()
+            } catch {
+                guard generation == attempt, markedUnread?.messageID == message.id else { return }
+                markedUnread = previous
+                if root != nil { chat.heldUnreadThread = previous?.rootID }
+                navigationError = "Couldn’t mark unread. Try again."
+            }
+        }
+    }
+
+    // MARK: Message links
+
+    /// A message link waiting for the workspace (signed in, spaces loaded).
+    @ObservationIgnored private var pendingMessageLink: MessageLinkTarget?
+    @ObservationIgnored private var lastOpenedMessageLink: (link: MessageLinkTarget, at: Date)?
+
+    /// Opens a message link's message where it lives, as a notification
+    /// does (a reply in its thread). Returns false for any other URL. Signed
+    /// out, the link waits for sign-in.
+    @discardableResult
+    public func openMessageLink(_ url: URL) -> Bool {
+        guard let link = MessageLinkTarget(url) else { return false }
+        // One universal link can arrive both as a URL and as a browsing activity.
+        let now = Date()
+        if let last = lastOpenedMessageLink, last.link == link, now.timeIntervalSince(last.at) < 1 { return true }
+        lastOpenedMessageLink = (link, now)
+        pendingMessageLink = link
+        Task { await openPendingMessageLink() }
+        return true
+    }
+
+    func openPendingMessageLink() async {
+        guard phase == .ready, account != nil, spacesLoaded, !restoringWorkspace, let link = pendingMessageLink else { return }
+        pendingMessageLink = nil
+        let attempt = generation, navigation = navigationGeneration
+        do {
+            guard let source = try await api.messageLink(link) else {
+                if generation == attempt { navigationError = "You can’t view that message." }
+                return
+            }
+            guard generation == attempt, navigationGeneration == navigation else { return }
+            if source.message.isDeleted { navigationError = ChatModel.jumpDeleted; return }
+            guard try await openConversation(of: source, attempt: attempt, navigation: navigation),
+                  await chat.goToMessage(source.message) else {
+                if generation == attempt, let failure = chat.jumpError { navigationError = failure }
+                return
+            }
+        } catch is CancellationError {}
+        catch {
+            if generation == attempt { navigationError = "Couldn’t open that message. Try again." }
+        }
+    }
+
     private var directMessageSnapshots: [DirectMessageConversation] = []
     public var directMessages: [DirectMessageConversation] {
         get {
@@ -385,7 +501,7 @@ public final class AppModel {
         set { directMessageSnapshots = newValue }
     }
     public private(set) var directMessagesError: String?
-    public var selectedDirectMessageID: String? { didSet { if selectedDirectMessageID != oldValue { removeShownNotifications() } } }
+    public var selectedDirectMessageID: String? { didSet { if selectedDirectMessageID != oldValue { clearMarkedUnread(); removeShownNotifications() } } }
     /// `GET /api/people` for `@` suggestions in DMs; nil until the first load
     /// succeeds. A refresh keeps the previous list until it completes.
     public private(set) var people: [Person]? {
@@ -1094,6 +1210,7 @@ public final class AppModel {
         startDirectMessageRefresh(prefetched: requests)
         refreshShareRecents(force: true)
         receiveShares()
+        await openPendingMessageLink()
     }
 
     public func loadSpaces() async { await loadSpaces(prefetched: nil) }
@@ -1600,27 +1717,7 @@ public final class AppModel {
             guard source.message.id == conversation.root?.id, source.message.channelId == conversation.root?.channelId else {
                 throw APIError(status: 502, message: "Conversation is unavailable.")
             }
-            if chat.channelID != source.message.channelId {
-                if let spaceID = source.spaceId {
-                    // navigate(space:) rechecks membership itself; fetch only a space this list lacks.
-                    let space: Space
-                    if let known = spaces.first(where: { $0.id == spaceID }) { space = known } else {
-                        space = try await api.space(spaceID).space
-                        guard generation == attempt, navigationGeneration == navigation else { return false }
-                    }
-                    await navigate(space: space, channelID: source.message.channelId)
-                } else {
-                    let conversations = try await fetchingProfiles({ try await api.directMessages() }, people: { $0.map(\.peer.profile) })
-                    guard generation == attempt, navigationGeneration == navigation else { return false }
-                    guard let direct = conversations.first(where: { $0.id == source.message.channelId }) else {
-                        throw APIError(status: 404, message: "Conversation is unavailable.")
-                    }
-                    directMessages = conversations
-                    await select(directMessage: direct)
-                }
-                guard generation == attempt, navigationGeneration == navigation + 1 else { return false }
-            }
-            guard chat.channelID == source.message.channelId else { return false }
+            guard try await openConversation(of: source, attempt: attempt, navigation: navigation) else { return false }
             guard await chat.goToMessage(source.message) else { return false }
             if source.message.threadRootId == nil { await chat.openThread(source.message.id) }
             return true
@@ -1629,6 +1726,31 @@ public final class AppModel {
             if generation == attempt, navigationGeneration == navigation { navigationError = "Couldn’t open the conversation. Try again." }
             return false
         }
+    }
+
+    /// Moves to the space channel or DM `source` is in, unless it is open.
+    private func openConversation(of source: ForwardSource, attempt: Int, navigation: Int) async throws -> Bool {
+        if chat.channelID != source.message.channelId {
+            if let spaceID = source.spaceId {
+                // navigate(space:) rechecks membership itself; fetch only a space this list lacks.
+                let space: Space
+                if let known = spaces.first(where: { $0.id == spaceID }) { space = known } else {
+                    space = try await api.space(spaceID).space
+                    guard generation == attempt, navigationGeneration == navigation else { return false }
+                }
+                await navigate(space: space, channelID: source.message.channelId)
+            } else {
+                let conversations = try await fetchingProfiles({ try await api.directMessages() }, people: { $0.map(\.peer.profile) })
+                guard generation == attempt, navigationGeneration == navigation else { return false }
+                guard let direct = conversations.first(where: { $0.id == source.message.channelId }) else {
+                    throw APIError(status: 404, message: "Conversation is unavailable.")
+                }
+                directMessages = conversations
+                await select(directMessage: direct)
+            }
+            guard generation == attempt, navigationGeneration == navigation + 1 else { return false }
+        }
+        return chat.channelID == source.message.channelId
     }
 
     public func openDirectMessage(id: String) async {
@@ -1786,7 +1908,7 @@ public final class AppModel {
 
     private func markSelectedDirectRead() {
         markSelectedChannelRead()
-        guard foreground, !browseCoversConversation, account != nil, let id = selectedDirectMessageID,
+        guard foreground, !browseCoversConversation, account != nil, let id = selectedDirectMessageID, !markedHere,
               selectedDirectMessage?.status != .incoming,
               let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               let index = directMessages.firstIndex(where: { $0.id == id }),
@@ -1877,7 +1999,7 @@ public final class AppModel {
     }
 
     private func markSelectedChannelRead() {
-        guard unreadVisitReady, foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
+        guard unreadVisitReady, foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil, !markedHere,
               let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
               let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               (try? Sequence.compare(history.cursor, channelReads[id] ?? "0")) == .orderedDescending else { return }
@@ -2450,6 +2572,8 @@ public final class AppModel {
     public func openInviteLink(_ url: URL) {
         // caper://share: the Share extension handed something over.
         if url.scheme?.lowercased() == ShareInbox.urlScheme, url.host?.lowercased() == ShareInbox.urlHost { receiveShares(); return }
+        // Message links share every entry point invite links have.
+        if openMessageLink(url) { return }
         guard let code = InviteLinks.code(opening: url) else { return }
         // One universal link can arrive both as a URL and as a browsing activity.
         let now = Date()
@@ -3604,6 +3728,9 @@ public final class ChatModel {
         didSet { if oldValue != threadRootID { visibleThreadReply = nil; composerRevision += 1; uploadSubmission = nil } }
     }
     public private(set) var unreadThreads: [String: String] = [:]
+    /// A thread marked unread this visit: it stays unread until you leave
+    /// the conversation (`AppModel.markUnread`).
+    public var heldUnreadThread: String?
     private var unreadThreadChannel: String?
     private var unreadThreadRevision = 0
     private var threadReadInFlight: Set<String> = []
@@ -3630,7 +3757,7 @@ public final class ChatModel {
     /// Only the rendered latest window supplies this cursor; never a fetched history cursor.
     public func acknowledgeVisibleThread() {
         guard let channelID, unreadThreadChannel == channelID,
-              let visible = visibleThreadReply, threadRootID == visible.rootID,
+              let visible = visibleThreadReply, threadRootID == visible.rootID, heldUnreadThread != visible.rootID,
               threadMessages.contains(where: { $0.seq == visible.seq }),
               !threadHasNewer, !threadLoading, let unread = unreadThreads[visible.rootID],
               (try? Sequence.compare(visible.seq, unread)) != .orderedAscending else { return }

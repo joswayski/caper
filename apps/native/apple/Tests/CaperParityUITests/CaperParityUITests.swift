@@ -667,7 +667,7 @@ final class CaperParityUITests: XCTestCase {
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                               "Missing fixture message")
         let text = "TEST FIXTURE — local sample data, not a live conversation."
-        for label in ["Copy text", "Copy message ID", "Edit message", "Reply"] {
+        for label in ["Copy text", "Copy link", "Edit message", "Reply"] {
             hold(row)
             let sheet = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                     "Missing message actions")
@@ -680,8 +680,8 @@ final class CaperParityUITests: XCTestCase {
             switch label {
             case "Copy text":
                 assertCopied(text, in: app)
-            case "Copy message ID":
-                assertCopied("chan00000001m01", in: app)
+            case "Copy link":
+                assertCopied("https://caper.chat/m/chan00000001/chan00000001m01", in: app)
             case "Edit message":
                 let editor = try require(app.textViews["message-edit-text"], timeout: 5,
                                          "Tapping the row's blank right side must open the editor")
@@ -1137,7 +1137,7 @@ final class CaperParityUITests: XCTestCase {
         // SwiftUI exposes the overlay's controls as siblings of the row on
         // macOS 15; only the hovered row has a visible toolbar.
         app.descendants(matching: .any)["Message options"].firstMatch.tap()
-        XCTAssertTrue(app.menuItems["Copy message ID"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.menuItems["Copy link"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.menuItems.matching(NSPredicate(format: "label BEGINSWITH %@", "React with")).firstMatch.exists)
         app.typeKey(.escape, modifierFlags: [])
         #endif
@@ -1156,8 +1156,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         hold(row)
         XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
-        app.buttons["Copy message ID"].tap()
-        assertCopied(targetID, in: app)
+        app.buttons["Copy link"].tap()
+        assertCopied("https://caper.chat/m/chan00000001/\(targetID)", in: app)
         dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         #endif

@@ -454,6 +454,7 @@ interface CallProps {
   /** The space being viewed when `stage` replaces its conversation. */
   space?: { id: string; name: string; demo?: boolean };
   onReadCursor?: (seq: string) => void;
+  onMarkUnread?: (seq: string) => Promise<void>;
   channelActions?: ReactNode;
   /** Extra items for the phone header menu, where wide-header actions move. */
   headerMenuItems?: ReactNode;
@@ -515,6 +516,7 @@ export default function Call({
   stage,
   space,
   onReadCursor,
+  onMarkUnread,
   channelActions,
   headerMenuItems,
   voiceChannels,
@@ -2368,6 +2370,7 @@ export default function Call({
               directPeer={channel?.directPeer}
               team={!!channel?.team}
               onReadCursor={onReadCursor}
+              onMarkUnread={onMarkUnread}
               readActive={engaged && !browsing && chatReadActive}
               readOnly={!channelJoined}
               composerNotice={channelActions}

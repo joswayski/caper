@@ -213,7 +213,7 @@ pub(crate) async fn read(
                     WHEN n.kind='direct.request' THEN 'd:' || n.channel_id || ':' || extract(epoch FROM n.created_at)::text
                     WHEN n.kind='space.invitation' THEN 's:' || n.space_id || ':' || extract(epoch FROM n.created_at)::text
                     WHEN n.kind='channel.invitation' THEN 'c:' || n.channel_id || ':' || extract(epoch FROM n.created_at)::text
-                  END) AS eligible,
+                  END AND ir.revoked_at IS NULL) AS eligible,
                 ns.default_level AS account_level,COALESCE(ns.paused_until>now(),false) AS paused,
                 co.level AS channel_level,COALESCE(co.muted_until>now(),false) AS channel_muted,
                 so.level AS space_level,COALESCE(so.muted_until>now(),false) AS space_muted

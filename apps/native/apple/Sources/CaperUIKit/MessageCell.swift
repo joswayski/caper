@@ -175,6 +175,8 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate, UITextView
     var plainText: String { LinkPills.plain(text ?? "") }
     /// A tapped person pill: its user id.
     var openMention: ((String) -> Void)?
+    /// A Caper message link opens its message in the app; false: not one.
+    var openMessageLink: ((URL) -> Bool)?
     /// A tapped hidden spoiler: its group.
     var revealSpoiler: ((Int) -> Void)?
     private let spoilerTaps = SpoilerTapDelegate()
@@ -204,7 +206,11 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate, UITextView
     }
 
     func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
-        guard case let .link(url) = textItem.content, let id = Self.mentionID(url) else { return defaultAction }
+        guard case let .link(url) = textItem.content else { return defaultAction }
+        guard let id = Self.mentionID(url) else {
+            guard MessageLinkTarget(url) != nil, let open = openMessageLink else { return defaultAction }
+            return UIAction { _ in if !open(url) { UIApplication.shared.open(url) } }
+        }
         return UIAction { [weak self] _ in self?.openMention?(id) }
     }
 
@@ -295,6 +301,8 @@ struct RowHost {
     var openPinner: (_ messageID: String) -> Void = { _ in }
     /// "(edited)": the edit history.
     var history: (_ messageID: String) -> Void = { _ in }
+    /// A Caper message link: opens its message; false when it is not one.
+    var openMessageLink: (URL) -> Bool = { _ in false }
 }
 
 /// One message: avatar or grouped gutter, header, text and its notes. The
@@ -430,6 +438,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             guard let self, let messageID = self.state?.messageID, !messageID.isEmpty else { return }
             self.host?.openMention(messageID, id)
         }
+        body.openMessageLink = { [weak self] url in self?.host?.openMessageLink(url) ?? false }
         body.revealSpoiler = { [weak self] group in self?.reveal([group]) }
         chips.toggle = { [weak self] emoji in self?.toggle(emoji) }
         chips.showReactors = { [weak self] emoji in
@@ -836,8 +845,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
                 })
                 return
             }
-            actions.append(UIAccessibilityCustomAction(name: "Open \(url.host ?? url.absoluteString)") { _ in
-                UIApplication.shared.open(url)
+            actions.append(UIAccessibilityCustomAction(name: "Open \(url.host ?? url.absoluteString)") { [weak self] _ in
+                if self?.host?.openMessageLink(url) != true { UIApplication.shared.open(url) }
                 return true
             })
         }
@@ -1319,6 +1328,7 @@ final class ThreadLinkButton: UIControl {
     /// Block on the card closes it, then `block` asks to confirm.
     mutating func openProfiles(model: AppModel, controller: UIViewController, messages: @escaping @MainActor () -> [ChatMessage],
                                block: @escaping (BlockTarget) -> Void) {
+        openMessageLink = { url in MainActor.assumeIsolated { model.openMessageLink(url) } }
         openMention = { [weak controller] messageID, userID in MainActor.assumeIsolated {
             guard let controller, let message = messages().first(where: { $0.id == messageID }),
                   let card = UIKitHosting.profileCard(model: model, userID: userID, in: message, requestBlock: block) else { return }

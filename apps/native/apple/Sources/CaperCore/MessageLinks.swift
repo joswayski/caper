@@ -44,3 +44,32 @@ enum MessageLinks {
         }
     }
 }
+
+/// Links to one message: `https://caper.chat/m/<channel>/<message>` (a
+/// message's Copy link) and `caper://m/<channel>/<message>`, through shared
+/// Rust (shared/messages/message_links.rs). Only caper.chat hosts count, so
+/// another site's `/m/...` stays an ordinary link. Every client runs
+/// shared/messages/message-link-cases.json.
+public struct MessageLinkTarget: Equatable, Sendable {
+    public let channelID: String
+    public let messageID: String
+
+    public init?(_ input: String) {
+        var source = input
+        let value: String = source.withUTF8 { bytes in
+            let link = caper_mobile_message_link(bytes.baseAddress, bytes.count)
+            defer { caper_mobile_ints_free(link) }
+            return String(decoding: UnsafeBufferPointer(start: link.data, count: link.len).map { UInt8(truncatingIfNeeded: $0) }, as: UTF8.self)
+        }
+        let parts = value.split(separator: "/")
+        guard parts.count == 2 else { return nil }
+        channelID = String(parts[0]); messageID = String(parts[1])
+    }
+
+    public init?(_ url: URL) { self.init(url.absoluteString) }
+
+    /// The link Copy link puts on the clipboard.
+    public static func url(channelID: String, messageID: String) -> String {
+        "https://caper.chat/m/\(channelID)/\(messageID)"
+    }
+}

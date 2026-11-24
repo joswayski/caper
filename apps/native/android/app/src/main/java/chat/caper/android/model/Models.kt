@@ -636,6 +636,8 @@ data class AppUiState(
     val selectedDirectId: String? = null,
     /** Immutable unread boundary captured before this channel visit acknowledges history. */
     val channelVisitUnread: UnreadChannel? = null,
+    /** Mark unread this visit: the New messages divider sits at that message and reads pause until it is left. */
+    val markedUnread: MarkedUnread? = null,
     val messages: List<ChatMessage> = emptyList(),
     val thread: ThreadUi? = null,
     val threadOnlyRows: Set<String> = emptySet(),
@@ -896,3 +898,6 @@ data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Bo
 data class PinSaveUi(val active: Boolean, val saving: Boolean = true, val error: String? = null)
 data class PinIntentUi(val message: ChatMessage, val pin: MessagePin?)
 data class EditIntentUi(val text: String, val expectedRevision: Int)
+
+/** A Mark unread in [channelId] (or its thread [rootId]) at [messageId], for the rest of the visit. */
+data class MarkedUnread(val channelId: String, val rootId: String?, val messageId: String)

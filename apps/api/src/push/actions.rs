@@ -106,7 +106,9 @@ async fn mark_read(pool: &PgPool, user: i64, target: &Target) -> Result<(), ApiE
     }
     // Its inbox entry too, whatever the read positions say about it.
     sqlx::query(
-        "INSERT INTO public.notification_inbox_reads(user_id,item_id) VALUES($1,'m:' || $2::bigint) ON CONFLICT DO NOTHING",
+        "INSERT INTO public.notification_inbox_reads(user_id,item_id) VALUES($1,'m:' || $2::bigint)
+         ON CONFLICT(user_id,item_id) DO UPDATE SET read_at=now(),revoked_at=NULL
+         WHERE notification_inbox_reads.revoked_at IS NOT NULL",
     )
     .bind(user)
     .bind(target.id)

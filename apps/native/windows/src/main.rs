@@ -5296,6 +5296,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 /// Opens a message link in the default browser. `links::segments` only
 /// yields web addresses.
 pub(crate) fn open_link(href: &str) {
+    // A Caper message link goes through `caper://`, whose handler hands it
+    // to this running window (`app_link`), instead of the browser.
+    let app = caper_client::message_links::parse(href)
+        .map(|link| format!("caper://m/{}/{}", link.channel, link.message));
+    let href = app.as_deref().unwrap_or(href);
     unsafe {
         let _ = windows::Win32::UI::Shell::ShellExecuteW(
             None,

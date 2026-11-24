@@ -1069,7 +1069,7 @@ import XCTest
             timeline.buttons["add-reaction-\(id)"].hover()
             let button = timeline.buttons["message-options-\(id)"]
             button.hover(); button.click()
-            XCTAssertTrue(messageMenuItem("Copy message ID", app: app, body: body).waitForExistence(timeout: 5))
+            XCTAssertTrue(messageMenuItem("Copy link", app: app, body: body).waitForExistence(timeout: 5))
         }
         func openPins() {
             app.buttons["toggle-members"].hover()
@@ -2115,10 +2115,10 @@ import XCTest
             let button = app.buttons["message-options-\(id)"]
             XCTAssertTrue(button.waitForExistence(timeout: 5)); XCTAssertTrue(button.isHittable)
             button.hover(); button.click()
-            XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
+            XCTAssertTrue(item("Copy link").waitForExistence(timeout: 5))
         }
         options()
-        for title in ["Add reaction…", "Edit message", "Copy text", "Open link", "Copy link", "Copy message ID", "Delete message"] {
+        for title in ["Add reaction…", "Edit message", "Copy text", "Open link", "Copy link address", "Copy link", "Delete message"] {
             XCTAssertTrue(item(title).exists, "Missing own-message action: \(title)")
             XCTAssertTrue(item(title).isEnabled)
         }
@@ -2140,12 +2140,13 @@ import XCTest
             XCTAssertEqual(NSPasteboard.general.string(forType: .string), expected, message)
         }
         copy("Copy text", original, "Copy text preserves asymmetric Unicode and line breaks")
-        options(); copy("Copy message ID", id)
+        // Fixture message IDs start with their channel's.
+        options(); copy("Copy link", "https://caper.chat/m/\(id.prefix(12))/\(id)")
         body.rightClick()
-        XCTAssertTrue(item("Copy link").waitForExistence(timeout: 5))
+        XCTAssertTrue(item("Copy link address").waitForExistence(timeout: 5))
         // Check the real Open target's availability, but never launch an external browser.
         XCTAssertTrue(item("Open link").isEnabled)
-        copy("Copy link", link, "Copy link must exclude surrounding non-ASCII text")
+        copy("Copy link address", link, "Copy link address must exclude surrounding non-ASCII text")
 
         options(); item("Edit message").click()
         let editor = app.textViews["message-edit-text"]
@@ -2223,20 +2224,20 @@ import XCTest
         XCTAssertTrue(row.exists, "Deletion keeps the server row as a tombstone")
         XCTAssertFalse(history.exists)
         options()
-        XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
-        let tombstoneMenu = app.menus.containing(.menuItem, identifier: "Copy message ID").firstMatch
-        XCTAssertEqual(tombstoneMenu.menuItems.allElementsBoundByIndex.map(\.label), ["Copy message ID"])
-        for title in ["Add reaction…", "Forward message", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message", "Pin message", "Unpin message"] {
-            XCTAssertFalse(item(title).exists, "A tombstone only offers Copy message ID")
+        XCTAssertTrue(item("Copy link").waitForExistence(timeout: 5))
+        let tombstoneMenu = app.menus.containing(.menuItem, identifier: "Copy link").firstMatch
+        XCTAssertEqual(tombstoneMenu.menuItems.allElementsBoundByIndex.map(\.label), ["Copy link"])
+        for title in ["Add reaction…", "Forward message", "Edit message", "Message history", "Copy text", "Open link", "Copy link address", "Mark unread", "Delete message", "Pin message", "Unpin message"] {
+            XCTAssertFalse(item(title).exists, "A tombstone only offers Copy link")
         }
         capture("tombstone options menu narrow", app: app)
-        NSPasteboard.general.clearContents(); item("Copy message ID").click()
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), id)
+        NSPasteboard.general.clearContents(); item("Copy link").click()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "https://caper.chat/m/\(id.prefix(12))/\(id)")
         body.rightClick()
-        XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
+        XCTAssertTrue(item("Copy link").waitForExistence(timeout: 5))
         // Native text-selection commands may remain for the placeholder. Only
         // message actions are restricted; they must not resurrect deleted text.
-        for title in ["Add reaction…", "Forward message", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message", "Pin message", "Unpin message"] {
+        for title in ["Add reaction…", "Forward message", "Edit message", "Message history", "Copy text", "Open link", "Copy link address", "Mark unread", "Delete message", "Pin message", "Unpin message"] {
             XCTAssertFalse(item(title).exists, "Right-click must not restore actions on deleted content")
         }
         app.typeKey(.escape, modifierFlags: [])

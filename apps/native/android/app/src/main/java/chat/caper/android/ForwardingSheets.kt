@@ -43,7 +43,7 @@ import java.math.BigInteger
 import java.util.UUID
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun SharedOriginal(
+@Composable internal fun SharedOriginal(
     message: ChatMessage, state: MessageRowState? = null, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     forwardOwnerId: String? = null,
 ) {

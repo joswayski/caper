@@ -373,6 +373,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var inviteLinkSequence = 0L
     /** An opened invite link that has not been shown yet; in memory only, so it never outlives the app. */
     private val pendingInviteLink = MutableStateFlow<InviteLinkRequest?>(null)
+    /** A message link waiting for sign-in: (channel, message). */
+    private val pendingMessageLink = MutableStateFlow<Pair<String, String>?>(null)
+    val messageLinkToOpen: StateFlow<Pair<String, String>?> =
+        combine(pendingMessageLink, state) { link, current -> link?.takeIf { opensInviteLinks(current) } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     /**
      * The opened invite link for "Join with invite link" to show, once someone with a finished
      * profile is home: a link opened while signed out or setting up a profile waits until then.
@@ -1768,6 +1773,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             current.selectedChannel?.id != channel || thread.rootId != root || thread.loading || thread.hasNewer) return
         val unread = current.unreadThreads[root] ?: return
         if (seq.toBigInteger() < unread.toBigInteger()) return
+        if (current.markedUnread?.rootId == root) return
         val token = accountToken ?: return
         val account = accountGeneration
         val revision = threadUnreadRevision
@@ -1872,6 +1878,51 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
+    /**
+     * Mark unread: moves the read position to just before [message] in the open channel or DM, or
+     * in the open thread when [inThread], synced through the server. Null when not offered: threads
+     * keep unread state only for people who started or replied in them.
+     */
+    fun markUnreadAction(message: ChatMessage, inThread: Boolean): (() -> Unit)? {
+        val current = mutable.value
+        val channel = current.selectedChannel ?: return null
+        if (current.account == null || current.visit != null || current.feedbackShown || message.deletedAt != null) return null
+        val own = current.chatAuthorId ?: current.account.id
+        val root = if (inThread) current.thread?.rootId ?: return null else null
+        if (root != null && current.messages.none { (it.id == root || it.threadRootId == root) && it.author.id == own }) return null
+        if (root == null && current.selectedDirectId == null && current.selectedSpace?.space?.id.isNullOrEmpty()) return null
+        return { markUnread(channel.id, root, message) }
+    }
+
+    private fun markUnread(channel: String, root: String?, message: ChatMessage) {
+        val token = accountToken ?: return
+        val seq = (message.seq.toBigInteger() - java.math.BigInteger.ONE).max(java.math.BigInteger.ZERO).toString()
+        val marked = MarkedUnread(channel, root, message.id)
+        val space = mutable.value.selectedSpace?.space?.id
+        val direct = mutable.value.selectedDirectId == channel
+        val account = accountGeneration
+        mutable.value = mutable.value.copy(markedUnread = marked)
+        viewModelScope.launch {
+            try {
+                when {
+                    root != null -> api.markThreadRead(token, channel, root, seq, markUnread = true)
+                    direct -> api.markDirectConversationRead(token, channel, seq, markUnread = true)
+                    else -> api.markChannelRead(token, requireNotNull(space), channel, seq, markUnread = true)
+                }
+                if (account != accountGeneration) return@launch
+                if (root == null && !direct) channelReads[channel] = seq
+                ++unreadRevision; ++threadUnreadRevision
+                if (direct) refreshDirectConversations()
+                refreshUnreadSpaces(); refreshThreadUnread()
+            } catch (error: CancellationException) { throw error }
+            catch (_: Throwable) {
+                if (account != accountGeneration) return@launch
+                if (mutable.value.markedUnread == marked) mutable.value = mutable.value.copy(markedUnread = null)
+                mutable.value = mutable.value.copy(error = "Couldn’t mark unread. Try again.")
+            }
+        }
+    }
+
     fun setConversationVisible(visible: Boolean) {
         conversationVisible = visible
         if (visible && !mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { markConversationRead(it, durableReplayCursor) }
@@ -1886,6 +1937,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (!foreground || !conversationVisible || activityShown || current.selectedChannel?.id != id || current.selectedDirect?.incoming == true) return
         // An older window (jumped to a reply or search result) is not the latest, for channels and DMs alike.
         if (current.hasNewerMessages) return
+        // Marked unread this visit: stays unread until the reader leaves it.
+        if (current.markedUnread?.let { it.channelId == id && it.rootId == null } == true) return
         if (current.selectedDirectId == id) { markDirectRead(id, seq); return }
         val space = current.selectedSpace?.space?.id?.takeIf { it.isNotEmpty() } ?: return
         sendChannelRead(space, id, seq)
@@ -2086,42 +2139,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = generation; val accountRequest = accountGeneration; val navigation = conversationOpeningRevision
         viewModelScope.launch {
             try {
-                val token = requireAccountToken()
                 val conversation = forwardedConversation(wrapper)
                 if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
                 val source = conversation.source
                 if (source == null) { readOnly(); return@launch }
                 require(source.message.id == conversation.root?.id && source.message.channelId == conversation.root?.channelId) { "Conversation is unavailable." }
-                val target = source.message
-                if (mutable.value.selectedChannel?.id != target.channelId) {
-                    // Prepare before replacing the destination, just as voice-context navigation does.
-                    val detail = source.spaceId?.let { api.space(token, it) }
-                    val direct = if (detail == null) api.directConversations(token).conversations.first { it.id == target.channelId } else null
-                    val channel = detail?.channels?.first { it.id == target.channelId }
-                        ?: Channel(target.channelId, "", requireNotNull(direct).peer.displayName, private = true, direct = true)
-                    val history = api.history(token, target.channelId)
-                    require(history.channel?.id == target.channelId && history.space?.id == (source.spaceId ?: "")) { "Conversation is unavailable." }
-                    if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
-                    rememberConversationHistory(); cancelConversationOpening()
-                    val previousSpace = mutable.value.selectedSpace?.space?.id
-                    val committed = ++generation
-                    if (detail != null && previousSpace != detail.space.id) ++spaceAccessGeneration
-                    closeChannel(clearPending = true)
-                    if (detail != null) lastChannelBySpace[detail.space.id] = channel.id
-                    installHistoryPins(history)
-                    mutable.value = mutable.value.copy(
-                        selectedSpace = detail ?: mutable.value.selectedSpace, selectedChannel = channel, selectedDirectId = direct?.id,
-                        directConversations = if (direct == null) mutable.value.directConversations else mutable.value.directConversations.filter { it.id != direct.id } + direct,
-                        messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore,
-                        deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
-                        busy = false, error = null, messagesLoading = false,
-                    )
-                    renewDraftUploads(channel.id)
-                    openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
-                    if (direct != null) refreshPeople()
-                }
-                goToMessage(target, notify = true) {
-                    if (target.threadRootId == null) openThread(target.id)
+                // A forward's View conversation opens the original's thread.
+                openSource(source, request, accountRequest, navigation) {
+                    if (source.message.threadRootId == null) openThread(source.message.id)
                     onOpened()
                 }
             } catch (error: CancellationException) { throw error }
@@ -2130,6 +2155,79 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = mutable.value.copy(error = "Couldn’t open the conversation. Try again.")
             } finally { openingForward = false }
         }
+    }
+
+    /**
+     * A message link (`caper.chat/m/<channel>/<message>` or `caper://m/...`, tapped in a message, a
+     * link card or another app): opens the message in its conversation once the API confirms this
+     * account can see it, now or after sign-in ([messageLinkToOpen]). Anything else is ignored.
+     */
+    fun openMessageLink(url: String) {
+        val link = messageLink(url) ?: return
+        pendingMessageLink.value = link
+    }
+
+    /** Called once Home shows for a signed-in account; a link waiting from launch opens then. */
+    fun openPendingMessageLink() {
+        val link = pendingMessageLink.value ?: return
+        if (!opensInviteLinks(mutable.value) || openingForward) return
+        pendingMessageLink.value = null
+        openingForward = true
+        val request = generation; val accountRequest = accountGeneration; val navigation = conversationOpeningRevision
+        viewModelScope.launch {
+            try {
+                val source = api.resolveMessageLink(requireAccountToken(), link.first, link.second)
+                if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
+                when {
+                    source == null -> mutable.value = mutable.value.copy(error = "You can’t view that message.")
+                    source.message.deletedAt != null -> mutable.value = mutable.value.copy(error = JUMP_DELETED)
+                    // Like an inbox row: highlight the message; only a reply opens its thread.
+                    else -> openSource(source, request, accountRequest, navigation) {}
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (request == generation && accountRequest == accountGeneration && navigation == conversationOpeningRevision)
+                    mutable.value = mutable.value.copy(error = "Couldn’t open that message. Try again.")
+            } finally { openingForward = false }
+        }
+    }
+
+    /** Message links resolve here: `{spaceId, message}`, or null when this account can't see it. */
+    suspend fun resolveMessageLink(channel: String, message: String): ForwardSource? =
+        api.resolveMessageLink(requireAccountToken(), channel, message)
+
+    /** Switches to [source]'s conversation if needed, then loads and highlights its message. */
+    private suspend fun openSource(source: ForwardSource, request: Long, accountRequest: Long, navigation: Long, onOpened: () -> Unit) {
+        val token = requireAccountToken()
+        val target = source.message
+        if (mutable.value.selectedChannel?.id != target.channelId) {
+            // Prepare before replacing the destination, just as voice-context navigation does.
+            val detail = source.spaceId?.let { api.space(token, it) }
+            val direct = if (detail == null) api.directConversations(token).conversations.first { it.id == target.channelId } else null
+            val channel = detail?.channels?.first { it.id == target.channelId }
+                ?: Channel(target.channelId, "", requireNotNull(direct).peer.displayName, private = true, direct = true)
+            val history = api.history(token, target.channelId)
+            require(history.channel?.id == target.channelId && history.space?.id == (source.spaceId ?: "")) { "Conversation is unavailable." }
+            if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return
+            rememberConversationHistory(); cancelConversationOpening()
+            val previousSpace = mutable.value.selectedSpace?.space?.id
+            val committed = ++generation
+            if (detail != null && previousSpace != detail.space.id) ++spaceAccessGeneration
+            closeChannel(clearPending = true)
+            if (detail != null) lastChannelBySpace[detail.space.id] = channel.id
+            installHistoryPins(history)
+            mutable.value = mutable.value.copy(
+                selectedSpace = detail ?: mutable.value.selectedSpace, selectedChannel = channel, selectedDirectId = direct?.id,
+                directConversations = if (direct == null) mutable.value.directConversations else mutable.value.directConversations.filter { it.id != direct.id } + direct,
+                messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore,
+                deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
+                busy = false, error = null, messagesLoading = false,
+            )
+            renewDraftUploads(channel.id)
+            openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
+            if (direct != null) refreshPeople()
+        }
+        goToMessage(target, notify = true) { onOpened() }
     }
 
     /** [notify]: also show a failure as the app's notice, for jumps made where the Pins list (and its error) isn't shown. */
@@ -2540,7 +2638,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         uploadSend?.cancel(); ++threadRequest
         // Its reply box goes with it: focus returns to the channel composer, as on web and Win32.
         val channel = mutable.value.selectedChannel?.id
-        mutable.value = mutable.value.copy(thread = null, composerFocusRequest = if (refocus && channel != null)
+        mutable.value = mutable.value.copy(thread = null, markedUnread = mutable.value.markedUnread?.takeIf { it.rootId == null }, composerFocusRequest = if (refocus && channel != null)
             chat.caper.android.model.ComposerFocusRequest(channel, null, java.util.UUID.randomUUID().toString(), keyboardOnly = true) else null)
     }
 
@@ -4544,7 +4642,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         threadPages.clear()
         ++threadUnreadRevision
         threadUnreadJob?.cancel(); threadUnreadJob = null
-        mutable.value = mutable.value.copy(unreadThreads = emptyMap())
+        mutable.value = mutable.value.copy(unreadThreads = emptyMap(), markedUnread = null)
         durableReplayCursor = null
         refreshingHistory = false
         gatewayStatus?.cancel(); gatewayStatus = null

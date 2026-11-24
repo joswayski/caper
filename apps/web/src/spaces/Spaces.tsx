@@ -56,6 +56,8 @@ import {
 } from "../account/profiles";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import { forwardedConversation } from "../chat/Forwarding";
+import { MessageLinkContext, resolveMessageLink } from "../chat/MessageLinkCards";
+import { messageLink, type MessageLink } from "../chat/message-links";
 import { excludePeople, withInvited, type MentionCandidate } from "../chat/mentions";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import type { FocusTarget } from "../chat/Chat";
@@ -2923,6 +2925,68 @@ export default function Spaces({
       .catch(() => undefined);
   };
 
+  // Mark unread: the server moves the position back; the sidebar follows at once.
+  const markDirectUnread = async (seq: string) => {
+    const conversation = directView?.conversation;
+    if (!conversation) return;
+    await readDirectConversation(conversation.id, seq, true);
+    setDirects((current) =>
+      current.map((item) =>
+        item.id === conversation.id && BigInt(item.readSeq) > BigInt(seq) ? { ...item, readSeq: seq } : item,
+      ),
+    );
+    void refreshDirects();
+  };
+  const markChannelUnread = async (seq: string) => {
+    const spaceId = view?.detail.space.id;
+    const channelId = view?.channelId;
+    if (!spaceId || !channelId) return;
+    await readChannel(spaceId, channelId, seq, true);
+    channelReads.current.set(channelId, seq);
+    void refreshUnread();
+  };
+
+  // A message link opens its message in place once the API confirms the
+  // reader can see it; anyone else learns nothing about it.
+  const openMessageLink = async (link: MessageLink) => {
+    const revision = navigationRevision.current;
+    let resolved;
+    try {
+      resolved = await resolveMessageLink(link);
+    } catch {
+      setNotice("Couldn’t open that message. Try again.");
+      return;
+    }
+    if (revision !== navigationRevision.current) return;
+    if (!resolved) {
+      setNotice("You can’t view that message.");
+      return;
+    }
+    const { message } = resolved;
+    if (resolved.spaceId) choose(resolved.spaceId, message.channelId);
+    else {
+      if (!directs.some((item) => item.id === message.channelId)) await refreshDirects();
+      if (revision !== navigationRevision.current) return;
+      choose(detail?.space.id || undefined, undefined, false, message.channelId);
+    }
+    if (message.deletedAt) setNotice("That message was deleted.");
+    else {
+      // Like an inbox row: highlight the message; only a reply opens its thread.
+      const target = { id: message.id, channelId: message.channelId, threadRootId: message.threadRootId };
+      inboxFocus.current = target;
+      setFocusMessage(target);
+    }
+    setNavigationOpen(false);
+  };
+  const openLinkFromUrl = useRef(true);
+  useEffect(() => {
+    if (loading || embedded || !account || !openLinkFromUrl.current) return;
+    openLinkFromUrl.current = false;
+    const value = new URLSearchParams(window.location.search).get("link");
+    const link = value ? messageLink(`caper://m/${value}`) : undefined;
+    if (link) void openMessageLink(link);
+  }, [loading, account?.id]);
+
   const prefetch = (spaceId: string, channelId?: string) => {
     if (spaceId === detail?.space.id && (!channelId || channelId === view?.channelId)) return;
     void navigation.current.prepare(spaceId, channelId).catch(() => undefined);
@@ -4300,7 +4364,7 @@ export default function Spaces({
       : ownedSpaces.filter((space) => space.id !== detail.space.id);
 
   return (
-    <>
+    <MessageLinkContext value={(link) => void openMessageLink(link)}>
       {inboxPanel}
       <Call
         embedded={embedded}
@@ -4392,6 +4456,7 @@ export default function Spaces({
         }
         // Visitors keep no read state in conversations they haven't joined.
         onReadCursor={visitView ? undefined : directView ? readDirect : readSpaceChannel}
+        onMarkUnread={visitView ? undefined : directView ? markDirectUnread : markChannelUnread}
         mentionMembers={
           visitView
             ? visitView.target.reporter
@@ -4572,6 +4637,6 @@ export default function Spaces({
           }}
         />
       )}
-    </>
+    </MessageLinkContext>
   );
 }

@@ -70,7 +70,7 @@ async fn unread_counts_messages_not_activity_or_own_messages(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    mark_read(&pool, users[0], &id, 1).await.unwrap();
+    mark_read(&pool, users[0], &id, 1, false).await.unwrap();
     let mut config = Config::test(false);
     config.auth_fixture = false;
     let app = crate::app(AppState::with_database(
@@ -110,7 +110,7 @@ async fn unread_counts_messages_not_activity_or_own_messages(pool: PgPool) {
     .await;
     assert_eq!(listed.0, StatusCode::OK);
     assert_eq!(listed.1["conversations"][0]["unreadCount"], 2);
-    mark_read(&pool, users[0], &id, 4).await.unwrap();
+    mark_read(&pool, users[0], &id, 4, false).await.unwrap();
     assert_eq!(
         conversations(&pool, users[0]).await.unwrap()[0]["unreadCount"],
         1
@@ -130,7 +130,7 @@ async fn unread_counts_messages_not_activity_or_own_messages(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    mark_read(&pool, users[0], &id, 9).await.unwrap();
+    mark_read(&pool, users[0], &id, 9, false).await.unwrap();
     assert_eq!(
         conversations(&pool, users[0]).await.unwrap()[0]["unreadCount"],
         0
@@ -295,13 +295,13 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
             .unwrap(),
         1,
     );
-    mark_read(&pool, users[0], &notes, 99).await.unwrap();
-    mark_read(&pool, users[0], &notes, 0).await.unwrap();
+    mark_read(&pool, users[0], &notes, 99, false).await.unwrap();
+    mark_read(&pool, users[0], &notes, 0, false).await.unwrap();
     assert_eq!(
         conversations(&pool, users[0]).await.unwrap()[0]["readSeq"],
         "1"
     );
-    assert!(mark_read(&pool, users[1], &notes, 1).await.is_err());
+    assert!(mark_read(&pool, users[1], &notes, 1, false).await.is_err());
     assert!(
         create_conversation(&pool, users[0], "missing")
             .await
@@ -422,13 +422,13 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
         history["messages"][0]["content"]["text"],
         "Only Alice and Bob 🙂"
     );
-    mark_read(&pool, users[1], &id, 999).await.unwrap();
-    mark_read(&pool, users[1], &id, 0).await.unwrap();
+    mark_read(&pool, users[1], &id, 999, false).await.unwrap();
+    mark_read(&pool, users[1], &id, 0, false).await.unwrap();
     assert_eq!(
         conversations(&pool, users[1]).await.unwrap()[0]["readSeq"],
         "1"
     );
-    assert!(mark_read(&pool, users[2], &id, 1).await.is_err());
+    assert!(mark_read(&pool, users[2], &id, 1, false).await.is_err());
     sqlx::query("ALTER TABLE channel_events ADD CONSTRAINT reject_dm CHECK (seq<2)")
         .execute(&pool)
         .await

@@ -628,6 +628,69 @@ impl Api {
         .map(|_| ())
     }
 
+    /// Mark unread: moves the read position back to `seq` (just before the
+    /// message) in a channel, DM or thread, unlike the reads above, which only
+    /// advance.
+    pub fn mark_unread(
+        &self,
+        token: &str,
+        target: &UnreadTarget,
+        seq: &str,
+    ) -> Result<(), ApiError> {
+        let (method, path) = match target {
+            UnreadTarget::Channel { space, channel } => (
+                Method::POST,
+                format!("api/spaces/{space}/channels/{channel}/read"),
+            ),
+            UnreadTarget::Direct { conversation } => {
+                (Method::POST, format!("api/dms/{conversation}/read"))
+            }
+            UnreadTarget::Thread { channel, root } => (
+                Method::PUT,
+                format!("api/chat/channels/{channel}/messages/{root}/thread/read"),
+            ),
+        };
+        checked(self.raw(
+            method,
+            &path,
+            Some(token),
+            None,
+            Some(json!({"seq": seq, "markUnread": true})),
+        )?)
+        .map(|_| ())
+    }
+
+    /// A message link's original and its space (`None` for a DM), or
+    /// `Ok(None)` when this account can't see it: the API answers no access
+    /// and no message alike.
+    pub fn resolve_message_link(
+        &self,
+        token: &str,
+        channel: &str,
+        message: &str,
+    ) -> Result<Option<crate::model::ForwardSource>, ApiError> {
+        let id = |value: &str, length: usize| {
+            value.len() == length && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        };
+        if !id(channel, 12) || !id(message, 15) {
+            return Err(invalid("Invalid message link."));
+        }
+        match self.request::<crate::model::ForwardSource>(
+            Method::GET,
+            &format!("api/chat/message-links/{channel}/{message}"),
+            Some(token),
+            None,
+            None,
+        ) {
+            Ok(source) if source.message.id == message && source.message.channel_id == channel => {
+                Ok(Some(source))
+            }
+            Ok(_) => Err(invalid("Message is unavailable.")),
+            Err(error) if error.status == Some(StatusCode::NOT_FOUND) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn general_history(&self, token: Option<&str>) -> Result<History, ApiError> {
         self.request(Method::GET, "api/chat/general", token, None, None)
     }
@@ -2720,4 +2783,12 @@ mod tests {
         );
         worker.join().unwrap();
     }
+}
+
+/// Where Mark unread moves the read position back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnreadTarget {
+    Channel { space: String, channel: String },
+    Direct { conversation: String },
+    Thread { channel: String, root: String },
 }

@@ -174,6 +174,20 @@ pub enum Command {
         channel: String,
         seq: String,
     },
+    /// Mark unread: moves the read position back to `seq`.
+    MarkUnread {
+        epoch: u64,
+        token: String,
+        target: crate::api::UnreadTarget,
+        seq: String,
+    },
+    /// A message link: where its message is, if this account may see it.
+    ResolveMessageLink {
+        epoch: u64,
+        token: String,
+        channel: String,
+        message: String,
+    },
     Restore {
         generation: u64,
     },
@@ -770,6 +784,18 @@ pub enum Event {
         channel: String,
         seq: String,
         result: Result<(), String>,
+    },
+    MarkedUnread {
+        epoch: u64,
+        target: crate::api::UnreadTarget,
+        result: Result<(), String>,
+    },
+    /// `Ok(None)`: this account can't see it (or it doesn't exist).
+    MessageLinkResolved {
+        epoch: u64,
+        channel: String,
+        message: String,
+        result: Result<Option<Box<crate::model::ForwardSource>>, String>,
     },
     MembershipRefreshed {
         epoch: u64,
@@ -1605,6 +1631,7 @@ fn manage<H: Host>(
                     Command::ReadDirect { .. }
                         | Command::ReadActivity { .. }
                         | Command::ReadChannel { .. }
+                        | Command::MarkUnread { .. }
                         | Command::ThreadUnread { read: Some(_), .. }
                         | Command::Account { .. }
                         | Command::Admin { .. }
@@ -2157,6 +2184,32 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
             space,
             channel,
             seq,
+        },
+        Command::MarkUnread {
+            epoch,
+            token,
+            target,
+            seq,
+        } => Event::MarkedUnread {
+            epoch,
+            result: api
+                .mark_unread(&token, &target, &seq)
+                .map_err(|error| error.to_string()),
+            target,
+        },
+        Command::ResolveMessageLink {
+            epoch,
+            token,
+            channel,
+            message,
+        } => Event::MessageLinkResolved {
+            epoch,
+            result: api
+                .resolve_message_link(&token, &channel, &message)
+                .map(|source| source.map(Box::new))
+                .map_err(|error| error.to_string()),
+            channel,
+            message,
         },
         Command::PrepareVoice { token, channel } => {
             api.prepare_voice(&token, &channel);

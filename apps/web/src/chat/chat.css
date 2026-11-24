@@ -7314,3 +7314,22 @@ a.chat-draft-preview {
   color: var(--text-muted);
   font-size: 0.78rem;
 }
+/* A message link the reader can't open: neutral, and no hint of what it holds. */
+.chat-message-link-locked {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-decoration: none;
+}
+.chat-message-link-locked:hover {
+  color: var(--text);
+}
+.chat-message-link-card .chat-embeds:empty {
+  display: none;
+}

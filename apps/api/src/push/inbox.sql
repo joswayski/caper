@@ -91,5 +91,5 @@ WITH visible AS (
     SELECT * FROM message_activity UNION ALL SELECT * FROM reaction_activity UNION ALL SELECT * FROM pending
 ), activity AS (
     SELECT sources.*, sources.unread AND reads.item_id IS NULL AS is_unread
-    FROM sources LEFT JOIN public.notification_inbox_reads reads ON reads.user_id=$1 AND reads.item_id=sources.id
+    FROM sources LEFT JOIN public.notification_inbox_reads reads ON reads.user_id=$1 AND reads.item_id=sources.id AND reads.revoked_at IS NULL
 )

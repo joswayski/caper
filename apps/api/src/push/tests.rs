@@ -4937,3 +4937,194 @@ async fn notification_actions_reply_and_read_with_access_and_blocks(pool: PgPool
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn mark_unread_moves_reads_back_and_keeps_inbox_and_badge_in_step(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let (space_id, space_external) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    let dm = direct(&h, &alice, "bob").await;
+    let get = |path: String| {
+        let app = h.app.clone();
+        let token = bob.token.clone();
+        async move {
+            let (status, body) = call(&app, "GET", &path, Some(&token), None, Value::Null).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            body
+        }
+    };
+    let post = |path: String, body: Value| {
+        let app = h.app.clone();
+        let token = bob.token.clone();
+        async move { call(&app, "POST", &path, Some(&token), None, body).await.0 }
+    };
+    let seq_of = |id: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT channel_seq FROM messages WHERE external_id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let first = send(&h, &alice, &general, "One", None).await;
+    let second = send(&h, &alice, &general, "Two", None).await;
+    send(&h, &alice, &general, "Three", None).await;
+    let read = format!("/api/spaces/{space_external}/channels/{general}/read");
+    assert_eq!(
+        post(read.clone(), json!({"seq":"999"})).await,
+        StatusCode::NO_CONTENT
+    );
+    // Acknowledge one message in the inbox as well, then read everything.
+    let inbox = get("/api/notifications/inbox".into()).await;
+    let second_item = inbox["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["messageId"] == second.as_str())
+        .unwrap()["id"]
+        .clone();
+    assert_eq!(
+        post(
+            "/api/notifications/inbox/read".into(),
+            json!({"ids":[second_item]})
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(get("/api/spaces/unread".into()).await["badgeCount"], 0);
+
+    // An ordinary read cannot move the position back.
+    let before_second = (seq_of(second.clone()).await - 1).to_string();
+    assert_eq!(
+        post(read.clone(), json!({"seq": before_second})).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(get("/api/spaces/unread".into()).await["badgeCount"], 0);
+
+    // Mark unread on Two: Two and Three are unread again everywhere, including
+    // Two's earlier inbox acknowledgement; One stays read.
+    assert_eq!(
+        post(
+            read.clone(),
+            json!({"seq": before_second, "markUnread": true})
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    let unread = get("/api/spaces/unread".into()).await;
+    assert_eq!(unread["badgeCount"], 2, "{unread}");
+    let entry = &unread["spaces"][0]["channels"][0];
+    assert_eq!(entry["readSeq"], before_second.as_str());
+    assert_eq!(entry["unreadCount"], 2);
+    let inbox = get("/api/notifications/inbox?unread=true".into()).await;
+    assert_eq!(inbox["unreadCount"], 2, "{inbox}");
+    let unread_ids: Vec<&str> = inbox["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["messageId"].as_str().unwrap())
+        .collect();
+    assert!(unread_ids.contains(&second.as_str()) && !unread_ids.contains(&first.as_str()));
+    // Acknowledging the revoked item again clears it.
+    assert_eq!(
+        post(
+            "/api/notifications/inbox/read".into(),
+            json!({"ids":[second_item]})
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(get("/api/spaces/unread".into()).await["badgeCount"], 1);
+    // Mark unread is clamped to the head and still needs access.
+    assert_eq!(
+        post(
+            format!("/api/spaces/{space_external}/channels/nochannel123/read"),
+            json!({"seq":"0","markUnread":true})
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
+
+    // DMs and threads move back the same way.
+    let direct_message = send(&h, &alice, &dm, "Direct", None).await;
+    let dm_read = format!("/api/dms/{dm}/read");
+    assert_eq!(
+        post(dm_read.clone(), json!({"seq":"999"})).await,
+        StatusCode::NO_CONTENT
+    );
+    let badge = get("/api/spaces/unread".into()).await["badgeCount"].clone();
+    let before_direct = (seq_of(direct_message).await - 1).to_string();
+    assert_eq!(
+        post(dm_read, json!({"seq": before_direct, "markUnread": true})).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get("/api/spaces/unread".into()).await["badgeCount"],
+        badge.as_i64().unwrap() + 1
+    );
+    let root = send(&h, &bob, &general, "My thread", None).await;
+    let reply = send(&h, &alice, &general, "Reply", Some(&root)).await;
+    let thread_read = format!("/api/chat/channels/{general}/messages/{root}/thread/read");
+    let put = |body: Value| {
+        let app = h.app.clone();
+        let token = bob.token.clone();
+        let path = thread_read.clone();
+        async move { call(&app, "PUT", &path, Some(&token), None, body).await.0 }
+    };
+    assert_eq!(put(json!({"seq":"999"})).await, StatusCode::NO_CONTENT);
+    assert_eq!(
+        get(format!("/api/chat/channels/{general}/threads/unread")).await["threads"],
+        json!([])
+    );
+    let before_reply = (seq_of(reply).await - 1).to_string();
+    assert_eq!(
+        put(json!({"seq": before_reply, "markUnread": true})).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(format!("/api/chat/channels/{general}/threads/unread")).await["threads"][0]["rootId"],
+        root.as_str()
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn message_links_resolve_only_for_readers_of_the_original(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let outsider = person(&pool, "outsider").await;
+    let (space_id, space_external) = space(&pool, &alice, &[&bob]).await;
+    let private = channel(&pool, space_id, "secret", true, &[&alice]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    let secret = send(&h, &alice, &private, "Secret plans", None).await;
+    let open = send(&h, &alice, &general, "Hello all", None).await;
+    let resolve = |channel: &str, message: &str, token: Option<String>| {
+        let app = h.app.clone();
+        let path = format!("/api/chat/message-links/{channel}/{message}");
+        async move { call(&app, "GET", &path, token.as_deref(), None, Value::Null).await }
+    };
+    let (status, body) = resolve(&general, &open, Some(bob.token.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["spaceId"], space_external.as_str());
+    assert_eq!(body["message"]["id"], open.as_str());
+    assert_eq!(body["message"]["content"]["text"], "Hello all");
+    // Without access, unknown and signed out all look the same and leak nothing.
+    for (channel, message, token) in [
+        (&private, &secret, Some(bob.token.clone())),
+        (&general, &open, Some(outsider.token.clone())),
+        (&general, &open, None),
+        (&general, &secret, Some(bob.token.clone())),
+    ] {
+        let (status, body) = resolve(channel, message, token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(!body.to_string().contains("Secret"), "{body}");
+    }
+    let (status, _) = resolve(&private, &secret, Some(alice.token.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+}

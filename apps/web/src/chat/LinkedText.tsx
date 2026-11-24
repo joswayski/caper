@@ -4,9 +4,12 @@ import { linkSegments } from "./links.ts";
 import FormattedText, { CodeBlockView, QuoteBlock, quoteBlocks } from "./FormattedText.tsx";
 import { formattedRuns } from "./formatting.ts";
 import { parseMessageBlocks } from "./code.ts";
+import { messageLink } from "./message-links.ts";
+import { useOpenMessageLink } from "./MessageLinkCards.tsx";
 
 /** Message formatting and safe autolinks; mention-aware callers format their outer runs. */
 export default function LinkedText({ text, formatted = true }: { text: string; formatted?: boolean }) {
+  const openMessage = useOpenMessageLink();
   if (formatted) {
     return parseMessageBlocks(text).map((block) => {
       if (block.kind === "code") return <CodeBlockView key={block.start} block={block} />;
@@ -38,7 +41,14 @@ export default function LinkedText({ text, formatted = true }: { text: string; f
             target="_blank"
             rel="noopener noreferrer nofollow ugc"
             // The row opens message actions on click/long-press; a link only navigates.
-            onClick={(event) => event.stopPropagation()}
+            // A Caper message link opens in place when the page can (Spaces).
+            onClick={(event) => {
+              event.stopPropagation();
+              const link = openMessage && messageLink(segment.href!);
+              if (!link || event.metaKey || event.ctrlKey || event.shiftKey) return;
+              event.preventDefault();
+              openMessage(link);
+            }}
           >
             <span className="chat-link-start">
               <Link aria-hidden="true" />

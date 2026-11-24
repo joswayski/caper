@@ -1964,6 +1964,58 @@ only to mobile user agents.
 
 The shape of KLIPY ad objects is undocumented beyond `type` and `content`.
 
+## Message links and Mark unread
+
+Every client's message actions offer **Copy link** and **Mark unread**.
+
+**Message links.** Copy link copies `https://caper.chat/m/<channel>/<message>`
+(the 12-character channel or DM ID and the 15-character message ID; no space or
+thread, so a link survives either changing). The apps also accept
+`caper://m/<channel>/<message>`. `shared/messages/message_links.rs` (API,
+desktop, Android, Apple) and web's `apps/web/src/chat/message-links.ts` parse
+them, and every client runs `shared/messages/message-link-cases.json`. Only
+`caper.chat`, `www.caper.chat` and `staging.caper.chat` count; another site's
+`/m/...` path stays an ordinary link.
+
+- `GET /api/chat/message-links/{channel}/{message}` returns
+  `{spaceId, message}` (`spaceId` null for a DM) with the same read access and
+  hydration as history: a forward's original is read fresh and a deleted
+  message keeps its tombstone. No access, signed out, an unknown channel and an
+  unknown message all return the same 404, so a link reveals nothing.
+- Web serves `/m/<channel>/<message>` as a redirect to
+  `/spaces?link=<channel>/<message>`, which survives sign-in and the profile
+  step; Spaces resolves it, then opens the channel or DM and highlights the
+  message like an inbox row (a reply opens its thread). iPhone (universal link
+  `/m/*`), Android (verified App Link `/m/`) and every app's `caper://m/...`
+  open the same way. A link the reader can't open shows "You can’t view that
+  message."
+- On web and Android, a message link in a message's text renders below it as a
+  live card of the original (author, text, attachments, embeds) with **Jump to
+  message**, for readers the API lets see it; everyone else sees a neutral
+  "Message you can’t view" pill. The Apple, Windows and Linux apps show the
+  link as text that opens the message in place (the same API check decides). Cards refresh while shown (every 30 seconds on web), so edits,
+  reactions and deletions follow the original. Up to five distinct links per
+  message get cards. Message links get no link-preview embed, in the composer or
+  after sending.
+
+**Mark unread** moves your read position to just before that message, synced
+through the server. The channel, DM or thread shows unread again and, for the
+rest of the visit, the **New messages** divider sits above that message and the
+conversation stops acknowledging reads until you leave it. Threads offer it
+only to people who started or replied in the thread, as only they have thread
+unread state.
+
+- The channel, DM and thread read routes accept `{"seq":"41","markUnread":true}`.
+  Without `markUnread` a read only advances; with it the position is set
+  exactly (clamped to the head), under a row lock so a concurrent read applies
+  before or after, never between.
+- Notification inbox acknowledgements (`notification_inbox_reads`) of messages
+  after the new position are revoked (`revoked_at`), not deleted, so the inbox,
+  `badgeCount`, unread counts and delayed alerts agree that they are unread;
+  acknowledging again clears `revoked_at`. Reactions the old channel position
+  had covered are acknowledged instead, so moving back does not resurrect
+  reactions already seen.
+
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus; clicking
@@ -1971,8 +2023,9 @@ a message or reaction does not keep the toolbar visible after the pointer leaves
 Reaction chips have no outer focus ring; keyboard navigation uses an inset cue.
 Mobile web, Android and iPhone hide the per-message add button: press and hold a
 committed message to open a bottom drawer with your three quick reactions, the
-searchable emoji picker, **Copy text** and **Copy message ID**. Copy uses the exact text or the public message `id`, never the client retry
-UUID or channel-local sequence. Read-only previews allow copying but not reaction
+searchable emoji picker, **Copy text**, **Copy link** and **Mark unread**. Copy
+text uses the exact text; Copy link copies the message's link (see
+[message links](#message-links-and-mark-unread)). Read-only previews allow copying but not reaction
 mutations. Web offers a keyboard/screen-reader message-actions button; iPhone
 provides a VoiceOver action and Android a labelled long-click action. macOS and
 Rust desktop keep their hover reaction controls.
@@ -2283,7 +2336,7 @@ not acknowledge earlier replies.
 `PUT /api/chat/channels/{channel}/messages/{root}/thread/read` accepts `{seq}` and
 returns 204. Both use account authentication and conversation read permissions.
 `thread_reads` stores a per-account/root cursor, advanced monotonically and
-clamped to the thread's latest reply. Personalized state never enters shared
+clamped to the thread's latest reply (Mark unread can move it back). Personalized state never enters shared
 payloads or replay.
 
 Clients acknowledge rendered replies only in an active, visible thread's latest
@@ -4675,7 +4728,7 @@ unread messages.
 
 `POST /api/spaces/{space}/channels/{channel}/read` accepts `{"seq":"42"}`. Read
 positions (`channel_reads`) are per account/channel, monotonic and capped at the
-channel head. Only a loaded foreground conversation acknowledges its committed
+channel head; only [Mark unread](#message-links-and-mark-unread) moves one back. Only a loaded foreground conversation acknowledges its committed
 cursor; prefetch, background views, mobile Browse and older search windows do
 not. Clients refresh on launch/foreground, every 15 seconds and about a second
 after live notification activity (one request per burst). Failed reads retry;

@@ -1,0 +1,23 @@
+{
+  "description": "Message links (https://caper.chat/m/<channel>/<message>, caper://m/<channel>/<message>). Every client parses these the same way: web's messageLink (apps/web/src/chat/message-links.ts) and shared/messages/message_links.rs. Only caper.chat hosts count.",
+  "cases": [
+    { "input": "https://caper.chat/m/Chan12345678/Msg123456789012", "link": { "channel": "Chan12345678", "message": "Msg123456789012" } },
+    { "input": "http://caper.chat/m/Chan12345678/Msg123456789012", "link": { "channel": "Chan12345678", "message": "Msg123456789012" } },
+    { "input": "https://www.caper.chat/m/Chan12345678/Msg123456789012/", "link": { "channel": "Chan12345678", "message": "Msg123456789012" } },
+    { "input": "https://staging.caper.chat/m/Chan12345678/Msg123456789012?x=1#y", "link": { "channel": "Chan12345678", "message": "Msg123456789012" } },
+    { "input": "HTTPS://CAPER.CHAT/m/Chan12345678/Msg123456789012", "link": { "channel": "Chan12345678", "message": "Msg123456789012" } },
+    { "input": "caper://m/Chan12345678/Msg123456789012", "link": { "channel": "Chan12345678", "message": "Msg123456789012" } },
+    { "input": "  https://caper.chat/m/Chan12345678/Msg123456789012  ", "link": { "channel": "Chan12345678", "message": "Msg123456789012" } },
+    { "input": "https://caper.chat/m/Chan1234567/Msg123456789012", "link": null },
+    { "input": "https://caper.chat/m/Chan12345678/Msg12345678901", "link": null },
+    { "input": "https://caper.chat/m/Chan-2345678/Msg123456789012", "link": null },
+    { "input": "https://caper.chat/m/Chan12345678/Msg123456789012/extra", "link": null },
+    { "input": "https://caper.chat/invite/AbC123xYz9", "link": null },
+    { "input": "https://evil.example/m/Chan12345678/Msg123456789012", "link": null },
+    { "input": "https://caper.chat.evil.example/m/Chan12345678/Msg123456789012", "link": null },
+    { "input": "https://caper.chat:8443/m/Chan12345678/Msg123456789012", "link": null },
+    { "input": "ftp://caper.chat/m/Chan12345678/Msg123456789012", "link": null },
+    { "input": "caper.chat/m/Chan12345678/Msg123456789012", "link": null },
+    { "input": "", "link": null }
+  ]
+}

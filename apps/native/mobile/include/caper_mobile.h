@@ -73,5 +73,8 @@ CaperMobileInts caper_mobile_space_name(const uint8_t *utf8, size_t len);
 // Web's inviteCode: the ten-character code's ASCII characters, or none. Only
 // the code: clients join through their configured API origin.
 CaperMobileInts caper_mobile_invite_code(const uint8_t *utf8, size_t len);
+// A message link's "<channel>/<message>" ASCII characters, or none. Only
+// caper.chat hosts and caper://m/ count (shared/messages/message_links.rs).
+CaperMobileInts caper_mobile_message_link(const uint8_t *utf8, size_t len);
 
 #endif

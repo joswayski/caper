@@ -66,7 +66,7 @@ async fn listed(pool: &PgPool, user: i64, only: Option<&str>) -> Result<Vec<Valu
                     AND m.deleted_at IS NULL AND author.user_id<>$1
                     AND (m.thread_root_id IS NULL OR m.broadcast)
                     AND d.accepted_at IS NOT NULL
-                    AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || m.id)
+                    AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || m.id AND ir.revoked_at IS NULL)
                     AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL)),
                 'status',CASE WHEN d.accepted_at IS NOT NULL THEN 'accepted' WHEN d.requested_by=$1 THEN 'outgoing' ELSE 'incoming' END,
                 'blocked',EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL))
@@ -567,9 +567,12 @@ async fn set_privacy(
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ReadInput {
     seq: String,
+    /// Mark unread: set the position to `seq` even when that moves it back.
+    #[serde(default)]
+    mark_unread: bool,
 }
 
 async fn read(
@@ -583,21 +586,57 @@ async fn read(
         principal.user.id,
         &conversation,
         chat::cursor(&input.seq)?,
+        input.mark_unread,
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn mark_read(pool: &PgPool, user: i64, conversation: &str, seq: i64) -> Result<(), ApiError> {
-    let result=sqlx::query("INSERT INTO public.direct_reads (channel_id,user_id,seq) SELECT c.id,$2,LEAST($3,c.last_seq) FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id WHERE c.external_id=$1 AND $2 IN (d.low_user_id,d.high_user_id) ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
-        .bind(conversation).bind(user).bind(seq).execute(pool).await.map_err(|_|chat::unavailable())?;
-    if result.rows_affected() == 0 {
+/// Ordinary reads only ever advance; Mark unread sets the position exactly.
+async fn mark_read(
+    pool: &PgPool,
+    user: i64,
+    conversation: &str,
+    seq: i64,
+    mark_unread: bool,
+) -> Result<(), ApiError> {
+    let mut tx = pool.begin().await.map_err(|_| chat::unavailable())?;
+    let target: Option<(i64, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT c.id,LEAST($3,c.last_seq),
+                (SELECT r.seq FROM public.direct_reads r WHERE r.channel_id=c.id AND r.user_id=$2 FOR UPDATE)
+         FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id
+         WHERE c.external_id=$1 AND $2 IN (d.low_user_id,d.high_user_id)",
+    )
+    .bind(conversation)
+    .bind(user)
+    .bind(seq)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| chat::unavailable())?;
+    let Some((channel, seq, previous)) = target else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "conversation not found",
         ));
+    };
+    sqlx::query(
+        "INSERT INTO public.direct_reads (channel_id,user_id,seq) VALUES($1,$2,$3)
+         ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=CASE WHEN $4 THEN EXCLUDED.seq
+           ELSE GREATEST(direct_reads.seq,EXCLUDED.seq) END",
+    )
+    .bind(channel)
+    .bind(user)
+    .bind(seq)
+    .bind(mark_unread)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| chat::unavailable())?;
+    if mark_unread {
+        crate::push::inbox::marked_unread(&mut tx, user, channel, None, seq, previous.unwrap_or(0))
+            .await
+            .map_err(|_| chat::unavailable())?;
     }
-    Ok(())
+    tx.commit().await.map_err(|_| chat::unavailable())
 }
 
 #[cfg(test)]

@@ -66,7 +66,10 @@ pub enum Item {
     PinSaving,
     ViewReactions,
     CopyText,
-    CopyId,
+    /// The message's link (`caper.chat/m/<channel>/<message>`).
+    CopyMessageLink,
+    /// Moves the read position to just before this message.
+    MarkUnread,
     Delete,
 }
 
@@ -90,7 +93,8 @@ impl Item {
             Self::PinSaving => "Saving\u{2026}",
             Self::ViewReactions => "View reactions",
             Self::CopyText => "Copy text",
-            Self::CopyId => "Copy message ID",
+            Self::CopyMessageLink => "Copy link",
+            Self::MarkUnread => "Mark unread",
             Self::Delete => "Delete message",
         }
     }
@@ -115,7 +119,8 @@ impl Item {
             Self::Unpin => Icon::PinOff,
             Self::ViewReactions => Icon::Smile,
             Self::CopyText => Icon::Copy,
-            Self::CopyId => Icon::Hash,
+            Self::CopyMessageLink => Icon::Link,
+            Self::MarkUnread => Icon::EyeOff,
             Self::Delete => Icon::Trash,
         }
     }
@@ -1732,7 +1737,10 @@ impl App {
         if !m.is_deleted() && !m.content.text.is_empty() {
             items.push(Item::CopyText);
         }
-        items.push(Item::CopyId);
+        items.push(Item::CopyMessageLink);
+        if live.can_mark_unread(&m, in_thread) {
+            items.push(Item::MarkUnread);
+        }
         if live.can_delete(&m) {
             items.push(Item::Delete);
         }
@@ -1914,7 +1922,11 @@ impl App {
             Item::Unpin => live.pin(&m, false),
             Item::ViewReactions => return self.open_reactors(&m.id),
             Item::CopyText => crate::set_clipboard(self.hwnd, &gfx::wide(&m.content.text)),
-            Item::CopyId => crate::set_clipboard(self.hwnd, &gfx::wide(&m.id)),
+            Item::CopyMessageLink => crate::set_clipboard(
+                self.hwnd,
+                &gfx::wide(&caper_client::message_links::url(&m.channel_id, &m.id)),
+            ),
+            Item::MarkUnread => live.mark_unread(&m, menu.in_thread),
             Item::CopySelection => crate::set_clipboard(self.hwnd, &menu.selection),
             Item::OpenLink => crate::open_link(&menu.link),
             Item::CopyLink => crate::set_clipboard(self.hwnd, &gfx::wide(&menu.link)),

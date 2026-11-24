@@ -117,8 +117,12 @@ export function createDirectConversation(username: string) {
   });
 }
 
-export async function readDirectConversation(id: string, seq: string) {
-  await request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
+/** `markUnread` sets the position to `seq` even when that moves it back (Mark unread). */
+export async function readDirectConversation(id: string, seq: string, markUnread = false) {
+  await request<void>(`/api/dms/${pathId(id)}/read`, {
+    method: "POST",
+    body: JSON.stringify(markUnread ? { seq, markUnread } : { seq }),
+  });
   unreadChanged();
 }
 
@@ -260,10 +264,11 @@ export async function readInbox(ids: string[]) {
   return result;
 }
 
-export async function readChannel(spaceId: string, channelId: string, seq: string) {
+/** `markUnread` sets the position to `seq` even when that moves it back (Mark unread). */
+export async function readChannel(spaceId: string, channelId: string, seq: string, markUnread = false) {
   await request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/read`, {
     method: "POST",
-    body: JSON.stringify({ seq }),
+    body: JSON.stringify(markUnread ? { seq, markUnread } : { seq }),
   });
   unreadChanged();
 }

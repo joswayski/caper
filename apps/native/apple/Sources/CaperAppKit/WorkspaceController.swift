@@ -304,6 +304,7 @@ import CaperCore
         timeline.openMention = { [weak self] mention, view, rect in
             self?.profiles.show(mention: mention, relativeTo: rect, of: view)
         }
+        timeline.openMessageLink = { [weak self] url in self?.model.openMessageLink(url) ?? false }
         membersToggle.setAccessibilityIdentifier("toggle-members")
         membersToggle.mutesAtRest = false
         closeVisit.setAccessibilityIdentifier("feedback-visit-close"); closeVisit.isHidden = true
@@ -1056,6 +1057,7 @@ import CaperCore
         row.body.openMention = { [weak self] mention, anchor, rect in
             self?.profiles.show(mention: mention, relativeTo: rect, of: anchor)
         }
+        row.body.openMessageLink = { [weak self] url in self?.model.openMessageLink(url) ?? false }
         row.makeAttachments = { [weak self] message in
             self?.media.messageAttachments(message, beforeViewing: { [weak self] in self?.pins.close() })
         }
@@ -1128,7 +1130,7 @@ import CaperCore
         func copy(_ text: String) {
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
         }
-        let copyID = NavigationMenuItem("Copy message ID", action: perform { copy($0.id) })
+        let copyID = NavigationMenuItem("Copy link", action: perform { copy(MessageLinkTarget.url(channelID: $0.channelId, messageID: $0.id)) })
         if current.isDeleted {
             var items: [NSMenuItem] = []
             if !inThread, current.threadRootId != nil || (current.thread?.replyCount ?? 0) > 0 {
@@ -1182,12 +1184,18 @@ import CaperCore
                     action()
                 }
             }
-            let actions = [NavigationMenuItem("Open link", action: linkAction { NSWorkspace.shared.open(link.url) }),
-                NavigationMenuItem("Copy link", action: linkAction { copy(link.url.absoluteString) })]
+            // "Copy link" copies the message's own link; these act on a link in its text.
+            let actions = [NavigationMenuItem("Open link", action: linkAction { [weak self] in
+                    if self?.model.openMessageLink(link.url) != true { NSWorkspace.shared.open(link.url) }
+                }),
+                NavigationMenuItem("Copy link address", action: linkAction { copy(link.url.absoluteString) })]
             if links.count == 1 { items += actions }
             else { items.append(NavigationMenus.submenu(link.text, actions)) }
         }
         items.append(copyID)
+        if model.canMarkUnread(current) {
+            items.append(NavigationMenuItem("Mark unread", action: perform { [weak self] in self?.model.markUnread($0) }))
+        }
         if dialogs.canDelete(current) {
             items += [.separator(), NavigationMenuItem("Delete message", role: .destructive, action: perform { [weak self] in
                 guard let self else { return }; self.dialogs.deleteMessage($0, in: self.presentationParent)

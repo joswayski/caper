@@ -29,9 +29,14 @@ export const fixtureIDs = {
   visitChannel: "chan00000009",
 };
 const ids = fixtureIDs;
-/** Links that get cards, without repeats, skipping any written `<like this>`. */
+/** Links that get cards, without repeats, skipping any written `<like this>` and
+ * Caper message links, which clients draw as cards of the original instead. */
 const embedLinks = (text) => [
-  ...new Set([...text.matchAll(/(<)?(https?:\/\/[^\s<>]+)(>)?/giu)].filter((m) => !(m[1] && m[3])).map((m) => m[2])),
+  ...new Set(
+    [...text.matchAll(/(<)?(https?:\/\/[^\s<>]+)(>)?/giu)]
+      .filter((m) => !(m[1] && m[3]) && !/^https?:\/\/(?:www\.|staging\.)?caper\.chat\/m\//i.test(m[2]))
+      .map((m) => m[2]),
+  ),
 ];
 // One `bytes=a-b` range, as storage serves it: native players seek media by
 // reading ranges through their loopback proxy.
@@ -2345,7 +2350,8 @@ export async function startFixture({
         if (!/^(0|[1-9]\d*)$/.test(body.seq)) return reject(response, 400, "Invalid cursor.");
         const head = BigInt(channelHead(conversation.id));
         const bounded = BigInt(body.seq) > head ? head : BigInt(body.seq);
-        if (bounded > BigInt(conversation.readSeq)) conversation.readSeq = String(bounded);
+        // Like the API: reads only advance; Mark unread sets the position exactly.
+        if (body.markUnread === true || bounded > BigInt(conversation.readSeq)) conversation.readSeq = String(bounded);
         return json(response, 204);
       }
       // Spaces where someone is in voice, for the clients' rail badges.
@@ -2388,8 +2394,9 @@ export async function startFixture({
       const channelRead = /^\/api\/spaces\/([^/]+)\/channels\/([^/]+)\/read$/.exec(path);
       if (channelRead && method === "POST" && user && state.channelReads) {
         const [, , channelId] = channelRead;
-        state.channelReadLog.push({ channelId, seq: body.seq });
-        if (BigInt(body.seq) > BigInt(state.channelReads[channelId] ?? "0")) state.channelReads[channelId] = body.seq;
+        state.channelReadLog.push({ channelId, seq: body.seq, ...(body.markUnread ? { markUnread: true } : {}) });
+        if (body.markUnread === true || BigInt(body.seq) > BigInt(state.channelReads[channelId] ?? "0"))
+          state.channelReads[channelId] = body.seq;
         if (state.channelMentions && BigInt(body.seq) >= BigInt(channelHead(channelId)))
           delete state.channelMentions[channelId];
         return json(response, 204);
@@ -2803,8 +2810,20 @@ export async function startFixture({
         if (!/^(0|[1-9]\d*)$/.test(body.seq)) return reject(response, 400, "Invalid cursor.");
         state.threadReads ??= new Map();
         const key = `${user.id}:${threadRead[2]}`;
-        if (BigInt(body.seq) > BigInt(state.threadReads.get(key) ?? "0")) state.threadReads.set(key, body.seq);
+        if (body.markUnread === true || BigInt(body.seq) > BigInt(state.threadReads.get(key) ?? "0"))
+          state.threadReads.set(key, body.seq);
         return json(response, 204);
+      }
+      // Message links: like the API, a reader who can't see the original gets the same 404 as for none.
+      const linked = /^\/api\/chat\/message-links\/([^/]+)\/([^/]+)$/.exec(path);
+      if (linked && method === "GET") {
+        const channel = channelFor(linked[1]);
+        const message =
+          channel && canRead(channel, user, false)
+            ? (state.messages.get(channel.id) ?? []).find((item) => item.id === linked[2])
+            : undefined;
+        if (!message) return reject(response, 404, "message not found");
+        return json(response, 200, { spaceId: channel.direct ? null : channel.spaceId, message });
       }
       const thread = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/thread$/.exec(path);
       if (thread && method === "GET") {

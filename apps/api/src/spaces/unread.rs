@@ -31,7 +31,7 @@ pub(super) async fn list(
           SELECT v.id,max(m.channel_seq) AS seq,count(*) AS unread_count
           FROM (SELECT channel_id,channel_seq,session_id,thread_root_id,broadcast FROM public.messages
                 WHERE forward_source_id IS NULL AND deleted_at IS NULL
-                  AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || messages.id)
+                  AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || messages.id AND ir.revoked_at IS NULL)
                   AND payload->'content'->'mentions' @> jsonb_build_array(jsonb_build_object('type','user','id',$2::text))
                 OFFSET 0) m
           JOIN visible v ON v.id=m.channel_id AND m.channel_seq>v.read_seq
@@ -57,7 +57,7 @@ pub(super) async fn list(
           JOIN public.users author ON author.id=cs.user_id AND author.deleted_at IS NULL
           WHERE v.joined AND m.channel_id=v.id AND m.channel_seq>v.read_seq AND m.deleted_at IS NULL
             AND (m.thread_root_id IS NULL OR m.broadcast) AND cs.user_id<>$1
-            AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || m.id)
+            AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || m.id AND ir.revoked_at IS NULL)
             AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
                  WHERE b.blocker_id=$1 AND b.blocked_id=cs.user_id AND b.deleted_at IS NULL)
         ) latest ON true
@@ -88,9 +88,12 @@ pub(super) async fn list(
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct ReadInput {
     seq: String,
+    /// Mark unread: set the position to `seq` even when that moves it back.
+    #[serde(default)]
+    mark_unread: bool,
 }
 
 pub(super) async fn read(
@@ -100,24 +103,51 @@ pub(super) async fn read(
     Json(input): Json<ReadInput>,
 ) -> Result<StatusCode, ApiError> {
     let seq = crate::chat::cursor(&input.seq)?;
-    let result = sqlx::query(
-        "INSERT INTO public.channel_reads(channel_id,user_id,seq)
-         SELECT c.id,$3,LEAST($4,c.last_seq) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    // The channel and the reader's current position, locked so a concurrent
+    // read or mark unread applies after this one rather than between.
+    let target: Option<(i64, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT c.id,LEAST($4,c.last_seq),
+                (SELECT r.seq FROM public.channel_reads r WHERE r.channel_id=c.id AND r.user_id=$3 FOR UPDATE)
+         FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
          WHERE s.external_id=$1 AND c.external_id=$2 AND s.deleted_at IS NULL AND NOT s.demo AND c.deleted_at IS NULL
            AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$3 AND sm.deleted_at IS NULL)
            AND (NOT c.private OR s.owner_id=$3 OR EXISTS(SELECT 1 FROM public.channel_members cm
-                WHERE cm.channel_id=c.id AND cm.user_id=$3 AND cm.deleted_at IS NULL))
-         ON CONFLICT(channel_id,user_id) DO UPDATE SET seq=GREATEST(channel_reads.seq,EXCLUDED.seq)",
+                WHERE cm.channel_id=c.id AND cm.user_id=$3 AND cm.deleted_at IS NULL))",
     )
     .bind(space)
     .bind(channel)
     .bind(principal.user.id)
     .bind(seq)
-    .execute(pool(&state)?)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(database_error)?;
-    if result.rows_affected() == 0 {
-        return Err(not_found());
+    let (channel, seq, previous) = target.ok_or_else(not_found)?;
+    // Ordinary reads only ever advance; Mark unread sets the position exactly.
+    sqlx::query(
+        "INSERT INTO public.channel_reads(channel_id,user_id,seq) VALUES($1,$2,$3)
+         ON CONFLICT(channel_id,user_id) DO UPDATE SET seq=CASE WHEN $4 THEN EXCLUDED.seq
+           ELSE GREATEST(channel_reads.seq,EXCLUDED.seq) END",
+    )
+    .bind(channel)
+    .bind(principal.user.id)
+    .bind(seq)
+    .bind(input.mark_unread)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    if input.mark_unread {
+        crate::push::inbox::marked_unread(
+            &mut tx,
+            principal.user.id,
+            channel,
+            None,
+            seq,
+            previous.unwrap_or(0),
+        )
+        .await
+        .map_err(database_error)?;
     }
+    tx.commit().await.map_err(database_error)?;
     Ok(StatusCode::NO_CONTENT)
 }

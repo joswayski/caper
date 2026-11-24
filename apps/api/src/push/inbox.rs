@@ -145,7 +145,9 @@ async fn read(
     sqlx::query(&format!(
         "{SOURCES}
         INSERT INTO public.notification_inbox_reads(user_id,item_id)
-        SELECT $1,id FROM activity WHERE id=ANY($2) ON CONFLICT DO NOTHING"
+        SELECT $1,id FROM activity WHERE id=ANY($2)
+        ON CONFLICT(user_id,item_id) DO UPDATE SET read_at=now(),revoked_at=NULL
+        WHERE notification_inbox_reads.revoked_at IS NOT NULL"
     ))
     .bind(principal.user.id)
     .bind(input.ids)
@@ -155,4 +157,49 @@ async fn read(
     Ok(Json(
         json!({"unreadCount":count(pool,principal.user.id).await.map_err(database_error)?}),
     ))
+}
+
+/// Mark unread moved a read position back to `seq`. Messages after it show
+/// again in the inbox and unread counts, so revoke their acknowledgements;
+/// reactions the old position (`previous`) had read stay read. `thread`
+/// scopes it to one thread's replies, otherwise to the channel's own
+/// messages and broadcast replies.
+pub(crate) async fn marked_unread(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user: i64,
+    channel: i64,
+    thread: Option<i64>,
+    seq: i64,
+    previous: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE public.notification_inbox_reads SET revoked_at=now()
+         WHERE user_id=$1 AND revoked_at IS NULL AND item_id IN(
+           SELECT 'm:' || m.id FROM public.messages m WHERE m.channel_id=$2 AND m.channel_seq>$4
+             AND CASE WHEN $3::bigint IS NULL THEN m.thread_root_id IS NULL OR m.broadcast
+                      ELSE m.thread_root_id=$3 END)",
+    )
+    .bind(user)
+    .bind(channel)
+    .bind(thread)
+    .bind(seq)
+    .execute(&mut **tx)
+    .await?;
+    if thread.is_none() && previous > seq {
+        sqlx::query(
+            "INSERT INTO public.notification_inbox_reads(user_id,item_id)
+             SELECT $1,'r:' || r.id FROM public.message_reactions r
+             JOIN public.messages m ON m.id=r.message_id
+             JOIN public.chat_sessions author ON author.id=m.session_id AND author.user_id=$1
+             WHERE m.channel_id=$2 AND r.seq>$3 AND r.seq<=$4 AND r.user_id<>$1 AND r.deleted_at IS NULL
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(user)
+        .bind(channel)
+        .bind(seq)
+        .bind(previous)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }

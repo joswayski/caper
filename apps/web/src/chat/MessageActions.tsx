@@ -13,9 +13,24 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { Ban, Copy, Forward, Hash, History, Pencil, Pin, PinOff, SmilePlus, Trash2, Users, X } from "lucide-react";
+import {
+  Ban,
+  Copy,
+  EyeOff,
+  Forward,
+  History,
+  Link,
+  Pencil,
+  Pin,
+  PinOff,
+  SmilePlus,
+  Trash2,
+  Users,
+  X,
+} from "lucide-react";
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import type { ChatMessage } from "./types.ts";
+import { messageLinkUrl } from "./message-links.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 import ReactionPicker, { loadReactionPicker } from "./LazyReactionPicker.tsx";
 import { getAccount, getRememberedAccount, subscribeAccount } from "../account/client.ts";
@@ -71,6 +86,7 @@ export default function MessageActions({
   onEdit,
   onDelete,
   onHistory,
+  onMarkUnread,
   block,
 }: {
   message: ChatMessage;
@@ -94,6 +110,8 @@ export default function MessageActions({
   /** The caller confirms before deleting. */
   onDelete?: () => void;
   onHistory: () => void;
+  /** Moves the reader's position to just before this message. */
+  onMarkUnread?: () => void;
   /** Another signed-in author. Blocking is confirmed by the caller; unblocking is immediate. */
   block?: { blocked: boolean; name: string; onBlock: () => void; onUnblock: () => Promise<void> };
 }) {
@@ -263,10 +281,22 @@ export default function MessageActions({
                   Copy text
                 </button>
               )}
-              <button type="button" onClick={() => void copy(message.id, "Message ID")}>
-                <Hash size={16} aria-hidden="true" />
-                Copy message ID
+              <button type="button" onClick={() => void copy(messageLinkUrl(message.channelId, message.id), "Link")}>
+                <Link size={16} aria-hidden="true" />
+                Copy link
               </button>
+              {onMarkUnread && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onMarkUnread();
+                  }}
+                >
+                  <EyeOff size={16} aria-hidden="true" />
+                  Mark unread
+                </button>
+              )}
               {canDelete && (
                 <button type="button" className="message-action-danger" onClick={onDelete}>
                   <Trash2 size={16} aria-hidden="true" />

@@ -418,6 +418,8 @@ export class ChatClient {
   private threadUnreadRevision = 0;
   private threadUnreadTimer?: ReturnType<typeof setTimeout>;
   private readonly threadReadsPending = new Set<string>();
+  /** Threads marked unread this visit: they stay unread until the thread is left. */
+  private readonly threadReadsPaused = new Set<string>();
   // Fetching a thread's older rows must not insert them into the channel page
   // or move the channel's exclusive pagination boundary past a history gap.
   private readonly threadOnlyRows = new Set<string>();
@@ -676,7 +678,7 @@ export class ChatClient {
       return;
     if (!this.state.messages.some((message) => message.threadRootId === rootId && message.seq === seq)) return;
     const key = `${account}:${rootId}`;
-    if (this.threadReadsPending.has(key)) return;
+    if (this.threadReadsPending.has(key) || this.threadReadsPaused.has(rootId)) return;
     this.threadReadsPending.add(key);
     try {
       const response = await fetch(
@@ -708,11 +710,38 @@ export class ChatClient {
     }
   }
 
+  /** Mark unread: moves this thread's read position back to `seq` and keeps it there while the thread stays open. */
+  async markThreadUnread(rootId: string, seq: string) {
+    const channel = this.state.channelId;
+    if (!channel) throw new Error("Chat session is unavailable.");
+    this.threadReadsPaused.add(rootId);
+    try {
+      const response = await fetch(
+        `/api/chat/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(rootId)}/thread/read`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ seq, markUnread: true }),
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        },
+      );
+      if (!response.ok) throw await apiError(response, "Couldn’t mark unread.");
+    } catch (error) {
+      this.threadReadsPaused.delete(rootId);
+      throw error;
+    }
+    ++this.threadUnreadRevision;
+    void this.refreshUnreadThreads();
+    unreadChanged();
+  }
+
   closeThread() {
+    this.threadReadsPaused.clear();
     this.update({ thread: undefined });
   }
 
   async openThread(rootId: string, around?: string) {
+    if (this.state.thread?.rootId !== rootId) this.threadReadsPaused.clear();
     if (around) {
       this.update({
         thread: { rootId, loading: true, loadingOlder: false, hasMore: false },

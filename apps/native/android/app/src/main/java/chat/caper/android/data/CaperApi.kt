@@ -85,15 +85,25 @@ class CaperApi(
     suspend fun spaceVoiceActivity(token: String): SpaceVoiceActivity = get("/api/spaces/voice-activity", token)
     suspend fun unreadThreads(token: String, channel: String): UnreadThreads =
         get("/api/chat/channels/${channel.pathId()}/threads/unread", token)
-    suspend fun markThreadRead(token: String, channel: String, root: String, seq: String) {
+    /** [markUnread]: Mark unread, which may move the read position back to [seq]. */
+    suspend fun markThreadRead(token: String, channel: String, root: String, seq: String, markUnread: Boolean = false) {
         require(messageId.matches(root)) { "Invalid message ID." }
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
-        request<Unit>("/api/chat/channels/${channel.pathId()}/messages/$root/thread/read", "PUT", token,
-            buildJsonObject { put("seq", seq) }.toString())
+        request<Unit>("/api/chat/channels/${channel.pathId()}/messages/$root/thread/read", "PUT", token, readBody(seq, markUnread))
     }
-    suspend fun markChannelRead(token: String, space: String, channel: String, seq: String) {
+    suspend fun markChannelRead(token: String, space: String, channel: String, seq: String, markUnread: Boolean = false) {
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
-        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
+        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/read", "POST", token, readBody(seq, markUnread))
+    }
+    private fun readBody(seq: String, markUnread: Boolean) =
+        buildJsonObject { put("seq", seq); if (markUnread) put("markUnread", true) }.toString()
+    /** A message link's original and its space, or null when this account can't see it (the API's 404). */
+    suspend fun resolveMessageLink(token: String, channel: String, message: String): ForwardSource? {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        return try {
+            get<ForwardSource>("/api/chat/message-links/${channel.pathId()}/$message", token)
+                .also { require(it.message.id == message && it.message.channelId == channel) { "Message is unavailable." } }
+        } catch (error: ApiException) { if (error.status == 404) null else throw error }
     }
     suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
     suspend fun directConversations(token: String): DirectConversationList = get("/api/dms", token)
@@ -113,9 +123,9 @@ class CaperApi(
     suspend fun setDirectPrivacy(token: String, value: String): DirectPrivacy = request(
         "/api/account/privacy", "PUT", token, buildJsonObject { put("directMessages", value) }.toString(),
     )
-    suspend fun markDirectConversationRead(token: String, id: String, seq: String) {
+    suspend fun markDirectConversationRead(token: String, id: String, seq: String, markUnread: Boolean = false) {
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
-        request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
+        request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, readBody(seq, markUnread))
     }
     /**
      * Feedback team only (404 for everyone else): `@feedback` reports, newest first, 50 per

@@ -255,6 +255,16 @@ pub unsafe extern "C" fn caper_mobile_invite_code(utf8: *const u8, len: usize) -
     crate::invite_code(unsafe { text(utf8, len) }).into()
 }
 
+/// `crate::message_link(text)`: `<channel>/<message>` in ASCII, or nothing.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_message_link(utf8: *const u8, len: usize) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::message_link(unsafe { text(utf8, len) }).into()
+}
+
 /// `crate::code_blocks(text, true)`: six values per prose or fenced code block.
 ///
 /// # Safety

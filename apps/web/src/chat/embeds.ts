@@ -1,4 +1,5 @@
 import { linkSegments } from "./links.ts";
+import { messageLink } from "./message-links.ts";
 import type { ChatMessage } from "./types.ts";
 
 /** Link preview cards (docs/media.md "Link embeds"), version 1. */
@@ -159,12 +160,13 @@ export function withEmbeds(message: ChatMessage, revision: number, embeds: unkno
 }
 
 /** The first link in a draft that will get a card (the API's rule: links
- * written `<like this>` get none), for the composer preview. */
+ * written `<like this>` and Caper message links get none), for the composer preview. */
 export function previewLink(draft: string): string | undefined {
   const segments = linkSegments(draft);
   for (const [index, segment] of segments.entries()) {
     if (!segment.href) continue;
     if (segments[index - 1]?.text.endsWith("<") && segments[index + 1]?.text.startsWith(">")) continue;
+    if (messageLink(segment.href)) continue;
     return segment.href;
   }
   return undefined;

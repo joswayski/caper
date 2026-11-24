@@ -34,6 +34,7 @@ use uuid::Uuid;
 mod deletion;
 mod editing;
 mod forwarding;
+mod message_links;
 mod thread_reads;
 
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
@@ -212,6 +213,7 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route("/api/chat/channels/{channel}/typing", post(typing))
         .merge(forwarding::routes())
+        .merge(message_links::routes())
         .merge(thread_reads::routes())
 }
 

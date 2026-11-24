@@ -120,7 +120,7 @@ function ForwardDialog({
   );
 }
 
-function OriginalMessage({ message, onView }: { message: ChatMessage; onView?: ViewAttachment }) {
+export function OriginalMessage({ message, onView }: { message: ChatMessage; onView?: ViewAttachment }) {
   return (
     <article className="chat-forward-original">
       <header>

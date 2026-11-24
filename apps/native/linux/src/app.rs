@@ -324,6 +324,10 @@ struct State {
     /// What was unread in the open channel when you arrived: "New messages"
     /// goes above the first such message from someone else.
     unread_boundary: Option<(u64, u64)>,
+    /// Mark unread this visit: the channel, the thread root (for a reply)
+    /// and the message "New messages" goes above. Reads there pause until
+    /// you leave the conversation.
+    marked: Option<(String, Option<String>, String)>,
     /// The visit's read snapshot is on its way; marking read waits for it.
     unread_visit_pending: bool,
     /// The read snapshot a navigation requested beside its history, by
@@ -454,6 +458,59 @@ impl State {
                     .and_then(|thread| thread.message.as_ref())
                     .filter(|message| message.id == id)
             })
+    }
+
+    /// Where Mark unread on `id` moves the read position back, when it is
+    /// offered: a channel or DM message, or a reply in a thread you started
+    /// or replied in (only participants have thread read state).
+    fn unread_target(&self, id: &str) -> Option<caper_client::api::UnreadTarget> {
+        use caper_client::api::UnreadTarget;
+        let message = self.message(id)?;
+        let channel = self.channel.clone()?;
+        if self.token.is_none()
+            || message.is_deleted()
+            || message.channel_id != channel
+            || self.visiting().is_some()
+            || self.open_request().is_some()
+        {
+            return None;
+        }
+        if let Some(root) = &message.thread_root_id {
+            let me = self.account.as_ref()?.id.as_str();
+            let mine = |message: &Message| {
+                message.author.id == me
+                    && (message.id == *root || message.thread_root_id.as_ref() == Some(root))
+            };
+            let started = self
+                .thread
+                .as_ref()
+                .and_then(|thread| thread.message.as_ref())
+                .is_some_and(mine);
+            return (started || self.timeline.messages().any(mine)).then(|| UnreadTarget::Thread {
+                channel,
+                root: root.clone(),
+            });
+        }
+        if self.direct.as_ref() == Some(&channel) {
+            return Some(UnreadTarget::Direct {
+                conversation: channel,
+            });
+        }
+        Some(UnreadTarget::Channel {
+            space: self.space.clone()?,
+            channel,
+        })
+    }
+
+    /// You marked the open conversation (not a thread in it) unread.
+    fn marked_here(&self) -> bool {
+        self.marked.as_ref().is_some_and(|(channel, root, _)| {
+            root.is_none() && self.channel.as_ref() == Some(channel)
+        })
+    }
+
+    fn can_mark_unread(&self, id: &str) -> bool {
+        self.unread_target(id).is_some()
     }
 
     /// Who `@` can suggest, never yourself, and which specials apply, as on
@@ -1470,14 +1527,22 @@ impl App {
     fn install_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 14] = [
+        let actions: [(&str, Run); 15] = [
             ("reactions", |app, id| app.open_reactors(id)),
             ("history", |app, id| app.open_history(&id)),
             ("reply", |app, id| app.row_action(Action::Reply(id), false)),
             ("thread", |app, id| {
                 app.row_action(Action::Thread(id), false)
             }),
-            ("copy-id", |app, id| app.ui.window.clipboard().set_text(&id)),
+            ("copy-link", |app, id| {
+                let link = app.state.borrow().message(&id).map(|message| {
+                    caper_client::message_links::url(&message.channel_id, &message.id)
+                });
+                if let Some(link) = link {
+                    app.ui.window.clipboard().set_text(&link);
+                }
+            }),
+            ("mark-unread", |app, id| app.mark_unread(&id)),
             // Its target is the text itself.
             ("copy-selected", |app, text| {
                 app.ui.window.clipboard().set_text(&text)
@@ -1820,6 +1885,7 @@ impl App {
     }
 
     fn leave_conversation(&self, state: &mut State) {
+        state.marked = None;
         self.reset_conversation(state, true);
     }
 
@@ -2646,6 +2712,54 @@ impl App {
         }
     }
 
+    /// Mark unread: moves the read position to just before `id`, synced
+    /// through the server. "New messages" goes above it, and the
+    /// conversation stops marking itself read until you leave it.
+    fn mark_unread(self: &Rc<Self>, id: &str) {
+        {
+            let mut state = self.state.borrow_mut();
+            let (Some(target), Some(token), Some(message)) = (
+                state.unread_target(id),
+                state.token.clone(),
+                state.message(id).cloned(),
+            ) else {
+                return;
+            };
+            let seq = message
+                .seq
+                .parse::<u64>()
+                .unwrap_or(1)
+                .saturating_sub(1)
+                .to_string();
+            let root = message.thread_root_id.clone();
+            state.marked = Some((message.channel_id.clone(), root, message.id.clone()));
+            // A later read must move it forward again.
+            state.read_through.remove(&message.channel_id);
+            self.worker.send(Command::MarkUnread {
+                epoch: state.epoch,
+                token,
+                target,
+                seq,
+            });
+        }
+        self.render();
+    }
+
+    /// A message link (`caper.chat/m/...`): asks the API whether this
+    /// account may see it, then opens it like a notification.
+    pub(super) fn open_message_link(&self, channel: String, message: String) {
+        let state = self.state.borrow();
+        let Some(token) = state.token.clone() else {
+            return;
+        };
+        self.worker.send(Command::ResolveMessageLink {
+            epoch: state.epoch,
+            token,
+            channel,
+            message,
+        });
+    }
+
     /// Marks the open conversation read through its newest message.
     fn mark_read(&self, state: &mut State) {
         // Reading a request must not look like engaging with it.
@@ -2655,6 +2769,7 @@ impl App {
             || state.open_request().is_some()
             || state.has_newer
             || state.visiting().is_some()
+            || state.marked_here()
         {
             return;
         }
@@ -3803,6 +3918,7 @@ impl App {
         at: Option<(f64, f64)>,
         selected: Option<String>,
     ) {
+        let markable = self.state.borrow().can_mark_unread(id);
         let (mine, pinned, forwardable, joined, in_thread, reacted, edited) = {
             let state = self.state.borrow();
             let Some(message) = state.message(id) else {
@@ -3868,7 +3984,10 @@ impl App {
             item("Pin message", "row.pin")
         });
         actions.append_item(&item("Copy text", "row.copy"));
-        actions.append_item(&item("Copy message ID", "row.copy-id"));
+        actions.append_item(&item("Copy link", "row.copy-link"));
+        if markable {
+            actions.append_item(&item("Mark unread", "row.mark-unread"));
+        }
         menu.append_section(None, &actions);
         if mine || block.is_some() {
             let danger = gio::Menu::new();
@@ -4038,6 +4157,13 @@ impl App {
             .thread
             .as_ref()
             .filter(|thread| !thread.loading)
+            // A thread marked unread this visit stays unread.
+            .filter(|thread| {
+                state
+                    .marked
+                    .as_ref()
+                    .is_none_or(|(_, root, _)| root.as_ref() != Some(&thread.root))
+            })
             .and_then(|thread| {
                 let unread = state.thread_unread.get(&thread.root)?.parse::<u64>().ok()?;
                 let newest = state
@@ -4064,9 +4190,9 @@ impl App {
         });
     }
 
-    /// Invite links from the OS (a launch argument or a later click handed
-    /// off by `app_link`) open Join with invite link once signed in with a
-    /// profile, as on egui.
+    /// Invite and message links from the OS (a launch argument or a later
+    /// click handed off by `app_link`, including Caper's own message links)
+    /// open once signed in with a profile, as on egui.
     fn poll_invite_links(self: &Rc<Self>) {
         if let Some(links) = &*self.invite_links.borrow() {
             // A launch without a link only brought the window back.
@@ -4085,7 +4211,11 @@ impl App {
         }
         let code = self.pending_invite.borrow_mut().take();
         if let Some(code) = code {
-            self.open_invite_link(&code);
+            // A message link (`m/<channel>/<message>`) opens that message.
+            match caper_client::app_link::message_target(&code) {
+                Some((channel, message)) => self.open_message_link(channel, message),
+                None => self.open_invite_link(&code),
+            }
         }
     }
 
@@ -4578,6 +4708,57 @@ impl App {
                     state.layout += 1;
                 }
                 self.clear_open_unread(state);
+            }
+            Event::MarkedUnread {
+                epoch,
+                target,
+                result,
+            } if epoch == state.epoch => match result {
+                Ok(()) => {
+                    use caper_client::api::UnreadTarget;
+                    // Unread counts, thread dots, the DM list and the inbox
+                    // follow the server.
+                    match &target {
+                        UnreadTarget::Channel { channel, .. } => {
+                            state.reads.remove(channel);
+                        }
+                        UnreadTarget::Direct { .. } => self.load_directs(state),
+                        UnreadTarget::Thread { .. } => state.thread_unread_dirty = true,
+                    }
+                    self.refresh_unread(state);
+                    self.load_inbox(state, false, true);
+                }
+                Err(_) => {
+                    state.marked = None;
+                    state.error = Some("Couldn’t mark unread. Try again.".into());
+                }
+            },
+            Event::MessageLinkResolved { epoch, result, .. } if epoch == state.epoch => {
+                match result {
+                    Ok(Some(source)) if source.message.is_deleted() => {
+                        state.error = Some("That message was deleted.".into());
+                    }
+                    Ok(Some(source)) => {
+                        let message = source.message;
+                        let channel = message.channel_id.clone();
+                        let root = message.thread_root_id.clone();
+                        if state.channel.as_deref() == Some(&channel) {
+                            state.arrival_ready = Some((message.id, root));
+                        } else {
+                            match source.space_id {
+                                Some(space) => {
+                                    self.navigate(state, Some(space), Some(channel.clone()));
+                                }
+                                None => self.enter_direct(state, channel.clone()),
+                            }
+                            state.arrival = Some((state.navigation, channel, message.id, root));
+                        }
+                    }
+                    Ok(None) => state.error = Some("You can’t view that message.".into()),
+                    Err(_) => {
+                        state.error = Some("Couldn’t open that message. Try again.".into());
+                    }
+                }
             }
             Event::ChannelRead {
                 epoch,
@@ -5521,7 +5702,11 @@ impl App {
 
     /// The open conversation shows no unread badge while you read it.
     fn clear_open_unread(&self, state: &mut State) {
-        // What you read here no longer counts as new when you come back.
+        // What you read here no longer counts as new when you come back,
+        // unless you marked it unread.
+        if state.marked_here() {
+            return;
+        }
         if let Some(channel) = &state.channel
             && let Some((read, last)) = state.reads.get_mut(channel)
         {
@@ -6182,8 +6367,21 @@ impl App {
                 &viewer(false),
             );
             let mut main = main;
+            // Mark unread puts it above the message you chose, DMs included.
+            let marked = state
+                .marked
+                .as_ref()
+                .filter(|_| state.marked_here())
+                .and_then(|(_, _, id)| main.iter().position(|row| row.id == *id));
             // Hidden while older history could still hold earlier unread messages.
-            if let Some((read, last)) = state.unread_boundary.filter(|_| state.direct.is_none())
+            if let Some(index) = marked {
+                main[index].unread = true;
+                main[index].grouped = false;
+                if let Some(above) = index.checked_sub(1) {
+                    main[above].continued = false;
+                }
+            } else if let Some((read, last)) =
+                state.unread_boundary.filter(|_| state.direct.is_none())
                 && (!state.has_more
                     || state.timeline.messages().next().is_some_and(|message| {
                         message.seq.parse::<u64>().is_ok_and(|seq| seq <= read + 1)

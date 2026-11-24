@@ -165,6 +165,8 @@ public enum CaperTheme {
         .buttonStyle(CaperSecondaryButton())
         .background(bgColor.ignoresSafeArea())
         .modifier(WhatsNewPresentation(model: model))
+        // A Caper message link opens its message here instead of in the browser.
+        .environment(\.openURL, OpenURLAction { [model] url in model.openMessageLink(url) ? .handled : .systemAction })
         .onChange(of: scenePhase, initial: true) { _, phase in model.applicationActivityChanged(active: phase == .active) }
         .task {
             CaperFontLoader.register()
@@ -4473,7 +4475,8 @@ private struct ChatView: View {
                                         ? { blockTarget = BlockTarget(author: message.author) } : nil,
                                     unblock: BlockedMessages.canUnblock(message.author, viewerID: viewerID, blocked: chat.blockedAuthorIDs)
                                         ? { chat.unblock(message.author) } : nil,
-                                    viewReactions: { emoji in reactorContext.show(message.id, emoji) })
+                                    viewReactions: { emoji in reactorContext.show(message.id, emoji) },
+                                    markUnread: model.canMarkUnread(message) ? { reactionMessage = nil; model.markUnread(message) } : nil)
             }
             .sheet(isPresented: $showingPins) {
                 PinnedMessagesView(chat: chat, model: model, close: { showingPins = false })
@@ -4999,7 +5002,8 @@ private struct NativeThreadView: View {
                         ? { blockTarget = BlockTarget(author: message.author) } : nil,
                     unblock: BlockedMessages.canUnblock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
                         ? { chat.unblock(message.author) } : nil,
-                    viewReactions: { emoji in reactors.show(message.id, emoji) })
+                    viewReactions: { emoji in reactors.show(message.id, emoji) },
+                    markUnread: model.canMarkUnread(message) ? { reactionMessage = nil; model.markUnread(message) } : nil)
             }
             .sheet(item: $reactorsTarget) { target in ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: chat.currentAuthor?.id) }
             .sheet(item: $forwardMessage) { message in ForwardPickerView(chat: chat, message: message) }
@@ -5465,7 +5469,8 @@ private struct MessageLinkMenuItems: View {
 
     @ViewBuilder private func actions(_ link: LinkSegment, url: URL) -> some View {
         Button("Open link") { openURL(url) }
-        Button("Copy link") {
+        // "Copy link" copies the message's own link; this is a link in its text.
+        Button("Copy link address") {
             UIPasteboard.general.string = link.href ?? link.text
         }
     }
@@ -5758,16 +5763,19 @@ struct ProfileSheetOutsideTap: UIViewControllerRepresentable {
 private struct MentionPillInteraction: ViewModifier {
     let pills: [MentionPill]
     let cards: MentionCardContext
+    @Environment(\.openURL) private var openURL
 
     @ViewBuilder func body(content: Content) -> some View {
         if pills.isEmpty {
             content
         } else {
+            let openURL = self.openURL
             content
                 .environment(\.openURL, OpenURLAction { url in
                     // A swipe that starts on a pill or link lifts on it too.
                     if SwipeTapGuard.swiping { return .handled }
-                    guard url.scheme == MentionCard.scheme else { return .systemAction }
+                    // Web and message links open as the surrounding views do.
+                    guard url.scheme == MentionCard.scheme else { openURL(url); return .handled }
                     if let id = MentionCard.userID(from: url), let pill = pills.first(where: { $0.id == id }) { cards.open(pill) }
                     return .handled
                 })
@@ -6761,6 +6769,8 @@ struct MessageActionsSheet: View {
     var unblock: (() -> Void)? = nil
     /// Who reacted, from the first reaction's tab; opened once this sheet has gone.
     var viewReactions: ((String) -> Void)? = nil
+    /// Mark unread, when this message offers it (`AppModel.canMarkUnread`).
+    var markUnread: (() -> Void)? = nil
     @State private var blockRequested = false
     @State private var confirmingDelete = false
     /// Forward also waits for this sheet to go, so its picker can present.
@@ -6769,7 +6779,7 @@ struct MessageActionsSheet: View {
 
     private var quickReactions: [String] { MessageQuickReactions.emoji }
 
-    /// A deleted message opens its thread, when it has one, and copies its ID.
+    /// A deleted message opens its thread, when it has one, and copies its link.
     private var deletedThread: Bool { reply != nil && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) }
 
     /// Fits every offered action without scrolling.
@@ -6783,6 +6793,7 @@ struct MessageActionsSheet: View {
         if viewReactions != nil && message.reactions?.isEmpty == false { height += 44 }
         if block != nil || unblock != nil { height += 44 }
         if chat.canDelete(message) { height += 44 }
+        if markUnread != nil { height += 44 }
         if message.content.text.isEmpty { height -= 44 }
         return height
     }
@@ -6888,11 +6899,21 @@ struct MessageActionsSheet: View {
             }
             Divider()
             Button {
-                UIPasteboard.general.string = message.id
+                UIPasteboard.general.string = MessageLinkTarget.url(channelID: message.channelId, messageID: message.id)
                 dismiss()
             } label: {
-                CaperLabel("Copy message ID", icon: "hash").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                CaperLabel("Copy link", icon: "link").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
+            }
+            if let markUnread {
+                Divider()
+                Button {
+                    markUnread()
+                    dismiss()
+                } label: {
+                    CaperLabel("Mark unread", icon: "eye-off").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
             }
             if chat.canDelete(message) {
                 Divider()
@@ -6939,10 +6960,10 @@ struct MessageActionsSheet: View {
                 Divider()
             }
             Button {
-                UIPasteboard.general.string = message.id
+                UIPasteboard.general.string = MessageLinkTarget.url(channelID: message.channelId, messageID: message.id)
                 dismiss()
             } label: {
-                CaperLabel("Copy message ID", icon: "hash").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                CaperLabel("Copy link", icon: "link").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }
         }

@@ -396,6 +396,10 @@ pub struct Live {
     /// read acknowledged per channel, and whether the window has focus.
     unread: Option<(u64, u64)>,
     unread_pending: bool,
+    /// Mark unread this visit: (channel, thread root, message). The divider
+    /// sits above that message and the conversation stops acknowledging
+    /// reads until it is left.
+    marked: Option<(String, Option<String>, String)>,
     visit: u64,
     visit_channel: Option<String>,
     /// The last visit id handed out.
@@ -728,6 +732,7 @@ impl Live {
             context_loading: false,
             unread: None,
             unread_pending: false,
+            marked: None,
             visit: 0,
             visit_channel: None,
             next_visit: 0,
@@ -2557,6 +2562,7 @@ impl Live {
         }
         self.navigation += 1;
         self.join_error = None;
+        self.marked = None;
         let visiting = self.report_target.as_ref().is_some_and(|(n, t)| {
             *n == self.navigation && channel.as_deref() == Some(t.channel.as_str())
         });
@@ -3023,6 +3029,86 @@ impl Live {
             self.navigate(source.space_id, Some(source.message.channel_id));
             self.focus = Some((self.navigation, source.message.id, Some(root)));
         }
+    }
+
+    /// Mark unread is offered for a signed-in reader's channel or DM message,
+    /// and in a thread only to people who started or replied in it (only
+    /// they have thread unread state).
+    pub fn can_mark_unread(&self, m: &core::Message, in_thread: bool) -> bool {
+        if self.token.is_none() || m.is_deleted() || self.feedback_visit.is_some() {
+            return false;
+        }
+        if !in_thread {
+            return (self.direct.is_some() && self.direct == self.channel) || self.space.is_some();
+        }
+        let (Some(me), Some(thread)) = (self.me.as_deref(), &self.thread) else {
+            return false;
+        };
+        self.timeline.messages().any(|r| {
+            (r.id == thread.root || r.thread_root_id.as_deref() == Some(thread.root.as_str()))
+                && r.author.id == me
+        })
+    }
+
+    /// Mark unread: moves the read position to just before `m`, synced
+    /// through the server.
+    pub fn mark_unread(&mut self, m: &core::Message, in_thread: bool) {
+        if !self.can_mark_unread(m, in_thread) {
+            return;
+        }
+        let (Some(token), Some(channel)) = (self.token.clone(), self.channel.clone()) else {
+            return;
+        };
+        let seq = core::sequence(&m.seq)
+            .unwrap_or(1)
+            .saturating_sub(1)
+            .to_string();
+        let root = if in_thread {
+            self.thread.as_ref().map(|t| t.root.clone())
+        } else {
+            None
+        };
+        let target = match (&root, &self.direct, &self.space) {
+            (Some(root), ..) => caper_client::api::UnreadTarget::Thread {
+                channel: channel.clone(),
+                root: root.clone(),
+            },
+            (None, Some(direct), _) if *direct == channel => {
+                caper_client::api::UnreadTarget::Direct {
+                    conversation: channel.clone(),
+                }
+            }
+            (None, _, Some(space)) => caper_client::api::UnreadTarget::Channel {
+                space: space.clone(),
+                channel: channel.clone(),
+            },
+            _ => return,
+        };
+        self.marked = Some((channel, root.clone(), m.id.clone()));
+        if root.is_none() {
+            self.queued.push(Update::Unread(m.id.clone()));
+        }
+        self.worker.send(Command::MarkUnread {
+            epoch: self.account_epoch,
+            token,
+            target,
+            seq,
+        });
+        self.host.wake();
+    }
+
+    /// A message link (`caper.chat/m/...`): asks the API whether this account
+    /// may see it, then opens it like a notification.
+    pub fn open_message_link(&mut self, channel: &str, message: &str) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        self.worker.send(Command::ResolveMessageLink {
+            epoch: self.account_epoch,
+            token,
+            channel: channel.to_owned(),
+            message: message.to_owned(),
+        });
     }
 
     /// The signed-in, non-guest author of `m` may delete it (and edit it,
@@ -4941,6 +5027,11 @@ impl Live {
     /// unread one from someone else, once the history reaches back to the
     /// boundary, and not in a View original window.
     fn unread_row(&self) -> Option<String> {
+        if let Some((channel, None, id)) = &self.marked
+            && self.channel.as_ref() == Some(channel)
+        {
+            return Some(id.clone());
+        }
         let (read, last) = self.unread?;
         if self.window.is_some() {
             return None;
@@ -4966,6 +5057,10 @@ impl Live {
             || self.unread_pending
             || self.window.is_some()
             || self.feedback_visit.is_some()
+            || self
+                .marked
+                .as_ref()
+                .is_some_and(|(c, root, _)| root.is_none() && self.channel.as_ref() == Some(c))
         {
             return;
         }
@@ -5606,6 +5701,53 @@ impl Live {
                     cached.loaded(&message, &revision, result);
                 }
                 out.push(Update::Reactors);
+            }
+            Event::MarkedUnread {
+                epoch,
+                target,
+                result,
+            } if epoch == self.account_epoch => match result {
+                Ok(()) => {
+                    // Unread counts, the inbox and the badge follow the server.
+                    if let caper_client::api::UnreadTarget::Channel { channel, .. } = &target {
+                        self.reads.remove(channel);
+                    }
+                    self.refresh_unread();
+                    if matches!(target, caper_client::api::UnreadTarget::Direct { .. }) {
+                        self.refresh_membership();
+                    }
+                    out.push(Update::Badges);
+                }
+                Err(_) => {
+                    self.marked = None;
+                    out.push(Update::Warning(
+                        "Couldn\u{2019}t mark unread. Try again.".into(),
+                    ));
+                }
+            },
+            Event::MessageLinkResolved { epoch, result, .. } if epoch == self.account_epoch => {
+                match result {
+                    Ok(Some(source)) if source.message.is_deleted() => {
+                        out.push(Update::Warning("That message was deleted.".into()));
+                    }
+                    Ok(Some(source)) => {
+                        let source = *source;
+                        let id = source.message.id.clone();
+                        let thread = source.message.thread_root_id.clone();
+                        if self.channel.as_deref() == Some(source.message.channel_id.as_str()) {
+                            self.focus_target(&id, thread.as_deref(), out);
+                        } else {
+                            self.navigate(source.space_id, Some(source.message.channel_id));
+                            self.focus = Some((self.navigation, id, thread));
+                        }
+                    }
+                    Ok(None) => out.push(Update::Warning(
+                        "You can\u{2019}t view that message.".into(),
+                    )),
+                    Err(_) => out.push(Update::Warning(
+                        "Couldn\u{2019}t open that message. Try again.".into(),
+                    )),
+                }
             }
             Event::ChannelRead {
                 space,

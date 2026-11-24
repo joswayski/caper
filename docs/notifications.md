@@ -305,7 +305,9 @@ on activity signals and every 15 s, revalidating through the oldest loaded row.
   unread until acknowledged. Message acknowledgements also clear matching
   channel/thread unread and suppress delayed live/phone alerts.
 - Acknowledgements are kept in `notification_inbox_reads` (runtime role has
-  SELECT/INSERT, never DELETE).
+  SELECT/INSERT/UPDATE, never DELETE). Mark unread revokes those after the new
+  read position (`revoked_at`); readers ignore revoked rows and acknowledging
+  again clears it.
 
 ## Reply and Mark as read from notifications
 

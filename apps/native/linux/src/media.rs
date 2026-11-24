@@ -479,11 +479,29 @@ impl Media {
     }
 }
 
-/// Opens an http(s) link in the default browser.
+/// Opens an http(s) link in the default browser; Caper message links open in Caper.
 pub fn open_uri(url: &str) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return;
     }
+    // A Caper message link opens in Caper: it goes to the open window
+    // through the same handoff as an OS click (`app::poll_invite_links`),
+    // off the UI thread, and to the browser only when nothing took it.
+    if let Some(code) =
+        caper_client::message_links::parse(url).and_then(|_| caper_client::app_link::link_code(url))
+    {
+        let url = url.to_owned();
+        std::thread::spawn(move || {
+            if !caper_client::app_link::hand_off_at(&crate::app::link_handoff(), &code) {
+                gtk::glib::MainContext::default().invoke(move || browse(&url));
+            }
+        });
+        return;
+    }
+    browse(url);
+}
+
+fn browse(url: &str) {
     if let Err(error) =
         gtk::gio::AppInfo::launch_default_for_uri(url, None::<&gtk::gio::AppLaunchContext>)
     {

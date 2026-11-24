@@ -478,9 +478,9 @@ try {
   wait('!document.querySelector(".chat-message-actions")');
   assert.equal(browser("clipboard", "read").text, text);
   await openTarget();
-  action("Copy message ID");
+  action("Copy link");
   wait('!document.querySelector(".chat-message-actions")');
-  assert.equal(browser("clipboard", "read").text, message.id);
+  assert.equal(browser("clipboard", "read").text, `https://caper.chat/m/${message.channelId}/${message.id}`);
 
   holdReactions();
   await openTarget();
@@ -618,16 +618,16 @@ try {
   );
   assert.deepEqual(
     previewActions.filter((label) => label.startsWith("Copy ")),
-    ["Copy text", "Copy message ID"],
+    ["Copy text", "Copy link"],
   );
   assert.equal(
     previewActions.some((label) => label === "Pin message" || label === "Edit message"),
     false,
   );
   screenshot("message-actions-mobile-read-only");
-  action("Copy message ID");
+  action("Copy link");
   wait('!document.querySelector(".chat-message-actions")');
-  assert.ok(browser("clipboard", "read").text.startsWith("chan00000002m"));
+  assert.match(browser("clipboard", "read").text, /^https:\/\/caper\.chat\/m\/[A-Za-z0-9]{12}\/[A-Za-z0-9]{15}$/);
 
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: false }, sessionId);
   browser("set", "viewport", "1280", "900", "2");

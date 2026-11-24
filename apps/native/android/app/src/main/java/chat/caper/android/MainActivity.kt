@@ -279,7 +279,7 @@ class MainActivity : ComponentActivity() {
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         if (intent.action == IncomingShare.ACTION) { IncomingShare.from(intent, packageName)?.let(viewModel::receiveShare); return }
         openFromNotification(intent)
-        if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let(viewModel::openInviteLink)
+        if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let { viewModel.openInviteLink(it); viewModel.openMessageLink(it) }
     }
 
     private fun openFromNotification(intent: Intent) {
@@ -357,6 +357,20 @@ internal data class VoiceJoinIntent(
 }
 
 @Composable private fun CaperApp(viewModel: CaperViewModel) {
+    // Every link tap goes through the UriHandler: Caper message links open in place, the rest in the browser.
+    val system = LocalUriHandler.current
+    val handler = remember(system) {
+        object : UriHandler {
+            override fun openUri(uri: String) {
+                if (chat.caper.android.data.messageLink(uri) != null) viewModel.openMessageLink(uri) else system.openUri(uri)
+            }
+        }
+    }
+    val links = remember(viewModel, handler) { MessageLinks(viewModel::resolveMessageLink, handler::openUri) }
+    CompositionLocalProvider(LocalUriHandler provides handler, LocalMessageLinks provides links) { CaperAppContent(viewModel) }
+}
+
+@Composable private fun CaperAppContent(viewModel: CaperViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
     val whatsNew by viewModel.whatsNew.state.collectAsStateWithLifecycle()
@@ -432,6 +446,9 @@ internal data class VoiceJoinIntent(
     // Something shared from another app asks which conversation it goes to.
     val share by viewModel.shareToPlace.collectAsStateWithLifecycle()
     share?.let { shown -> key(shown) { SharePickerSheet(shown, state, viewModel) } }
+    // A message link (from another app, a message or a card) opens once Home shows; the API checks access.
+    val openedMessageLink by viewModel.messageLinkToOpen.collectAsStateWithLifecycle()
+    LaunchedEffect(openedMessageLink) { if (openedMessageLink != null) { overlay = null; viewModel.openPendingMessageLink() } }
     Scaffold(containerColor = Blackout) { padding ->
         // The bottom inset Scaffold pads for is part of the keyboard's, so only the rest is added.
         // A finger that slides off a button, row or image never presses it, on every screen.
@@ -2564,7 +2581,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val selfId = state.chatAuthorId ?: state.account?.id
     val blocked = rowState.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
-    val newMessagesId = if (!inThread && state.visit == null && !state.feedbackShown && state.selectedDirectId == null && state.selectedChannel?.direct == false)
+    // Mark unread this visit puts the divider at that message, in the channel, DM or thread it was used in.
+    val marked = state.markedUnread?.takeIf { it.channelId == state.selectedChannel?.id && it.rootId == (if (inThread) state.thread?.rootId else null) }
+    val newMessagesId = marked?.messageId ?: if (!inThread && state.visit == null && !state.feedbackShown && state.selectedDirectId == null && state.selectedChannel?.direct == false)
         remember(state.messages, state.threadOnlyRows, state.contextStart, state.contextEnd, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId) {
             chat.caper.android.data.channelNewMessagesId(state.channelMessages, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId)
         } else null
@@ -2887,6 +2906,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             onDelete = if (viewModel.canDelete(presented)) ({ actionTarget = null; deleteTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
             onViewReactions = { presented.reactions.firstOrNull()?.let { reactorsTarget = presented.id to it.emoji }; actionTarget = null },
+            onMarkUnread = viewModel.markUnreadAction(presented, inThread),
             blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId && (it.id in blocked || viewModel.blockTarget(it).canBlock) }?.let { author ->
                 val target = viewModel.blockTarget(author)
                 val name = if (target.username.isNotBlank()) "@${target.username}" else target.displayName
@@ -3323,6 +3343,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     onBlock: () -> Unit = {},
     /** Asks to confirm deleting; null unless the viewer may delete it. */
     onDelete: (() -> Unit)? = null,
+    /** Moves the read position to just before this message; null when not offered. */
+    onMarkUnread: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(ClipboardManager::class.java)
@@ -3397,7 +3419,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
                         SheetAction("Copy text") { copy("Message text", message.content.text, "Text copied.") }
                         HorizontalDivider(color = Border)
                     }
-                    SheetAction("Copy message ID") { copy("Message ID", message.id, "Message ID copied.") }
+                    SheetAction("Copy link") { copy("Message link", chat.caper.android.data.messageLinkUrl(message.channelId, message.id), "Link copied.") }
+                    if (!deleted) onMarkUnread?.let { HorizontalDivider(color = Border); SheetAction("Mark unread") { onDismiss(); it() } }
                     blockLabel?.let { label ->
                         HorizontalDivider(color = Border)
                         SheetAction(label, if (label.startsWith("Block")) ErrorText else Text, onClick = onBlock)
@@ -3917,6 +3940,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
                 caption = listOf(author, timeLabel(createdAt, hour24)).filter { it.isNotEmpty() }.joinToString(" · "),
             )
             if (!deleted) MessageEmbeds(embeds)
+            if (!deleted && !pending) MessageLinkCards(text)
         }
     }
 }

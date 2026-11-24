@@ -221,7 +221,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                     WHEN n.kind='direct.request' THEN 'd:' || n.channel_id || ':' || extract(epoch FROM n.created_at)::text
                     WHEN n.kind='space.invitation' THEN 's:' || n.space_id || ':' || extract(epoch FROM n.created_at)::text
                     WHEN n.kind='channel.invitation' THEN 'c:' || n.channel_id || ':' || extract(epoch FROM n.created_at)::text
-                  END) AS read,
+                  END AND ir.revoked_at IS NULL) AS read,
                 n.kind, COALESCE(m.external_id,'') AS message_id, COALESCE(m.payload,'{}'::jsonb) AS message,
                 COALESCE(ch.external_id,'') AS channel_id, COALESCE(ch.name,'') AS channel_name,
                 s.external_id AS space_id, s.name AS space_name,

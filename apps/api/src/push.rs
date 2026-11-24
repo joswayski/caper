@@ -28,7 +28,7 @@ mod credentials;
 mod delivery;
 mod expansion;
 mod fcm;
-mod inbox;
+pub(crate) mod inbox;
 pub(crate) mod live;
 mod retraction;
 mod settings;

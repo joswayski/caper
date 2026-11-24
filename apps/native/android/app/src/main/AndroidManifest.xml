@@ -48,6 +48,8 @@
                 <data android:scheme="https" />
                 <data android:host="caper.chat" />
                 <data android:pathPrefix="/invite/" />
+                <!-- Message links (Copy link): open the message in its conversation. -->
+                <data android:pathPrefix="/m/" />
             </intent-filter>
             <!-- caper://invite/<code>: the web invite page's "Open in the Caper app". -->
             <intent-filter>
@@ -56,6 +58,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="caper" />
                 <data android:host="invite" />
+                <data android:host="m" />
             </intent-filter>
         </activity>
         <!-- The system share sheet's "Caper": hands what was shared to MainActivity in

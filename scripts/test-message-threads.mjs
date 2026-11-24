@@ -84,7 +84,7 @@ const assertReplyAction = (expected) => {
     '[...document.querySelectorAll(".chat-message-actions button")].map(button => button.textContent.trim())',
   );
   assert.equal(actions.includes("Reply in thread"), expected);
-  for (const action of ["Pin message", "Copy text", "Copy message ID"]) assert.ok(actions.includes(action));
+  for (const action of ["Pin message", "Copy text", "Copy link"]) assert.ok(actions.includes(action));
   assert.equal(evaluate('!!document.querySelector(".chat-quick-reactions")'), true);
 };
 const actions = (selector, expected) => {

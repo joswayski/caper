@@ -227,7 +227,8 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!(
             "GRANT SELECT, INSERT, UPDATE ON public.notification_devices, public.notification_settings, public.notification_overrides, public.notifications TO {role}"
         ),
-        format!("GRANT SELECT, INSERT ON public.notification_inbox_reads TO {role}"),
+        // Mark unread revokes acknowledgements in place; they are never deleted.
+        format!("GRANT SELECT, INSERT, UPDATE ON public.notification_inbox_reads TO {role}"),
         format!("GRANT SELECT ON public.notification_invitation_sources TO {role}"),
         format!("GRANT SELECT ON public.notification_request_sources TO {role}"),
         format!("GRANT SELECT ON public.notification_voice_sources TO {role}"),
@@ -494,6 +495,7 @@ mod tests {
             ("public.notification_overrides", "INSERT"),
             ("public.notification_inbox_reads", "SELECT"),
             ("public.notification_inbox_reads", "INSERT"),
+            ("public.notification_inbox_reads", "UPDATE"),
             ("public.notification_voice_sources", "SELECT"),
             ("public.voice_notification_state", "SELECT"),
             ("public.voice_notification_state", "INSERT"),

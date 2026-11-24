@@ -1,6 +1,6 @@
 /**
  * Verification files that let the native apps open `caper.chat/invite/<code>`
- * directly instead of the browser. Android checks `assetlinks.json` against the
+ * and message links (`caper.chat/m/<channel>/<message>`) directly instead of the browser. Android checks `assetlinks.json` against the
  * installed app's signing certificate; iOS checks the associated-domains file.
  * The Mac (Developer ID) and Windows/Linux apps use the `caper://` scheme
  * instead, from the invite page's "Open in the Caper app".
@@ -27,7 +27,10 @@ export function appleAppSiteAssociation(): Response {
       details: [
         {
           appIDs: [`${APPLE_TEAM_ID}.${IOS_BUNDLE_ID}`],
-          components: [{ "/": "/invite/*", comment: "Space invite links" }],
+          components: [
+            { "/": "/invite/*", comment: "Space invite links" },
+            { "/": "/m/*", comment: "Message links" },
+          ],
         },
       ],
     },

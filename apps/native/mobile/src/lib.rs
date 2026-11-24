@@ -33,6 +33,9 @@ pub mod links;
 pub mod media;
 #[path = "../../../../shared/messages/mentions.rs"]
 pub mod mentions;
+/// Message links (`caper.chat/m/<channel>/<message>`, `caper://m/...`).
+#[path = "../../../../shared/messages/message_links.rs"]
+pub mod message_links;
 #[path = "../../../../shared/media/metadata.rs"]
 pub mod metadata;
 /// The name-character rule, as the desktop clients compile it.
@@ -392,6 +395,13 @@ pub fn invite_code(text: &str) -> Vec<i32> {
     invites::invite_code(text).map_or_else(Vec::new, ascii)
 }
 
+/// The message a link opens, as `<channel>/<message>` in ASCII values, or nothing.
+pub fn message_link(text: &str) -> Vec<i32> {
+    message_links::parse(text).map_or_else(Vec::new, |link| {
+        ascii(&format!("{}/{}", link.channel, link.message))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,6 +737,29 @@ mod tests {
                 trimmed,
                 "{name:?}"
             );
+        }
+    }
+
+    #[test]
+    fn message_links_follow_the_shared_cases() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../shared/messages/message-link-cases.json"
+        ))
+        .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let input = case["input"].as_str().unwrap();
+            let found: String = message_link(input)
+                .into_iter()
+                .map(|c| c as u8 as char)
+                .collect();
+            let expected = case["link"].as_object().map_or(String::new(), |link| {
+                format!(
+                    "{}/{}",
+                    link["channel"].as_str().unwrap(),
+                    link["message"].as_str().unwrap()
+                )
+            });
+            assert_eq!(found, expected, "{input:?}");
         }
     }
 

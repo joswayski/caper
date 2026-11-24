@@ -131,7 +131,8 @@ impl Embeds {
 }
 
 /// The links in `text` that get a preview: http(s) links as every client
-/// detects them, in order, without repeats, skipping any written `<like this>`.
+/// detects them, in order, without repeats, skipping any written `<like this>`
+/// and links to Caper messages.
 pub(crate) fn links(text: &str) -> Vec<String> {
     let segments = links::segments(text);
     let mut found: Vec<String> = Vec::new();
@@ -144,7 +145,10 @@ pub(crate) fn links(text: &str) -> Vec<String> {
             .get(index + 1)
             .is_some_and(|next| next.text.starts_with('>'));
         let bracketed = before && after;
-        if !bracketed && !found.contains(href) {
+        // Clients draw a message link as a card of the original, for readers
+        // allowed to see it, so it never gets a public preview.
+        let message = crate::message_links::parse(href).is_some();
+        if !bracketed && !message && !found.contains(href) {
             found.push(href.clone());
         }
         if found.len() == MAX_PER_MESSAGE {

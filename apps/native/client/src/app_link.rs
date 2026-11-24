@@ -16,13 +16,30 @@ use std::time::Duration;
 /// invite code, which is longer.
 pub const OPEN: &str = "open";
 
-/// The invite code in launch arguments. Only URL-shaped arguments count, so
-/// option values such as a fixture name are never read as codes.
+/// The invite code, or a message link as `m/<channel>/<message>`, in launch
+/// arguments. Only URL-shaped arguments count, so option values such as a
+/// fixture name are never read as codes.
 pub fn launch_code(args: &[String]) -> Option<String> {
     args.iter()
         .skip(1)
         .filter(|arg| arg.contains("://"))
-        .find_map(|arg| crate::invites::invite_code(arg))
+        .find_map(|arg| link_code(arg))
+}
+
+/// What a link hands to the app: an invite code, or `m/<channel>/<message>`
+/// for a message link (`caper://m/...` or `https://caper.chat/m/...`).
+pub fn link_code(link: &str) -> Option<String> {
+    crate::message_links::parse(link)
+        .map(|link| format!("m/{}/{}", link.channel, link.message))
+        .or_else(|| crate::invites::invite_code(link))
+}
+
+/// The (channel, message) a handed-off `m/<channel>/<message>` names; `None`
+/// for an invite code.
+pub fn message_target(code: &str) -> Option<(String, String)> {
+    let link = format!("caper://{code}");
+    let link = crate::message_links::parse(&link)?;
+    Some((link.channel.to_owned(), link.message.to_owned()))
 }
 
 /// Gives `code` to the Caper listening at the handoff file `path`. False when
@@ -76,7 +93,11 @@ pub fn listen_at(path: &Path, wake: impl Fn() + Send + 'static) -> Option<mpsc::
                 let Some((given, code)) = line.trim().split_once(' ') else {
                     continue;
                 };
-                if given != token || !(code == OPEN || crate::invites::valid_code(code)) {
+                if given != token
+                    || !(code == OPEN
+                        || crate::invites::valid_code(code)
+                        || message_target(code).is_some())
+                {
                     continue;
                 }
                 let _ = (&stream).write_all(b"ok\n");
@@ -204,6 +225,21 @@ mod tests {
             launch_code(&args(&["caper", "https://caper.chat/invite/AbCdE12345/"])),
             Some("AbCdE12345".into())
         );
+        // Message links hand off as m/<channel>/<message>, which only they parse as.
+        let message = launch_code(&args(&["caper", "caper://m/Chan12345678/Msg123456789012"]));
+        assert_eq!(message.as_deref(), Some("m/Chan12345678/Msg123456789012"));
+        assert_eq!(
+            message.as_deref().and_then(message_target),
+            Some(("Chan12345678".into(), "Msg123456789012".into()))
+        );
+        assert_eq!(
+            launch_code(&args(&[
+                "caper",
+                "https://caper.chat/m/Chan12345678/Msg123456789012"
+            ])),
+            message
+        );
+        assert_eq!(message_target("AbCdE12345"), None);
         for arguments in [
             &["caper"][..],
             &["caper", "--fixture", "AbCdE12345"],

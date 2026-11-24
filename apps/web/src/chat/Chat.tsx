@@ -61,6 +61,7 @@ import MessageRow, {
 import {
   attachmentsOf,
   isChannelMessage,
+  sequence,
   type ChatAttachment,
   type ChatAuthor,
   type ChatMessage,
@@ -290,6 +291,7 @@ export default function Chat({
   directPeer,
   team = false,
   onReadCursor,
+  onMarkUnread,
   readActive = true,
   initialHistory,
   initialHistoryError,
@@ -331,6 +333,8 @@ export default function Chat({
   /** A DM with the Caper account, which the feedback team answers. */
   team?: boolean;
   onReadCursor?: (seq: string) => void;
+  /** Mark unread in the channel or DM: moves the read position back to `seq`. */
+  onMarkUnread?: (seq: string) => Promise<void>;
   readActive?: boolean;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
@@ -424,6 +428,9 @@ export default function Chat({
   const [jumping, setJumping] = useState<string>();
   const [jumpError, setJumpError] = useState<string>();
   const [jumpMessage, setJumpMessage] = useState<string>();
+  // Mark unread, this visit: the New messages divider sits at that message and
+  // the conversation (or thread) stops acknowledging until the reader leaves it.
+  const [markedUnread, setMarkedUnread] = useState<{ channelId: string; rootId?: string; messageId: string }>();
   const [scrollTarget, setScrollTarget] = useState<string>();
   const [listWindow, setListWindow] = useState(0);
   const closePins = useCallback(() => {
@@ -858,6 +865,7 @@ export default function Chat({
       if (
         visitReady &&
         readActive &&
+        !(markedUnread && !markedUnread.rootId && markedUnread.channelId === channelId) &&
         state.phase === "ready" &&
         !state.hasNewer &&
         // As for thread replies and browser alerts: a window that is showing
@@ -877,7 +885,7 @@ export default function Chat({
       document.removeEventListener("visibilitychange", read);
       window.removeEventListener("focus", read);
     };
-  }, [state.phase, state.hasNewer, readCursor, channelId, readActive, visitReady]);
+  }, [state.phase, state.hasNewer, readCursor, channelId, readActive, visitReady, markedUnread]);
 
   useEffect(() => {
     const refresh = () => {
@@ -1456,10 +1464,15 @@ export default function Chat({
       state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages,
     [channelMessages, state.pendingSend],
   );
+  const markedHere = markedUnread?.channelId === channelId ? markedUnread : undefined;
   const newMessagesId =
-    trackChannelVisit && visitReady
-      ? channelNewMessagesId(channelHistory, unreadVisit?.entry, state.hasMore, viewerId, blockedIds)
-      : undefined;
+    markedHere && !markedHere.rootId
+      ? markedHere.messageId
+      : trackChannelVisit && visitReady
+        ? channelNewMessagesId(channelHistory, unreadVisit?.entry, state.hasMore, viewerId, blockedIds)
+        : undefined;
+  const threadNewMessagesId =
+    markedHere?.rootId && markedHere.rootId === state.thread?.rootId ? markedHere.messageId : undefined;
   arrivals.current.observe(
     "channel",
     state.channelId ?? "",
@@ -1742,7 +1755,7 @@ export default function Chat({
     inThread: boolean,
   ) => {
     if (!hydrated || !previous || !message) return false;
-    if (!inThread && "id" in message && message.id === newMessagesId) return false;
+    if ("id" in message && message.id === (inThread ? threadNewMessagesId : newMessagesId)) return false;
     const runs = inThread ? threadRuns : channelRuns;
     const run = "content" in message ? runs.get(message.clientMessageId) : undefined;
     if (run && (run.first === message.clientMessageId || !revealedRuns.has(run.first))) return false;
@@ -1768,6 +1781,35 @@ export default function Chat({
     else composerRef.current?.focus();
   };
   const threadRoot = state.thread && state.messages.find((message) => message.id === state.thread?.rootId);
+  /**
+   * Mark unread moves the read position to just before `message`. Threads keep
+   * unread state only for people who started or replied in them, so a thread
+   * offers it only then.
+   */
+  const markUnreadAction = (message: ChatMessage, inThread: boolean) => {
+    if (!signedIn || !channelId || visitor) return undefined;
+    const rootId = inThread ? state.thread?.rootId : undefined;
+    if (inThread) {
+      const mine = (author?: { id: string }) => !!author && author.id === state.author?.id;
+      if (
+        !rootId ||
+        !(mine(threadRoot?.author) || state.messages.some((item) => item.threadRootId === rootId && mine(item.author)))
+      )
+        return undefined;
+    } else if (!onMarkUnread) return undefined;
+    return () => {
+      const seq = sequence(message.seq) > 0n ? (sequence(message.seq) - 1n).toString() : "0";
+      const marked = { channelId, rootId, messageId: message.id };
+      setMarkedUnread(marked);
+      const request = rootId ? clientRef.current?.markThreadUnread(rootId, seq) : onMarkUnread?.(seq);
+      void Promise.resolve(request)
+        .then(() => setActionStatus("Marked unread."))
+        .catch(() => {
+          setMarkedUnread((current) => (current === marked ? undefined : current));
+          setActionStatus("Couldn’t mark unread. Try again.");
+        });
+    };
+  };
   const shownThreadRoot = threadRoot?.deletedAt ? undefined : threadRoot;
   const renderMessage = (
     index: number,
@@ -1801,7 +1843,7 @@ export default function Chat({
           grouped={joinsPrevious(inThread ? previousInThread : messages[index - 1], message, inThread)}
           // The row above a follow-up gives up its bottom padding so the run reads as one block.
           continued={joinsPrevious(message, inThread ? nextInThread : messages[index + 1], inThread)}
-          newMessages={!inThread && !pending && message.id === newMessagesId}
+          newMessages={!pending && message.id === (inThread ? threadNewMessagesId : newMessagesId)}
           arriving={!!arrivals.current?.has(message.clientMessageId)}
           jumpTarget={!pending && jumpMessage === message.id}
           threadActive={!inThread && !pending && state.thread?.rootId === message.id}
@@ -2472,6 +2514,7 @@ export default function Chat({
               openHistory(actionMessage.id);
             }}
             onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)}
+            onMarkUnread={markUnreadAction(actionMessage, actionTarget.inThread)}
             block={
               onBlockAuthor &&
               !actionMessage.author.isGuest &&

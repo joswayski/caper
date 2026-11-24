@@ -73,6 +73,8 @@ internal object CaperMobile {
 
     /** Web's inviteCode: the 10-character code, one ASCII character per value, or empty. */
     @JvmStatic external fun inviteCode(text: String): IntArray
+    /** A message link's `<channel>/<message>`, one ASCII character per value, or empty. */
+    @JvmStatic external fun messageLink(text: String): IntArray
 
     /**
      * Top-level prose and fenced code blocks (shared/messages/code.rs): `[kind, start, end, flags]`

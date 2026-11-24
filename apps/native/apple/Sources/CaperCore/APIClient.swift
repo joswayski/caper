@@ -72,7 +72,12 @@ private struct UsernameInput: Encodable { let username: String }
 /// nil fields are omitted, which the API reads as null: default channel,
 /// never expires, no use limit.
 private struct InviteLinkInput: Encodable { let channelId: String?; let maxAge: Int?; let maxUses: Int? }
-private struct ReadInput: Encodable { let seq: String }
+/// `markUnread` moves the read position back to `seq` (Mark unread); left
+/// out, reads only ever advance.
+private struct ReadInput: Encodable {
+    let seq: String
+    var markUnread: Bool? = nil
+}
 /// `appId` is the bundle ID the server sends to (APNs topic); nil is left out.
 private struct PushDeviceInput: Encodable { let platform: String; let token: String; let appId: String? }
 public struct MembersResponse: Decodable, Sendable {
@@ -189,17 +194,28 @@ public actor APIClient {
         }
         return response.threads
     }
-    public func markThreadRead(channelID: String, rootID: String, seq: String) async throws {
+    public func markThreadRead(channelID: String, rootID: String, seq: String, markUnread: Bool = false) async throws {
         _ = try Sequence.compare(seq, "0")
-        let _: Empty = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread/read", method: "PUT", body: ReadInput(seq: seq))
+        let _: Empty = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread/read", method: "PUT", body: ReadInput(seq: seq, markUnread: markUnread ? true : nil))
     }
     public func unreadSpaces() async throws -> UnreadSpacesResponse {
         let response: UnreadSpacesResponse = try await request("api/spaces/unread")
         return response
     }
-    public func markChannelRead(spaceID: String, channelID: String, seq: String) async throws {
+    public func markChannelRead(spaceID: String, channelID: String, seq: String, markUnread: Bool = false) async throws {
         _ = try Sequence.compare(seq, "0")
-        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/read", method: "POST", body: ReadInput(seq: seq))
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/read", method: "POST", body: ReadInput(seq: seq, markUnread: markUnread ? true : nil))
+    }
+    /// A message link's original and its space (nil for a DM), or nil when
+    /// this account can't see it: the API answers no access and no message alike.
+    public func messageLink(_ link: MessageLinkTarget) async throws -> ForwardSource? {
+        do {
+            let source: ForwardSource = try await request("api/chat/message-links/\(try pathID(link.channelID))/\(try messagePathID(link.messageID))")
+            guard source.message.id == link.messageID, source.message.channelId == link.channelID else {
+                throw APIError(status: 502, message: "Message is unavailable.")
+            }
+            return source
+        } catch let error as APIError where error.status == 404 { return nil }
     }
     public func directMessages() async throws -> [DirectMessageConversation] {
         let response: DirectMessagesResponse = try await request("api/dms")
@@ -245,8 +261,8 @@ public actor APIClient {
     public func updatePrivacy(_ directMessages: DirectMessagePrivacy) async throws -> PrivacySettings {
         try await request("api/account/privacy", method: "PUT", body: PrivacySettings(directMessages: directMessages))
     }
-    public func markDirectMessageRead(id: String, seq: String) async throws {
-        let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
+    public func markDirectMessageRead(id: String, seq: String, markUnread: Bool = false) async throws {
+        let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq, markUnread: markUnread ? true : nil))
     }
     /// Account-wide activity; listing never acknowledges unread entries.
     func activityInbox(filter: ActivityFilter, unread: Bool, cursor: String?) async throws -> ActivityPage {

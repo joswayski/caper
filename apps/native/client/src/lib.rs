@@ -38,6 +38,9 @@ pub mod media;
 pub mod media_gateway;
 pub mod media_proxy;
 pub mod mentions;
+/// Message links (`caper.chat/m/<channel>/<message>`, `caper://m/...`), shared by every client.
+#[path = "../../../../shared/messages/message_links.rs"]
+pub mod message_links;
 pub mod metadata;
 pub mod model;
 pub mod names;

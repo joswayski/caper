@@ -77,8 +77,12 @@ pub mod gateway;
 mod klipy;
 #[path = "../../../shared/messages/links.rs"]
 mod links;
+// The API only parses links; clients build them.
 mod media_store;
 mod mentions;
+#[allow(dead_code)]
+#[path = "../../../shared/messages/message_links.rs"]
+mod message_links;
 mod names;
 mod notifications;
 mod pictures;

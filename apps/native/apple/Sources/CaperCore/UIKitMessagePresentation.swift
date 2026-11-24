@@ -188,8 +188,10 @@ import Observation
                     let control = Self.button("Links") {}; control.showsMenuAsPrimaryAction = true
                     control.menu = UIMenu(children: links.compactMap { link in
                         guard let url = LinkEmbeds.openableURL(link) else { return nil }
-                        return UIMenu(title: link, children: [UIAction(title: "Open link") { _ in UIApplication.shared.open(url) },
-                            UIAction(title: "Copy link") { _ in UIPasteboard.general.string = link }])
+                        return UIMenu(title: link, children: [UIAction(title: "Open link") { [model] _ in
+                                if !model.openMessageLink(url) { UIApplication.shared.open(url) }
+                            },
+                            UIAction(title: "Copy link address") { _ in UIPasteboard.general.string = link }])
                     }); body.addArrangedSubview(control)
                 }
                 button("Copy text") { [weak self] in UIPasteboard.general.string = message.content.text; self?.finish(nil) }
@@ -197,8 +199,16 @@ import Observation
         } else if !inThread, message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0 {
             button("View thread") { [weak self] in self?.afterClosing { chat.replyInThread(to: message) } }
         }
-        button("Copy message ID") { [weak self] in UIPasteboard.general.string = message.id; self?.finish(nil) }
+        button("Copy link") { [weak self] in
+            UIPasteboard.general.string = MessageLinkTarget.url(channelID: message.channelId, messageID: message.id); self?.finish(nil)
+        }
         guard !message.isDeleted else { return }
+        if model.canMarkUnread(message) {
+            button("Mark unread") { [weak self, model] in
+                guard let self else { return }; let current = self.current
+                self.finish { model.markUnread(current) }
+            }
+        }
         if chat.canDelete(message) {
             button("Delete message", id: "message-action-delete") { [weak self] in
                 guard let self, chat.canDelete(self.current) else { return }
