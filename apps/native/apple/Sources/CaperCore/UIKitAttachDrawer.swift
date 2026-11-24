@@ -19,6 +19,7 @@ import Observation
     private var copies: [String: (id: UUID, task: Task<Void, Never>)] = [:]
     private var notice: String?
     private let panel = UIView()
+    private let scrim = UIButton()
     private let titleLabel = UIKitMessageDialog.label("", size: 15, bold: true)
     private let hint = UIKitMessageDialog.label("")
     private let access = UIKitMessageDialog.label("")
@@ -54,7 +55,7 @@ import Observation
     isolated deinit { foreground.map(NotificationCenter.default.removeObserver); library.stop() }
     override func viewDidLoad() {
         super.viewDidLoad(); overrideUserInterfaceStyle = .dark; view.backgroundColor = .clear; view.accessibilityViewIsModal = true
-        let scrim = UIButton(); scrim.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        scrim.backgroundColor = UIColor.black.withAlphaComponent(0.55)
         scrim.isAccessibilityElement = false; scrim.addAction(UIAction { [weak self] _ in self?.close() }, for: .touchUpInside)
         scrim.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(scrim)
         panel.backgroundColor = UIColor(CaperTheme.surface); panel.layer.cornerRadius = 16
@@ -112,13 +113,20 @@ import Observation
         super.viewDidLayoutSubviews(); resizePanel(animated: false)
         if gridWidth != grid.bounds.width { gridWidth = grid.bounds.width; grid.collectionViewLayout.invalidateLayout() }
     }
+    // The sheet rises from the bottom edge as the scrim fades in, set up
+    // before the first frame so it never shows in place first. Closing stays instant.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        guard !appeared, !CaperAccessibility.reduceMotion else { return }
+        view.layoutIfNeeded()
+        scrim.alpha = 0; panel.transform = CGAffineTransform(translationX: 0, y: panelHeight.constant)
+    }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         guard !appeared else { return }; appeared = true
         guard !CaperAccessibility.reduceMotion else { return }
-        panel.alpha = 0; panel.transform = CGAffineTransform(translationX: 0, y: 12)
-        UIViewPropertyAnimator(duration: CaperMotion.base, controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1)) {
-            self.panel.alpha = 1; self.panel.transform = .identity
+        UIViewPropertyAnimator(duration: CaperMotion.slow, controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1)) {
+            self.scrim.alpha = 1; self.panel.transform = .identity
         }.startAnimation()
     }
     override func viewDidDisappear(_ animated: Bool) {
@@ -145,8 +153,13 @@ import Observation
         send.isEnabled = draft?.canSend() == true && queue.order.isEmpty
         send.accessibilityLabel = send.isEnabled ? "Send message" : "Uploading attachments"
         let files = draft?.files() ?? []
-        if displayedAssets !== library.assets || displayedFiles != files || displayedPending != queue.order || displayedFull != full {
+        if displayedAssets !== library.assets {
             displayedAssets = library.assets; displayedFiles = files; displayedPending = queue.order; displayedFull = full; grid.reloadData()
+        } else if displayedFiles != files || displayedPending != queue.order || displayedFull != full {
+            // A tap changes only badges and dimming: update the tiles in place
+            // so thumbnails and GIFs keep playing instead of reloading.
+            displayedFiles = files; displayedPending = queue.order; displayedFull = full
+            grid.reconfigureItems(at: grid.indexPathsForVisibleItems)
         }
     }
     private func resizePanel(animated: Bool) {
@@ -178,11 +191,19 @@ import Observation
     }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "photo", for: indexPath) as! UIKitAttachTile
-        guard let asset = library.assets?.object(at: indexPath.item) else { return cell }
-        let source = AttachDrawer.source(asset.localIdentifier), files = draft?.files() ?? []
-        let order = files.firstIndex { $0.source == source }.map { $0 + 1 }
-        cell.configure(asset, order: order, pending: queue.isPending(source), full: full) { [weak self] in self?.choose(asset.localIdentifier) }
+        configure(cell, at: indexPath)
         return cell
+    }
+    // A prefetched tile missed the in-place update while offscreen.
+    func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        if let cell = cell as? UIKitAttachTile { configure(cell, at: indexPath) }
+    }
+    private func configure(_ cell: UIKitAttachTile, at indexPath: IndexPath) {
+        guard let asset = library.assets?.object(at: indexPath.item) else { return }
+        let source = AttachDrawer.source(asset.localIdentifier), files = draft?.files() ?? []
+        // A tap shows its place at once; the copy joins the draft in tap order.
+        let order = files.firstIndex { $0.source == source }.map { $0 + 1 } ?? queue.order.firstIndex(of: source).map { files.count + $0 + 1 }
+        cell.configure(asset, order: order, pending: queue.isPending(source), full: full) { [weak self] in self?.choose(asset.localIdentifier) }
     }
     private func choose(_ identifier: String) {
         if picking {
@@ -327,23 +348,27 @@ import Observation
         animation?.cancel(); animation = nil; picture.layer.removeAllAnimations(); picture.image = nil
     }
     func configure(_ asset: PHAsset, order: Int?, pending: Bool, full: Bool, pick: @escaping () -> Void) {
-        clear(); self.asset = asset; self.pick = pick
+        // The same photo keeps its thumbnail, request and GIF frames.
+        let same = self.asset.map(AttachGalleryCache.key) == AttachGalleryCache.key(asset)
+        if !same { clear() }
+        self.asset = asset; self.pick = pick
         let date = asset.creationDate?.formatted(date: .abbreviated, time: .omitted) ?? ""
         button.accessibilityIdentifier = "attach-drawer-tile"
         button.accessibilityLabel = "\(asset.mediaType == .video ? "Video, \(Int(asset.duration)) seconds" : AttachGalleryCache.isGIF(asset) ? "GIF" : "Photo"), \(date)"
-        button.accessibilityValue = order.map { "Attached \($0)" } ?? (pending ? "Adding" : full ? "Attachment limit reached" : "")
+        button.accessibilityValue = pending ? "Adding" : order.map { "Attached \($0)" } ?? (full ? "Attachment limit reached" : "")
         button.accessibilityTraits = order == nil ? .button : [.button, .selected]
-        badge.text = order.map(String.init) ?? (pending ? "…" : asset.mediaType == .video ? VoiceDuration.format(ms: Int(asset.duration * 1000)) : AttachGalleryCache.isGIF(asset) ? "GIF" : nil)
+        badge.text = order.map(String.init) ?? (asset.mediaType == .video ? VoiceDuration.format(ms: Int(asset.duration * 1000)) : AttachGalleryCache.isGIF(asset) ? "GIF" : nil)
         badge.isHidden = badge.text == nil; picture.alpha = full && order == nil && !pending ? 0.4 : 1
         load(asset)
     }
     private func load(_ asset: PHAsset) {
-        guard request == nil else { return }
+        guard request == nil, animation == nil else { return }
         let key = AttachGalleryCache.key(asset)
-        picture.image = AttachGalleryCache.thumbnail(key)
-        request = AttachGalleryCache.requestThumbnail(asset, scale: window?.screen.scale ?? 2) { [weak self] image in
+        // A cached final thumbnail is never replaced by a blurry interim one.
+        if let cached = AttachGalleryCache.thumbnail(key) { picture.image = cached }
+        else { request = AttachGalleryCache.requestThumbnail(asset, scale: window?.screen.scale ?? 2) { [weak self] image in
             if let self, self.asset.map(AttachGalleryCache.key) == key { self.picture.image = image }
-        }
+        } }
         guard !CaperAccessibility.reduceMotion, AttachGalleryCache.isGIF(asset) else { return }
         animation = Task { [weak self] in
             guard let original = await AttachGalleryCache.animation(for: asset), !Task.isCancelled, !CaperAccessibility.reduceMotion,

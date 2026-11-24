@@ -227,6 +227,8 @@ struct AttachDrawer: View {
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var expanded = false
+    /// The sheet rises from the bottom edge as the scrim fades in.
+    @State private var entered = false
     /// Picture mode: a camera photo, chosen once the camera has closed.
     @State private var capturedPicture: LocalAttachmentFile?
     @GestureState private var drag: CGFloat = 0
@@ -254,9 +256,9 @@ struct AttachDrawer: View {
             let panelHeight = expanded ? height : collapsedHeight
             ZStack(alignment: .bottom) {
                 Color.black.opacity(0.55).ignoresSafeArea()
+                    .opacity(entered ? 1 : 0)
                     .onTapGesture { close() }
                     .accessibilityHidden(true)
-                    .modifier(Entrance.scrim)
                 panel
                     .padding(.leading, geometry.safeAreaInsets.leading)
                     .padding(.trailing, geometry.safeAreaInsets.trailing)
@@ -266,7 +268,7 @@ struct AttachDrawer: View {
                             .fill(CaperTheme.surface).ignoresSafeArea(edges: .bottom)
                     }
                     .offset(y: max(0, drag - (panelHeight - collapsedHeight)))
-                    .modifier(Entrance(offset: CGSize(width: 0, height: 12), animation: CaperMotion.easeOut(CaperMotion.base)))
+                    .offset(y: entered ? 0 : collapsedHeight + geometry.safeAreaInsets.bottom)
             }
             // The surface reaches both window edges, including in landscape;
             // the controls still respect the notch and home-indicator safe areas.
@@ -280,6 +282,13 @@ struct AttachDrawer: View {
         // Hosts use a transparent full-screen cover; this drawer owns its height.
         .presentationBackground(.clear)
         .accessibilityAction(.escape) { close() }
+        .onAppear {
+            guard !entered else { return }
+            guard !reduceMotion else { entered = true; return }
+            // Hosts present the cover without animation, and that transaction
+            // would swallow an entrance started now; start it a turn later.
+            DispatchQueue.main.async { withAnimation(CaperMotion.easeOut(CaperMotion.slow)) { entered = true } }
+        }
         .task { library.start(imagesOnly: picking) }
         .onChange(of: scenePhase) { _, phase in if phase == .active { library.reload() } }
         .onChange(of: valid) { _, valid in if !valid { close() } }
@@ -449,7 +458,7 @@ struct AttachDrawer: View {
                     }
                     .padding(.horizontal, 16).padding(.bottom, 8)
                 }
-                AttachLibraryGrid(assets: library.assets, status: library.status, selection: Self.selection(files),
+                AttachLibraryGrid(assets: library.assets, status: library.status, selection: Self.selection(files), attached: files.count,
                                   pending: queue.order, full: full, picking: picking, cameraAvailable: cameraAvailable,
                                   camera: { if full { nudge() } else { showingCamera = true } },
                                   tap: { source, identifier, draftID in
@@ -616,6 +625,8 @@ private struct AttachLibraryGrid: View, Equatable {
     let status: PHAuthorizationStatus
     /// Library source -> its place in the draft.
     let selection: [String: AttachDrawerSelection]
+    /// How many files the draft holds; copies join after them.
+    let attached: Int
     /// Sources still copying, in tap order.
     let pending: [String]
     let full: Bool
@@ -629,7 +640,7 @@ private struct AttachLibraryGrid: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.assets === rhs.assets && lhs.status == rhs.status && lhs.selection == rhs.selection
-            && lhs.pending == rhs.pending && lhs.full == rhs.full && lhs.picking == rhs.picking
+            && lhs.attached == rhs.attached && lhs.pending == rhs.pending && lhs.full == rhs.full && lhs.picking == rhs.picking
             && lhs.cameraAvailable == rhs.cameraAvailable
     }
 
@@ -655,9 +666,12 @@ private struct AttachLibraryGrid: View, Equatable {
                         let asset = assets.object(at: index)
                         let source = AttachDrawer.source(asset.localIdentifier)
                         let selected = selection[source]
-                        let copying = pending.contains(source)
+                        let queued = pending.firstIndex(of: source)
+                        let copying = queued != nil
                         Button { tap(source, asset.localIdentifier, selected?.id) } label: {
-                            AttachLibraryTile(asset: asset, order: selected?.position, copying: copying,
+                            // A tap shows its place at once (as on Android); the copy
+                            // landing in the draft keeps the same number, in tap order.
+                            AttachLibraryTile(asset: asset, order: selected?.position ?? queued.map { attached + $0 + 1 },
                                               dimmed: full && selected == nil && !copying, selectable: !picking)
                             .id(asset.localIdentifier)
                         }
@@ -865,7 +879,6 @@ private struct AttachGalleryAnimationView: UIViewRepresentable {
 private struct AttachLibraryTile: View {
     let asset: PHAsset
     let order: Int?
-    let copying: Bool
     let dimmed: Bool
     /// False when a tap chooses at once: no selection circle.
     var selectable = true
@@ -893,7 +906,7 @@ private struct AttachLibraryTile: View {
                 }
             }
             .clipped()
-            .overlay { if order != nil || copying { CaperTheme.blackout.opacity(0.25) } }
+            .overlay { if order != nil { CaperTheme.blackout.opacity(0.25) } }
             .overlay { Rectangle().strokeBorder(order != nil ? CaperTheme.terracotta : .clear, lineWidth: 3) }
             .overlay(alignment: .topTrailing) {
                 Group {
@@ -901,9 +914,6 @@ private struct AttachLibraryTile: View {
                         Text("\(order)").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text)
                             .frame(width: 24, height: 24).background(CaperTheme.terracotta, in: Circle())
                             .modifier(Entrance.chip)
-                    } else if copying {
-                        ProgressView().controlSize(.small).tint(CaperTheme.text)
-                            .frame(width: 24, height: 24).background(CaperTheme.blackout.opacity(0.7), in: Circle())
                     } else if selectable {
                         Circle().strokeBorder(CaperTheme.text.opacity(0.9), lineWidth: 1.5)
                             .background(CaperTheme.blackout.opacity(0.35), in: Circle())
