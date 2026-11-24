@@ -1654,6 +1654,15 @@ fn draw_content(
                 fill_round(dc, a, AVATAR * 0.3, &g.solid(author.color)?);
                 crate::text::draw(dc, &h.initials, a.left, a.top, &g.brushes.text);
             }
+            // An animated picture redraws its row on the GIF timer, which
+            // holds while nobody watches.
+            if let Some(f) = files.as_deref_mut()
+                && f.playing
+                && let Some(next) = crate::avatars::next_frame(dc, &author.avatar)
+            {
+                f.next = Some(f.next.map_or(next, |n| n.min(next)));
+                f.animated.push(media_row);
+            }
             crate::text::draw(dc, &h.name, BODY_X, hy, &g.brushes.text);
             crate::text::draw(
                 dc,

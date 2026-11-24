@@ -7,13 +7,16 @@
 //! URLs re-sign daily); they are fetched and decoded off the UI thread
 //! (`caper_client::pictures::decode`, a square of at most 128 px) and arrive
 //! through `WM_LIVE`, after which every panel showing avatars redraws. An
-//! animated picture shows its first frame. Until a picture is ready, or when
+//! animated picture keeps its frames and shows the one due now on a shared
+//! clock; message rows redraw on the GIF timer (`next_frame`), so it plays
+//! while Caper is watched and holds still with reduced motion. Until a picture is ready, or when
 //! it fails, callers see the mascot or initials; a failed URL is not tried
 //! again until the server signs a new one.
 use caper_client::api::Api;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -48,7 +51,32 @@ impl Avatar {
     }
 }
 
-type Loaded = (String, String, Option<caper_client::Rgba>);
+type Loaded = (String, String, Option<caper_client::pictures::Frames>);
+
+/// An uploaded picture on the GPU: its frames and how long each shows.
+struct Picture {
+    frames: Vec<(ID2D1Bitmap1, Duration)>,
+    total: Duration,
+}
+
+impl Picture {
+    /// The frame due now and how long until the next one; a still has none.
+    fn now(&self, motion: bool) -> (&ID2D1Bitmap1, Option<Duration>) {
+        if !motion || self.frames.len() < 2 || self.total.is_zero() {
+            return (&self.frames[0].0, None);
+        }
+        let total = self.total.as_millis().max(1);
+        let mut at = (EPOCH.with(|e| e.elapsed()).as_millis() % total) as u64;
+        for (bitmap, delay) in &self.frames {
+            let d = delay.as_millis() as u64;
+            if at < d {
+                return (bitmap, Some(Duration::from_millis(d - at)));
+            }
+            at -= d;
+        }
+        (&self.frames[0].0, Some(Duration::from_millis(10)))
+    }
+}
 
 struct Cache {
     api: Option<Api>,
@@ -57,9 +85,11 @@ struct Cache {
     rx: Receiver<Loaded>,
     mascots: HashMap<u16, Option<ID2D1Bitmap1>>,
     branding: HashMap<u16, Option<ID2D1Bitmap1>>,
-    /// Decoded pictures awaiting their bitmap, then the bitmaps.
-    decoded: HashMap<String, caper_client::Rgba>,
-    pictures: HashMap<String, ID2D1Bitmap1>,
+    /// Decoded pictures awaiting their bitmaps, then the bitmaps.
+    decoded: HashMap<String, caper_client::pictures::Frames>,
+    pictures: HashMap<String, std::rc::Rc<Picture>>,
+    /// Windows' animation setting, read once a second at most.
+    motion: (bool, Option<Instant>),
     loading: HashSet<String>,
     failed: HashMap<String, String>,
 }
@@ -76,6 +106,7 @@ impl Default for Cache {
             branding: HashMap::new(),
             decoded: HashMap::new(),
             pictures: HashMap::new(),
+            motion: (true, None),
             loading: HashSet::new(),
             failed: HashMap::new(),
         }
@@ -84,6 +115,8 @@ impl Default for Cache {
 
 thread_local! {
     static CACHE: RefCell<Cache> = RefCell::default();
+    /// Every animated avatar shares one clock, so the same picture plays in step everywhere.
+    static EPOCH: Instant = Instant::now();
 }
 
 /// Pictures load through `api` and wake `hwnd` when they arrive.
@@ -106,7 +139,7 @@ pub fn clear() {
 /// A private profile preview, removed when its editor closes or replaces it.
 pub fn local(key: String, image: caper_client::Rgba) {
     CACHE.with_borrow_mut(|c| {
-        c.decoded.insert(key, image);
+        c.decoded.insert(key, vec![(image, Duration::ZERO)]);
     });
 }
 
@@ -123,8 +156,8 @@ pub fn save_local(key: &str, asset: &str) {
         if let Some(image) = c.decoded.get(key).cloned() {
             c.decoded.insert(asset.to_owned(), image);
         }
-        if let Some(bitmap) = c.pictures.get(key).cloned() {
-            c.pictures.insert(asset.to_owned(), bitmap);
+        if let Some(picture) = c.pictures.get(key).cloned() {
+            c.pictures.insert(asset.to_owned(), picture);
         }
     });
 }
@@ -221,16 +254,48 @@ pub fn draw_branding(dc: &ID2D1DeviceContext, index: usize, r: D2D_RECT_F) -> bo
 /// (drawn as a rounded square) rather than a mascot (drawn whole); a
 /// picture not loaded yet starts loading. `None`: draw the initials.
 pub fn bitmap(dc: &ID2D1DeviceContext, avatar: &Avatar) -> Option<(ID2D1Bitmap1, bool)> {
+    frame(dc, avatar).map(|(bitmap, picture, _)| (bitmap, picture))
+}
+
+/// When `avatar`'s next frame is due, for an animated picture that is
+/// playing; `None` for a still, a mascot or with reduced motion.
+pub fn next_frame(dc: &ID2D1DeviceContext, avatar: &Avatar) -> Option<Duration> {
+    frame(dc, avatar).and_then(|(_, _, next)| next)
+}
+
+fn frame(
+    dc: &ID2D1DeviceContext,
+    avatar: &Avatar,
+) -> Option<(ID2D1Bitmap1, bool, Option<Duration>)> {
     CACHE.with_borrow_mut(|c| {
         if let Some((asset, url)) = &avatar.picture {
-            if let Some(b) = c.pictures.get(asset) {
-                return Some((b.clone(), true));
+            if c.motion
+                .1
+                .is_none_or(|at| at.elapsed() > Duration::from_secs(1))
+            {
+                c.motion = (crate::files::motion(), Some(Instant::now()));
             }
-            if let Some(image) = c.decoded.remove(asset) {
-                let (w, h) = (image.size[0] as u32, image.size[1] as u32);
-                if let Ok(b) = crate::gfx::bitmap_on(dc, w, h, &premultiplied(&image.pixels)) {
-                    c.pictures.insert(asset.clone(), b.clone());
-                    return Some((b, true));
+            let motion = c.motion.0;
+            if let Some(p) = c.pictures.get(asset) {
+                let (b, next) = p.now(motion);
+                return Some((b.clone(), true, next));
+            }
+            if let Some(frames) = c.decoded.remove(asset) {
+                let bitmaps: Option<Vec<_>> = frames
+                    .iter()
+                    .map(|(image, delay)| {
+                        let (w, h) = (image.size[0] as u32, image.size[1] as u32);
+                        crate::gfx::bitmap_on(dc, w, h, &premultiplied(&image.pixels))
+                            .ok()
+                            .map(|b| (b, *delay))
+                    })
+                    .collect();
+                if let Some(frames) = bitmaps.filter(|f| !f.is_empty()) {
+                    let total = frames.iter().map(|(_, d)| *d).sum();
+                    let p = std::rc::Rc::new(Picture { frames, total });
+                    c.pictures.insert(asset.clone(), p.clone());
+                    let (b, next) = p.now(motion);
+                    return Some((b.clone(), true, next));
                 }
             }
             if let (Some(url), Some(api)) = (url, &c.api)
@@ -242,14 +307,13 @@ pub fn bitmap(dc: &ID2D1DeviceContext, avatar: &Avatar) -> Option<(ID2D1Bitmap1,
                 let (api, tx, hwnd) = (api.clone(), c.tx.clone(), c.hwnd);
                 let (asset, url) = (asset.clone(), url.clone());
                 std::thread::spawn(move || {
-                    let image = api
+                    let frames = api
                         .fetch_media(&url)
                         .ok()
-                        .and_then(|bytes| caper_client::pictures::decode(&bytes, false))
-                        .and_then(|frames| frames.into_iter().next())
-                        .map(|(image, _)| image)
-                        .filter(|i| i.size[0] > 0 && i.size[1] > 0);
-                    let _ = tx.send((asset, url, image));
+                        .and_then(|bytes| caper_client::pictures::decode(&bytes, true))
+                        .filter(|f| f.iter().all(|(i, _)| i.size[0] > 0 && i.size[1] > 0))
+                        .filter(|f| !f.is_empty());
+                    let _ = tx.send((asset, url, frames));
                     unsafe {
                         let _ = PostMessageW(
                             Some(HWND(hwnd as _)),
@@ -266,7 +330,7 @@ pub fn bitmap(dc: &ID2D1DeviceContext, avatar: &Avatar) -> Option<(ID2D1Bitmap1,
             .entry(index)
             .or_insert_with(|| mascot(dc, index))
             .clone()
-            .map(|b| (b, false))
+            .map(|b| (b, false, None))
     })
 }
 
