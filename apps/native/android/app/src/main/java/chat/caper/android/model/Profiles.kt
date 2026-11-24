@@ -33,6 +33,11 @@ sealed interface ProfileEvent {
     data class Person(val person: ProfilePerson) : ProfileEvent
     /** `space.updated`: a space you are in was renamed or its icon changed. */
     data class SpaceChanged(val space: Space) : ProfileEvent
+    /**
+     * `notifications.updated`: your account-level notification settings (level, phone choice,
+     * voice starts, Do Not Disturb) were saved, here or on another device. [settings] has no overrides.
+     */
+    data class NotificationsChanged(val settings: NotificationSettings) : ProfileEvent
 }
 
 fun Account.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)

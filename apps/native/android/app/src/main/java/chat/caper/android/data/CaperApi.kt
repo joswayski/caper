@@ -159,6 +159,10 @@ class CaperApi(
         "/api/notifications/settings", "PUT", token,
         buildJsonObject { level?.let { put("level", it) }; mobile?.let { put("mobile", it) }; voiceStarted?.let { put("voiceStarted", it) } }.toString(),
     ).normalized()
+    /** Do Not Disturb: [pausedUntil] null turns it off, else `forever` or an RFC 3339 time within the next year. */
+    suspend fun setDoNotDisturb(token: String, pausedUntil: String?): NotificationSettings = request<NotificationSettings>(
+        "/api/notifications/settings", "PUT", token, buildJsonObject { put("pausedUntil", pausedUntil) }.toString(),
+    ).normalized()
     suspend fun setSpaceNotifications(token: String, space: String, change: OverrideChange): NotificationOverride =
         setOverride("/api/spaces/${space.pathId()}/notifications", token, change, spaceKey(space))
     suspend fun setChannelNotifications(token: String, space: String, channel: String, change: OverrideChange): NotificationOverride =

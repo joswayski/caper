@@ -330,8 +330,8 @@ private sealed interface Overlay {
     data class LeaveChannel(val channel: Channel) : Overlay
     data object LeaveSpace : Overlay
     data object Profile : Overlay
-    data object Audio : Overlay
-    data object Privacy : Overlay
+    /** Opens the Settings screen. It is kept apart from the overlay, so dialogs opened from it return to it. */
+    data object Settings : Overlay
     data class WhatsNew(val snapshot: WhatsNewSnapshot? = null, val automatic: Boolean = false) : Overlay
     data class AudioPanelOverlay(val panel: AudioPanel) : Overlay
 }
@@ -377,9 +377,11 @@ internal data class VoiceJoinIntent(
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
     val whatsNew by viewModel.whatsNew.state.collectAsStateWithLifecycle()
     var overlay by remember { mutableStateOf<Overlay?>(null) }
-    SideEffect { viewModel.overlayShown = overlay != null }
     val keyboardSheet by viewModel.keyboardSheet.collectAsStateWithLifecycle()
     val keyContext = LocalContext.current
+    // The Settings screen and its page; null while closed. Edit profile, What’s new and the audio panels open above it.
+    var settingsPage by remember { mutableStateOf<SettingsPage?>(null) }
+    SideEffect { viewModel.overlayShown = overlay != null || settingsPage != null }
     // Startup's "fully drawn" (macrobenchmarks, Android vitals): past the brand screen and the first history page.
     androidx.activity.compose.ReportDrawnWhen { state.screen != SessionScreen.Loading && !state.restoring && !state.messagesLoading }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -406,7 +408,7 @@ internal data class VoiceJoinIntent(
                 // Native dialogs, sheets, permission prompts and focusable menus take
                 // window focus, including ones owned by nested message views.
                 val idle = VoiceCallService.state.value.phase.let { it == VoiceState.Phase.IDLE || it == VoiceState.Phase.FAILED }
-                if (overlay == null && idle && view.hasWindowFocus() && notes.unread.isNotEmpty()) {
+                if (overlay == null && settingsPage == null && idle && view.hasWindowFocus() && notes.unread.isNotEmpty()) {
                     overlay = Overlay.WhatsNew(notes.snapshot?.copy(releases = notes.unread.asReversed()), automatic = true)
                 }
             }
@@ -431,15 +433,17 @@ internal data class VoiceJoinIntent(
         }
     }
 
-    // Web: closing User Settings, or a panel opened from it, returns focus to its button.
+    // Web: closing Settings returns focus to its button.
     val settingsFocus = remember { FocusRequester() }
     var settingsShown by remember { mutableStateOf(false) }
-    LaunchedEffect(overlay) {
-        if (settingsShown && overlay == null) runCatching { settingsFocus.requestFocus() }
-        settingsShown = overlay.let { it == Overlay.Audio || it == Overlay.Privacy || it is Overlay.AudioPanelOverlay || it is Overlay.WhatsNew }
+    LaunchedEffect(settingsPage == null) {
+        if (settingsShown && settingsPage == null) runCatching { settingsFocus.requestFocus() }
+        settingsShown = settingsPage != null
     }
 
     val homeVisible = state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces
+    // Signing out or losing the workspace closes Settings.
+    LaunchedEffect(homeVisible, state.account?.id) { if (!homeVisible) settingsPage = null }
     // An opened invite link (signed in, or once sign-in finishes) takes over whatever dialog is open.
     val openedInviteLink by viewModel.inviteLinkToOpen.collectAsStateWithLifecycle()
     LaunchedEffect(openedInviteLink) {
@@ -457,6 +461,8 @@ internal data class VoiceJoinIntent(
         // Navigation keys go ahead of the focused field; Escape only once nothing else took it.
         Box(Modifier.fillMaxSize().onPreviewKeyEvent { navigationKey(it.nativeKeyEvent, viewModel, keyContext) }
             .onKeyEvent { escapeMarksRead(it.nativeKeyEvent, viewModel) }.swipeCancelsPresses().padding(padding).consumeWindowInsets(padding).imePadding()) {
+            // Settings covers the app: what's underneath leaves the accessibility tree while it is open.
+            Box(Modifier.fillMaxSize().then(if (settingsPage != null && homeVisible) Modifier.clearAndSetSemantics {} else Modifier)) {
             CompositionLocalProvider(LocalSettingsFocus provides settingsFocus) { when (val screen = state.screen) {
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
@@ -471,9 +477,19 @@ internal data class VoiceJoinIntent(
                         state.spaces.none { !it.demo } && state.selectedDirectId == null && state.visit == null && !state.feedbackShown && !navigationOpen)
                         FirstSpaceScreen(state, viewModel)
                     else HomeScreen(
-                        state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
+                        state, voice, navigationOpen, { navigationOpen = it },
+                        { if (it == Overlay.Settings) settingsPage = SettingsPage.Root else overlay = it }, viewModel,
                     )
             } }
+            }
+            settingsPage?.takeIf { homeVisible }?.let { page ->
+                SettingsScreen(
+                    state, voice, viewModel, page, { settingsPage = it }, close = { settingsPage = null },
+                    editProfile = { overlay = Overlay.Profile },
+                    openWhatsNew = { overlay = Overlay.WhatsNew(); viewModel.refreshWhatsNew() },
+                    openAudioPanel = { overlay = Overlay.AudioPanelOverlay(it) },
+                )
+            }
             // Keep the current conversation stable while a space or channel opens.
             if (state.busy && !homeVisible) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Terracotta)
             // Web's notice sits at the top centre: at the bottom it covered the composer and the
@@ -493,7 +509,7 @@ internal data class VoiceJoinIntent(
         }
     }
 
-    if (homeVisible && overlay == null) when (keyboardSheet) {
+    if (homeVisible && overlay == null && settingsPage == null) when (keyboardSheet) {
         KeyboardSheet.SWITCHER -> QuickSwitcherDialog(state, viewModel, { viewModel.keyboardSheet.value = null }) { navigationOpen = false }
         KeyboardSheet.SHORTCUTS -> ShortcutHelpDialog { viewModel.keyboardSheet.value = null }
         null -> {}
@@ -535,10 +551,9 @@ internal data class VoiceJoinIntent(
             }
         }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }, pendingLabel = "Leaving…", error = state.error, focusCancel = true) { viewModel.leaveCurrentSpace { overlay = null } }
-        Overlay.Profile -> ProfileEditor(state, viewModel) { overlay = null; viewModel.returnFocusToComposer(null) }
-        Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin,
-            notifications = { NotificationSettingsSection(state, viewModel) },
-            openWhatsNew = { overlay = Overlay.WhatsNew(); viewModel.refreshWhatsNew() }) { overlay = Overlay.Privacy }
+        // From Settings, closing returns to Settings; from the account bar, to the composer.
+        Overlay.Profile -> ProfileEditor(state, viewModel) { overlay = null; if (settingsPage == null) viewModel.returnFocusToComposer(null) }
+        Overlay.Settings -> LaunchedEffect(Unit) { overlay = null; settingsPage = SettingsPage.Root }
         is Overlay.WhatsNew -> {
             DisposableEffect(shown.snapshot) { onDispose { viewModel.whatsNew.dismiss(shown.snapshot?.sequence) } }
             WhatsNewDialog(whatsNew, shown.snapshot, shown.automatic, viewModel::refreshWhatsNew) {
@@ -546,7 +561,6 @@ internal data class VoiceJoinIntent(
                 overlay = null
             }
         }
-        Overlay.Privacy -> PrivacySettingsDialog(state, viewModel) { overlay = null }
         is Overlay.AudioPanelOverlay -> when (shown.panel) {
             AudioPanel.Test -> AudioTestDialog(voice) { overlay = null }
             AudioPanel.Connection -> ConnectionDetailsDialog(voice) { overlay = null }
@@ -565,7 +579,7 @@ internal data class VoiceJoinIntent(
 }
 
 internal val LocalBrandAvatar = compositionLocalOf { 0 }
-/** The account bar's User Settings button, which takes focus back when settings close. */
+/** The account bar's Settings button ("User Settings"), which takes focus back when Settings closes. */
 private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { null }
 
 @Composable private fun Wordmark(modifier: Modifier = Modifier) = Image(
@@ -1549,7 +1563,7 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
     }
 }
 
-@Composable private fun AccountAvatar(state: AppUiState, viewModel: CaperViewModel) {
+@Composable private fun AccountAvatar(state: AppUiState, viewModel: CaperViewModel, dnd: Boolean = false) {
     val name = state.account?.displayName ?: "Guest"
     // Web: account spaces show the server's presence for you; General and guests show local presence.
     val accountPresence = state.account != null && state.selectedSpace?.space?.demo == false
@@ -1561,6 +1575,11 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
         Avatar(name, 30.dp, avatarId = state.account?.avatarId, avatarAsset = state.account?.avatarAsset, avatarUrl = state.account?.avatarUrl)
         PresenceDot(if (accountPresence) state.presence[state.account?.id] else local,
             live = !accountPresence || state.presenceLive, SurfaceRaised, Modifier.align(Alignment.BottomEnd))
+        // Do Not Disturb: a moon on the avatar's top corner (the account bar names it).
+        if (dnd) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(14.dp).clip(CircleShape).background(SurfaceRaised).padding(1.5.dp)
+            .clip(CircleShape).background(Border).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.lucide_moon), null, Modifier.size(8.dp), tint = Text)
+        }
     }
 }
 
@@ -1579,6 +1598,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, narrow: Boolean = false, closeNavigation: (() -> Unit)? = null) {
     val context = LocalContext.current
     val view = LocalView.current
+    // Do Not Disturb's end label while it is on (it turns off by itself at the end).
+    val dndLabel = state.account?.let { rememberDndLabel(state.notificationSettings?.pausedUntil) }
     // Match the one-line Material composer and its bottom inset, retaining touch targets.
     Surface(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
       Column {
@@ -1612,20 +1633,26 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         Row(Modifier.height(56.dp).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.small)
                 .clickable(role = Role.Button) { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
-                .semantics { contentDescription = if (state.account == null) "Sign in to edit your profile" else "Edit profile for ${state.account.displayName ?: "Guest"}" }
+                .semantics {
+                    contentDescription = if (state.account == null) "Sign in to edit your profile"
+                        else "Edit profile for ${state.account.displayName ?: "Guest"}" + (dndLabel?.let { ", Do Not Disturb, $it" } ?: "")
+                }
                 .padding(horizontal = 4.dp), contentAlignment = Alignment.CenterStart) {
                 // Web: where the controls would leave the name a letter or two ("F…"), the
                 // avatar shows alone; the button above still names the account.
                 val nameFits = maxWidth >= 30.dp + 7.dp + 44.dp
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AccountAvatar(state, viewModel)
+                    AccountAvatar(state, viewModel, dnd = dndLabel != null)
                     if (nameFits) {
                         Spacer(Modifier.width(7.dp))
-                        Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Column {
+                            Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            if (dndLabel != null) Text("Do Not Disturb", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = TextMuted)
+                        }
                     }
                 }
             }
-            // Phones use the call card's controls and Settings → Audio test for devices/volume.
+            // Phones use the call card's controls and Settings → Voice & audio → Audio test for devices/volume.
             if (!narrow && BuildConfig.ENABLE_NATIVE_VOICE) {
                 // Web: mute and deafen wait while the Audio test holds the microphone.
                 val monitoring = Modifier.semantics { if (voice.monitoring) stateDescription = "Stop mic test to change mute" }
@@ -1634,7 +1661,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 IconButton({ Haptics.toggle(view, on = !voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(40.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
                 AudioOptionsMenu(input = false, voice = voice)
             }
-            IconButton({ show(Overlay.Audio) }, Modifier.size(40.dp).then(LocalSettingsFocus.current?.let { Modifier.focusRequester(it) } ?: Modifier)) {
+            if (state.account != null) DoNotDisturbButton(state, viewModel)
+            IconButton({ show(Overlay.Settings) }, Modifier.size(40.dp).then(LocalSettingsFocus.current?.let { Modifier.focusRequester(it) } ?: Modifier)) {
                 Icon(painterResource(R.drawable.lucide_settings), "User Settings", Modifier.size(18.dp), tint = TextMuted)
             }
         }

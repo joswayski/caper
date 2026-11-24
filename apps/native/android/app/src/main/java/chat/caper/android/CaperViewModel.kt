@@ -13,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import chat.caper.android.data.*
 import chat.caper.android.model.*
 import chat.caper.android.push.CaperNotifications
+import chat.caper.android.push.DoNotDisturbGate
 import chat.caper.android.push.ForegroundConversation
 import chat.caper.android.push.PushActivity
 import chat.caper.android.push.PushOffer
@@ -402,6 +403,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { while (true) { delay(5 * 60_000L); if (foreground) refreshExpiringUrls() } }
         viewModelScope.launch { state.map { it.selectedChannel?.id }.distinctUntilChanged().collect { publishForegroundConversation(); refreshThreadUnread() } }
         viewModelScope.launch { PushActivity.received.collect { scheduleUnreadRefresh() } }
+        // Pushes check Do Not Disturb on disk, so they hold back even when this process isn't running.
+        viewModelScope.launch {
+            state.map { it.notificationSettings }.distinctUntilChanged().collect { settings ->
+                if (settings != null) DoNotDisturbGate.set(getApplication(), settings.pausedUntil)
+            }
+        }
     }
 
     private fun loadHome() {
@@ -628,6 +635,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         profileRecipients.clear()
         notificationEdits = null
+        DoNotDisturbGate.set(getApplication(), null)
         pendingInvitationIntent = null
         pendingChannelIntent = null
         pendingDirectIntent = null
@@ -1625,6 +1633,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return@editNotifications { it.copy(voiceStarted = saved) }
     }
 
+    /** Do Not Disturb: a [DndPreset]'s `pausedUntil`, or null to turn it off. */
+    fun setDoNotDisturb(pausedUntil: String?) = editNotifications(PAUSE_KEY, { it.copy(pausedUntil = pausedUntil) }, DND_SAVE_ERROR) { token ->
+        val saved = api.setDoNotDisturb(token, pausedUntil).pausedUntil
+        return@editNotifications { it.copy(pausedUntil = saved) }
+    }
+
     fun setSpaceNotifications(spaceId: String, change: OverrideChange) =
         editOverride(NotificationOverride(spaceId = spaceId), change) { api.setSpaceNotifications(it, spaceId, change) }
 
@@ -1648,6 +1662,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun editNotifications(
         key: String,
         edit: (NotificationSettings) -> NotificationSettings,
+        failure: String = NOTIFICATION_SAVE_ERROR,
         save: suspend (String) -> (NotificationSettings) -> NotificationSettings,
     ) {
         val token = accountToken ?: return
@@ -1671,7 +1686,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Throwable) {
                 if (request != accountGeneration) return@launch
                 edits.failed(key, ticket)
-                mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSaving = edits.saving, notificationErrors = mutable.value.notificationErrors + (key to NOTIFICATION_SAVE_ERROR))
+                mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSaving = edits.saving, notificationErrors = mutable.value.notificationErrors + (key to failure))
             }
         }
     }
@@ -2034,6 +2049,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         refreshMembership()
         refreshUnreadSpaces()
         refreshVoiceActivity()
+        // `notifications.updated` has no replay: Do Not Disturb may have changed elsewhere meanwhile.
+        refreshNotificationSettings()
         val current = mutable.value
         if (!current.messagesLoading) current.selectedChannel?.id?.let { markConversationRead(it, durableReplayCursor) }
     }
@@ -4259,6 +4276,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val id = event.space.id
                 if (current.spaces.none { it.id == id } && current.invitations.none { it.id == id } && current.selectedSpace?.space?.id != id) return
                 applySpace(event.space)
+            }
+            // Saved here or on another device: the account-level fields change, overrides stay.
+            // Settings still saving keep the value being saved (NotificationEdits.loaded).
+            is ProfileEvent.NotificationsChanged -> {
+                val edits = notificationEdits ?: return refreshNotificationSettings()
+                val next = event.settings
+                edits.loaded(edits.confirmed.copy(level = next.level, mobile = next.mobile, voiceStarted = next.voiceStarted, pausedUntil = next.pausedUntil))
+                mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSettingsError = null)
             }
         }
     }

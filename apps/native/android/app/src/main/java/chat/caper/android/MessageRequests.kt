@@ -167,13 +167,10 @@ import kotlinx.coroutines.launch
     }
 }
 
-/** User settings: appearance/themes, who can start a DM with you, the accounts you blocked, and how to delete your account. */
-@Composable internal fun PrivacySettingsDialog(state: AppUiState, viewModel: CaperViewModel, close: () -> Unit) = CaperDialog("Settings & Privacy", close) {
-    val scope = rememberCoroutineScope()
+/** Settings → Appearance: the theme presets. */
+@Composable internal fun AppearanceSettings() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val activeTheme = CaperThemeStore.active
-
-    SettingLabel("Appearance")
     Text(
         "Choose between Obsidian Dark and Paper Light.",
         color = activeTheme.textMuted,
@@ -195,8 +192,11 @@ import kotlinx.coroutines.launch
             onClick = { CaperThemeStore.selectPreset(context, "paper") },
         )
     }
-    HorizontalDivider(color = activeTheme.border)
+}
 
+/** Settings → Privacy & blocked accounts: who can start a DM with you, the accounts you blocked, and how to delete your account. */
+@Composable internal fun PrivacySettingsSection(state: AppUiState, viewModel: CaperViewModel) {
+    val scope = rememberCoroutineScope()
     var setting by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var settingError by remember { mutableStateOf<String?>(null) }

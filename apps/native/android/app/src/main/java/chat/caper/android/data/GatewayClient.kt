@@ -25,11 +25,15 @@ internal const val NOTIFICATIONS_SUBSCRIBE = """{"type":"subscribe","id":"$NOTIF
 private val profileJson = Json { ignoreUnknownKeys = true }
 
 /**
- * One `profiles` event: `profile.updated` (a person) or `space.updated`. Unknown types and
- * malformed payloads are null, never fatal; absent picture or icon fields mean it was removed.
+ * One `profiles` event: `profile.updated` (a person), `space.updated`, or `notifications.updated`
+ * (your account-level notification settings). Unknown types and malformed payloads are null,
+ * never fatal; absent picture or icon fields mean it was removed.
  */
 internal fun profileEvent(event: JsonObject, json: Json = profileJson): ProfileEvent? = runCatching {
     when ((event["type"] as? JsonPrimitive)?.content) {
+        "notifications.updated" -> (event.getValue("settings") as JsonObject)
+            .let { json.decodeFromJsonElement(NotificationSettings.serializer(), it) }
+            .normalized().let { ProfileEvent.NotificationsChanged(it.copy(overrides = emptyList())) }
         "profile.updated" -> json.decodeFromJsonElement(ProfilePerson.serializer(), event.getValue("person"))
             .takeIf { it.id.isNotEmpty() }?.let { ProfileEvent.Person(it) }
         "space.updated" -> json.decodeFromJsonElement(Space.serializer(), event.getValue("space"))

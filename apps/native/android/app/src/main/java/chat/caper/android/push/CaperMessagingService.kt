@@ -105,6 +105,8 @@ class CaperMessagingService : FirebaseMessagingService() {
         val payload = PushPayload.parse(message.data) ?: return
         PushActivity.received.tryEmit(Unit)
         if (ForegroundConversation.id == payload.tag) return
+        // Do Not Disturb: unread state still refreshes (above), but nothing is shown.
+        if (DoNotDisturbGate.active(this)) return
         CaperNotifications.show(this, payload)
     }
 }

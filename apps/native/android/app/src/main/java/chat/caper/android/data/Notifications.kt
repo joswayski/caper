@@ -65,9 +65,11 @@ internal fun knownLevel(level: String?): String? = when (level) {
     else -> LEVEL_MENTIONS
 }
 
-internal fun NotificationSettings.normalized() = copy(
+/** An expired or unreadable [NotificationSettings.pausedUntil] reads as off (null). */
+internal fun NotificationSettings.normalized(now: Instant = Instant.now()) = copy(
     level = knownLevel(level) ?: LEVEL_ALL,
     mobile = if (mobile == MOBILE_ALWAYS) MOBILE_ALWAYS else MOBILE_WHEN_INACTIVE,
+    pausedUntil = pausedUntil?.takeIf { dndActive(it, now) },
     overrides = overrides.filter { it.conversationId != null || it.channelId != null || it.spaceId != null }
         .map { it.normalized() }.distinctBy { it.key },
 )
@@ -126,6 +128,66 @@ internal enum class MutePreset(val label: String, private val duration: Duration
     fun mutedUntil(now: Instant): String = duration?.let { now.plus(it).truncatedTo(ChronoUnit.SECONDS).toString() } ?: MUTED_FOREVER
 }
 
+// --- Do Not Disturb ---------------------------------------------------------------------------
+
+/** Do Not Disturb's setting key in [NotificationEdits]. */
+internal const val PAUSE_KEY = "pausedUntil"
+internal const val PAUSED_FOREVER = "forever"
+internal const val DND_SAVE_ERROR = "That change wasn’t saved. Try again."
+
+/** On while [pausedUntil] is `forever` or a time still ahead. Expired or unreadable values are off. */
+internal fun dndActive(pausedUntil: String?, now: Instant): Boolean = muteActive(pausedUntil, now)
+
+/** When Do Not Disturb ends by itself: null when off or `forever`. */
+internal fun dndEnd(pausedUntil: String?): Instant? = pausedUntil?.takeIf { it != PAUSED_FOREVER }?.let(::muteEnd)
+
+/** The Do Not Disturb choices, identical on every client, in display order. */
+internal enum class DndPreset(val label: String) {
+    Minutes30("30 minutes"),
+    Hour1("1 hour"),
+    Hours8("8 hours"),
+    TomorrowMorning("Until tomorrow morning"),
+    Forever("Until I turn it off");
+
+    /**
+     * The `pausedUntil` to send: whole seconds in UTC, or `forever`. Tomorrow morning is 8:00
+     * local time on the next calendar day, except between 00:00 and 04:59, when it is 8:00 today.
+     */
+    fun pausedUntil(now: Instant, zone: ZoneId = ZoneId.systemDefault()): String = when (this) {
+        Minutes30 -> utcSeconds(now.plus(Duration.ofMinutes(30)))
+        Hour1 -> utcSeconds(now.plus(Duration.ofHours(1)))
+        Hours8 -> utcSeconds(now.plus(Duration.ofHours(8)))
+        TomorrowMorning -> {
+            val local = now.atZone(zone)
+            val day = if (local.hour < 5) local.toLocalDate() else local.toLocalDate().plusDays(1)
+            utcSeconds(day.atTime(8, 0).atZone(zone).toInstant())
+        }
+        Forever -> PAUSED_FOREVER
+    }
+}
+
+private fun utcSeconds(instant: Instant) = instant.truncatedTo(ChronoUnit.SECONDS).toString()
+
+/**
+ * `Until 3:45 PM` (today), `Until tomorrow at 8:00 AM`, `Until Thu 8:00 AM` (later), or
+ * `Until you turn it off`; null while Do Not Disturb is off. Times follow [hour24] (the
+ * system's 12/24-hour setting) like message times.
+ */
+internal fun dndEndLabel(
+    pausedUntil: String?, now: Instant, zone: ZoneId = ZoneId.systemDefault(),
+    locale: Locale = Locale.getDefault(), hour24: Boolean = false,
+): String? {
+    if (!dndActive(pausedUntil, now)) return null
+    val end = dndEnd(pausedUntil)?.atZone(zone) ?: return "Until you turn it off"
+    val time = DateTimeFormatter.ofPattern(if (hour24) "HH:mm" else "h:mm a", locale).format(end)
+    val today = now.atZone(zone).toLocalDate()
+    return when (end.toLocalDate()) {
+        today -> "Until $time"
+        today.plusDays(1) -> "Until tomorrow at $time"
+        else -> "Until ${DateTimeFormatter.ofPattern("EEE", locale).format(end)} $time"
+    }
+}
+
 /** One override change. The API leaves the other field as it is, and null resets this one. */
 sealed interface OverrideChange {
     data class VoiceStarted(val enabled: Boolean?) : OverrideChange
@@ -163,6 +225,7 @@ internal fun NotificationSettings.withSettingFrom(key: String, source: Notificat
     ACCOUNT_LEVEL_KEY -> copy(level = source.level)
     MOBILE_KEY -> copy(mobile = source.mobile)
     VOICE_KEY -> copy(voiceStarted = source.voiceStarted)
+    PAUSE_KEY -> copy(pausedUntil = source.pausedUntil)
     else -> withOverride(key, source.override(key))
 }
 

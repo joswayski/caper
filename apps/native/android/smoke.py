@@ -584,15 +584,23 @@ def main() -> None:
     assert find(hierarchy(), text="Collapse channels") is None, "Opening a dialog must close the menu"
 
     # Inspect prejoin audio controls without starting capture or playback.
+    # The gear opens one Settings screen: its sections in order, then Log out.
     tap(description="User Settings")
-    settings = capture("caper-android-audio-settings", "Audio test")
-    assert find(settings, text="Audio test") is not None, "Missing audio settings entry: Audio test"
-    voice_started = find(settings, description="When voice starts in a space")
+    settings = capture("caper-android-settings", "Voice & audio")
+    for section in ("Profile", "Edit profile", "Appearance", "Notifications", "Voice & audio", "Privacy & blocked accounts", "About", "Log out"):
+        assert find(settings, text=section) is not None, f"Missing Settings section: {section}"
+    tap(text="Notifications")
+    notifications = capture("caper-android-settings-notifications", "Do Not Disturb")
+    assert find(notifications, text="Off") is not None, "Do Not Disturb starts off"
+    assert find(notifications, text="Until tomorrow morning") is not None, "Missing Do Not Disturb preset"
+    voice_started = find(notifications, description="When voice starts in a space")
     assert voice_started is not None and voice_started.get("class") == "android.widget.CheckBox", "Checkbox is named"
-    assert find(settings, text="Connection details") is None, "Connection details are only offered while connected"
-    # Log out ends the menu, below the fold on a phone since Settings shows the version.
-    reveal("Log out", anchor="Send voice messages as soon as I stop recording")
-    reveal("Audio test", anchor="Log out", up=True)
+    # Back from a page returns to Settings.
+    adb("shell", "input", "keyevent", "KEYCODE_BACK")
+    wait_for(text="Voice & audio")
+    tap(text="Voice & audio")
+    audio_settings = capture("caper-android-audio-settings", "Audio test")
+    assert find(audio_settings, text="Connection details") is None, "Connection details are only offered while connected"
     tap(text="Audio test")
     audio = capture("caper-android-audio-prejoin", "Only you can hear these tests.")
     for label in ("Test microphone volume", "Voice processing", "Test speaker volume"):
@@ -640,12 +648,14 @@ def main() -> None:
     # The microphone test sits below the fold of the tall dialog.
     lower = reveal("Test microphone", anchor="Only you can hear these tests.")
     assert find(lower, text="Input level") is not None, "Missing audio test copy: Input level"
+    # Closing the Audio test returns to Settings → Voice & audio.
     tap(description="Close Audio test")
-    tap(description="User Settings")
     tap(text="Audio test")
     capture("caper-android-audio-prejoin-zero-output", "0%")
     reveal("Test microphone", anchor="Only you can hear these tests.")
     tap(description="Close Audio test")
+    tap(description="Back to Settings")
+    tap(description="Close Settings")
 
     tap(description="Edit profile for Fixture Owner")
     enter_first_field("ab")
@@ -798,10 +808,15 @@ def main() -> None:
     tap(description="Expand channels")
     wait_for(text="planning")
     tap(description="User Settings")
+    tap(text="Voice & audio")
     tap(text="Audio test")
     audio_narrow = capture("caper-android-audio-prejoin-narrow", "Only you can hear these tests.")
     assert find(audio_narrow, description="Test microphone volume") is not None
     tap(description="Close Audio test")
+    # Back from a page returns to Settings, and from Settings to the app.
+    adb("shell", "input", "keyevent", "KEYCODE_BACK")
+    wait_for(description="Close Settings")
+    adb("shell", "input", "keyevent", "KEYCODE_BACK")
 
     # Spectator snapshots are fixture-only; the media join endpoint remains 503.
     # Read #general while #design has occupants, without granting microphone access.

@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -24,6 +25,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -36,6 +38,7 @@ import chat.caper.android.push.PushRegistration
 import chat.caper.android.ui.*
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.delay
 
 /** Which part of an options menu shows: its own items, the notification levels, or the mute choices. */
@@ -204,7 +207,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
 }
 
 /**
- * User settings → Notifications: the account level and, when this build has Firebase and
+ * Settings → Notifications: Do Not Disturb, the account level and, when this build has Firebase and
  * the server offers FCM, "Send to this phone" and this phone's on/off switch. Push is on by
  * default (opening the app turns it on, asking once on Android 13+); turning the switch off
  * here is remembered for the account.
@@ -235,8 +238,8 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
         if (BuildConfig.FIREBASE_ENABLED && account != null) pushAvailable = viewModel.canEnablePush()
     }
     val settings = state.notificationSettings
+    DoNotDisturbGroup(state, viewModel)
     HorizontalDivider(color = Border)
-    Text("Notifications", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
     SettingChoices("Notify me about", accountLevelOptions, settings?.level, settings != null && ACCOUNT_LEVEL_KEY !in state.notificationSaving, viewModel::setNotificationLevel)
     NotificationSaveError(state.notificationErrors[ACCOUNT_LEVEL_KEY]) { viewModel.dismissNotificationError(ACCOUNT_LEVEL_KEY) }
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -269,4 +272,87 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
         Switch(pushEnabled, null, enabled = !pushWorking, colors = caperSwitchColors())
     }
     pushError?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+}
+
+/**
+ * Do Not Disturb's end label (`Until 3:45 PM`, `Until you turn it off`), or null while it is off.
+ * It turns off by itself at the end, and the day words follow local midnight.
+ */
+@Composable internal fun rememberDndLabel(pausedUntil: String?): String? {
+    val context = LocalContext.current
+    // The system's 24-hour setting, as message times use it.
+    val hour24 = remember(context) { android.text.format.DateFormat.is24HourFormat(context) }
+    var now by remember { mutableStateOf(Instant.now()) }
+    LaunchedEffect(pausedUntil) {
+        while (true) {
+            now = Instant.now()
+            val end = dndEnd(pausedUntil)?.takeIf { it.isAfter(now) } ?: break
+            val zone = ZoneId.systemDefault()
+            val midnight = now.atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant()
+            delay((Duration.between(Instant.now(), minOf(end, midnight)).toMillis() + 500).coerceAtLeast(0))
+        }
+    }
+    return dndEndLabel(pausedUntil, now, hour24 = hour24)
+}
+
+/** Settings → Notifications' first group: Do Not Disturb's status, the five presets, and Turn off while on. */
+@Composable private fun DoNotDisturbGroup(state: AppUiState, viewModel: CaperViewModel) {
+    val settings = state.notificationSettings
+    val label = rememberDndLabel(settings?.pausedUntil)
+    val enabled = settings != null && PAUSE_KEY !in state.notificationSaving
+    SettingLabel("Do Not Disturb")
+    Text(if (label == null) "Off" else "On · $label", Modifier.semantics { liveRegion = LiveRegionMode.Polite }, fontSize = 13.sp)
+    Column {
+        DndPreset.entries.forEach { preset ->
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
+                    .clickable(enabled = enabled, role = Role.Button) { viewModel.setDoNotDisturb(preset.pausedUntil(Instant.now())) }
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MenuIcon(R.drawable.lucide_moon, Modifier.graphicsLayer { alpha = if (enabled) 1f else .5f })
+                Spacer(Modifier.width(10.dp))
+                Text(preset.label, color = if (enabled) Text else TextMuted, fontSize = 13.sp)
+            }
+        }
+        if (label != null) Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
+                .clickable(enabled = enabled, role = Role.Button) { viewModel.setDoNotDisturb(null) }
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MenuIcon(R.drawable.lucide_bell, Modifier.graphicsLayer { alpha = if (enabled) 1f else .5f })
+            Spacer(Modifier.width(10.dp))
+            Text("Turn off", color = if (enabled) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+    NotificationSaveError(state.notificationErrors[PAUSE_KEY]) { viewModel.dismissNotificationError(PAUSE_KEY) }
+}
+
+/**
+ * The account bar's moon: a quick Do Not Disturb menu. Off, it offers "Pause notifications" with
+ * the presets; on, it names the end ("Do Not Disturb · Until 3:45 PM") above Turn off and the
+ * presets, which change the end.
+ */
+@Composable internal fun DoNotDisturbButton(state: AppUiState, viewModel: CaperViewModel) {
+    val settings = state.notificationSettings
+    val label = rememberDndLabel(settings?.pausedUntil)
+    val enabled = settings != null && PAUSE_KEY !in state.notificationSaving
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton({ open = true; viewModel.refreshNotificationSettings() },
+            Modifier.size(40.dp).semantics { stateDescription = label?.let { "On, $it" } ?: "Off" }) {
+            Icon(painterResource(R.drawable.lucide_moon), "Do Not Disturb", Modifier.size(18.dp), tint = if (label != null) Text else TextMuted)
+        }
+        DropdownMenu(open, { open = false }, Modifier.widthIn(min = 220.dp), containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            val choose = { pausedUntil: String? -> open = false; viewModel.setDoNotDisturb(pausedUntil) }
+            Text(if (label == null) "Pause notifications" else "Do Not Disturb · $label",
+                Modifier.padding(horizontal = 12.dp, vertical = 10.dp).semantics { heading() }, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            if (label != null) DropdownMenuItem(text = { Text("Turn off", fontSize = 13.sp) }, onClick = { choose(null) }, enabled = enabled,
+                leadingIcon = { MenuIcon(R.drawable.lucide_bell) })
+            DndPreset.entries.forEach { preset ->
+                DropdownMenuItem(text = { Text(preset.label, fontSize = 13.sp) }, onClick = { choose(preset.pausedUntil(Instant.now())) }, enabled = enabled)
+            }
+        }
+    }
 }

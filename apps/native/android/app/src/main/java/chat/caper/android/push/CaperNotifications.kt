@@ -26,6 +26,7 @@ import chat.caper.android.caperAvatarResources
 import chat.caper.android.data.ApiException
 import chat.caper.android.data.CaperApi
 import chat.caper.android.data.TokenStore
+import chat.caper.android.data.dndActive
 import chat.caper.android.ui.Terracotta
 import java.io.File
 import java.io.IOException
@@ -39,6 +40,25 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 /** The DM or channel on screen while the app is in the foreground; its pushes show no notification. */
 internal object ForegroundConversation {
     @Volatile var id: String? = null
+}
+
+/**
+ * The account's Do Not Disturb `pausedUntil`, kept on disk so pushes that arrive while the app
+ * isn't running are also held back. The server stops sending them while paused; this covers
+ * pushes already in flight and the time before the next settings refresh.
+ */
+internal object DoNotDisturbGate {
+    private const val PREFS = "do_not_disturb"
+    private const val PAUSED_UNTIL = "pausedUntil"
+
+    fun set(context: Context, pausedUntil: String?) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply {
+            if (pausedUntil == null) remove(PAUSED_UNTIL) else putString(PAUSED_UNTIL, pausedUntil)
+        }.apply()
+    }
+
+    fun active(context: Context, now: java.time.Instant = java.time.Instant.now()): Boolean =
+        dndActive(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(PAUSED_UNTIL, null), now)
 }
 
 /** Message pushes received while the app runs, shown or not: the open app refreshes unread state from them. */

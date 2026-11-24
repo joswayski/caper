@@ -100,12 +100,14 @@ val DEFAULT_QUICK_REACTIONS = listOf("👍", "❤️", "😂")
 @Serializable data class PushConfig(val platforms: List<String>)
 /**
  * `GET /api/notifications/settings`: the account [level] (`all`, `mentions` or `nothing`),
- * [mobile] (`whenInactive` or `always`) and the overrides that still set something.
+ * [mobile] (`whenInactive` or `always`), Do Not Disturb's [pausedUntil] (null when off,
+ * `forever`, or a whole-second RFC 3339 UTC time) and the overrides that still set something.
  */
 @Serializable data class NotificationSettings(
     val level: String = "all",
     val mobile: String = "whenInactive",
     val voiceStarted: Boolean = true,
+    val pausedUntil: String? = null,
     val overrides: List<NotificationOverride> = emptyList(),
 )
 /**

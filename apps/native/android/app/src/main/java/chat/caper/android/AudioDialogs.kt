@@ -57,18 +57,8 @@ import kotlinx.coroutines.launch
 
 internal enum class AudioPanel { Test, Connection, Diagnostics }
 
-/** Web's User Settings menu. */
-@Composable internal fun AudioSettingsMenu(
-    state: AppUiState,
-    voice: VoiceState,
-    close: () -> Unit,
-    open: (AudioPanel) -> Unit,
-    logout: () -> Unit,
-    signIn: () -> Unit,
-    notifications: @Composable () -> Unit = {},
-    openWhatsNew: () -> Unit = {},
-    openPrivacy: () -> Unit = {},
-) = CaperDialog("Audio settings", close) {
+/** Settings → Voice & audio: sending voice messages on stop, the Audio test, and in a call its connection details and diagnostics. */
+@Composable internal fun VoiceAudioSettings(state: AppUiState, voice: VoiceState, open: (AudioPanel) -> Unit) {
     // Off by default: stopping a recording stages it in the composer.
     VoiceSendOnStopSetting()
     val testable = voice.phase == VoiceState.Phase.IDLE || voice.phase == VoiceState.Phase.FAILED || voice.phase == VoiceState.Phase.CONNECTED
@@ -76,16 +66,12 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     if (voice.phase == VoiceState.Phase.CONNECTED && voice.diagnostics != null) MenuButton("Connection details") { open(AudioPanel.Connection) }
     if (state.account?.debugEnabled == true && voice.phase == VoiceState.Phase.CONNECTED && voice.processing.size == 5)
         MenuButton("Audio diagnostics") { open(AudioPanel.Diagnostics) }
-    if (state.account != null) {
-        notifications()
-        HorizontalDivider(color = Border)
-    }
-    // Who can start a DM with you, and the accounts you blocked.
-    if (state.account != null) MenuButton("Privacy and blocked accounts") { openPrivacy() }
+}
+
+/** Settings → About: the installed version (a tap copies it) and What’s new. */
+@Composable internal fun AboutSettings(openWhatsNew: () -> Unit) {
     InstalledVersionControl()
-    MenuButton("What’s new") { openWhatsNew() }
-    if (state.account != null) MenuButton(if (state.loggingOut) "Logging out…" else "Log out") { if (!state.loggingOut) { close(); logout() } }
-    else MenuButton("Sign in") { close(); signIn() }
+    MenuButton("What’s new", action = openWhatsNew)
 }
 
 /** Web's Input Options / Output Options menus beside mute and deafen. */
