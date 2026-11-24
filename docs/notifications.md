@@ -219,8 +219,9 @@ download, OS timeout) keeps the caption/file description and sender artwork.
   replay, discard replay older than two minutes (or over 30 s in the future) and
   clear alerts on logout. Rust desktop presents from its account worker,
   independently of rendering; its reading state is a two-second lease.
-- The tab or app must be running; minimized windows still notify. There is no
-  keep-running-in-tray mode or service worker.
+- The tab or app must be running; minimized windows still notify, and desktop
+  apps keep running when their window closes (see "Closing the desktop window"
+  in `docs/media.md`). There is no service worker.
 
 ## Message-request and invitation alerts
 
@@ -554,7 +555,8 @@ uploads; release builds already carry `aps-environment=production`.
   through a service worker for their actions, but there is no closed-browser
   Web Push. Mobile browsers rely on the native apps.
 - **macOS**: local notifications and Dock badge while running; no APNs.
-- **Windows/Linux (Rust desktop)**: local notifications while running or
-  minimized; no tray mode, nothing after quit.
+- **Windows/Linux (Rust desktop)**: local notifications while running,
+  including with the window closed to the tray (Windows) or minimized (Linux);
+  nothing after quit.
 - Each phone platform stays out of `PUSH_PLATFORMS` until it works on real
   signed devices.

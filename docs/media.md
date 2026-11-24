@@ -4310,8 +4310,8 @@ and configuration.
   notifications from an account-wide gateway feed, with sender artwork,
   focused-conversation suppression, reconnect deduplication, click navigation and
   logout cleanup. macOS uses an upload or sender-avatar attachment rather than
-  replacing the app icon. Closed-browser Web Push, macOS APNs and keep-running-in-
-  tray are not implemented.
+  replacing the app icon. Closed-browser Web Push and macOS APNs are not
+  implemented.
 - Phone and local notifications can preview one image or video through a
   15-minute signed URL: images use their original (up to 50,000,000 bytes); videos
   use only their chat poster (at most 512 KiB), never video bytes. The receiving
@@ -4964,6 +4964,31 @@ actions; native cards offer equivalent context-menu or long-press actions.
 
 `node scripts/test-pictures.mjs <loopback-web-url>` runs the mocked browser suite
 (`PICTURE_VIEWER_ONLY=1` and `PICTURE_GALLERY_ONLY=1` narrow it).
+
+## Closing the desktop window
+
+Closing the window does not quit Caper, so a voice call and notifications carry
+on. The per-device setting "Keep Caper running when the window closes"
+(`keep-running-when-closed-v1`, on by default; Settings > Startup) turns this
+off, and closing quits again. Shared words and notices live in
+`caper_client::background`.
+
+- **macOS**: closing hides the window as Mac apps do; the Dock icon, Window >
+  Caper (Cmd-0) or a notification click brings it back, and Quit (Cmd-Q) quits.
+  During a call the Dock menu offers Mute, Deafen and Leave call.
+- **Windows**: closing hides the window to a notification-area icon, shown while
+  the setting is on. A click opens Caper; its menu offers Open Caper, Mute,
+  Deafen and Leave call during a call, and Quit Caper. Its tooltip names the call.
+- **Linux**: closing minimizes the window instead of hiding it, since many
+  desktops (GNOME) have no tray: Caper stays in the taskbar or dock and Alt+Tab.
+  Quit Caper in the account menu (Ctrl+Q) quits, as does a dock's or taskbar's
+  Quit (a close that reaches the window while it is minimized this way).
+- Each close during a call shows a notification that the call goes on; the first
+  close otherwise says once that Caper is still running (Windows, Linux).
+- Opening Caper again (Windows and Linux release builds) hands `open` to the
+  running app over the `caper://` link handoff, which brings its window back
+  instead of starting a second copy.
+- Web asks before a tab closes or reloads during a call.
 
 ## Desktop window restoration
 

@@ -732,6 +732,17 @@ export default function Call({
     return () => window.removeEventListener("keydown", keydown);
   }, [connected]);
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
+  // Closing or reloading the tab ends the call, so the browser asks first.
+  useEffect(() => {
+    if (idle) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // Browsers from before preventDefault counted (Chrome 118, Safari 16).
+      event.returnValue = true;
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [idle]);
   const joinUnavailable = available !== true;
   const controlsDisabled = (!idle && !connected) || actionPending;
   // Keep the public roster until our own call reports its participants, so
