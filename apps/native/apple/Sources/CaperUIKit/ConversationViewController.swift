@@ -65,6 +65,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let skeleton = MessageSkeletonView(rows: 5, label: "Loading messages")
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
+    /// Under the typing row and composer, which float over the timeline's end.
+    private let backdrop = ComposerBackdropView()
     /// While the attach drawer is docked, the message box sits on its edge
     /// (`ComposerView.drawerMoved`): the keyboard guide doesn't follow it as it resizes.
     private lazy var drawerEdge = composer.bottomAnchor.constraint(equalTo: view.bottomAnchor).withPriority(.required - 1)
@@ -543,6 +545,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         collection.backgroundColor = .clear
         collection.alwaysBounceVertical = true
         collection.keyboardDismissMode = .interactive
+        // It runs on under the composer, into the home indicator's area: its
+        // bottom inset is what covers it (`layoutComposerOverlap`), not the safe area.
+        collection.contentInsetAdjustmentBehavior = .never
+        collection.automaticallyAdjustsScrollIndicatorInsets = false
         collection.delegate = self
         collection.accessibilityIdentifier = "message-timeline"
         collection.register(MessageCell.self, forCellWithReuseIdentifier: MessageCell.reuse)
@@ -626,7 +632,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             timelineUnderStrip,
             notices.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             notices.view.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            notices.view.topAnchor.constraint(equalTo: collection.bottomAnchor),
+            // The timeline runs on under its notices, the typing row and the
+            // composer, which float over its end (`layoutComposerOverlap`).
+            collection.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             collection.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             collection.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             statusStack.centerXAnchor.constraint(equalTo: collection.centerXAnchor),
@@ -637,7 +645,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             typing.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -18),
             typing.topAnchor.constraint(equalTo: notices.view.bottomAnchor),
         ])
-        ComposerLipView.attach(to: collection, in: view)
+        view.insertSubview(backdrop, aboveSubview: collection)
     }
 
     private func buildComposer() {
@@ -668,7 +676,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             guard let drawer = UIKitHosting.attachDrawer(chat: self.model.chat, presenter: { [weak self] in self },
                                                          dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
                                                          // Grown, it lifts the message box up to the top of the timeline.
-                                                         dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
+                                                         dockRoom: { [weak self] in self.map { $0.notices.view.frame.minY - $0.collection.frame.minY } ?? 0 },
                                                          dockMoved: { [weak composer] in composer?.drawerDidMove($0) },
                                                          dockOverflow: { [weak composer] in composer?.drawerOverflow ?? 0 },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
@@ -692,9 +700,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             composer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             composer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             // Below required: the docked attach drawer's edge (`drawerEdge`) wins over
-            // it, and the timeline (never negative) over both; the drawer then gives room back.
+            // it, and the timeline's top over both; the drawer then gives room back.
             composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 2),
-            collection.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
+            notices.view.topAnchor.constraint(greaterThanOrEqualTo: collection.topAnchor),
+            // As short as its rows allow: nothing above pins its top now.
+            notices.view.heightAnchor.constraint(equalToConstant: 0).withPriority(.defaultLow),
         ])
         // An incoming request or a blocked peer replaces the composer.
         view.addSubview(directBar)
@@ -706,10 +716,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         ])
     }
 
-    /// Above the timeline's bottom edge, just above the composer and its
+    /// Over the timeline, just above the composer, its typing row and its
     /// notices (`JumpToLatestToast.attach`).
     private func buildJump() {
-        jump.attach(over: collection, in: view)
+        jump.attach(over: collection, in: view, above: notices.view.topAnchor)
     }
 
     // MARK: Rendering
@@ -1077,8 +1087,33 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         timelineWidth = width
         // The heading has no view of its own; VoiceOver skips a zero-size element.
         heading.accessibilityFrameInContainerSpace = titleMenu.frame
+        layoutComposerOverlap()
         pinTailIfFollowing()
         layoutStatusColumn()
+    }
+
+    /// The notices, typing row and composer float over the timeline's end on
+    /// the backdrop. The timeline reserves what they cover (and the keyboard
+    /// under them) at its end, so its newest message keeps its distance from
+    /// the input; a reader at the newest message keeps it in view as the
+    /// composer grows, while one up in the history stays where they are.
+    private func layoutComposerOverlap() {
+        let top = notices.view.frame.minY
+        // Solid from the composer's top edge, or from the notices when they show.
+        let solid = notices.view.frame.height > 0 ? top : composer.frame.minY
+        backdrop.frame = CGRect(x: collection.frame.minX, y: solid - ComposerBackdrop.fade, width: collection.frame.width,
+                                height: max(0, view.bounds.maxY - solid + ComposerBackdrop.fade))
+        let covered = max(0, collection.frame.maxY - top)
+        guard abs(collection.contentInset.bottom - covered) > 0.5 else { return }
+        // Against the old reserve: where the reader was before the composer moved.
+        let atEnd = tailOffset - collection.contentOffset.y <= 80
+        collection.contentInset.bottom = covered
+        collection.verticalScrollIndicatorInsets.bottom = covered
+        if atEnd, live, !model.chat.hasNewer { followingTail = true }
+        pinTailIfFollowing()
+        // A shrinking composer leaves no room past the newest message.
+        if !collection.isTracking, collection.contentOffset.y > tailOffset { collection.contentOffset.y = tailOffset }
+        refreshJump()
     }
 
     // MARK: Status column

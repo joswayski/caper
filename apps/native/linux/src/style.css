@@ -509,8 +509,6 @@ list.channels > row button.row-options:focus-visible {
   margin-right: 20px;
 }
 
-/* The history ends at the typing band, so the composer has the same 18px
-   above it (band and margin) as below it. */
 listview.messages {
   background: transparent;
   color: @caper_text;
@@ -878,10 +876,24 @@ popover.emoji-picker image.mine {
   background: #20282a;
 }
 
-/* The composer's lip: an 8px shade over the bottom of the history. */
-.composer-lip {
-  min-height: 8px;
-  background: linear-gradient(to top, alpha(black, 0.14), transparent);
+/* The typing row and composer float over the end of the history, which
+   runs on under them (`ui::float_composer`). Solid conversation colour
+   behind the composer, easing out over the 32px above it (web's mask stops;
+   no blur, which GTK has no cheap way to draw). */
+.composer-backdrop {
+  background: @caper_surface_conversation;
+}
+
+.composer-fade {
+  min-height: 32px;
+  background-image: linear-gradient(
+    to bottom,
+    alpha(@caper_surface_conversation, 0),
+    alpha(@caper_surface_conversation, 0.3) 9px,
+    alpha(@caper_surface_conversation, 0.62) 17px,
+    alpha(@caper_surface_conversation, 0.86) 24px,
+    @caper_surface_conversation 32px
+  );
 }
 
 .join-bar {
@@ -1083,6 +1095,15 @@ button.send:not(:disabled):hover {
     0 0 0 4px rgba(0, 0, 0, 0.42),
     0 0 0 5px rgba(255, 255, 255, 0.055),
     0 2px 10px rgba(0, 0, 0, 0.32);
+}
+
+/* Over the conversation's end, the input sits on the composer's backdrop
+   with no border or ring: its fill, radius and a soft shadow, focused or
+   not. A light theme's shadow comes with it (`settings::theme_css`). */
+.composer.floating,
+.composer.floating:focus-within {
+  border: none;
+  box-shadow: 0 2px 10px alpha(black, 0.32);
 }
 
 .composer textview,
@@ -2471,11 +2492,11 @@ button.edited:hover {
   font-size: 12px;
 }
 
-/* A jump's context: "Load newer messages" at the end of the list, clear of
-   the toast floating 12px above the 16px typing band (68px from the
-   band's bottom, as web). */
+/* A jump's context: "Load newer messages" over the end of the list, above
+   the composer and clear of the toast floating 12px above the 16px typing
+   row (12px above the toast). */
 .newer-bar {
-  margin: 8px 20px 52px;
+  margin: 8px 20px 84px;
 }
 
 button.quote-more {

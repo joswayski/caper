@@ -1,6 +1,21 @@
 import Foundation
 import Observation
 
+/// The composer's backdrop over the end of its conversation (web's
+/// `.chat-composer::before`). The timeline runs on under the typing row and
+/// composer; the backdrop is solid conversation color from the composer's top
+/// edge down and eases out over the `fade` points above it, where a native blur
+/// frosts what scrolls behind (dropped with Reduce Transparency).
+public enum ComposerBackdrop {
+    /// The eased band above the solid part.
+    public static let fade: CGFloat = 32
+    /// Web's mask stops: points down from the band's top, and opacity.
+    public static let stops: [(offset: CGFloat, opacity: CGFloat)] = [(0, 0), (9, 0.3), (17, 0.62), (24, 0.86), (32, 1)]
+    /// The conversation color's own opacity at `offset` into the band: web's
+    /// tint runs from 60% at the band's top to solid at its bottom, under the mask.
+    public static func tint(at offset: CGFloat) -> CGFloat { 0.6 + 0.4 * min(1, max(0, offset) / fade) }
+}
+
 @MainActor private func replyDraftText(_ chat: ChatModel, inThread: Bool) -> (String, String)? {
     guard let root = inThread ? chat.threadRootID : "channel", let reply = chat.replyTargets[root] else { return nil }
     let hidden = chat.blockedAuthorIDs.contains(reply.author.id) && reply.author.id != chat.viewerID

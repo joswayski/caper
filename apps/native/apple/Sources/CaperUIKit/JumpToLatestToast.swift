@@ -96,12 +96,12 @@ final class JumpToLatestToast: UIView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Floats 12 points above `timeline`'s bottom edge, just above the
-    /// composer: centered and at most its width less 24, or on a compact
-    /// width an arrow 12 points from its right edge.
-    func attach(over timeline: UIView, in container: UIView) {
+    /// Floats 12 points above `edge`, the top of the composer floating over
+    /// `timeline`'s end: centered and at most its width less 24, or on a
+    /// compact width an arrow 12 points from its right edge.
+    func attach(over timeline: UIView, in container: UIView, above edge: NSLayoutYAxisAnchor) {
         container.addSubview(self)
-        let bottom = bottomAnchor.constraint(equalTo: timeline.bottomAnchor, constant: -12)
+        let bottom = bottomAnchor.constraint(equalTo: edge, constant: -12)
         wide = [centerXAnchor.constraint(equalTo: timeline.centerXAnchor),
                 widthAnchor.constraint(lessThanOrEqualTo: timeline.widthAnchor, constant: -24)]
         compactPlacement = [trailingAnchor.constraint(equalTo: timeline.trailingAnchor, constant: -12)]

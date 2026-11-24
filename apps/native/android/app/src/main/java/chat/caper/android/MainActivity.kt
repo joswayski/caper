@@ -1885,125 +1885,135 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         .graphicsLayer { translationX = if (swipeToClose) swipeOffset else 0f }
         .then(modifier).attachmentDrop(canAttach, target, viewModel, dropping)) {
         Column(Modifier.fillMaxSize().background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
-            Column(Modifier.weight(1f).fillMaxWidth().threadBackSwipe(swipeToClose, dragThread, settleThread)) {
-                Row(Modifier.fillMaxWidth().height(53.dp).padding(start = 4.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(viewModel::closeThread, Modifier.size(48.dp)) {
-                        Icon(painterResource(R.drawable.lucide_chevron_left), if (direct) "Back to conversation" else "Back to channel", Modifier.size(20.dp), tint = TextMuted)
-                    }
-                    Text("Thread · $conversation", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                HorizontalDivider(color = Border)
-                thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
-                if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
-                // Remembered, so a recomposition of this panel doesn't refilter the replies.
-                val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
-                    state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
-                        (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
-                        (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
-                }
-                val queued = remember(state.queuedMessages, thread.rootId) { state.queuedMessages.filter { it.threadRootId == thread.rootId } }
-                MessageTimeline(state.copy(messages = rows, pendingMessage = pending, queuedMessages = queued, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
-                    pending?.error?.let { error ->
-                        Text(error, color = ErrorText)
-                        if (pending.rejected) Row {
-                            TextButton({
-                                viewModel.discardPending(restoreFiles = true)?.let {
-                                    draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
-                                }
-                            }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
-                            TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
-                        } else TextButton(viewModel::retryPending, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
-                    }
-                }
-                if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
-                // A failed load shows its error and Retry instead (web).
-                if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
-                    Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
+            // Remembered, so a recomposition of this panel doesn't refilter the replies.
+            val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
+                state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
+                    (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
+                    (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
             }
-            // Its own scope: a keystroke recomposes the composer, not the thread's timeline.
             val dock = remember(thread.rootId) { AttachDock() }
-            if (state.canParticipate) Column(Modifier.composerLip().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
-                state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
-                state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-                if (state.uploadSendTarget == target) UploadWaitNotice()
-                // Signed in, the reply's first link shows its card inside the field, like the channel composer's.
-                val preview = rememberLinkPreview(if (state.account != null) draft.text else "", thread.rootId, viewModel::linkPreview)
-                val sendReply = { send(preview) }
-                DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
-                // A voice reply goes on its own; the draft text stays, "Also send to" applies to it and resets.
-                // Stopping stages the recording with the reply's files; with "send as soon as I stop" it goes on its own.
-                val recorder = rememberVoiceRecorder(target, rememberVoiceStop(
-                    stage = { viewModel.stageVoice(it.file, it.durationMs, it.waveform, target) },
-                    send = {
-                        viewModel.sendVoice(it.file, it.durationMs, it.waveform, threadRootId = thread.rootId, broadcast = broadcast)
-                        broadcast = false
-                    },
-                ),
-                    transcribe = viewModel::dictate,
-                    insert = { words -> dictateAtSelection(draft, words)?.let { draft = it; true } ?: false })
-                val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null, stagedVoice = files.any { it.voice })
-                val broadcastChecked = pending?.broadcast ?: broadcast
-                // The label toggles too, as one checkbox control.
-                Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
-                    .toggleable(value = broadcastChecked, enabled = pending == null, role = Role.Checkbox, onValueChange = { broadcast = it }),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    // Padded to the 48dp a checkbox with its own click handler would have.
-                    // Material Checkbox animates its stroke and colors; this reply option responds immediately.
-                    if (swipeToClose) ThreadBroadcastIndicator(broadcastChecked, enabled = pending == null)
-                    else Checkbox(broadcastChecked, onCheckedChange = null, modifier = Modifier.padding(12.dp), enabled = pending == null)
-                    Text(buildAnnotatedString {
-                        append("Also send to ")
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(conversation) }
-                    }, Modifier.weight(1f), fontSize = 12.sp)
-                }
-                VoiceRecordingNotice(recorder)
-                // One transformation per mention source, so typing and presence updates don't refilter the draft.
-                val source = mentionSource(state)
-                val transformation = remember(source) { MentionVisualTransformation(source) }
-                SuggestingComposer(draft, { draft = it }, source, thread.rootId, sendReply,
-                    focusRequest = state.composerFocusRequest?.takeIf { it.channelId == state.selectedChannel?.id && it.rootId == thread.rootId },
-                    focusEnabled = !thread.loading, consumeFocus = viewModel::consumeComposerFocus,
-                    editLast = { files.isEmpty() && viewModel.editLast(thread.rootId) }) { field, change ->
-                    Box(Modifier.voiceRecordingKeys(recorder)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                            ComposerShell(Modifier.weight(1f)) {
-                                EmojiTextField(draft, change, Modifier.fillMaxWidth().attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
-                                    keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
-                                    visualTransformation = transformation,
-                                    leadingIcon = {
-                                        AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
-                                            drawer = AttachDrawerHost(files, viewModel::removeDraft,
-                                                canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true, send = sendReply), dock = dock)
-                                    },
-                                    trailingIcon = {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            // Sent at once as its own reply; the draft stays, and "Also send to" applies like a reply's.
-                                            EmojiInsertButton(!thread.loading, load = viewModel::klipyPage, mediaAvailable = state.klipy != null,
-                                                sendMedia = { gif, kind, query ->
-                                                    !thread.loading && state.chatAuthorId != null && state.pendingMessage == null &&
-                                                        viewModel.sendGif(gif, kind, query, thread.rootId, broadcast).also { if (it) { broadcast = false; Haptics.tap(view) } }
-                                                }) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } }
-                                            if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
-                                        }
-                                    },
-                                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences), enabled = !thread.loading, colors = composerFieldColors(),
-                                    below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } })
-                            }
-                            ComposerSendButton(
-                                sendReply, Modifier.padding(bottom = 8.dp).size(48.dp).semantics { contentDescription = "Send reply" },
-                                enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true && (draft.text.isNotBlank() || files.isNotEmpty()),
-                            )
+            // As in the channel, replies run on under the composer floating over their end.
+            var composerHeight by remember(thread.rootId) { mutableStateOf(0.dp) }
+            val density = LocalDensity.current
+            Box(Modifier.weight(1f)) {
+                Column(Modifier.fillMaxSize().threadBackSwipe(swipeToClose, dragThread, settleThread)) {
+                    Row(Modifier.fillMaxWidth().height(53.dp).padding(start = 4.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(viewModel::closeThread, Modifier.size(48.dp)) {
+                            Icon(painterResource(R.drawable.lucide_chevron_left), if (direct) "Back to conversation" else "Back to channel", Modifier.size(20.dp), tint = TextMuted)
                         }
-                        if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
+                        Text("Thread · $conversation", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    HorizontalDivider(color = Border)
+                    thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
+                    if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
+                    val queued = remember(state.queuedMessages, thread.rootId) { state.queuedMessages.filter { it.threadRootId == thread.rootId } }
+                    MessageTimeline(state.copy(messages = rows, pendingMessage = pending, queuedMessages = queued, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true, overlap = composerHeight) {
+                        pending?.error?.let { error ->
+                            Text(error, color = ErrorText)
+                            if (pending.rejected) Row {
+                                TextButton({
+                                    viewModel.discardPending(restoreFiles = true)?.let {
+                                        draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
+                                    }
+                                }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
+                                TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
+                            } else TextButton(viewModel::retryPending, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+                        }
                     }
                 }
-                DraftCounter(draft.text)
-                if (state.pendingMessage?.rejected == true && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
-            } } else Text(when {
-                state.selectedDirect?.incoming == true -> "Accept the request to reply."
-                direct -> "You can’t reply in this conversation."
-                else -> "Join the channel to reply."
-            }, Modifier.padding(18.dp), color = TextMuted)
+                // Under the replies, these float with the composer, so the list ends above them too.
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().composerBackdrop()
+                    .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }) {
+                    if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
+                    // A failed load shows its error and Retry instead (web).
+                    if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
+                        Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
+                    // Its own scope: a keystroke recomposes the composer, not the thread's timeline.
+                    if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
+                        state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
+                        state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+                        if (state.uploadSendTarget == target) UploadWaitNotice()
+                        // Signed in, the reply's first link shows its card inside the field, like the channel composer's.
+                        val preview = rememberLinkPreview(if (state.account != null) draft.text else "", thread.rootId, viewModel::linkPreview)
+                        val sendReply = { send(preview) }
+                        DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
+                        // A voice reply goes on its own; the draft text stays, "Also send to" applies to it and resets.
+                        // Stopping stages the recording with the reply's files; with "send as soon as I stop" it goes on its own.
+                        val recorder = rememberVoiceRecorder(target, rememberVoiceStop(
+                            stage = { viewModel.stageVoice(it.file, it.durationMs, it.waveform, target) },
+                            send = {
+                                viewModel.sendVoice(it.file, it.durationMs, it.waveform, threadRootId = thread.rootId, broadcast = broadcast)
+                                broadcast = false
+                            },
+                        ),
+                            transcribe = viewModel::dictate,
+                            insert = { words -> dictateAtSelection(draft, words)?.let { draft = it; true } ?: false })
+                        val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null, stagedVoice = files.any { it.voice })
+                        val broadcastChecked = pending?.broadcast ?: broadcast
+                        // The label toggles too, as one checkbox control.
+                        Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
+                            .toggleable(value = broadcastChecked, enabled = pending == null, role = Role.Checkbox, onValueChange = { broadcast = it }),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            // Padded to the 48dp a checkbox with its own click handler would have.
+                            // Material Checkbox animates its stroke and colors; this reply option responds immediately.
+                            if (swipeToClose) ThreadBroadcastIndicator(broadcastChecked, enabled = pending == null)
+                            else Checkbox(broadcastChecked, onCheckedChange = null, modifier = Modifier.padding(12.dp), enabled = pending == null)
+                            Text(buildAnnotatedString {
+                                append("Also send to ")
+                                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(conversation) }
+                            }, Modifier.weight(1f), fontSize = 12.sp)
+                        }
+                        VoiceRecordingNotice(recorder)
+                        // One transformation per mention source, so typing and presence updates don't refilter the draft.
+                        val source = mentionSource(state)
+                        val transformation = remember(source) { MentionVisualTransformation(source) }
+                        SuggestingComposer(draft, { draft = it }, source, thread.rootId, sendReply,
+                            focusRequest = state.composerFocusRequest?.takeIf { it.channelId == state.selectedChannel?.id && it.rootId == thread.rootId },
+                            focusEnabled = !thread.loading, consumeFocus = viewModel::consumeComposerFocus,
+                            editLast = { files.isEmpty() && viewModel.editLast(thread.rootId) }) { field, change ->
+                            Box(Modifier.voiceRecordingKeys(recorder)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                                    // Borderless, with no shell, on the floating backdrop; the shell's 4dp inset stays, centring Send.
+                                    Box(Modifier.weight(1f).padding(4.dp)) {
+                                        EmojiTextField(draft, change, Modifier.fillMaxWidth().attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
+                                            keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
+                                            visualTransformation = transformation,
+                                            leadingIcon = {
+                                                AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
+                                                    drawer = AttachDrawerHost(files, viewModel::removeDraft,
+                                                        canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true, send = sendReply), dock = dock)
+                                            },
+                                            trailingIcon = {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    // Sent at once as its own reply; the draft stays, and "Also send to" applies like a reply's.
+                                                    EmojiInsertButton(!thread.loading, load = viewModel::klipyPage, mediaAvailable = state.klipy != null,
+                                                        sendMedia = { gif, kind, query ->
+                                                            !thread.loading && state.chatAuthorId != null && state.pendingMessage == null &&
+                                                                viewModel.sendGif(gif, kind, query, thread.rootId, broadcast).also { if (it) { broadcast = false; Haptics.tap(view) } }
+                                                        }) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } }
+                                                    if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
+                                                }
+                                            },
+                                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences), enabled = !thread.loading, colors = composerFieldColors(floating = true), shape = RoundedCornerShape(20.dp),
+                                            below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } })
+                                    }
+                                    ComposerSendButton(
+                                        sendReply, Modifier.padding(bottom = 8.dp).size(48.dp).semantics { contentDescription = "Send reply" },
+                                        enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true && (draft.text.isNotBlank() || files.isNotEmpty()),
+                                    )
+                                }
+                                if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
+                            }
+                        }
+                        DraftCounter(draft.text)
+                        if (state.pendingMessage?.rejected == true && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
+                    } } else Text(when {
+                        state.selectedDirect?.incoming == true -> "Accept the request to reply."
+                        direct -> "You can’t reply in this conversation."
+                        else -> "Join the channel to reply."
+                    }, Modifier.padding(18.dp), color = TextMuted)
+                }
+            }
             if (state.canParticipate) AttachDockPanel(dock)
         }
         if (dropping.value && canAttach) {
@@ -2196,151 +2206,162 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
             }
-            MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
-                // A left swipe opens the member list, as a right one opens Browse.
-                .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined && visit == null),
-                listState = timelineState, follow = timelineFollow) {
-                channelPending?.error?.let { pending ->
-                    val editable = canEditRejectedMessage(draft.text, channelPending.text)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (channelPending.uploadFailed) pending else if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
-                        TextButton({
-                            if (channelPending.rejected) {
-                                if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
-                            } else viewModel.retryPending()
-                        }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
-                            enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
-                            Text(if (channelPending.uploadFailed) "Retry" else if (channelPending.rejected) "Edit" else "Retry send")
-                        }
-                        if (channelPending.rejected) TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
-                    }
-                    if (channelPending.rejected && !editable)
-                        Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
-                }
-            }
-            // Phones show the conversation alone, so voice errors from the dock (behind Browse) come with it, above the composer.
-            (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error -> VoiceErrorBanner(error, dismissVoiceError) }
             val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
             val dock = remember(channel.id) { AttachDock() }
-            // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
-            if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
-            else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
-            // Keep the composer inset from the timeline and the panel edge: the typing line's 16dp
-            // above the field matches the 16dp below it (and the account bar's bottom inset).
-            else if (joined) Column(Modifier.composerLip().padding(start = 18.dp, end = 18.dp, bottom = 16.dp)) { OwnRecomposeScope {
-                TypingLine(state.typingAuthors)
-                if (direct?.outgoing == true) OutgoingRequestNotice(direct)
-                state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
-                state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
-                    pending.threadRootId?.let { root ->
+            // The conversation runs on under the composer, which floats over its end on a fading backdrop; the
+            // timeline reserves the composer's measured height (web's useComposerOverlap).
+            var composerHeight by remember(channel.id) { mutableStateOf(0.dp) }
+            val density = LocalDensity.current
+            Box(Modifier.weight(1f)) {
+                MessageTimeline(state, viewModel, Modifier.fillMaxSize().browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
+                    // A left swipe opens the member list, as a right one opens Browse.
+                    .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined && visit == null),
+                    listState = timelineState, follow = timelineFollow, overlap = composerHeight) {
+                    channelPending?.error?.let { pending ->
+                        val editable = canEditRejectedMessage(draft.text, channelPending.text)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                            TextButton({ viewModel.openThread(root) }, shape = MaterialTheme.shapes.small) { Text("Review reply") }
-                        }
-                    }
-                }
-                state.sessionError?.let { error ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                        TextButton(viewModel::retrySession, shape = MaterialTheme.shapes.small) { Text("Retry session", fontSize = 12.sp) }
-                    }
-                }
-                state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-                if (state.uploadSendTarget == AttachmentDraftTarget(channel.id)) UploadWaitNotice()
-                // Signed in, the draft's first link shows the card it will get inside the field, with × to send it without one.
-                val preview = rememberLinkPreview(if (state.account != null) draft.text else "", channel.id, viewModel::linkPreview)
-                DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
-                // A voice message goes on its own: the draft text and files stay in the composer.
-                // Stopping stages the recording with the draft's files; with "send as soon as I stop" it goes on its own.
-                val recorder = rememberVoiceRecorder(target, rememberVoiceStop(
-                    stage = { viewModel.stageVoice(it.file, it.durationMs, it.waveform, target) },
-                    send = { viewModel.sendVoice(it.file, it.durationMs, it.waveform) },
-                ),
-                    transcribe = viewModel::dictate,
-                    insert = { words -> dictateAtSelection(draft, words)?.let { updateDraft(it); viewModel.setTyping(true); true } ?: false })
-                val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null, stagedVoice = state.drafts.any { it.voice })
-                VoiceRecordingNotice(recorder)
-                val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
-                fun sendDraft() {
-                    // A message sent while another is on its way follows it; behind a rejected one it waits.
-                    if (hasContent && state.pendingMessage?.rejected != true) {
-                        Haptics.tap(view)
-                        val sent = draft.text
-                        viewModel.setTyping(false)
-                        val clear = { updateDraft(TextFieldValue("")) }
-                        // The card shown for this draft rides on the pending row, so it already has its final height.
-                        val card = preview.embed?.takeIf { sent == draft.text }
-                        if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear, suppressEmbeds = preview.removed(sent), embeds = listOfNotNull(card))) clear()
-                    }
-                }
-                fun submit() {
-                    val pending = state.pendingMessage
-                    // Web: Enter with nothing typed retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
-                    if (state.chatAuthorId != null) {
-                        if (hasContent) sendDraft()
-                        else if (pending != null && pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.retryPending()
-                    }
-                }
-                // One transformation per mention source, so typing and presence updates don't refilter the draft.
-                val source = mentionSource(state)
-                val transformation = remember(source) { MentionVisualTransformation(source) }
-                SuggestingComposer(draft, {
-                    // Typing follows the text, not caret moves or selections.
-                    val edited = it.text != draft.text
-                    updateDraft(it); viewModel.reportActivity()
-                    if (edited) viewModel.setTyping(it.text.isNotBlank())
-                }, source, channel.id, ::submit,
-                    focusRequest = state.composerFocusRequest?.takeIf { it.channelId == channel.id && it.rootId == null && state.thread == null },
-                    consumeFocus = viewModel::consumeComposerFocus,
-                    editLast = { state.drafts.isEmpty() && viewModel.editLast(null) }) { field, change ->
-                    Box(Modifier.voiceRecordingKeys(recorder)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                            ComposerShell(Modifier.weight(1f)) {
-                            EmojiTextField(
-                                draft, change, modifier = Modifier.fillMaxWidth().attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
-                                keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
-                                // One line: a long channel or DM name would otherwise wrap and grow the empty field.
-                                placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
-                                visualTransformation = transformation,
-                                // Reserve the icon inside the field while uploads/session become ready.
-                                // Read-only previews and locked DMs have no composer.
-                                leadingIcon = {
-                                    AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
-                                        drawer = AttachDrawerHost(state.drafts, viewModel::removeDraft,
-                                            canSend = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null, send = ::sendDraft), dock = dock)
-                                },
-                                // The `:name:` shortcut still works; this is the visible way in.
-                                trailingIcon = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        // Sent at once as its own message; the draft stays.
-                                        EmojiInsertButton(!state.messagesLoading && state.messagesError == null,
-                                            load = viewModel::klipyPage, mediaAvailable = state.klipy != null,
-                                            sendMedia = { gif, kind, query ->
-                                                !state.messagesLoading && state.messagesError == null && state.pendingMessage == null && state.chatAuthorId != null && viewModel.sendGif(gif, kind, query).also { if (it) Haptics.tap(view) }
-                                            }) { emoji ->
-                                            insertEmojiAtSelection(draft, emoji)?.let { updateDraft(it); viewModel.setTyping(true) }
-                                        }
-                                        // Wherever files can be sent: hidden when uploads are unavailable.
-                                        if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
-                                    }
-                                },
-                                enabled = !state.messagesLoading && state.messagesError == null,
-                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                                colors = composerFieldColors(),
-                                below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } },
-                            )
+                            Text(if (channelPending.uploadFailed) pending else if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
+                            TextButton({
+                                if (channelPending.rejected) {
+                                    if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
+                                } else viewModel.retryPending()
+                            }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
+                                enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
+                                Text(if (channelPending.uploadFailed) "Retry" else if (channelPending.rejected) "Edit" else "Retry send")
                             }
-                            ComposerSendButton(
-                                { sendDraft() },
-                                // Centred on a one-line field (56dp in the 4dp trough), and near the bottom as the field grows.
-                                Modifier.padding(bottom = 8.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null,
-                            )
+                            if (channelPending.rejected) TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
                         }
-                        if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
+                        if (channelPending.rejected && !editable)
+                            Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
                     }
                 }
-                DraftCounter(draft.text)
-            } }
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().composerBackdrop()
+                    .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }) {
+                    // Phones show the conversation alone, so voice errors from the dock (behind Browse) come with it, above the composer.
+                    (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error -> VoiceErrorBanner(error, dismissVoiceError) }
+                    // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
+                    if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
+                    else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
+                    // Keep the composer inset from the panel edge: the typing line's 16dp
+                    // above the field matches the 16dp below it (and the account bar's bottom inset).
+                    else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 16.dp)) { OwnRecomposeScope {
+                        TypingLine(state.typingAuthors)
+                        if (direct?.outgoing == true) OutgoingRequestNotice(direct)
+                        state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
+                        state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
+                            pending.threadRootId?.let { root ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                                    TextButton({ viewModel.openThread(root) }, shape = MaterialTheme.shapes.small) { Text("Review reply") }
+                                }
+                            }
+                        }
+                        state.sessionError?.let { error ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                                TextButton(viewModel::retrySession, shape = MaterialTheme.shapes.small) { Text("Retry session", fontSize = 12.sp) }
+                            }
+                        }
+                        state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+                        if (state.uploadSendTarget == AttachmentDraftTarget(channel.id)) UploadWaitNotice()
+                        // Signed in, the draft's first link shows the card it will get inside the field, with × to send it without one.
+                        val preview = rememberLinkPreview(if (state.account != null) draft.text else "", channel.id, viewModel::linkPreview)
+                        DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
+                        // A voice message goes on its own: the draft text and files stay in the composer.
+                        // Stopping stages the recording with the draft's files; with "send as soon as I stop" it goes on its own.
+                        val recorder = rememberVoiceRecorder(target, rememberVoiceStop(
+                            stage = { viewModel.stageVoice(it.file, it.durationMs, it.waveform, target) },
+                            send = { viewModel.sendVoice(it.file, it.durationMs, it.waveform) },
+                        ),
+                            transcribe = viewModel::dictate,
+                            insert = { words -> dictateAtSelection(draft, words)?.let { updateDraft(it); viewModel.setTyping(true); true } ?: false })
+                        val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null, stagedVoice = state.drafts.any { it.voice })
+                        VoiceRecordingNotice(recorder)
+                        val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
+                        fun sendDraft() {
+                            // A message sent while another is on its way follows it; behind a rejected one it waits.
+                            if (hasContent && state.pendingMessage?.rejected != true) {
+                                Haptics.tap(view)
+                                val sent = draft.text
+                                viewModel.setTyping(false)
+                                val clear = { updateDraft(TextFieldValue("")) }
+                                // The card shown for this draft rides on the pending row, so it already has its final height.
+                                val card = preview.embed?.takeIf { sent == draft.text }
+                                if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear, suppressEmbeds = preview.removed(sent), embeds = listOfNotNull(card))) clear()
+                            }
+                        }
+                        fun submit() {
+                            val pending = state.pendingMessage
+                            // Web: Enter with nothing typed retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
+                            if (state.chatAuthorId != null) {
+                                if (hasContent) sendDraft()
+                                else if (pending != null && pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.retryPending()
+                            }
+                        }
+                        // One transformation per mention source, so typing and presence updates don't refilter the draft.
+                        val source = mentionSource(state)
+                        val transformation = remember(source) { MentionVisualTransformation(source) }
+                        SuggestingComposer(draft, {
+                            // Typing follows the text, not caret moves or selections.
+                            val edited = it.text != draft.text
+                            updateDraft(it); viewModel.reportActivity()
+                            if (edited) viewModel.setTyping(it.text.isNotBlank())
+                        }, source, channel.id, ::submit,
+                            focusRequest = state.composerFocusRequest?.takeIf { it.channelId == channel.id && it.rootId == null && state.thread == null },
+                            consumeFocus = viewModel::consumeComposerFocus,
+                            editLast = { state.drafts.isEmpty() && viewModel.editLast(null) }) { field, change ->
+                            Box(Modifier.voiceRecordingKeys(recorder)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                                    // Borderless, with no shell, on the floating backdrop; the shell's 4dp inset stays, centring Send.
+                                    Box(Modifier.weight(1f).padding(4.dp)) {
+                                    EmojiTextField(
+                                        draft, change, modifier = Modifier.fillMaxWidth().attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
+                                        keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
+                                        // One line: a long channel or DM name would otherwise wrap and grow the empty field.
+                                        placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
+                                        visualTransformation = transformation,
+                                        // Reserve the icon inside the field while uploads/session become ready.
+                                        // Read-only previews and locked DMs have no composer.
+                                        leadingIcon = {
+                                            AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
+                                                drawer = AttachDrawerHost(state.drafts, viewModel::removeDraft,
+                                                    canSend = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null, send = ::sendDraft), dock = dock)
+                                        },
+                                        // The `:name:` shortcut still works; this is the visible way in.
+                                        trailingIcon = {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                // Sent at once as its own message; the draft stays.
+                                                EmojiInsertButton(!state.messagesLoading && state.messagesError == null,
+                                                    load = viewModel::klipyPage, mediaAvailable = state.klipy != null,
+                                                    sendMedia = { gif, kind, query ->
+                                                        !state.messagesLoading && state.messagesError == null && state.pendingMessage == null && state.chatAuthorId != null && viewModel.sendGif(gif, kind, query).also { if (it) Haptics.tap(view) }
+                                                    }) { emoji ->
+                                                    insertEmojiAtSelection(draft, emoji)?.let { updateDraft(it); viewModel.setTyping(true) }
+                                                }
+                                                // Wherever files can be sent: hidden when uploads are unavailable.
+                                                if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
+                                            }
+                                        },
+                                        enabled = !state.messagesLoading && state.messagesError == null,
+                                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                                        colors = composerFieldColors(floating = true),
+                                        shape = RoundedCornerShape(20.dp),
+                                        below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } },
+                                    )
+                                    }
+                                    ComposerSendButton(
+                                        { sendDraft() },
+                                        // Centred on a one-line field (56dp in the 4dp trough), and near the bottom as the field grows.
+                                        Modifier.padding(bottom = 8.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null,
+                                    )
+                                }
+                                if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
+                            }
+                        }
+                        DraftCounter(draft.text)
+                    } }
+                }
+            }
             if (joined && request == null && direct?.blocked != true) AttachDockPanel(dock)
         }
         if (dropping.value && canAttach) {
@@ -2488,15 +2509,25 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-/** The channel and thread composers' field: the composer surface, botanical green while focused. */
-@Composable internal fun composerFieldColors(): TextFieldColors {
+/**
+ * A composer's field: the composer surface, botanical green while focused. [floating] (the channel and thread
+ * composers over their conversation) keeps only the fill, without a border, focused or not.
+ */
+@Composable internal fun composerFieldColors(floating: Boolean = false): TextFieldColors {
     val light = CaperThemeStore.active.isLight
     val unfocused = if (light) Color(0xFF0F172A).copy(alpha = 0.09f) else Color.White.copy(alpha = 0.08f)
-    return OutlinedTextFieldDefaults.colors(
+    val colors = OutlinedTextFieldDefaults.colors(
         focusedContainerColor = SurfaceComposer,
         unfocusedContainerColor = SurfaceComposer,
         focusedBorderColor = TerracottaBright.copy(alpha = 0.58f),
         unfocusedBorderColor = unfocused,
+    )
+    return if (!floating) colors else colors.copy(
+        disabledContainerColor = SurfaceComposer,
+        focusedIndicatorColor = Color.Transparent,
+        unfocusedIndicatorColor = Color.Transparent,
+        disabledIndicatorColor = Color.Transparent,
+        errorIndicatorColor = Color.Transparent,
     )
 }
 
@@ -2624,7 +2655,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), follow: TimelineFollow = remember { TimelineFollow() }, pendingStatus: @Composable () -> Unit = {}) {
+@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), follow: TimelineFollow = remember { TimelineFollow() }, overlap: Dp = 0.dp, pendingStatus: @Composable () -> Unit = {}) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val view = LocalView.current
@@ -2698,7 +2729,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         while (true) {
             val layout = listState.layoutInfo
             val visible = layout.visibleItemsInfo.filter {
-                it.offset + it.size > layout.viewportStartOffset && it.offset + it.size <= layout.viewportEndOffset
+                it.offset + it.size > layout.viewportStartOffset && it.offset + it.size <= layout.viewportEndOffset - layout.afterContentPadding
             }.map { it.key }.toSet()
             rows.filterIsInstance<TimelineRow.Message>().map { it.message }
                 .filter { it.id in visible && it.threadRootId == root }
@@ -2755,9 +2786,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) {
         SideEffect { follow.settled = false; displacement.clear() }
-        return MessageSkeleton(modifier.clipToBounds())
+        return MessageSkeleton(modifier.clipToBounds().padding(bottom = overlap))
     }
-    state.messagesError?.let { error -> return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    state.messagesError?.let { error -> return Box(modifier.fillMaxWidth().padding(bottom = overlap), contentAlignment = Alignment.Center) {
         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(error, color = TextMuted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             OutlinedButton(viewModel::retryMessages, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
@@ -2846,7 +2877,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             else -> "Only you and $name can read this conversation."
         }
     }
-    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { Box(modifier.fillMaxWidth()) { LazyColumn(Modifier.fillMaxSize().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp),
+    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { Box(modifier.fillMaxWidth()) { LazyColumn(Modifier.fillMaxSize().displacementViewport(displacement), state = listState, reverseLayout = false,
+        // The composer floats over the list's end: reserve its height, keeping the newest row 16dp above it.
+        contentPadding = PaddingValues(top = 8.dp, bottom = if (overlap > 0.dp) overlap + 16.dp else 8.dp),
         // As web: a short conversation rests on the composer rather than the header.
         verticalArrangement = Arrangement.Bottom) {
         if (!inThread) item(contentType = "history") {
@@ -3006,7 +3039,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
         // Over the list just above the composer, taking no space: centred, or an arrow at the right on a phone. A
         // detached window's button reloads the latest page and lands at its end.
-        JumpToLatestOverlay(jump, newer, jumpToLatest, viewModel::retryMessages)
+        Box(Modifier.matchParentSize().padding(bottom = overlap)) { JumpToLatestOverlay(jump, newer, jumpToLatest, viewModel::retryMessages) }
     } }
     actionTarget?.let { target ->
         val presented = state.displayedMessages.firstOrNull { it.id == target.id } ?: target
@@ -3177,7 +3210,7 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
     }
 }
 
-/** Applies [followScroll] before the next measure, so nothing flashes at the old position, and keeps a reader at the bottom when the viewport shrinks (the keyboard opening) or a shown row grows. */
+/** Applies [followScroll] before the next measure, so nothing flashes at the old position, and keeps a reader at the bottom when the visible part shrinks (the keyboard opening, the composer growing over the list's end) or a shown row grows. */
 @Composable private fun FollowLatest(list: LazyListState, follow: TimelineFollow, now: FollowFrame, firstRow: Int, lastIndex: Int, ready: Boolean, displacement: TimelineDisplacement) {
     val threshold = with(LocalDensity.current) { 80.dp.roundToPx() }
     val still = reducedMotion()
@@ -3219,8 +3252,10 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
         var near = true
         var sizes = emptyMap<Any, Int>()
         snapshotFlow { list.layoutInfo }.collect { info ->
-            val shrank = info.viewportSize.height < height
-            height = info.viewportSize.height
+            // What the composer floating over the list's end (its reserved after-padding) leaves visible.
+            val visible = info.viewportSize.height - info.afterContentPadding
+            val shrank = visible < height
+            height = visible
             // A shown row measured taller (embeds arriving, a card loading after opening) pushes the end down.
             val grew = info.visibleItemsInfo.any { item -> sizes[item.key]?.let { item.size > it } == true }
             sizes = info.visibleItemsInfo.associate { it.key to it.size }
@@ -3862,11 +3897,19 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
 /** Web's 3% white over the conversation surface, opaque. */
 private val ReplyDraftFill = Color(0xFF20282A)
 
-/** A soft shadow above the composer's top edge, over the timeline's end (web's .chat-typing::before). Draws only; no layout or touch. */
-private fun Modifier.composerLip() = drawBehind {
-    val height = 8.dp.toPx()
-    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.14f)), startY = -height, endY = 0f),
-        topLeft = Offset(0f, -height), size = Size(size.width, height))
+/**
+ * The backdrop of a composer floating over the end of its conversation (web's .chat-composer::before): solid
+ * conversation colour behind it, easing out over the 32dp above its top edge. A gradient alone, without web's blur:
+ * RenderEffect blur is costly and needs API 31. Its own bounds take touches, so a tap beside the field doesn't reach
+ * a message hidden underneath; the fade above draws only.
+ */
+private fun Modifier.composerBackdrop() = pointerInput(Unit) {}.drawBehind {
+    if (size.height == 0f) return@drawBehind
+    val fade = 32.dp.toPx()
+    drawRect(SurfaceConversation)
+    drawRect(Brush.verticalGradient(*arrayOf(0f to SurfaceConversation.copy(alpha = 0f), 9f / 32 to SurfaceConversation.copy(alpha = 0.30f),
+        17f / 32 to SurfaceConversation.copy(alpha = 0.62f), 24f / 32 to SurfaceConversation.copy(alpha = 0.86f), 1f to SurfaceConversation),
+        startY = -fade, endY = 0f), topLeft = Offset(0f, -fade), size = Size(size.width, fade))
 }
 
 @Composable private fun ReplyDraft(reference: MessageReply, state: AppUiState, onCancel: () -> Unit) {

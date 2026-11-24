@@ -660,6 +660,30 @@ import XCTest
         XCTAssertEqual(timeline.jump.count, 0)
     }
 
+    /// The composer floats over the history's end: its reserve keeps the
+    /// newest message above it as it grows and shrinks, and leaves a reader
+    /// up in the history where they are.
+    func testComposerReserveKeepsTheNewestMessageAboveItOnlyAtTheEnd() throws {
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        timeline.update((0..<60).map { message($0) }, conversationID: "channel", viewerID: "me")
+        timeline.layoutSubtreeIfNeeded()
+        func distanceFromEnd() -> CGFloat { (timeline.documentView?.frame.height ?? 0) - timeline.contentView.bounds.maxY }
+        for reserve: CGFloat in [80, 160, 80] {
+            timeline.bottomReserve = reserve
+            timeline.layoutSubtreeIfNeeded()
+            XCTAssertEqual(distanceFromEnd(), 0, accuracy: 1, "reserve \(reserve)")
+            let newest = try XCTUnwrap(bodies(in: timeline).first { $0.accessibilityIdentifier() == "message-message-59" })
+            let bottom = newest.convert(NSRect(origin: .zero, size: newest.bounds.size), to: timeline.contentView).maxY
+            XCTAssertLessThanOrEqual(bottom, timeline.contentView.bounds.maxY - reserve, "The newest message stays above the composer")
+        }
+        timeline.contentView.scroll(to: NSPoint(x: 0, y: 200))
+        timeline.layoutSubtreeIfNeeded()
+        let reading = timeline.contentView.bounds.minY
+        timeline.bottomReserve = 240
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(timeline.contentView.bounds.minY, reading, accuracy: 1, "A reader up in the history stays put")
+    }
+
     func testEmojiKeepsLinePitchAndTimestampsFollowAuthorNames() throws {
         CaperFontLoader.register()
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))

@@ -502,8 +502,9 @@ pub struct App {
     note_p: Panel,
     /// Who is typing, in the 16 px band above the composer, reply and note.
     typing_p: Panel,
-    /// The composer's lip: a shade over the bottom of the history.
-    lip_p: Panel,
+    /// The composer's backdrop over the end of the history, under the
+    /// typing row and the composer: solid, fading out above them.
+    backdrop_p: Panel,
     /// "You're viewing older messages" (`jump`): its state, panel, what
     /// the panel last drew, whether the pointer is on its Jump to latest
     /// button or the button has the keyboard, and its glide (from where,
@@ -680,7 +681,7 @@ impl App {
             let reply_p = Panel::new(&g)?;
             let note_p = Panel::new(&g)?;
             let typing_p = Panel::new(&g)?;
-            let lip_p = Panel::new(&g)?;
+            let backdrop_p = Panel::new(&g)?;
             let jump_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
             let thread_jump_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
             let thread_p = Panel::new(&g)?.entering(&g, motion::Kind::Thread);
@@ -711,7 +712,7 @@ impl App {
             content.SetContent(&vs)?;
             history_clip.AddVisual(&content, false, None)?;
             history_clip.AddVisual(&toolbar.visual, true, &content)?;
-            history_clip.AddVisual(&lip_p.visual, true, &content)?;
+            history_clip.AddVisual(&backdrop_p.visual, true, &content)?;
             root.AddVisual(&background, false, None)?;
             navigation_layer.AddVisual(&rail.visual, false, None)?;
             navigation_layer.AddVisual(&sidebar.visual, true, &rail.visual)?;
@@ -902,7 +903,7 @@ impl App {
                 note: None,
                 note_p,
                 typing_p,
-                lip_p,
+                backdrop_p,
                 jump: Default::default(),
                 jump_p,
                 jump_drawn: None,
@@ -1421,17 +1422,19 @@ impl App {
         )
     }
 
-    /// Height of the visible history.
+    /// Height of the history the typing row and composer leave visible.
+    /// The history runs on under them to the window's bottom (`cover_h`),
+    /// and its end stops here: 16 px above the typing row, where the
+    /// composer's backdrop starts fading in, so the newest message sits
+    /// clear of the fade, `FADE_H` above the composer (and its reply).
     pub fn vh(&self) -> f32 {
-        // 16px above the composer (and its reply), matching the 16px below it,
-        // so the composer sits centered in its band.
-        (self.box_rect().1
-            - 16.0
-            - self.history_y()
-            - self.reply_h()
-            - self.note_h()
-            - self.voice_error_h())
-        .max(0.0)
+        (self.typing_rect().1 - (FADE_H - 16.0) - self.history_y()).max(0.0)
+    }
+
+    /// The end of the history the typing row and composer float over,
+    /// below `vh`: its backdrop's height.
+    pub fn cover_h(&self) -> f32 {
+        (self.h - self.history_y() - self.vh()).max(0.0)
     }
 
     pub fn visible_rows(&self) -> Range<usize> {
@@ -2345,7 +2348,9 @@ impl App {
             && x >= self.list_x()
             && x < self.list_x() + self.chat_width()
             && y >= self.history_y()
-            && y < self.history_y() + self.vh()
+            // Rows under the backdrop's fade take the pointer, down to
+            // the typing row.
+            && y < self.typing_rect().1
     }
 
     fn update_hover(&mut self) {
@@ -3963,22 +3968,29 @@ impl App {
         } else {
             self.typing_p.offset(-10_000.0, 0.0)?;
         }
-        let vh = self.vh();
+        // The history runs on to the bottom, under the typing row and the
+        // composer, which float over it on their backdrop.
+        let (vh, cover) = (self.vh(), self.cover_h());
         unsafe {
             self.history_clip.SetOffsetX2((lx * s).round())?;
             self.history_clip
                 .SetOffsetY2((self.history_y() * s).round())?;
-            self.history_clip
-                .SetClip2(&rect(0.0, 0.0, (lw * s).round(), (vh * s).round()))?;
+            self.history_clip.SetClip2(&rect(
+                0.0,
+                0.0,
+                (lw * s).round(),
+                ((vh + cover) * s).round(),
+            ))?;
         }
-        if self.lip_p.ensure(&self.g, px(lw), px(LIP_H))? {
-            self.lip_p.draw(s, |dc| {
-                unsafe { dc.Clear(Some(&gfx::color(0x000000, 0.0))) };
-                draw_lip(dc, 0.0, 0.0, lw);
-                Ok(())
-            })?;
-        }
-        self.lip_p.offset(0.0, ((vh - LIP_H) * s).round())?;
+        // Redrawn with every layout: its height follows the composer's, and
+        // its colour the theme's.
+        self.backdrop_p.ensure(&self.g, px(lw), px(cover))?;
+        self.backdrop_p.draw(s, |dc| {
+            unsafe { dc.Clear(Some(&gfx::color(0x000000, 0.0))) };
+            draw_backdrop(dc, 0.0, 0.0, lw, cover);
+            Ok(())
+        })?;
+        self.backdrop_p.offset(0.0, (vh * s).round())?;
         let body = Rows::body_width(lw);
         if (body - self.rows.width).abs() > 0.01 {
             // Text rewraps: keep the top visible row in place unless at the live end.
@@ -4230,8 +4242,11 @@ impl App {
             self.row_px(self.rows.bottom() + foot_h).ceil() as i64,
         );
         let (above, below) = if fresh { (0.0, 1.0) } else { (0.25, 1.25) };
+        // The rows under the typing row and the composer show through their
+        // backdrop's fade: drawn as part of the viewport.
+        let cover = self.cover_h() as f64;
         let n0 = (self.row_px(self.scroll_top - vh * above).floor() as i64).max(lim0);
-        let n1 = (self.row_px(self.scroll_top + vh * below).ceil() as i64)
+        let n1 = (self.row_px(self.scroll_top + vh * below + cover).ceil() as i64)
             .min(lim1)
             .max(n0);
         let chunk = (vh * 0.5 * s) as i64;
@@ -5140,23 +5155,48 @@ fn caret_timeout() -> Option<std::time::Duration> {
     (ms > 0).then(|| std::time::Duration::from_millis(ms.into()))
 }
 
-/// The composer's lip, `LIP_H` tall from `y` and `w` wide: black at 14%
-/// along its bottom edge (the composer's top), fading to transparent upward.
-pub fn draw_lip(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32) {
-    const STEPS: usize = 24;
-    let step = LIP_H / STEPS as f32;
+/// The composer's backdrop over the end of a message history, `w` wide and
+/// `h` tall from `y`: the conversation colour easing in over its first
+/// `FADE_H` (web's mask stops), solid below, where the composer floats.
+/// Web also blurs what scrolls behind the fade; here it fades alone.
+pub fn draw_backdrop(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32, h: f32) {
+    use windows::Win32::Graphics::Direct2D::Common::D2D1_GRADIENT_STOP;
+    let c = theme::surface_conversation();
+    let stops = [
+        (0.0, 0.0),
+        (9.0, 0.30),
+        (17.0, 0.62),
+        (24.0, 0.86),
+        (FADE_H, 1.0),
+    ]
+    .map(|(at, alpha)| D2D1_GRADIENT_STOP {
+        position: at / FADE_H,
+        color: gfx::color(c, alpha),
+    });
     unsafe {
-        let Ok(brush) = dc.CreateSolidColorBrush(&gfx::color(0x000000, 1.0), None) else {
+        let Ok(collection) = ID2D1RenderTarget::CreateGradientStopCollection(
+            dc,
+            &stops,
+            D2D1_GAMMA_2_2,
+            D2D1_EXTEND_MODE_CLAMP,
+        ) else {
             return;
         };
-        let max_opacity = if theme::is_light() { 0.06 } else { 0.14 };
-        for i in 0..STEPS {
-            // Strip i runs from the top; its opacity is taken at its middle.
-            let opacity = max_opacity * (i as f32 + 0.5) / STEPS as f32;
-            brush.SetOpacity(opacity);
-            let top = y + i as f32 * step;
-            dc.FillRectangle(&rect(x, top, x + w, top + step), &brush);
-        }
+        // Clamped past its end point: solid from the composer's top edge down.
+        let Ok(brush) = dc.CreateLinearGradientBrush(
+            &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: windows_numerics::Vector2 { X: 0.0, Y: y },
+                endPoint: windows_numerics::Vector2 {
+                    X: 0.0,
+                    Y: y + FADE_H,
+                },
+            },
+            None,
+            &collection,
+        ) else {
+            return;
+        };
+        dc.FillRectangle(&rect(x, y, x + w, y + h), &brush);
     }
 }
 

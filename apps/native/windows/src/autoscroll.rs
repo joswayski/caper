@@ -160,7 +160,7 @@ impl App {
         let root = if self.thread_w() > 0.0
             && self.in_thread(x, y)
             && y >= HEADER_H
-            && y < HEADER_H + self.thread_vh()
+            && y < HEADER_H + self.thread_hit_h()
         {
             Some(self.thread.as_ref()?.root.clone())
         } else if self.c.has_conversation() && self.in_history(x, y) {

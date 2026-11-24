@@ -245,8 +245,9 @@ pub const RAIL_W: f32 = 60.0;
 pub const SIDEBAR_W: f32 = 280.0;
 pub const MEMBERS_W: f32 = 220.0;
 pub const HEADER_H: f32 = 54.0;
-/// The composer's lip over the bottom of a message history.
-pub const LIP_H: f32 = 8.0;
+/// How far above the composer's top edge its backdrop fades out over the
+/// message history that scrolls on under it.
+pub const FADE_H: f32 = 32.0;
 pub const SECTION_TOP: f32 = 66.0;
 pub const CHANNEL_TOP: f32 = 96.0;
 /// A channel row's pitch: 6 DIPs around its 20 DIP line inside the

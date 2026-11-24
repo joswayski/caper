@@ -2,7 +2,7 @@
 
 use crate::images::{AvatarView, Icon, Images};
 use crate::rows;
-use gtk::{gio, glib, pango, prelude::*};
+use gtk::{gdk, gio, glib, pango, prelude::*};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -147,14 +147,110 @@ fn clickable(widget: &gtk::Widget) -> bool {
         || single_click(widget.parent())
 }
 
-/// The composer's lip: a non-interactive shade over the bottom of a message
-/// history, where it meets the composer. It takes no layout space.
-fn composer_lip() -> gtk::Box {
-    let lip = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    lip.add_css_class("composer-lip");
-    lip.set_valign(gtk::Align::End);
-    lip.set_can_target(false);
-    lip
+/// Floats a composer over the end of its message list, as web: the list
+/// (in `stage`'s child) runs on under `dock`, which sits at the stage's
+/// foot. `backdrop`, the dock's solid part (the composer and the bars in
+/// its place), is the conversation colour; `fade` eases it out over the 32px
+/// above it without taking the pointer, with `typing` along its foot. The
+/// list keeps its newest message 32px clear of the backdrop: its allocation
+/// ends there and its rows draw on below it (so Page Up/Down page by what
+/// the composer leaves visible), and the toast and `empty` sit above it.
+fn float_composer(
+    stage: &gtk::Overlay,
+    list: &List,
+    dock: &gtk::Box,
+    backdrop: &gtk::Box,
+    typing: Option<&gtk::Label>,
+    empty: Option<&gtk::Box>,
+) {
+    let fade = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    fade.add_css_class("composer-fade");
+    fade.set_can_target(false);
+    if let Some(typing) = typing {
+        typing.set_valign(gtk::Align::End);
+        fade.append(typing);
+    }
+    // Rows draw past the list's end, under the composer, but not over the
+    // header: the scroller, which spans the stage, clips them.
+    list.view.set_overflow(gtk::Overflow::Visible);
+    list.scroller.set_overflow(gtk::Overflow::Hidden);
+    stage.add_overlay(&fade);
+    stage.add_overlay(dock);
+    stage.add_overlay(&list.jump.toast);
+    let height =
+        |widget: &gtk::Box, width: i32| widget.measure(gtk::Orientation::Vertical, width).1;
+    // (reserve, covered): what the list keeps clear at its end, and the
+    // height of the typing row and backdrop under the toast.
+    let applied = Rc::new(Cell::new((0, 0)));
+    let (view, bar, toast, empty, dock, backdrop, typing) = (
+        list.view.downgrade(),
+        list.scroller.vscrollbar().downgrade(),
+        list.jump.toast.downgrade(),
+        empty.map(|empty| empty.downgrade()),
+        dock.downgrade(),
+        backdrop.downgrade(),
+        typing.map(|typing| typing.downgrade()),
+    );
+    let fade_widget = fade.upcast::<gtk::Widget>();
+    stage.connect_get_child_position(move |stage, child| {
+        let (Some(dock), Some(backdrop)) = (dock.upgrade(), backdrop.upgrade()) else {
+            return None;
+        };
+        let width = stage.width();
+        let solid = height(&backdrop, width);
+        // The fade's 32px, scaled with the interface's zoom.
+        let band = fade_widget.measure(gtk::Orientation::Vertical, width).1;
+        if child == &fade_widget {
+            // Measured as the backdrop is laid out, so it never lags it.
+            return Some(gdk::Rectangle::new(
+                0,
+                stage.height() - solid - band,
+                width,
+                band,
+            ));
+        }
+        if child != dock.upcast_ref::<gtk::Widget>() {
+            return None;
+        }
+        let lead = typing
+            .as_ref()
+            .and_then(|typing| typing.upgrade())
+            .map_or(0, |typing| {
+                typing.measure(gtk::Orientation::Vertical, width).1
+            });
+        let docked = height(&dock, width);
+        let next = (docked + band, solid + lead);
+        if applied.replace(next) != next {
+            // After this layout: margins set while allocating would not
+            // take until the next one anyway.
+            let (view, bar, toast, empty) =
+                (view.clone(), bar.clone(), toast.clone(), empty.clone());
+            glib::idle_add_local_once(move || {
+                let (reserve, covered) = next;
+                if let Some(bar) = bar.upgrade() {
+                    bar.set_margin_bottom(reserve);
+                }
+                if let Some(toast) = toast.upgrade() {
+                    toast.set_margin_bottom(covered + 12);
+                }
+                if let Some(empty) = empty.as_ref().and_then(|empty| empty.upgrade()) {
+                    empty.set_margin_bottom(covered);
+                }
+                // Last: `app` keeps the newest message in view from here.
+                if let Some(view) = view.upgrade() {
+                    view.set_margin_bottom(reserve);
+                }
+            });
+        }
+        // Its height for the stage's width: the overlay's own placement
+        // measures it unconstrained, which leaves a wrapped draft short.
+        Some(gdk::Rectangle::new(
+            0,
+            stage.height() - docked,
+            width,
+            docked,
+        ))
+    });
 }
 
 /// A message field: a `GtkTextView` with a placeholder. As desktop and web on
@@ -316,6 +412,8 @@ impl Composer {
     fn new(images: &Images, thread: bool) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.add_css_class("composer");
+        // Over its conversation's end: no border or ring (style.css).
+        root.add_css_class("floating");
         let chips = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         chips.add_css_class("chips");
         chips.set_visible(false);
@@ -1308,29 +1406,27 @@ impl Ui {
         list_overlay.set_child(Some(&list.scroller));
         crate::autoscroll::attach(&list.scroller, &list_overlay);
         list_overlay.add_overlay(&empty);
-        list_overlay.add_overlay(&composer_lip());
-        // The toast floats over the list and the typing band under it: 12px
-        // up from the band, which ends 4px above the composer.
-        let above_composer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        above_composer.append(&list_overlay);
+        // The list runs on under the typing row and composer, which float
+        // over its end (`float_composer`).
         let jump_overlay = gtk::Overlay::new();
-        jump_overlay.set_child(Some(&above_composer));
-        list.jump.toast.set_margin_bottom(12);
-        jump_overlay.add_overlay(&list.jump.toast);
+        jump_overlay.set_child(Some(&list_overlay));
         conversation.append(&jump_overlay);
+        let dock = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        backdrop.add_css_class("composer-backdrop");
         let newer_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         newer_bar.add_css_class("newer-bar");
         newer_bar.set_halign(gtk::Align::Center);
         newer_bar.set_visible(false);
         let load_newer = gtk::Button::with_label("Load newer messages");
         newer_bar.append(&load_newer);
-        above_composer.append(&newer_bar);
+        dock.append(&newer_bar);
+        dock.append(&backdrop);
         let typing = label("", &["typing"]);
         typing.set_ellipsize(pango::EllipsizeMode::End);
-        above_composer.append(&typing);
         let composer_error = label("", &["error", "composer-error"]);
         composer_error.set_wrap(true);
-        conversation.append(&composer_error);
+        backdrop.append(&composer_error);
         let compose_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         compose_bar.add_css_class("compose-bar");
         let compose_label = label("", &["muted"]);
@@ -1345,11 +1441,11 @@ impl Ui {
         compose_bar.append(&compose_label);
         compose_bar.append(&compose_reload);
         compose_bar.append(&compose_cancel);
-        conversation.append(&compose_bar);
+        backdrop.append(&compose_bar);
         let request = RequestBar::new();
-        conversation.append(&request.waiting);
+        backdrop.append(&request.waiting);
         let composer = Composer::new(images, false);
-        conversation.append(&composer.outer);
+        backdrop.append(&composer.outer);
         let join_bar = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         join_bar.add_css_class("join-bar");
         let join_label = label("", &["muted"]);
@@ -1359,8 +1455,16 @@ impl Ui {
         join.add_css_class("primary");
         join_bar.append(&join_label);
         join_bar.append(&join);
-        conversation.append(&join_bar);
-        conversation.append(&request.root);
+        backdrop.append(&join_bar);
+        backdrop.append(&request.root);
+        float_composer(
+            &jump_overlay,
+            &list,
+            &dock,
+            &backdrop,
+            Some(&typing),
+            Some(&empty),
+        );
         // Files dragged over the conversation: the shared drop text.
         // The feedback inbox takes the conversation's place (`app::feedback`).
         let feedback_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1465,13 +1569,13 @@ impl Ui {
         let thread_overlay = gtk::Overlay::new();
         thread_overlay.set_child(Some(&thread_list.scroller));
         crate::autoscroll::attach(&thread_list.scroller, &thread_overlay);
-        thread_overlay.add_overlay(&composer_lip());
-        thread_list.jump.toast.set_margin_bottom(16);
-        thread_overlay.add_overlay(&thread_list.jump.toast);
         thread_panel.append(&thread_overlay);
+        // As in the channel, replies run on under the composer.
+        let thread_backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        thread_backdrop.add_css_class("composer-backdrop");
         let thread_error = label("", &["error", "composer-error"]);
         thread_error.set_wrap(true);
-        thread_panel.append(&thread_error);
+        thread_backdrop.append(&thread_error);
         let thread_reply_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         thread_reply_bar.add_css_class("compose-bar");
         let thread_reply_label = label("", &["muted"]);
@@ -1483,9 +1587,17 @@ impl Ui {
         thread_reply_bar.append(&thread_reply_label);
         thread_reply_bar.append(&thread_reply_cancel);
         thread_reply_bar.set_visible(false);
-        thread_panel.append(&thread_reply_bar);
+        thread_backdrop.append(&thread_reply_bar);
         let thread_composer = Composer::new(images, true);
-        thread_panel.append(&thread_composer.outer);
+        thread_backdrop.append(&thread_composer.outer);
+        float_composer(
+            &thread_overlay,
+            &thread_list,
+            &thread_backdrop,
+            &thread_backdrop,
+            None,
+            None,
+        );
         thread_panel.set_visible(false);
         arrive(&thread_panel);
         // As desktop: the thread opens between the conversation and the

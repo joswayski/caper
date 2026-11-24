@@ -2031,7 +2031,7 @@ impl crate::App {
                 &t.rows,
                 x,
                 y,
-                crate::theme::HEADER_H + self.thread_vh(),
+                crate::theme::HEADER_H + self.thread_hit_h(),
             )
         } else {
             if !self.visible_rows().contains(&i) {
@@ -2042,7 +2042,7 @@ impl crate::App {
                 &self.rows,
                 self.list_x(),
                 self.history_y() + (self.rows.top[i] - self.scroll_top) as f32,
-                self.history_y() + self.vh(),
+                self.typing_rect().1,
             )
         };
         let Some((m, row)) = c.messages.get(i).zip(rows.row(i)) else {

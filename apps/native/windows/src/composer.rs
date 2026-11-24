@@ -1135,54 +1135,13 @@ impl Composer {
         placeholder: &str,
     ) -> Result<()> {
         unsafe {
-            let light = crate::theme::is_light();
-            dc.Clear(Some(&gfx::color(crate::theme::surface_conversation(), 1.0)));
-            // Recessed outer trough + top-lit inner composer surface.
-            let outer_r = rect(0.5, 0.5, w - 0.5, h - 0.5);
-            let inner_r = rect(4.5, 4.5, w - 4.5, h - 4.5);
-            let inner_radius = 20.0_f32.min((h - 9.0) * 0.5).max(crate::theme::RADIUS);
-            let outer_radius = inner_radius + 4.0;
-            let outer_fill = if light {
-                dc.CreateSolidColorBrush(&gfx::color(0x0F172A, 0.045), None)?
-            } else {
-                dc.CreateSolidColorBrush(&gfx::color(0x000000, 0.42), None)?
-            };
-            fill_round(dc, outer_r, outer_radius, &outer_fill);
-            let outer_border = if light {
-                dc.CreateSolidColorBrush(&gfx::color(0x0F172A, 0.08), None)?
-            } else {
-                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.055), None)?
-            };
-            crate::gfx::stroke_round(dc, outer_r, outer_radius, &outer_border);
-
+            // The box floats on the conversation's backdrop: its fill alone,
+            // with no border, shell or rim, and focus changes no edge.
+            // It keeps the 4 px inset the shell took, so its parts stay put.
+            dc.Clear(Some(&gfx::color(0, 0.0)));
+            let inner_r = rect(4.0, 4.0, w - 4.0, h - 4.0);
+            let inner_radius = 20.0_f32.min((h - 8.0) * 0.5).max(crate::theme::RADIUS);
             fill_round(dc, inner_r, inner_radius, &g.brushes.composer);
-            let top_rim = if light {
-                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.9), None)?
-            } else {
-                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.08), None)?
-            };
-            crate::gfx::stroke_round(
-                dc,
-                rect(
-                    inner_r.left + 1.0,
-                    inner_r.top + 1.0,
-                    inner_r.right - 1.0,
-                    inner_r.bottom - 1.0,
-                ),
-                (inner_radius - 1.0).max(0.0),
-                &top_rim,
-            );
-            let inner_border = if self.focused {
-                dc.CreateSolidColorBrush(
-                    &gfx::color(crate::theme::terracotta_bright(), 0.58),
-                    None,
-                )?
-            } else if light {
-                dc.CreateSolidColorBrush(&gfx::color(0x0F172A, 0.1), None)?
-            } else {
-                dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.075), None)?
-            };
-            crate::gfx::stroke_round(dc, inner_r, inner_radius, &inner_border);
             // The selection's toolbar, as web's: one group of buttons with a
             // gap before Quote; a pressed button (the selection has
             // its style) is lit.

@@ -103,18 +103,16 @@ import CaperCore
     private let emptyTitle = NativeStyle.label("", size: 16, bold: true)
     private let emptyNote = NativeStyle.label("", size: 12)
     private var shownEmptyCaperIndex: Int?
-    private let lip = AppKitComposerLip()
+    /// Under the status row and composer, which float over the timeline's end.
+    private let backdrop = AppKitComposerBackdrop()
     private let header = NativeStyle.label("", size: 16, bold: true)
     private let status = NativeStyle.label("", size: 12)
     private var announcedTyping = ""
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
-    /// Outer recessed bezel creating an Antigravity-style darker trough around the composer card.
-    private let composerShell = AppKitComposerShell()
-    /// Web's message field: one top-lit bordered box holding attach, the editor, and
-    /// the GIF, emoji, microphone and send tools.
+    /// Web's message field: one top-lit box, without a border or ring, holding
+    /// attach, the editor, and the GIF, emoji, microphone and send tools.
     private let composerField = AppKitComposerField()
-    private var composerFocused = false
     private var laidOutEditorHeight: CGFloat = 0
     private let attachmentScroll = NSScrollView()
     private var attachmentTray: AppKitAttachmentSurface?
@@ -212,7 +210,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, emptyState, lip, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerShell, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions, formatToolbar].forEach { stage.addSubview($0) }
+        [timeline, emptyState, backdrop, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions, formatToolbar].forEach { stage.addSubview($0) }
         emptyState.isHidden = true
         emptyState.setAccessibilityElement(false)
         emptyCaper.imageScaling = .scaleProportionallyUpOrDown
@@ -342,8 +340,6 @@ import CaperCore
         }
         composer.focusChanged = { [weak self] focused in
             guard let self else { return }
-            self.composerFocused = focused
-            self.applyComposerChrome()
             if focused { self.refreshSuggestions() } else { self.suggestions.update(nil); self.formatToolbar.isHidden = true }
         }
         composer.setAccessibilityHelp("Return sends. Shift-Return adds a new line. Use arrows and Return or Tab to choose a suggestion; Escape dismisses.")
@@ -737,7 +733,8 @@ import CaperCore
         let editorHeight = min(laidOutEditorHeight, max(40, min(318, height * 0.4) - toolRows))
         let fieldHeight = max(42, editorHeight + 2 + toolRows)
         composerField.frame = NSRect(x: fieldX, y: fieldBottom - fieldHeight, width: fieldWidth, height: fieldHeight)
-        composerShell.frame = composerField.frame.insetBy(dx: -4, dy: -4)
+        // The 4 points the field's ring used to take still separate it from what stacks above.
+        let fieldTop = composerField.frame.minY - 4
         composerScroll.frame = NSRect(x: editorX, y: composerField.frame.minY + 1, width: max(0, editorRight - editorX), height: fieldHeight - 2 - toolRows)
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: composerScroll.contentSize.height)
@@ -755,7 +752,7 @@ import CaperCore
         }
         let recordingHeight: CGFloat = center - 40 < 300 ? 126 : 42
         voiceComposer.bar.frame = NSRect(x: fieldX, y: fieldBottom - recordingHeight, width: fieldWidth, height: recordingHeight)
-        let composerTop = composerField.isHidden && !voiceComposer.bar.isHidden ? voiceComposer.bar.frame.minY : composerShell.frame.minY
+        let composerTop = composerField.isHidden && !voiceComposer.bar.isHidden ? voiceComposer.bar.frame.minY : fieldTop
         let attachmentHeight = attachmentTray?.height(for: max(1, center - 40)) ?? 0
         let trayHeight = min(attachmentHeight, max(80, height * 0.3))
         let quoteHeight = replyDraft?.height(for: max(1, center - 40)) ?? 0
@@ -773,16 +770,21 @@ import CaperCore
         // a thread, or a row holding Retry, keeps a 22pt row.
         let roomyStatus = inThread || !retry.isHidden
         let statusHeight: CGFloat = roomyStatus ? 22 : 16
-        // Directly over the field, the row overlaps the shell's 4-point ring, as
-        // web's typing row sits 2 above the field: the field then has as much
-        // room above it as below.
+        // Directly over the field, the row takes the 4 points its ring used
+        // to, as web's typing row sits 2 above the field: the field then has
+        // as much room above it as below.
         let stackTop = quoteBottom - quoteHeight - recoveryHeight
-        let ringOverlap: CGFloat = stackTop == composerShell.frame.minY && !composerShell.isHidden ? 4 : 0
+        let ringOverlap: CGFloat = stackTop == fieldTop && !composerField.isHidden ? 4 : 0
         let statusY = directBar.isHidden ? stackTop + ringOverlap - (roomyStatus ? 24 : 18) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
         let top: CGFloat = 48
-        timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - top))
+        // The timeline runs on to the pane's bottom, under the status row and
+        // composer, and reserves what they cover at its end.
+        timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, height - top))
+        timeline.bottomReserve = max(0, height - max(top, statusY))
         layoutEmptyState()
-        lip.frame = NSRect(x: 0, y: max(top, timeline.frame.maxY - 8), width: center, height: min(8, timeline.frame.height))
+        // Solid from the composer's top edge (or the direct-message bar's), easing out above it.
+        let solidTop = max(top, directBar.isHidden ? stackTop : statusY + statusHeight)
+        backdrop.frame = NSRect(x: 0, y: solidTop - ComposerBackdrop.fade, width: center, height: max(0, height - solidTop + ComposerBackdrop.fade))
         status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: statusHeight)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
         counter.frame = NSRect(x: 20, y: base - 24, width: center - 40, height: 16)
@@ -832,7 +834,9 @@ import CaperCore
 
     private func layoutEmptyState() {
         guard !emptyState.isHidden else { return }
-        let area = timeline.frame
+        // Centred in the part of the history the composer leaves visible.
+        var area = timeline.frame
+        area.size.height = max(0, area.height - timeline.bottomReserve)
         let maxTextWidth = max(120, min(360, area.width - 48))
         let caperSide: CGFloat = emptyCaper.isHidden ? 0 : 88
         let titleHeight: CGFloat = emptyTitle.isHidden ? 0 : ceil(emptyTitle.sizeThatFits(NSSize(width: maxTextWidth, height: 200)).height)
@@ -912,10 +916,7 @@ import CaperCore
         composerScroll.isHidden = hidden || recording
         if composerField.isHidden != composerScroll.isHidden {
             composerField.isHidden = composerScroll.isHidden
-            composerShell.isHidden = composerScroll.isHidden
             view.needsLayout = true
-        } else {
-            composerShell.isHidden = composerField.isHidden
         }
         voiceComposer.button.isHidden = hidden
         voiceComposer.bar.isHidden = !recording
@@ -999,16 +1000,16 @@ import CaperCore
         layoutJumpToLatest()
     }
 
-    /// Centered 12 points above the history's bottom edge, just above the
-    /// composer, and at most the history's width less 24. Below the history
-    /// it would overhang the status row, which is stacked above it and would
+    /// Centered 12 points above the part of the history the status row and
+    /// composer cover, and at most the history's width less 24. Lower, it
+    /// would overhang the status row, which is stacked above it and would
     /// take its clicks.
     private func layoutJumpToLatest() {
         guard !jumpToLatest.isHidden else { return }
         let maxWidth = max(0, timeline.frame.width - 24)
         let size = jumpToLatest.size(maxWidth: maxWidth)
         let width = min(size.width, maxWidth)
-        jumpToLatest.frame = NSRect(x: timeline.frame.midX - width / 2, y: timeline.frame.maxY - 12 - size.height,
+        jumpToLatest.frame = NSRect(x: timeline.frame.midX - width / 2, y: timeline.frame.maxY - timeline.bottomReserve - 12 - size.height,
                                     width: width, height: size.height)
     }
 
@@ -1337,10 +1338,10 @@ import CaperCore
                 targetX = inStage.midX - barSize.width / 2
             }
         }
-        let minX = composerShell.frame.minX
+        let minX = composerField.frame.minX - 4
         let maxX = max(minX, stage.bounds.width - barSize.width - 16)
         let x = min(max(targetX, minX), maxX)
-        let y = max(52, composerShell.frame.minY - barSize.height - 8)
+        let y = max(52, composerField.frame.minY - 4 - barSize.height - 8)
         formatToolbar.frame = NSRect(x: floor(x), y: floor(y), width: barSize.width, height: barSize.height)
     }
     private func formatDraft(_ style: MessageStyle) {
@@ -1425,8 +1426,8 @@ import CaperCore
         suggestions.update(nil)
     }
     private func applyComposerChrome() {
-        composerShell.applyTheme()
-        composerField.applyTheme(focused: composerFocused)
+        composerField.applyTheme()
+        backdrop.applyTheme()
         formatToolbar.applyTheme()
         composer.drawsBackground = false
         composer.backgroundColor = .clear
@@ -1471,22 +1472,22 @@ import CaperCore
     }
 }
 
-/// Recessed dark outer trough around the composer card, slightly deeper toward
-/// the bottom edge to ground the elevated input field inside it.
-private final class AppKitComposerShell: NSView {
-    private let depth = CAGradientLayer()
+/// Web's message field: the composer fill, its 20-point radius and a soft top
+/// sheen. No border, ring or focus color: it sits on `AppKitComposerBackdrop`.
+private final class AppKitComposerField: NSView {
+    private let sheen = CAGradientLayer()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.cornerRadius = 24
+        layer?.cornerRadius = 20
         layer?.cornerCurve = .continuous
-        layer?.borderWidth = 1
         layer?.masksToBounds = true
-        // Unflipped: (0.5, 1) is the top edge and (0.5, 0) is the bottom edge.
-        depth.startPoint = CGPoint(x: 0.5, y: 1)
-        depth.endPoint = CGPoint(x: 0.5, y: 0)
-        layer?.addSublayer(depth)
+        // Unflipped: (0.5, 1) is top and (0.5, 0) is bottom.
+        sheen.startPoint = CGPoint(x: 0.5, y: 1)
+        sheen.endPoint = CGPoint(x: 0.5, y: 0)
+        sheen.locations = [0, 0.28]
+        layer?.addSublayer(sheen)
         setAccessibilityElement(false)
         applyTheme()
     }
@@ -1497,117 +1498,104 @@ private final class AppKitComposerShell: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        depth.frame = bounds
+        sheen.frame = bounds
         CATransaction.commit()
     }
 
     func applyTheme() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        depth.colors = [NativeStyle.composerOuterBg.cgColor, NativeStyle.composerOuterDepth.cgColor]
-        layer?.borderColor = NativeStyle.composerOuterBorder.cgColor
-        CATransaction.commit()
-    }
-}
-
-/// Elevated inner composer surface with a delicate overhead top specular rim,
-/// soft top sheen, and subtle bottom inner shade matching web's composer depth.
-private final class AppKitComposerField: NSView {
-    private let sheen = CAGradientLayer()
-    private let topRim = CAGradientLayer()
-    private let topRimMask = CAShapeLayer()
-    private let bottomShade = CAGradientLayer()
-    private let bottomShadeMask = CAShapeLayer()
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = 20
-        layer?.cornerCurve = .continuous
-        layer?.borderWidth = 1
-        layer?.masksToBounds = true
-        // Unflipped: (0.5, 1) is top and (0.5, 0) is bottom.
-        sheen.startPoint = CGPoint(x: 0.5, y: 1)
-        sheen.endPoint = CGPoint(x: 0.5, y: 0)
-        sheen.locations = [0, 0.28]
-        layer?.addSublayer(sheen)
-
-        topRim.startPoint = CGPoint(x: 0.5, y: 1)
-        topRim.endPoint = CGPoint(x: 0.5, y: 0)
-        topRim.locations = [0, 0.26]
-        topRimMask.fillColor = nil
-        topRimMask.strokeColor = NSColor.black.cgColor
-        topRimMask.lineWidth = 1
-        topRim.mask = topRimMask
-        layer?.addSublayer(topRim)
-
-        bottomShade.startPoint = CGPoint(x: 0.5, y: 0)
-        bottomShade.endPoint = CGPoint(x: 0.5, y: 1)
-        bottomShade.locations = [0, 0.2]
-        bottomShadeMask.fillColor = nil
-        bottomShadeMask.strokeColor = NSColor.black.cgColor
-        bottomShadeMask.lineWidth = 1
-        bottomShade.mask = bottomShadeMask
-        layer?.addSublayer(bottomShade)
-
-        setAccessibilityElement(false)
-        applyTheme(focused: false)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        sheen.frame = bounds
-        topRim.frame = bounds
-        topRimMask.frame = bounds
-        bottomShade.frame = bounds
-        bottomShadeMask.frame = bounds
-        let inset = bounds.insetBy(dx: 1.5, dy: 1.5)
-        if inset.width > 0, inset.height > 0 {
-            let radius = min(18.5, inset.width / 2, inset.height / 2)
-            let path = CGPath(roundedRect: inset, cornerWidth: radius, cornerHeight: radius, transform: nil)
-            topRimMask.path = path
-            bottomShadeMask.path = path
-        } else {
-            topRimMask.path = nil
-            bottomShadeMask.path = nil
-        }
-        CATransaction.commit()
-    }
-
-    func applyTheme(focused: Bool) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         layer?.backgroundColor = NativeStyle.composer.cgColor
-        layer?.borderColor = (focused ? NativeStyle.composerFocusBorder : NativeStyle.composerBorder).cgColor
         let topSheen = NativeStyle.composerTopSheen
         sheen.colors = [topSheen.cgColor, topSheen.withAlphaComponent(0).cgColor]
-        let topShine = NativeStyle.composerTopShine
-        topRim.colors = [topShine.cgColor, topShine.withAlphaComponent(0).cgColor]
-        let shade = NativeStyle.composerBottomShade
-        bottomShade.colors = [shade.cgColor, shade.withAlphaComponent(0).cgColor]
         CATransaction.commit()
     }
 }
 
-/// The composer's lip, as SwiftUI's ComposerLip: an 8pt shade over the bottom
-/// of the timeline, black at 14% along the bottom edge fading out upward. It
-/// takes no clicks.
-private final class AppKitComposerLip: NSView {
+/// The composer's backdrop (web's `.chat-composer::before`, `ComposerBackdrop`).
+/// The timeline runs on under the status row and composer, and this covers
+/// its end: solid conversation color from `ComposerBackdrop.fade` points below
+/// its top edge down, easing out over the band above as frosted glass, a
+/// within-window blur under the same eased mask. Reduce Transparency drops the
+/// blur and keeps the fade. The band passes clicks and scrolling through to
+/// the messages under it; the solid part keeps them off rows hidden under the composer.
+private final class AppKitComposerBackdrop: NSView {
+    override var isFlipped: Bool { true }
+
+    /// The conversation color over the blur, from web's 60% to solid at its
+    /// bottom, under the mask's stops.
+    private final class Tint: NSView {
+        let gradient = CAGradientLayer()
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            // Unflipped: (0.5, 1) is the band's top and (0.5, 0) its bottom.
+            gradient.startPoint = CGPoint(x: 0.5, y: 1)
+            gradient.endPoint = CGPoint(x: 0.5, y: 0)
+            gradient.locations = ComposerBackdrop.stops.map { NSNumber(value: Double($0.offset / ComposerBackdrop.fade)) }
+            layer = gradient
+            wantsLayer = true
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    }
+
+    private let blur = NSVisualEffectView()
+    private let tint = Tint()
+    private let solid = NSView()
+
     override init(frame: NSRect) {
         super.init(frame: frame)
-        let gradient = CAGradientLayer()
-        // Unflipped: the gradient runs from the bottom edge up.
-        gradient.colors = [NSColor.black.withAlphaComponent(0.14).cgColor, NSColor.black.withAlphaComponent(0).cgColor]
-        layer = gradient
         wantsLayer = true
+        blur.material = .headerView
+        blur.blendingMode = .withinWindow
+        blur.state = .active
+        // Transparent at the band's top, opaque at its bottom, at web's mask stops.
+        let mask = NSImage(size: NSSize(width: 1, height: ComposerBackdrop.fade), flipped: false) { rect in
+            guard let context = NSGraphicsContext.current?.cgContext,
+                  let gradient = CGGradient(colorsSpace: nil,
+                                            colors: ComposerBackdrop.stops.map { NSColor.black.withAlphaComponent($0.opacity).cgColor } as CFArray,
+                                            locations: ComposerBackdrop.stops.map { $0.offset / ComposerBackdrop.fade }) else { return false }
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: rect.maxY), end: CGPoint(x: 0, y: rect.minY), options: [])
+            return true
+        }
+        mask.resizingMode = .stretch
+        blur.maskImage = mask
+        solid.wantsLayer = true
+        [blur, tint, solid].forEach { addSubview($0) }
         setAccessibilityElement(false)
+        applyTheme()
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(displayOptionsChanged),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    @objc private func displayOptionsChanged() { applyTheme() }
+
+    func applyTheme() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let conversation = NativeStyle.conversation
+        tint.gradient.colors = ComposerBackdrop.stops.map {
+            conversation.withAlphaComponent($0.opacity * ComposerBackdrop.tint(at: $0.offset)).cgColor
+        }
+        solid.layer?.backgroundColor = conversation.cgColor
+        CATransaction.commit()
+        blur.isHidden = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        let fade = min(ComposerBackdrop.fade, bounds.height)
+        let band = NSRect(x: 0, y: 0, width: bounds.width, height: fade)
+        blur.frame = band
+        tint.frame = band
+        solid.frame = NSRect(x: 0, y: fade, width: bounds.width, height: bounds.height - fade)
+    }
+
+    /// Only the solid part takes clicks.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        return local.y >= ComposerBackdrop.fade && bounds.contains(local) ? self : nil
+    }
 }
 
 /// Floating selection formatting bar anchored over the macOS AppKit composer,
