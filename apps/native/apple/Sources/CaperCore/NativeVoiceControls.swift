@@ -398,8 +398,10 @@ import UIKit
         return card
     }
 
+    /// A Lucide icon from CaperIcons.xcassets, which the Xcode app ships in its
+    /// main bundle (SwiftPM builds keep it in the package bundle).
     nonisolated static func icon(_ name: String, size: CGFloat) -> UIImage? {
-        guard let image = UIImage(named: "caper-\(name)", in: caperResourceBundle, compatibleWith: nil) else { return nil }
+        guard let image = UIImage(named: "caper-\(name)") ?? UIImage(named: "caper-\(name)", in: caperResourceBundle, compatibleWith: nil) else { return nil }
         return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
             image.draw(in: CGRect(x: 0, y: 0, width: size, height: size))
         }.withRenderingMode(.alwaysTemplate)
