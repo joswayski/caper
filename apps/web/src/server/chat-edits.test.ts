@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { parseDiffFromFile } from "@pierre/diffs";
+import { lastEditableMessage } from "../chat/edits.ts";
 import { ChatTimeline } from "../chat/timeline.ts";
 import { isChatEditEvent, isChatMessage, type ChatEditEvent, type ChatMessage } from "../chat/types.ts";
 
@@ -271,4 +272,37 @@ test("replies quoting a deleted message validate without its text", () => {
     }),
   );
   assert.equal(isChatMessage({ ...root, deletedAt: 5 }), false);
+});
+
+test("Up edits the viewer's newest editable message in the composer's own conversation", () => {
+  const mine = { id: "me", name: "Me", isGuest: false };
+  const peer = { id: "peer", name: "Peer", isGuest: false };
+  const message = (id: string, seq: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    ...root,
+    id,
+    seq,
+    clientMessageId: `send-${id}`,
+    author: mine,
+    ...extra,
+  });
+  const messages = [
+    message("first", "1"),
+    message("hidden-reply", "2", { threadRootId: "first" }),
+    message("peer", "3", { author: peer }),
+    message("forwarded", "4", { forward: { message: null, seq: "4" } }),
+    message("deleted", "5", { deletedAt: "2026-10-06T14:00:00Z" }),
+    message("peer-thread", "6", { author: peer }),
+    message("peer-reply", "7", { author: peer, threadRootId: "peer-thread" }),
+  ];
+  assert.equal(lastEditableMessage(messages, "me")?.id, "first");
+  assert.equal(lastEditableMessage(messages, "me", "first")?.id, "hidden-reply");
+  assert.equal(lastEditableMessage(messages, "me", "peer-thread"), undefined);
+  assert.equal(
+    lastEditableMessage(
+      [...messages, message("broadcast", "8", { threadRootId: "peer-thread", broadcast: true })],
+      "me",
+    )?.id,
+    "broadcast",
+  );
+  assert.equal(lastEditableMessage(messages, undefined), undefined);
 });

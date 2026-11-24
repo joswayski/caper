@@ -4,7 +4,13 @@ import AttachmentPicker from "./AttachmentPicker.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState, PendingChatMessage } from "./client.ts";
 import { DraftAttachments } from "./Attachments.tsx";
-import { UploadWaitNotice, useLinkPreview, useQueuedSubmit, type ComposerAttachments } from "./Composer.tsx";
+import {
+  editLastKey,
+  UploadWaitNotice,
+  useLinkPreview,
+  useQueuedSubmit,
+  type ComposerAttachments,
+} from "./Composer.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import JumpToLatest from "./JumpToLatest.tsx";
 import { carriesFiles } from "./drop.ts";
@@ -51,6 +57,7 @@ export default function ThreadPanel({
   blockedIds,
   renderMessage,
   arrivals,
+  onEditLast,
   onClose,
 }: {
   state: ChatViewState;
@@ -85,6 +92,8 @@ export default function ThreadPanel({
   ) => ReactNode;
   /** Shared with the channel list, whose rows render through `renderMessage`. */
   arrivals: Arrivals;
+  /** Up in an empty reply: opens the viewer's newest message in this thread to edit, if any. */
+  onEditLast?: () => boolean;
   onClose: () => void;
 }) {
   // Kept in the page-wide store, so switching conversations never drops a reply.
@@ -872,11 +881,13 @@ export default function ThreadPanel({
                     if (sending) queued.queue();
                     else void submit();
                   }
+                  if (editLastKey(event, draft.text, !!attachments?.drafts.length) && onEditLast?.())
+                    event.preventDefault();
                 }}
               />
               <span id="chat-thread-composer-hint" className="sr-only">
                 Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
-                suggestions. Enter to send. Shift+Enter for a new line.
+                suggestions. Enter to send. Shift+Enter for a new line. Up in an empty reply edits your last one.
               </span>
               <div className="chat-thread-tools">
                 <EmojiButton

@@ -3768,6 +3768,20 @@ public final class ChatModel {
         message.forward == nil && canDelete(message)
     }
 
+    /// Up in an empty composer opens this for editing: your newest message
+    /// shown in the channel timeline, or in the open thread, that Edit message
+    /// would open.
+    public func lastEditableMessage(inThread: Bool) -> ChatMessage? {
+        let rootID = inThread ? threadRootID : nil
+        if inThread && rootID == nil { return nil }
+        let shown = inThread
+            ? displayedMessages.filter { $0.id == rootID } + displayedThreadMessages.filter { $0.id != rootID }
+            : displayedChannelMessages
+        guard let message = LastEditableMessage.find(in: shown, viewerID: currentAuthor?.id, threadRootID: rootID),
+              canEdit(message) else { return nil }
+        return message
+    }
+
     /// Your own messages, forwards included, while you can participate.
     func canDelete(_ message: ChatMessage) -> Bool {
         !message.isDeleted && canInteract && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id

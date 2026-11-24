@@ -631,6 +631,16 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             chat.draftChanged(text)
         }
         composer.submitted = { [weak self] in self?.send() }
+        // A hardware keyboard's Up in an empty composer edits your newest message here.
+        composer.textView.canEditLast = { [weak self] in
+            guard let self, self.presentedViewController == nil, !self.presentations.presenting,
+                  self.model.chat.attachmentDrafts.isEmpty else { return false }
+            return self.model.chat.lastEditableMessage(inThread: false) != nil
+        }
+        composer.textView.editLast = { [weak self] in
+            guard let self, let message = self.model.chat.lastEditableMessage(inThread: false) else { return }
+            self.presentations.edit = message
+        }
         composer.attachTapped = { [weak self] in
             guard let self, let drawer = UIKitHosting.attachDrawer(chat: self.model.chat) else { return }
             self.present(drawer, animated: false)

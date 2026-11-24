@@ -2311,6 +2311,13 @@ impl App {
                     }
                     return done;
                 }
+                if vk == VK_UP && !ctrl && !shift {
+                    let root = t.root.clone();
+                    if self.edit_last(Some(root.as_str())) {
+                        return done;
+                    }
+                }
+                let t = self.thread.as_mut()?;
                 match vk {
                     // As web's textarea: Tab moves on (the sidebar, past the
                     // page's end) and Shift+Tab back to the main composer.

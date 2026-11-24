@@ -3577,6 +3577,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value.selectedChannel?.id == message.channelId &&
         chatAuthor?.let { !it.isGuest && it.id == message.author.id } == true
 
+    /**
+     * Up in an empty composer: opens Edit message for your newest message in the channel timeline, or in
+     * the open thread [root], when Edit message would be offered for it. False leaves the key alone.
+     */
+    fun editLast(root: String?): Boolean {
+        val state = mutable.value
+        if (root != null && state.thread?.rootId != root) return false
+        val candidates = if (root == null) state.channelMessages else state.messages
+        val message = lastEditableMessage(candidates, chatAuthor?.id, root)?.takeIf(::canEdit) ?: return false
+        val presented = state.displayedMessages.firstOrNull { it.id == message.id } ?: message
+        mutable.value = state.copy(editLastRequest = chat.caper.android.model.EditLastRequest(root, presented, java.util.UUID.randomUUID().toString()))
+        return true
+    }
+
+    fun consumeEditLast(id: String) {
+        if (mutable.value.editLastRequest?.id == id) mutable.value = mutable.value.copy(editLastRequest = null)
+    }
+
     suspend fun editMessage(message: ChatMessage, text: String): Unit {
         check(canEdit(message)) { "Only the author can edit while participating." }
         check(message.id !in mutable.value.editIntents) { "This message is already being saved." }
@@ -4383,7 +4401,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(), presenceLoading = false, presenceLive = false,
             channelVisitUnread = null,
             visit = null, feedbackShown = false,
-            thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(), composerFocusRequest = null,
+            thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(), composerFocusRequest = null, editLastRequest = null,
             contextStart = null, contextEnd = null, hasNewerMessages = false, loadingNewer = false,
             focusedMessageId = null, loadingMessageContext = false, messageContextError = null,
             loadingOlder = false, olderError = null, newerError = null, messagesLoading = false, messagesError = null, refreshError = null,

@@ -3040,6 +3040,19 @@ impl Live {
         m.forward.is_none() && self.can_delete(m)
     }
 
+    /// Up in an empty composer: the message Edit message would open for the
+    /// channel's rows, or for thread `root`'s root and replies.
+    pub fn last_editable(&self, root: Option<&str>) -> Option<core::Message> {
+        let me = self.author.as_ref()?.id.as_str();
+        let shown = self
+            .timeline
+            .messages()
+            .filter(|m| root.is_some() || self.in_channel(m));
+        last_editable(shown, me, root)
+            .filter(|m| self.can_edit(m))
+            .cloned()
+    }
+
     /// You can react and reply in the open channel.
     pub fn can_react(&self) -> bool {
         self.chat_token.is_some() && self.channel.is_some()
@@ -6322,6 +6335,24 @@ pub fn spans(text: &str, mentions: &[core::Mention]) -> Vec<Span> {
     out
 }
 
+/// The newest of `messages` (oldest first) by `me` that is neither deleted
+/// nor a forward: in thread `root`, its root or a reply; otherwise a channel
+/// row (a top-level message or a reply also sent to the channel), as on web.
+pub fn last_editable<'a>(
+    messages: impl IntoIterator<Item = &'a core::Message>,
+    me: &str,
+    root: Option<&str>,
+) -> Option<&'a core::Message> {
+    messages
+        .into_iter()
+        .filter(|m| match root {
+            Some(root) => m.id == root || m.thread_root_id.as_deref() == Some(root),
+            None => m.is_channel_message(),
+        })
+        .filter(|m| m.author.id == me && !m.is_deleted() && m.forward.is_none())
+        .last()
+}
+
 /// One displayed message. `me`
 /// is the signed-in author, whose reactions are highlighted.
 pub fn message(
@@ -7028,6 +7059,63 @@ mod tests {
             m[k] = v.clone();
         }
         serde_json::from_value(m).unwrap()
+    }
+
+    #[test]
+    fn up_edits_your_newest_live_message_in_the_composers_conversation() {
+        let me = "member000001";
+        let n = |k: u32, extra: serde_json::Value| {
+            let mut m = serde_json::json!({
+                "id": format!("b0000000000000{k}"), "seq": k.to_string(),
+                "author": { "id": me, "name": "Me", "isGuest": false },
+                "clientMessageId": format!("00000000-0000-4000-9000-00000000000{k}"),
+            });
+            for (key, v) in extra.as_object().unwrap() {
+                m[key] = v.clone();
+            }
+            core_message(m)
+        };
+        let root = n(1, serde_json::json!({}));
+        let messages = [
+            root.clone(),
+            n(
+                2,
+                serde_json::json!({ "threadRootId": root.id, "broadcast": true }),
+            ),
+            // Only the thread shows it.
+            n(3, serde_json::json!({ "threadRootId": root.id })),
+            n(
+                4,
+                serde_json::json!({ "author": { "id": "member000002", "name": "Alex", "isGuest": false } }),
+            ),
+            n(
+                5,
+                serde_json::json!({ "deletedAt": "2026-10-01T09:05:00Z" }),
+            ),
+            n(
+                6,
+                serde_json::json!({ "forward": { "seq": "9", "message": null } }),
+            ),
+        ];
+        let id = |m: Option<&core::Message>| m.map(|m| m.id.clone());
+        assert_eq!(
+            id(last_editable(&messages, me, None)),
+            Some(messages[1].id.clone())
+        );
+        assert_eq!(
+            id(last_editable(&messages, me, Some(root.id.as_str()))),
+            Some(messages[2].id.clone())
+        );
+        // Someone else's newest message is theirs to edit, not yours.
+        assert_eq!(
+            id(last_editable(&messages, "member000002", None)),
+            Some(messages[3].id.clone())
+        );
+        assert_eq!(
+            id(last_editable(&messages, me, Some(messages[3].id.as_str()))),
+            None
+        );
+        assert_eq!(id(last_editable(&messages[4..], me, None)), None);
     }
 
     #[test]

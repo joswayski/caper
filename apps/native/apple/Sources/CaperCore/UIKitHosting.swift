@@ -271,6 +271,8 @@ private final class WeakController {
     public var actions: ChatMessage?
     public var reactors: ReactorsRequest?
     public var block: BlockTarget?
+    /// Edit message without the actions sheet: Up in an empty composer.
+    public var edit: ChatMessage?
     var showingEmojiPicker = false
     public init() {}
 
@@ -282,7 +284,7 @@ private final class WeakController {
     }
 
     /// Whether any of these is showing, so the conversation leaves its gestures alone.
-    public var presenting: Bool { actions != nil || reactors != nil || block != nil }
+    public var presenting: Bool { actions != nil || reactors != nil || block != nil || edit != nil }
 }
 
 /// The account's notifications inbox ("Notifications" in the account panel):

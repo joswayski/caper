@@ -447,6 +447,15 @@ public final class ComposerTextView: UITextView {
     }
     public var autocompleteActive: (() -> Bool)?
     public var handleKey: ((String) -> Void)?
+    /// A hardware keyboard's bare Up in an empty composer with no staged files
+    /// edits your newest message there, as in Discord and Slack (web `editLastKey`).
+    /// `canEditLast` says whether there is one; without it, Up does what it did.
+    public var canEditLast: (() -> Bool)?
+    public var editLast: (() -> Void)?
+    private var editLastReady: Bool {
+        markedTextRange == nil && text.isEmpty && autocompleteActive?() != true && canEditLast?() == true
+    }
+    @objc private func editLastMessage(_ command: UIKeyCommand) { if editLastReady { editLast?() } }
     public var pasteAttachments: (() -> Bool)?
     public var formatSelection: ((MessageStyle) -> Void)?
     @objc func formatBold(_ sender: Any?) { formatSelection?(.bold) }
@@ -534,6 +543,8 @@ public final class ComposerTextView: UITextView {
     public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), isEditable, pasteAttachments != nil,
            NativeAttachmentPaste.hasAttachments { return true }
+        // Declining passes Up on, so it moves the caret or focus as before.
+        if action == #selector(editLastMessage(_:)) { return editLastReady }
         return super.canPerformAction(action, withSender: sender)
     }
     /// Once Browse has covered the conversation, UIKit gave the composer its
@@ -577,7 +588,13 @@ public final class ComposerTextView: UITextView {
                 command.wantsPriorityOverSystemBehavior = true
                 return command
             }
-            return (super.keyCommands ?? []) + formatting + (markedTextRange == nil ? tabs : [])
+            var up: [UIKeyCommand] = []
+            if editLastReady {
+                let command = UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(editLastMessage(_:)))
+                command.wantsPriorityOverSystemBehavior = true
+                up.append(command)
+            }
+            return (super.keyCommands ?? []) + formatting + (markedTextRange == nil ? tabs : []) + up
         }
         return [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\r", "\t", UIKeyCommand.inputEscape].map {
             let command = UIKeyCommand(input: $0, modifierFlags: [], action: #selector(autocompleteKey(_:)))

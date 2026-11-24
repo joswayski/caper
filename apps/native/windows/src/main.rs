@@ -3509,6 +3509,7 @@ impl App {
             // As web's textarea: Tab leaves for the sidebar (suggestions
             // took it first when open); Shift+Tab went to the history.
             VK_TAB if !ctrl && !shift => return self.tab_to_sidebar(),
+            VK_UP if !ctrl && !shift && self.edit_last(None) => return true,
             VK_RETURN if shift => self.composer.insert(&['\n' as u16]),
             VK_RETURN => {
                 if let Err(e) = self.send() {

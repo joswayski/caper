@@ -207,6 +207,10 @@ export default function MentionTextarea({
       {
         state: EditorState.create({ doc: composerDocument(source.current), plugins: plugins() }),
         editable: () => !current.current.disabled && !current.current.readOnly,
+        // ProseMirror prevents every Escape's default, and the dialogs, menus and
+        // thread around a composer skip a prevented Escape as already handled.
+        // No composer binds Escape, so leave it to them.
+        handleDOMEvents: { keydown: (_view, event) => event.key === "Escape" },
         dispatchTransaction(transaction) {
           if (transaction.docChanged && !editor.composing) normalizeComposer(transaction);
           editor.updateState(editor.state.apply(transaction));

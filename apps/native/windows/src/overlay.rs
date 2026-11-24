@@ -1948,6 +1948,36 @@ impl App {
         self.events |= EV_SCREEN | EV_FOCUS;
     }
 
+    /// Up in an empty composer (no text, no files, nothing composing) opens
+    /// your newest message there in Edit message, as on web, in Discord and
+    /// in Slack: the channel's rows, or thread `root`'s. False leaves the key
+    /// to the field. Suggestions and Ctrl/Shift were handled by the caller.
+    pub fn edit_last(&mut self, root: Option<&str>) -> bool {
+        let held = |vk: VIRTUAL_KEY| unsafe { GetKeyState(vk.0 as i32) } < 0;
+        if held(VK_MENU) || held(VK_LWIN) || held(VK_RWIN) {
+            return false;
+        }
+        let field = match root {
+            Some(_) => match &self.thread {
+                Some(t) => &t.composer,
+                None => return false,
+            },
+            None => &self.composer,
+        };
+        if !field.text.is_empty() || field.composing || !field.comp.is_empty() {
+            return false;
+        }
+        let Some(live) = &self.live else { return false };
+        if !live.composer_drafts(root).is_empty() {
+            return false;
+        }
+        let Some(m) = live.last_editable(root) else {
+            return false;
+        };
+        self.open_dialog(Dialog::edit(m));
+        true
+    }
+
     pub fn close_dialog(&mut self) {
         if let Some(d) = self.dialog.take() {
             // Closing the review is Later; the dock stays.

@@ -1345,6 +1345,7 @@ import CaperCore
             formatDraft(item.style); return true
         }
         if handleSuggestionKey(event) { return true }
+        if editLastMessage(event) { return true }
         if event.keyCode == 53, !formatToolbar.isHidden {
             formatToolbarDismissed = true
             formatToolbar.isHidden = true
@@ -1353,6 +1354,18 @@ import CaperCore
         if event.keyCode == 53, model.chat.threadRootID != nil { closeThread(); return true }
         if event.keyCode == 36, !event.modifierFlags.contains(.shift) { submit(); return true }
         return false
+    }
+    /// A bare Up in a composer with no text and no files edits your newest
+    /// message here, as in Discord and Slack (web `editLastKey`). Open
+    /// suggestions took the arrows first.
+    private func editLastMessage(_ event: NSEvent) -> Bool {
+        let chat = model.chat
+        guard event.keyCode == 126, event.modifierFlags.intersection([.shift, .option, .control, .command]).isEmpty,
+              !composer.hasMarkedText(), suggestions.match == nil, composer.string.isEmpty,
+              (inThread ? chat.threadAttachmentDrafts : chat.attachmentDrafts).isEmpty,
+              let message = chat.lastEditableMessage(inThread: inThread) else { return false }
+        dialogs.editMessage(message, in: presentationParent)
+        return true
     }
     private func handleSuggestionKey(_ event: NSEvent) -> Bool {
         guard !composer.hasMarkedText(), suggestions.match != nil else { return false }

@@ -191,6 +191,16 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         composer.model = model
         composer.changed = { [weak self] text in self?.chat.threadDraft = text }
         composer.submitted = { [weak self] in self?.send() }
+        // A hardware keyboard's Up in an empty reply edits your newest message in this thread.
+        composer.textView.canEditLast = { [weak self] in
+            guard let self, self.presentedViewController == nil, !self.presentations.presenting,
+                  self.chat.threadAttachmentDrafts.isEmpty else { return false }
+            return self.chat.lastEditableMessage(inThread: true) != nil
+        }
+        composer.textView.editLast = { [weak self] in
+            guard let self, let message = self.chat.lastEditableMessage(inThread: true) else { return }
+            self.presentations.edit = message
+        }
         composer.attachTapped = { [weak self] in
             guard let self, let drawer = UIKitHosting.attachDrawer(chat: self.chat, inThread: true) else { return }
             self.present(drawer, animated: false)

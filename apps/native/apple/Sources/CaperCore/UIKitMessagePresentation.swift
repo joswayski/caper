@@ -33,16 +33,21 @@ import Observation
         let chat = model.chat
         // Read every request even while another sheet is open, so the next
         // action is observed rather than lost behind an early return.
-        let action = state.actions, reaction = state.reactors, block = state.block
+        let action = state.actions, reaction = state.reactors, block = state.block, edit = state.edit
         let forward = chat.forwardTarget, conversation = chat.forwardConversationTarget
         let frontmost = leave == nil && (chat.threadRootID != nil) == inThread
         if context != chat.editingContext || author != chat.currentAuthor?.id || (chat.isPreview && action != nil) {
             context = chat.editingContext; author = chat.currentAuthor?.id
-            state.actions = nil; state.reactors = nil; state.showingEmojiPicker = false
+            state.actions = nil; state.reactors = nil; state.edit = nil; state.showingEmojiPicker = false
             finish(); return
         }
         guard view.window != nil, !closing, owned == nil else { return }
         if let block { confirmBlock(block); return }
+        if let edit {
+            guard chat.canEdit(edit) else { state.edit = nil; return }
+            show(UIKitMessageEditor(chat: chat, message: edit) { [weak self] in self?.finish() }, kind: "edit")
+            return
+        }
         if let action {
             show(UIKitNativeMessageActions(model: model, message: action, inThread: inThread,
                 leave: leave, close: { [weak self] then in self?.finish(then: then) },
@@ -72,6 +77,7 @@ import Observation
         case "forward": model.chat.forwardTarget = nil
         case "conversation": model.chat.forwardConversationTarget = nil
         case "block": state.block = nil
+        case "edit": state.edit = nil
         default: break
         }
         kind = nil

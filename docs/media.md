@@ -2385,6 +2385,12 @@ desktop Ctrl/Cmd+Enter saves. Conflicts and failed saves keep the draft;
 **Discard draft and load latest** explicitly replaces it. Channel/account/access
 changes close obsolete dialogs.
 
+With a hardware keyboard, a bare Up arrow in an empty composer (no text, no
+staged files, no suggestion list open) opens **Edit message** for your newest
+message you can edit there: the channel or DM timeline, including broadcast
+thread replies, from the main composer; the thread's root and replies from a
+thread composer. Otherwise Up does what it did before.
+
 An **edited** indicator opens retained versions, also available from message
 actions and pins. Everyone with current read access can inspect the original and
 later versions, including members previewing an unjoined channel; the edit dialog

@@ -138,6 +138,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -1818,7 +1821,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 val transformation = remember(source) { MentionVisualTransformation(source) }
                 SuggestingComposer(draft, { draft = it }, source, thread.rootId, sendReply,
                     focusRequest = state.composerFocusRequest?.takeIf { it.channelId == state.selectedChannel?.id && it.rootId == thread.rootId },
-                    focusEnabled = !thread.loading, consumeFocus = viewModel::consumeComposerFocus) { field, change, actions ->
+                    focusEnabled = !thread.loading, consumeFocus = viewModel::consumeComposerFocus,
+                    editLast = { files.isEmpty() && viewModel.editLast(thread.rootId) }) { field, change, actions ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             ComposerShell(Modifier.weight(1f)) {
@@ -2142,7 +2146,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     if (edited) viewModel.setTyping(it.text.isNotBlank())
                 }, source, channel.id, ::submit,
                     focusRequest = state.composerFocusRequest?.takeIf { it.channelId == channel.id && it.rootId == null && state.thread == null },
-                    consumeFocus = viewModel::consumeComposerFocus) { field, change, actions ->
+                    consumeFocus = viewModel::consumeComposerFocus,
+                    editLast = { state.drafts.isEmpty() && viewModel.editLast(null) }) { field, change, actions ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             ComposerShell(Modifier.weight(1f)) {
@@ -2208,6 +2213,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     draft: TextFieldValue, onDraft: (TextFieldValue) -> Unit, mentions: MentionSource, scope: Any?, send: () -> Unit,
     focusRequest: chat.caper.android.model.ComposerFocusRequest? = null,
     focusEnabled: Boolean = true, consumeFocus: (String) -> Unit = {},
+    /** A bare hardware Up in an empty field: opens your newest message to edit, if any (true consumes it). */
+    editLast: () -> Boolean = { false },
     content: @Composable (field: Modifier, change: (TextFieldValue) -> Unit, actions: KeyboardActions) -> Unit,
 ) {
     val context = LocalContext.current
@@ -2288,7 +2295,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
             if (event.type != KeyEventType.KeyDown) false
             // A hardware Enter outside IME composition sends; the text field never sees it.
-            else if (count == 0) (enter && !event.isShiftPressed && draft.composition == null).also { if (it) send() }
+            else if (count == 0) when {
+                enter -> (!event.isShiftPressed && draft.composition == null).also { if (it) send() }
+                // As in Discord and Slack; with suggestions open, Up moves through them instead.
+                event.key == Key.DirectionUp -> !event.isShiftPressed && !event.isAltPressed && !event.isCtrlPressed && !event.isMetaPressed &&
+                    draft.composition == null && draft.text.isEmpty() && editLast()
+                else -> false
+            }
             else when (event.key) {
                 Key.DirectionDown -> { selected = (selected + 1) % count; true }
                 Key.DirectionUp -> { selected = (selected - 1 + count) % count; true }
@@ -2573,6 +2586,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         blockTarget = null
         revealedRuns = emptySet()
         viewerHost.open = null
+    }
+    // Up in this timeline's empty composer opens Edit message, as the message actions do.
+    LaunchedEffect(state.editLastRequest) {
+        val request = state.editLastRequest?.takeIf { (it.rootId != null) == inThread } ?: return@LaunchedEffect
+        viewModel.consumeEditLast(request.id)
+        actionTarget = null
+        editTarget = request.message
     }
     HostedMediaViewer(viewerHost, state, viewModel::reportAttachmentFailure)
     // Web's chat phases: loading, failed first load, then the conversation.

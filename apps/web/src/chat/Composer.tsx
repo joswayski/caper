@@ -1,4 +1,13 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type Ref,
+} from "react";
 import { Send } from "lucide-react";
 import AttachmentPicker from "./AttachmentPicker.tsx";
 import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Attachments.tsx";
@@ -75,6 +84,8 @@ interface ComposerProps {
   onPreviewChange?: () => void;
   /** Whether a draft exists, for actions that would replace it. */
   onDraftPresence: (hasDraft: boolean) => void;
+  /** Up in an empty composer: opens the viewer's newest message to edit, if any. */
+  onEditLast?: () => boolean;
   attachments?: ComposerAttachments;
 }
 
@@ -108,6 +119,20 @@ export function useLinkPreview(draft: string) {
     remove: () => setRemoved(link),
     removed: (text: string) => !!removed && previewLink(text) === removed,
   };
+}
+
+/** A bare Up in a composer with no text and no files, as in Discord and Slack. */
+export function editLastKey(event: KeyboardEvent<HTMLElement>, draft: string, hasFiles: boolean) {
+  return (
+    event.key === "ArrowUp" &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.nativeEvent.isComposing &&
+    !draft &&
+    !hasFiles
+  );
 }
 
 /** Shown from Send until the staged files have uploaded and the message goes. */
@@ -162,6 +187,7 @@ export default function Composer({
   onResize,
   onPreviewChange,
   onDraftPresence,
+  onEditLast,
   attachments,
   linkPreviews = false,
 }: ComposerProps) {
@@ -361,6 +387,7 @@ export default function Composer({
               if (sending) queued.queue();
               else void submit();
             }
+            if (editLastKey(event, draft, !!attachments?.drafts.length) && onEditLast?.()) event.preventDefault();
           }}
         />
         <div className="chat-composer-tools">
@@ -410,7 +437,7 @@ export default function Composer({
         )}
         <span id="chat-composer-hint" className="sr-only">
           Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
-          suggestions. Enter to send. Shift+Enter for a new line.
+          suggestions. Enter to send. Shift+Enter for a new line. Up in an empty message edits your last one.
         </span>
         {characterCount >= COUNTER_START && (
           <small className="chat-counter" data-tone={counterTone(characterCount)}>

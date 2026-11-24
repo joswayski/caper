@@ -590,6 +590,9 @@ fun voiceJoinUnavailableLabel(available: Boolean?): String? = when (available) {
  */
 data class ComposerFocusRequest(val channelId: String, val rootId: String?, val id: String, val keyboardOnly: Boolean = false, val typed: String = "")
 
+/** Up in an empty composer asked its timeline (the thread [rootId]'s, or the channel's) to edit [message]. */
+data class EditLastRequest(val rootId: String?, val message: ChatMessage, val id: String)
+
 data class AppUiState(
     val screen: SessionScreen = SessionScreen.Loading,
     /**
@@ -679,6 +682,7 @@ data class AppUiState(
     val queuedMessages: List<PendingMessageUi> = emptyList(),
     val replyTargets: Map<String, MessageReply> = emptyMap(),
     val composerFocusRequest: ComposerFocusRequest? = null,
+    val editLastRequest: EditLastRequest? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
     val pinnedMessages: List<ChatMessage> = emptyList(),

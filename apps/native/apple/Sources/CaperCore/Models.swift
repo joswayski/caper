@@ -748,6 +748,20 @@ public enum MessageDeletion {
     }
 }
 
+/// Up in an empty composer edits the viewer's newest message in that
+/// composer's conversation, as in Discord and Slack (web `lastEditableMessage`):
+/// the channel timeline (top-level messages and broadcast thread replies), or
+/// one thread's root and replies. `messages` run oldest to newest.
+enum LastEditableMessage {
+    static func find(in messages: [ChatMessage], viewerID: String?, threadRootID: String?) -> ChatMessage? {
+        guard let viewerID else { return nil }
+        return messages.last { message in
+            let here = threadRootID.map { message.id == $0 || message.threadRootId == $0 } ?? message.isChannelMessage
+            return here && message.author.id == viewerID && !message.isDeleted && message.forward == nil
+        }
+    }
+}
+
 /// Immutable reference breaks the recursive message/forward value layout.
 public final class MessageForward: Codable, Equatable, Sendable {
     public let message: ChatMessage?

@@ -1,4 +1,18 @@
-import { sequence, type ChatMessage } from "./types.ts";
+import { isChannelMessage, sequence, type ChatMessage } from "./types.ts";
+
+/** Up in an empty composer edits the viewer's newest message in that composer's
+ * conversation: the channel timeline, or one thread's root and replies. */
+export function lastEditableMessage(messages: ChatMessage[], authorId: string | undefined, threadRootId?: string) {
+  if (!authorId) return undefined;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    const here = threadRootId
+      ? message.id === threadRootId || message.threadRootId === threadRootId
+      : isChannelMessage(message);
+    if (here && message.author.id === authorId && !message.deletedAt && !message.forward) return message;
+  }
+  return undefined;
+}
 
 type AttachmentsSnapshot = { content: Pick<ChatMessage["content"], "attachments">; attachmentsSeq?: string };
 

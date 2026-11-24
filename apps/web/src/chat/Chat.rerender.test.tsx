@@ -433,3 +433,18 @@ test("rows follow the account's quick reactions without re-rendering for an unch
   await act(async () => void (await getAccount()));
   expect(counts()).toEqual(settled.map((count) => count + 1));
 });
+
+test("Up in an empty composer edits your newest message, and Escape closes the editor", async () => {
+  await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
+  await act(async () => fixture.clients.at(-1)!.emit({ phase: "ready", author: history.messages[0].author }));
+  const key = (target: Element, key: string, keyCode: number) =>
+    act(async () => {
+      target.dispatchEvent(new KeyboardEvent("keydown", { key, keyCode, bubbles: true, cancelable: true }));
+    });
+  await key(container.querySelector("#chat-message")!, "ArrowUp", 38);
+  const editor = document.querySelector<ComposerInput>("dialog.chat-edit-dialog #chat-edit-text");
+  expect(editor?.value).toBe(history.messages.at(-1)!.content.text);
+  // ProseMirror claims every Escape; the dialog must still see it as unhandled.
+  await key(editor!, "Escape", 27);
+  expect(document.querySelector("dialog.chat-edit-dialog")).toBeNull();
+});

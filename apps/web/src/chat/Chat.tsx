@@ -34,6 +34,7 @@ import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
 import DeleteMessage from "./DeleteMessage.tsx";
+import { lastEditableMessage } from "./edits.ts";
 import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import MessageGif from "./MessageGif.tsx";
@@ -649,6 +650,14 @@ export default function Chat({
     setActionTarget(undefined);
     setHistoryTarget(undefined);
     setEditTarget(messageId);
+  };
+  // Message actions offer Edit under the same conditions.
+  const editLast = (threadRootId?: string) => {
+    if (readOnly || state.phase !== "ready" || state.author?.isGuest) return false;
+    const message = lastEditableMessage(state.messages, state.author?.id, threadRootId);
+    if (!message) return false;
+    openEdit(message.id);
+    return true;
   };
   const openHistory = (messageId: string) => {
     if (findMessage(messageId)?.forward) return;
@@ -2573,6 +2582,7 @@ export default function Chat({
               onResize={keepLatestInView}
               onPreviewChange={() => allowFollow.current && carryTimeline()}
               onDraftPresence={setHasDraft}
+              onEditLast={() => editLast()}
               attachments={
                 signedIn || channelDrafts.length
                   ? {
@@ -2601,6 +2611,7 @@ export default function Chat({
       </section>
       <ThreadPanel
         state={state}
+        onEditLast={() => !!state.thread && editLast(state.thread.rootId)}
         client={clientRef.current}
         channelName={channelName}
         direct={direct}

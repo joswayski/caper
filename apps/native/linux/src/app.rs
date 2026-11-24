@@ -1177,6 +1177,7 @@ impl App {
             let keys = gtk::EventControllerKey::new();
             keys.set_propagation_phase(gtk::PropagationPhase::Capture);
             let (app, rich) = (self.clone(), composer.rich.clone());
+            let view = composer.view.downgrade();
             keys.connect_key_pressed(move |_, key, _, modifiers| {
                 app.active();
                 // An IME's Enter and Escape are its own.
@@ -1185,6 +1186,23 @@ impl App {
                 }
                 let popup = app.suggestions.borrow().get(usize::from(thread)).cloned();
                 if popup.is_some_and(|popup| popup.key(key, modifiers)) {
+                    return glib::Propagation::Stop;
+                }
+                // As in Discord and Slack, a bare Up in an empty composer
+                // edits your last message.
+                if matches!(key, gdk::Key::Up | gdk::Key::KP_Up)
+                    && !modifiers.intersects(
+                        gdk::ModifierType::SHIFT_MASK
+                            | gdk::ModifierType::CONTROL_MASK
+                            | gdk::ModifierType::ALT_MASK
+                            | gdk::ModifierType::SUPER_MASK
+                            | gdk::ModifierType::META_MASK,
+                    )
+                    && view
+                        .upgrade()
+                        .is_some_and(|view| view.buffer().char_count() == 0)
+                    && app.edit_last(thread)
+                {
                     return glib::Propagation::Stop;
                 }
                 if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
@@ -3370,6 +3388,54 @@ impl App {
         self.ui.composer.view.buffer().set_text(&text);
         self.ui.composer.view.grab_focus();
         self.render();
+    }
+
+    /// Up in an empty composer: edits your newest message in its
+    /// conversation, as web's `editLast`; false when there is none, or the
+    /// composer has files. Edit message's conditions apply.
+    fn edit_last(self: &Rc<Self>, thread: bool) -> bool {
+        // Editing happens in the main composer: never replace its unsent
+        // draft, or an edit already in progress, from the thread's.
+        if self.ui.composer.view.buffer().char_count() > 0 || self.state.borrow().compose.is_some()
+        {
+            return false;
+        }
+        let id = {
+            let state = self.state.borrow();
+            let root = Self::composer_root(&state, thread);
+            let Some(author) = state
+                .session
+                .as_ref()
+                .map(|session| &session.author)
+                .filter(|author| !author.is_guest)
+            else {
+                return false;
+            };
+            if (thread && root.is_none())
+                || !state.joined()
+                || Self::files_in(&state, root.as_deref()) > 0
+            {
+                return false;
+            }
+            let window = state.context_window;
+            // The thread's root may be outside the loaded history.
+            let root_message = state
+                .thread
+                .as_ref()
+                .and_then(|open| open.message.as_ref())
+                .filter(|_| thread);
+            let loaded = state
+                .timeline
+                .messages()
+                .filter(|message| thread || window.is_none_or(|window| window.contains(message)));
+            let shown = root_message.into_iter().chain(loaded);
+            match last_editable(shown, &author.id, root.as_deref()) {
+                Some(message) => message.id.clone(),
+                None => return false,
+            }
+        };
+        self.start_edit(&id);
+        true
     }
 
     fn confirm_delete(self: &Rc<Self>, id: String) {
@@ -6662,6 +6728,27 @@ impl App {
     }
 }
 
+/// The message Up in an empty composer edits, as web's
+/// `lastEditableMessage`: the newest in `messages` (oldest first) that
+/// `author` wrote and could edit, among those the main list shows, or
+/// `thread`'s root and replies.
+fn last_editable<'a>(
+    messages: impl IntoIterator<Item = &'a Message>,
+    author: &str,
+    thread: Option<&str>,
+) -> Option<&'a Message> {
+    messages
+        .into_iter()
+        .filter(|message| match thread {
+            Some(root) => message.id == root || message.thread_root_id.as_deref() == Some(root),
+            None => message.is_channel_message(),
+        })
+        .filter(|message| {
+            message.author.id == author && !message.is_deleted() && message.forward.is_none()
+        })
+        .last()
+}
+
 /// Sends the delete once the dialog is confirmed.
 fn self_send_delete(app: &App, state: &State, chat_token: String, channel: String, id: String) {
     app.worker.send(Command::DeleteMessage {
@@ -6862,4 +6949,55 @@ pub fn popup_at(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget, at: Opti
         glib::idle_add_local_once(move || popover.unparent());
     });
     popover.popup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(id: &str, author: &str, extra: serde_json::Value) -> Message {
+        let mut json = serde_json::json!({
+            "id": id, "channelId": "channel", "seq": "1",
+            "createdAt": "2026-11-24T09:00:00Z", "clientMessageId": format!("client-{id}"),
+            "author": {"id": author, "name": author, "isGuest": false},
+            "content": {"version": 1, "type": "text", "text": id}
+        });
+        if let (Some(json), Some(extra)) = (json.as_object_mut(), extra.as_object()) {
+            json.extend(extra.clone());
+        }
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn up_edits_your_newest_editable_message_where_the_composer_is() {
+        let none = serde_json::Value::Null;
+        let messages = [
+            message("root", "me", none.clone()),
+            message(
+                "shown",
+                "me",
+                serde_json::json!({"threadRootId": "root", "broadcast": true}),
+            ),
+            message("hidden", "me", serde_json::json!({"threadRootId": "root"})),
+            message(
+                "deleted",
+                "me",
+                serde_json::json!({"deletedAt": "2026-11-24T09:01:00Z"}),
+            ),
+            message(
+                "forwarded",
+                "me",
+                serde_json::json!({"forward": {"message": null, "seq": "1"}}),
+            ),
+            message("theirs", "maya", none),
+        ];
+        let id = |author, thread| last_editable(&messages, author, thread).map(|m| m.id.as_str());
+        // The main list skips the hidden reply, your deleted and forwarded
+        // messages, and Maya's newer one.
+        assert_eq!(id("me", None), Some("shown"));
+        assert_eq!(id("me", Some("root")), Some("hidden"));
+        assert_eq!(id("maya", None), Some("theirs"));
+        assert_eq!(id("maya", Some("root")), None);
+        assert_eq!(id("me", Some("other")), None);
+    }
 }

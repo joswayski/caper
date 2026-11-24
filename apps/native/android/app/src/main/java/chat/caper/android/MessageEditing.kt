@@ -39,6 +39,20 @@ import kotlinx.coroutines.launch
 /** The draft with the caret after its last character, where editing continues. */
 private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.length))
 
+/**
+ * Up in an empty composer edits the viewer's newest message in that composer's conversation, as on
+ * web: the channel timeline's rows (top-level messages and replies also sent to the channel), or the
+ * thread [threadRootId]'s root and replies. Oldest first, as the history is kept.
+ */
+internal fun lastEditableMessage(messages: List<ChatMessage>, authorId: String?, threadRootId: String? = null): ChatMessage? {
+    if (authorId == null) return null
+    return messages.lastOrNull { message ->
+        val here = if (threadRootId != null) message.id == threadRootId || message.threadRootId == threadRootId
+            else message.threadRootId == null || message.broadcast
+        here && message.author.id == authorId && message.deletedAt == null && message.forward == null
+    }
+}
+
 @Composable internal fun MessageEditorDialog(message: ChatMessage, viewModel: CaperViewModel, close: () -> Unit) {
     var baseline by remember(message.id) { mutableStateOf(message) }
     var draft by remember(message.id) { mutableStateOf(draftAtEnd(message.content.text)) }
