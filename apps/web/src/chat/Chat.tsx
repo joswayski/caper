@@ -80,7 +80,9 @@ import { carriesFiles } from "./drop.ts";
 import type { ChatEmbed } from "./embeds.ts";
 import {
   MAX_ATTACHMENTS,
+  REMOVAL_GRACE_MS,
   AttachmentUpload,
+  fileSource,
   loadUploadSettings,
   refreshAttachmentUrls,
   rememberedUploadSettings,
@@ -784,6 +786,13 @@ export default function Chat({
   const setAttachError = (error: string | undefined, root?: string) =>
     setAttachErrors((current) => ({ ...current, [root ?? "channel"]: error }));
   const uploads = useRef(new Map<string, AttachmentUpload>());
+  /** Removed files still uploading for `REMOVAL_GRACE_MS`, by thread root and `fileSource`. */
+  const parked = useRef(
+    new Map<
+      string,
+      { draft: DraftAttachment; upload: AttachmentUpload; timer: ReturnType<typeof setTimeout>; release: () => void }
+    >(),
+  );
   const abandonUpload = useCallback((key: string) => {
     uploads.current.get(key)?.release(true);
     uploads.current.delete(key);
@@ -1116,6 +1125,12 @@ export default function Chat({
         if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
     }
     return () => {
+      // Removed files waiting out their grace period belong to this view only.
+      for (const entry of parked.current.values()) {
+        clearTimeout(entry.timer);
+        entry.release();
+      }
+      parked.current.clear();
       if (draftKey) stashStagedFiles(draftKey, { drafts: latestDrafts.current, uploads: uploads.current });
       else for (const key of uploads.current.keys()) abandonUpload(key);
       uploads.current = new Map();
@@ -1212,6 +1227,17 @@ export default function Chat({
       threadRootId,
     );
     for (const file of files.slice(0, room)) {
+      const source = fileSource(file);
+      const restored = parked.current.get(`${threadRootId ?? ""}|${source}`);
+      if (restored) {
+        // Removed moments ago: bring back its upload rather than start again.
+        clearTimeout(restored.timer);
+        parked.current.delete(`${threadRootId ?? ""}|${source}`);
+        uploads.current.set(restored.draft.key, restored.upload);
+        setDrafts((current) => [...current, { ...restored.draft, ...restored.upload.state, spoiler: undefined }]);
+        if (restored.upload.stale || restored.upload.state.error) void restored.upload.ensure().catch(() => {});
+        continue;
+      }
       const key = crypto.randomUUID();
       const localKind =
         file.type.startsWith("image/") && file.type !== "image/svg+xml"
@@ -1240,6 +1266,7 @@ export default function Chat({
         {
           key,
           threadRootId,
+          source,
           name: file.name,
           localUrl,
           localKind,
@@ -1298,11 +1325,29 @@ export default function Chat({
   };
 
   const removeDraft = (key: string) => {
-    abandonUpload(key);
-    // A removed file is never sent, so its preview can go now rather than when the page closes.
     const removed = latestDrafts.current.find((item) => item.key === key);
-    forgetLocalUrl(removed?.localUrl);
-    forgetLocalUrl(removed?.thumbnailUrl);
+    const upload = uploads.current.get(key);
+    uploads.current.delete(key);
+    // A removed file is never sent, so its preview can go now rather than when the page closes.
+    const release = () => {
+      upload?.release(true);
+      forgetLocalUrl(removed?.localUrl);
+      forgetLocalUrl(removed?.thumbnailUrl);
+    };
+    // An unedited file keeps uploading for a while, in case it is added straight back.
+    if (removed?.source && upload && !removed.edit && !removed.voice) {
+      const park = `${removed.threadRootId ?? ""}|${removed.source}`;
+      const previous = parked.current.get(park);
+      if (previous) {
+        clearTimeout(previous.timer);
+        previous.release();
+      }
+      const timer = setTimeout(() => {
+        parked.current.delete(park);
+        release();
+      }, REMOVAL_GRACE_MS);
+      parked.current.set(park, { draft: removed, upload, timer, release });
+    } else release();
     setDrafts((current) => current.filter((item) => item.key !== key));
   };
 

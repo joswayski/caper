@@ -101,15 +101,47 @@ import QuartzCore
     }
 }
 
-@MainActor private func stagedProgress(_ layer: CAShapeLayer, file: NativeStagedFile) {
-    layer.isHidden = file.busy == nil || file.failed
-    layer.strokeEnd = file.progress.flatMap { $0.isFinite ? min(1, max(0, $0)) : nil } ?? 0.75
-    let rotating = !layer.isHidden && file.progress == nil && !CaperAccessibility.reduceMotion
-    if rotating, layer.animation(forKey: "busy") == nil {
-        let animation = CABasicAnimation(keyPath: "transform.rotation.z")
-        animation.fromValue = 0; animation.toValue = Double.pi * 2; animation.duration = 1; animation.repeatCount = .infinity
-        layer.add(animation, forKey: "busy")
-    } else if !rotating { layer.removeAnimation(forKey: "busy") }
+/// The tile's ✕ and Edit faces sit on pictures, so they are dark with a chalk
+/// glyph in every theme, not themed.
+@MainActor private enum StagedFace {
+    static let blackout = CGColor(red: 9 / 255, green: 10 / 255, blue: 12 / 255, alpha: 0.72)
+    static let chalk = CGColor(red: 244 / 255, green: 244 / 255, blue: 246 / 255, alpha: 1)
+    static let rim = CGColor(red: 1, green: 1, blue: 1, alpha: 0.2)
+    static let shadow = CGColor(red: 0, green: 0, blue: 0, alpha: 0.35)
+}
+
+/// While a file prepares or uploads: a scrim over the tile and a centred ring
+/// filling clockwise from 12 o'clock (a spinning quarter while the fraction is
+/// unknown). Decoration only; the buttons carry the status text.
+@MainActor private final class StagedProgress {
+    let layer = CALayer()
+    private let track = CAShapeLayer(), fill = CAShapeLayer()
+    init() {
+        layer.backgroundColor = CGColor(red: 9 / 255, green: 10 / 255, blue: 12 / 255, alpha: 0.45); layer.cornerRadius = 8
+        for ring in [track, fill] { ring.fillColor = nil; ring.lineWidth = 3; ring.lineCap = .round; layer.addSublayer(ring) }
+        track.strokeColor = CGColor(red: 1, green: 1, blue: 1, alpha: 0.25); fill.strokeColor = StagedFace.chalk
+    }
+    func update(busy: Bool, fraction: Double?) {
+        layer.isHidden = !busy
+        // Nothing sent yet reads as waiting, so the ring turns instead of sitting empty.
+        let fraction = fraction.flatMap { $0.isFinite && $0 > 0 ? min(1, $0) : nil }
+        fill.strokeEnd = fraction ?? 0.25
+        let spinning = busy && fraction == nil && !CaperAccessibility.reduceMotion
+        if spinning, fill.animation(forKey: "busy") == nil {
+            let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+            animation.fromValue = 0; animation.toValue = Double.pi * 2; animation.duration = 1; animation.repeatCount = .infinity
+            fill.add(animation, forKey: "busy")
+        } else if !spinning { fill.removeAnimation(forKey: "busy") }
+    }
+    func layout(_ bounds: CGRect) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        layer.frame = bounds
+        // Angles grow clockwise on the tile's y-down layers, so this starts at 12 o'clock.
+        let path = CGMutablePath()
+        path.addArc(center: CGPoint(x: 14, y: 14), radius: 12.5, startAngle: -.pi / 2, endAngle: .pi * 1.5, clockwise: false)
+        for ring in [track, fill] { ring.frame = CGRect(x: bounds.midX - 14, y: bounds.midY - 14, width: 28, height: 28); ring.path = path }
+    }
 }
 
 /// Thumbnail loading is owned by a retained tile, never its render pass.
@@ -196,39 +228,36 @@ import AppKit
     private let thumbnail = StagedThumbnail()
     private let waveform = NativeVoiceWaveform(playedColor: AppKitKit.text.cgColor, unplayedColor: AppKitKit.muted.withAlphaComponent(0.45).cgColor)
     private var preview: AppKitKitButton!
-    private var remove: AppKitKitButton!
-    private var edit: AppKitKitButton!
+    private var remove: AppKitStagedFace!
+    private var edit: AppKitStagedFace!
     private var retry: AppKitKitButton!
     private let time = AppKitKit.label("", size: 11, color: AppKitKit.muted)
-    private let progress = CAShapeLayer()
+    private let progress = StagedProgress()
     override var isFlipped: Bool { true }
     init(_ file: NativeStagedFile) {
         self.file = file; super.init(frame: .zero); wantsLayer = true
         layer?.backgroundColor = AppKitKit.surface.cgColor; layer?.cornerRadius = 8; layer?.borderWidth = 1
         layer?.addSublayer(thumbnail.layer)
         layer?.addSublayer(waveform.layer)
+        layer?.addSublayer(progress.layer)
         preview = AppKitKitButton("", kind: .plain) { [weak self] in
             guard let self else { return }; if let voice = self.file.voice { VoiceMessagePlayer.shared.toggle(voice, chat: nil) } else { self.file.preview() }
         }
-        remove = corner("xmark") { [weak self] in self?.file.remove() }
-        edit = corner("pencil") { [weak self] in guard let self else { return }; if self.file.editable { self.file.preview() } else { self.showMenu() } }
-        retry = corner("arrow.clockwise") { [weak self] in self?.file.retry?() }
+        remove = AppKitStagedFace(symbol: "xmark") { [weak self] in self?.file.remove() }
+        edit = AppKitStagedFace(symbol: "pencil", label: "Edit") { [weak self] in guard let self else { return }; if self.file.editable { self.file.preview() } else { self.showMenu() } }
+        retry = AppKitKitButton("", kind: .plain) { [weak self] in self?.file.retry?() }
+        retry.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil); retry.imagePosition = .imageOnly
         [preview!, time, remove!, edit!, retry!].forEach { $0.translatesAutoresizingMaskIntoConstraints = true; addSubview($0) }
-        progress.fillColor = nil; progress.strokeColor = AppKitKit.terracottaBright.cgColor; progress.lineWidth = 2
-        remove.wantsLayer = true; remove.layer?.addSublayer(progress); update(file)
+        update(file)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { stop() }
     func stop() { if let voice = file.voice, VoiceMessagePlayer.shared.isCurrent(voice) { VoiceMessagePlayer.shared.stop() } }
-    private func corner(_ icon: String, action: @escaping () -> Void) -> AppKitKitButton {
-        let button = AppKitKitButton("", kind: .plain, action: action)
-        button.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil); button.imagePosition = .imageOnly
-        return button
-    }
     func update(_ file: NativeStagedFile) {
         self.file = file; thumbnail.update(file)
         let playing = file.voice.map { VoiceMessagePlayer.shared.isPlaying($0) } ?? false
-        preview.title = file.voice != nil ? (playing ? "Ⅱ" : "▶") : file.spoiler ? "Spoiler" : (file.kind == .file ? "File" : file.kind == .audio ? "Audio" : "")
+        // While busy the progress ring owns the centre.
+        preview.title = file.voice != nil ? (playing ? "Ⅱ" : "▶") : file.busy != nil ? "" : file.spoiler ? "Spoiler" : (file.kind == .file ? "File" : file.kind == .audio ? "Audio" : "")
         preview.setAccessibilityLabel(file.voice != nil ? (playing ? "Pause voice message" : "Play voice message") : "Preview \(file.safeName)")
         preview.setAccessibilityValue(file.accessibilityStatus); preview.toolTip = file.safeName
         remove.setAccessibilityLabel("Remove \(file.safeName)"); remove.setAccessibilityValue(file.accessibilityStatus)
@@ -239,7 +268,8 @@ import AppKit
         time.stringValue = file.voice.map { file.failed ? file.status : file.busy ?? VoiceDuration.playerLabel(durationMs: $0.durationMs, elapsedMs: VoiceMessagePlayer.shared.elapsed(for: $0)) } ?? ""
         time.isHidden = file.voice == nil
         layer?.borderColor = (file.failed ? AppKitKit.error : AppKitKit.border).cgColor
-        stagedProgress(progress, file: file)
+        // Voice chips keep their own "Uploading…" line instead of a scrim over the waveform.
+        progress.update(busy: file.busy != nil && !file.failed && file.voice == nil, fraction: file.progress)
         setAccessibilityIdentifier(file.voice == nil ? "staged-file-\(file.id)" : "voice-draft")
         needsLayout = true
     }
@@ -247,11 +277,12 @@ import AppKit
         super.layout(); thumbnail.layer.frame = bounds
         preview.frame = file.voice == nil ? bounds : NSRect(x: 6, y: 4, width: 36, height: 36)
         waveform.update(file.voice, frame: CGRect(x: 8, y: bounds.height - 48, width: max(0, bounds.width - 16), height: 18))
-        remove.frame = NSRect(x: max(0, bounds.width - 28), y: 0, width: 28, height: 28)
-        edit.frame = NSRect(x: 0, y: max(0, bounds.height - 28), width: 28, height: 28)
+        // Pointer targets hug the corners; each face is drawn 6pt inside the tile's edges.
+        remove.frame = NSRect(x: max(0, bounds.width - 36), y: 0, width: 36, height: 36)
+        edit.frame = NSRect(x: 0, y: max(0, bounds.height - 36), width: edit.targetWidth, height: 36)
         retry.frame = NSRect(x: bounds.midX - 17, y: bounds.midY - 17, width: 34, height: 34)
         time.frame = NSRect(x: 6, y: bounds.height - 24, width: max(0, bounds.width - 12), height: 20)
-        progress.frame = remove.bounds; progress.path = CGPath(ellipseIn: remove.bounds.insetBy(dx: 4, dy: 4), transform: nil)
+        progress.layout(bounds)
     }
     override func rightMouseDown(with event: NSEvent) { showMenu() }
     private func showMenu() {
@@ -264,6 +295,79 @@ import AppKit
     @objc private func editFile() { if file.removable { file.preview() } }
     @objc private func spoiler() { if file.removable { file.toggleSpoiler?() } }
     @objc private func removeFile() { if file.removable { file.remove() } }
+}
+
+/// A ✕ (top-right) or labelled Edit pill (bottom-left) drawn 6pt inside the
+/// tile's corner; the button itself is the larger pointer target there.
+@MainActor private final class AppKitStagedFace: NSButton {
+    private let glyph: NSImage?, label: NSAttributedString?, handler: () -> Void
+    private var hovered = false, pressed = false, tracking: NSTrackingArea?
+    override var isFlipped: Bool { true }
+    init(symbol: String, label: String? = nil, action: @escaping () -> Void) {
+        let chalk = NSColor(cgColor: StagedFace.chalk) ?? .white
+        glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 12, weight: label == nil ? .bold : .semibold).applying(NSImage.SymbolConfiguration(paletteColors: [chalk])))
+        self.label = label.map { NSAttributedString(string: $0, attributes: [.font: AppKitKit.font(12, weight: .semibold), .foregroundColor: chalk]) }
+        handler = action; super.init(frame: .zero)
+        title = ""; isBordered = false; imagePosition = .noImage; focusRingType = .none
+        target = self; self.action = #selector(fire)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func fire() { handler() }
+    /// 24 high; the pill is 7 leading + pencil + 4 + "Edit" + 9 trailing.
+    private var faceWidth: CGFloat { label.map { 7 + (glyph?.size.width ?? 12) + 4 + ceil($0.size().width) + 9 } ?? 24 }
+    var targetWidth: CGFloat { faceWidth + 12 }
+    private var face: NSRect {
+        label == nil ? NSRect(x: bounds.width - 30, y: 6, width: 24, height: 24) : NSRect(x: 6, y: bounds.height - 30, width: faceWidth, height: 24)
+    }
+    private var focused: Bool { window?.firstResponder === self && window?.isKeyWindow == true }
+    override func draw(_ dirtyRect: NSRect) {
+        let face = face, path = NSBezierPath(roundedRect: face, xRadius: 12, yRadius: 12)
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow(); shadow.shadowOffset = NSSize(width: 0, height: -1); shadow.shadowBlurRadius = 3
+        shadow.shadowColor = NSColor(cgColor: StagedFace.shadow); shadow.set()
+        (NSColor(cgColor: StagedFace.blackout) ?? .black).setFill(); path.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        if hovered || pressed { NSColor.white.withAlphaComponent(pressed ? 0.2 : 0.12).setFill(); path.fill() }
+        (NSColor(cgColor: StagedFace.rim) ?? .white).setStroke()
+        let rim = NSBezierPath(roundedRect: face.insetBy(dx: 0.5, dy: 0.5), xRadius: 11.5, yRadius: 11.5); rim.lineWidth = 1; rim.stroke()
+        if focused && isEnabled {
+            AppKitKit.terracottaBright.setStroke()
+            let ring = NSBezierPath(roundedRect: face.insetBy(dx: -2, dy: -2), xRadius: 14, yRadius: 14); ring.lineWidth = 2; ring.stroke()
+        }
+        if let glyph {
+            let x = label == nil ? face.midX - glyph.size.width / 2 : face.minX + 7
+            glyph.draw(in: NSRect(x: x, y: face.midY - glyph.size.height / 2, width: glyph.size.width, height: glyph.size.height),
+                       from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+        if let label {
+            let size = label.size()
+            label.draw(at: NSPoint(x: face.minX + 7 + (glyph?.size.width ?? 12) + 4, y: face.midY - size.height / 2))
+        }
+    }
+    override var acceptsFirstResponder: Bool { isEnabled && KeyboardTabOrder.keyboardFocusAllowed }
+    override var canBecomeKeyView: Bool { acceptsFirstResponder && !isHiddenOrHasHiddenAncestor && window != nil }
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 48 else { super.keyDown(with: event); return }
+        KeyboardTabOrder.step(in: window, forward: !event.modifierFlags.contains(.shift), from: self)
+    }
+    override func becomeFirstResponder() -> Bool { needsDisplay = true; return super.becomeFirstResponder() }
+    override func resignFirstResponder() -> Bool { needsDisplay = true; return super.resignFirstResponder() }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { if AppKitKit.windowActive(window) { hovered = true; needsDisplay = true } }
+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        pressed = true; needsDisplay = true
+        super.mouseDown(with: event)
+        pressed = false; needsDisplay = true
+    }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
 }
 #elseif os(iOS)
 import UIKit
@@ -314,24 +418,29 @@ import UIKit
     private var file: NativeStagedFile
     private let thumbnail = StagedThumbnail()
     private let waveform = NativeVoiceWaveform(playedColor: UIColor(CaperTheme.text).cgColor, unplayedColor: UIColor(CaperTheme.muted).withAlphaComponent(0.45).cgColor)
-    private let preview = UIButton(type: .custom), remove = UIButton(type: .system), edit = UIButton(type: .system), retry = UIButton(type: .system)
+    private let preview = UIButton(type: .custom), remove = UIButton(type: .custom), edit = UIButton(type: .custom), retry = UIButton(type: .system)
     private let time = UIKitMessageDialog.label("", size: 11)
-    private let progress = CAShapeLayer()
+    private let progress = StagedProgress()
     init(_ file: NativeStagedFile) {
         self.file = file; super.init(frame: .zero); backgroundColor = UIColor(CaperTheme.surface); layer.cornerRadius = 8; layer.borderWidth = 1
         layer.addSublayer(thumbnail.layer)
         layer.addSublayer(waveform.layer)
+        layer.addSublayer(progress.layer)
         [preview, time, remove, edit, retry].forEach(addSubview)
         preview.addAction(UIAction { [weak self] _ in guard let self else { return }; if let voice = self.file.voice { VoiceMessagePlayer.shared.toggle(voice, chat: nil) } else { self.file.preview() } }, for: .touchUpInside)
-        remove.setImage(UIImage(systemName: "xmark"), for: .normal); edit.setImage(UIImage(systemName: "pencil"), for: .normal); retry.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+        retry.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
         remove.addAction(UIAction { [weak self] _ in self?.file.remove() }, for: .touchUpInside)
         edit.addAction(UIAction { [weak self] _ in if self?.file.editable == true { self?.file.preview() } }, for: .touchUpInside)
         retry.addAction(UIAction { [weak self] _ in self?.file.retry?() }, for: .touchUpInside)
-        for button in [remove, edit, retry] { button.tintColor = UIColor(CaperTheme.text) }
-        // Remove and Edit sit on small dark faces, as on Android, so they read over pale pictures.
-        // Face and glyph are one image, so nothing can draw between them.
-        remove.setImage(Self.face("xmark"), for: .normal); edit.setImage(Self.face("pencil"), for: .normal)
-        progress.fillColor = nil; progress.strokeColor = UIColor(CaperTheme.terracottaBright).cgColor; progress.lineWidth = 2; remove.layer.addSublayer(progress)
+        retry.tintColor = UIColor(CaperTheme.text)
+        // Remove and Edit sit on small dark faces so they read over pale pictures. Face, glyph and
+        // label are one image, so nothing can draw between them; the shadow follows the face.
+        for button in [remove, edit] {
+            button.setImage(Self.face(edit: button === edit, wash: 0), for: .normal); button.setImage(Self.face(edit: button === edit, wash: 0.2), for: .highlighted)
+            button.layer.shadowColor = UIColor.black.cgColor; button.layer.shadowOpacity = 0.35
+            button.layer.shadowOffset = CGSize(width: 0, height: 1); button.layer.shadowRadius = 1.5
+            button.addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:))))
+        }
         preview.addInteraction(UIContextMenuInteraction(delegate: self)); update(file)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -340,7 +449,8 @@ import UIKit
     func update(_ file: NativeStagedFile) {
         self.file = file; thumbnail.update(file)
         let playing = file.voice.map { VoiceMessagePlayer.shared.isPlaying($0) } ?? false
-        preview.setTitle(file.voice != nil ? nil : file.spoiler ? "Spoiler" : file.kind == .file ? "File" : file.kind == .audio ? "Audio" : nil, for: .normal)
+        // While busy the progress ring owns the centre.
+        preview.setTitle(file.voice != nil || file.busy != nil ? nil : file.spoiler ? "Spoiler" : file.kind == .file ? "File" : file.kind == .audio ? "Audio" : nil, for: .normal)
         preview.setImage(file.voice == nil ? nil : UIImage(systemName: playing ? "pause.fill" : "play.fill"), for: .normal)
         preview.accessibilityLabel = file.voice != nil ? (playing ? "Pause voice message" : "Play voice message") : "Preview \(file.safeName)"
         preview.accessibilityValue = file.accessibilityStatus
@@ -353,28 +463,53 @@ import UIKit
         time.text = file.voice.map { file.failed ? file.status : file.busy ?? VoiceDuration.playerLabel(durationMs: $0.durationMs, elapsedMs: VoiceMessagePlayer.shared.elapsed(for: $0)) }
         time.isHidden = file.voice == nil
         layer.borderColor = UIColor(file.failed ? CaperTheme.error : CaperTheme.border).cgColor
-        stagedProgress(progress, file: file)
+        // Voice chips keep their own "Uploading…" line instead of a scrim over the waveform.
+        progress.update(busy: file.busy != nil && !file.failed && file.voice == nil, fraction: file.progress)
         accessibilityIdentifier = file.voice == nil ? "staged-file-\(file.id)" : "voice-draft"; setNeedsLayout()
     }
     override func layoutSubviews() {
         super.layoutSubviews(); thumbnail.layer.frame = bounds
         preview.frame = file.voice == nil ? bounds : CGRect(x: 0, y: 0, width: 44, height: 44)
         waveform.update(file.voice, frame: CGRect(x: 8, y: bounds.height - 48, width: max(0, bounds.width - 16), height: 18))
+        // 44pt targets anchored to their corners; each image draws its face 6pt inside the tile's edges.
+        let width = edit.image(for: .normal)?.size.width ?? 44
         remove.frame = CGRect(x: max(0, bounds.width - 44), y: 0, width: 44, height: 44)
-        edit.frame = CGRect(x: 0, y: max(0, bounds.height - 44), width: 44, height: 44)
+        edit.frame = CGRect(x: 0, y: max(0, bounds.height - 44), width: width, height: 44)
+        for (button, face) in [(remove, CGRect(x: 14, y: 6, width: 24, height: 24)), (edit, CGRect(x: 6, y: 14, width: width - 12, height: 24))] {
+            button.layer.shadowPath = UIBezierPath(roundedRect: face, cornerRadius: 12).cgPath
+            button.focusEffect = UIFocusHaloEffect(roundedRect: face, cornerRadius: 12, curve: .continuous)
+        }
         retry.frame = CGRect(x: bounds.midX - 22, y: bounds.midY - 22, width: 44, height: 44)
         time.frame = CGRect(x: 6, y: bounds.height - 24, width: max(0, bounds.width - 12), height: 20)
-        progress.frame = remove.bounds; progress.path = CGPath(ellipseIn: remove.bounds.insetBy(dx: 11, dy: 11), transform: nil)
+        progress.layout(bounds)
     }
-    /// A 22pt dark circle with a hairline rim and a white symbol, drawn as it is (not tinted).
-    private static func face(_ symbol: String) -> UIImage {
-        UIGraphicsImageRenderer(size: CGSize(width: 22, height: 22)).image { _ in
-            let circle = UIBezierPath(ovalIn: CGRect(x: 0.5, y: 0.5, width: 21, height: 21))
-            UIColor(CaperTheme.blackout).withAlphaComponent(0.78).setFill(); circle.fill()
-            UIColor.white.withAlphaComponent(0.12).setStroke(); circle.lineWidth = 1; circle.stroke()
-            let glyph = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold))?
-                .withTintColor(UIColor(CaperTheme.text), renderingMode: .alwaysOriginal)
-            if let glyph { glyph.draw(at: CGPoint(x: (22 - glyph.size.width) / 2, y: (22 - glyph.size.height) / 2)) }
+    @objc private func hovered(_ recognizer: UIHoverGestureRecognizer) {
+        guard let button = recognizer.view as? UIButton else { return }
+        switch recognizer.state {
+        case .began: button.setImage(Self.face(edit: button === edit, wash: 0.12), for: .normal)
+        case .ended, .cancelled, .failed: button.setImage(Self.face(edit: button === edit, wash: 0), for: .normal)
+        default: break
+        }
+    }
+    /// The ✕ (a 24pt circle in the top-right) or the Edit pill (pencil and "Edit", bottom-left),
+    /// Blackout @ 72% with a white @ 20% rim, drawn as it is (not tinted) in a 44pt-high image;
+    /// `wash` lightens it for hover and press.
+    private static func face(edit: Bool, wash: CGFloat) -> UIImage {
+        let chalk = UIColor(cgColor: StagedFace.chalk)
+        let glyph = UIImage(systemName: edit ? "pencil" : "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: edit ? .semibold : .bold))?
+            .withTintColor(chalk, renderingMode: .alwaysOriginal)
+        let label = edit ? NSAttributedString(string: "Edit", attributes: [.font: UIFont(name: "Figtree-Bold", size: 12) ?? UIFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: chalk]) : nil
+        let glyphWidth = glyph?.size.width ?? 12
+        let faceWidth = label.map { 7 + glyphWidth + 4 + ceil($0.size().width) + 9 } ?? 24
+        let face = edit ? CGRect(x: 6, y: 14, width: faceWidth, height: 24) : CGRect(x: 14, y: 6, width: 24, height: 24)
+        return UIGraphicsImageRenderer(size: CGSize(width: edit ? faceWidth + 12 : 44, height: 44)).image { _ in
+            let path = UIBezierPath(roundedRect: face, cornerRadius: 12)
+            UIColor(cgColor: StagedFace.blackout).setFill(); path.fill()
+            if wash > 0 { UIColor.white.withAlphaComponent(wash).setFill(); path.fill() }
+            let rim = UIBezierPath(roundedRect: face.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 11.5)
+            UIColor(cgColor: StagedFace.rim).setStroke(); rim.lineWidth = 1; rim.stroke()
+            if let glyph { glyph.draw(at: CGPoint(x: edit ? face.minX + 7 : face.midX - glyph.size.width / 2, y: face.midY - glyph.size.height / 2)) }
+            if let label { label.draw(at: CGPoint(x: face.minX + 7 + glyphWidth + 4, y: face.midY - label.size().height / 2)) }
         }.withRenderingMode(.alwaysOriginal)
     }
     private func menu() -> UIMenu {

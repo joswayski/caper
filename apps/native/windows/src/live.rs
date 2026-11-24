@@ -425,6 +425,9 @@ pub struct Live {
     /// the server's compression settings once uploads are known to work,
     /// and own decoded images to show for sent attachments.
     pub drafts: Vec<crate::uploads::Draft>,
+    /// Removed files waiting `REMOVAL_GRACE` to be added again, by channel
+    /// and thread, their uploads still running.
+    parked: caper_client::drafts::Parked<(String, Option<String>), crate::uploads::Draft>,
     draft_keys: u64,
     edit_upload: Option<(u64, crate::uploads::Draft)>,
     /// The last dictation sent, so only its answer is used.
@@ -755,6 +758,7 @@ impl Live {
             unread_spaces: Vec::new(),
             unread_revision: 0,
             drafts: Vec::new(),
+            parked: Default::default(),
             draft_keys: 0,
             edit_upload: None,
             dictations: 0,
@@ -841,6 +845,7 @@ impl Live {
         }
         self.profile_drafts.clear();
         self.discard_voice_sends();
+        self.release_parked();
         if let Some((_, draft)) = self.edit_upload.take() {
             draft.upload.abandon();
         }
@@ -2265,7 +2270,21 @@ impl Live {
             return Some(caper_client::drafts::room_error(0));
         }
         let error = (files.len() > room).then(|| caper_client::drafts::room_error(room));
+        let target = (channel.clone(), root.map(str::to_owned));
         for (path, scratch) in files.into_iter().take(room) {
+            let source = scratch
+                .is_none()
+                .then(|| caper_client::drafts::source_key(&path))
+                .flatten();
+            // The same file removed moments ago comes back as it was.
+            if let Some(mut draft) = source
+                .as_ref()
+                .and_then(|source| self.parked.restore(&target, source))
+            {
+                draft.upload.spoiler = false;
+                self.drafts.push(draft);
+                continue;
+            }
             self.draft_keys += 1;
             let name = if scratch.is_some() {
                 "Pasted image.png".to_owned()
@@ -2281,6 +2300,7 @@ impl Live {
                 Some(path),
             );
             upload.source_scratch = scratch;
+            upload.source_key = source;
             self.worker
                 .send(upload.command(token.clone(), settings.clone()));
             self.drafts.push(crate::uploads::Draft::new(upload));
@@ -2441,8 +2461,9 @@ impl Live {
         (before.as_ref() != preview.card(), wait)
     }
 
-    /// Removes a composer file, stopping its upload and giving up the
-    /// server's copy.
+    /// Removes a composer file. An unedited picked file is parked for
+    /// `REMOVAL_GRACE`, still uploading, in case it is added again; anything
+    /// else stops its upload and gives up the server's copy now.
     pub fn remove_draft(&mut self, key: u64) {
         self.cancel_draft_edit(key);
         if let Some(i) = self.drafts.iter().position(|d| d.upload.key == key) {
@@ -2450,12 +2471,47 @@ impl Live {
                 return;
             }
             let draft = self.drafts.remove(i);
-            draft.upload.abandon();
-            if !draft.auto_send.as_ref().is_some_and(|s| s.attempted)
-                && let Some(file) = draft.upload.attachment
+            match draft
+                .upload
+                .parkable()
+                .filter(|_| draft.auto_send.is_none())
             {
-                self.cancel_assets(vec![file.id]);
+                Some(source) => {
+                    let target = (
+                        draft.upload.channel.clone(),
+                        draft.upload.thread_root_id.clone(),
+                    );
+                    self.parked
+                        .park(target, source, draft, std::time::Instant::now());
+                }
+                None => self.release_draft(draft),
             }
+        }
+    }
+
+    /// Stops a removed file's upload and gives up the server's copy.
+    fn release_draft(&self, draft: crate::uploads::Draft) {
+        draft.upload.abandon();
+        if !draft.auto_send.as_ref().is_some_and(|s| s.attempted)
+            && let Some(file) = draft.upload.attachment
+        {
+            self.cancel_assets(vec![file.id]);
+        }
+    }
+
+    /// Releases parked files whose grace ended by `now`; how long until the
+    /// next one's ends.
+    pub fn release_expired(&mut self, now: std::time::Instant) -> Option<Duration> {
+        for draft in self.parked.expired(now) {
+            self.release_draft(draft);
+        }
+        self.parked.next_due(now)
+    }
+
+    /// Releases every parked file now: signing out or leaving.
+    fn release_parked(&mut self) {
+        for draft in self.parked.take_all() {
+            self.release_draft(draft);
         }
     }
 
@@ -4652,6 +4708,7 @@ impl Live {
                 // Fence late history/gateway responses and discard the departed
                 // conversation even when there is nothing else to navigate to.
                 self.discard_voice_sends();
+                self.release_parked();
                 self.generation += 1;
                 self.navigation += 1;
                 self.worker.send(Command::StopGateway);
@@ -5340,6 +5397,7 @@ impl Live {
                     // Events still in flight for the previous conversation
                     // (its gateway, sends) carry the old generation and drop.
                     self.discard_voice_sends();
+                    self.release_parked();
                     self.generation += 1;
                     let current = self.generation;
                     // A DM has no space of its own: the open space's
@@ -6475,7 +6533,12 @@ impl Live {
                     }
                     return;
                 }
-                let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) else {
+                let Some(d) = self
+                    .drafts
+                    .iter_mut()
+                    .chain(self.parked.items_mut())
+                    .find(|d| d.upload.key == key)
+                else {
                     // Removed while it uploaded: give up the server's copy.
                     if let caper_client::worker::UploadUpdate::Finished(Ok(file)) = update {
                         self.worker.send(Command::CancelAssets {

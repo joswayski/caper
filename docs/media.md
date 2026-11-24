@@ -1133,13 +1133,27 @@ media, PDF, ZIP and generic binary data, preferring GIF over PNG.
 
 ### Editing attachments before sending
 
-A pencil on a draft's tile opens a full-window editor for still images and videos
-before they are sent, on every client. Each tile carries two small round buttons
-on opposite corners: Remove (X) top right and Edit (pencil) bottom left. Faces
-are 22 px (24 on touch) with 44 px/pt touch targets (48dp on Android). While a
-file prepares or uploads, a progress ring wraps the X; the figure is in its
-accessible label. A failed upload shows one centred eggshell Retry button; a
-spoilered tile is blurred with a centred crossed-out eye.
+Edit on a draft's tile opens a full-window editor for still images and videos
+before they are sent, on every client. Each tile carries two buttons on opposite
+corners, on solid dark faces (Blackout at 72%, a white rim and a soft shadow,
+with a light glyph in every theme) so they read over any picture: a round 24 px
+Remove (X) top right and an **Edit** pill (pencil and the word) bottom left,
+each inset 6 px, with 44 px/pt touch targets (48dp on Android). While a file
+prepares or uploads, the tile dims and a 28 px ring in its centre fills
+clockwise (a spinning arc while the progress is unknown); Remove stays usable,
+and the figure is in the accessible label. A failed upload shows one centred
+eggshell Retry button; a spoilered tile is blurred with a centred crossed-out eye.
+
+**Removing is undoable for 30 seconds.** Removing an unedited file (Remove, the
+menu, the editor or deselecting it in an attach drawer) hides it at once but
+keeps its upload running for 30 seconds. Adding the same file back to the same
+composer in that time restores it, upload and progress included, instead of
+uploading it again. After that, or when the conversation's staged files are
+discarded, it is released as before (`POST /api/assets/{id}/cancel`). The same
+file is the photo library item on iOS, the content URI on Android, the path,
+size and modification time on desktop, and the name, size, type and
+modification time on web. Edited files, voice messages and camera captures are
+released at once.
 
 Edit, like a tap on the picture, opens the editor for viewing with no tool
 chosen. Its tool row is always **Spoiler** | **Crop** **Draw** **Text** |
@@ -1182,7 +1196,7 @@ cancels that file's upload (`POST /api/assets/{id}/cancel`) and prepares the
 The draft keeps the original and a description of the edit, so reopening shows
 the earlier edits still editable and edits never stack generation loss. The
 profile card composer, which uploads at Send, applies the edit when it prepares
-the file. The pencil is hidden while a send carrying the files is pending.
+the file. Edit is hidden while a send carrying the files is pending.
 
 **Never the unedited file.** An edit that cannot be applied (undecodable image, no
 H.264 encoder, failed transcode) fails the tile with \"Couldn’t apply your
@@ -1212,7 +1226,7 @@ crops, when a file counts as edited, and which lines an eraser touches).
   cannot tone map HDR, editing fails. Audio is kept.
 - Editable: still JPEG, PNG, WebP, AVIF, HEIC/HEIF, BMP and TIFF the platform
   decodes, and videos it can transcode. GIFs, animated WebP/PNG, audio and other
-  files show no pencil.
+  files show no Edit pill.
 
 The server sees an ordinary upload.
 

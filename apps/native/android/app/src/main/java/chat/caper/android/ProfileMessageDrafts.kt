@@ -45,9 +45,14 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
     private val uploader = AttachmentUploader(api)
     private val uploadLocks = mutableMapOf<String, Mutex>()
     private val voices = mutableMapOf<String, WaitingVoice>()
+    /** Removed files in their grace period: still prepared and uploading, but never shown or sent. */
+    private val parked = ParkedDrafts<String>()
     @Volatile private var epoch = 0L
 
     operator fun get(person: String): ProfileMessageDraft = mutable.value[person] ?: ProfileMessageDraft()
+
+    /** [person]'s file [key], staged or parked. */
+    private fun findFile(person: String, key: String): DraftAttachmentUi? = get(person).files.find { it.key == key } ?: parked[key]
 
     fun text(person: String, text: String) {
         if (!get(person).editable) return
@@ -68,6 +73,7 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
     }
 
     fun updateFile(person: String, key: String, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
+        parked.update(key, change)
         mutable.update { drafts ->
             val draft = drafts[person] ?: return@update drafts
             drafts + (person to draft.copy(files = draft.files.map { file -> if (file.key == key) change(file) else file }))
@@ -75,7 +81,7 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
     }
 
     fun ready(person: String, key: String, file: PreparedAttachment) {
-        if (get(person).files.any { it.key == key }) prepared[key] = file
+        if (findFile(person, key) != null) prepared[key] = file
     }
 
     /** An edited file prepares again; until then it cannot be sent. */
@@ -90,13 +96,32 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         return true
     }
 
+    /** Removes [key] but keeps it prepared and uploading (see [ParkedDrafts]); false when it must be released now. */
+    fun park(person: String, key: String): Boolean {
+        val file = get(person).files.find { it.key == key }
+        if (!get(person).editable || file == null || !parked.park(person, file)) return false
+        update(person) { it.copy(files = it.files.filter { staged -> staged.key != key }, error = null) }
+        return true
+    }
+
+    /** Puts back the file parked for [person] from [source], at the end; null when there is none. */
+    fun restore(person: String, source: String): DraftAttachmentUi? {
+        if (!get(person).editable) return null
+        val file = parked.restore(person, source) ?: return null
+        update(person) { it.copy(files = it.files + file, error = null) }
+        return file
+    }
+
+    /** Takes out parked [key] when its grace period ends, to release. */
+    fun release(key: String): DraftAttachmentUi? = parked.release(key)?.also { prepared.remove(key) }
+
     /**
      * Logout invalidates in-flight completions as well as every person's text, files, retry ID and
      * waiting voice message (returned like a file, so its upload is cancelled and its copy deleted).
      */
     fun clear(): List<DraftAttachmentUi> {
         ++epoch
-        val files = mutable.value.values.flatMap { it.files } +
+        val files = mutable.value.values.flatMap { it.files } + parked.releaseAll() +
             voices.values.map { DraftAttachmentUi(it.key, VoiceMessages.LABEL, "audio", attachment = it.attachment) }
         mutable.value = emptyMap()
         prepared.clear(); conversations.clear(); pending.clear(); uploadLocks.clear(); voices.clear()
@@ -118,7 +143,7 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
             check(latest?.incoming != true) { "Open conversation and accept this message request before replying." }
         }
         writable()
-        if (keys.isNotEmpty() && get(person).files.none { it.key in keys }) throw CancellationException("Draft removed.")
+        if (keys.isNotEmpty() && keys.none { findFile(person, it) != null }) throw CancellationException("Draft removed.")
         val conversation = directs().firstOrNull {
             if (id != null) it.peer.id == id else it.peer.username.equals(username, ignoreCase = true)
         } ?: conversations[person] ?: run {
@@ -164,7 +189,7 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
 
     private suspend fun uploadFiles(person: String, channel: String, token: String, keys: Set<String>, request: Long, writable: () -> Unit) {
         keys.forEach { key ->
-            val file = get(person).files.find { it.key == key } ?: return@forEach
+            val file = findFile(person, key) ?: return@forEach
             val stale = file.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
             // Never replace the attachments in an uncertain send's exact retry payload.
             if (file.attachment != null && (!stale || get(person).uncertain)) return@forEach
@@ -176,7 +201,7 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
                 val attachment = uploader.upload(token, channel, source) { progress ->
                     if (request == epoch && prepared[key] === source) updateFile(person, key) { it.copy(progress = progress) }
                 }
-                if (request != epoch || prepared[key] !== source || get(person).files.none { it.key == key }) {
+                if (request != epoch || prepared[key] !== source || findFile(person, key) == null) {
                     api.cancelAsset(token, attachment.id)
                     throw CancellationException("Draft replaced.")
                 }

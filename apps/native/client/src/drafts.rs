@@ -2,10 +2,10 @@
 //! Clients keep their own thumbnails and widgets beside it; the upload's
 //! state, its status words and when it must go up again live here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::compress::Compression;
 use crate::model::{Attachment, AttachmentKind};
@@ -15,6 +15,91 @@ use crate::worker::{Command, UploadUpdate};
 /// Uploads the server has not had sent with a message expire after a day;
 /// an hour's margin uploads them again before that.
 const FRESH: Duration = Duration::from_secs(23 * 60 * 60);
+
+/// How long a removed file waits, still uploading or uploaded, for the
+/// same file to be added to the same composer again.
+pub const REMOVAL_GRACE: Duration = Duration::from_secs(30);
+
+/// What recognises the same picked file added again: its canonical path,
+/// size and modification time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceKey {
+    path: PathBuf,
+    size: u64,
+    modified: Option<SystemTime>,
+}
+
+/// The file at `path` as a `SourceKey`, or None when it cannot be read.
+pub fn source_key(path: &Path) -> Option<SourceKey> {
+    let path = std::fs::canonicalize(path).ok()?;
+    let metadata = std::fs::metadata(&path).ok()?;
+    Some(SourceKey {
+        size: metadata.len(),
+        modified: metadata.modified().ok(),
+        path,
+    })
+}
+
+/// Removed files kept for `REMOVAL_GRACE`, by composer target and source:
+/// adding the same file there again restores one, and the rest are released
+/// as Remove releases a file once their time runs out.
+pub struct Parked<K, T> {
+    entries: Vec<(K, SourceKey, Instant, T)>,
+}
+
+impl<K, T> Default for Parked<K, T> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<K: PartialEq, T> Parked<K, T> {
+    pub fn park(&mut self, target: K, source: SourceKey, item: T, now: Instant) {
+        self.entries
+            .push((target, source, now + REMOVAL_GRACE, item));
+    }
+
+    /// The file parked for `target` from `source`, which leaves the park.
+    pub fn restore(&mut self, target: &K, source: &SourceKey) -> Option<T> {
+        let i = self
+            .entries
+            .iter()
+            .position(|(k, s, ..)| k == target && s == source)?;
+        Some(self.entries.remove(i).3)
+    }
+
+    /// The files whose grace ended by `now`, for the caller to release.
+    pub fn expired(&mut self, now: Instant) -> Vec<T> {
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|(_, _, due, _)| *due <= now);
+        self.entries = kept;
+        gone.into_iter().map(|(.., item)| item).collect()
+    }
+
+    /// Every parked file, for the caller to release at once.
+    pub fn take_all(&mut self) -> Vec<T> {
+        std::mem::take(&mut self.entries)
+            .into_iter()
+            .map(|(.., item)| item)
+            .collect()
+    }
+
+    /// How long until the next file's grace ends, or None with none parked.
+    pub fn next_due(&self, now: Instant) -> Option<Duration> {
+        self.entries
+            .iter()
+            .map(|(_, _, due, _)| due.saturating_duration_since(now))
+            .min()
+    }
+
+    /// Parked files still take their upload's events.
+    pub fn items_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.entries.iter_mut().map(|(.., item)| item)
+    }
+}
 
 pub struct Upload {
     /// Matches upload events; saving an edit restarts the upload with a new one.
@@ -37,6 +122,9 @@ pub struct Upload {
     pub source_scratch: Option<Arc<Scratch>>,
     /// The picked file's size; 0 until the file was read.
     pub source_size: u64,
+    /// The picked file on disk as it was added, which removing it parks
+    /// under; None for pastes, captures and recordings.
+    pub source_key: Option<SourceKey>,
     /// What is stored after compression, once prepared.
     pub stored_size: Option<u64>,
     /// Video compression before upload, 0–1, while it runs.
@@ -54,7 +142,7 @@ pub struct Upload {
     pub cancel: Arc<AtomicBool>,
 }
 
-/// What a staged file's progress ring shows.
+/// What a staged file's busy ring shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Progress {
     Known(f32),
@@ -84,6 +172,7 @@ impl Upload {
             edit: None,
             source_scratch: None,
             source_size: 0,
+            source_key: None,
             stored_size: None,
             compressing: None,
             progress: 0.0,
@@ -138,6 +227,14 @@ impl Upload {
         self.prepared
             .as_ref()
             .filter(|prepared| prepared.voice.is_some())
+    }
+
+    /// What removing this file parks it under: only an unedited picked
+    /// file has one; anything else is released at once.
+    pub fn parkable(&self) -> Option<SourceKey> {
+        self.source_key.clone().filter(|_| {
+            self.edit.is_none() && self.source_scratch.is_none() && self.voice().is_none()
+        })
     }
 
     /// The uploaded file as the message sends it, with the composer's
@@ -233,7 +330,7 @@ impl Upload {
     }
 
     /// The status for the file's label and hover text, and the progress its
-    /// Remove ring shows while unfinished: packing first when that reports a
+    /// busy ring shows while unfinished: packing first when that reports a
     /// fraction, then sending.
     pub fn status(&self) -> (String, Progress) {
         if let Some(error) = &self.error {
@@ -252,7 +349,12 @@ impl Upload {
         } else {
             (
                 format!("Sending {}%", (self.progress * 100.0).round() as u32),
-                Progress::Known(self.progress),
+                // Nothing sent yet reads as waiting, so the ring turns instead of sitting empty.
+                if self.progress > 0.0 {
+                    Progress::Known(self.progress)
+                } else {
+                    Progress::Unknown
+                },
             )
         }
     }
@@ -338,6 +440,7 @@ mod tests {
             stored_size: 4000,
         });
         assert_eq!(file.kind, AttachmentKind::Video);
+        assert_eq!(file.status(), ("Sending 0%".into(), Progress::Unknown));
         file.apply(UploadUpdate::Progress(0.6));
         file.apply(UploadUpdate::Progress(0.4));
         assert_eq!(file.status(), ("Sending 60%".into(), Progress::Known(0.6)));
@@ -377,6 +480,55 @@ mod tests {
         assert_eq!(file.status(), (String::new(), Progress::Known(1.0)));
         file.spoiler = true;
         assert!(file.send_attachment().is_some_and(|a| a.spoiler));
+    }
+
+    #[test]
+    fn parked_files_restore_for_their_own_target_until_the_grace_ends() {
+        let scratch = Scratch::new("png");
+        std::fs::write(scratch.path(), b"picture").unwrap();
+        let key = source_key(scratch.path()).unwrap();
+        assert_eq!(key.size, 7);
+        assert_eq!(source_key(Path::new("/no/such/file.png")), None);
+        let other = SourceKey {
+            path: "/elsewhere.png".into(),
+            ..key.clone()
+        };
+        let now = Instant::now();
+        let mut parked = Parked::default();
+        parked.park(("c", None), key.clone(), 1, now);
+        parked.park(("c", Some("root")), key.clone(), 2, now);
+        assert_eq!(parked.next_due(now), Some(REMOVAL_GRACE));
+        // Another file, or the same file in another composer, is not it.
+        assert_eq!(parked.restore(&("c", None), &other), None);
+        assert_eq!(parked.restore(&("d", None), &key), None);
+        assert_eq!(parked.restore(&("c", None), &key), Some(1));
+        assert_eq!(parked.restore(&("c", None), &key), None);
+        // Parked files still take their upload's events.
+        assert_eq!(parked.items_mut().collect::<Vec<_>>(), [&mut 2]);
+        // A file parked again later waits its own full grace.
+        let later = now + Duration::from_secs(10);
+        parked.park(("c", None), key.clone(), 3, later);
+        let ended = now + REMOVAL_GRACE;
+        assert!(parked.expired(ended - Duration::from_millis(1)).is_empty());
+        assert_eq!(parked.expired(ended), [2]);
+        assert_eq!(parked.next_due(ended), Some(Duration::from_secs(10)));
+        assert_eq!(parked.take_all(), [3]);
+        assert_eq!(parked.next_due(ended), None);
+    }
+
+    #[test]
+    fn only_unedited_picked_files_park() {
+        let scratch = Scratch::new("txt");
+        std::fs::write(scratch.path(), b"notes").unwrap();
+        let mut file = Upload::picked(1, "c".into(), None, "notes.txt".into(), None);
+        assert_eq!(file.parkable(), None);
+        file.source_key = source_key(scratch.path());
+        assert!(file.parkable().is_some());
+        file.edit = Some(Default::default());
+        assert_eq!(file.parkable(), None);
+        file.edit = None;
+        file.source_scratch = Some(Arc::new(Scratch::new("png")));
+        assert_eq!(file.parkable(), None);
     }
 
     #[test]

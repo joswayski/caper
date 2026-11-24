@@ -2060,11 +2060,14 @@ impl App {
         if let Some(t) = &mut self.thread
             && t.hover != hover
         {
-            // Send a GIF, Insert emoji and the link card's Remove are drawn
-            // in the box's own surface.
-            let gif = [t.hover, hover]
-                .iter()
-                .any(|h| matches!(h, Some(Part::Gif | Part::Emoji | Part::RemovePreview)));
+            // Send a GIF, Insert emoji, the link card's Remove and the files'
+            // controls are drawn in the box's own surface.
+            let gif = [t.hover, hover].iter().any(|h| {
+                matches!(
+                    h,
+                    Some(Part::Gif | Part::Emoji | Part::RemovePreview | Part::Upload(_))
+                )
+            });
             t.hover = hover;
             self.dirty.thread = true;
             self.dirty.thread_box |= gif;
@@ -2484,10 +2487,14 @@ impl App {
                 .is_some_and(|p| p.root.as_deref() == Some(t.root.as_str()));
             let lit = open || t.hover == Some(Part::Gif);
             let emoji = self.emoji_open_for(Some(t.root.as_str())) || t.hover == Some(Part::Emoji);
+            let upload_hover = match t.hover {
+                Some(Part::Upload(p)) => Some(p),
+                _ => None,
+            };
             self.thread_box_p.draw(s, |dc| {
                 t.composer.draw(g, dc, bw, bh, placeholder)?;
-                for (draft, tile) in drafts.iter().zip(&tiles) {
-                    crate::uploads::tile(g, dc, draft, *tile)?;
+                for (k, (draft, tile)) in drafts.iter().zip(&tiles).enumerate() {
+                    crate::uploads::tile(g, dc, draft, *tile, k, upload_hover)?;
                 }
                 if let Some(notice) = &notice {
                     let l = g.layout(

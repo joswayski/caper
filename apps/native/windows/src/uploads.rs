@@ -1,9 +1,10 @@
 //! Files attached in the composer, as in the egui client: picked with the
 //! system dialog (Attach files), dropped on the window or pasted, each
 //! uploading at once and shown as a 104-point tile above the text with
-//! Remove (its ring shows the upload's progress), a spoiler toggle and,
-//! after a failure, Retry. The upload state is the shared
-//! `caper_client::drafts::Upload`; sending waits for every file.
+//! Remove in its top-right corner, a Spoiler pill bottom-left, a centred
+//! progress ring over a dimmed tile while it is busy and, after a failure,
+//! Retry. The upload state is the shared `caper_client::drafts::Upload`;
+//! sending waits for every file.
 use crate::composer::{self, PAD};
 use crate::files::{D2d, alpha, cover, line};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
@@ -28,7 +29,7 @@ use windows::Win32::System::Memory::*;
 use windows::Win32::System::Ole::{CF_DIB, CF_HDROP};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::*;
-use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostMessageW, SetTimer};
 use windows::core::*;
 
 /// A staged file's tile, as in egui.
@@ -46,10 +47,21 @@ const NOTICE_H: f32 = 18.0;
 /// A staged recording's chip (egui's `voice_chip`).
 pub const CHIP_W: f32 = 236.0;
 pub const CHIP_H: f32 = 52.0;
-/// A corner button's circle, its inset from the tile's edges and its target.
-const CORNER_R: f32 = 11.0;
-const CORNER_INSET: f32 = 4.0;
-const CORNER_HIT: f32 = 28.0;
+/// A corner control's face (Remove's circle, the Spoiler pill's height
+/// over two), its inset from the tile's edges and Remove's pointer target.
+const CORNER_R: f32 = 12.0;
+const CORNER_INSET: f32 = 6.0;
+const CORNER_HIT: f32 = 36.0;
+/// The Spoiler pill's pointer target, from the tile's bottom-left corner.
+const PILL_HIT_W: f32 = 84.0;
+/// The busy ring: its diameter and stroke.
+const RING: f32 = 28.0;
+const RING_STROKE: f32 = 3.0;
+/// The controls' constant ink, on their dark face in every theme.
+const ON_FACE: u32 = 0xF4F4F6;
+/// Releases removed files once their grace ends, and turns busy rings
+/// while a file has no fraction to show.
+pub const TIMER_DRAFTS: usize = 51;
 
 /// A voice message sends separately, retaining its id across uncertain failures.
 pub struct AutoSend {
@@ -238,7 +250,8 @@ fn remove_rect(t: D2D_RECT_F) -> D2D_RECT_F {
 }
 
 fn spoiler_rect(t: D2D_RECT_F) -> D2D_RECT_F {
-    rect(t.left, t.bottom - CORNER_HIT, t.left + CORNER_HIT, t.bottom)
+    let h = 2.0 * (CORNER_INSET + CORNER_R);
+    rect(t.left, t.bottom - h, t.left + PILL_HIT_W, t.bottom)
 }
 
 fn retry_rect(t: D2D_RECT_F) -> D2D_RECT_F {
@@ -318,41 +331,120 @@ pub fn describe(d: &Draft) -> String {
         .join(", ")
 }
 
-/// A round corner button: blackout at 78% with a hairline edge.
-fn corner(g: &Gfx, dc: &ID2D1DeviceContext, cx: f32, cy: f32) -> Result<()> {
-    let e = D2D1_ELLIPSE {
-        point: windows_numerics::Vector2 { X: cx, Y: cy },
-        radiusX: CORNER_R,
-        radiusY: CORNER_R,
+/// A control's dark face over a tile, rounded by `radius`: Blackout at 72%
+/// with a white rim at 20% over a soft shadow, lightened while hovered.
+fn face(dc: &ID2D1DeviceContext, r: D2D_RECT_F, radius: f32, lit: bool) -> Result<()> {
+    let round = |r: D2D_RECT_F, grow: f32, dy: f32| D2D1_ROUNDED_RECT {
+        rect: rect(
+            r.left - grow,
+            r.top - grow + dy,
+            r.right + grow,
+            r.bottom + grow + dy,
+        ),
+        radiusX: radius + grow,
+        radiusY: radius + grow,
     };
     unsafe {
-        dc.FillEllipse(&e, &alpha(dc, crate::theme::blackout(), 199.0 / 255.0)?);
-        dc.DrawEllipse(&e, &g.brushes.border, 1.0, None);
+        // The shadow: two soft steps one point down.
+        dc.FillRoundedRectangle(&round(r, 1.5, 1.0), &alpha(dc, 0, 0.12)?);
+        dc.FillRoundedRectangle(&round(r, 0.5, 1.0), &alpha(dc, 0, 0.23)?);
+        dc.FillRoundedRectangle(
+            &round(r, 0.0, 0.0),
+            &alpha(dc, crate::theme::blackout(), 0.72)?,
+        );
+        if lit {
+            dc.FillRoundedRectangle(&round(r, 0.0, 0.0), &alpha(dc, 0xFFFFFF, 0.12)?);
+        }
+        dc.DrawRoundedRectangle(&round(r, -0.5, 0.0), &alpha(dc, 0xFFFFFF, 0.2)?, 1.0, None);
     }
     Ok(())
 }
 
-/// The upload's progress around Remove: a fraction clockwise from the
-/// top, or a quarter while there is no fraction to show.
+/// A round face of radius `r` at (cx, cy).
+fn disc(dc: &ID2D1DeviceContext, cx: f32, cy: f32, r: f32, lit: bool) -> Result<()> {
+    face(dc, rect(cx - r, cy - r, cx + r, cy + r), r, lit)
+}
+
+/// Where a busy ring without a fraction has turned to, once a second.
+fn spin() -> f32 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    if !crate::files::motion() {
+        return 0.0;
+    }
+    let ms = START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis()
+        % 1000;
+    ms as f32 / 1000.0
+}
+
+/// A busy file's centred ring: a white track at 25% and the fraction
+/// clockwise from the top, or a quarter turning while there is none.
 fn ring(dc: &ID2D1DeviceContext, cx: f32, cy: f32, progress: Progress) -> Result<()> {
-    let fraction = match progress {
-        Progress::Known(f) => f.clamp(0.0, 1.0),
-        Progress::Unknown => 0.25,
+    let r = (RING - RING_STROKE) / 2.0;
+    let (start, sweep) = match progress {
+        Progress::Known(f) => (0.0, f.clamp(0.0, 1.0)),
+        Progress::Unknown => (spin(), 0.25),
     };
-    let brush = dc_brush(dc, crate::theme::action())?;
-    let steps = (48.0 * fraction).ceil() as usize;
-    let point = |t: f32| {
-        let a = t * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-        windows_numerics::Vector2 {
-            X: cx + CORNER_R * a.cos(),
-            Y: cy + CORNER_R * a.sin(),
+    let e = D2D1_ELLIPSE {
+        point: windows_numerics::Vector2 { X: cx, Y: cy },
+        radiusX: r,
+        radiusY: r,
+    };
+    let fill = alpha(dc, ON_FACE, 1.0)?;
+    unsafe {
+        dc.DrawEllipse(&e, &alpha(dc, 0xFFFFFF, 0.25)?, RING_STROKE, None);
+        if sweep >= 0.999 {
+            dc.DrawEllipse(&e, &fill, RING_STROKE, None);
+            return Ok(());
         }
-    };
-    for i in 0..steps {
-        let (a, b) = (i as f32 / 48.0, ((i + 1) as f32 / 48.0).min(fraction));
-        unsafe { dc.DrawLine(point(a), point(b), &brush, 2.0, None) };
+        if sweep <= 0.0 {
+            return Ok(());
+        }
+        let point = |t: f32| {
+            let a = t * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+            windows_numerics::Vector2 {
+                X: cx + r * a.cos(),
+                Y: cy + r * a.sin(),
+            }
+        };
+        let factory = dc.GetFactory()?;
+        let path = factory.CreatePathGeometry()?;
+        let sink = path.Open()?;
+        sink.BeginFigure(point(start), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink.AddArc(&D2D1_ARC_SEGMENT {
+            point: point(start + sweep),
+            size: D2D_SIZE_F {
+                width: r,
+                height: r,
+            },
+            rotationAngle: 0.0,
+            sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+            arcSize: if sweep > 0.5 {
+                D2D1_ARC_SIZE_LARGE
+            } else {
+                D2D1_ARC_SIZE_SMALL
+            },
+        });
+        sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        sink.Close()?;
+        let caps = factory.CreateStrokeStyle(
+            &D2D1_STROKE_STYLE_PROPERTIES {
+                startCap: D2D1_CAP_STYLE_ROUND,
+                endCap: D2D1_CAP_STYLE_ROUND,
+                ..Default::default()
+            },
+            None,
+        )?;
+        dc.DrawGeometry(&path, &fill, RING_STROKE, &caps);
     }
     Ok(())
+}
+
+/// Whether a file is still preparing or uploading.
+fn busy(u: &Upload) -> bool {
+    u.attachment.is_none() && u.error.is_none()
 }
 
 fn dc_brush(dc: &ID2D1DeviceContext, c: u32) -> Result<ID2D1SolidColorBrush> {
@@ -477,7 +569,15 @@ fn chip(
     Ok(())
 }
 
-pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Result<()> {
+/// File `k`'s tile; `hover` is the box's control under the pointer.
+pub fn tile(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    d: &Draft,
+    t: D2D_RECT_F,
+    k: usize,
+    hover: Option<Part>,
+) -> Result<()> {
     let u = &d.upload;
     let (cx, cy) = ((t.left + t.right) / 2.0, (t.top + t.bottom) / 2.0);
     fill_round(dc, t, RADIUS, &g.brushes.surface);
@@ -512,12 +612,15 @@ pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Resul
             &g.brushes.muted,
         );
     }
-    // The centre holds Retry after a failure, else the spoiler eye or a
-    // video's play mark.
-    if u.error.is_none() && (u.spoiler || u.kind == AttachmentKind::Video) {
-        corner(g, dc, cx, cy)?;
+    // The centre holds the busy ring over a scrim, Retry after a failure,
+    // else the spoiler eye or a video's play mark.
+    if busy(u) {
+        fill_round(dc, t, RADIUS, &alpha(dc, crate::theme::blackout(), 0.45)?);
+        ring(dc, cx, cy, u.status().1)?;
+    } else if u.error.is_none() && (u.spoiler || u.kind == AttachmentKind::Video) {
+        disc(dc, cx, cy, CORNER_R, false)?;
         let icon = if u.spoiler { Icon::EyeOff } else { Icon::Play };
-        centered_icon(dc, icon, cx, cy, 12.0, crate::theme::text());
+        centered_icon(dc, icon, cx, cy, 12.0, ON_FACE);
     }
     let edge = if u.error.is_some() {
         &g.brushes.error
@@ -536,24 +639,40 @@ pub fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Resul
         centered_icon(dc, Icon::Retry, x + 7.0, cy, 14.0, crate::theme::text());
         crate::text::draw(dc, &l, x + 19.0, cy - m.height / 2.0, &g.brushes.text);
     }
-    // Remove top-right with the upload's ring; the spoiler toggle
-    // diagonally opposite, so a slip meant for one never lands on the other.
+    // Remove top-right, usable while busy; the Spoiler pill diagonally
+    // opposite, so a slip meant for one never lands on the other.
     let (rx, ry) = (
         t.right - CORNER_INSET - CORNER_R,
         t.top + CORNER_INSET + CORNER_R,
     );
-    corner(g, dc, rx, ry)?;
-    centered_icon(dc, Icon::Close, rx, ry, 12.0, crate::theme::text());
-    if u.attachment.is_none() && u.error.is_none() {
-        ring(dc, rx, ry, u.status().1)?;
-    }
-    let (sx, sy) = (
-        t.left + CORNER_INSET + CORNER_R,
-        t.bottom - CORNER_INSET - CORNER_R,
+    disc(dc, rx, ry, CORNER_R, hover == Some(Part::Remove(k)))?;
+    icons::draw(
+        dc,
+        Icon::Close,
+        rect(rx - 6.0, ry - 6.0, rx + 6.0, ry + 6.0),
+        ON_FACE,
+        1.0,
     );
-    corner(g, dc, sx, sy)?;
+    // The pill: eye 12, a gap of 4 and "Spoiler", padded 7 and 9.
+    let l = line(g, "Spoiler", &g.formats.tile_pill, 1e6)?;
+    let m = gfx::metrics(&l);
+    let (left, bottom) = (t.left + CORNER_INSET, t.bottom - CORNER_INSET);
+    let pill = rect(
+        left,
+        bottom - 2.0 * CORNER_R,
+        left + 7.0 + 12.0 + 4.0 + m.widthIncludingTrailingWhitespace + 9.0,
+        bottom,
+    );
+    face(dc, pill, CORNER_R, hover == Some(Part::Spoiler(k)))?;
     let icon = if u.spoiler { Icon::Eye } else { Icon::EyeOff };
-    centered_icon(dc, icon, sx, sy, 12.0, crate::theme::text());
+    centered_icon(dc, icon, left + 7.0 + 6.0, bottom - CORNER_R, 12.0, ON_FACE);
+    crate::text::draw(
+        dc,
+        &l,
+        left + 7.0 + 12.0 + 4.0,
+        bottom - CORNER_R - m.height / 2.0,
+        &alpha(dc, ON_FACE, 1.0)?,
+    );
     Ok(())
 }
 
@@ -633,10 +752,10 @@ pub fn draw(
             },
         )?;
     }
-    for (d, t) in drafts.iter().zip(tiles) {
+    for (k, (d, t)) in drafts.iter().zip(tiles).enumerate() {
         match d.upload.voice() {
             Some(prepared) => chip(g, dc, d, prepared, voice, *t)?,
-            None => tile(g, dc, d, *t)?,
+            None => tile(g, dc, d, *t, k, hover)?,
         }
     }
     if let Some((text, calm)) = notice {
@@ -1191,10 +1310,54 @@ impl App {
         self.drafts_changed();
     }
 
+    /// Releases removed files whose grace ended and turns busy rings that
+    /// have no fraction, then waits for whichever is next.
+    pub fn drafts_tick(&mut self) {
+        let Some(live) = &mut self.live else {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_DRAFTS);
+            }
+            return;
+        };
+        let parked = live.release_expired(std::time::Instant::now());
+        let spinning = crate::files::motion()
+            && live.drafts.iter().any(|d| {
+                d.upload.voice().is_none()
+                    && busy(&d.upload)
+                    && d.upload.status().1 == Progress::Unknown
+            });
+        if spinning {
+            self.dirty.composer = true;
+            self.dirty.thread_box = true;
+            self.need = true;
+        }
+        let wait = if spinning {
+            Some(std::time::Duration::from_millis(33))
+        } else {
+            parked
+        };
+        unsafe {
+            match wait {
+                Some(wait) => {
+                    SetTimer(
+                        Some(self.hwnd),
+                        TIMER_DRAFTS,
+                        (wait.as_millis() + 1).min(u32::MAX as u128) as u32,
+                        None,
+                    );
+                }
+                None => {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_DRAFTS);
+                }
+            }
+        }
+    }
+
     /// The composer's files changed: the box relayouts and redraws, and a
     /// send waiting for them goes once they are all uploaded (or stops when
     /// one failed or the draft changed).
     pub fn drafts_changed(&mut self) {
+        self.drafts_tick();
         self.thread_tools_changed();
         self.thread_files_changed();
         if let Some((text, keys)) = &self.send_waiting

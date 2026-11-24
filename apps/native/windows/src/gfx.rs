@@ -138,6 +138,8 @@ pub struct Formats {
     /// An attachment card's name and its detail line (one line each).
     pub file_name: IDWriteTextFormat,
     pub file_detail: IDWriteTextFormat,
+    /// A staged file's labelled corner pill (12, semibold).
+    pub tile_pill: IDWriteTextFormat,
     /// A link preview's site line and footer, author, title and text, as
     /// egui sizes them (11.5, bold 13, bold 14.4, 13.6).
     pub embed_meta: IDWriteTextFormat,
@@ -346,6 +348,7 @@ impl Gfx {
                 )?,
                 file_name: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 file_detail: fmt(11.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                tile_pill: fmt(12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
                 embed_meta: fmt(11.5, DWRITE_FONT_WEIGHT_NORMAL)?,
                 embed_author: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 embed_title: fmt(14.4, DWRITE_FONT_WEIGHT_BOLD)?,

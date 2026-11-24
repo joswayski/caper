@@ -335,6 +335,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val pickedDrafts = mutableMapOf<String, PickedFile>()
     /** A draft's folder for files prepared since its latest edit: new each time, so no thumbnail shows a stale picture. */
     private val draftOutputs = mutableMapOf<String, File>()
+    /** Conversation files removed in the last [REMOVAL_GRACE_MS]; profile files park in [profileDrafts]. */
+    private val parkedDrafts = ParkedDrafts<AttachmentDraftTarget>()
+    /** Each parked file's release, by draft key; adding the file again cancels it. */
+    private val parkTimers = mutableMapOf<String, Job>()
     private var pendingNeedsUpload = false
     /** Drafts moved into the pending message; restored by Edit, deleted once confirmed. */
     private var pendingDrafts: List<DraftAttachmentUi> = emptyList()
@@ -614,7 +618,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         invalidate()
         presenceSnapshots.clear()
         // Signing out gives up every conversation's staged files.
-        mutable.value.attachmentDrafts.values.flatten().forEach { abandonDraft(it) }
+        (mutable.value.attachmentDrafts.values.flatten() + parkedDrafts.releaseAll()).forEach { abandonDraft(it) }
         mutable.value = mutable.value.copy(attachmentDrafts = emptyMap(), attachmentErrors = emptyMap(), pictureSaves = emptyMap())
         pictureJobs.values.forEach { it.cancel() }; pictureJobs.clear()
         accountToken = null
@@ -3196,7 +3200,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         pendingSends.clear()
         val candidates = if (restoreFiles) pendingDrafts + drafts else drafts
         val kept = candidates.take(AttachmentPolicy.MAX_ATTACHMENTS)
-        (pendingDrafts + drafts).filter { it !in kept }.forEach { abandonDraft(it) }
+        ((pendingDrafts + drafts).filter { it !in kept } + parkedDrafts.releaseAll { it == target }).forEach { abandonDraft(it) }
         pendingDrafts = emptyList()
         pendingNeedsUpload = false
         val targets = if (restoreReply && pending.replyTo != null) mutable.value.replyTargets + ((pending.threadRootId ?: "channel") to pending.replyTo) else mutable.value.replyTargets
@@ -3294,6 +3298,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = accountGeneration
         val jobs = mutableListOf<Job>()
         uris.take(room).forEach { uri ->
+            // The same file removed here moments ago comes back as it was, upload and all.
+            val restored = if (person == null) parkedDrafts.restore(requireNotNull(target), uri.toString()) else profileDrafts.restore(person, uri.toString())
+            if (restored != null) {
+                parkTimers.remove(restored.key)?.cancel()
+                if (person == null) setAttachmentDrafts(requireNotNull(target), mutable.value.attachmentDrafts[target].orEmpty() + restored, error)
+                // Only resumes an upload that stopped without failing; a running or finished one is left as it is.
+                if (restored.attachment == null && restored.error == null && uploadJobs[restored.key]?.isActive != true) {
+                    if (person == null) retryDraft(restored.key) else prepareProfileDraft(person, restored.key, settings, request)
+                }
+                uploadJobs[restored.key]?.let(jobs::add)
+                return@forEach
+            }
             val key = UUID.randomUUID().toString()
             val directory = File(uploadSession, key)
             draftDirectories[key] = directory
@@ -3383,15 +3399,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Gives up a conversation's regular and thread files when it can no longer be used. */
     private fun dropChannelDrafts(channelId: String) {
-        mutable.value.attachmentDrafts.filterKeys { it.channelId == channelId }.values.flatten().forEach { abandonDraft(it) }
+        (mutable.value.attachmentDrafts.filterKeys { it.channelId == channelId }.values.flatten() +
+            parkedDrafts.releaseAll { it.channelId == channelId }).forEach { abandonDraft(it) }
         mutable.value = mutable.value.copy(
             attachmentDrafts = mutable.value.attachmentDrafts.filterKeys { it.channelId != channelId },
             attachmentErrors = mutable.value.attachmentErrors.filterKeys { it.channelId != channelId },
         )
     }
 
-    /** Open, sending and stashed drafts: an upload continues while its file is in any of them. */
-    private fun knownDrafts() = mutable.value.attachmentDrafts.values.flatten() + pendingDrafts + queuedSends.flatMap { it.drafts }
+    /** Open, sending, stashed and parked drafts: an upload continues while its file is in any of them. */
+    private fun knownDrafts() = mutable.value.attachmentDrafts.values.flatten() + pendingDrafts + queuedSends.flatMap { it.drafts } + parkedDrafts.drafts()
 
     private fun uploadStale(draft: DraftAttachmentUi) = draft.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
 
@@ -3532,8 +3549,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeDraft(key: String) {
         val entry = mutable.value.attachmentDrafts.entries.find { it.value.any { draft -> draft.key == key } } ?: return
-        entry.value.find { it.key == key }?.let { abandonDraft(it) }
+        entry.value.find { it.key == key }?.let { draft ->
+            if (parkedDrafts.park(entry.key, draft)) releaseLater(key, parkedDrafts::release) else abandonDraft(draft)
+        }
         setAttachmentDrafts(entry.key, entry.value.filter { it.key != key })
+    }
+
+    /** Releases parked [key] (taken out by [take]) once [REMOVAL_GRACE_MS] passes without the same file being added back. */
+    private fun releaseLater(key: String, take: (String) -> DraftAttachmentUi?) {
+        parkTimers.remove(key)?.cancel()
+        parkTimers[key] = viewModelScope.launch {
+            delay(REMOVAL_GRACE_MS)
+            parkTimers.remove(key)
+            take(key)?.let { abandonDraft(it) }
+        }
     }
 
     private fun abandonDraft(draft: DraftAttachmentUi) {
@@ -3545,11 +3574,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     internal fun removeProfileAttachment(person: String, key: String) {
         val draft = profileDrafts[person].files.find { it.key == key } ?: return
-        if (profileDrafts.remove(person, key)) abandonDraft(draft)
+        if (profileDrafts.park(person, key)) releaseLater(key, profileDrafts::release)
+        else if (profileDrafts.remove(person, key)) abandonDraft(draft)
     }
 
     /** Stops an unfinished upload and deletes its working copies; the API expires reservations never sent. */
     private fun discardDraftFiles(key: String) {
+        parkTimers.remove(key)?.cancel()
         uploadJobs.remove(key)?.cancel()
         preparedDrafts.remove(key)
         pickedDrafts.remove(key)
@@ -3559,6 +3590,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun updateDraft(key: String, person: String? = null, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
         if (person != null) { profileDrafts.updateFile(person, key, change); return }
+        parkedDrafts.update(key, change)
         mutable.value = mutable.value.copy(attachmentDrafts = mutable.value.attachmentDrafts.mapValues { (_, files) ->
             files.map { if (it.key == key) change(it) else it }
         })

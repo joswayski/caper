@@ -3882,6 +3882,15 @@ public final class ChatModel {
     /// Files of every composer, open or not. Uploads carry on while it is closed.
     private var stagedFiles: [AttachmentTarget: [AttachmentDraft]] = [:]
     private var attachmentNotices: [AttachmentTarget: String] = [:]
+    /// A removed photo-library draft, hidden but still uploading for
+    /// `removalGrace`, so re-adding the same item to the same composer restores
+    /// it instead of copying and uploading it again. Never shown, sent or counted.
+    struct ParkedAttachment: Hashable {
+        let target: AttachmentTarget
+        let source: String
+    }
+    static let removalGrace: Duration = .seconds(30)
+    @ObservationIgnored private var parkedFiles: [ParkedAttachment: (draft: AttachmentDraft, timer: Task<Void, Never>)] = [:]
     /// The conversation each staged file uploads to, open or not.
     private var draftChannels: [String: String] = [:]
     private var restoredDraft: String?
@@ -5375,9 +5384,35 @@ public final class ChatModel {
         for file in files where file.needsUpload && preparedUploads[file.id] != nil { retryAttachmentDraft(id: file.id) }
     }
 
+    /// Parked drafts count: their uploads carry on so a restore finds them ready.
     private func hasDraft(_ id: String) -> Bool {
         pendingDrafts.contains(where: { $0.id == id })
             || stagedFiles.values.contains(where: { $0.contains(where: { $0.id == id }) })
+            || parkedDraft(id) != nil
+    }
+
+    private func parkedDraft(_ id: String) -> AttachmentDraft? { parkedFiles.values.first { $0.draft.id == id }?.draft }
+
+    /// Hides a removed draft. One from the photo library (unedited, not a voice
+    /// note) is parked for `removalGrace` with its upload running; anything
+    /// else is released at once.
+    private func park(_ draft: AttachmentDraft, target: AttachmentTarget) {
+        guard let source = draft.source, !draft.edit.isEdited, !draft.isVoice else { abandon(draft); return }
+        let key = ParkedAttachment(target: target, source: source)
+        releaseParked { $0 == key }
+        parkedFiles[key] = (draft, Task { [weak self] in
+            try? await Task.sleep(for: Self.removalGrace)
+            // A restore or release cancelled this timer; the key may hold a newer park.
+            guard !Task.isCancelled else { return }
+            self?.releaseParked { $0 == key }
+        })
+    }
+
+    private func releaseParked(where matches: (ParkedAttachment) -> Bool) {
+        for key in parkedFiles.keys where matches(key) {
+            guard let parked = parkedFiles.removeValue(forKey: key) else { continue }
+            parked.timer.cancel(); abandon(parked.draft)
+        }
     }
 
     /// Gives up staged files that can no longer be sent: on sign-out, or for a
@@ -5387,6 +5422,7 @@ public final class ChatModel {
         for target in targets {
             for draft in stagedFiles.removeValue(forKey: target) ?? [] { abandon(draft) }
         }
+        releaseParked { channelID == nil || $0.target.channelID == channelID }
         attachmentNotices = attachmentNotices.filter { channelID != nil && $0.key.channelID != channelID }
         if let channelID { attachmentAccessIDs[channelID] = nil } else { attachmentAccessIDs = [:]; uploadGeneration += 1 }
     }
@@ -5719,6 +5755,15 @@ public final class ChatModel {
         if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
         let expectedGeneration = uploadGeneration
         for file in files.prefix(room) {
+            // Re-added within the grace period: the parked draft comes back with
+            // its upload as it is, and the fresh copy goes.
+            if let source = file.source, let parked = parkedFiles.removeValue(forKey: ParkedAttachment(target: target, source: source)) {
+                parked.timer.cancel(); AttachmentStaging.remove(file.url)
+                var draft = parked.draft
+                draft.spoiler = false
+                stagedFiles[target, default: []].append(draft)
+                continue
+            }
             let id = UUID().uuidString
             draftChannels[id] = target.channelID
             var draft = AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
@@ -5757,7 +5802,7 @@ public final class ChatModel {
             return
         }
         // Editable drafts keep their original for the editor until sent or removed.
-        let keepsOriginal = stagedDraft(id)?.editable == true
+        let keepsOriginal = (stagedDraft(id) ?? parkedDraft(id))?.editable == true
         if prepared.fileURL != file.url, !keepsOriginal { AttachmentStaging.remove(file.url) }
         preparedUploads[id] = prepared
         updateDraft(id) {
@@ -5828,9 +5873,9 @@ public final class ChatModel {
     public func removeAttachmentDraft(id: String) {
         for (target, files) in stagedFiles {
             guard let draft = files.first(where: { $0.id == id }) else { continue }
-            abandon(draft)
             stagedFiles[target]?.removeAll { $0.id == id }
             attachmentNotices[target] = nil
+            park(draft, target: target)
             return
         }
     }
@@ -5844,6 +5889,7 @@ public final class ChatModel {
             if let index = files.firstIndex(where: { $0.id == id }) { change(&stagedFiles[target]![index]) }
         }
         if let index = pendingDrafts.firstIndex(where: { $0.id == id }) { change(&pendingDrafts[index]) }
+        if let key = parkedFiles.first(where: { $0.value.draft.id == id })?.key { change(&parkedFiles[key]!.draft) }
     }
 
     public func refreshDraftUploads() {
@@ -5884,7 +5930,7 @@ public final class ChatModel {
     private func uploadAttachmentDraft(id: String) async throws -> ChatAttachment {
         let staged = stagedFiles.values.flatMap { $0 }
         guard let channelID = draftChannels[id] ?? channelID,
-              let file = (pendingDrafts + staged).first(where: { $0.id == id }),
+              let file = (pendingDrafts + staged).first(where: { $0.id == id }) ?? parkedDraft(id),
               let prepared = preparedUploads[id] else { throw CancellationError() }
         if !file.needsUpload, let attachment = file.attachment { return attachment }
         let expected = uploadGeneration

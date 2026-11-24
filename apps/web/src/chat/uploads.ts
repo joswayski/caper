@@ -11,6 +11,11 @@ import { MetadataRefused } from "./metadata.ts";
 import { voiceFilename, type VoiceRecording } from "./voice.ts";
 
 export const MAX_ATTACHMENTS = 10;
+/** A removed file waits this long before its upload is cancelled, so adding
+ * the same file back restores it instead of uploading it again. */
+export const REMOVAL_GRACE_MS = 30_000;
+/** The same picked file, as far as a browser can tell. */
+export const fileSource = (file: File) => [file.name, file.size, file.lastModified, file.type].join("|");
 export const METADATA_REFUSED = "Caper can’t remove hidden details like location from this file, so it can’t be sent.";
 /** Allow a queued batch of ten files (two minutes per original/preview) to finish cleaning. */
 export const COMPLETE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, ...Array<number>(240).fill(5_000)];

@@ -138,6 +138,9 @@ final class ProfileMessageDraft {
     private var uploadTask: Task<Void, Error>?
     private var uploadGeneration = UUID()
     private var uploadAPI: APIClient?
+    /// Removed photo-library files by source, hidden for `ChatModel.removalGrace`
+    /// with their prepared file and upload kept, so re-adding one restores it.
+    @ObservationIgnored private var parked: [String: (file: File, timer: Task<Void, Never>)] = [:]
 
     func startUploads() {
         guard !discarded, pending == nil, uploadTask == nil, !files.isEmpty,
@@ -240,8 +243,19 @@ final class ProfileMessageDraft {
     func add(_ incoming: [LocalAttachmentFile]) {
         guard editable else { incoming.forEach { AttachmentStaging.remove($0.url) }; return }
         let room = max(0, AttachmentPolicy.maxAttachments - files.count)
-        let added = incoming.prefix(room).map { File(local: $0) }
-        files.append(contentsOf: added)
+        var added: [File] = []
+        for local in incoming.prefix(room) {
+            // Re-added within the grace period: the parked file comes back, the fresh copy goes.
+            if let source = local.source, let entry = parked.removeValue(forKey: source) {
+                entry.timer.cancel(); AttachmentStaging.remove(local.url)
+                var file = entry.file
+                file.spoiler = false
+                files.append(file)
+            } else {
+                let file = File(local: local)
+                added.append(file); files.append(file)
+            }
+        }
         incoming.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
         error = incoming.count > room ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : nil
         for file in added {
@@ -257,11 +271,31 @@ final class ProfileMessageDraft {
     func remove(id: String) {
         guard editable, let file = files.first(where: { $0.id == id }) else { return }
         invalidateUploads()
-        cancelAsset(file)
-        Self.removeFiles(of: file)
         files.removeAll { $0.id == id }
+        park(file)
         error = nil
         startUploads()
+    }
+
+    /// An unedited photo-library file is parked; anything else is released at
+    /// once. One upload loop serves every file, so a parked file keeps a finished
+    /// upload and its prepared file, but one still uploading restarts on restore.
+    private func park(_ file: File) {
+        guard let source = file.local.source, !file.edit.isEdited, file.voiceDurationMs == nil else { release(file); return }
+        if let old = parked.removeValue(forKey: source) { old.timer.cancel(); release(old.file) }
+        var file = file
+        file.progress = nil; file.uploadError = nil
+        let id = file.id
+        parked[source] = (file, Task { [weak self] in
+            try? await Task.sleep(for: ChatModel.removalGrace)
+            guard !Task.isCancelled, let self, let entry = self.parked[source], entry.file.id == id else { return }
+            self.parked[source] = nil; self.release(entry.file)
+        })
+    }
+
+    private func release(_ file: File) {
+        cancelAsset(file)
+        Self.removeFiles(of: file)
     }
 
     /// The editor's change to a staged file starts a replacement upload.
@@ -383,6 +417,7 @@ final class ProfileMessageDraft {
 
     func clear() {
         invalidateUploads()
+        parked.values.forEach { $0.timer.cancel(); release($0.file) }; parked = [:]
         if pending == nil { files.forEach(cancelAsset) }
         files.forEach(Self.removeFiles)
         text = ""; files = []; pending = nil; conversation = nil; error = nil; progress = nil

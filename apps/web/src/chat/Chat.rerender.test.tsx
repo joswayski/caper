@@ -11,6 +11,7 @@ import type { ComposerInput } from "./MentionTextarea.tsx";
 const fixture = vi.hoisted(() => ({
   renders: new Map<string, number>(),
   clients: [] as { emit: (change: Partial<ChatViewState>) => void; sent: unknown[][] }[],
+  uploads: [] as { name: string; released: boolean }[],
 }));
 
 vi.mock("./LinkedText.tsx", () => ({
@@ -65,6 +66,39 @@ vi.mock("./client.ts", async (importOriginal) => {
   return { ...actual, ChatClient };
 });
 
+// Uploads are configured, and each staged file's upload is recorded instead of sent.
+vi.mock("./uploads.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./uploads.ts")>();
+  const { DEFAULT_COMPRESSION } = await import("./prepare.ts");
+  class AttachmentUpload {
+    state: import("./uploads.ts").UploadState;
+    private record: { name: string; released: boolean };
+    constructor(_channel: string, file: File) {
+      this.state = { name: file.name, sourceSize: file.size, progress: 0 };
+      this.record = { name: file.name, released: false };
+      fixture.uploads.push(this.record);
+    }
+    get stale() {
+      return false;
+    }
+    get source() {
+      return undefined;
+    }
+    ensure() {
+      return new Promise(() => {});
+    }
+    release() {
+      this.record.released = true;
+    }
+  }
+  return {
+    ...actual,
+    AttachmentUpload,
+    rememberedUploadSettings: () => DEFAULT_COMPRESSION,
+    loadUploadSettings: async () => DEFAULT_COMPRESSION,
+  };
+});
+
 const { default: Chat } = await import("./Chat.tsx");
 
 const COUNT = 12;
@@ -117,6 +151,7 @@ beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 404 }));
   fixture.renders.clear();
   fixture.clients.length = 0;
+  fixture.uploads.length = 0;
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -447,4 +482,50 @@ test("Up in an empty composer edits your newest message, and Escape closes the e
   // ProseMirror claims every Escape; the dialog must still see it as unhandled.
   await key(editor!, "Escape", 27);
   expect(document.querySelector("dialog.chat-edit-dialog")).toBeNull();
+});
+
+test("a removed file added back within the grace period keeps its upload; later it is released", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await render(
+      <Chat name="Viewer" signedIn identityReady accountId="viewer" channelId="channel" initialHistory={history} />,
+    );
+    await act(async () => fixture.clients.at(-1)!.emit({ phase: "ready", author: history.messages[0].author }));
+    const photo = new File(["pixels"], "photo.png", { type: "image/png", lastModified: 1 });
+    const other = new File(["other pixels"], "photo.png", { type: "image/png", lastModified: 2 });
+    const drop = (files: File[]) =>
+      act(async () => {
+        const event = new Event("drop", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "dataTransfer", { value: { files, types: ["Files"] } });
+        container.querySelector(".chat-panel")!.dispatchEvent(event);
+      });
+    const remove = () =>
+      act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Remove photo.png"]')!.click());
+    const tiles = () => container.querySelectorAll(".chat-drafts li").length;
+
+    await drop([photo]);
+    expect(tiles()).toBe(1);
+    expect(container.querySelector(".chat-draft-ring")).not.toBeNull();
+    await remove();
+    expect(tiles()).toBe(0);
+    expect(fixture.uploads).toEqual([{ name: "photo.png", released: false }]);
+
+    // The same file comes back with the same upload; a different one with that name does not.
+    await drop([photo]);
+    expect(tiles()).toBe(1);
+    expect(fixture.uploads).toHaveLength(1);
+    await drop([other]);
+    expect(fixture.uploads).toHaveLength(2);
+
+    // Removed and left alone, it is released once the grace period ends, and adding it then starts again.
+    await remove();
+    await act(async () => vi.advanceTimersByTime(29_000));
+    expect(fixture.uploads[0].released).toBe(false);
+    await act(async () => vi.advanceTimersByTime(1_000));
+    expect(fixture.uploads[0].released).toBe(true);
+    await drop([photo]);
+    expect(fixture.uploads).toHaveLength(3);
+  } finally {
+    vi.useRealTimers();
+  }
 });

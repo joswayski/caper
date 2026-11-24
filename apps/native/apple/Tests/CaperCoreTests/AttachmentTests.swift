@@ -2086,6 +2086,39 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
+    func testRemovedLibraryFileIsParkedThenRestoredWithoutUploadingAgain() async throws {
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        func photo() throws -> LocalAttachmentFile {
+            var file = try AttachmentStaging.stage(data: Data("photo".utf8), filename: "notes.txt")
+            file.source = "photos:ABC"
+            return file
+        }
+        chat.addAttachments([try photo()])
+        await waitUntil("upload") { chat.attachmentDrafts.first?.attachment != nil }
+        let id = try XCTUnwrap(chat.attachmentDrafts.first?.id)
+        chat.toggleAttachmentSpoiler(id: id)
+        chat.removeAttachmentDraft(id: id)
+        XCTAssertTrue(chat.attachmentDrafts.isEmpty, "a parked file is hidden")
+        XCTAssertFalse(chat.canSubmit, "and never sent")
+        let copy = try photo()
+        chat.addAttachments([copy])
+        XCTAssertEqual(chat.attachmentDrafts.map(\.id), [id], "re-adding the same item restores the parked draft")
+        XCTAssertEqual(chat.attachmentDrafts.first?.attachment?.id, "Asset0000001")
+        XCTAssertEqual(chat.attachmentDrafts.first?.spoiler, false)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.url.path), "the fresh copy is deleted")
+        XCTAssertEqual(AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path == "/api/assets" }.count, 1)
+        XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.url.path.hasSuffix("/cancel") })
+        chat.removeAttachmentDraft(id: id)
+        await chat.stop(discardingDrafts: true)
+        await waitUntil("parked file released on sign-out") {
+            AttachmentURLProtocol.requests.contains { $0.url.path == "/api/assets/Asset0000001/cancel" }
+        }
+    }
+
+    @MainActor
     func testThreadFileOnlySendKeepsChannelAndOtherThreadDrafts() async throws {
         AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
         let chat = ChatModel(api: client())

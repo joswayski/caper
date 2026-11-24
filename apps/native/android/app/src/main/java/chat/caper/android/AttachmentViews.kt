@@ -14,6 +14,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,6 +32,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -44,6 +47,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.paneTitle
@@ -488,16 +492,16 @@ internal fun replyAttachmentPreviewUrl(attachment: ChatAttachment): String? = wh
     }
 }
 
-/** A staged file's open editor, on [tool], or viewing (its preview) when that is null, as a tap or the pencil opens it. */
+/** A staged file's open editor, on [tool], or viewing (its preview) when that is null, as a tap or Edit opens it. */
 internal data class OpenEditor(val key: String, val tool: EditTool? = null)
 
-/** What a staged file offers from its menus (the long press, and the pencil of a file the app can't preview). */
+/** What a staged file offers from its menus (the long press, and the Edit button of a file the app can't preview). */
 internal enum class DraftAction { EDIT, SPOILER, REMOVE }
 
 /**
  * A staged file's menu, top to bottom: Edit when the app can preview the file ([previewable]; it
  * opens [AttachmentEditor], viewing), the spoiler toggle where the composer offers it ([spoiler]), then Remove;
- * nothing while the files are locked (sending). The pencil of a file without a preview opens
+ * nothing while the files are locked (sending). The Edit button of a file without a preview opens
  * this menu with [previewable] false.
  */
 internal fun draftMenuActions(previewable: Boolean, spoiler: Boolean, enabled: Boolean): List<DraftAction> =
@@ -573,14 +577,15 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
 
 /**
  * Compact composer previews shared by message and profile uploads; never scroll sideways. Each
- * tile has two round corner buttons, diagonal from each other so a mis-tap can't remove: Remove
- * (top right; a ring around it shows preparing and upload progress) and the pencil (bottom left).
- * With [edit], images and videos the editor can open preview in the app: the pencil or a tap opens
+ * tile has two corner buttons, diagonal from each other so a mis-tap can't remove: a round ✕
+ * Remove (top right) and an Edit pill (bottom left). While a file prepares or uploads, the tile
+ * dims under a centred progress ring.
+ * With [edit], images and videos the editor can open preview in the app: Edit or a tap opens
  * [AttachmentEditor] on the original, viewing with no tool chosen (covered as recipients see it while
  * a spoiler), one screen that also crops, draws and adds text, toggles the spoiler ([toggleSpoiler])
  * and removes the file; a saved change arrives as the draft key, the edit (null for the original)
  * and its render. Other files
- * preview in the system viewer, and their pencil opens a menu with the spoiler toggle and Remove.
+ * preview in the system viewer, and their Edit opens a menu with the spoiler toggle and Remove.
  * A long press offers the same choices. Files that upload on Send ([uploadOnSend]) offer Retry
  * only when preparing them failed.
  */
@@ -648,7 +653,7 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = columns) {
                 // Keyed, so each tile arrives once and keeps its own progress animation.
                 files.forEach { draft -> key(draft.key) {
-                    // The open menu's choices: the long press's, or the pencil's for a file without a preview.
+                    // The open menu's choices: the long press's, or Edit's for a file without a preview.
                     var menu by remember { mutableStateOf<List<DraftAction>>(emptyList()) }
                     LaunchedEffect(enabled) { if (!enabled) menu = emptyList() }
                     Surface(Modifier.entrance(MOTION_BASE, scale = 0.94f).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
@@ -685,36 +690,35 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                                     Icon(painterResource(if (draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
                                     Text(when (draft.kind) { "image" -> "Image"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
                                 }
-                                // Retry takes the centre on a failed file; otherwise a spoiler shows a crossed-out eye and a video its play mark.
-                                if (draft.spoiler && !retriable) Icon(painterResource(R.drawable.lucide_eye_off), null, Modifier.size(20.dp), tint = Text)
-                                else if (draft.kind == "video" && !retriable) Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
+                                // Retry takes the centre on a failed file and the progress ring on a busy one; otherwise a
+                                // spoiler shows a crossed-out eye and a video its play mark.
+                                if (draft.spoiler && !retriable && !busy) Icon(painterResource(R.drawable.lucide_eye_off), null, Modifier.size(20.dp), tint = Text)
+                                else if (draft.kind == "video" && !retriable && !busy) Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
                                     Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
                                 }
                             }
+                            // Preparing and uploading dim the tile under a centred ring, shown even while locked for sending.
+                            if (busy) DraftProgressOverlay(draftRingProgress(draft), Modifier.matchParentSize())
                             if (enabled) {
-                                // Editing works on the local original, so the pencil is offered as soon as the file is known
-                                // editable; a file with no preview has one only while it can be marked as a spoiler.
+                                // Editing works on the local original, so Edit is offered as soon as the file is known
+                                // editable; a file with no preview has it only while it can be marked as a spoiler.
                                 if (previewable || spoilerAvailable) DraftTileButton(
                                     R.drawable.lucide_pencil, draftActionLabel(DraftAction.EDIT, accessibleName, draft.spoiler), Alignment.BottomStart,
-                                    Modifier.align(Alignment.BottomStart),
+                                    Modifier.align(Alignment.BottomStart), text = "Edit",
                                 ) { if (previewable) editing = OpenEditor(draft.key) else menu = draftMenuActions(previewable = false, spoiler = spoilerAvailable, enabled = enabled) }
+                                // Stays usable while busy: removing cancels the preparation or upload.
                                 DraftTileButton(
                                     R.drawable.lucide_x, draftActionLabel(DraftAction.REMOVE, accessibleName, draft.spoiler), Alignment.TopEnd,
-                                    Modifier.align(Alignment.TopEnd), ring = busy, ringProgress = draftRingProgress(draft),
+                                    Modifier.align(Alignment.TopEnd),
                                 ) { remove(draft.key) }
-                            } else if (busy) {
-                                // Locked while sending: the progress stays visible, but nothing can be pressed.
-                                DraftTileButton(
-                                    null, null, Alignment.TopEnd, Modifier.align(Alignment.TopEnd), ring = true, ringProgress = draftRingProgress(draft),
-                                    onClick = null,
-                                )
                             }
                             // Drawn last, so Retry (harmless) wins where its target meets a corner's.
                             if (retriable) DraftTileButton(
                                 R.drawable.lucide_rotate_cw, "Retry uploading $accessibleName", Alignment.Center, Modifier.align(Alignment.Center),
                                 face = 30.dp, iconSize = 16.dp, inset = 0.dp, container = Action, content = OnAction, outline = null, overlay = Blackout,
+                                elevated = false,
                             ) { retry?.invoke(draft.key) }
-                            // Menus open from the tile's bottom-left corner, beside the pencil.
+                            // Menus open from the tile's bottom-left corner, beside Edit.
                             Box(Modifier.align(Alignment.BottomStart)) {
                                 DropdownMenu(menu.isNotEmpty() && enabled, { menu = emptyList() }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                                     menu.forEach { action ->
@@ -743,66 +747,86 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     }
 }
 
+/** The ✕ and Edit glyphs always sit on the dark face, so they stay this white in every theme. */
+private val TileFaceInk = Color(0xFFF4F4F6)
+
 /**
- * A round button on a staged file's tile: a [face]-wide circle sitting [inset] from the tile's
- * edges at [corner], inside a 44dp touch target anchored to that corner (place it with [modifier]).
- * Hovering and pressing tint the face with [overlay]; keyboard focus rings it in terracotta. With
- * [ring] a progress ring runs around the icon: [ringProgress] filled, or an indeterminate arc while
- * it is null (a still partial arc under Remove animations). A null [onClick] only shows the ring.
+ * A button on a staged file's tile: a [face]-high circle (or, with [text], a pill holding the icon
+ * and the word) sitting [inset] from the tile's edges at [corner], inside a 48dp touch target
+ * anchored to that corner (place it with [modifier]). It floats on a soft shadow when [elevated].
+ * Hovering and pressing tint the face with [overlay]; keyboard focus rings it in the focus colour.
  */
 @Composable private fun DraftTileButton(
-    icon: Int?, label: String?, corner: Alignment, modifier: Modifier,
-    face: Dp = 22.dp, iconSize: Dp = 12.dp, inset: Dp = 4.dp,
-    container: Color = Blackout.copy(alpha = 0.78f), content: Color = Text,
-    outline: Color? = Color.White.copy(alpha = 0.12f), overlay: Color = Color.White,
-    ring: Boolean = false, ringProgress: Float? = null,
-    onClick: (() -> Unit)?,
+    icon: Int, label: String, corner: Alignment, modifier: Modifier, text: String? = null,
+    face: Dp = 24.dp, iconSize: Dp = 12.dp, inset: Dp = 6.dp,
+    container: Color = Blackout.copy(alpha = 0.72f), content: Color = TileFaceInk,
+    outline: Color? = Color.White.copy(alpha = 0.2f), overlay: Color = Color.White, elevated: Boolean = true,
+    onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val pressed by interaction.collectIsPressedAsState()
     val focused by interaction.collectIsFocusedAsState()
-    val still = reducedMotion()
-    // Progress glides between updates instead of jumping.
-    val fill by animateFloatAsState(ringProgress ?: 0f, if (still) snap() else tween(MOTION_BASE, easing = LinearEasing), label = "draftRing")
-    val spin = if (ring && ringProgress == null && !still) {
-        val transition = rememberInfiniteTransition(label = "draftRingSpin")
-        transition.animateFloat(0f, 360f, infiniteRepeatable(tween(1000, easing = LinearEasing)), label = "draftRingAngle")
-    } else null
     Box(
-        modifier.size(44.dp)
-            .then(if (onClick != null) Modifier.clickable(interaction, indication = null, role = Role.Button, onClick = onClick) else Modifier)
-            .then(if (label != null) Modifier.semantics { contentDescription = label } else Modifier),
+        modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(interaction, indication = null, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
         contentAlignment = corner,
     ) {
         Box(
-            Modifier.padding(inset).size(face)
+            Modifier.padding(inset).then(if (text == null) Modifier.size(face) else Modifier.heightIn(min = face))
+                .then(if (elevated) Modifier.shadow(3.dp, CircleShape, clip = false, ambientColor = Color.Black.copy(alpha = 0.35f), spotColor = Color.Black.copy(alpha = 0.35f)) else Modifier)
                 .background(container, CircleShape)
-                .background(overlay.copy(alpha = if (pressed) 0.18f else if (hovered) 0.12f else 0f), CircleShape)
-                .then(if (outline != null && !ring) Modifier.border(1.dp, outline, CircleShape) else Modifier)
+                .background(overlay.copy(alpha = if (pressed) 0.2f else if (hovered) 0.12f else 0f), CircleShape)
+                .then(if (outline != null) Modifier.border(1.dp, outline, CircleShape) else Modifier)
                 .drawWithContent {
                     drawContent()
-                    if (ring) {
-                        val stroke = 2.dp.toPx()
-                        val diameter = size.minDimension - stroke
-                        val topLeft = Offset((size.width - diameter) / 2, (size.height - diameter) / 2)
-                        val arc = Size(diameter, diameter)
-                        drawArc(Color.White.copy(alpha = 0.16f), 0f, 360f, false, topLeft, arc, style = Stroke(stroke))
-                        val (start, sweep) = when {
-                            ringProgress != null -> -90f to 360f * fill
-                            spin != null -> spin.value - 90f to 90f
-                            else -> -90f to 90f
-                        }
-                        drawArc(TerracottaBright, start, sweep, false, topLeft, arc, style = Stroke(stroke, cap = StrokeCap.Round))
-                    }
                     if (focused) {
                         val width = 2.dp.toPx()
-                        drawCircle(Terracotta, radius = size.minDimension / 2 + width, style = Stroke(width))
+                        drawRoundRect(
+                            Terracotta, Offset(-width, -width), Size(size.width + 2 * width, size.height + 2 * width),
+                            CornerRadius(size.height / 2 + width), style = Stroke(width),
+                        )
                     }
                 },
             contentAlignment = Alignment.Center,
         ) {
-            if (icon != null) Icon(painterResource(icon), null, Modifier.size(iconSize), tint = content)
+            if (text == null) Icon(painterResource(icon), null, Modifier.size(iconSize), tint = content)
+            else Row(Modifier.padding(start = 7.dp, end = 9.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(painterResource(icon), null, Modifier.size(iconSize), tint = content)
+                // The button's label already names it; the word is only drawn.
+                Text(text, Modifier.clearAndSetSemantics {}, color = content, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+        }
+    }
+}
+
+/**
+ * A busy tile's dimming scrim and centred progress ring: [progress] filled clockwise from 12
+ * o'clock, gliding between updates, or a quarter arc spinning once a second while it is null (still
+ * when motion is reduced). Decoration only: the tile's own description carries the status.
+ */
+@Composable private fun DraftProgressOverlay(progress: Float?, modifier: Modifier) {
+    val still = reducedMotion()
+    // Progress glides between updates instead of jumping.
+    val fill by animateFloatAsState(progress ?: 0f, if (still) snap() else tween(MOTION_BASE, easing = LinearEasing), label = "draftRing")
+    val spin = if (progress == null && !still) {
+        val transition = rememberInfiniteTransition(label = "draftRingSpin")
+        transition.animateFloat(0f, 360f, infiniteRepeatable(tween(1000, easing = LinearEasing)), label = "draftRingAngle")
+    } else null
+    Box(modifier.background(Blackout.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(28.dp)) {
+            val stroke = 3.dp.toPx()
+            val diameter = size.minDimension - stroke
+            val topLeft = Offset((size.width - diameter) / 2, (size.height - diameter) / 2)
+            val arc = Size(diameter, diameter)
+            drawArc(Color.White.copy(alpha = 0.25f), 0f, 360f, false, topLeft, arc, style = Stroke(stroke))
+            val (start, sweep) = when {
+                progress != null -> -90f to 360f * fill
+                spin != null -> spin.value - 90f to 90f
+                else -> -90f to 90f
+            }
+            drawArc(TileFaceInk, start, sweep, false, topLeft, arc, style = Stroke(stroke, cap = StrokeCap.Round))
         }
     }
 }

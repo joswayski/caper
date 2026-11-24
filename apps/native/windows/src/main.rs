@@ -2819,6 +2819,7 @@ impl App {
                 recording::TIMER_RECORDING => self.recording_tick(),
                 profile::TIMER_PROFILE_RECORDING => self.profile_recording_tick(),
                 preview::TIMER_PREVIEW => self.preview_tick(),
+                uploads::TIMER_DRAFTS => self.drafts_tick(),
                 TIMER_GIFS => self.gifs_tick(),
                 TIMER_GIF_FRAMES => self.next_picker_frame(),
                 TIMER_UNREAD => {

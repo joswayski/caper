@@ -540,6 +540,8 @@ export interface DraftAttachment extends UploadState {
   threadRootId?: string;
   /** Kept locally until Send, which prepares and uploads it (profile cards). */
   staged?: boolean;
+  /** The picked file (`fileSource`), so removing and re-adding it can restore this upload. */
+  source?: string;
   /** Local file for previewing before sending, also used by the pending row.
    * An edited image's is a render of the edit; an edited video has none (the
    * upload is its preview). */
@@ -745,8 +747,9 @@ function DraftAttachmentTile({
               }
             }}
           >
-            <span className="chat-draft-corner-face">
+            <span className="chat-draft-corner-face" data-pill>
               <Pencil size={12} strokeWidth={2.5} aria-hidden="true" />
+              Edit
             </span>
           </button>
         )}
@@ -891,8 +894,9 @@ export function DraftAttachments({
             draft.thumbnailUrl ??
             (kind === "image" ? (draft.localUrl ?? draft.attachment?.previewUrl ?? url) : undefined);
           const busy = !draft.attachment && !draft.error && !draft.staged;
-          // Unknown while preparing without a compression estimate.
-          const progress = !busy ? undefined : draft.storedSize === undefined ? draft.compressing : draft.progress;
+          // Unknown (a turning ring) while preparing without a compression estimate or before any bytes go.
+          const progress =
+            (!busy ? undefined : draft.storedSize === undefined ? draft.compressing : draft.progress) || undefined;
           const status = draft.error
             ? "Failed"
             : !busy
@@ -995,18 +999,18 @@ export function DraftAttachments({
                   {content}
                 </div>
               )}
-              {kind === "video" && !draft.spoiler && !(draft.error && onRetry) && (
+              {kind === "video" && !busy && !draft.spoiler && !(draft.error && onRetry) && (
                 <span className="chat-draft-video-play" role="img" aria-label="Video">
                   <Play size={16} fill="currentColor" aria-hidden="true" />
                 </span>
               )}
-              {draft.spoiler && !(draft.error && onRetry) && (
+              {draft.spoiler && !busy && !(draft.error && onRetry) && (
                 <span className="chat-draft-spoiler-mark" role="img" aria-label="Spoiler">
                   <EyeOff size={20} aria-hidden="true" />
                 </span>
               )}
               {busy && (
-                // The ring wraps Remove's corner, like iMessage; the exact figure is in its label.
+                // A dimmed tile with a ring in its centre; the exact figure is in its label.
                 <span
                   className="chat-draft-ring"
                   role="progressbar"

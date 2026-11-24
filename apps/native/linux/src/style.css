@@ -1551,14 +1551,83 @@ scale.video-track slider {
   border-radius: 6px;
 }
 
-progressbar.upload-progress trough,
-progressbar.upload-progress progress {
-  min-height: 3px;
-  border-radius: 2px;
+/* A composer chip leaves its top-right corner to Remove. */
+.draft-chip {
+  padding-right: 40px;
 }
 
-progressbar.upload-progress progress {
-  background: @caper_action;
+/* While a file prepares or uploads, its picture dims under a centred ring. */
+.tile-scrim {
+  background: alpha(#090a0c, 0.45);
+  border-radius: 6px;
+}
+
+/* Remove and Edit: a white glyph on a dark face that reads as a button in
+   every theme. The button is the (larger) pointer target; its face is drawn
+   inside it, inset 6 from the chip's corner for Remove. */
+button.tile-remove,
+button.tile-pill {
+  min-width: 0;
+  min-height: 0;
+  padding: 6px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  box-shadow: none;
+  outline: none;
+}
+
+button.tile-pill {
+  padding: 2px 0;
+}
+
+.tile-face {
+  min-height: 24px;
+  border-radius: 999px;
+  background-color: alpha(#090a0c, 0.72);
+  box-shadow:
+    inset 0 0 0 1px alpha(white, 0.2),
+    0 1px 3px alpha(black, 0.35);
+  color: #f4f4f6;
+}
+
+button.tile-remove .tile-face {
+  min-width: 24px;
+}
+
+button.tile-remove .tile-face > image {
+  margin: 0 6px;
+}
+
+button.tile-pill .tile-face {
+  padding: 0 9px 0 7px;
+}
+
+.tile-word {
+  color: #f4f4f6;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+button.tile-remove:hover .tile-face,
+button.tile-pill:hover .tile-face {
+  background-image: linear-gradient(alpha(white, 0.12), alpha(white, 0.12));
+}
+
+button.tile-remove:active .tile-face,
+button.tile-pill:active .tile-face {
+  background-image: linear-gradient(alpha(white, 0.2), alpha(white, 0.2));
+}
+
+window.caper button.tile-remove:focus-visible,
+window.caper button.tile-pill:focus-visible {
+  outline: none;
+}
+
+button.tile-remove:focus-visible .tile-face,
+button.tile-pill:focus-visible .tile-face {
+  outline: 2px solid @caper_terracotta;
+  outline-offset: 0;
 }
 
 .attach-menu {

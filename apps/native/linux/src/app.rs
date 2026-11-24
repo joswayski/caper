@@ -292,6 +292,9 @@ struct State {
     uploads_checked: bool,
     /// Files in every composer, uploading or uploaded.
     files: Vec<DraftFile>,
+    /// Removed files waiting `REMOVAL_GRACE` to be added again, by channel
+    /// and thread, their uploads still running.
+    parked: caper_client::drafts::Parked<(String, Option<String>), DraftFile>,
     file_keys: u64,
     /// Advanced when any file changes, so chips redraw.
     files_revision: u64,
@@ -696,6 +699,8 @@ pub struct App {
     activity: Cell<Instant>,
     /// The typing timer runs only while someone types.
     ticking: Cell<bool>,
+    /// The timer releasing removed files runs only while some are parked.
+    parked_ticking: Cell<bool>,
     /// The sign-in countdown's pending redraw.
     countdown: Cell<bool>,
     /// The channel and thread composers' `:`/`@` suggestions.
@@ -961,6 +966,7 @@ pub fn start(
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
+        parked_ticking: Cell::new(false),
         countdown: Cell::new(false),
         suggestions: RefCell::default(),
         direct_dialog: RefCell::default(),
@@ -1738,9 +1744,11 @@ impl App {
                     }
                 }
             }
+            let parked = state.parked.take_all();
             let uploaded: Vec<String> = state
                 .files
                 .iter()
+                .chain(&parked)
                 .chain(state.voice_sends.iter().map(|send| &send.file))
                 .inspect(|file| file.stop())
                 .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
@@ -1965,6 +1973,9 @@ impl App {
     fn prepare(&self, state: &mut State, space: Option<String>, channel: Option<String>) {
         // A voice message sending on its own belongs to its conversation.
         self.discard_voice_sends(state, channel.as_deref());
+        for file in state.parked.take_all() {
+            self.release_file(state, file);
+        }
         // A report's conversation, read without joining it.
         let visit = space.is_none()
             && state
@@ -2986,7 +2997,17 @@ impl App {
             let (room, error) =
                 crate::uploads::room(Self::files_in(&state, root.as_deref()), paths.len());
             state.send_error = error;
+            let target = (channel.clone(), root.clone());
             for (path, scratch) in paths.into_iter().take(room) {
+                // The same file removed moments ago comes back as it was.
+                if scratch.is_none()
+                    && let Some(source) = caper_client::drafts::source_key(&path)
+                    && let Some(mut file) = state.parked.restore(&target, &source)
+                {
+                    file.spoiler = false;
+                    state.files.push(file);
+                    continue;
+                }
                 state.file_keys += 1;
                 let file = DraftFile::new(
                     state.file_keys,
@@ -3023,6 +3044,7 @@ impl App {
                     .flat_map(|pending| pending.files.iter_mut()),
             )
             .chain(state.voice_sends.iter_mut().map(|send| &mut send.file))
+            .chain(state.parked.items_mut())
             .find(|file| file.key == key);
         let Some(file) = file else {
             // Removed while it uploaded: give its reservation back.
@@ -3071,14 +3093,15 @@ impl App {
                 ChipAction::Remove(key) => {
                     if let Some(index) = state.files.iter().position(|file| file.key == key) {
                         let file = state.files.remove(index);
-                        file.stop();
-                        if let (Some(token), Some(attachment)) =
-                            (state.token.clone(), &file.attachment)
-                        {
-                            self.worker.send(Command::CancelAssets {
-                                token,
-                                ids: vec![attachment.id.clone()],
-                            });
+                        // An unedited picked file waits, still uploading, in
+                        // case it is added again; anything else goes now.
+                        match file.parkable() {
+                            Some(source) => {
+                                let target = (file.channel.clone(), file.thread_root_id.clone());
+                                state.parked.park(target, source, file, Instant::now());
+                                self.arm_parked(&state);
+                            }
+                            None => self.release_file(&state, file),
                         }
                     }
                     state.send_error = None;
@@ -3105,6 +3128,39 @@ impl App {
             state.files_revision += 1;
         }
         self.render();
+    }
+
+    /// Stops a removed file's upload and gives its reservation back.
+    fn release_file(&self, state: &State, file: DraftFile) {
+        file.stop();
+        if let (Some(token), Some(attachment)) = (state.token.clone(), &file.attachment) {
+            self.worker.send(Command::CancelAssets {
+                token,
+                ids: vec![attachment.id.clone()],
+            });
+        }
+    }
+
+    /// Waits for the next parked file's grace to end, releases every file
+    /// whose grace has, and waits again while any remain. Later files are
+    /// always due later, so one timer serves them all.
+    fn arm_parked(self: &Rc<Self>, state: &State) {
+        let Some(wait) = state.parked.next_due(Instant::now()) else {
+            return;
+        };
+        if self.parked_ticking.replace(true) {
+            return;
+        }
+        let app = Rc::downgrade(self);
+        glib::timeout_add_local_once(wait, move || {
+            let Some(app) = app.upgrade() else { return };
+            app.parked_ticking.set(false);
+            let mut state = app.state.borrow_mut();
+            for file in state.parked.expired(Instant::now()) {
+                app.release_file(&state, file);
+            }
+            app.arm_parked(&state);
+        });
     }
 
     /// The attach menu: \"Upload a file\", or why it cannot add more.

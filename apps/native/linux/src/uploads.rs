@@ -9,13 +9,70 @@ use caper_client::attachment_edit::Kind;
 use caper_client::drafts::{Progress, Upload};
 use caper_client::model::AttachmentKind;
 use caper_client::uploads::{Scratch, format_bytes};
-use gtk::{pango, prelude::*};
+use gtk::{glib, pango, prelude::*};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 /// The thumbnail a chip shows.
 const CHIP_EDGE: i32 = 48;
+/// The busy ring over the thumbnail: its diameter and stroke.
+const RING: i32 = 28;
+const RING_STROKE: f64 = 3.0;
+
+/// Where a busy ring without a fraction has turned to, once a second;
+/// still with reduced motion.
+fn spin() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    if !crate::images::motion() {
+        return 0.0;
+    }
+    let ms = START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis()
+        % 1000;
+    ms as f64 / 1000.0
+}
+
+/// A busy file's ring: a white track at 25% and the fraction clockwise
+/// from the top, or a quarter turning while there is none. Decoration: the
+/// chip's status line says the same.
+fn ring(progress: Progress) -> gtk::DrawingArea {
+    let ring = gtk::DrawingArea::new();
+    ring.set_content_width(RING);
+    ring.set_content_height(RING);
+    ring.set_can_target(false);
+    ring.set_halign(gtk::Align::Center);
+    ring.set_valign(gtk::Align::Center);
+    ring.set_draw_func(move |_, cr, width, height| {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        let (cx, cy) = (f64::from(width) / 2.0, f64::from(height) / 2.0);
+        let r = (f64::from(RING) - RING_STROKE) / 2.0;
+        cr.set_line_width(RING_STROKE);
+        cr.set_line_cap(gtk::cairo::LineCap::Round);
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.25);
+        cr.arc(cx, cy, r, 0.0, TAU);
+        let _ = cr.stroke();
+        let (from, sweep) = match progress {
+            Progress::Known(fraction) => (0.0, f64::from(fraction.clamp(0.0, 1.0))),
+            Progress::Unknown => (spin(), 0.25),
+        };
+        if sweep > 0.0 {
+            let start = from * TAU - FRAC_PI_2;
+            cr.set_source_rgb(244.0 / 255.0, 244.0 / 255.0, 246.0 / 255.0);
+            cr.arc(cx, cy, r, start, start + sweep * TAU);
+            let _ = cr.stroke();
+        }
+    });
+    if progress == Progress::Unknown && crate::images::motion() {
+        ring.add_tick_callback(|ring, _| {
+            ring.queue_draw();
+            glib::ControlFlow::Continue
+        });
+    }
+    ring
+}
 
 pub struct DraftFile {
     /// The upload's state, shared with the other clients.
@@ -52,6 +109,10 @@ impl DraftFile {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
         let mut upload = Upload::picked(key, channel, root, name, Some(path.clone()));
+        upload.source_key = scratch
+            .is_none()
+            .then(|| caper_client::drafts::source_key(&path))
+            .flatten();
         upload.source_scratch = scratch;
         upload.source_size = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
         Self {
@@ -159,18 +220,17 @@ pub fn chips(
             place(chip.upcast_ref(), key);
             continue;
         }
-        let chip = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        chip.add_css_class("chip");
-        chip.set_valign(gtk::Align::Start);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        row.add_css_class("chip");
+        row.add_css_class("draft-chip");
         if file.error.is_some() {
-            chip.add_css_class("failed");
+            row.add_css_class("failed");
         }
         let preview = gtk::Box::new(gtk::Orientation::Vertical, 0);
         preview.add_css_class("chip-preview");
         preview.set_size_request(CHIP_EDGE, CHIP_EDGE);
         preview.set_homogeneous(true);
         preview.set_overflow(gtk::Overflow::Hidden);
-        preview.set_valign(gtk::Align::Center);
         match file.thumbnail.as_ref().and_then(crate::media::texture) {
             Some(texture) => {
                 // An image keeps its own size request; this one draws at the chip's.
@@ -198,14 +258,25 @@ pub fn chips(
             });
             preview.add_controller(click);
         }
-        chip.append(&preview);
+        // While it prepares or uploads, the picture dims under a centred ring.
+        let picture = gtk::Overlay::new();
+        picture.set_child(Some(&preview));
+        picture.set_valign(gtk::Align::Center);
+        let (status, progress) = file.status();
+        if file.uploading {
+            let scrim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            scrim.add_css_class("tile-scrim");
+            scrim.set_can_target(false);
+            picture.add_overlay(&scrim);
+            picture.add_overlay(&ring(progress));
+        }
+        row.append(&picture);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
         text.set_valign(gtk::Align::Center);
         let name = crate::ui::label(&file.name, &["file-name"]);
         name.set_ellipsize(pango::EllipsizeMode::Middle);
         name.set_max_width_chars(18);
         text.append(&name);
-        let (status, progress) = file.status();
         let status = crate::ui::label(
             &status,
             if file.error.is_some() {
@@ -217,16 +288,7 @@ pub fn chips(
         status.set_ellipsize(pango::EllipsizeMode::End);
         status.set_max_width_chars(22);
         text.append(&status);
-        if file.uploading {
-            let bar = gtk::ProgressBar::new();
-            match progress {
-                Progress::Known(fraction) => bar.set_fraction(f64::from(fraction)),
-                Progress::Unknown => bar.pulse(),
-            }
-            bar.add_css_class("upload-progress");
-            text.append(&bar);
-        }
-        chip.append(&text);
+        row.append(&text);
         let key = file.key;
         let button = |icon: Icon, name: &str, action: ChipAction| {
             let button: gtk::Button = crate::app::named("GtkButton", name);
@@ -243,19 +305,42 @@ pub fn chips(
             });
             button
         };
+        // Remove and Edit: a white glyph (and word) on a dark face.
+        let face_button = |icon: Icon, word: Option<&str>, name: &str, action: ChipAction| {
+            let button: gtk::Button = crate::app::named("GtkButton", name);
+            button.set_tooltip_text(Some(name));
+            let face = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            face.add_css_class("tile-face");
+            face.append(&images.icon_image(icon, "#f4f4f6", 12));
+            if let Some(word) = word {
+                face.append(&crate::ui::label(word, &["tile-word"]));
+            }
+            button.set_child(Some(&face));
+            let (handler, action) = (handler.clone(), std::cell::Cell::new(Some(action)));
+            button.connect_clicked(move |_| {
+                if let Some(action) = action.take() {
+                    handler(action);
+                }
+            });
+            button
+        };
         if file.editable.is_some() {
-            chip.append(&button(
+            let edit = face_button(
                 Icon::Pencil,
+                Some("Edit"),
                 &format!("Edit {}", file.name),
                 ChipAction::Edit(key),
-            ));
+            );
+            edit.add_css_class("tile-pill");
+            edit.set_valign(gtk::Align::Center);
+            row.append(&edit);
         }
         if file.error.is_some() {
-            chip.append(&button(Icon::Retry, "Retry upload", ChipAction::Retry(key)));
+            row.append(&button(Icon::Retry, "Retry upload", ChipAction::Retry(key)));
         }
         let media = matches!(file.kind, AttachmentKind::Image | AttachmentKind::Video);
         if media || file.spoiler {
-            chip.append(&button(
+            row.append(&button(
                 if file.spoiler {
                     Icon::EyeOff
                 } else {
@@ -269,16 +354,25 @@ pub fn chips(
                 ChipAction::Spoiler(key, !file.spoiler),
             ));
         }
-        chip.append(&button(
-            Icon::Close,
-            &format!("Remove {}", file.name),
-            ChipAction::Remove(key),
-        ));
-        chip.set_tooltip_text(Some(&format!(
+        row.set_tooltip_text(Some(&format!(
             "{} · {}",
             file.name,
             format_bytes(file.stored_size.unwrap_or(file.source_size))
         )));
+        // Remove sits over the chip's top-right corner, usable while busy.
+        let chip = gtk::Overlay::new();
+        chip.set_child(Some(&row));
+        chip.set_valign(gtk::Align::Start);
+        let remove = face_button(
+            Icon::Close,
+            None,
+            &format!("Remove {}", file.name),
+            ChipAction::Remove(key),
+        );
+        remove.add_css_class("tile-remove");
+        remove.set_halign(gtk::Align::End);
+        remove.set_valign(gtk::Align::Start);
+        chip.add_overlay(&remove);
         place(chip.upcast_ref(), file.key);
     }
     container.set_visible(!files.is_empty());
