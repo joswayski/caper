@@ -3,7 +3,7 @@
 //! apply at once and revert if saving fails. Pure so the rules are testable.
 
 use crate::model::{NotificationLevel, NotificationOverride, NotificationSettings};
-use chrono::{DateTime, Datelike, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, Datelike, SecondsFormat, TimeZone, Timelike, Utc};
 use std::collections::BTreeMap;
 
 /// What a setting applies to.
@@ -53,6 +53,9 @@ pub enum Change {
     Level(Option<NotificationLevel>),
     /// `forever`, an RFC 3339 time, or `None` to unmute.
     Mute(Option<String>),
+    /// Do Not Disturb, account only: `forever`, an RFC 3339 time, or `None`
+    /// to turn it off.
+    Pause(Option<String>),
 }
 
 /// A save's answer: the account's full settings, or one override.
@@ -120,6 +123,70 @@ where
     }
 }
 
+/// Do Not Disturb's choices, the same on every client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PausePreset {
+    Minutes(i64),
+    /// 8:00 tomorrow, or 8:00 today before 5:00.
+    TomorrowMorning,
+    Forever,
+}
+
+pub const PAUSE_PRESETS: [(&str, PausePreset); 5] = [
+    ("30 minutes", PausePreset::Minutes(30)),
+    ("1 hour", PausePreset::Minutes(60)),
+    ("8 hours", PausePreset::Minutes(8 * 60)),
+    ("Until tomorrow morning", PausePreset::TomorrowMorning),
+    ("Until I turn it off", PausePreset::Forever),
+];
+
+/// The `pausedUntil` a preset sends as of `now` (in the zone whose morning
+/// counts): `forever` or a UTC time like `2026-10-08T17:00:00Z`.
+pub fn pause_value<Tz: TimeZone>(preset: PausePreset, now: &DateTime<Tz>) -> String {
+    let until = match preset {
+        PausePreset::Forever => return "forever".into(),
+        PausePreset::Minutes(minutes) => {
+            now.with_timezone(&Utc) + chrono::Duration::minutes(minutes)
+        }
+        PausePreset::TomorrowMorning => {
+            let today = now.date_naive();
+            let day = if now.hour() < 5 {
+                today
+            } else {
+                today.succ_opt().unwrap_or(today)
+            };
+            let morning = day.and_hms_opt(8, 0, 0).expect("valid time");
+            // A clock change at 8:00 (none in practice) falls back to UTC.
+            now.timezone()
+                .from_local_datetime(&morning)
+                .earliest()
+                .map_or_else(|| morning.and_utc(), |local| local.with_timezone(&Utc))
+        }
+    };
+    until.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+/// When Do Not Disturb ends, in local time: `Until 3:45 PM` today, `Until
+/// tomorrow at 8:00 AM`, `Until Thu 8:00 AM` within the week, `Until Dec 3,
+/// 8:00 AM` beyond it, or `Until you turn it off`.
+pub fn pause_label<Tz: TimeZone>(pause: Mute, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let Mute::Until(until) = pause else {
+        return "Until you turn it off".into();
+    };
+    let local = until.with_timezone(&now.timezone());
+    let time = local.format("%-I:%M %p");
+    let days = (local.date_naive() - now.date_naive()).num_days();
+    match days {
+        ..=0 => format!("Until {time}"),
+        1 => format!("Until tomorrow at {time}"),
+        2..=6 => format!("Until {} {time}", local.format("%a")),
+        _ => format!("Until {}, {time}", local.format("%b %-d")),
+    }
+}
+
 /// A space or channel level as its menu names it.
 pub fn level_label(level: NotificationLevel) -> &'static str {
     match level {
@@ -146,6 +213,7 @@ pub fn default_label(inherited: NotificationLevel) -> String {
 enum Previous {
     VoiceStarted(bool),
     Level(NotificationLevel),
+    Pause(Option<String>),
     Override(Option<NotificationOverride>),
 }
 
@@ -217,6 +285,12 @@ impl Notifications {
                 }
                 Previous::Level(std::mem::replace(&mut settings.level, *level))
             }
+            (Scope::Account, Change::Pause(until)) => {
+                if settings.paused_until == *until {
+                    return false;
+                }
+                Previous::Pause(std::mem::replace(&mut settings.paused_until, until.clone()))
+            }
             (Scope::Account, _) => return false,
             (scope, change) => {
                 let previous = settings
@@ -229,6 +303,7 @@ impl Notifications {
                     Change::VoiceStarted(enabled) => entry.voice_started = *enabled,
                     Change::Level(level) => entry.level = *level,
                     Change::Mute(until) => entry.muted_until = until.clone(),
+                    Change::Pause(_) => return false,
                 }
                 if previous.as_ref() == Some(&entry)
                     || (previous.is_none() && entry == scope.empty())
@@ -263,6 +338,7 @@ impl Notifications {
                     match previous {
                         Previous::VoiceStarted(enabled) => settings.voice_started = enabled,
                         Previous::Level(level) => settings.level = level,
+                        Previous::Pause(until) => settings.paused_until = until,
                         Previous::Override(entry) => {
                             set_entry(&mut settings.overrides, scope, entry);
                         }
@@ -282,6 +358,7 @@ impl Notifications {
             if *scope == Scope::Account {
                 settings.level = current.level;
                 settings.voice_started = current.voice_started;
+                settings.paused_until = current.paused_until.clone();
             } else {
                 let entry = current
                     .overrides
@@ -292,6 +369,26 @@ impl Notifications {
             }
         }
         settings
+    }
+
+    /// The account settings another device saved (`notifications.updated`,
+    /// which carries no overrides). An account save in flight keeps its
+    /// values; its own answer settles them.
+    pub fn apply_account(&mut self, account: NotificationSettings) {
+        if self.saving.contains_key(&Scope::Account) {
+            return;
+        }
+        if let Some(settings) = self.settings.as_mut() {
+            settings.level = account.level;
+            settings.mobile = account.mobile;
+            settings.voice_started = account.voice_started;
+            settings.paused_until = account.paused_until;
+        }
+    }
+
+    /// Do Not Disturb as of `now`, or `None` when it is off or has ended.
+    pub fn paused(&self, now: DateTime<Utc>) -> Option<Mute> {
+        mute(self.settings.as_ref()?.paused_until.as_deref(), now)
     }
 
     /// Whether the first load has finished.
@@ -381,13 +478,16 @@ impl Notifications {
         }
     }
 
-    /// How long until the next timed mute ends, to redraw when it does.
+    /// How long until the next timed mute or Do Not Disturb ends, to
+    /// redraw when it does.
     pub fn next_expiry(&self, now: DateTime<Utc>) -> Option<std::time::Duration> {
-        self.settings
-            .as_ref()?
+        let settings = self.settings.as_ref()?;
+        settings
             .overrides
             .iter()
-            .filter_map(|entry| match mute(entry.muted_until.as_deref(), now)? {
+            .map(|entry| entry.muted_until.as_deref())
+            .chain([settings.paused_until.as_deref()])
+            .filter_map(|until| match mute(until, now)? {
                 Mute::Until(until) => (until - now).to_std().ok(),
                 Mute::Forever => None,
             })
@@ -439,6 +539,57 @@ mod tests {
         let revision = notifications.start_load().unwrap();
         notifications.finish_load(revision, Ok(settings()));
         notifications
+    }
+
+    #[test]
+    fn pause_presets_labels_saves_and_pushes() {
+        let new_york = FixedOffset::west_opt(5 * 3600).unwrap();
+        let evening = at("2026-11-24T23:10:00Z").with_timezone(&new_york); // 6:10 PM
+        let small_hours = at("2026-11-25T07:30:00Z").with_timezone(&new_york); // 2:30 AM
+        let preset = |k: usize, now: &DateTime<FixedOffset>| pause_value(PAUSE_PRESETS[k].1, now);
+        assert_eq!(preset(0, &evening), "2026-11-24T23:40:00Z");
+        assert_eq!(preset(2, &evening), "2026-11-25T07:10:00Z");
+        // Tomorrow morning is 8:00 local the next day, or today before 5:00.
+        assert_eq!(preset(3, &evening), "2026-11-25T13:00:00Z");
+        assert_eq!(preset(3, &small_hours), "2026-11-25T13:00:00Z");
+        let five = at("2026-11-25T10:00:00Z").with_timezone(&new_york);
+        assert_eq!(preset(3, &five), "2026-11-26T13:00:00Z");
+        assert_eq!(preset(4, &evening), "forever");
+
+        let label =
+            |value: &str| pause_label(mute(Some(value), evening.to_utc()).unwrap(), &evening);
+        assert_eq!(label("2026-11-24T23:40:00Z"), "Until 6:40 PM");
+        assert_eq!(label("2026-11-25T13:00:00Z"), "Until tomorrow at 8:00 AM");
+        assert_eq!(label("2026-11-27T13:00:00Z"), "Until Fri 8:00 AM");
+        assert_eq!(label("2026-12-03T13:00:00Z"), "Until Dec 3, 8:00 AM");
+        assert_eq!(label("forever"), "Until you turn it off");
+
+        let mut notifications = loaded();
+        let now = evening.to_utc();
+        assert_eq!(notifications.paused(now), None);
+        let until = preset(1, &evening);
+        assert!(notifications.begin(&Scope::Account, &Change::Pause(Some(until.clone()))));
+        assert_eq!(notifications.paused(now), Some(Mute::Until(at(&until))));
+        assert_eq!(
+            notifications.next_expiry(now),
+            Some(std::time::Duration::from_secs(3600))
+        );
+        // Saving: another device's push doesn't undo it; a failure restores.
+        let mut elsewhere = settings();
+        elsewhere.paused_until = Some("forever".into());
+        notifications.apply_account(elsewhere.clone());
+        assert_eq!(notifications.paused(now), Some(Mute::Until(at(&until))));
+        notifications.finish_save(&Scope::Account, Err("offline".into()));
+        assert_eq!(notifications.paused(now), None);
+        notifications.apply_account(elsewhere);
+        assert_eq!(notifications.paused(now), Some(Mute::Forever));
+        // Pushes carry no overrides and keep the loaded ones.
+        assert_eq!(
+            notifications.level(&Scope::Space("spc1".into())),
+            Some(NotificationLevel::Nothing)
+        );
+        // An elapsed pause reads as off.
+        assert_eq!(mute(Some("2026-11-24T23:00:00Z"), now), None);
     }
 
     #[test]

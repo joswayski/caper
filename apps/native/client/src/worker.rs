@@ -1464,6 +1464,18 @@ fn manage<H: Host>(
             Command::StartNotifications { epoch, token } => {
                 badge.account(Some(token.clone()));
                 notifications.take();
+                // Know about Do Not Disturb before the first alert, whether
+                // or not the UI has loaded notification settings yet.
+                crate::os_notifications::set_paused_until(None);
+                {
+                    let api = api.clone();
+                    let token = token.clone();
+                    thread::spawn(move || {
+                        if let Ok(settings) = api.notification_settings(&token) {
+                            crate::os_notifications::follow_pause(&settings);
+                        }
+                    });
+                }
                 let events = events.clone();
                 let host = host.clone();
                 let visible = visible.clone();
@@ -1478,7 +1490,11 @@ fn manage<H: Host>(
                             let host = host.clone();
                             move |alert, lifetime| {
                                 send(&events, &host, Event::NotificationActivity { epoch });
-                                if alert.quiet || !alert.fresh() {
+                                // Do Not Disturb: unread state still updates.
+                                if alert.quiet
+                                    || !alert.fresh()
+                                    || crate::os_notifications::paused(chrono::Utc::now())
+                                {
                                     return;
                                 }
                                 let events = events.clone();
@@ -1565,6 +1581,7 @@ fn manage<H: Host>(
             Command::StopNotifications => {
                 badge.account(None);
                 notifications.take();
+                crate::os_notifications::set_paused_until(None);
             }
             Command::Connect {
                 generation,
@@ -2756,15 +2773,24 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
         },
         AccountOperation::LoadNotifications { revision } => AccountResult::Notifications {
             revision,
-            result: api.notification_settings(token).map_err(text),
+            result: api
+                .notification_settings(token)
+                .inspect(crate::os_notifications::follow_pause)
+                .map_err(text),
         },
         AccountOperation::SaveNotifications { scope, change } => {
             let result = match (&scope, &change) {
-                (Scope::Account, Change::VoiceStarted(Some(enabled))) => {
-                    api.save_voice_started(token, *enabled).map(Saved::Settings)
-                }
+                (Scope::Account, Change::Pause(until)) => api
+                    .save_paused_until(token, until.as_deref())
+                    .inspect(crate::os_notifications::follow_pause)
+                    .map(Saved::Settings),
+                (Scope::Account, Change::VoiceStarted(Some(enabled))) => api
+                    .save_voice_started(token, *enabled)
+                    .inspect(crate::os_notifications::follow_pause)
+                    .map(Saved::Settings),
                 (Scope::Account, Change::Level(Some(level))) => api
                     .save_notification_level(token, *level)
+                    .inspect(crate::os_notifications::follow_pause)
                     .map(Saved::Settings),
                 _ => api
                     .save_notification_override(token, &scope, &change)

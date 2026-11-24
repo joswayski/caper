@@ -511,6 +511,21 @@ impl Api {
         )
     }
 
+    /// Starts (`forever` or an RFC 3339 time) or ends (`None`) Do Not Disturb.
+    pub fn save_paused_until(
+        &self,
+        token: &str,
+        until: Option<&str>,
+    ) -> Result<NotificationSettings, ApiError> {
+        self.request(
+            Method::PUT,
+            "api/notifications/settings",
+            Some(token),
+            None,
+            Some(json!({"pausedUntil": until})),
+        )
+    }
+
     /// `PUT` one field of a space, channel or DM override; `None` resets it.
     pub fn save_notification_override(
         &self,
@@ -530,6 +545,7 @@ impl Api {
             Change::VoiceStarted(enabled) => json!({"voiceStarted": enabled}),
             Change::Level(level) => json!({"level": level.map(NotificationLevel::as_str)}),
             Change::Mute(until) => json!({"mutedUntil": until}),
+            Change::Pause(_) => return Err(invalid("Invalid Caper endpoint.")),
         };
         self.request(Method::PUT, &path, Some(token), None, Some(body))
     }

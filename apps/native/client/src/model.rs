@@ -576,6 +576,9 @@ pub struct NotificationSettings {
     pub mobile: String,
     #[serde(default = "voice_started_default")]
     pub voice_started: bool,
+    /// Do Not Disturb: `forever`, an RFC 3339 time, or `None` (off).
+    #[serde(default)]
+    pub paused_until: Option<String>,
     #[serde(default)]
     pub overrides: Vec<NotificationOverride>,
 }

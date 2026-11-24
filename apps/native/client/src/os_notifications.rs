@@ -12,6 +12,24 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The signed-in account's Do Not Disturb, as last loaded, saved or pushed
+/// by `notifications.updated`. One account per process signs in at a time.
+static PAUSED_UNTIL: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn set_paused_until(until: Option<String>) {
+    *PAUSED_UNTIL.lock().unwrap() = until;
+}
+
+pub fn follow_pause(settings: &crate::model::NotificationSettings) {
+    set_paused_until(settings.paused_until.clone());
+}
+
+/// Whether Do Not Disturb holds banners back at `now`. The server already
+/// suppresses alerts while paused; this covers ones already on their way.
+pub fn paused(now: DateTime<Utc>) -> bool {
+    crate::notifications::mute(PAUSED_UNTIL.lock().unwrap().as_deref(), now).is_some()
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
@@ -346,7 +364,15 @@ pub fn watch(
                                 Some(crate::gateway::ProfileEvent::NotificationRetracted(
                                     message,
                                 )) => retractions.retract(&message, Instant::now()),
-                                Some(event) => profiles(event),
+                                Some(event) => {
+                                    if let crate::gateway::ProfileEvent::NotificationSettings(
+                                        settings,
+                                    ) = &event
+                                    {
+                                        follow_pause(settings);
+                                    }
+                                    profiles(event);
+                                }
                                 None => {}
                             }
                         }

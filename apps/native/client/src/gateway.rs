@@ -141,6 +141,10 @@ pub enum ProfileEvent {
     /// `notification.retracted`: this message (id) was deleted, so the
     /// notification shown for it is taken back. The account feed handles it.
     NotificationRetracted(String),
+    /// `notifications.updated`: this account's settings changed on another
+    /// device (or this one): level, voice starts and Do Not Disturb, with no
+    /// overrides.
+    NotificationSettings(crate::model::NotificationSettings),
 }
 
 /// A `profiles` event frame, or `None` for other frames, unknown event types
@@ -165,6 +169,11 @@ pub fn profiles_event(frame: &Value) -> Option<ProfileEvent> {
             .as_str()
             .filter(|id| !id.is_empty())
             .map(|id| ProfileEvent::NotificationRetracted(id.to_owned())),
+        "notifications.updated" => {
+            serde_json::from_value::<crate::model::NotificationSettings>(event["settings"].clone())
+                .ok()
+                .map(ProfileEvent::NotificationSettings)
+        }
         _ => None,
     }
 }
@@ -1028,7 +1037,18 @@ mod tests {
                 "msg000000000002".into()
             ))
         );
+        let Some(ProfileEvent::NotificationSettings(settings)) = profiles_event(&frame(json!({
+            "type":"notifications.updated",
+            "settings":{"level":"mentions","mobile":"always","voiceStarted":false,"pausedUntil":"forever"}
+        }))) else {
+            panic!("notifications.updated parses")
+        };
+        assert_eq!(
+            (settings.paused_until.as_deref(), settings.voice_started),
+            (Some("forever"), false)
+        );
         for ignored in [
+            frame(json!({"type":"notifications.updated","settings":{"pausedUntil":null}})),
             frame(json!({"type":"notification.retracted"})),
             frame(json!({"type":"notification.retracted","messageId":""})),
             frame(json!({"type":"notification.retracted","messageId":7})),
