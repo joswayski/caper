@@ -40,7 +40,7 @@ team="$(sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p' <<<"$APPLE_SIGNING_IDENTITY")"
 group="$team.$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
 with_group() {
   cp "$1" "$2"
-  /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" -c "Add :com.apple.security.application-groups:0 string $group" "$2"
+  plutil -insert com.apple.security.application-groups -json "[\"$group\"]" "$2"
 }
 with_group "$ENTITLEMENTS" "$work/app.entitlements"
 with_group "$ROOT/Configuration/Share-macOS.entitlements" "$work/share.entitlements"

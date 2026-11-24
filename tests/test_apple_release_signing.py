@@ -350,11 +350,19 @@ class MacDiskImageTests(unittest.TestCase):
         self.apple = self.root / "app files"
         self.apple.mkdir()
         source = UPLOAD.parent
-        for name in ("sign-and-notarize.sh", "dmg-settings.py"):
+        for name in (
+            "sign-and-notarize.sh",
+            "dmg-settings.py",
+            "Configuration/macOS-Release.entitlements",
+            "Configuration/Share-macOS.entitlements",
+        ):
+            (self.apple / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source / name, self.apple / name)
         self.app = self.apple / "dist/Caper.app"
         (self.app / "Contents/MacOS").mkdir(parents=True)
         (self.app / "Contents/Frameworks").mkdir()
+        self.extension = self.app / "Contents/PlugIns/CaperShare.appex"
+        self.extension.mkdir(parents=True)
         with (self.app / "Contents/Info.plist").open("wb") as info:
             plistlib.dump(
                 {
@@ -370,20 +378,35 @@ class MacDiskImageTests(unittest.TestCase):
         self.updater.write_bytes(b"updater")
         binary = self.root / "bin"
         binary.mkdir()
-        for name in ("codesign", "ditto", "xcrun", "spctl", "dmgbuild", "sleep"):
+        for name in ("codesign", "ditto", "xcrun", "spctl", "dmgbuild", "sleep", "plutil"):
             tool = binary / name
             tool.write_text("""#!/usr/bin/env python3
 import json
 import os
 from pathlib import Path
+import plistlib
 import sys
 tool, args = Path(sys.argv[0]).name, sys.argv[1:]
+logged = [tool, *args]
+if tool == "codesign" and "--entitlements" in args and "-d" not in args:
+    # The App Group each signature claims (its entitlements file is temporary).
+    with open(args[args.index("--entitlements") + 1], "rb") as source:
+        logged.append(plistlib.load(source).get("com.apple.security.application-groups"))
 with open(os.environ["TEST_LOG"], "a") as log:
-    log.write(json.dumps([tool, *args]) + "\\n")
+    log.write(json.dumps(logged) + "\\n")
 target = Path(args[-1])
 app = Path(os.environ["TEST_APP"])
-if tool == "codesign" and "-d" in args:
-    print("<key>com.apple.security.device.audio-input</key><true/>")
+if tool == "plutil" and args[0] == "-extract":
+    with open(target, "rb") as source:
+        print(plistlib.load(source)[args[1]])
+elif tool == "plutil" and args[0] == "-insert":
+    with open(target, "rb") as source:
+        entitlements = plistlib.load(source)
+    entitlements[args[1]] = json.loads(args[3])
+    with open(target, "wb") as output:
+        plistlib.dump(entitlements, output)
+elif tool == "codesign" and "-d" in args:
+    print("<key>com.apple.security.device.audio-input</key><true/><string>ABCDE12345.chat.caper.fixture</string>")
 elif tool == "ditto":
     target.write_bytes(b"stapled" if (app / "stapled-fixture").exists() else b"unstapled")
 elif tool == "dmgbuild":
@@ -419,7 +442,7 @@ elif tool == "spctl":
             "PATH": f"{binary}:{os.environ['PATH']}",
             "TEST_LOG": str(self.log),
             "TEST_APP": str(self.app),
-            "APPLE_SIGNING_IDENTITY": "Developer ID Application: Fixture",
+            "APPLE_SIGNING_IDENTITY": "Developer ID Application: Fixture (ABCDE12345)",
             "NOTARY_KEY_PATH": str(self.root / "fixture-key.p8"),
             "NOTARY_KEY_ID": "fixture-id",
             "NOTARY_ISSUER": "fixture-issuer",
@@ -457,6 +480,15 @@ elif tool == "spctl":
             commands,
         )
         self.assertIn(str(dmg), result.stdout)
+
+    def test_share_extension_and_app_share_the_team_prefixed_app_group(self):
+        result, commands = self.sign()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        group = ["ABCDE12345.chat.caper.fixture"]
+        signed = [c for c in commands if c[0] == "codesign" and "--entitlements" in c and "-d" not in c]
+        self.assertEqual(
+            [(Path(c[-2]).name, c[-1]) for c in signed], [("CaperShare.appex", group), ("Caper.app", group)]
+        )
 
     def test_ticket_service_failures_recover_for_app_and_dmg(self):
         for stage in ("app-staple", "app-validate", "dmg-staple", "dmg-validate"):
