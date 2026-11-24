@@ -10,7 +10,7 @@ struct UIKitMessageDialogSheet: View {
     var body: some View {
         UIKitMessageDialogBridge(controller: controller)
             .interactiveDismissDisabled(controller.dismissDisabled)
-            .presentationDetents([.large]).preferredColorScheme(.dark)
+            .presentationDetents([.large]).preferredColorScheme(CaperTheme.colorScheme)
     }
 }
 
@@ -59,7 +59,7 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(CaperTheme.raised); overrideUserInterfaceStyle = .dark
+        view.backgroundColor = UIColor(CaperTheme.raised); overrideUserInterfaceStyle = CaperTheme.interfaceStyle
         let title = Self.label(self.title ?? "", size: 20, bold: true)
         titleLabel = title
         let close = Self.button("Close") { [weak self] in if let self, !self.dismissDisabled { self.close() } }

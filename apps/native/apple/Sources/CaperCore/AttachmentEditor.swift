@@ -118,7 +118,7 @@ struct AttachmentEditorHost: ViewModifier {
             .fullScreenCover(isPresented: Binding(get: { request != nil }, set: { if !$0 { request = nil } })) {
                 presented
                     .presentationBackground(.clear)
-                    .preferredColorScheme(.dark)
+                    .preferredColorScheme(CaperTheme.colorScheme)
             }
     }
 

@@ -47,7 +47,7 @@ final class JumpToLatestToast: UIView {
         button.configuration = configuration
         button.configurationUpdateHandler = { [weak self] button in
             let arrow = self?.compact == true
-            button.configuration?.baseBackgroundColor = arrow ? (button.isHighlighted ? UIColor.white.withAlphaComponent(0.08) : .clear)
+            button.configuration?.baseBackgroundColor = arrow ? (button.isHighlighted ? UIKitStyle.hoverWash : .clear)
                 : button.isHighlighted ? UIKitStyle.actionPress : UIKitStyle.action
             button.configuration?.baseForegroundColor = arrow ? UIKitStyle.text : UIKitStyle.onAction
         }

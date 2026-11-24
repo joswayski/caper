@@ -40,7 +40,7 @@ struct NativeAttachmentEditorBridge: UIViewControllerRepresentable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
-        super.viewDidLoad(); overrideUserInterfaceStyle = .dark
+        super.viewDidLoad(); overrideUserInterfaceStyle = CaperTheme.interfaceStyle
         view.backgroundColor = UIColor(CaperTheme.blackout); view.accessibilityIdentifier = "attachment-editor"
         view.accessibilityViewIsModal = true
         let close = UIKitMessageDialog.button("Close") { [state] in state.close() }

@@ -232,7 +232,7 @@ import Observation
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(CaperTheme.surface); overrideUserInterfaceStyle = .dark
+        view.backgroundColor = UIColor(CaperTheme.surface); overrideUserInterfaceStyle = CaperTheme.interfaceStyle
         view.accessibilityIdentifier = "mention-card"
         let avatar = UIKitAvatar(side: 48); avatar.show(name: person.avatarName, avatarID: person.avatarId, picture: person.picture)
         let picture = UIButton(type: .custom); picture.addSubview(avatar); avatar.isUserInteractionEnabled = false

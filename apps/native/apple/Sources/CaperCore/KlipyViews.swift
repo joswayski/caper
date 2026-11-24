@@ -408,7 +408,7 @@ struct ComposerGifButton: View {
             showing = false
             send(gif, query)
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(CaperTheme.colorScheme)
     }
 
     private func finish() { controller?.restoreFocus() }

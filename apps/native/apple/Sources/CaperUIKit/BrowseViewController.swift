@@ -105,7 +105,18 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             UIKitAudioSettings.sendVoiceOnStop.toggle()
         }
         sendOnStop.accessibilityIdentifier = "voice-messages-send-on-stop"
-        var items: [UIMenuElement] = [UIMenu(title: "Audio settings", options: .displayInline, children: [sendOnStop]),
+        // Web's and macOS's two presets, Obsidian (dark) and Paper (light).
+        let theme = CaperThemeStore.shared.active.id
+        let appearance = [("obsidian", "Obsidian", "Dark"), ("paper", "Paper", "Light")].map { id, title, subtitle in
+            let action = UIAction(title: title, subtitle: subtitle, state: theme == id ? .on : .off) { _ in
+                guard CaperThemeStore.shared.active.id != id else { return }
+                CaperThemeStore.shared.selectPreset(id)
+            }
+            action.accessibilityIdentifier = "appearance-\(id)"
+            return action
+        }
+        var items: [UIMenuElement] = [UIMenu(title: "Appearance", options: .displayInline, children: appearance),
+                                      UIMenu(title: "Audio settings", options: .displayInline, children: [sendOnStop]),
                                       UIAction(title: "Audio test", attributes: model.voice.phase == .leaving ? .disabled : []) { [weak self] _ in self?.dialog(.audio) }]
         if model.voice.phase == .connected {
             items.append(UIAction(title: "Connection details") { [weak self] _ in self?.dialog(.connection) })
@@ -1249,7 +1260,7 @@ final class AccountPanelRow: UIControl {
     }
     private func refresh() {
         backgroundColor = selectedRow ? UIKitStyle.terracotta.withAlphaComponent(0.16)
-            : isHighlighted || hovered ? UIColor.white.withAlphaComponent(0.06) : .clear
+            : isHighlighted || hovered ? UIKitStyle.hoverWash : .clear
     }
 }
 

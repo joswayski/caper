@@ -22,7 +22,7 @@ import Observation
     init(model: AppModel, page: Page) { self.model = model; self.page = page; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
-        super.viewDidLoad(); view.backgroundColor = UIColor(CaperTheme.blackout); overrideUserInterfaceStyle = .dark
+        super.viewDidLoad(); view.backgroundColor = UIColor(CaperTheme.blackout); overrideUserInterfaceStyle = CaperTheme.interfaceStyle
         let scroll = UIScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false; scroll.keyboardDismissMode = .interactive
         view.addSubview(scroll); body.axis = .vertical; body.spacing = 18; body.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(body)
         NSLayoutConstraint.activate([

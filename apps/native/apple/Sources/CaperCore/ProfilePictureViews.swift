@@ -247,7 +247,7 @@ struct PictureEditor<Preview: View>: View {
         .sheet(isPresented: $showHistory) {
             if let history, let select {
                 AvatarHistoryChooser(expected: historyExpected, history: history, select: select)
-                    .preferredColorScheme(.dark)
+                    .preferredColorScheme(CaperTheme.colorScheme)
             }
         }
         // The same drawer as chat attachments, in picture mode: photos only,
@@ -269,7 +269,7 @@ struct PictureEditor<Preview: View>: View {
             stagedURL = nil
         }) { request in
             AttachmentEditor(request: request) { editing = nil }
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(CaperTheme.colorScheme)
         }
         .confirmationDialog("Animated picture", isPresented: $showAnimationChoice, titleVisibility: .visible) {
             Button("Use original animation") {

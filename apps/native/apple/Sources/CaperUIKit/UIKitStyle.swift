@@ -37,28 +37,29 @@ private final class WeakObserver: @unchecked Sendable {
     init(_ value: ModelObserver) { self.value = value }
 }
 
-/// Caper's tokens (shared/design.css, via CaperTheme) for UIKit.
+/// Caper's tokens (shared/themes, via CaperTheme) for UIKit: Obsidian, or Paper
+/// while it is the active theme.
 enum UIKitStyle {
-    static let blackout = UIColor(CaperTheme.blackout)
-    static let surface = UIColor(CaperTheme.surface)
-    static let raised = UIColor(CaperTheme.raised)
-    static let sidebar = UIColor(CaperTheme.sidebar)
-    static let conversation = UIColor(CaperTheme.conversation)
-    static let composer = UIColor(CaperTheme.composer)
-    static let border = UIColor(CaperTheme.border)
-    static let text = UIColor(CaperTheme.text)
+    static let blackout = CaperTheme.UI.blackout
+    static let surface = CaperTheme.UI.surface
+    static let raised = CaperTheme.UI.raised
+    static let sidebar = CaperTheme.UI.sidebar
+    static let conversation = CaperTheme.UI.conversation
+    static let composer = CaperTheme.UI.composer
+    static let border = CaperTheme.UI.border
+    static let text = CaperTheme.UI.text
     /// Message body text, a step under headings (SwiftUI's MessageRow).
-    static let body = UIColor(red: 222 / 255, green: 223 / 255, blue: 224 / 255, alpha: 1)
-    static let muted = UIColor(CaperTheme.muted)
-    static let link = UIColor(CaperTheme.link)
-    static let terracotta = UIColor(CaperTheme.terracotta)
-    static let terracottaBright = UIColor(CaperTheme.terracottaBright)
-    static let action = UIColor(CaperTheme.action)
-    static let actionPress = UIColor(CaperTheme.actionPress)
+    static let body = CaperTheme.themed(0xDEDFE0, 0x24262F)
+    static let muted = CaperTheme.UI.muted
+    static let link = CaperTheme.UI.link
+    static let terracotta = CaperTheme.UI.terracotta
+    static let terracottaBright = CaperTheme.UI.terracottaBright
+    static let action = CaperTheme.UI.action
+    static let actionPress = CaperTheme.UI.actionPress
     /// Ink on a primary (chalk) fill.
-    static let onAction = UIColor(CaperTheme.onAction)
-    static let error = UIColor(CaperTheme.error)
-    static let green = UIColor(CaperTheme.green)
+    static let onAction = CaperTheme.UI.onAction
+    static let error = CaperTheme.UI.error
+    static let green = CaperTheme.UI.green
 
     enum Weight { case regular, medium, bold, black }
 
@@ -90,8 +91,10 @@ enum UIKitStyle {
         UIImage(named: "caper-\(name)")?.withRenderingMode(.alwaysTemplate)
     }
 
-    static let pinGold = UIColor(CaperTheme.pinGold)
-    static let sidebarRaised = UIColor(CaperTheme.sidebarRaised)
+    /// A hovered or pressed row (macOS's hoverWash).
+    static let hoverWash = CaperTheme.hoverWash
+    static let pinGold = CaperTheme.UI.pinGold
+    static let sidebarRaised = CaperTheme.UI.sidebarRaised
 
     private static let fractionalDates: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -161,7 +164,7 @@ final class CaperButton: UIButton {
             backgroundColor = !enabled ? UIKitStyle.raised : button.isHighlighted ? UIKitStyle.actionPress : UIKitStyle.action
             layer.borderWidth = enabled ? 0 : 1
             layer.borderColor = UIKitStyle.border.cgColor
-            button.configuration?.baseForegroundColor = enabled ? UIKitStyle.blackout : UIKitStyle.muted
+            button.configuration?.baseForegroundColor = enabled ? UIKitStyle.onAction : UIKitStyle.muted
         case .secondary:
             backgroundColor = button.isHighlighted ? UIKitStyle.border.withAlphaComponent(0.55) : UIKitStyle.surface
             layer.borderWidth = 1

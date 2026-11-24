@@ -272,7 +272,7 @@ public enum NativePresentation {
         #if os(macOS)
         let hidden = CaperThemeStore.borderColor, shown = CaperThemeStore.hoverWashColor, clear = NSColor.clear
         #else
-        let hidden = UIColor(CaperTheme.border), shown = UIColor.white.withAlphaComponent(0.06), clear = UIColor.clear
+        let hidden = UIColor(CaperTheme.border), shown = CaperTheme.hoverWash, clear = UIColor.clear
         #endif
         var spoilers: [(range: NSRange, group: Int)] = []
         text.enumerateAttribute(spoilerAttribute, in: NSRange(location: 0, length: text.length)) { value, range, _ in

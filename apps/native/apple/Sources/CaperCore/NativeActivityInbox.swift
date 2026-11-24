@@ -355,7 +355,7 @@ import Observation
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(CaperTheme.surface); overrideUserInterfaceStyle = .dark
+        view.backgroundColor = UIColor(CaperTheme.surface); overrideUserInterfaceStyle = CaperTheme.interfaceStyle
         view.accessibilityIdentifier = "activity-inbox-dialog"
 
         // Title, its unread count, and Done.

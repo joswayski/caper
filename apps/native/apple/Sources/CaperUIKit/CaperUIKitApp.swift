@@ -74,6 +74,8 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
         CaperUIKitLaunch.mark("scene")
+        // Loads the saved theme before anything takes a color.
+        _ = CaperThemeStore.shared
         let model = CaperRuntime.makeModel()
         CaperUIKitLaunch.mark("model")
         let cached = CaperUIKitLaunch.cachedSnapshot()
@@ -88,8 +90,13 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let window = UIWindow(windowScene: scene)
         window.rootViewController = root
         window.tintColor = UIKitStyle.terracottaBright
-        window.overrideUserInterfaceStyle = .dark
+        window.overrideUserInterfaceStyle = CaperTheme.interfaceStyle
         window.makeKeyAndVisible()
+        // Views take their colors as they are built, so another theme rebuilds
+        // them; the model keeps the open conversation, drafts and any call.
+        themeObserver = NotificationCenter.default.addObserver(forName: CaperThemeStore.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyTheme() }
+        }
         CaperUIKitLaunch.mark("window")
         self.window = window
         self.root = root
@@ -119,6 +126,20 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private let accountObserver = ModelObserver()
+    private var themeObserver: NSObjectProtocol?
+
+    private func applyTheme() {
+        guard let window, let model = root?.model else { return }
+        window.overrideUserInterfaceStyle = CaperTheme.interfaceStyle
+        window.tintColor = UIKitStyle.terracottaBright
+        let rebuilt = RootViewController(model: model, cached: nil)
+        root = rebuilt
+        let replace = { UIView.transition(with: window, duration: UIKitStyle.reduceMotion ? 0 : 0.2, options: .transitionCrossDissolve) {
+            window.rootViewController = rebuilt
+        } }
+        if let presented = window.rootViewController?.presentedViewController { presented.dismiss(animated: false, completion: replace) }
+        else { replace() }
+    }
 
     /// Invite links (`caper://invite/<code>`, https://caper.chat/invite/<code>),
     /// as CaperIOSApp's onOpenURL and onContinueUserActivity route them. Only

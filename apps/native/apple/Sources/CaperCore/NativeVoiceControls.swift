@@ -438,7 +438,7 @@ import UIKit
                 config.baseForegroundColor = UIColor(CaperTheme.onAction)
                 config.background.strokeWidth = 0
             } else {
-                config.background.backgroundColor = pressed ? UIColor.white.withAlphaComponent(0.08) : UIColor(CaperTheme.raised)
+                config.background.backgroundColor = pressed ? CaperTheme.hoverWash : UIColor(CaperTheme.raised)
                 config.baseForegroundColor = UIColor(button.isEnabled ? CaperTheme.text : CaperTheme.muted)
                 config.background.strokeColor = UIColor(CaperTheme.border); config.background.strokeWidth = 1
             }
@@ -458,7 +458,7 @@ import UIKit
         button.configurationUpdateHandler = { button in
             guard var config = button.configuration else { return }
             config.baseForegroundColor = button.isHighlighted ? UIColor(CaperTheme.text) : tint
-            config.background.backgroundColor = button.isHighlighted ? UIColor.white.withAlphaComponent(0.08) : bordered ? UIColor(CaperTheme.raised) : .clear
+            config.background.backgroundColor = button.isHighlighted ? CaperTheme.hoverWash : bordered ? UIColor(CaperTheme.raised) : .clear
             config.background.strokeColor = bordered ? UIColor(CaperTheme.border) : .clear; config.background.strokeWidth = bordered ? 1 : 0
             button.configuration = config
         }

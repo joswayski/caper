@@ -27,11 +27,11 @@ struct NativeProfileEditorSheet: View {
             } message: { data in Text(ProfilePicturePolicy.animationMessage(data)) }
             .sheet(item: $state.editing, onDismiss: state.closeCrop) { request in
                 NativeAttachmentEditorBridge(request: request, close: state.closeCrop)
-                    .preferredColorScheme(.dark)
+                    .preferredColorScheme(CaperTheme.colorScheme)
             }
             .sheet(item: $state.history) { history in
                 NativeProfileHistoryForm(state: history) { state.history?.stop(); state.history = nil }
-                    .preferredColorScheme(.dark)
+                    .preferredColorScheme(CaperTheme.colorScheme)
             }
             .background(ProfileEditDismissObserver(preventDismissal: state.busy || state.draft?.hasChanges == true, attempt: state.requestClose))
             .background(ProfileSheetOutsideTap(close: state.requestClose))

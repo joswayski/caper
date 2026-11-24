@@ -63,7 +63,7 @@ import Observation
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { foreground.map(NotificationCenter.default.removeObserver); library.stop() }
     override func viewDidLoad() {
-        super.viewDidLoad(); overrideUserInterfaceStyle = .dark; view.backgroundColor = .clear; view.accessibilityViewIsModal = !docked
+        super.viewDidLoad(); overrideUserInterfaceStyle = CaperTheme.interfaceStyle; view.backgroundColor = .clear; view.accessibilityViewIsModal = !docked
         scrim.backgroundColor = UIColor.black.withAlphaComponent(0.55)
         scrim.isAccessibilityElement = false; scrim.addAction(UIAction { [weak self] _ in self?.close() }, for: .touchUpInside)
         scrim.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(scrim); scrim.isHidden = docked

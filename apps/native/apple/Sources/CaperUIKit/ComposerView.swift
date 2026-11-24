@@ -87,11 +87,11 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         translatesAutoresizingMaskIntoConstraints = false
         fieldShell.translatesAutoresizingMaskIntoConstraints = false
         fieldShell.isUserInteractionEnabled = false
-        fieldShell.backgroundColor = UIColor.black.withAlphaComponent(0.42)
+        fieldShell.backgroundColor = CaperTheme.themed(UIColor.black.withAlphaComponent(0.42), UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.055))
         fieldShell.layer.cornerRadius = 23
         fieldShell.layer.cornerCurve = .continuous
         fieldShell.layer.borderWidth = 1
-        fieldShell.layer.borderColor = UIColor.white.withAlphaComponent(0.055).cgColor
+        fieldShell.layer.borderColor = CaperTheme.themed(UIColor.white.withAlphaComponent(0.055), UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.10)).cgColor
         fieldShell.clipsToBounds = true
         addSubview(fieldShell)
 
@@ -100,7 +100,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         field.layer.cornerRadius = 20
         field.layer.cornerCurve = .continuous
         field.layer.borderWidth = 1
-        field.layer.borderColor = UIColor.white.withAlphaComponent(0.075).cgColor
+        field.layer.borderColor = CaperTheme.themed(UIColor.white.withAlphaComponent(0.075), UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.11)).cgColor
         field.clipsToBounds = true
         addSubview(field)
 

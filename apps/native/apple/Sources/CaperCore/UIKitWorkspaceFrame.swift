@@ -11,7 +11,7 @@ import UIKit
     private var appeared = false
     init(content: UIViewController, width: CGFloat) {
         self.content = content; maximumWidth = width; super.init(nibName: nil, bundle: nil)
-        modalPresentationStyle = .overFullScreen; overrideUserInterfaceStyle = .dark
+        modalPresentationStyle = .overFullScreen; overrideUserInterfaceStyle = CaperTheme.interfaceStyle
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {

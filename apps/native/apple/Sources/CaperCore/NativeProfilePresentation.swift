@@ -149,7 +149,7 @@ import UIKit
         show(drawer, kind: "picture")
     }
     private func show(_ controller: UIViewController, kind: String) {
-        child = controller; childKind = kind; controller.overrideUserInterfaceStyle = .dark
+        child = controller; childKind = kind; controller.overrideUserInterfaceStyle = CaperTheme.interfaceStyle
         present(controller, animated: !CaperAccessibility.reduceMotion)
     }
     private func dismissChild() {

@@ -267,7 +267,7 @@ func releaseDayLabel(_ day: String) -> String {
             }.padding(22)
         }
         .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.text)
-        .background(CaperTheme.surface).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
+        .background(CaperTheme.surface).preferredColorScheme(CaperTheme.colorScheme).tint(CaperTheme.terracottaBright)
         .buttonStyle(CaperSecondaryButton()).accessibilityIdentifier("whats-new")
         .onChange(of: notes.presentation?.sequence, initial: true) { _, _ in
             if display.releases == nil, let loaded = notes.presentation, loaded.id == display.id {

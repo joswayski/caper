@@ -471,3 +471,50 @@ private final class ThemeSnapshotBox: @unchecked Sendable {
         public var errorDescription: String? { message }
     }
 }
+
+extension CaperTheme {
+    /// The color scheme SwiftUI surfaces drawn with these tokens use: the
+    /// active theme's on iOS, Obsidian's on macOS, whose tokens stay dark.
+    public static var colorScheme: ColorScheme {
+        #if os(iOS)
+        CaperThemeStore.isLightTheme ? .light : .dark
+        #else
+        .dark
+        #endif
+    }
+
+    /// A SwiftUI color for `dark` under Obsidian and `light` under Paper on iOS;
+    /// macOS, whose SwiftUI tokens stay Obsidian, always draws `dark`.
+    public static func themedColor(_ dark: UInt32, _ light: UInt32) -> Color {
+        #if os(iOS)
+        Color(uiColor: themed(dark, light))
+        #else
+        Color(red: Double((dark >> 16) & 0xFF) / 255, green: Double((dark >> 8) & 0xFF) / 255, blue: Double(dark & 0xFF) / 255)
+        #endif
+    }
+}
+
+#if os(iOS)
+extension CaperTheme {
+    /// `dark` under Obsidian and `light` under Paper. It reads the active theme,
+    /// not the trait collection, so a CGColor taken while building a view is
+    /// already right; switching themes rebuilds the window's views.
+    public static func themed(_ dark: UIColor, _ light: UIColor) -> UIColor {
+        UIColor { _ in CaperThemeStore.isLightTheme ? light : dark }
+    }
+
+    public static func themed(_ dark: UInt32, _ light: UInt32) -> UIColor {
+        func color(_ hex: UInt32) -> UIColor {
+            UIColor(red: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                    blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+        }
+        return themed(color(dark), color(light))
+    }
+
+    /// A hovered or pressed row or control (macOS's hoverWashColor).
+    public static let hoverWash = themed(UIColor.white.withAlphaComponent(0.08), UIColor(red: 11 / 255, green: 11 / 255, blue: 12 / 255, alpha: 0.07))
+
+    /// System controls (menus, alerts, the keyboard) follow the active theme.
+    public static var interfaceStyle: UIUserInterfaceStyle { CaperThemeStore.isLightTheme ? .light : .dark }
+}
+#endif

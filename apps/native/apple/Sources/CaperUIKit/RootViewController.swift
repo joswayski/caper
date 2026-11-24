@@ -49,7 +49,7 @@ final class RootViewController: UIViewController {
         }
     }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    override var preferredStatusBarStyle: UIStatusBarStyle { CaperThemeStore.isLightTheme ? .darkContent : .lightContent }
 
     private func render() {
         let kind: Kind

@@ -490,7 +490,7 @@ import WebKit
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func setKind(_ kind: ChatGif.Kind) { model.kind = kind }
     override func viewDidLoad() {
-        super.viewDidLoad(); overrideUserInterfaceStyle = .dark; view.backgroundColor = UIColor(CaperTheme.surface)
+        super.viewDidLoad(); overrideUserInterfaceStyle = CaperTheme.interfaceStyle; view.backgroundColor = UIColor(CaperTheme.surface)
         view.accessibilityIdentifier = "gif-picker"
         let header = UIKitMessageDialog.header(UIKitMessageDialog.label("GIFs", size: 20, bold: true), UIKitMessageDialog.button("Cancel", action: close))
         header.isHidden = embedded
@@ -631,7 +631,7 @@ import WebKit
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
-        super.viewDidLoad(); overrideUserInterfaceStyle = .dark; view.backgroundColor = UIColor(CaperTheme.surface)
+        super.viewDidLoad(); overrideUserInterfaceStyle = CaperTheme.interfaceStyle; view.backgroundColor = UIColor(CaperTheme.surface)
         let header = UIKitMessageDialog.header(UIKitMessageDialog.label("Emojis, GIFs & Stickers", size: 16, bold: true),
             UIKitMessageDialog.button("Cancel", action: close))
         tabs.selectedSegmentIndex = 0; tabs.accessibilityLabel = "Expression type"

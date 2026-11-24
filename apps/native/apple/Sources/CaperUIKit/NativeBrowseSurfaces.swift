@@ -556,7 +556,7 @@ final class NativeVoiceStripController: UIViewController {
     static func inVoice(_ model: AppModel) -> Int { channel(model).map { VoicePresentation.occupants(model, channelID: $0.id).count } ?? 0 }
     override func loadView() {
         view = UIView(); view.translatesAutoresizingMaskIntoConstraints = false
-        view.backgroundColor = UIColor(red: 26/255, green: 38/255, blue: 34/255, alpha: 1); view.clipsToBounds = true
+        view.backgroundColor = CaperTheme.themed(0x1A2622, 0xEEF5E9); view.clipsToBounds = true
         view.accessibilityIdentifier = "voice-strip"
         body.spacing = 6; body.alignment = .center; body.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(body)
         [open, faces, clock, mute, join].forEach(body.addArrangedSubview)

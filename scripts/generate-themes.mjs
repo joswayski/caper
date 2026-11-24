@@ -325,42 +325,79 @@ replaceGeneratedBlock(
 );
 
 // 6. apps/native/apple/Sources/CaperCore/CaperView.swift
+// iOS resolves each token against the active preset (Obsidian or Paper) when it
+// draws; macOS keeps Obsidian here and themes its AppKit chrome through
+// CaperThemeStore's dynamic NSColors.
+const paper = presets.get("paper");
+assert.ok(paper, "Missing light theme shared/themes/paper.json");
+const swiftHexLiteral = (hex) => `0x${parseHex(hex, hex).upper}`;
+const appleTokens = [
+  ["blackout", (theme) => theme.surfaces.frame],
+  ["surface", (theme) => theme.surfaces.base],
+  ["raised", (theme) => theme.surfaces.raised],
+  ["sidebar", (theme) => theme.surfaces.sidebar],
+  [
+    "sidebarRaised",
+    (theme) => theme.surfaces.sidebarRaised,
+    "Web's --surface-hover (6% white) over the sidebar, opaque: a private\n    /// channel's own members in the member list.",
+  ],
+  ["conversation", (theme) => theme.surfaces.conversation],
+  ["composer", (theme) => theme.surfaces.composer],
+  [
+    "replyDraft",
+    (theme) => theme.surfaces.replyDraft,
+    "3% white over the conversation: the reply draft card above the composer.",
+  ],
+  ["border", (theme) => theme.borders.default],
+  ["borderSubtle", null, null, ["Color.white.opacity(0.08)", "UIColor.white.withAlphaComponent(0.08)", "UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.08)"]],
+  ["surfaceRim", null, null, ["Color.white.opacity(0.08)", "UIColor.white.withAlphaComponent(0.08)", "UIColor.white.withAlphaComponent(0.9)"]],
+  ["text", (theme) => theme.text.primary],
+  ["muted", (theme) => theme.text.muted],
+  ["link", (theme) => theme.text.link],
+  ["terracotta", (theme) => theme.accent.primary],
+  ["terracottaBright", (theme) => theme.accent.bright],
+  [
+    "action",
+    (theme) => theme.action.primary,
+    "Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json).",
+  ],
+  ["actionHover", (theme) => theme.action.primaryHover],
+  ["actionPress", (theme) => theme.action.primaryPress],
+  ["onAction", (theme) => theme.action.onPrimary],
+  ["green", (theme) => theme.brand.caper],
+  ["voiceSessionGreen", (theme) => theme.status.voice],
+  ["pinGold", (theme) => theme.status.pin],
+  ["error", (theme) => theme.status.errorText, "Web's error text, in place of the system red."],
+  [
+    "voiceOff",
+    (theme) => theme.status.voiceOffIcon,
+    "Web's muted/deafened account controls: the icon and its options chevron.",
+  ],
+];
+const appleLines = (render) =>
+  appleTokens.flatMap(([name, read, doc, literal]) => [
+    ...(doc ? [`    /// ${doc}`] : []),
+    `    public static let ${name} = ${render(name, read, literal)}`,
+  ]);
 replaceGeneratedBlock(
   "apps/native/apple/Sources/CaperCore/CaperView.swift",
   "    // BEGIN GENERATED THEME TOKENS",
   "    // END GENERATED THEME TOKENS",
   [
-    `    public static let blackout = ${swiftColor(t.surfaces.frame)}`,
-    `    public static let surface = ${swiftColor(t.surfaces.base)}`,
-    `    public static let raised = ${swiftColor(t.surfaces.raised)}`,
-    `    public static let sidebar = ${swiftColor(t.surfaces.sidebar)}`,
-    `    /// Web's --surface-hover (6% white) over the sidebar, opaque: a private`,
-    `    /// channel's own members in the member list.`,
-    `    public static let sidebarRaised = ${swiftColor(t.surfaces.sidebarRaised)}`,
-    `    public static let conversation = ${swiftColor(t.surfaces.conversation)}`,
-    `    public static let composer = ${swiftColor(t.surfaces.composer)}`,
-    `    /// 3% white over the conversation: the reply draft card above the composer.`,
-    `    public static let replyDraft = ${swiftColor(t.surfaces.replyDraft)}`,
-    `    public static let border = ${swiftColor(t.borders.default)}`,
-    `    public static let borderSubtle = Color.white.opacity(0.08)`,
-    `    public static let surfaceRim = Color.white.opacity(0.08)`,
-    `    public static let text = ${swiftColor(t.text.primary)}`,
-    `    public static let muted = ${swiftColor(t.text.muted)}`,
-    `    public static let link = ${swiftColor(t.text.link)}`,
-    `    public static let terracotta = ${swiftColor(t.accent.primary)}`,
-    `    public static let terracottaBright = ${swiftColor(t.accent.bright)}`,
-    `    /// Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json).`,
-    `    public static let action = ${swiftColor(t.action.primary)}`,
-    `    public static let actionHover = ${swiftColor(t.action.primaryHover)}`,
-    `    public static let actionPress = ${swiftColor(t.action.primaryPress)}`,
-    `    public static let onAction = blackout`,
-    `    public static let green = ${swiftColor(t.brand.caper)}`,
-    `    public static let voiceSessionGreen = ${swiftColor(t.status.voice)}`,
-    `    public static let pinGold = ${swiftColor(t.status.pin)}`,
-    `    /// Web's error text, in place of the system red.`,
-    `    public static let error = ${swiftColor(t.status.errorText)}`,
-    `    /// Web's muted/deafened account controls: the icon and its options chevron.`,
-    `    public static let voiceOff = ${swiftColor(t.status.voiceOffIcon)}`,
+    "    #if os(iOS)",
+    ...appleLines((name) => `Color(uiColor: UI.${name})`),
+    "    /// The same tokens for UIKit, resolved against the active theme whenever",
+    "    /// they draw, or are read as a CGColor.",
+    "    public enum UI {",
+    ...appleTokens.map(([name, read, , literal]) =>
+      literal
+        ? `        public static let ${name} = CaperTheme.themed(${literal[1]}, ${literal[2]})`
+        : `        public static let ${name} = CaperTheme.themed(${swiftHexLiteral(read(t))}, ${swiftHexLiteral(read(paper))})`,
+    ),
+    "    }",
+    "    #else",
+    ...appleLines((name, read, literal) => (literal ? literal[0] : swiftColor(read(t)))),
+    "    #endif",
   ].join("\n"),
 );
 

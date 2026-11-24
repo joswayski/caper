@@ -12,6 +12,68 @@ import ServiceManagement
 
 public enum CaperTheme {
     // BEGIN GENERATED THEME TOKENS
+    #if os(iOS)
+    public static let blackout = Color(uiColor: UI.blackout)
+    public static let surface = Color(uiColor: UI.surface)
+    public static let raised = Color(uiColor: UI.raised)
+    public static let sidebar = Color(uiColor: UI.sidebar)
+    /// Web's --surface-hover (6% white) over the sidebar, opaque: a private
+    /// channel's own members in the member list.
+    public static let sidebarRaised = Color(uiColor: UI.sidebarRaised)
+    public static let conversation = Color(uiColor: UI.conversation)
+    public static let composer = Color(uiColor: UI.composer)
+    /// 3% white over the conversation: the reply draft card above the composer.
+    public static let replyDraft = Color(uiColor: UI.replyDraft)
+    public static let border = Color(uiColor: UI.border)
+    public static let borderSubtle = Color(uiColor: UI.borderSubtle)
+    public static let surfaceRim = Color(uiColor: UI.surfaceRim)
+    public static let text = Color(uiColor: UI.text)
+    public static let muted = Color(uiColor: UI.muted)
+    public static let link = Color(uiColor: UI.link)
+    public static let terracotta = Color(uiColor: UI.terracotta)
+    public static let terracottaBright = Color(uiColor: UI.terracottaBright)
+    /// Primary actions are warm chalk white with obsidian labels (shared/themes/obsidian.json).
+    public static let action = Color(uiColor: UI.action)
+    public static let actionHover = Color(uiColor: UI.actionHover)
+    public static let actionPress = Color(uiColor: UI.actionPress)
+    public static let onAction = Color(uiColor: UI.onAction)
+    public static let green = Color(uiColor: UI.green)
+    public static let voiceSessionGreen = Color(uiColor: UI.voiceSessionGreen)
+    public static let pinGold = Color(uiColor: UI.pinGold)
+    /// Web's error text, in place of the system red.
+    public static let error = Color(uiColor: UI.error)
+    /// Web's muted/deafened account controls: the icon and its options chevron.
+    public static let voiceOff = Color(uiColor: UI.voiceOff)
+    /// The same tokens for UIKit, resolved against the active theme whenever
+    /// they draw, or are read as a CGColor.
+    public enum UI {
+        public static let blackout = CaperTheme.themed(0x090A0C, 0xECEEF2)
+        public static let surface = CaperTheme.themed(0x111216, 0xFFFFFF)
+        public static let raised = CaperTheme.themed(0x191B22, 0xF4F5F8)
+        public static let sidebar = CaperTheme.themed(0x0D0E11, 0xF1F2F6)
+        public static let sidebarRaised = CaperTheme.themed(0x17191F, 0xE5E7ED)
+        public static let conversation = CaperTheme.themed(0x121317, 0xFFFFFF)
+        public static let composer = CaperTheme.themed(0x1B1D24, 0xF3F4F8)
+        public static let replyDraft = CaperTheme.themed(0x171920, 0xF3F4F8)
+        public static let border = CaperTheme.themed(0x24262F, 0xDCDFE6)
+        public static let borderSubtle = CaperTheme.themed(UIColor.white.withAlphaComponent(0.08), UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.08))
+        public static let surfaceRim = CaperTheme.themed(UIColor.white.withAlphaComponent(0.08), UIColor.white.withAlphaComponent(0.9))
+        public static let text = CaperTheme.themed(0xF4F4F6, 0x111217)
+        public static let muted = CaperTheme.themed(0x8F919C, 0x656876)
+        public static let link = CaperTheme.themed(0x6EB8FF, 0x1466D6)
+        public static let terracotta = CaperTheme.themed(0x4E7835, 0x456C2D)
+        public static let terracottaBright = CaperTheme.themed(0x77A659, 0x3A5D24)
+        public static let action = CaperTheme.themed(0xF4F4F6, 0x111217)
+        public static let actionHover = CaperTheme.themed(0xFFFFFF, 0x22242D)
+        public static let actionPress = CaperTheme.themed(0xE2E3E8, 0x000000)
+        public static let onAction = CaperTheme.themed(0x090A0C, 0xFFFFFF)
+        public static let green = CaperTheme.themed(0x638E46, 0x567D3B)
+        public static let voiceSessionGreen = CaperTheme.themed(0x4CC970, 0x238742)
+        public static let pinGold = CaperTheme.themed(0xE2C36B, 0xB58918)
+        public static let error = CaperTheme.themed(0xFF9685, 0xC23244)
+        public static let voiceOff = CaperTheme.themed(0xEB5265, 0xD63B4E)
+    }
+    #else
     public static let blackout = Color(red: 9/255, green: 10/255, blue: 12/255)
     public static let surface = Color(red: 17/255, green: 18/255, blue: 22/255)
     public static let raised = Color(red: 25/255, green: 27/255, blue: 34/255)
@@ -35,7 +97,7 @@ public enum CaperTheme {
     public static let action = Color(red: 244/255, green: 244/255, blue: 246/255)
     public static let actionHover = Color(red: 255/255, green: 255/255, blue: 255/255)
     public static let actionPress = Color(red: 226/255, green: 227/255, blue: 232/255)
-    public static let onAction = blackout
+    public static let onAction = Color(red: 9/255, green: 10/255, blue: 12/255)
     public static let green = Color(red: 99/255, green: 142/255, blue: 70/255)
     public static let voiceSessionGreen = Color(red: 76/255, green: 201/255, blue: 112/255)
     public static let pinGold = Color(red: 226/255, green: 195/255, blue: 107/255)
@@ -43,6 +105,7 @@ public enum CaperTheme {
     public static let error = Color(red: 255/255, green: 150/255, blue: 133/255)
     /// Web's muted/deafened account controls: the icon and its options chevron.
     public static let voiceOff = Color(red: 235/255, green: 82/255, blue: 101/255)
+    #endif
     // END GENERATED THEME TOKENS
     /// Shared bottom edge for the account dock and conversation composer.
     static let workspaceBottomInset: CGFloat = 16
@@ -2060,14 +2123,15 @@ struct SidebarIconButton: ButtonStyle {
 /// Design H's voice colours (the "Live now" spec), beside the shared tokens.
 private enum LiveNowPalette {
     /// Your call's green-tinted card (#22382c, border #4b8a60).
-    static let callFill = Color(red: 34/255, green: 56/255, blue: 44/255)
-    static let callBorder = Color(red: 75/255, green: 138/255, blue: 96/255)
+    /// Paper draws them as macOS's light call and room colors.
+    static let callFill = CaperTheme.themedColor(0x22382C, 0xE2F0D9)
+    static let callBorder = CaperTheme.themedColor(0x4B8A60, 0x6F9948)
     /// Other live rooms (#18231f, border #28362f).
-    static let roomFill = Color(red: 24/255, green: 35/255, blue: 31/255)
-    static let roomBorder = Color(red: 40/255, green: 54/255, blue: 47/255)
+    static let roomFill = CaperTheme.themedColor(0x18231F, 0xEEF5E9)
+    static let roomBorder = CaperTheme.themedColor(0x28362F, 0xC5DAB8)
     /// The phone strip under the chat header (#1a2622, bottom border #26352f).
-    static let stripFill = Color(red: 26/255, green: 38/255, blue: 34/255)
-    static let stripBorder = Color(red: 38/255, green: 53/255, blue: 47/255)
+    static let stripFill = CaperTheme.themedColor(0x1A2622, 0xEEF5E9)
+    static let stripBorder = CaperTheme.themedColor(0x26352F, 0xC5DAB8)
     /// Connecting… and Reconnecting… (#d9ab5c).
     static let connecting = Color(red: 217/255, green: 171/255, blue: 92/255)
     /// Touch's join on quiet channel rows (#687174).
@@ -6005,7 +6069,7 @@ struct MentionCardView: View {
         .fullScreenCover(isPresented: Binding(get: { editingFile != nil }, set: { if !$0 { editingFile = nil } })) {
             presentedFile
                 .presentationBackground(.clear)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(CaperTheme.colorScheme)
         }
         .onChange(of: showingFiles) { _, _ in updateDialogState() }
         .onChange(of: showingPhotos) { _, _ in updateDialogState() }
@@ -7102,7 +7166,7 @@ private struct ComposerEmojiButton: View {
             })
             .presentationDetents([.medium, .large])
             .presentationBackground(CaperTheme.surface)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(CaperTheme.colorScheme)
         }
         .onChange(of: showing) { _, value in presenting?(value) }
     }
