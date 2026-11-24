@@ -80,6 +80,9 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// The drawer's top edge in screen coordinates as it is dragged, nil once
     /// it's gone: the owner keeps the message box above it.
     var drawerMoved: ((CGFloat?) -> Void)?
+    private var drawerTop: CGFloat?
+    /// The docked drawer moved (nil: it's gone): remember its edge and let the owner follow.
+    func drawerDidMove(_ top: CGFloat?) { drawerTop = top; drawerMoved?(top) }
     var emojiTapped: (() -> Void)?
     /// Who `@` may suggest: the open conversation's context.
     weak var model: AppModel?
@@ -371,7 +374,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     func textViewDidEndEditing(_ textView: UITextView) {
         // Swiped away with the timeline. A camera or picker the drawer opened
         // only covers it; the drawer comes back when that closes.
-        if drawer != nil, !presenting { drawer = nil; textView.inputView = nil; showAttachState(); drawerMoved?(nil) }
+        if drawer != nil, !presenting { drawer = nil; textView.inputView = nil; showAttachState(); drawerDidMove(nil) }
         typing.end()
         self.textView.hideEmojiName()
         suggestions.show(nil)
@@ -572,7 +575,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             return
         }
         if !textView.becomeFirstResponder() {
-            drawer = nil; textView.inputView = nil; showAttachState(); drawerMoved?(nil)
+            drawer = nil; textView.inputView = nil; showAttachState(); drawerDidMove(nil)
         }
     }
 
@@ -580,7 +583,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     func hideDrawer(keyboard: Bool) {
         guard drawer != nil else { return }
         drawer = nil
-        drawerMoved?(nil)
+        drawerDidMove(nil)
         if keyboard {
             textView.inputView = nil
             if textView.isFirstResponder { textView.reloadInputViews() } else { textView.becomeFirstResponder() }
@@ -648,6 +651,11 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        // A staged file's row grew the box past a grown drawer's edge: the drawer makes room.
+        if let drawer, let drawerTop, let window {
+            let overflow = convert(bounds, to: window.screen.coordinateSpace).maxY + 8 - drawerTop
+            if overflow > 1 { DispatchQueue.main.async { UIKitHosting.shrinkAttachDrawer(drawer, by: overflow) } }
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         shellDepth.frame = fieldShell.bounds

@@ -212,7 +212,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                                                          dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
                                                          // Grown, it lifts the message box up to the top of the timeline.
                                                          dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
-                                                         dockMoved: { [weak composer] in composer?.drawerMoved?($0) },
+                                                         dockMoved: { [weak composer] in composer?.drawerDidMove($0) },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
             composer.showDrawer(drawer)
         }
@@ -262,9 +262,11 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             bottom.topAnchor.constraint(equalTo: collection.bottomAnchor, constant: 4),
             bottom.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            // Just under required: a grown attach drawer lowers the ceiling below.
-            bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 1),
-            { let ceiling = bottom.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor); self.drawerCeiling = ceiling; return ceiling }(),
+            // Below required: a grown attach drawer lowers the ceiling, and the
+            // timeline (never negative) wins over both; the composer then shrinks the drawer.
+            bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 2),
+            { let ceiling = bottom.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor).withPriority(.required - 1); self.drawerCeiling = ceiling; return ceiling }(),
+            collection.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
             // As short as its contents allow: the timeline takes the slack.
             bottom.heightAnchor.constraint(equalToConstant: 0).withPriority(.defaultLow),
             broadcast.topAnchor.constraint(equalTo: broadcastRow.topAnchor),

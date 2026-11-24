@@ -192,7 +192,9 @@ import Observation
         super.viewDidDisappear(animated)
         // A camera or system picker temporarily covers the drawer. In-flight
         // copies still belong to the user's taps after the drawer is dismissed.
-        if presentingViewController == nil { active = false; library.stop() }
+        // Docked, a full-screen cover takes it off screen too; it stays live
+        // until the composer lets it go.
+        if presentingViewController == nil, !docked { active = false; library.stop() }
     }
     private func observe() {
         guard active else { return }
@@ -254,6 +256,13 @@ import Observation
             if abs(travel) > 40 { expanded = travel < 0 }
             if docked { resizeDock(animated: true) } else { resizePanel(animated: true) }
         } else if docked { resizeDock(animated: false) } else { resizePanel(animated: false) }
+    }
+    /// Grown, the drawer gives back `overflow` when the message box above it
+    /// grows (a staged file's row), so the box stays in view.
+    func shrink(by overflow: CGFloat) {
+        guard docked, expanded, drag == 0, let dockView, overflow > 0 else { return }
+        dockExpanded = max(dockRest, dockView.height - overflow)
+        resizeDock(animated: true)
     }
     private func setExpanded(_ value: Bool) {
         guard value != expanded else { return }

@@ -34,6 +34,11 @@ import UniformTypeIdentifiers
         return host
     }
 
+    /// A grown docked drawer gives back `overflow` points so the message box above it stays in view.
+    public static func shrinkAttachDrawer(_ drawer: UIViewController, by overflow: CGFloat) {
+        (drawer as? UIKitAttachDrawer)?.shrink(by: overflow)
+    }
+
     /// Prepares the drawer's gallery while the composer is up.
     public static func warmAttachGallery() { AttachGalleryCache.warm() }
 

@@ -665,7 +665,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                                                          dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
                                                          // Grown, it lifts the message box up to the top of the timeline.
                                                          dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
-                                                         dockMoved: { [weak composer] in composer?.drawerMoved?($0) },
+                                                         dockMoved: { [weak composer] in composer?.drawerDidMove($0) },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
             composer.showDrawer(drawer)
         }
@@ -685,9 +685,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             composer.topAnchor.constraint(equalTo: typing.bottomAnchor),
             composer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             composer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            // Just under required: a grown attach drawer lowers the ceiling below.
-            composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 1),
-            { let ceiling = composer.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor); self.drawerCeiling = ceiling; return ceiling }(),
+            // Below required: a grown attach drawer lowers the ceiling, and the
+            // timeline (never negative) wins over both; the composer then shrinks the drawer.
+            composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 2),
+            { let ceiling = composer.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor).withPriority(.required - 1); self.drawerCeiling = ceiling; return ceiling }(),
+            collection.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
         ])
         // An incoming request or a blocked peer replaces the composer.
         view.addSubview(directBar)
