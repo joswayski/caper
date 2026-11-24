@@ -28,6 +28,7 @@ macro_rules! icons {
 icons! {
     ArrowRight => "arrow-right.svg",
     AudioLines => "audio-lines.svg",
+    Ban => "ban.svg",
     Bell => "bell.svg",
     BellOff => "bell-off.svg",
     Check => "check.svg",

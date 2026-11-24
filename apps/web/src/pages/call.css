@@ -594,6 +594,9 @@
 .participant-menu-button {
   height: 28px;
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   padding: 0 7px;
   border: 0;
   border-radius: var(--radius);
@@ -602,6 +605,10 @@
   font-size: 0.7rem;
   font-weight: 700;
   cursor: pointer;
+}
+.participant-menu-button svg {
+  width: 12px;
+  height: 12px;
 }
 .participant-menu-button[aria-expanded="true"] {
   color: var(--text);

@@ -30,6 +30,7 @@ import {
   Plus,
   Search,
   Settings,
+  Trash2,
   Volume2,
   X,
 } from "lucide-react";
@@ -1131,6 +1132,7 @@ function ManageSpaceDialog({
           <h3>Delete space</h3>
           <p>Delete this space and all its channels for every member.</p>
           <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>
+            <Trash2 aria-hidden="true" />
             Delete space
           </button>
         </section>
@@ -1284,6 +1286,7 @@ function ManageChannelDialog({
         <h3>Delete channel</h3>
         <p>Delete this channel for everyone in the space.</p>
         <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>
+          <Trash2 aria-hidden="true" />
           Delete channel
         </button>
       </section>
@@ -4041,7 +4044,7 @@ export default function Spaces({
         ) : (
           <button type="button" className="leave-space" onClick={() => run("leave")}>
             <LogOut aria-hidden="true" />
-            Leave space…
+            Leave space
           </button>
         )}
       </div>
@@ -4423,20 +4426,24 @@ export default function Spaces({
       <div className="empty-channel-actions">
         {spaces.length > 0 && (
           <button type="button" className={owner ? "secondary" : "primary"} onClick={() => setBrowseOpen(true)}>
+            <Search aria-hidden="true" />
             Browse channels
           </button>
         )}
         {owner && (
           <button type="button" className="primary" onClick={() => setDialog("channel")}>
+            <Plus aria-hidden="true" />
             Create channel
           </button>
         )}
         {!spaces.length && (
           <button type="button" className="primary" onClick={() => setDialog("space")}>
+            <Plus aria-hidden="true" />
             Create your first space
           </button>
         )}
         <button type="button" className="secondary" onClick={() => setDialog("direct")}>
+          <Plus aria-hidden="true" />
           New direct message
         </button>
       </div>

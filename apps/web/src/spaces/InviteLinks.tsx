@@ -429,6 +429,7 @@ export function InviteLinkManager({
                 </span>
                 <span className="invite-link-actions">
                   <button type="button" className="invite-link-copy" onClick={() => void copy(link.code)}>
+                    <Copy size={14} aria-hidden="true" />
                     {copied === link.code ? "Copied" : "Copy"}
                   </button>
                   <button
@@ -436,6 +437,7 @@ export function InviteLinkManager({
                     disabled={pending}
                     onClick={() => setConfirmation({ action: "deactivate", code: link.code })}
                   >
+                    <Ban size={14} aria-hidden="true" />
                     Deactivate
                   </button>
                 </span>

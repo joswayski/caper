@@ -1291,7 +1291,11 @@ impl Ui {
         empty_note.set_justify(gtk::Justification::Center);
         empty_note.set_xalign(0.5);
         empty_note.set_max_width_chars(48);
-        let empty_action = gtk::Button::with_label("Create channel");
+        let empty_action: gtk::Button = crate::app::named("GtkButton", "Create channel");
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.append(&images.icon_image(Icon::Plus, "#090a0c", 16));
+        line.append(&label("Create channel", &[]));
+        empty_action.set_child(Some(&line));
         empty_action.add_css_class("primary");
         empty_action.set_halign(gtk::Align::Center);
         empty_action.set_visible(false);

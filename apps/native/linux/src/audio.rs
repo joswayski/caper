@@ -829,11 +829,20 @@ impl App {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.append(&body);
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let copy = gtk::Button::with_label(if connection {
+        let copy_label = if connection {
             "Copy connection details"
         } else {
             "Copy diagnostics"
-        });
+        };
+        let copy: gtk::Button = crate::app::named("GtkButton", copy_label);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.append(
+            &self
+                .images
+                .icon_image(crate::images::Icon::Copy, "#f3f4f5", 16),
+        );
+        line.append(&label(copy_label, &[]));
+        copy.set_child(Some(&line));
         actions.append(&copy);
         let status = label("", &["muted", "small"]);
         actions.append(&status);

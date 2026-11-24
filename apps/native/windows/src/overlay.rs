@@ -1578,6 +1578,22 @@ impl Dialog {
         r: Rect,
         tone: Tone,
     ) -> Result<()> {
+        self.icon_button(g, dc, part, None, label, r, tone)
+    }
+
+    /// `button` led by `icon` (`BUTTON_ICON_W` wider), as web's Copy,
+    /// Deactivate and Delete buttons are.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn icon_button(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        part: Part,
+        icon: Option<Icon>,
+        label: &str,
+        r: Rect,
+        tone: Tone,
+    ) -> Result<()> {
         let enabled = self.enabled(part);
         let state = if !enabled {
             0
@@ -1588,7 +1604,10 @@ impl Dialog {
         } else {
             1
         };
-        draw_button(g, dc, label, r, tone, state)?;
+        match icon {
+            Some(icon) => draw_icon_button(g, dc, icon, label, r, tone, state)?,
+            None => draw_button(g, dc, label, r, tone, state)?,
+        }
         if self.button == Some(part) {
             let (x, y, w, h) = r;
             stroke_round(
@@ -1649,6 +1668,43 @@ pub(crate) fn draw_button(
         dc,
         &l,
         x + (w - width(&l)) / 2.0,
+        y + (h - height(&l)) / 2.0,
+        &g.solid(text)?,
+    );
+    Ok(())
+}
+
+/// The width a leading icon adds to a button: the 16-DIP icon and its gap.
+pub(crate) const BUTTON_ICON_W: f32 = 22.0;
+
+/// `draw_button` with `icon` before the label, the pair centred, as web's
+/// Copy and Delete buttons lead with theirs.
+pub(crate) fn draw_icon_button(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    icon: Icon,
+    label: &str,
+    r: Rect,
+    tone: Tone,
+    state: u8,
+) -> Result<()> {
+    draw_button(g, dc, "", r, tone, state)?;
+    let (_, _, text) = tone.colors(state);
+    let (x, y, w, h) = r;
+    let l = layout(g, label, &g.formats.button, w - BUTTON_ICON_W)?;
+    let left = x + (w - width(&l) - BUTTON_ICON_W) / 2.0;
+    let top = y + (h - 16.0) / 2.0;
+    icons::draw(
+        dc,
+        icon,
+        rect(left, top, left + 16.0, top + 16.0),
+        text,
+        1.0,
+    );
+    crate::text::draw(
+        dc,
+        &l,
+        left + BUTTON_ICON_W,
         y + (h - height(&l)) / 2.0,
         &g.solid(text)?,
     );

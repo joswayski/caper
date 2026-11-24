@@ -71,7 +71,7 @@ import AppKit
         self.voice = voice; self.kind = kind
         super.init(title: kind == .connection ? "Connection details" : "Audio diagnostics", detail: kind == .connection ? "" : "Local processing counters",
             closeLabel: kind == .connection ? "Close connection details" : "Close audio diagnostics", identifier: kind == .connection ? "connection-details" : "audio-diagnostics", close: close)
-        copy = AppKitKitButton(kind == .connection ? "Copy connection details" : "Copy diagnostics") { [weak self] in
+        copy = AppKitKitButton(kind == .connection ? "Copy connection details" : "Copy diagnostics", icon: "doc.on.doc") { [weak self] in
             guard let self else { return }; NSPasteboard.general.clearContents()
             self.status.stringValue = NSPasteboard.general.setString(self.text, forType: .string)
                 ? (self.kind == .connection ? "Copied connection details" : "Copied diagnostics") : "Copy failed; select the report below."
@@ -145,7 +145,7 @@ import UIKit
     override func viewDidLoad() {
         super.viewDidLoad(); rows.axis = .vertical; rows.spacing = 6
         view.accessibilityIdentifier = kind == .connection ? "connection-details" : "audio-diagnostics"
-        copy = Self.button(kind == .connection ? "Copy connection details" : "Copy diagnostics") { [weak self] in
+        copy = Self.button(kind == .connection ? "Copy connection details" : "Copy diagnostics", icon: "doc.on.doc") { [weak self] in
             guard let self else { return }; UIPasteboard.general.string = self.text
             self.status.text = self.kind == .connection ? "Copied connection details" : "Copied diagnostics"
         }

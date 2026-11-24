@@ -80,7 +80,7 @@ import AppKit
         let meta = AppKitKit.label(InviteLinks.meta(for: link, now: Date()), size: 11, color: AppKitKit.muted)
         if main { meta.setAccessibilityIdentifier("default-invite-link-summary") }
         let copied = state.copied == link.code
-        let copy = AppKitKitButton(copied ? "Copied" : main ? "Copy link" : "Copy", kind: main ? .primary : .secondary) { [state] in state.copy(link, briefly: !main) }
+        let copy = AppKitKitButton(copied ? "Copied" : main ? "Copy link" : "Copy", kind: main ? .primary : .secondary, icon: "doc.on.doc") { [state] in state.copy(link, briefly: !main) }
         copy.setAccessibilityLabel(copied ? "Copied" : main ? "Copy link" : "Copy invite link")
         if main { copy.setAccessibilityIdentifier("default-invite-link-copy") }
         copy.isEnabled = !main || !state.busy
@@ -106,7 +106,7 @@ import AppKit
             // The menu button matches Copy link's height beside it.
             options.heightAnchor.constraint(equalTo: copy.heightAnchor).isActive = true
         } else {
-            let revoke = AppKitKitButton(state.pending == link.code ? "Revoking…" : "Revoke", kind: .destructive) { [weak self] in self?.confirm(link, regenerate: false) }; revoke.isEnabled = !state.busy; actions.addArrangedSubview(revoke)
+            let revoke = AppKitKitButton(state.pending == link.code ? "Revoking…" : "Revoke", kind: .destructive, icon: "nosign") { [weak self] in self?.confirm(link, regenerate: false) }; revoke.isEnabled = !state.busy; actions.addArrangedSubview(revoke)
         }
         let row = AppKitKit.stack([url, meta, actions], spacing: 6); row.setAccessibilityIdentifier("invite-link-\(link.code)"); return row
     }
@@ -210,7 +210,7 @@ import Observation
         url.font = .monospacedSystemFont(ofSize: 12, weight: .regular); url.textColor = UIColor(CaperTheme.text); url.backgroundColor = .clear; url.textContainerInset = .zero
         let meta = UIKitMessageDialog.label(InviteLinks.meta(for: link, now: Date()), size: 11); if main { meta.accessibilityIdentifier = "default-invite-link-summary" }
         let copied = state.copied == link.code
-        let copy = UIKitMessageDialog.button(copied ? "Copied" : main ? "Copy link" : "Copy", primary: main) { [state] in state.copy(link, briefly: !main) }
+        let copy = UIKitMessageDialog.button(copied ? "Copied" : main ? "Copy link" : "Copy", primary: main, icon: "doc.on.doc") { [state] in state.copy(link, briefly: !main) }
         copy.accessibilityLabel = copied ? "Copied" : main ? "Copy link" : "Copy invite link"; if main { copy.accessibilityIdentifier = "default-invite-link-copy" }
         copy.isEnabled = !main || !state.busy
         let actions = UIStackView(arrangedSubviews: [copy]); actions.spacing = 8
@@ -221,7 +221,7 @@ import Observation
                 UIAction(title: "Custom links") { [state] _ in state.expanded = true }, UIAction(title: "Deactivate link", attributes: .destructive) { [weak self] _ in self?.confirm(link, regenerate: false) }])
             actions.addArrangedSubview(options)
         } else {
-            let revoke = UIKitMessageDialog.button(state.pending == link.code ? "Revoking…" : "Revoke") { [weak self] in self?.confirm(link, regenerate: false) }; revoke.isEnabled = !state.busy; actions.addArrangedSubview(revoke)
+            let revoke = UIKitMessageDialog.button(state.pending == link.code ? "Revoking…" : "Revoke", icon: "nosign") { [weak self] in self?.confirm(link, regenerate: false) }; revoke.isEnabled = !state.busy; actions.addArrangedSubview(revoke)
         }
         let row = UIStackView(arrangedSubviews: [url, meta, actions]); row.axis = .vertical; row.spacing = 6; row.accessibilityIdentifier = "invite-link-\(link.code)"; return row
     }

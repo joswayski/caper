@@ -34,7 +34,7 @@ import AppKit
                 Self.heading("Invite by username"), people, invite, results]
             if !inviteOnly {
                 rows += [AppKitKit.divider(), Self.heading("Delete space"), Self.note("Delete this space and all its channels for every member."),
-                    AppKitKitButton("Delete space", kind: .destructive) { [weak self] in
+                    AppKitKitButton("Delete space", kind: .destructive, icon: "trash") { [weak self] in
                         self?.confirm("Delete space", detail: "Delete \(model.detail?.space.name ?? "space") for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space") {
                             try await model.deleteCurrentSpace(); close()
                         }
@@ -123,7 +123,7 @@ import AppKit
         retry = AppKitKitButton("Retry loading members") { [state] in Task { await state.loadMembers() } }
         save = AppKitKitButton("Create channel", kind: .primary) { [state] in state.save() }
         reset = AppKitKitButton("Reset") { [state] in state.reset() }
-        delete = AppKitKitButton("Delete channel", kind: .destructive) { [weak self] in
+        delete = AppKitKitButton("Delete channel", kind: .destructive, icon: "trash") { [weak self] in
             guard let self, let channel = self.state.channel else { return }
             self.confirm("Delete channel", detail: "Delete #\(channel.name) for everyone? This channel and its messages will disappear from the space. This cannot be undone.", action: "Delete channel") {
                 try await model.deleteChannel(channel); close()

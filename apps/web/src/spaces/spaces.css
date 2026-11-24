@@ -1611,6 +1611,9 @@ html[data-resizing-sections] * {
   margin-top: 18px;
 }
 .empty-channel-actions > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   min-height: 38px;
   padding: 0 16px;
   border: 1px solid var(--btn-secondary-border);
@@ -1626,6 +1629,10 @@ html[data-resizing-sections] * {
     color var(--motion-fast) var(--ease-out),
     box-shadow var(--motion-fast) var(--ease-out),
     transform var(--motion-fast) var(--ease-out);
+}
+.empty-channel-actions > button > svg {
+  width: 16px;
+  height: 16px;
 }
 .empty-channel-actions > .primary {
   border-color: var(--btn-primary-border);
@@ -2422,6 +2429,11 @@ html[data-resizing-sections] * {
   display: flex;
   gap: 2px;
 }
+.member-manager.invite-links .invite-link-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
 .join-invite-link {
   padding-top: 20px;
   border-top: 1px solid var(--border);
@@ -2472,6 +2484,15 @@ html[data-resizing-sections] * {
   color: var(--text-muted);
   font-size: 0.72rem;
   line-height: 1.45;
+}
+.danger-zone > .danger-outline {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.danger-zone > .danger-outline svg {
+  width: 15px;
+  height: 15px;
 }
 .delete-confirmation {
   margin: 20px 22px 22px;

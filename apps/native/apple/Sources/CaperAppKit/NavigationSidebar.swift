@@ -706,7 +706,7 @@ import CaperCore
             }
             if space.ownerId == account.id {
                 items.append(NavigationMenuItem("Space settings") { [weak self] in run { self?.show?(.manageSpace) } })
-            } else { items.append(NavigationMenuItem("Leave space…", role: .destructive) { [weak self] in run { self?.show?(.leaveSpace) } }) }
+            } else { items.append(NavigationMenuItem("Leave space", role: .destructive) { [weak self] in run { self?.show?(.leaveSpace) } }) }
         }
         if let tile {
             let top = tile.isFlipped ? tile.bounds.minY : tile.bounds.maxY

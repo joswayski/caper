@@ -915,7 +915,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 if (owner) DropdownMenuItem({ Text("Invite people…") }, { openThen(space.id) { show(Overlay.InvitePeople()) } })
                                 if (owner) DropdownMenuItem({ Text("Space settings") }, { openThen(space.id) { show(Overlay.ManageSpace) } },
                                     leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
-                                else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { openThen(space.id) { show(Overlay.LeaveSpace) } },
+                                else DropdownMenuItem({ Text("Leave space", color = ErrorText) }, { openThen(space.id) { show(Overlay.LeaveSpace) } },
                                     leadingIcon = { Icon(painterResource(R.drawable.lucide_log_out), null, Modifier.size(16.dp), tint = ErrorText) })
                             },
                         )
@@ -1115,7 +1115,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (detail != null && !detail.space.demo) Box(Modifier.weight(1f)) {
-                    // Web: the space name opens a menu with Space settings (owners) or Leave space…,
+                    // Web: the space name opens a menu with Space settings (owners) or Leave space,
                     // plus Notifications and Mute.
                     var spaceMenuOpen by remember(detail.space.id) { mutableStateOf(false) }
                     var spaceMenuPage by remember(detail.space.id) { mutableStateOf(NotificationMenuPage.Main) }
@@ -1161,7 +1161,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 }
                                 if (owner) DropdownMenuItem({ Text("Space settings") }, { closeSpaceMenu(); show(Overlay.ManageSpace) },
                                     leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
-                                else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { closeSpaceMenu(); show(Overlay.LeaveSpace) },
+                                else DropdownMenuItem({ Text("Leave space", color = ErrorText) }, { closeSpaceMenu(); show(Overlay.LeaveSpace) },
                                     leadingIcon = { Icon(painterResource(R.drawable.lucide_log_out), null, Modifier.size(16.dp), tint = ErrorText) })
                             },
                         )
@@ -2595,14 +2595,21 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 else -> "Browse channels to find a conversation, or accept a private channel invitation."
             }, color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             // One primary action (web); the rest are secondary.
-            @Composable fun Action(label: String, primary: Boolean, onClick: () -> Unit) =
-                if (primary) Button(onClick, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(label) }
-                else OutlinedButton(onClick, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = neutralOutlinedButtonColors()) { Text(label) }
+            // Each action leads with its icon, as on web.
+            @Composable fun Action(label: String, icon: Int, primary: Boolean, onClick: () -> Unit) {
+                val content: @Composable RowScope.() -> Unit = {
+                    Icon(painterResource(icon), null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(label)
+                }
+                if (primary) Button(onClick, shape = MaterialTheme.shapes.small, colors = primaryButtonColors(), content = content)
+                else OutlinedButton(onClick, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = neutralOutlinedButtonColors(), content = content)
+            }
             // Lists every channel in the sidebar (with search), in the Browse drawer on phones.
-            if (!noSpaces) Action("Browse channels", primary = !owner, onClick = browseChannels)
-            if (owner) Action("Create channel", primary = true) { show(Overlay.CreateChannel) }
-            if (noSpaces) Action("Create your first space", primary = true) { show(Overlay.CreateSpace) }
-            Action("New direct message", primary = false) { show(Overlay.StartDirect) }
+            if (!noSpaces) Action("Browse channels", R.drawable.lucide_search, primary = !owner, onClick = browseChannels)
+            if (owner) Action("Create channel", R.drawable.lucide_plus, primary = true) { show(Overlay.CreateChannel) }
+            if (noSpaces) Action("Create your first space", R.drawable.lucide_plus, primary = true) { show(Overlay.CreateSpace) }
+            Action("New direct message", R.drawable.lucide_plus, primary = false) { show(Overlay.StartDirect) }
         }
     }
 }
@@ -4940,7 +4947,11 @@ internal fun counterTone(count: Int): Color {
 @Composable private fun DangerZone(title: String, body: String, busy: Boolean, delete: () -> Unit) {
     Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold)
     Text(body, color = TextMuted, fontSize = 11.sp)
-    OutlinedButton(delete, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text(title) }
+    OutlinedButton(delete, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) {
+        Icon(painterResource(R.drawable.lucide_trash_2), null, Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(title)
+    }
 }
 
 internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =

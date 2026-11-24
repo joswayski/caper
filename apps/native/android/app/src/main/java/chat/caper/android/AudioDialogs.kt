@@ -467,7 +467,11 @@ private const val MAX_RECORDING_SECONDS = 30
         OutlinedButton({
             val json = detailsJson.encodeToString(JsonObject.serializer(), buildJsonObject { rows.forEach { (label, value) -> put(label, value) } })
             copyStatus = try { clipboard.setText(AnnotatedString(json)); "Copied diagnostics" } catch (_: Throwable) { "Copy failed; try again." }
-        }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Copy diagnostics") }
+        }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) {
+            Icon(painterResource(R.drawable.lucide_copy), null, Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Copy diagnostics")
+        }
         if (copyStatus.isNotEmpty()) Text(copyStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 11.sp)
     } else Text("No microphone capture started. Open Mic Test or join voice first.", color = TextMuted, fontSize = 12.sp)
 }
@@ -487,7 +491,11 @@ private const val MAX_RECORDING_SECONDS = 30
         OutlinedButton({
             copyStatus = try { clipboard.setText(AnnotatedString(connectionDetailsJson(diagnostics))); "Copied connection details" }
             catch (_: Throwable) { "Copy failed; try again." }
-        }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Copy connection details") }
+        }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) {
+            Icon(painterResource(R.drawable.lucide_copy), null, Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Copy connection details")
+        }
         if (copyStatus.isNotEmpty()) Text(copyStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 11.sp)
     }
 }

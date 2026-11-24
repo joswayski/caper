@@ -279,10 +279,16 @@ private final class AppKitKitButtonCell: NSButtonCell {
         super.keyDown(with: event)
     }
 
-    init(_ title: String, kind: Kind = .secondary, action: @escaping () -> Void) {
+    /// `icon`: an SF Symbol before the title, such as Copy's `doc.on.doc`.
+    init(_ title: String, kind: Kind = .secondary, icon: String? = nil, action: @escaping () -> Void) {
         handler = action; self.kind = kind
         super.init(frame: .zero)
         self.title = title
+        if let icon {
+            image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+            imagePosition = .imageLeading; imageHugsTitle = true
+        }
         target = self; self.action = #selector(fire)
         isBordered = false; bezelStyle = .regularSquare
         wantsLayer = true
@@ -322,7 +328,9 @@ private final class AppKitKitButtonCell: NSButtonCell {
         let horizontal: CGFloat = bare ? 4 : 24
         let vertical: CGFloat = bare ? 4 : 16
         let inset = 2 * ((cell as? AppKitKitButtonCell)?.inset ?? 0)
-        return NSSize(width: ceil(text.width) + horizontal + inset, height: max(ceil(text.height) + vertical, minimumHeight))
+        // A leading icon beside a title (not an icon-only button) widens it.
+        let icon = imagePosition == .imageLeading && !title.isEmpty ? ceil(image?.size.width ?? 0) + 6 : 0
+        return NSSize(width: ceil(text.width) + horizontal + inset + icon, height: max(ceil(text.height) + vertical, minimumHeight))
     }
 
     private var focused: Bool { window?.firstResponder === self && window?.isKeyWindow == true }

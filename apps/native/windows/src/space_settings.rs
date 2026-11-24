@@ -6,6 +6,7 @@
 //! save bar, and, once it is saved private, who has access to it.
 use crate::custom_links::{NAME, number};
 use crate::gfx::{Gfx, rect};
+use crate::icons::Icon;
 use crate::invite_people::{Answer, InvitePeople, NAME_ERROR};
 use crate::overlay::{Dialog, Part, Rect, Tone, height, layout, width};
 use crate::text;
@@ -422,10 +423,11 @@ impl Dialog {
             Part::RemoveMember(_) => {
                 self.button(g, dc, part, "Remove", (x, y, w, h), Tone::Secondary)?
             }
-            Part::DeleteOpen => self.button(
+            Part::DeleteOpen => self.icon_button(
                 g,
                 dc,
                 part,
+                Some(Icon::Trash),
                 self.delete_label(),
                 (x, y, w, h),
                 Tone::DangerOutline,

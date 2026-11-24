@@ -363,6 +363,26 @@ fn button(text: &str, class: &str) -> gtk::Button {
     button
 }
 
+/// `button` led by `icon` in `color` (web's Copy, Deactivate and Delete),
+/// named by `text` for screen readers.
+fn icon_button(
+    images: &crate::images::Images,
+    icon: Icon,
+    color: &'static str,
+    text: &str,
+    class: &str,
+) -> gtk::Button {
+    let button: gtk::Button = crate::app::named("GtkButton", text);
+    if !class.is_empty() {
+        button.add_css_class(class);
+    }
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    line.append(&images.icon_image(icon, color, 14));
+    line.append(&label(text, &[]));
+    button.set_child(Some(&line));
+    button
+}
+
 fn actions(left: &gtk::Button, right: &gtk::Button) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.set_halign(gtk::Align::End);
@@ -550,7 +570,7 @@ impl App {
                 if owner {
                     menu.append_item(&item("Space settings", "admin.manage-space", ""));
                 } else if state.can_leave_space() {
-                    menu.append_item(&item("Leave space…", "admin.leave-space", ""));
+                    menu.append_item(&item("Leave space", "admin.leave-space", ""));
                 }
             }
             Scope::Channel { space, channel } if *space == detail.space.id => {
@@ -574,7 +594,7 @@ impl App {
 
     /// The space name's menu, as desktop's: Browse channels and Invite
     /// people…, the space's notification items, then Space settings (or
-    /// Leave space… for members). Create channel is the Channels list's +.
+    /// Leave space for members). Create channel is the Channels list's +.
     fn space_menu(self: &Rc<Self>, anchor: &gtk::Widget) {
         let menu = {
             let state = self.state.borrow();
@@ -599,7 +619,7 @@ impl App {
             Self::notification_sections(&state, &Scope::Space(detail.space.id.clone()), &menu);
             let last = gio::Menu::new();
             if state.can_leave_space() {
-                last.append_item(&item("Leave space…", "admin.leave-space"));
+                last.append_item(&item("Leave space", "admin.leave-space"));
             } else if state.owner() {
                 last.append_item(&item("Space settings", "admin.manage-space"));
             }
@@ -638,7 +658,7 @@ impl App {
             last.append_item(&if owner {
                 item("Space settings", "manage-space")
             } else {
-                item("Leave space…", "leave-space")
+                item("Leave space", "leave-space")
             });
             menu.append_section(None, &last);
             menu
@@ -2057,7 +2077,13 @@ impl App {
     ) {
         body.append(&heading(title));
         body.append(&hint(text));
-        let delete = button(title, "destructive-action");
+        let delete = icon_button(
+            &self.images,
+            Icon::Trash,
+            "#ffffff",
+            title,
+            "destructive-action",
+        );
         delete.set_halign(gtk::Align::Start);
         let weak = Rc::downgrade(self);
         delete.connect_clicked(move |_| {
@@ -2760,7 +2786,7 @@ impl App {
                 root.append(&hint("Preparing invite link…"));
             }
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let copy = button("Copy link", "primary");
+            let copy = icon_button(&self.images, Icon::Copy, "#090a0c", "Copy link", "primary");
             copy.set_sensitive(!pending);
             let weak = Rc::downgrade(self);
             let code = link.code.clone();
@@ -2885,7 +2911,13 @@ impl App {
                 .copied
                 .as_ref()
                 .is_some_and(|(code, at)| *code == link.code && at.elapsed() < COPIED_FOR);
-            let copy = button(if copied { "Copied" } else { "Copy" }, "");
+            let copy = icon_button(
+                &self.images,
+                Icon::Copy,
+                "#f3f4f5",
+                if copied { "Copied" } else { "Copy" },
+                "",
+            );
             copy.set_valign(gtk::Align::Center);
             let weak = Rc::downgrade(self);
             let code = link.code.clone();
@@ -2895,7 +2927,13 @@ impl App {
                 }
             });
             let revoking = links.revoking.contains(&link.code);
-            let revoke = button(if revoking { "Revoking…" } else { "Revoke" }, "remove");
+            let revoke = icon_button(
+                &self.images,
+                Icon::Ban,
+                "#b9bcbe",
+                if revoking { "Revoking…" } else { "Revoke" },
+                "remove",
+            );
             revoke.set_valign(gtk::Align::Center);
             revoke.set_sensitive(enabled);
             let weak = Rc::downgrade(self);

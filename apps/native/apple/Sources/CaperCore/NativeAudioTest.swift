@@ -113,7 +113,7 @@ import AppKit
         if debugEnabled {
             diagnostics.font = .monospacedSystemFont(ofSize: 11, weight: .regular); diagnostics.isSelectable = true
             rows += [AppKitKitButton("Audio diagnostics") { [weak self] in self?.showDiagnostics.toggle(); self?.render() }, diagnostics,
-                AppKitKitButton("Copy diagnostics") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(NativeAudioReport.processing(voice), forType: .string) }]
+                AppKitKitButton("Copy diagnostics", icon: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(NativeAudioReport.processing(voice), forType: .string) }]
         }
         setRows(rows); preferHeight(650)
     }
@@ -222,7 +222,7 @@ import MediaPlayer
         if debugEnabled {
             body.addArrangedSubview(Self.button("Audio diagnostics") { [weak self] in self?.showDiagnostics.toggle(); self?.render() })
             body.addArrangedSubview(diagnostics)
-            body.addArrangedSubview(Self.button("Copy diagnostics") { [state] in UIPasteboard.general.string = NativeAudioReport.processing(state.voice) })
+            body.addArrangedSubview(Self.button("Copy diagnostics", icon: "doc.on.doc") { [state] in UIPasteboard.general.string = NativeAudioReport.processing(state.voice) })
         }
         observe(); Task { [state] in await state.voice.refreshAudioDevices() }
     }

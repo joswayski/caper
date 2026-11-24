@@ -155,9 +155,14 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         header.registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (header: UIStackView, _) in fit(header) }
         return header
     }
-    static func button(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> UIButton {
+    /// `icon`: an SF Symbol before the title, such as Copy's `doc.on.doc`.
+    static func button(_ title: String, primary: Bool = false, icon: String? = nil, action: @escaping () -> Void) -> UIButton {
         var config = UIButton.Configuration.filled()
         config.title = title; config.cornerStyle = .fixed; config.background.cornerRadius = 8
+        if let icon {
+            config.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+            config.imagePlacement = .leading; config.imagePadding = 6
+        }
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attributes = incoming
             attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Bold", size: 13) ?? .systemFont(ofSize: 13))

@@ -919,7 +919,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
                 UIAction(title: "Space settings") { [weak self] _ in run { self?.dialog(.manageSpace) } },
             ]))
         } else {
-            items.append(UIAction(title: "Leave space…", attributes: .destructive) { [weak self] _ in run { self?.dialog(.leaveSpace) } })
+            items.append(UIAction(title: "Leave space", attributes: .destructive) { [weak self] _ in run { self?.dialog(.leaveSpace) } })
         }
         return items
     }

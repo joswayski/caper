@@ -1,3 +1,4 @@
+import { Copy } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { PublicCallClient } from "../media/client";
 import { playbackDiagnostics } from "../media/audio-context";
@@ -48,6 +49,7 @@ export default function AudioDiagnostics({ client }: { client: PublicCallClient 
           )
         }
       >
+        <Copy aria-hidden="true" />
         Copy diagnostics
       </button>
       <span role="status">{copyStatus}</span>

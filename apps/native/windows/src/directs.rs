@@ -79,7 +79,7 @@ pub enum MenuItem {
     Unmute(&'static str),
     /// Text only: when the mute ends, "Loading…", or an error (true).
     Note(String, bool),
-    /// The menu's last item: "Leave space…" (true, in red) or "Leave
+    /// The menu's last item: "Leave space" (true, in red) or "Leave
     /// channel", opening its confirmation.
     Leave(bool),
     /// The space menu's first item: "Browse channels".
@@ -112,7 +112,7 @@ impl MenuItem {
                 .into(),
             Self::Unmute(noun) => format!("Unmute {noun}"),
             Self::Note(text, _) => text.clone(),
-            Self::Leave(true) => "Leave space\u{2026}".into(),
+            Self::Leave(true) => "Leave space".into(),
             Self::Leave(false) => "Leave channel".into(),
             Self::Browse => "Browse channels".into(),
             Self::Invite => "Invite people\u{2026}".into(),

@@ -80,7 +80,11 @@ import kotlinx.coroutines.delay
             Button({
                 context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Invite link", viewModel.inviteUrl(link.code)))
                 copied = true
-            }, enabled = !state.busy && !preparing, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (copied) "Copied" else "Copy") }
+            }, enabled = !state.busy && !preparing, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
+                Icon(painterResource(R.drawable.lucide_copy), null, Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (copied) "Copied" else "Copy")
+            }
             InviteLinkActions(!state.busy && !preparing, {
                 error = null
                 viewModel.regenerateInviteLink(link, { code = it.code; copied = false }) { error = it }
@@ -219,10 +223,14 @@ import kotlinx.coroutines.delay
                     Text(inviteLinkMeta(link, now), color = TextMuted, fontSize = 10.sp)
                 }
                 TextButton({ copy(link.code) }, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
+                    Icon(painterResource(R.drawable.lucide_copy), null, Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
                     PendingLabel("Copy", "Copied", copied == link.code)
                 }
                 TextButton({ revokeTarget = link }, enabled = !state.busy,
                     shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = ErrorText)) {
+                    Icon(painterResource(R.drawable.lucide_ban), null, Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
                     PendingLabel("Revoke", "Revoking…", state.busy && revoking == link.code)
                 }
             }

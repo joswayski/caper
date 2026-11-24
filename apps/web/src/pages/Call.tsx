@@ -19,6 +19,7 @@ import {
   ArrowLeft,
   AudioLines,
   ChevronDown,
+  Copy,
   Ear,
   Hash,
   LockKeyhole,
@@ -179,6 +180,7 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
           )
         }
       >
+        <Copy aria-hidden="true" />
         Copy connection details
       </button>
       <span role="status">{copyStatus}</span>
@@ -1532,6 +1534,7 @@ export default function Call({
                 }
               >
                 Audio
+                <ChevronDown aria-hidden="true" />
               </button>
             )}
             {own && volumeParticipant === participant.id && (

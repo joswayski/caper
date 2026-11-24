@@ -1323,7 +1323,7 @@ private struct SpaceRail: View {
             Button("Invite people…") { open(space) { sheet = .invitePeople(spaceID: space.id, channelID: nil) } }
             Button("Space settings") { open(space) { sheet = .manageSpace } }
         } else {
-            Button("Leave space…", role: .destructive) { open(space) { sheet = .leaveSpace } }
+            Button("Leave space", role: .destructive) { open(space) { sheet = .leaveSpace } }
         }
     }
 
@@ -1497,7 +1497,7 @@ private struct ChannelSidebar: View {
             }
             Button("Space settings") { sheet = .manageSpace }
         }
-        else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
+        else if model.account != nil && model.detail?.space.demo != true { Button("Leave space", role: .destructive) { sheet = .leaveSpace } }
     }
     /// The Channels pane: live voice, joined channels, Browse and invitations.
     /// Kept out of `body` so the compiler type-checks each pane on its own.

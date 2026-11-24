@@ -35,7 +35,7 @@ import UIKit
             [membership, Self.label("Invite by username", size: 14, bold: true), people, invite!, results].forEach(body.addArrangedSubview)
             if !state.inviteOnly {
                 body.addArrangedSubview(Self.label("Delete this space and all its channels for every member."))
-                body.addArrangedSubview(Self.button("Delete space") { [weak self] in
+                body.addArrangedSubview(Self.button("Delete space", icon: "trash") { [weak self] in
                     guard let self, !self.state.pending else { return }
                     self.confirm("Delete space", detail: "Delete \(self.state.model.detail?.space.name ?? "space") for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space") { [state] in
                         try await state.model.deleteCurrentSpace(); state.close()
@@ -109,7 +109,7 @@ import UIKit
         privacy.addAction(UIAction { [weak self] _ in guard let self else { return }; self.state.privateChannel = self.privacy.isOn }, for: .valueChanged)
         let toggle = UIStackView(arrangedSubviews: [Self.label("Private channel", size: 13, bold: true), privacy]); toggle.spacing = 10
         save = Self.button("Create channel", primary: true) { [state] in state.save() }; reset = Self.button("Reset") { [state] in state.reset() }
-        delete = Self.button("Delete channel") { [weak self] in
+        delete = Self.button("Delete channel", icon: "trash") { [weak self] in
             guard let self, let channel = self.state.channel else { return }
             self.confirm("Delete channel", detail: "Delete #\(channel.name) for everyone? This channel and its messages will disappear from the space. This cannot be undone.", action: "Delete channel") { [state] in
                 try await state.model.deleteChannel(channel); state.close()

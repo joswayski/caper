@@ -289,6 +289,14 @@ impl SPart {
                 | Self::Logout
         )
     }
+
+    /// A button's leading icon, as web draws it.
+    fn icon(self) -> Option<Icon> {
+        match self {
+            Self::CopyReport => Some(Icon::Copy),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1428,7 +1436,11 @@ impl Settings {
                     SPart::MicTest => (item.text.as_str(), Tone::Primary),
                     _ => (item.text.as_str(), Tone::Secondary),
                 };
-                crate::overlay::draw_button(g, dc, label, r, tone, state)?;
+                if let Some(icon) = part.icon() {
+                    crate::overlay::draw_icon_button(g, dc, icon, label, r, tone, state)?;
+                } else {
+                    crate::overlay::draw_button(g, dc, label, r, tone, state)?;
+                }
             }
             _ => {}
         }
@@ -1733,7 +1745,12 @@ impl Builder<'_> {
     }
 
     fn button(&mut self, part: SPart, label: &str) -> Result<()> {
-        let w = self.width(label, Style::Label)? + 24.0;
+        let icon = if part.icon().is_some() {
+            crate::overlay::BUTTON_ICON_W
+        } else {
+            0.0
+        };
+        let w = self.width(label, Style::Label)? + 24.0 + icon;
         self.items.push(Item {
             part,
             rect: (0.0, self.y, w, BUTTON_H),

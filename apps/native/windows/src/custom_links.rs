@@ -7,7 +7,7 @@ use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::invite_people::*;
 use crate::live::Live;
-use crate::overlay::{Dialog, FIELD_PAD_X, Part, Rect, Tone, height, layout, width};
+use crate::overlay::{BUTTON_ICON_W, Dialog, FIELD_PAD_X, Part, Rect, Tone, height, layout, width};
 use crate::text;
 use crate::theme::*;
 use caper_client::invites::{self, EXPIRY_UNITS, ExpiryUnit};
@@ -424,8 +424,9 @@ impl Dialog {
             parts.push((Part::Line(FORM_ERROR), (0.0, y, inner, h)));
             y += h;
         }
-        let copy_w = width(&layout(g, "Copied", &g.formats.button, 1e6)?) + 24.0;
-        let revoke_w = width(&layout(g, "Deactivate", &g.formats.button, 1e6)?) + 24.0;
+        let copy_w = width(&layout(g, "Copied", &g.formats.button, 1e6)?) + 24.0 + BUTTON_ICON_W;
+        let revoke_w =
+            width(&layout(g, "Deactivate", &g.formats.button, 1e6)?) + 24.0 + BUTTON_ICON_W;
         // A summary wraps beside the buttons, and its row grows to fit it.
         let tw = (inner - 44.0 - revoke_w - copy_w).max(1.0);
         let now = chrono::Utc::now();
@@ -643,17 +644,24 @@ impl Dialog {
                 text::draw(dc, &meta, x + 12.0, top + height(&name), &g.brushes.muted);
                 unsafe { dc.PopAxisAlignedClip() };
             }
-            Part::LinkCopy(k) => self.button(
+            Part::LinkCopy(k) => self.icon_button(
                 g,
                 dc,
                 part,
+                Some(Icon::Copy),
                 self.link_copy_label(k),
                 (x, y, w, h),
                 Tone::Secondary,
             )?,
-            Part::LinkRevoke(_) => {
-                self.button(g, dc, part, "Deactivate", (x, y, w, h), Tone::Secondary)?
-            }
+            Part::LinkRevoke(_) => self.icon_button(
+                g,
+                dc,
+                part,
+                Some(Icon::Ban),
+                "Deactivate",
+                (x, y, w, h),
+                Tone::Secondary,
+            )?,
             _ => {}
         }
         Ok(())

@@ -8,7 +8,7 @@ use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::live::Live;
 use crate::overlay::{
-    CARD_PAD, Dialog, FIELD_PAD_X, Kind, Part, Rect, Tone, height, layout, width,
+    BUTTON_ICON_W, CARD_PAD, Dialog, FIELD_PAD_X, Kind, Part, Rect, Tone, height, layout, width,
 };
 use crate::space_settings::{FOOTER_H, Manage};
 use crate::theme::*;
@@ -721,7 +721,7 @@ impl Dialog {
             y += 8.0;
             if ip.default.is_some() {
                 let copied = layout(g, "Copied", &g.formats.button, 1e6)?;
-                let copy_w = width(&copied) + 28.0;
+                let copy_w = width(&copied) + 28.0 + BUTTON_ICON_W;
                 let link_w = (inner - copy_w - 1.0 - CONTROL_H - 8.0).max(40.0);
                 parts.push((Part::Link, (0.0, y, link_w, CONTROL_H)));
                 parts.push((Part::Copy, (link_w + 8.0, y, copy_w, CONTROL_H)));
@@ -882,7 +882,10 @@ impl Dialog {
                 y,
             )? + 10.0;
             let l = layout(g, self.delete_label(), &g.formats.button, 1e6)?;
-            parts.push((Part::DeleteOpen, (0.0, y, width(&l) + 24.0, BUTTON_H)));
+            parts.push((
+                Part::DeleteOpen,
+                (0.0, y, width(&l) + 24.0 + BUTTON_ICON_W, BUTTON_H),
+            ));
             y += BUTTON_H;
         }
         // The menu is hit first, and drawn last.
@@ -1087,9 +1090,15 @@ impl Dialog {
                 );
                 unsafe { dc.PopAxisAlignedClip() };
             }
-            Part::Copy => {
-                self.button(g, dc, part, self.copy_label(), (x, y, w, h), Tone::Primary)?
-            }
+            Part::Copy => self.icon_button(
+                g,
+                dc,
+                part,
+                Some(Icon::Copy),
+                self.copy_label(),
+                (x, y, w, h),
+                Tone::Primary,
+            )?,
             Part::More => {
                 self.button(g, dc, part, "", (x, y, w, h), Tone::Primary)?;
                 let (cx, cy) = (x + w / 2.0, y + h / 2.0);
