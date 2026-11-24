@@ -33,8 +33,8 @@ class ReplyFocusUiTest {
                 Column {
                     SuggestingComposer(draft, { draft = it }, MentionSource(emptyList(), false), "root", {},
                         focusRequest = request, focusEnabled = enabled,
-                        consumeFocus = { consumed++; request = null }) { field, change, actions ->
-                        OutlinedTextField(draft, change, field, label = { Text("Reply") }, enabled = enabled, keyboardActions = actions)
+                        consumeFocus = { consumed++; request = null }) { field, change ->
+                        OutlinedTextField(draft, change, field, label = { Text("Reply") }, enabled = enabled)
                     }
                 }
             }
