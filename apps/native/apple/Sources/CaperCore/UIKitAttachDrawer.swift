@@ -424,7 +424,9 @@ import Observation
         shade.backgroundColor = UIColor(CaperTheme.blackout).withAlphaComponent(0.3)
         shade.layer.borderColor = UIColor(CaperTheme.terracotta).cgColor; shade.layer.borderWidth = 3; shade.layer.cornerRadius = 8
         ring.font = UIFont(name: "Figtree-Bold", size: 12) ?? .boldSystemFont(ofSize: 12); ring.textColor = UIColor(CaperTheme.text)
-        ring.textAlignment = .center; ring.layer.cornerRadius = 12; ring.clipsToBounds = true
+        ring.textAlignment = .center; ring.layer.cornerRadius = 12
+        // A soft shadow keeps the ring readable on pale photos and bright skies.
+        ring.layer.shadowColor = UIColor.black.cgColor; ring.layer.shadowOpacity = 0.45; ring.layer.shadowRadius = 2; ring.layer.shadowOffset = .zero
         badge.font = (UIFont(name: "Figtree-Bold", size: 11) ?? .boldSystemFont(ofSize: 11)); badge.textColor = UIColor(CaperTheme.text)
         badge.backgroundColor = UIColor(CaperTheme.blackout).withAlphaComponent(0.7); badge.textAlignment = .center
         badge.layer.cornerRadius = 4; badge.clipsToBounds = true
@@ -464,8 +466,9 @@ import Observation
         shade.isHidden = order == nil
         ring.isHidden = !selectable
         ring.text = order.map(String.init)
-        ring.backgroundColor = order == nil ? UIColor(CaperTheme.blackout).withAlphaComponent(0.35) : UIColor(CaperTheme.terracotta)
-        ring.layer.borderWidth = order == nil ? 1.5 : 0; ring.layer.borderColor = UIColor(CaperTheme.text).withAlphaComponent(0.9).cgColor
+        // Layer colours, not backgroundColor: the shadow needs the label unclipped.
+        ring.layer.backgroundColor = (order == nil ? UIColor(CaperTheme.blackout).withAlphaComponent(0.15) : UIColor(CaperTheme.terracotta)).cgColor
+        ring.layer.borderWidth = order == nil ? 2 : 0; ring.layer.borderColor = UIColor(CaperTheme.text).withAlphaComponent(0.9).cgColor
         badge.text = asset.mediaType == .video ? "\u{25B6}\u{FE0E} \(VoiceDuration.format(ms: Int(asset.duration * 1000)))" : AttachGalleryCache.isGIF(asset) ? "GIF" : nil
         badge.isHidden = badge.text == nil; setNeedsLayout()
         button.alpha = full && order == nil && !pending ? 0.4 : 1
