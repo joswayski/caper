@@ -501,7 +501,9 @@ struct NativeProfileForm: UIViewControllerRepresentable {
         unsaved.isHidden = !draft.hasChanges; save.isEnabled = state.canSave; save.configuration?.title = state.saving ? "Saving…" : "Save profile"
         picture.isEnabled = !state.busy; regenerate.isEnabled = !state.busy; regenerate.isHidden = state.hasPicture
         badge.backgroundColor = UIColor(state.busy ? CaperTheme.border : CaperTheme.action)
-        pencil.tintColor = UIColor(state.busy ? CaperTheme.muted : CaperTheme.onAction)
+        // The ink is baked into the image: a tinted template left the chalk badge blank on iPhone.
+        pencil.image = UIKitVoiceControls.icon("pencil", size: 15)?
+            .withTintColor(UIColor(state.busy ? CaperTheme.muted : CaperTheme.onAction), renderingMode: .alwaysOriginal)
         avatar.show(name: draft.displayName.isEmpty ? draft.username : draft.displayName, avatarID: draft.avatarId, picture: draft.avatarPicture)
         sign.isHidden = state.hasPicture || CaperAvatar.index(for: draft.avatarId) == nil
         prepared.backgroundColor = UIColor(CaperTheme.raised)
