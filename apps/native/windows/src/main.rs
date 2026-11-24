@@ -44,6 +44,7 @@ mod settings;
 mod space_settings;
 mod suggest;
 mod tips;
+mod tray;
 mod typing;
 // The message grammar every client shares.
 #[allow(dead_code)]
@@ -564,6 +565,9 @@ pub struct App {
     tint_due: bool,
     /// Inside Windows' modal move/size loop, which runs instead of ours.
     sizing: bool,
+    /// The notification-area icon that holds Caper while its window is
+    /// closed.
+    tray: tray::Tray,
     quit: bool,
 }
 
@@ -925,6 +929,7 @@ impl App {
                 gifs_paused: false,
                 tint_due: true,
                 sizing: false,
+                tray: tray::Tray::new(hwnd),
                 quit: false,
             })
         }
@@ -987,8 +992,10 @@ impl App {
         live.showing(
             showing
                 && unsafe {
+                    // The tray menu makes a hidden window the foreground one.
                     GetForegroundWindow() == self.hwnd
                         && !windows::Win32::UI::WindowsAndMessaging::IsIconic(self.hwnd).as_bool()
+                        && IsWindowVisible(self.hwnd).as_bool()
                 },
         );
         let updates = live.drain();
@@ -1008,13 +1015,12 @@ impl App {
                     None,
                 );
             }
-            if requests.front {
-                let _ = ShowWindow(self.hwnd, SW_RESTORE);
-                let _ = SetForegroundWindow(self.hwnd);
-            }
             if let Some(title) = requests.title {
                 let _ = SetWindowTextW(self.hwnd, &HSTRING::from(title));
             }
+        }
+        if requests.front {
+            self.show_window();
         }
         if images {
             self.media_changed();
@@ -5084,12 +5090,24 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // Before the window hides, while its placement is still current.
             WM_CLOSE => {
                 with_app(App::save_placement);
+                // Caper keeps running in the tray unless that is turned off.
+                if with_app(App::close_to_tray) == Some(true) {
+                    return LRESULT(0);
+                }
+            }
+            tray::WM_TRAY => {
+                // The menu's modal loop runs outside the app borrow.
+                if let Some(choice) = tray::event(hwnd, lp) {
+                    with_app(|a| a.tray_choice(choice));
+                }
+                return LRESULT(0);
             }
             WM_ENDSESSION if wp.0 != 0 => {
                 with_app(App::save_placement);
                 return LRESULT(0);
             }
             WM_DESTROY => {
+                with_app(|a| a.tray.hide());
                 let _ = RevokeDragDrop(hwnd);
                 // The player's child window goes with ours.
                 with_app(|a| a.web_player = None);
@@ -5133,6 +5151,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     wp,
                     LPARAM(lp.0 & !(ISC_SHOWUICOMPOSITIONWINDOW as isize)),
                 );
+            }
+            // Explorer restarted, taking the tray icon with it.
+            m if with_app(|a| a.tray.taskbar_created == m) == Some(true) => {
+                with_app(|a| a.tray.taskbar_restarted());
+                return LRESULT(0);
             }
             _ => {}
         }
@@ -5325,6 +5348,15 @@ fn main() -> Result<()> {
     if connected && launch_invite.as_deref().is_some_and(app_link::hand_off) {
         return Ok(());
     }
+    // Opening Caper again brings back the running one, which may be hidden
+    // in the tray. Development and test runs open their own window.
+    if launch_invite.is_none()
+        && !cfg!(debug_assertions)
+        && live::production()
+        && app_link::hand_off(caper_client::app_link::OPEN)
+    {
+        return Ok(());
+    }
     if connected {
         app_link::register();
     }
@@ -5396,6 +5428,7 @@ fn main() -> Result<()> {
                 a.pending_invite = launch_invite;
                 a.updates = caper_client::updates::Updates::start(wake, true);
             }
+            a.sync_tray();
         });
         if active {
             SetTimer(Some(hwnd), TIMER_BENCH, 50, None);
@@ -5433,8 +5466,11 @@ fn main() -> Result<()> {
                 // A minimized window draws nothing: `need` waits for the
                 // restore, and GIF and media timers, which re-arm only after
                 // a drawn frame, stop meanwhile.
-                let render =
-                    !a.quit && (a.need || a.bench.wants_frames()) && !IsIconic(a.hwnd).as_bool();
+                // Hidden in the tray likewise.
+                let render = !a.quit
+                    && (a.need || a.bench.wants_frames())
+                    && !IsIconic(a.hwnd).as_bool()
+                    && IsWindowVisible(a.hwnd).as_bool();
                 if render {
                     a.need = false;
                     if let Err(e) = a.frame() {

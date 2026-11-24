@@ -89,6 +89,8 @@ pub enum SPart {
     Text(usize),
     Launch,
     DismissStartup,
+    /// Keep Caper running when the window closes (`caper_client::background`).
+    KeepRunning,
     VoiceSend,
     CheckUpdates,
     WhatsNew,
@@ -152,6 +154,10 @@ impl SPart {
                 "Launch at login",
                 "Open Caper when you sign in to your computer.",
             ),
+            Self::KeepRunning => (
+                caper_client::background::SETTING_TITLE,
+                caper_client::background::SETTING_DETAIL,
+            ),
             _ => unreachable!("not a settings switch"),
         }
     }
@@ -196,6 +202,7 @@ impl SPart {
             Self::Changes => 56,
             Self::ThemeObsidian => 57,
             Self::ThemePaper => 58,
+            Self::KeepRunning => 59,
             Self::FeedbackOpen(k) => 2_000_000 + 2 * k,
             Self::FeedbackArchive(k) => 2_000_001 + 2 * k,
             Self::ReleaseRevision(k) => 4000 + k,
@@ -225,7 +232,11 @@ impl SPart {
     pub fn is_toggle(self) -> bool {
         matches!(
             self,
-            Self::Launch | Self::VoiceSend | Self::VoiceStarted | Self::UnreadOnly
+            Self::Launch
+                | Self::KeepRunning
+                | Self::VoiceSend
+                | Self::VoiceStarted
+                | Self::UnreadOnly
         )
     }
 
@@ -296,6 +307,9 @@ pub struct Snapshot {
     /// Launch at login as the OS has it; None when it can't change here.
     pub launch: Option<bool>,
     pub startup_error: Option<String>,
+    /// Whether closing the window keeps Caper running; None without a
+    /// connection, when closing always quits.
+    pub keep_running: Option<bool>,
     pub voice_send: bool,
     pub updates: crate::updates::Check,
     pub highlights: Option<crate::updates::History>,
@@ -443,6 +457,7 @@ impl Settings {
                 )
             }
             SPart::Launch => s.launch.is_some(),
+            SPart::KeepRunning => s.keep_running.is_some(),
             SPart::VoiceSend | SPart::WhatsNew => s.highlights.is_some(),
             SPart::CheckUpdates => {
                 s.updates.can_check && s.updates.status != caper_client::updates::Status::Checking
@@ -476,6 +491,7 @@ impl Settings {
         let s = &self.snap;
         match part {
             SPart::Launch => s.launch.unwrap_or(false),
+            SPart::KeepRunning => s.keep_running.unwrap_or(false),
             SPart::VoiceSend => s.voice_send,
             SPart::VoiceStarted => s.voice_started,
             SPart::Level(k) => s.level == Some(LEVELS[k]),
@@ -692,6 +708,8 @@ impl Builder<'_> {
             b.y += 4.0;
             b.button(SPart::DismissStartup, "Dismiss startup error")?;
         }
+        b.y += 12.0;
+        b.switch_row(SPart::KeepRunning)?;
         b.separator();
         b.text("Voice messages", Style::Section)?;
         b.y += 6.0;
@@ -1106,7 +1124,7 @@ impl Settings {
                 };
                 text::draw(dc, &l, tx, ty, brush);
             }
-            SPart::Launch | SPart::VoiceSend => {
+            SPart::Launch | SPart::KeepRunning | SPart::VoiceSend => {
                 let (title, note) = item.part.switch_text();
                 let tw = w - 56.0;
                 let t = g.layout(&gfx::wide(title), &g.formats.dialog_note, tw)?;
@@ -1829,6 +1847,7 @@ impl App {
         let mut snap = Snapshot {
             launch: launch_allowed().then(|| s.is_some_and(|s| s.launch)),
             startup_error: s.and_then(|s| s.startup_error.clone()),
+            keep_running: self.live.as_ref().map(|_| self.keep_running()),
             voice_send: self
                 .live
                 .as_ref()
@@ -1969,6 +1988,15 @@ impl App {
                     live.preferences
                         .set("voice-send-on-stop-v1", (!s.snap.voice_send).to_string());
                 }
+            }
+            SPart::KeepRunning => {
+                let on = s.snap.keep_running != Some(true);
+                if let Some(live) = &mut self.live {
+                    live.preferences
+                        .set(caper_client::background::KEY, on.to_string());
+                }
+                // The tray icon shows only while closing keeps Caper running.
+                self.sync_tray();
             }
             SPart::Input(_)
             | SPart::Output(_)

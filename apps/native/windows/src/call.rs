@@ -956,6 +956,8 @@ impl App {
         self.need = true;
         self.arm_call_timer();
         self.audio_changed();
+        // The tray icon's tooltip says whether a call is going on.
+        self.sync_tray();
     }
 
     /// The call's levels and clock tick only while a call is under way and

@@ -8,9 +8,7 @@ use crate::overlay::Dialog;
 use crate::{App, EV_SCREEN};
 use std::path::PathBuf;
 use std::sync::mpsc;
-use windows::Win32::UI::WindowsAndMessaging::{
-    ASFW_ANY, AllowSetForegroundWindow, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
-};
+use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
 
 /// egui's handoff file (eframe's storage directory, `%APPDATA%\Caper\data`).
 fn handoff_path() -> Option<PathBuf> {
@@ -55,17 +53,15 @@ impl App {
         let mut arrived = false;
         if let Some(links) = &self.app_links {
             while let Ok(code) = links.try_recv() {
-                self.pending_invite = Some(code);
+                // A launch without a link only brings the window back.
+                if code != caper_client::app_link::OPEN {
+                    self.pending_invite = Some(code);
+                }
                 arrived = true;
             }
         }
         if arrived {
-            unsafe {
-                if IsIconic(self.hwnd).as_bool() {
-                    let _ = ShowWindow(self.hwnd, SW_RESTORE);
-                }
-                let _ = SetForegroundWindow(self.hwnd);
-            }
+            self.show_window();
         }
         if self.signin.is_some() {
             return;
