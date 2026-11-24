@@ -533,14 +533,20 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// with the message box (and its staged files) still above it.
     func showDrawer(_ controller: UIViewController) {
         let bounds = window?.bounds ?? UIScreen.main.bounds
-        // Before any keyboard has shown, about a phone keyboard's height (≈38% of the screen).
-        let height = Self.keyboardHeight > 0 ? Self.keyboardHeight : min(380, max(300, (bounds.height * 0.38).rounded()))
-        controller.view.frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)
-        controller.view.autoresizingMask = [.flexibleWidth]
+        controller.view.frame = CGRect(x: 0, y: 0, width: bounds.width, height: drawerHeight)
+        // The drawer sizes itself (it grows when dragged up); only a plain view keeps a fixed height.
+        if !(controller.view is UIInputView) { controller.view.autoresizingMask = [.flexibleWidth] }
         drawer = controller
         textView.inputView = controller.view
         if textView.isFirstResponder { textView.reloadInputViews() } else { textView.becomeFirstResponder() }
         showAttachState()
+    }
+
+    /// The keyboard's height, which the drawer rests at. Before any keyboard
+    /// has shown, about a phone keyboard's height (≈38% of the screen).
+    var drawerHeight: CGFloat {
+        let bounds = window?.bounds ?? UIScreen.main.bounds
+        return Self.keyboardHeight > 0 ? Self.keyboardHeight : min(380, max(300, (bounds.height * 0.38).rounded()))
     }
 
     /// Takes the drawer down: back to the keyboard, or away entirely.

@@ -11,9 +11,12 @@ import UniformTypeIdentifiers
     /// The composer's attach drawer: recent photos and videos, the camera,
     /// Files, and Send. Nil when the conversation can't take files. With a
     /// `presenter` it docks in the keyboard's place (the composer sends, and
-    /// `close` hides it); otherwise it is a sheet with its own Send.
+    /// `close` hides it) at `dockHeight`, and dragging its handle or flicking
+    /// its photos up grows it by up to `dockRoom` over the timeline; otherwise
+    /// it is a sheet with its own Send.
     public static func attachDrawer(chat: ChatModel, inThread: Bool = false, presenter: (() -> UIViewController?)? = nil,
-                                    dockInset: CGFloat = 0, close: (() -> Void)? = nil) -> UIViewController? {
+                                    dockInset: CGFloat = 0, dockHeight: CGFloat = 0, dockRoom: @escaping () -> CGFloat = { 0 },
+                                    close: (() -> Void)? = nil) -> UIViewController? {
         guard let target = chat.attachmentTarget(inThread: inThread) else { return nil }
         let draft = AttachDrawerDraft(
             files: { chat.attachmentFiles(inThread: inThread).map { AttachDrawerFile(id: $0.id, source: $0.source) } },
@@ -23,7 +26,8 @@ import UniformTypeIdentifiers
             send: { Task { await chat.send(inThread: inThread) } },
             valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })
         let box = WeakController()
-        let host = UIKitAttachDrawer(mode: .attach(draft), presenter: presenter, dockInset: dockInset) { if let close { close() } else { box.value?.dismiss(animated: false) } }
+        let host = UIKitAttachDrawer(mode: .attach(draft), presenter: presenter, dockInset: dockInset,
+                                     dockHeight: dockHeight, dockRoom: dockRoom) { if let close { close() } else { box.value?.dismiss(animated: false) } }
         box.value = host
         return host
     }

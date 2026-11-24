@@ -207,7 +207,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             if composer.showsDrawer { composer.hideDrawer(keyboard: true); return }
             // Docked below the message box, in the keyboard's place.
             guard let drawer = UIKitHosting.attachDrawer(chat: self.chat, inThread: true, presenter: { [weak self] in self },
-                                                         dockInset: self.view.window?.safeAreaInsets.bottom ?? 0,
+                                                         dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
+                                                         // Grown, it lifts the message box up to the top of the timeline.
+                                                         dockRoom: { [weak self] in self.map { $0.composer.convert($0.composer.bounds, to: $0.view).minY - $0.collection.frame.minY } ?? 0 },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
             composer.showDrawer(drawer)
         }

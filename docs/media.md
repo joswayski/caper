@@ -1556,9 +1556,11 @@ library and files; desktop web, the Mac and Rust desktop offer one unfiltered
   keyboard's place, at the last software keyboard's height, below the message box,
   as Discord's does. Picks queue as chips above the box and the composer's Send
   sends them; emoji and the microphone stay available. While it is up the `+` is
-  an ✕ that returns to the keyboard; tapping the field does too, and dragging the
-  handle or the timeline down hides it. The camera and pickers present from the
-  conversation. Picture choosers and the quick composer keep the modal sheet below.
+  an ✕ that returns to the keyboard; tapping the field does too. Dragging the
+  handle up (or flicking the photos up) grows it over the timeline, lifting the
+  message box; tapping the handle toggles that, and dragging the handle, the photos
+  past their top, or the timeline down shrinks or hides it. The camera and pickers
+  present from the conversation. Picture choosers and the quick composer keep the modal sheet below.
 - **iPad and modal sheets** (`AttachDrawer.swift`, `UIKitAttachDrawer.swift`): an
   edge-to-edge drawer in a transparent full-screen cover, initially half-height.
   Drag its header or tap the handle to expand/collapse; drag down, tap outside,
@@ -1577,7 +1579,8 @@ library and files; desktop web, the Mac and Rust desktop offer one unfiltered
   below the message box in the keyboard's place (`AttachDock`), as on iPhone: it
   takes the last keyboard's height and shrinks as the keyboard returns, picks
   queue as chips and the composer's Send sends, `+` becomes ✕ (back to typing),
-  and Back closes it. The profile composer and picture choosers use a bottom
+  and Back closes it. Its handle drags up over the timeline and down to close, and a
+  tap toggles. The profile composer and picture choosers use a bottom
   sheet. Both read MediaStore. It asks when first opened: `READ_MEDIA_IMAGES` and
   `READ_MEDIA_VIDEO`, plus `READ_MEDIA_VISUAL_USER_SELECTED` on Android 14+
   (partial access, with \"Manage\"), or `READ_EXTERNAL_STORAGE` up to Android 12.
@@ -1588,6 +1591,10 @@ library and files; desktop web, the Mac and Rust desktop offer one unfiltered
   bottom sheet with Camera (`capture`), Photos and videos, and Files.
 - **Rust desktop** (`attach_drawer.rs`): a menu above `+` with \"Upload a file\".
   Profile messages add Paste from clipboard.
+
+Phones show four tiles across (more on wider screens). Holding a tile opens a
+large preview of it with Attach (Remove once attached, Choose in a picture
+chooser): an iOS context-menu preview, an Android dialog.
 
 iOS and Android animate local GIF originals in Photos tiles, with a GIF badge.
 Leaving the viewport, backgrounding or reduced motion stops them. Android decodes

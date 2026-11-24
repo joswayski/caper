@@ -16,9 +16,15 @@ import Observation
     UIDocumentPickerDelegate, PHPickerViewControllerDelegate {
     private let mode: AttachDrawerMode
     private let close: () -> Void
-    /// Docked: who presents the camera and pickers, and the home indicator's inset.
+    /// Docked: who presents the camera and pickers, the home indicator's inset,
+    /// the keyboard's height it rests at, and how much taller it may grow over
+    /// the timeline (read as it starts to grow).
     private let presenter: (() -> UIViewController?)?
     private let dockInset: CGFloat
+    private let dockRest: CGFloat
+    private let dockRoom: () -> CGFloat
+    private var dockView: UIKitAttachDockView? { view as? UIKitAttachDockView }
+    private var dockExpanded: CGFloat = 0
     private var docked: Bool { presenter != nil }
     private let library = AttachDrawerLibrary()
     private var changes: AnyCancellable?
@@ -54,14 +60,22 @@ import Observation
     private var full: Bool { !picking && used >= AttachmentPolicy.maxAttachments }
     private var cameraAvailable: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
 
-    init(mode: AttachDrawerMode, presenter: (() -> UIViewController?)? = nil, dockInset: CGFloat = 0, close: @escaping () -> Void) {
+    init(mode: AttachDrawerMode, presenter: (() -> UIViewController?)? = nil, dockInset: CGFloat = 0, dockHeight: CGFloat = 0,
+         dockRoom: @escaping () -> CGFloat = { 0 }, close: @escaping () -> Void) {
         self.mode = mode; self.close = close; self.presenter = presenter; self.dockInset = dockInset
+        self.dockRest = dockHeight; self.dockRoom = dockRoom
         let layout = UICollectionViewFlowLayout(); layout.minimumInteritemSpacing = Self.spacing; layout.minimumLineSpacing = Self.spacing
         grid = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(nibName: nil, bundle: nil); modalPresentationStyle = .overFullScreen
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { foreground.map(NotificationCenter.default.removeObserver); library.stop() }
+    /// Docked, the view is the field's input view. It sizes itself, so the
+    /// keyboard area (and the message box above it) follows the handle.
+    override func loadView() {
+        guard docked else { super.loadView(); return }
+        view = UIKitAttachDockView(height: dockRest)
+    }
     override func viewDidLoad() {
         super.viewDidLoad(); overrideUserInterfaceStyle = CaperTheme.interfaceStyle; view.backgroundColor = .clear; view.accessibilityViewIsModal = !docked
         scrim.backgroundColor = UIColor.black.withAlphaComponent(0.55)
@@ -73,9 +87,7 @@ import Observation
         let name = picking ? "picture chooser" : "attachment drawer"
         // The handle: a short capsule across the top; tapping it expands the drawer.
         resize = UIButton(type: .custom); resize.accessibilityIdentifier = "attach-drawer-resize"; resize.accessibilityLabel = "Expand \(name)"
-        resize.addAction(UIAction { [weak self] _ in guard let self, !self.docked else { return }; self.expanded.toggle(); self.resizePanel(animated: true) }, for: .touchUpInside)
-        // Docked, the handle only drags the drawer down; the composer's X closes it.
-        resize.isAccessibilityElement = !docked
+        resize.addAction(UIAction { [weak self] _ in guard let self else { return }; self.setExpanded(!self.expanded) }, for: .touchUpInside)
         let grabber = UIView(); grabber.backgroundColor = UIColor(CaperTheme.muted).withAlphaComponent(0.6); grabber.layer.cornerRadius = 2.5
         grabber.isUserInteractionEnabled = false; grabber.translatesAutoresizingMaskIntoConstraints = false; resize.addSubview(grabber)
         let cancel = UIButton(type: .system); cancel.setImage(attachIcon("x", size: 18), for: .normal); cancel.tintColor = UIColor(CaperTheme.muted)
@@ -94,6 +106,7 @@ import Observation
         grid.accessibilityIdentifier = "attach-drawer-grid"
         // Keep the last row clear of the floating Send button (sheets only).
         grid.contentInset.bottom = docked ? 8 : 76
+        grid.alwaysBounceVertical = true
         manage = UIKitMessageDialog.button("Manage") { [library] in library.manageLimitedAccess() }
         settings = UIKitMessageDialog.button("Open Settings") {
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -124,7 +137,8 @@ import Observation
         panelHeight = panel.heightAnchor.constraint(equalToConstant: 400)
         NSLayoutConstraint.activate(docked ? [
             panel.topAnchor.constraint(equalTo: view.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -(dockInset + 4)),
+            // The tabs sit just above the home indicator, as the keyboard's own bottom row does.
+            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -max(4, dockInset - 20)),
         ] : [
             panelHeight,
             stack.bottomAnchor.constraint(equalTo: panel.safeAreaLayoutGuide.bottomAnchor, constant: -4),
@@ -226,14 +240,42 @@ import Observation
         }
     }
     @objc private func pan(_ gesture: UIPanGestureRecognizer) {
-        drag = gesture.translation(in: view).y
+        if gesture.state == .began, docked, !expanded { dockExpanded = dockRest + max(0, dockRoom()) }
+        // Measured in the window: the docked drawer moves under the finger as it resizes.
+        drag = gesture.translation(in: nil).y
         if gesture.state == .ended || gesture.state == .cancelled {
-            let travel = drag + gesture.velocity(in: view).y * 0.15
+            let travel = drag + gesture.velocity(in: nil).y * 0.15
+            drag = 0
             if !expanded && travel > 80 { close(); return }
-            if docked { drag = 0; return }
             if abs(travel) > 40 { expanded = travel < 0 }
-            drag = 0; resizePanel(animated: true)
-        } else if !docked { resizePanel(animated: false) }
+            if docked { resizeDock(animated: true) } else { resizePanel(animated: true) }
+        } else if docked { resizeDock(animated: false) } else { resizePanel(animated: false) }
+    }
+    private func setExpanded(_ value: Bool) {
+        guard value != expanded else { return }
+        if docked, value { dockExpanded = dockRest + max(0, dockRoom()) }
+        expanded = value; drag = 0
+        if docked { resizeDock(animated: true) } else { resizePanel(animated: true) }
+    }
+    /// Docked, the drawer follows the finger: up over the timeline (as far as
+    /// the conversation has room), down toward closing.
+    private func resizeDock(animated: Bool) {
+        guard let dockView else { return }
+        let top = max(dockRest, dockExpanded)
+        dockView.height = min(top, max(120, (expanded ? top : dockRest) - drag))
+        resize.accessibilityLabel = "\(expanded ? "Collapse" : "Expand") attachment drawer"
+        let layout = { self.view.superview?.layoutIfNeeded(); self.view.window?.layoutIfNeeded() }
+        if animated, !CaperAccessibility.reduceMotion {
+            UIViewPropertyAnimator(duration: CaperMotion.base, controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1), animations: layout).startAnimation()
+        } else { layout() }
+    }
+    // Docked, flicking the photos up opens the drawer out over the timeline, and
+    // pulling down past the top brings it back (or closes it), as Discord's does.
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        guard docked else { return }
+        let atTop = scrollView.contentOffset.y <= -scrollView.adjustedContentInset.top
+        if !expanded, velocity.y > 0.3 { setExpanded(true) }
+        else if atTop, velocity.y < -0.5 { if expanded { setExpanded(false) } else { close() } }
     }
     private func nudge() { notice = AttachCapacity.hint(AttachmentPolicy.maxAttachments); UINotificationFeedbackGenerator().notificationOccurred(.warning); render() }
     private static let spacing: CGFloat = 3
@@ -241,9 +283,9 @@ import Observation
     private var cameraTiles: Int { cameraAvailable ? 1 : 0 }
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { (library.assets?.count ?? 0) + cameraTiles }
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
-        // Three large tiles across a phone, more on wider screens.
+        // Four tiles across a phone (as on Android), more on wider screens.
         let width = collectionView.bounds.width
-        let columns = max(3, floor((width + Self.spacing) / 124)), side = floor((width - (columns - 1) * Self.spacing) / columns)
+        let columns = max(4, floor((width + Self.spacing) / 88)), side = floor((width - (columns - 1) * Self.spacing) / columns)
         return CGSize(width: side, height: side)
     }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
@@ -268,10 +310,25 @@ import Observation
         let order = files.firstIndex { $0.source == source }.map { $0 + 1 } ?? queue.order.firstIndex(of: source).map { files.count + $0 + 1 }
         cell.configure(asset, order: order, pending: queue.isPending(source), full: full) { [weak self] in self?.choose(asset.localIdentifier) }
     }
+    // Holding a photo shows it large, with Attach or Remove under it; letting
+    // go of the preview leaves the draft as it was.
+    func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
+        let index = (indexPaths.first?.item ?? 0) - cameraTiles
+        guard indexPaths.count == 1, let assets = library.assets, index >= 0, index < assets.count else { return nil }
+        let asset = assets.object(at: index), source = AttachDrawer.source(asset.localIdentifier)
+        let attached = draft?.files().contains { $0.source == source } == true || queue.isPending(source)
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: { UIKitAttachPreview(asset) }) { [weak self] _ in
+            guard let self, self.picking || attached || !self.full else { return nil }
+            let title = self.picking ? "Choose" : attached ? "Remove" : "Attach"
+            return UIMenu(children: [UIAction(title: title, image: attachIcon(attached ? "x" : "check", size: 18),
+                                              attributes: attached ? .destructive : []) { [weak self] _ in self?.choose(asset.localIdentifier) }])
+        }
+    }
     /// A toolbar tab: its icon over its name, bright and bold when selected.
     private static func tab(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> UIButton {
         var config = UIButton.Configuration.plain()
-        config.image = attachIcon(icon, size: 20); config.imagePlacement = .top; config.imagePadding = 4; config.title = title
+        config.image = attachIcon(icon, size: 20); config.imagePlacement = .top; config.imagePadding = 3; config.title = title
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 2, trailing: 8)
         config.baseForegroundColor = UIColor(selected ? CaperTheme.text : CaperTheme.muted)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attributes = incoming
@@ -279,7 +336,7 @@ import Observation
             return attributes
         }
         let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
-        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         if selected { button.accessibilityTraits.insert(.selected) }
         return button
     }
@@ -398,6 +455,51 @@ import Observation
     private func show(_ controller: UIViewController) {
         (presenter?() ?? self).present(controller, animated: !CaperAccessibility.reduceMotion)
     }
+}
+
+/// A held tile's large preview: the whole photo (or a video's frame) at its
+/// own shape, sharpening from the tile's thumbnail.
+@MainActor private final class UIKitAttachPreview: UIViewController {
+    private let asset: PHAsset
+    private let picture = UIImageView()
+    private var request: PHImageRequestID?
+    init(_ asset: PHAsset) {
+        self.asset = asset
+        super.init(nibName: nil, bundle: nil)
+        let width = CGFloat(max(1, asset.pixelWidth)), height = CGFloat(max(1, asset.pixelHeight))
+        let screen = UIScreen.main.bounds.size
+        let fit = min((screen.width - 32) / width, screen.height * 0.6 / height)
+        preferredContentSize = CGSize(width: (width * fit).rounded(), height: (height * fit).rounded())
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit { if let request { PHImageManager.default().cancelImageRequest(request) } }
+    override func viewDidLoad() {
+        super.viewDidLoad(); view.backgroundColor = UIColor(CaperTheme.raised)
+        picture.contentMode = .scaleAspectFill; picture.clipsToBounds = true
+        picture.frame = view.bounds; picture.autoresizingMask = [.flexibleWidth, .flexibleHeight]; view.addSubview(picture)
+        picture.image = AttachGalleryCache.thumbnail(AttachGalleryCache.key(asset))
+        picture.accessibilityIgnoresInvertColors = true
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic; options.resizeMode = .fast; options.isNetworkAccessAllowed = true
+        let scale = UIScreen.main.scale
+        request = PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: preferredContentSize.width * scale, height: preferredContentSize.height * scale),
+                                                        contentMode: .aspectFit, options: options) { [weak self] result, _ in
+            Task { @MainActor in if let result { self?.picture.image = result } }
+        }
+    }
+}
+
+/// The docked drawer's input view: its height is the keyboard area's.
+@MainActor private final class UIKitAttachDockView: UIInputView {
+    var height: CGFloat { didSet { if height != oldValue { invalidateIntrinsicContentSize() } } }
+    init(height: CGFloat) {
+        self.height = height
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: height), inputViewStyle: .default)
+        allowsSelfSizing = true
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: height) }
 }
 
 /// A Lucide icon from the app's catalog (CaperIcons.xcassets), drawn at `size` as a template.
