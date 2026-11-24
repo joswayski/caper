@@ -15,6 +15,7 @@ import android.os.Bundle
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.IconCompat
@@ -22,9 +23,16 @@ import androidx.core.graphics.drawable.toBitmap
 import chat.caper.android.MainActivity
 import chat.caper.android.R
 import chat.caper.android.caperAvatarResources
+import chat.caper.android.data.ApiException
+import chat.caper.android.data.CaperApi
 import chat.caper.android.data.TokenStore
 import chat.caper.android.ui.Terracotta
 import java.io.File
+import java.io.IOException
+import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 
@@ -50,6 +58,11 @@ internal object CaperNotifications {
     private const val MESSAGE_IDS = "chat.caper.android.messageIds"
     /** On each MessagingStyle line: the message it shows, so a retraction removes exactly that line. */
     private const val LINE_MESSAGE_ID = "chat.caper.android.messageId"
+    /** On each line: the thread it replies in, so Mark as read reads every thread it shows. */
+    private const val LINE_THREAD_ROOT_ID = "chat.caper.android.threadRootId"
+    const val ACTION_REPLY = "chat.caper.android.action.REPLY"
+    const val ACTION_MARK_READ = "chat.caper.android.action.MARK_READ"
+    const val KEY_REPLY = "chat.caper.android.reply"
     private const val MEDIA_FILES = "chat.caper.android.notificationMedia"
     private const val HAS_THREADS = "chat.caper.android.hasThreads"
     private const val MAX_MESSAGES = 25
@@ -122,6 +135,7 @@ internal object CaperNotifications {
             .setIcon(avatar?.let(IconCompat::createWithBitmap)).build()
         val message = NotificationCompat.MessagingStyle.Message(payload.body, System.currentTimeMillis(), sender)
         message.extras.putString(LINE_MESSAGE_ID, payload.messageId)
+        payload.threadRootId?.let { message.extras.putString(LINE_THREAD_ROOT_ID, it) }
         if (media != null) message.setData("image/png", FileProvider.getUriForFile(context, "${context.packageName}.notification-media", media))
         style.setConversationTitle(payload.conversationTitle).setGroupConversation(payload.groupConversation).addMessage(message)
         // The data URI keeps each conversation's PendingIntent (and its extras) separate.
@@ -152,11 +166,88 @@ internal object CaperNotifications {
                 putBoolean(HAS_THREADS, payload.threadRootId != null || current?.extras?.getBoolean(HAS_THREADS) == true)
                 if (!payload.consent && payload.kind != "feedback" && payload.spaceId != null) putString(EXTRA_CHANNEL_ID, payload.channelId)
             })
+            .apply { if (payload.actionable) addActions(context, payload.tag) }
             .build()
         post(manager, payload.tag, notification)
         // notify() enqueues asynchronously; activeNotifications can still be the old list.
         cleanup(context, files)
         return true
+    }
+
+    /**
+     * Reply (inline, with the system's text field) and Mark as read. Both act on the lines the
+     * notification shows when tapped, never on extras captured when it was posted.
+     */
+    private fun NotificationCompat.Builder.addActions(context: Context, tag: String) {
+        fun intent(action: String) = Intent(context, NotificationActionReceiver::class.java).setAction(action)
+            .setData(Uri.fromParts("caper-action", tag, null))
+        // RemoteInput fills the intent in, so this one must stay mutable.
+        val reply = PendingIntent.getBroadcast(context, 0, intent(ACTION_REPLY),
+            PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+        val read = PendingIntent.getBroadcast(context, 0, intent(ACTION_MARK_READ), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        addAction(NotificationCompat.Action.Builder(R.drawable.lucide_reply, "Reply", reply)
+            .addRemoteInput(RemoteInput.Builder(KEY_REPLY).setLabel("Reply").build())
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY).setShowsUserInterface(false).build())
+        addAction(NotificationCompat.Action.Builder(R.drawable.lucide_check, "Mark as read", read)
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ).setShowsUserInterface(false).build())
+    }
+
+    /** What a tap on an action answers or reads: the newest line, and the newest line of each thread shown. */
+    private class Targets(val reply: String, val read: List<String>)
+
+    @Synchronized
+    private fun targets(context: Context, tag: String): Targets? {
+        val current = currentNotification(context.getSystemService(NotificationManager::class.java), tag) ?: return null
+        val lines = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(current)?.messages.orEmpty()
+            .filter { it.extras.getString(LINE_MESSAGE_ID) != null }
+        val reply = lines.lastOrNull()?.extras?.getString(LINE_MESSAGE_ID) ?: return null
+        val read = lines.groupBy { it.extras.getString(LINE_THREAD_ROOT_ID) }.values.mapNotNull { it.last().extras.getString(LINE_MESSAGE_ID) }
+        return Targets(reply, read)
+    }
+
+    /**
+     * Runs a notification action with the saved session, while the app is closed too. Mark as
+     * read clears the notification once the server has read it. A reply joins the conversation
+     * as your own line, silently; one that could not be sent says so in its place.
+     */
+    suspend fun act(context: Context, tag: String, action: String?, text: String?) {
+        val token = TokenStore(context).read() ?: return
+        if (!PushRegistration.enabled(context)) return
+        val targets = targets(context, tag) ?: return
+        val api = CaperApi()
+        when (action) {
+            ACTION_MARK_READ -> {
+                val read = runCatching { targets.read.forEach { retrying { api.readFromNotification(token, it) } } }
+                if (read.isSuccess && TokenStore(context).read() == token) cancel(context, tag)
+            }
+            ACTION_REPLY -> {
+                val reply = text?.trim().orEmpty()
+                if (reply.isEmpty()) { repost(context, tag, null); return }
+                // One ID for every attempt: a retry after a lost response never sends twice.
+                val clientMessageId = UUID.randomUUID().toString()
+                val sent = runCatching { retrying { api.replyFromNotification(token, targets.reply, clientMessageId, reply) } }.isSuccess
+                if (TokenStore(context).read() == token) repost(context, tag, if (sent) reply else "Couldn’t send “$reply”. Open Caper to try again.")
+            }
+        }
+        // A running app refreshes unread state and its badge.
+        PushActivity.received.tryEmit(Unit)
+    }
+
+    /** One retry for a dropped connection, never for the server's answer (a block, lost access). */
+    private suspend fun <T> retrying(block: suspend () -> T): T = try { block() } catch (error: IOException) {
+        if (error is ApiException) throw error
+        block()
+    }
+
+    /** Re-posts a conversation's notification without alerting, with your reply added; this also ends the reply spinner. */
+    @Synchronized
+    private fun repost(context: Context, tag: String, line: String?) {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val current = currentNotification(manager, tag) ?: return
+        val style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(current) ?: return
+        if (line != null) style.addMessage(NotificationCompat.MessagingStyle.Message(line, System.currentTimeMillis(), null as Person?))
+        post(manager, tag, NotificationCompat.Builder(context, current).setStyle(style).setOnlyAlertOnce(true).build())
     }
 
     /**
@@ -257,6 +348,18 @@ internal object CaperNotifications {
             tagGenerations[tag] = (tagGenerations[tag] ?: 0L) + 1
         }
         cleanup(context)
+    }
+}
+
+/** Reply and Mark as read from a message notification, without opening the app. */
+class NotificationActionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val tag = intent.data?.schemeSpecificPart ?: return
+        val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(CaperNotifications.KEY_REPLY)?.toString()
+        val pending = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try { CaperNotifications.act(context.applicationContext, tag, intent.action, text) } finally { pending.finish() }
+        }
     }
 }
 

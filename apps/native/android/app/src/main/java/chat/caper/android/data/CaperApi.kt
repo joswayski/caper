@@ -70,6 +70,17 @@ class CaperApi(
     suspend fun readActivity(token: String, ids: List<String>): ActivityRead = post(
         "/api/notifications/inbox/read", buildJsonObject { putJsonArray("ids") { ids.forEach { add(it) } } }, token,
     )
+    /** Mark as read from a system notification: the conversation (or thread) up to [message]. */
+    suspend fun readFromNotification(token: String, message: String): NotificationActionResult {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        return post("/api/notifications/messages/$message/read", null, token)
+    }
+    /** Reply from a system notification, where the in-app inbox would: in the thread, or as a reply. */
+    suspend fun replyFromNotification(token: String, message: String, clientMessageId: String, text: String): NotificationActionResult {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        return post("/api/notifications/messages/$message/reply",
+            buildJsonObject { put("clientMessageId", clientMessageId); put("text", text) }, token)
+    }
     suspend fun unreadSpaces(token: String): UnreadSpaces = get("/api/spaces/unread", token)
     suspend fun spaceVoiceActivity(token: String): SpaceVoiceActivity = get("/api/spaces/voice-activity", token)
     suspend fun unreadThreads(token: String, channel: String): UnreadThreads =

@@ -28,6 +28,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         let epoch = self.epoch
         let center = UNUserNotificationCenter.current()
         center.delegate = self
+        NotificationActions.register(on: center)
         let api = model.api
         // While this feed is live, the shell polls only as a backstop.
         let gateway = Gateway(baseURL: api.baseURL, token: { await api.authorizationToken() }) { [weak self] state, _ in
@@ -112,6 +113,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         if NSApp.isActive && !model.navigationOpen && model.isShowing(route) { return }
         let content = UNMutableNotificationContent()
         content.title = title; content.body = body; content.sound = .default; content.userInfo = event
+        if NotificationActions.actionable(event) { content.categoryIdentifier = NotificationActions.category }
         content.threadIdentifier = (event["notificationId"] as? String).map({ "\(prefix):\($0)" }) ?? event["conversationId"] as? String ?? event["channelId"] as? String ?? ""
         var temporary: URL?
         if let image = CaperAvatar.image(for: event["senderAvatarId"] as? Int),
@@ -156,6 +158,11 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         guard let model, model.account?.id == accountID,
               response.notification.request.identifier.hasPrefix("\(accountID ?? ""):\(epoch):"),
               let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
+        // Reply and Mark as read stay in the notification; the Dock badge follows the unread refresh.
+        if [NotificationActions.reply, NotificationActions.read].contains(response.actionIdentifier) {
+            if await NotificationActions.handle(response, api: model.api) != nil { model.scheduleUnreadRefresh() }
+            return
+        }
         NSApp.activate(ignoringOtherApps: true)
         await model.open(route)
     }

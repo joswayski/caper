@@ -54,6 +54,8 @@ internal data class PushPayload(
     val direct: Boolean get() = conversationId != null
     val invitation: Boolean get() = kind == "space.invitation" || kind == "channel.invitation"
     val consent: Boolean get() = invitation || kind == "direct.request"
+    /** A message someone can answer or read from the notification itself. */
+    val actionable: Boolean get() = !consent && kind != "voice.started" && messageId.isNotEmpty()
 
     /** One notification per DM or channel, tagged with its ID. */
     val tag: String get() = if (consent) "${if (invitation) "invitation" else "request"}:$notificationId" else conversationId ?: checkNotNull(channelId)

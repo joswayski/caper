@@ -26,6 +26,42 @@ export function setBrowserNotificationsEnabled(on: boolean) {
   }
 }
 
+/**
+ * Reply and Mark as read need a service worker's persistent notifications
+ * and a browser that shows actions (Chromium; inline text on Chrome and Edge).
+ * Elsewhere notifications stay as they were: a click opens Caper.
+ */
+let worker: Promise<ServiceWorkerRegistration | undefined> | undefined;
+function notificationWorker() {
+  if (typeof Notification === "undefined" || !("actions" in Notification.prototype) || !navigator.serviceWorker)
+    return Promise.resolve(undefined);
+  worker ??= navigator.serviceWorker
+    .register("/notifications-sw.js")
+    .then(() =>
+      Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 5_000)),
+      ]),
+    )
+    .catch(() => undefined);
+  return worker;
+}
+
+type ActionOptions = NotificationOptions & {
+  image?: string;
+  actions?: { action: string; title: string; type?: "button" | "text"; placeholder?: string }[];
+};
+
+/** Messages can be answered or read from the notification; invitations, requests and voice cannot. */
+function actionable(event: MessageNotification) {
+  return (
+    typeof event.messageId === "string" &&
+    /^[A-Za-z0-9]{15}$/.test(event.messageId) &&
+    !event.notificationId &&
+    !["space.invitation", "channel.invitation", "direct.request", "voice.started"].includes(event.kind ?? "")
+  );
+}
+
 export interface MessageNotification {
   type: "notification.created";
   seq: string;
@@ -105,6 +141,27 @@ export function watchBrowserNotifications(
 ) {
   let active = true;
   const downloads = new AbortController();
+  const tagPrefix = `caper:${accountId}:`;
+  // The worker hands a notification click to one tab, and reports Reply and Mark as read.
+  const fromWorker = (message: MessageEvent) => {
+    const data = message.data as { type?: unknown; location?: unknown } | null;
+    if (!active) return;
+    if (data?.type === "caper.notification.acted") onActivity?.(new Set());
+    if (
+      data?.type === "caper.notification.open" &&
+      typeof data.location === "string" &&
+      data.location.startsWith("/spaces?")
+    ) {
+      window.focus();
+      if (!open?.(data.location)) window.location.assign(data.location);
+    }
+  };
+  navigator.serviceWorker?.addEventListener("message", fromWorker);
+  const workerNotifications = async (tag?: string) => {
+    const registration = await notificationWorker();
+    const shown = (await registration?.getNotifications(tag ? { tag } : undefined)) ?? [];
+    return shown.filter((notification) => notification.tag.startsWith(tagPrefix));
+  };
   const displayed = new Map<Notification, string | undefined>();
   const identities = new WeakMap<Notification, string>();
   // Messages deleted after they notified: closed if shown, never shown if late.
@@ -208,12 +265,29 @@ export function watchBrowserNotifications(
       return;
     }
     try {
-      const options: NotificationOptions & { image?: string } = {
+      const options: ActionOptions = {
         body: event.body,
         icon: pictureUrl(event.senderAvatarUrl) ?? avatarUrl(event.senderAvatarId),
-        tag: `caper:${accountId}:${identity}`,
+        tag: `${tagPrefix}${identity}`,
         ...(image ? { image } : {}),
       };
+      const registration = actionable(event) ? await notificationWorker() : undefined;
+      if (registration && active) {
+        const persistent: ActionOptions = {
+          ...options,
+          data: { location, messageId: event.messageId, accountId },
+          actions: [
+            { action: "reply", type: "text", title: "Reply", placeholder: "Reply" },
+            { action: "read", title: "Mark as read" },
+          ],
+        };
+        // TypeScript's DOM types have not caught up with notification actions.
+        await registration.showNotification(event.title, persistent as NotificationOptions);
+        // The browser read the image when it showed the notification.
+        if (image) URL.revokeObjectURL(image);
+        if (retracted.has(identity)) for (const shown of await workerNotifications(options.tag)) shown.close();
+        return;
+      }
       const notification = new Notification(event.title, options);
       displayed.set(notification, image);
       identities.set(notification, identity);
@@ -256,6 +330,7 @@ export function watchBrowserNotifications(
         if (retracted.size > 256) retracted.delete(retracted.values().next().value!);
         for (const notification of displayed.keys())
           if (identities.get(notification) === event.messageId) notification.close();
+        void workerNotifications(`${tagPrefix}${event.messageId}`).then((shown) => shown.forEach((n) => n.close()));
       },
       error: () => undefined,
     },
@@ -268,6 +343,9 @@ export function watchBrowserNotifications(
     clearTimeout(activityTimer);
     downloads.abort();
     subscription.unsubscribe();
+    navigator.serviceWorker?.removeEventListener("message", fromWorker);
+    // Sign-out or an account switch: this account's notifications go, actions and all.
+    void workerNotifications().then((shown) => shown.forEach((notification) => notification.close()));
     clearInterval(visibleTimer);
     window.removeEventListener("focus", visibility);
     window.removeEventListener("blur", visibility);

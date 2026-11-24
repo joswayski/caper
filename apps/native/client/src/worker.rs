@@ -1441,6 +1441,7 @@ fn manage<H: Host>(
                 let events = events.clone();
                 let host = host.clone();
                 let visible = visible.clone();
+                let actions = (api.clone(), token.clone());
                 notifications = Some((
                     epoch,
                     crate::os_notifications::watch(
@@ -1457,7 +1458,11 @@ fn manage<H: Host>(
                                 let events = events.clone();
                                 let host = host.clone();
                                 let visible = visible.clone();
+                                let (api, token) = actions.clone();
                                 thread::spawn(move || {
+                                    let message = alert.message_id.clone().unwrap_or_default();
+                                    let acted = events.clone();
+                                    let refresh = host.clone();
                                     let target = alert.clone();
                                     let conversation = alert.conversation().map(str::to_owned);
                                     let clicks = events.clone();
@@ -1476,6 +1481,42 @@ fn manage<H: Host>(
                                                     alert: target.clone(),
                                                 },
                                             );
+                                        },
+                                        // Reply and Mark as read with the saved
+                                        // session; unread state refreshes after.
+                                        move |action| {
+                                            let result = match action {
+                                                crate::os_notifications::Action::MarkRead => {
+                                                    api.read_from_notification(&token, &message)
+                                                }
+                                                crate::os_notifications::Action::Reply(text) => {
+                                                    // One ID for both attempts: a retry after
+                                                    // a lost response never sends twice.
+                                                    let id = uuid::Uuid::new_v4();
+                                                    api.reply_from_notification(
+                                                        &token, &message, id, &text,
+                                                    )
+                                                    .or_else(|error| match error.status {
+                                                        None => api.reply_from_notification(
+                                                            &token, &message, id, &text,
+                                                        ),
+                                                        Some(_) => Err(error),
+                                                    })
+                                                    .map_err(|error| crate::api::ApiError {
+                                                        message: format!(
+                                                            "Couldn’t send “{text}”. {}",
+                                                            error.message
+                                                        ),
+                                                        ..error
+                                                    })
+                                                }
+                                            };
+                                            send(
+                                                &acted,
+                                                &refresh,
+                                                Event::NotificationActivity { epoch },
+                                            );
+                                            result.map(|_| ()).map_err(|error| error.message)
                                         },
                                     ) {
                                         send(

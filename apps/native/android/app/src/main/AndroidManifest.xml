@@ -32,6 +32,7 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/notification_media_paths" />
         </provider>
         <receiver android:name=".push.NotificationDismissReceiver" android:exported="false" />
+        <receiver android:name=".push.NotificationActionReceiver" android:exported="false" />
         <!-- adjustResize: the keyboard is a window inset the composer pads for, never a pan of the whole window. -->
         <!-- Invite links open "Join with invite link". Launcher entries are the generated aliases below. -->
         <activity

@@ -305,6 +305,43 @@ impl Api {
         )
     }
 
+    /// Mark as read from a system notification: the conversation (or the
+    /// thread, for a thread reply) up to `message`.
+    pub fn read_from_notification(
+        &self,
+        token: &str,
+        message: &str,
+    ) -> Result<crate::os_notifications::ActionResult, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/notifications/messages/{}/read", message_path(message)?),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    /// Reply from a system notification, where the in-app inbox would: in
+    /// the thread for a thread reply, otherwise as a reply to `message`.
+    pub fn reply_from_notification(
+        &self,
+        token: &str,
+        message: &str,
+        client_message_id: uuid::Uuid,
+        text: &str,
+    ) -> Result<crate::os_notifications::ActionResult, ApiError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "api/notifications/messages/{}/reply",
+                message_path(message)?
+            ),
+            Some(token),
+            None,
+            Some(json!({"clientMessageId": client_message_id, "text": text})),
+        )
+    }
+
     /// `GET /api/feedback[?before=<cursor>]`: the Caper team's inbox, newest
     /// first. Everyone else gets 404.
     /// `archived` lists only archived threads' reports.
@@ -1852,6 +1889,15 @@ fn invite_path(code: &str) -> Result<&str, ApiError> {
             attempts_remaining: None,
             code: None,
         })
+    }
+}
+
+/// A message ID as a URL path segment: never a path or query of its own.
+fn message_path(message: &str) -> Result<&str, ApiError> {
+    if (1..=64).contains(&message.len()) && message.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        Ok(message)
+    } else {
+        Err(invalid("Invalid message ID."))
     }
 }
 

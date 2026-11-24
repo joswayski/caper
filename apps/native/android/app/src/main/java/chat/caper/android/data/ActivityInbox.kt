@@ -18,6 +18,8 @@ import kotlinx.serialization.Serializable
 }
 @Serializable data class ActivityPage(val items: List<ActivityItem>, val nextCursor: String? = null, val unreadCount: Int)
 @Serializable data class ActivityRead(val unreadCount: Int)
+/** A notification's Reply or Mark as read: the account's new badge count, and the reply's ID. */
+@Serializable data class NotificationActionResult(val badgeCount: Int, val messageId: String? = null)
 
 internal enum class ActivityFilter(val wire: String, val label: String) {
     All("all", "All"), Dms("dms", "DMs"), Mentions("mentions", "Mentions"),

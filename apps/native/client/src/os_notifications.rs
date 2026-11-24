@@ -21,7 +21,8 @@ pub struct Alert {
     /// Absent for invitations and message requests.
     #[serde(default)]
     pub message_id: Option<String>,
-    #[cfg(target_os = "windows")]
+    /// Invitations, message requests and voice; absent for messages.
+    #[serde(default)]
     pub notification_id: Option<String>,
     /// Present when the message is a thread reply (every kind).
     #[serde(default)]
@@ -110,11 +111,47 @@ impl Alert {
         })
     }
 
+    /// A message the notification can answer or mark read in place: never
+    /// an invitation, a message request or voice.
+    pub fn actionable(&self) -> bool {
+        self.message_id.as_deref().is_some_and(|id| !id.is_empty())
+            && self.notification_id.is_none()
+            && !matches!(
+                self.kind.as_deref(),
+                Some(
+                    "space.invitation" | "channel.invitation" | "direct.request" | "voice.started"
+                )
+            )
+    }
+
     pub fn fresh(&self) -> bool {
         DateTime::parse_from_rfc3339(&self.created_at).is_ok_and(|date| {
             (-30..=120).contains(&(Utc::now() - date.with_timezone(&Utc)).num_seconds())
         })
     }
+}
+
+/// What a notification's own buttons ask for, without opening Caper.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    Reply(String),
+    MarkRead,
+}
+
+impl Action {
+    /// A reply typed into the notification: trimmed, and nothing when empty.
+    fn reply(text: &str) -> Option<Self> {
+        let text = text.trim();
+        (!text.is_empty()).then(|| Self::Reply(text.to_owned()))
+    }
+}
+
+/// The result of a notification's Reply or Mark as read.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionResult {
+    pub badge_count: i64,
+    pub message_id: Option<String>,
 }
 
 /// What clicking a notification opens.
@@ -467,11 +504,15 @@ fn attachment(alert: &Alert, directory: &std::path::Path) -> Option<std::path::P
     Some(output)
 }
 
+/// Shows `alert` until it is clicked, dismissed or ends. Reply and Mark as
+/// read (on messages, where the notification service allows them) close it
+/// and run `act`; a failure is reported in a notification of its own.
 pub fn show(
     alert: Alert,
     lifetime: Lifetime,
     suppressed: impl Fn() -> bool,
     clicked: impl Fn() + Send + 'static,
+    act: impl FnOnce(Action) -> Result<(), String>,
 ) -> Result<(), String> {
     if lifetime.ended() || suppressed() {
         return Ok(());
@@ -490,21 +531,31 @@ pub fn show(
     let media = attachment(&alert, &directory);
     // Retracted while its artwork downloaded: never shown.
     let result = if lifetime.ended() || suppressed() {
-        Ok(())
+        Ok(None)
     } else {
         platform_show(
             &alert,
             image.as_deref(),
             media.as_deref(),
-            lifetime,
+            lifetime.clone(),
             clicked,
         )
     };
     // Keep artwork and activation handlers until dismissal, expiry or logout.
     let _ = std::fs::remove_dir_all(directory);
-    result
+    // Outside the platform's runtime: `act` makes blocking requests.
+    if let Some(action) = result?
+        && !lifetime.stopped.load(Ordering::Relaxed)
+        && let Err(error) = act(action)
+    {
+        platform_notice(&alert.title, &error);
+    }
+    Ok(())
 }
 
+/// Servers that offer `inline-reply` (KDE Plasma) take a typed reply in the
+/// notification and answer with `NotificationReplied`; elsewhere a message
+/// offers Mark as read beside the default action, which opens Caper.
 #[cfg(target_os = "linux")]
 fn platform_show(
     alert: &Alert,
@@ -512,7 +563,10 @@ fn platform_show(
     media: Option<&std::path::Path>,
     lifetime: Lifetime,
     clicked: impl Fn() + Send + 'static,
-) -> Result<(), String> {
+) -> Result<Option<Action>, String> {
+    let inline = alert.actionable()
+        && notify_rust::get_capabilities()
+            .is_ok_and(|capabilities| capabilities.iter().any(|c| c == "inline-reply"));
     let mut notification = notify_rust::Notification::new();
     notification
         .appname("Caper")
@@ -526,6 +580,21 @@ fn platform_show(
         )
         .action("default", "Open Caper")
         .timeout(10_000);
+    if inline {
+        notification
+            .action("inline-reply", "Reply")
+            .hint(notify_rust::Hint::Custom(
+                "x-kde-reply-placeholder-text".into(),
+                "Reply".into(),
+            ))
+            .hint(notify_rust::Hint::Custom(
+                "x-kde-reply-submit-button-text".into(),
+                "Send".into(),
+            ));
+    }
+    if alert.actionable() {
+        notification.action("read", "Mark as read");
+    }
     if let Some(path) = image.and_then(|path| path.to_str()) {
         notification.icon(path);
     }
@@ -540,15 +609,64 @@ fn platform_show(
         let handle = notification.show_async().await.map_err(|_| {
             "Desktop notifications are unavailable. Check your notification service.".to_owned()
         })?;
+        let mut chosen = None;
         tokio::select! {
-            _ = handle.wait_for_action_async(|action| {
-                if action.is_default_action() && !lifetime.ended() { clicked(); }
+            _ = handle.wait_for_action_async(|action| match action {
+                notify_rust::NotificationResponse::Default if !lifetime.ended() => clicked(),
+                notify_rust::NotificationResponse::Action(key) if key == "read" => chosen = Some(Action::MarkRead),
+                _ => {}
             }) => {},
+            Some(text) = replied(handle.id(), inline) => chosen = Action::reply(&text),
             () = lifetime.until(SHOWN_FOR, || false) => {},
         }
         handle.close_async().await;
-        Ok(())
+        Ok(chosen.filter(|_| !lifetime.ended()))
     })
+}
+
+/// The text of KDE's `NotificationReplied` for notification `id`; never
+/// resolves where the server has no inline replies or the bus is unavailable.
+#[cfg(target_os = "linux")]
+async fn replied(id: u32, inline: bool) -> Option<String> {
+    use futures_util::StreamExt;
+    let stream = async {
+        let connection = zbus::Connection::session().await.ok()?;
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("org.freedesktop.Notifications")
+            .ok()?
+            .member("NotificationReplied")
+            .ok()?
+            .build();
+        zbus::MessageStream::for_match_rule(rule, &connection, None)
+            .await
+            .ok()
+    };
+    let mut stream = match inline {
+        true => stream.await,
+        false => None,
+    };
+    while let Some(stream) = stream.as_mut() {
+        let Some(Ok(message)) = stream.next().await else {
+            break;
+        };
+        if let Ok((replied, text)) = message.body().deserialize::<(u32, String)>()
+            && replied == id
+        {
+            return Some(text);
+        }
+    }
+    std::future::pending().await
+}
+
+#[cfg(target_os = "linux")]
+fn platform_notice(title: &str, body: &str) {
+    let _ = notify_rust::Notification::new()
+        .appname("Caper")
+        .summary(title)
+        .body(body)
+        .timeout(10_000)
+        .show();
 }
 
 #[cfg(target_os = "windows")]
@@ -558,10 +676,11 @@ fn platform_show(
     media: Option<&std::path::Path>,
     lifetime: Lifetime,
     clicked: impl Fn() + Send + 'static,
-) -> Result<(), String> {
+) -> Result<Option<Action>, String> {
     use winrt_toast_reborn::{
-        DismissalReason, Image, Toast, ToastManager,
+        Action as Button, DismissalReason, Image, Toast, ToastManager,
         content::image::{ImageHintCrop, ImagePlacement},
+        content::input::{Input, InputType},
         register,
     };
     const APP_ID: &str = "chat.caper.desktop";
@@ -586,7 +705,18 @@ fn platform_show(
         .text1(&alert.title)
         .text2(&alert.body)
         .tag(&tag)
-        .group(GROUP);
+        .group(GROUP)
+        // A click on the body arrives as `open`; the buttons as their own arguments.
+        .launch("open");
+    if alert.actionable() {
+        // The process that showed the toast handles its buttons (foreground
+        // activation): an unpackaged app has no COM activator, so a toast left
+        // in Action Center after Caper quits only opens it again.
+        toast
+            .input(Input::new(REPLY, InputType::Text).with_placeholder("Reply"))
+            .action(Button::new("Send", REPLY, "").with_input_id(REPLY))
+            .action(Button::new("Mark as read", "read", ""));
+    }
     if let Some(image) = image.and_then(|path| Image::new_local(path).ok()) {
         toast.image(
             1,
@@ -598,15 +728,34 @@ fn platform_show(
     if let Some(media) = media.and_then(|path| Image::new_local(path).ok()) {
         toast.image(2, media.with_placement(ImagePlacement::Hero));
     }
+    const REPLY: &str = "reply";
     let activated = Arc::new(AtomicBool::new(false));
     let done = activated.clone();
     let closed = activated.clone();
     let cancelled = lifetime.clone();
+    let chosen = Arc::new(Mutex::new(None));
+    let choice = chosen.clone();
     let manager = ToastManager::new(APP_ID)
-        .on_activated(None, move |_| {
+        .on_activated(Some(REPLY), move |activation| {
+            let action = match activation.as_ref().map(|a| a.arg.as_str()) {
+                Some(REPLY) => activation
+                    .as_ref()
+                    .and_then(|a| a.values.get(REPLY))
+                    .and_then(|text| Action::reply(text.as_str())),
+                Some("read") => Some(Action::MarkRead),
+                _ => None,
+            };
+            let button = matches!(
+                activation.as_ref().map(|a| a.arg.as_str()),
+                Some(REPLY | "read")
+            );
+            if let Ok(mut chosen) = choice.lock() {
+                *chosen = action;
+            }
             done.store(true, Ordering::Relaxed);
             wake();
-            if !cancelled.ended() {
+            // An empty reply only closes the toast.
+            if !button && !cancelled.ended() {
                 clicked();
             }
         })
@@ -628,7 +777,16 @@ fn platform_show(
         .block_on(lifetime.until(SHOWN_FOR, || activated.load(Ordering::Relaxed)));
     // Removing the toast also clears it from Action Center.
     let _ = manager.remove_grouped_tag(GROUP, &tag);
-    Ok(())
+    let chosen = chosen.lock().ok().and_then(|mut chosen| chosen.take());
+    Ok(chosen.filter(|_| !lifetime.ended()))
+}
+
+#[cfg(target_os = "windows")]
+fn platform_notice(title: &str, body: &str) {
+    use winrt_toast_reborn::{Toast, ToastManager};
+    let mut toast = Toast::new();
+    toast.text1(title).text2(body).group("caper");
+    let _ = ToastManager::new("chat.caper.desktop").show(&toast);
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -638,9 +796,12 @@ fn platform_show(
     _: Option<&std::path::Path>,
     _: Lifetime,
     _: impl Fn() + Send + 'static,
-) -> Result<(), String> {
+) -> Result<Option<Action>, String> {
     Err("Use the native Mac app for desktop notifications.".into())
 }
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn platform_notice(_: &str, _: &str) {}
 
 #[cfg(test)]
 #[allow(clippy::result_large_err)] // Tungstenite's handshake callback uses an unboxed HTTP response.
@@ -662,6 +823,26 @@ mod tests {
             event[key] = value.clone();
         }
         serde_json::from_value(event).unwrap()
+    }
+
+    #[test]
+    fn only_messages_offer_reply_and_mark_read() {
+        assert!(alert(json!({"kind": "channel.message"})).actionable());
+        assert!(
+            alert(json!({"kind": "mention.user", "threadRootId": "msg000000001"})).actionable()
+        );
+        for consent in [
+            json!({"kind": "space.invitation", "notificationId": "7", "messageId": null}),
+            json!({"kind": "direct.request", "notificationId": "8", "messageId": null}),
+            json!({"kind": "voice.started", "notificationId": "9", "messageId": null}),
+        ] {
+            assert!(!alert(consent).actionable());
+        }
+        assert_eq!(
+            Action::reply("  On it \n"),
+            Some(Action::Reply("On it".into()))
+        );
+        assert_eq!(Action::reply("   "), None);
     }
 
     #[test]

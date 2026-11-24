@@ -257,6 +257,17 @@ public actor APIClient {
         return try await request("api/notifications/inbox?" + (query.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B"))
     }
 
+    /// Mark as read from a system notification: the conversation (or thread) up to the message.
+    func readFromNotification(messageID: String) async throws -> NotificationActionResult {
+        try await request("api/notifications/messages/\(try messagePathID(messageID))/read", method: "POST", body: [String: String]())
+    }
+
+    /// Reply from a system notification, where the in-app inbox would: in the thread, or as a reply.
+    func replyFromNotification(messageID: String, clientMessageID: String, text: String) async throws -> NotificationActionResult {
+        try await request("api/notifications/messages/\(try messagePathID(messageID))/reply", method: "POST",
+                          body: ["clientMessageId": clientMessageID, "text": text])
+    }
+
     func readActivity(ids: [String]) async throws -> ActivityRead {
         struct Input: Encodable { let ids: [String] }
         return try await request("api/notifications/inbox/read", method: "POST", body: Input(ids: ids))

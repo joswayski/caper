@@ -584,6 +584,7 @@ dependencies = [
  "ab_glyph",
  "avif-serialize",
  "chrono",
+ "futures-util",
  "image",
  "jpeg-encoder",
  "keyring",

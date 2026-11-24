@@ -306,6 +306,42 @@ on activity signals and every 15 s, revalidating through the oldest loaded row.
 - Acknowledgements are kept in `notification_inbox_reads` (runtime role has
   SELECT/INSERT, never DELETE).
 
+## Reply and Mark as read from notifications
+
+Message notifications (DMs, channel messages, mentions, thread replies,
+`@feedback`) offer **Reply** and **Mark as read** in the system notification
+itself; invitations, message requests, voice-start and deletion replacements do
+not. Both use the device's saved account session, never a stored chat token.
+
+- `POST /api/notifications/messages/{messageId}/read` → `{badgeCount}`. Reads
+  the conversation up to and including that message (the thread only, for a
+  thread reply; also the channel for a broadcast reply) and acknowledges its
+  inbox row. Read positions never move back, and later messages stay unread.
+- `POST /api/notifications/messages/{messageId}/reply`
+  `{clientMessageId,text}` → `{messageId,badgeCount}`. Answers where the inbox
+  would: in the thread for a thread reply, otherwise as a quoted reply. It mints
+  a chat session for the account's session and goes through the ordinary send
+  path, so blocks (403), membership, private-channel grants, joins and DM
+  acceptance apply exactly as in the conversation. A retry with the same
+  `clientMessageId` and text returns the original message. Sending also reads
+  up to the message answered.
+- No access, a pending request or an unknown message → 404 `message not found`.
+
+| Client | Reply | Mark as read | App closed |
+| --- | --- | --- | --- |
+| iPhone/iPad | `UNTextInputNotificationAction` in category `caper.message` (APNs `aps.category`) | Clears that conversation's or thread's earlier notifications, sets the badge | Yes: iOS runs the action in the background, with the Keychain session |
+| Android | `RemoteInput` on the MessagingStyle notification; the reply joins it as your line, silently | Clears the conversation's notification after the server reads every thread it shows | Yes: a broadcast receiver; not after a force-stop |
+| macOS | Same category on local notifications | Same | No: local notifications exist only while Caper runs |
+| Windows | Toast text input with Send, plus Mark as read (foreground activation) | Closes the toast | No: an unpackaged app has no COM activator, so a toast left in Action Center after quitting only opens Caper |
+| Linux | Inline only where the server lists `inline-reply` (KDE Plasma, `NotificationReplied`) | Mark as read action beside Open; servers without actions show neither | No |
+| Web | `type: "text"` action through `/notifications-sw.js` (Chrome and Edge desktop and Android) | Same worker | While a tab has the account feed; the worker survives closing the tab, not the browser |
+
+The web worker has no fetch handler and caches nothing. Browsers without
+notification actions (Firefox, Safari) keep plain click-to-open notifications;
+a Reply clicked without inline text opens the conversation. Before acting, the
+worker checks that the signed-in account is the one that was notified. A reply
+that cannot be sent says so in a notification on every client.
+
 ## App-icon badges
 
 `GET /api/spaces/unread` includes `badgeCount`: unread messages from other
@@ -514,8 +550,9 @@ uploads; release builds already carry `aps-environment=production`.
   and retraction; local alerts are not used.
 - **Android**: FCM data push with MessagingStyle, OS channels per category,
   previews, launcher badges and retraction. Stops after a force-stop.
-- **Web**: local notifications while a tab is open; no closed-browser Web Push or
-  service worker. Mobile browsers rely on the native apps.
+- **Web**: local notifications while a tab is open; message notifications go
+  through a service worker for their actions, but there is no closed-browser
+  Web Push. Mobile browsers rely on the native apps.
 - **macOS**: local notifications and Dock badge while running; no APNs.
 - **Windows/Linux (Rust desktop)**: local notifications while running or
   minimized; no tray mode, nothing after quit.

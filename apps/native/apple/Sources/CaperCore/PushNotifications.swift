@@ -21,6 +21,7 @@ public final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNot
 
     public func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        NotificationActions.register(on: .current())
         return true
     }
 
@@ -141,7 +142,18 @@ public final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNot
 
     /// A tap opens the push's channel (`spaceId` + `channelId`) or DM (`conversationId`);
     /// kind `feedback` opens a feedback visit at `messageId`, in its thread.
+    /// Reply and Mark as read run without opening the app: iOS launches it in
+    /// the background, before any model exists, so they use the saved session.
     public func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        if [NotificationActions.reply, NotificationActions.read].contains(response.actionIdentifier) {
+            let background = UIApplication.shared.beginBackgroundTask(withName: "Notification action")
+            defer { UIApplication.shared.endBackgroundTask(background) }
+            if let count = await NotificationActions.handle(response, api: model?.api ?? APIClient()) {
+                try? await center.setBadgeCount(count)
+                model?.scheduleUnreadRefresh()
+            }
+            return
+        }
         guard let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
         guard let model else { pendingRoute = route; return }
         await model.open(route)
