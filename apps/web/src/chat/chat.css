@@ -2466,14 +2466,6 @@ button.chat-mention-card-avatar {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-typing-echo {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-  display: block;
-  user-select: none;
-  animation: typing-peek 1.6s ease-in-out infinite;
-}
 .chat-typing-dots {
   display: inline-flex;
   flex: 0 0 auto;
@@ -2493,15 +2485,6 @@ button.chat-mention-card-avatar {
 .chat-typing-dots i:nth-child(3) {
   animation-delay: 0.3s;
 }
-@keyframes typing-peek {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-1.5px);
-  }
-}
 @keyframes typing-bounce {
   0%,
   60%,
@@ -2515,7 +2498,6 @@ button.chat-mention-card-avatar {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-typing-echo,
   .chat-typing-dots i {
     animation: none;
   }

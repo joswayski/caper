@@ -135,7 +135,8 @@ regenerate.
 
 Static desktop icons use `apps/web/public/caper-face.svg`. With ImageMagick 7
 and librsvg installed, `node scripts/generate-favicons.mjs` regenerates the web
-fallback PNGs, Linux SVG, multi-size Windows ICO, and macOS AppIcon PNGs
+fallback PNGs, Linux SVG, multi-size Windows ICO, macOS and iOS AppIcon PNGs,
+and the Android launcher PNG
 (`--check` detects drift without writing). The executable, installer and
 uninstaller use that ICO. Linux packages the SVG as
 `hicolor/scalable/apps/caper.svg`; `caper.desktop` names it with `Icon=caper`

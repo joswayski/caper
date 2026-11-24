@@ -883,14 +883,6 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                 <span className="chat-typing-content" data-visible={!!typingLabel}>
                   {displayedTypingLabel && (
                     <>
-                      <img
-                        className="chat-typing-echo"
-                        src="/caper-echo.svg"
-                        width={14}
-                        height={14}
-                        alt=""
-                        aria-hidden="true"
-                      />
                       <span className="chat-typing-dots" aria-hidden="true">
                         <i />
                         <i />

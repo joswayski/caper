@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const source = fileURLToPath(new URL("../docs/brand/echo/echo-app-icon.svg", import.meta.url));
+const source = fileURLToPath(new URL("../apps/web/public/caper-face.svg", import.meta.url));
 const output = fileURLToPath(new URL("../apps/web/public/icons/", import.meta.url));
 const desktop = fileURLToPath(new URL("../apps/native/desktop/resources/", import.meta.url));
 const mac = fileURLToPath(
@@ -16,6 +16,7 @@ const mac = fileURLToPath(
 const android = fileURLToPath(
   new URL("../apps/native/android/app/src/main/res/drawable-nodpi/ic_caper_app.png", import.meta.url),
 );
+const opaque = ["-background", "#0C0D0F", "-alpha", "remove", "-alpha", "off"];
 const files = new Map();
 const raster = execFileSync("rsvg-convert", ["--width", "1024", "--height", "1024", source]);
 for (const size of [32, 180, 192, 512]) {
@@ -25,8 +26,8 @@ for (const size of [32, 180, 192, 512]) {
       "png:-",
       "-resize",
       `${size}x${size}`,
-      // Installed icons are opaque on Obsidian frame; the small browser fallback retains transparency.
-      ...(size !== 32 ? ["-background", "#0B0B0C", "-alpha", "remove", "-alpha", "off"] : []),
+      // Installed icons are opaque; the small browser fallback retains transparency.
+      ...(size !== 32 ? opaque : []),
       "-depth",
       "8",
       "-strip",
@@ -34,11 +35,11 @@ for (const size of [32, 180, 192, 512]) {
     ],
     { input: raster },
   );
-  files.set(`${output}caper-main-v4-${size}.png`, png);
+  files.set(`${output}caper-main-v5-${size}.png`, png);
 }
 
-// Share the same 8-bit RGBA rasters across Windows, Linux, macOS, iOS and Android.
-// Render from the Echo app icon artwork, not an intermediate platform export.
+// Share the same transparent 8-bit RGBA rasters across Windows, Linux, macOS and Android.
+// Render from the main artwork, not an intermediate platform export.
 const pngs = new Map(
   [16, 24, 32, 48, 64, 128, 256, 432, 512, 1024].map((size) => [
     size,
@@ -52,7 +53,11 @@ files.set(android, pngs.get(432));
 for (const size of [16, 32, 64, 128, 256, 512, 1024]) {
   files.set(`${mac}icon-${size}.png`, pngs.get(size));
 }
-files.set(`${mac}icon-ios-1024.png`, pngs.get(1024));
+// iOS rejects app icons with an alpha channel.
+files.set(
+  `${mac}icon-ios-1024.png`,
+  execFileSync("magick", ["png:-", ...opaque, "-depth", "8", "-strip", "PNG24:-"], { input: raster }),
+);
 
 // Windows Search and Explorer choose different ICO frames at different DPIs.
 const sizes = [16, 24, 32, 48, 64, 128, 256];

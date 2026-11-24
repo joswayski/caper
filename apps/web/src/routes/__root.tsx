@@ -34,14 +34,14 @@ export const Route = createRootRoute({
         rel: "icon",
         type: "image/png",
         sizes: "32x32",
-        href: "/icons/caper-main-v4-32.png",
+        href: "/icons/caper-main-v5-32.png",
       },
       {
         id: "caper-favicon-192",
         rel: "icon",
         type: "image/png",
         sizes: "192x192",
-        href: "/icons/caper-main-v4-192.png",
+        href: "/icons/caper-main-v5-192.png",
       },
       {
         id: "caper-favicon-svg",
@@ -53,7 +53,7 @@ export const Route = createRootRoute({
       {
         rel: "apple-touch-icon",
         sizes: "180x180",
-        href: "/icons/caper-main-v4-180.png",
+        href: "/icons/caper-main-v5-180.png",
       },
       { rel: "manifest", href: "/site.webmanifest" },
       {

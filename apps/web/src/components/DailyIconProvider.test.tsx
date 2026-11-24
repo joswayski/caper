@@ -21,7 +21,7 @@ test("daily illustrations rotate without changing favicons across space navigati
       root.render(<RouterProvider router={router} />);
     });
     const icons = () => [...document.querySelectorAll('link[rel="icon"]')].map((link) => link.getAttribute("href"));
-    const expected = ["/icons/caper-main-v4-32.png", "/icons/caper-main-v4-192.png", "/caper-face.svg?v=4"];
+    const expected = ["/icons/caper-main-v5-32.png", "/icons/caper-main-v5-192.png", "/caper-face.svg?v=4"];
     expect(icons()).toEqual(expected);
     expect(document.querySelector("img")?.getAttribute("src")).toBe("/images/branding/v1/42.svg");
     const changes: (string | null)[][] = [];

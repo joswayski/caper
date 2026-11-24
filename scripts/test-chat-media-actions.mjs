@@ -49,7 +49,7 @@ try {
   const media = `${row} .chat-media`;
   wait(`!!document.querySelector('${row}.chat-message-grouped') && !document.querySelector('.chat-initial-messages')`);
   assert.equal(evaluate('matchMedia("(hover: hover) and (pointer: fine)").matches'), true);
-  const image = `${web}/icons/caper-main-v4-512.png`;
+  const image = `${web}/icons/caper-main-v5-512.png`;
   for (const [layout, width, text] of [
     ["desktop-image-only", 1000, ""],
     ["desktop-caption", 1000, "Image test"],

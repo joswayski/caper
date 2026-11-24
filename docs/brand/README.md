@@ -12,9 +12,9 @@ Thread unread indicators use the existing gold `#E4C76A` (`--pin-gold`) for both
 
 Source: images supplied by Jose Valerio.
 
-## Echo mark
+## Echo mark (saved for later, not in the product)
 
-Caper's app mark across Web, Apple (macOS and iOS), Android, Windows, and Linux. Two concentric c's (caper, chat) read as an echo, a voice carrying outward, around the Caper character. [Overview sheet](echo/echo-sheet.png).
+A candidate mark for caper.chat, kept for possible future use. No client uses it; every app icon is the Caper character from `apps/web/public/caper-face.svg`. Two concentric c's (caper, chat) read as an echo, a voice carrying outward, around the Caper character. [Overview sheet](echo/echo-sheet.png).
 
 - [`echo.svg`](echo/echo.svg): primary, on dark backgrounds.
 - [`echo-plain.svg`](echo/echo-plain.svg): the caper without its face, where the mark should be quieter.
@@ -28,4 +28,4 @@ Construction, on a 100-unit viewBox centered at (50, 50): rings of radius 40 and
 
 Proposed motion, not built: _speaking_ pulses the inner ring and then the outer ring, from 38% to full opacity and 97% to 102% scale over 1.4s; _connecting_ turns the inner ring every 1.6s and the outer ring the other way every 2.4s; _quiet_ holds both rings at 28% opacity. Respect reduced-motion settings.
 
-`scripts/generate-favicons.mjs` renders the web, desktop, macOS, iOS, and Android app icons from `echo-app-icon.svg` and keeps `apps/web/public/caper-echo.svg` in sync with `echo.svg`. Style reference: the reductive marks in Yasaburo Kuwayama's _Trade Marks & Symbols, Volume 2: Symbolical Designs_. The mark itself is original and copies none of the book's trademarks.
+Style reference: the reductive marks in Yasaburo Kuwayama's _Trade Marks & Symbols, Volume 2: Symbolical Designs_. The mark itself is original and copies none of the book's trademarks.
