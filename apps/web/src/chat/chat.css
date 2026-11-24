@@ -5118,7 +5118,7 @@ a.chat-draft-preview {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
-  flex: 0 0 340px;
+  flex: 0 0 400px;
   max-width: min(600px, max(50%, calc(100% - 300px)));
   min-width: 0;
   min-height: 0;

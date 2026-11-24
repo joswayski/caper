@@ -590,13 +590,28 @@ export default function Call({
   const [membersVisible, setMembersVisible] = useState(true);
   const wideMembersVisible = useRef(true);
   const [narrow, setNarrow] = useState(false);
+  // A thread takes the member column's place: opening one hides the member list, and
+  // closing it brings the list back unless the reader showed or hid it meanwhile.
+  const membersForThread = useRef({ narrow, visible: membersVisible, hidden: false });
+  membersForThread.current.narrow = narrow;
+  membersForThread.current.visible = membersVisible;
+  const threadChange = useCallback((open: boolean) => {
+    const current = membersForThread.current;
+    if (open && !current.narrow && current.visible) {
+      current.hidden = true;
+      setMembersVisible(false);
+    } else if (!open && current.hidden) {
+      current.hidden = false;
+      if (!current.narrow) setMembersVisible(wideMembersVisible.current);
+    }
+  }, []);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 760px)");
     // Phone layouts start, and narrowing windows return, with the conversation instead of
     // the wide member column reappearing as a drawer over it; widening restores the column.
     const update = () => {
       setNarrow(media.matches);
-      setMembersVisible(media.matches ? false : wideMembersVisible.current);
+      setMembersVisible(media.matches || membersForThread.current.hidden ? false : wideMembersVisible.current);
       if (media.matches) setAudioMenu((menu) => (menu === "settings" ? menu : undefined));
     };
     update();
@@ -611,6 +626,7 @@ export default function Call({
   const browsing = narrow && navigationOpen && !!onNavigationToggle;
   const members = useMembersDrawer(roomRef, narrow && !navigationOpen && !!membersPanel, membersVisible, (open) => {
     if (!narrow) wideMembersVisible.current = open;
+    membersForThread.current.hidden = false;
     setMembersVisible(open);
   });
   // Like desktop: Members sit beside the conversation while it keeps 320px,
@@ -2373,6 +2389,7 @@ export default function Call({
               }
               onBlockAuthor={onBlockAuthor}
               onOnlineChange={onChatOnlineChange}
+              onThreadChange={threadChange}
               mentionMembers={mentionMembers}
               mentionDirectory={mentionDirectory}
               onMessagePerson={onMessagePerson}

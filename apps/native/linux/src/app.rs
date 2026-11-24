@@ -703,6 +703,9 @@ pub struct App {
     narrow: Cell<bool>,
     browsing: Cell<bool>,
     wide_members: Cell<bool>,
+    /// Opening a thread beside the conversation hid the member list, so
+    /// closing it shows the list again; the reader's own toggle clears it.
+    thread_hid_members: Cell<bool>,
 }
 
 struct PinsView {
@@ -830,6 +833,7 @@ pub fn start(
         narrow: Cell::new(false),
         browsing: Cell::new(false),
         wide_members: Cell::new(true),
+        thread_hid_members: Cell::new(false),
         images,
         worker: Worker::new(api.clone(), wakes.clone()),
         state: RefCell::new(State::default()),
@@ -1085,8 +1089,12 @@ impl App {
             .connect_clicked(move |button| app.settings_menu(button));
 
         let app = self.clone();
-        // As desktop, the member list stays beside an open thread.
-        ui.members_toggle.connect_toggled(move |_| app.render());
+        // Showing or hiding the member list is the reader's choice, kept
+        // when a thread that hid it closes.
+        ui.members_toggle.connect_toggled(move |_| {
+            app.thread_hid_members.set(false);
+            app.render();
+        });
         let app = self.clone();
         ui.error_retry.connect_clicked(move |_| app.retry());
         let app = self.clone();
@@ -3573,6 +3581,7 @@ impl App {
         self.thread_follow.set(focus.is_none());
         self.reset_jump(true);
         let reply;
+        let opening = self.state.borrow().thread.is_none();
         {
             let mut state = self.state.borrow_mut();
             state.focused = focus.clone();
@@ -3611,6 +3620,10 @@ impl App {
         // A narrow thread takes the conversation's place, drawer and all.
         if self.is_narrow() {
             self.ui.members_toggle.set_active(false);
+        } else if opening && self.ui.members_panel.is_visible() {
+            // A wide thread takes the member column's place until it closes.
+            self.ui.members_toggle.set_active(false);
+            self.thread_hid_members.set(true);
         }
         self.render();
         self.ui.thread_composer.view.grab_focus();
@@ -5708,6 +5721,18 @@ impl App {
             self.restoring.set(true);
             self.ui.composer.view.buffer().set_text(&draft);
             self.restoring.set(false);
+        }
+        // However the thread that hid the member list closed, the list
+        // comes back, or in a narrow window comes back with the width.
+        if self.thread_hid_members.get() && self.state.borrow().thread.is_none() {
+            self.thread_hid_members.set(false);
+            if self.narrow.get() {
+                self.wide_members.set(true);
+            } else if !self.ui.members_toggle.is_active() {
+                // Toggling renders again.
+                self.ui.members_toggle.set_active(true);
+                return;
+            }
         }
         self.render_rows();
         self.render_voice();

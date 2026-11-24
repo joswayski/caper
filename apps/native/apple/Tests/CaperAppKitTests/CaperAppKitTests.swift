@@ -16,7 +16,7 @@ import XCTest
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES", "-caper.space-landing.owner0000001", ""]
         // Normal flows start at the shipping defaults. Persistence flows omit
         // these argument-domain overrides on their second real app launch.
-        if !preservePanelWidths { app.launchArguments += ["-caper.membersWidth", "220", "-caper.channelSidebarWidth", "280", "-caper.threadPanelWidth", "340"] }
+        if !preservePanelWidths { app.launchArguments += ["-caper.membersWidth", "220", "-caper.channelSidebarWidth", "280", "-caper.threadPanelWidth", "400"] }
         app.launchArguments += arguments
         app.launch()
         return app
@@ -1648,10 +1648,12 @@ import XCTest
         try await Self.control(["failure": ["path": threadPath, "method": "GET", "status": 503,
             "error": "TEST FIXTURE: thread history unavailable."]])
         let root = channel.textViews["message-\(rootID)"]
+        XCTAssertTrue(members.waitForExistence(timeout: 5), "1280 docks the member list before a thread opens")
         XCTAssertTrue(root.waitForExistence(timeout: 5)); root.rightClick()
         let open = messageMenuItem("Reply in thread", app: app, body: root)
         XCTAssertTrue(open.waitForExistence(timeout: 5)); open.click()
         XCTAssertTrue(pane.waitForExistence(timeout: 5))
+        XCTAssertTrue(members.waitForNonExistence(timeout: 5), "A thread beside the conversation takes the member column's place")
         let loadError = pane.staticTexts["TEST FIXTURE: thread history unavailable."]
         XCTAssertTrue(loadError.waitForExistence(timeout: 10))
         let retryLoad = pane.buttons["Retry"]
@@ -1760,7 +1762,7 @@ import XCTest
         XCTAssertEqual(composer.value as? String, channelDraft)
         capture("dictation entrypoints and independent composers wide", app: app)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX, "Wide windows show both timelines without overlap")
-        XCTAssertTrue(divider.exists); XCTAssertEqual(divider.value as? String, "340 pixels")
+        XCTAssertTrue(divider.exists); XCTAssertEqual(divider.value as? String, "400 pixels")
         app.buttons["channel-pins"].hover(); back.hover(); divider.hover()
         let handle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         handle.press(forDuration: 0.15, thenDragTo: handle.withOffset(CGVector(dx: timeline.frame.width - 380, dy: 0)))
@@ -1771,15 +1773,15 @@ import XCTest
         XCTAssertEqual(timeline.frame.width, 300, accuracy: 1)
         capture("thread minimum width and focused handle", app: app)
         divider.typeKey(.end, modifierFlags: [])
-        XCTAssertEqual(timeline.frame.width, 420, accuracy: 1, "1280 minus 340 navigation and 220 members leaves a 720pt split")
+        XCTAssertEqual(timeline.frame.width, 600, accuracy: 1, "1280 minus 340 navigation leaves a 940pt split; the thread stops at 600")
         XCTAssertGreaterThanOrEqual(channel.frame.width, 300)
-        try assertSplit(threadWidth: 420, showingMembers: true)
+        try assertSplit(threadWidth: 600, showingMembers: false)
         capture("thread maximum width and adjacent channel", app: app)
         divider.doubleClick()
-        XCTAssertEqual(timeline.frame.width, 340, accuracy: 1)
-        divider.typeKey(.leftArrow, modifierFlags: [])
-        divider.typeKey(.leftArrow, modifierFlags: [])
-        divider.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(timeline.frame.width, 400, accuracy: 1)
+        divider.typeKey(.rightArrow, modifierFlags: [])
+        divider.typeKey(.rightArrow, modifierFlags: [])
+        divider.typeKey(.rightArrow, modifierFlags: [])
         XCTAssertEqual(timeline.frame.width, 370, accuracy: 1)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
         XCTAssertEqual(editor.value as? String, "")
@@ -1794,26 +1796,33 @@ import XCTest
         XCTAssertEqual(editor.value as? String, threadDraft)
         XCTAssertEqual(composer.value as? String, channelDraft, "Reply inside a thread must not target the channel composer")
         capture("thread quote and independent channel draft wide", app: app)
+        back.click()
+        XCTAssertTrue(pane.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(members.waitForExistence(timeout: 5), "Closing the thread brings back the member list it hid")
+        XCTAssertTrue(summary.waitForExistence(timeout: 5)); summary.click()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5)); XCTAssertEqual(editor.value as? String, threadDraft)
+        XCTAssertTrue(members.waitForNonExistence(timeout: 5), "Reopening the thread hides the member list again")
+        XCTAssertTrue(pane.buttons["Cancel reply"].exists)
 
         let sidebar = app.sliders["channel-sidebar-resize"]
         sidebar.click(); sidebar.typeKey(.end, modifierFlags: [])
         XCTAssertTrue(channel.exists, "Above 760, even maximum navigation must keep both conversations accessible")
         XCTAssertTrue(divider.exists, "Sidebar width never folds the thread split")
         XCTAssertTrue(editor.isHittable); XCTAssertEqual(editor.value as? String, threadDraft)
-        XCTAssertTrue(app.sliders["members-panel-resize"].exists)
-        try assertSplit(threadWidth: 280, showingMembers: true)
+        XCTAssertFalse(app.sliders["members-panel-resize"].exists)
+        try assertSplit(threadWidth: 370, showingMembers: false)
         XCTAssertEqual(composer.value as? String, channelDraft)
-        capture("1280 maximum sidebar keeps two bounded 280pt conversation panes", app: app)
+        capture("1280 maximum sidebar keeps the thread and conversation side by side", app: app)
         sidebar.typeKey(.home, modifierFlags: [])
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         XCTAssertEqual(timeline.frame.width, 370, accuracy: 1, "A temporary layout clamp never replaces the preferred thread width")
         XCTAssertEqual(composer.value as? String, channelDraft)
         XCTAssertEqual(editor.value as? String, threadDraft)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
-        try assertSplit(threadWidth: 370, showingMembers: true)
+        try assertSplit(threadWidth: 370, showingMembers: false)
         sidebar.doubleClick()
 
-        // Check automatic member docking before any explicit show/hide choice.
+        // The thread keeps the member list hidden at every width until it closes.
         // Exact window widths distinguish the two sides of the 760/761 boundary.
         for width in [CGFloat(900), 761, 760, 390] {
             resize(app, width: width)
@@ -1822,7 +1831,7 @@ import XCTest
             XCTAssertEqual(editor.value as? String, threadDraft)
             XCTAssertTrue(pane.buttons["Cancel reply"].exists)
             if width > 760 {
-                try assertSplit(threadWidth: width == 900 ? 170 : 210.5, showingMembers: width == 900)
+                try assertSplit(threadWidth: width == 900 ? 280 : 210.5, showingMembers: false)
                 XCTAssertEqual(channel.frame.width, timeline.frame.width, accuracy: 1)
                 XCTAssertEqual(composer.value as? String, channelDraft)
                 capture("\(Int(width)) split thread and channel with wrapped accessories and real neighbor hover", app: app)

@@ -3700,7 +3700,7 @@ private struct ChatView: View {
     let membersVisible: Bool
     let toggleMembers: () -> Void
     @Environment(\.statusColumn) private var statusColumn
-    @AppStorage("caper.threadPanelWidth") private var threadWidth = 340.0
+    @AppStorage("caper.threadPanelWidth") private var threadWidth = 400.0
     @State private var threadDragStart: Double?
     @State private var threadDragWidth: Double?
     @FocusState private var threadResizeFocused: Bool
@@ -3992,7 +3992,7 @@ private struct ChatView: View {
                         if let value = threadDragWidth { resize(value) }
                         threadDragWidth = nil; threadDragStart = nil
                     })
-                    .simultaneousGesture(TapGesture(count: 2).onEnded { resize(340); threadResizeFocused = true })
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { resize(400); threadResizeFocused = true })
                     .onTapGesture { threadResizeFocused = true }
                     .focusable().focusEffectDisabled().focused($threadResizeFocused)
                     .accessibilityRepresentation {

@@ -31,7 +31,7 @@ import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
 import { motionMs, useTimelineMotion } from "./useTimelineMotion.ts";
 import { useVoiceRecorder } from "./VoiceRecorder.tsx";
 
-const DEFAULT_WIDTH = 340;
+const DEFAULT_WIDTH = 400;
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 600;
 const WIDTH_KEY = "caper:thread-panel-width";

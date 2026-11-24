@@ -4423,10 +4423,15 @@ double-tap zoom animates.
 
 Web, wide Android and Apple layouts allow dragging the thread's leading divider
 (left widens). Left/Right adjust by 10, Home/End select the bounds and
-double-click/tap resets to 340px/pt/dp. Preferred widths range 300–600 and
+double-click/tap resets to 400px/pt/dp. Preferred widths range 300–600 and
 persist locally. The pane reserves 300 for the main conversation, or splits the
 area equally when it is under 600; shrinking the window does not overwrite the
 preference. Phone threads are full screen without a handle.
+
+A thread takes the member list's place: opening one beside the conversation
+hides the member column, and closing it brings the column back. Showing or
+hiding members while the thread is open overrides this, and closing the thread
+then leaves them as set.
 
 ### Optimistic feedback and thread loading
 

@@ -11,9 +11,9 @@ import CaperCore
     /// Closing the thread with its button or Escape focuses the composer.
     private var focusAfterThreadClose = false
     private let threadObservation = NativeObservation()
-    private var preferredThreadWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.threadPanelWidth") as? Double ?? 340)
+    private var preferredThreadWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.threadPanelWidth") as? Double ?? 400)
     private var threadDragWidth: CGFloat?
-    private lazy var threadDivider = NativePanelResizeHandle("Thread width", identifier: "thread-panel-resize", defaultWidth: 340, minimum: 300, widensToLeft: true) { [weak self] width, commit in
+    private lazy var threadDivider = NativePanelResizeHandle("Thread width", identifier: "thread-panel-resize", defaultWidth: 400, minimum: 300, widensToLeft: true) { [weak self] width, commit in
         guard let self else { return }
         if commit {
             self.preferredThreadWidth = max(300, width); self.threadDragWidth = nil
@@ -60,6 +60,10 @@ import CaperCore
     private lazy var profiles = AppKitProfilePresenter(model: model)
     private lazy var reactionTooltip = AppKitReactionTooltipPresenter(model: model)
     private var membersPreference: Bool?
+    /// A thread beside the conversation takes the member column's place: opening
+    /// one hides the list, and closing it brings the list back unless the reader
+    /// showed or hid it meanwhile. It never changes `membersPreference`.
+    private var membersHiddenByThread = false
     private var preferredMembersWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.membersWidth") as? Double ?? 220)
     private var membersDragWidth: CGFloat?
     private lazy var membersResize = NativePanelResizeHandle("Member list width", identifier: "members-panel-resize", defaultWidth: 220, widensToLeft: true) { [weak self] width, commit in
@@ -85,6 +89,7 @@ import CaperCore
     private lazy var membersToggle = NativeButton.icon("Show members", symbol: "person.2") { [weak self] in
         guard let self else { return }
         self.membersPreference = self.members.isHidden
+        self.membersHiddenByThread = false
         self.view.needsLayout = true
     }
     /// A feedback visit's Close: back to the conversation shown before it.
@@ -277,6 +282,7 @@ import CaperCore
             directBar.changed = { [weak self] in self?.view.needsLayout = true }
             members.close = { [weak self] in
                 self?.membersPreference = false
+                self?.membersHiddenByThread = false
                 self?.view.needsLayout = true
                 self?.focusComposer()
             }
@@ -543,6 +549,8 @@ import CaperCore
         pins.close(restoringFocus: false)
         let requested = focusAfterThreadClose; focusAfterThreadClose = false
         if root != nil, threadPane == nil {
+            // Above 760 the thread opens beside the conversation; folded layouts are unchanged.
+            if view.bounds.width > 760, !members.isHidden { membersHiddenByThread = true }
             let pane = WorkspaceController(model: model, inThread: true)
             addChild(pane)
             view.addSubview(pane.view, positioned: .below, relativeTo: members)
@@ -559,6 +567,7 @@ import CaperCore
             pane.picker.close(restoringFocus: false)
             pane.view.removeFromSuperview(); pane.removeFromParent()
             threadPane = nil
+            membersHiddenByThread = false
             stage.isHidden = false
             updateComposer()
             model.threadVisibilityChanged(rootID: nil, seq: nil)
@@ -617,7 +626,7 @@ import CaperCore
         let navigationWidth = narrow ? 0 : self.navigationWidth
         let docked = !narrow && width - navigationWidth >= 540
         let hasMembers = !inThread && model.selectedDirectMessageID == nil && model.visit == nil
-        let visible = hasMembers && !browsing && !(narrow && model.previewingChannel) && (membersPreference ?? docked)
+        let visible = hasMembers && !browsing && !(narrow && model.previewingChannel) && !membersHiddenByThread && (membersPreference ?? docked)
         if !visible { membersDragWidth = nil }
         let maximum = min(440, max(220, width - navigationWidth - (docked ? 320 : 64)))
         // Clamping a small window never overwrites the user's saved width.

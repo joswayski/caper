@@ -647,6 +647,16 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             val medium = maxWidth < 880.dp
             var membersVisible by remember { mutableStateOf(!narrow) }
             LaunchedEffect(narrow) { if (narrow) membersVisible = false }
+            // A thread takes the member column's place: opening one hides the member list, and
+            // closing it brings the list back unless the reader showed or hid it meanwhile.
+            var membersHiddenForThread by remember { mutableStateOf(false) }
+            val threadOpen = state.thread != null
+            LaunchedEffect(threadOpen) {
+                if (threadOpen && !narrow && membersVisible) { membersHiddenForThread = true; membersVisible = false }
+                else if (!threadOpen && membersHiddenForThread) { membersHiddenForThread = false; if (!narrow) membersVisible = true }
+            }
+            // While the thread hid it, the list can only be shown again, which makes it the reader's choice.
+            LaunchedEffect(membersVisible) { if (membersVisible) membersHiddenForThread = false }
             // The member list only shows in a joined channel; elsewhere Back must reach the system.
             val membersShown = membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null
             SideEffect { viewModel.composerCovered = narrow && (navigationOpen || membersShown) }
@@ -1570,7 +1580,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val threadDrafts = rememberSaveableStateHolder()
     val context = LocalContext.current
     val preferences = remember(context) { context.getSharedPreferences("layout", android.content.Context.MODE_PRIVATE) }
-    var preferredWidth by rememberSaveable { mutableFloatStateOf(preferences.getFloat("threadWidth", 340f).coerceIn(300f, 600f)) }
+    var preferredWidth by rememberSaveable { mutableFloatStateOf(preferences.getFloat("threadWidth", 400f).coerceIn(300f, 600f)) }
     val density = LocalDensity.current.density
     val resizeFocus = remember { FocusRequester() }
     var resizeFocused by remember { mutableStateOf(false) }
@@ -1613,13 +1623,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         stateDescription = "${width.toInt()} dp"
                         progressBarRangeInfo = ProgressBarRangeInfo(width, minimum..maximum)
                         setProgress { resize(it); true }
-                        customActions = listOf(CustomAccessibilityAction("Reset thread width") { resize(340f); true })
+                        customActions = listOf(CustomAccessibilityAction("Reset thread width") { resize(400f); true })
                     }
                     .draggable(rememberDraggableState { delta ->
                         preferredWidth = (preferredWidth.coerceIn(minimum, maximum) - delta / density).coerceIn(minimum, maximum).coerceAtLeast(300f)
                     }, Orientation.Horizontal, onDragStarted = { resizeDragging = true; resizeFocus.requestFocus() }, onDragStopped = { resizeDragging = false; saveWidth() })
                     .pointerInput(maximum) {
-                        detectTapGestures(onTap = { resizeFocus.requestFocus() }, onDoubleTap = { resize(340f); resizeFocus.requestFocus() })
+                        detectTapGestures(onTap = { resizeFocus.requestFocus() }, onDoubleTap = { resize(400f); resizeFocus.requestFocus() })
                     })
             }
         }

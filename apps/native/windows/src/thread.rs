@@ -22,8 +22,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::Result;
 
-/// egui's thread panel width (its default; it is not resizable here).
-pub const THREAD_W: f32 = 340.0;
+/// The thread pane's default width, as on the web; double-click resets to it.
+pub const THREAD_W: f32 = 400.0;
 /// Separate from channel GIFs: either surface may redraw without the other.
 pub const TIMER_MEDIA: usize = 20;
 const PAD: f32 = 18.0;
@@ -1449,6 +1449,7 @@ impl App {
         };
         let (Some(t), Some(view)) = (live.thread.as_ref(), live.thread_view()) else {
             if self.thread.take().is_some() {
+                self.thread_members(false);
                 self.thread_layout_changed();
                 // Its reply went with it, and so does that reply's link card.
                 self.preview_tick();
@@ -1465,6 +1466,7 @@ impl App {
                 .get(&caper_client::saved_drafts::thread_key(&root))
                 .encode_utf16()
                 .collect();
+            let first = self.thread.is_none();
             let mut pane = Pane::new(
                 &self.g,
                 root,
@@ -1478,6 +1480,9 @@ impl App {
                 .relayout(&self.g, text_w(pane.width, pane.gif))?
                 .max(BOX_MIN);
             self.thread = Some(pane);
+            if first {
+                self.thread_members(true);
+            }
             self.thread_layout_changed();
             // The new thread's reply box is empty: its link card starts over.
             self.preview_tick();
@@ -1626,6 +1631,22 @@ impl App {
         if let Err(e) = self.drain_live() {
             eprintln!("thread failed: {e:?}");
         }
+    }
+
+    /// A thread takes the tiled member column's place, as on the web:
+    /// opening one hides the list, and closing it brings the list back
+    /// unless the reader showed or hid it meanwhile.
+    pub fn thread_members(&mut self, open: bool) {
+        if open && self.members_reserved() > 0.0 {
+            self.members_hidden = true;
+            self.members_thread_hid = true;
+        } else if !open && std::mem::take(&mut self.members_thread_hid) {
+            self.members_hidden = false;
+        } else {
+            return;
+        }
+        self.hover_member = None;
+        self.member_search_follow();
     }
 
     pub fn close_thread(&mut self) {

@@ -307,6 +307,7 @@ export default function Chat({
   onHistoryChange,
   onLocalPresenceChange,
   onOnlineChange,
+  onThreadChange,
   mentionMembers,
   mentionDirectory = NO_CANDIDATES,
   onMessagePerson,
@@ -350,6 +351,8 @@ export default function Chat({
   onHistoryChange?: (history: GeneralChatHistory) => void;
   onLocalPresenceChange?: (status: PresenceStatus) => void;
   onOnlineChange?: (online: boolean) => void;
+  /** Whether a thread panel is open beside the conversation. */
+  onThreadChange?: (open: boolean) => void;
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
   /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
   onMessagePerson?: (username: string) => Promise<void>;
@@ -1321,6 +1324,10 @@ export default function Chat({
   useEffect(() => {
     onOnlineChange?.(state.online);
   }, [state.online, onOnlineChange]);
+  const threadOpen = !!state.thread;
+  useEffect(() => {
+    onThreadChange?.(threadOpen);
+  }, [threadOpen, onThreadChange]);
 
   useEffect(() => {
     if (identityReady && (!readOnly || signedIn)) clientRef.current?.identify(name, signedIn, accountId);

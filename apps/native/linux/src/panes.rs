@@ -7,7 +7,7 @@
 //! splits Channels from Direct messages the same way (Up and Down), saved
 //! as a fraction of its height (`sidebar-channels-fraction-v1`), each list
 //! keeping at least 96 px. An open thread sits between the conversation
-//! and the member list, 300–480 px (340 at first), saved as
+//! and the member list, 300–480 px (400 at first), saved as
 //! `thread-width-v1`. A child of `app`.
 
 use super::App;
@@ -32,7 +32,7 @@ const LISTS_KEY: &str = "sidebar-channels-fraction-v1";
 const THREAD_KEY: &str = "thread-width-v1";
 const THREAD_MIN: i32 = 300;
 const THREAD_MAX: i32 = 480;
-const THREAD: i32 = 340;
+const THREAD: i32 = 400;
 
 fn saved(app: &App, key: &str, default: i32) -> i32 {
     app.prefs

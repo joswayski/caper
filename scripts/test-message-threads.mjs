@@ -241,11 +241,11 @@ const checkThreadResize = (rootID) => {
     browser("mouse", "up", "left");
   };
   browser("dblclick", handle);
-  assert.equal(width(), 340);
+  assert.equal(width(), 400);
   browser("fill", "#chat-thread-reply", "TEST FIXTURE — resizing keeps the draft");
   drag(-83);
-  assert.equal(width(), 423, "Dragging the left edge left widens the actual thread");
-  assert.equal(evaluate(`document.querySelector('${handle}').getAttribute('aria-valuenow')`), "423");
+  assert.equal(width(), 483, "Dragging the left edge left widens the actual thread");
+  assert.equal(evaluate(`document.querySelector('${handle}').getAttribute('aria-valuenow')`), "483");
   assert.equal(
     evaluate('document.querySelector("#chat-thread-reply").value'),
     "TEST FIXTURE — resizing keeps the draft",
@@ -278,9 +278,9 @@ const checkThreadResize = (rootID) => {
   open(rootID);
   assert.equal(width(), 600, "Reopening and temporary window constraints preserve the preferred width");
   browser("dblclick", handle);
-  assert.equal(width(), 340);
+  assert.equal(width(), 400);
   drag(-83);
-  assert.equal(width(), 423);
+  assert.equal(width(), 483);
   browser("fill", "#chat-thread-reply", "");
 };
 
@@ -1224,7 +1224,7 @@ try {
   open(root.clientMessageId);
   assert.equal(
     evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width'),
-    423,
+    483,
     "Preferred width survives a page reload and mobile layout",
   );
   await checkReactionFollow(root, "desktop");

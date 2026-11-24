@@ -395,6 +395,8 @@ pub struct App {
     /// The header's member-list toggle: the list is hidden, and the
     /// pointer is over the toggle.
     pub members_hidden: bool,
+    /// An open thread hid the member list, and closing it shows it again.
+    pub members_thread_hid: bool,
     members_toggle_hover: bool,
     /// The open Pins dialog, its panel, and whether the header's Pins
     /// button is hovered.
@@ -822,6 +824,7 @@ impl App {
                 dm_menu_p,
                 gear_hover: false,
                 members_hidden: false,
+                members_thread_hid: false,
                 members_toggle_hover: false,
                 pins: None,
                 member_search: None,
@@ -959,6 +962,7 @@ impl App {
         self.focused = None;
         self.foot_hover = false;
         if self.thread.take().is_some() {
+            self.thread_members(false);
             self.dirty.layout = true;
         }
         self.scroll_top = 0.0;
@@ -1575,9 +1579,13 @@ impl App {
     }
 
     /// Shows or hides the member list; the conversation takes its width.
+    /// The reader's choice outlasts a thread that hid the list.
     pub fn toggle_members(&mut self) {
+        let thread_hid = std::mem::take(&mut self.members_thread_hid);
         if self.is_narrow() {
             self.narrow.members = !self.narrow.members;
+            // As on the web, the wide column the thread hid comes back.
+            self.members_hidden &= !thread_hid;
         } else {
             self.members_hidden = !self.members_hidden;
         }
