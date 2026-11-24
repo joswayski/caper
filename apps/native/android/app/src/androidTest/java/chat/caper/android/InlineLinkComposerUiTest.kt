@@ -87,7 +87,9 @@ class InlineLinkComposerUiTest {
                 editor.performTextInput(draft.substring(at, next))
                 at = next
             }
-            compose.runOnIdle { assertEquals(draft, value.value.text) }
+            // As web's serializer, the composer writes italic typed with `*` as `_` (shared/messages/composer.rs).
+            val saved = draft.replace("*star*", "_star_").replace("*the narrow layout*", "_the narrow layout_")
+            compose.runOnIdle { assertEquals(saved, value.value.text) }
         }
     }
 
