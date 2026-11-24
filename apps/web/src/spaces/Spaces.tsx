@@ -53,7 +53,6 @@ import {
   withSpaceUpdates,
   type SpaceUpdate,
 } from "../account/profiles";
-import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import { forwardedConversation } from "../chat/Forwarding";
 import { excludePeople, withInvited, type MentionCandidate } from "../chat/mentions";
@@ -302,13 +301,6 @@ function DeleteConfirmation({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
-  const warned = useRef(false);
-  useEffect(() => {
-    if (!warned.current) {
-      warned.current = true;
-      playSound("warning");
-    }
-  }, []);
   return (
     <Dialog
       title={`Delete ${kind}`}
@@ -349,13 +341,11 @@ function DeleteConfirmation({
               submitting.current = true;
               setPending(true);
               setError(undefined);
-              void onDelete()
-                .then(() => playSound("delete"))
-                .catch((reason) => {
-                  setError(errorMessage(reason));
-                  submitting.current = false;
-                  setPending(false);
-                });
+              void onDelete().catch((reason) => {
+                setError(errorMessage(reason));
+                submitting.current = false;
+                setPending(false);
+              });
             }}
           >
             {pending ? "Deleting…" : `Delete ${kind}`}
@@ -452,7 +442,6 @@ function ChannelPrivacy({
           role="switch"
           checked={checked}
           onChange={(event) => {
-            playSound(event.target.checked ? "toggle-on" : "toggle-off");
             onChange(event.target.checked);
           }}
           aria-describedby="channel-privacy-help"
@@ -2930,7 +2919,6 @@ export default function Spaces({
 
   useEffect(() => {
     let current = true;
-    if (engaged) void preloadSoundEffects();
     void (initialAccount ? Promise.resolve(initialAccount) : getAccount())
       .then(async (nextAccount) => {
         if (!current) return;

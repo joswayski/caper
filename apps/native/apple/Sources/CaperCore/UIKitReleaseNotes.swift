@@ -2,15 +2,15 @@
 import UIKit
 import Observation
 
-/// The root's native release-notes and call-effects lifetime. Sampling is
-/// independent of the foreground timer so an active call keeps its chimes.
+/// The root's native release-notes and speaking-ring lifetime. Sampling is
+/// independent of the foreground timer.
 @MainActor final class UIKitReleaseNotesPresenter: UIViewController {
     private let model: AppModel
     private var generation = 0
     private var timer: Timer?
     private var refresh: Task<Void, Never>?
     private var refreshGeneration = 0
-    private lazy var effects = NativeVoiceCallEffects(voice: model.voice)
+    private lazy var speaking = NativeVoiceSpeaking(voice: model.voice)
     private var wasReady = false
     private var wasActive = false
     private var lastRefresh: Date?
@@ -23,7 +23,7 @@ import Observation
         super.didMove(toParent: parent); generation += 1
         let center = NotificationCenter.default
         if parent != nil {
-            CaperEffects.shared.preload(); observe(generation)
+            observe(generation)
             // tick() does nothing unless Caper is active, so neither does the timer.
             center.addObserver(self, selector: #selector(becameActive), name: UIApplication.didBecomeActiveNotification, object: nil)
             center.addObserver(self, selector: #selector(resigningActive), name: UIApplication.willResignActiveNotification, object: nil)
@@ -33,7 +33,7 @@ import Observation
             center.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
             refreshGeneration += 1
             timer?.invalidate(); timer = nil; refresh?.cancel(); refresh = nil
-            effects.stop(); sheet?.dismiss(animated: false); sheet = nil
+            speaking.stop(); sheet?.dismiss(animated: false); sheet = nil
         }
     }
     isolated deinit { timer?.invalidate(); refresh?.cancel() }
@@ -53,7 +53,7 @@ import Observation
             let ready = model.phase == .ready
             if ready && !wasReady { CaperRuntime.showWhatsNewPreview(model) }
             wasReady = ready
-            effects.sync(); sync()
+            speaking.sync(); sync()
         } onChange: { [weak self] in Task { @MainActor in self?.observe(token) } }
     }
     private func tick() {

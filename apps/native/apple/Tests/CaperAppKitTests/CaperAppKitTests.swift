@@ -145,12 +145,10 @@ import XCTest
         XCTAssertTrue(scroll.exists)
         scroll.scroll(byDeltaX: 0, deltaY: 10000)
         let startup = settings.descendants(matching: .any)["launch-at-login"].firstMatch
-        let sounds = settings.descendants(matching: .any)["sound-effects"].firstMatch
         let voice = settings.descendants(matching: .any)["voice-messages-send-on-stop"].firstMatch
         XCTAssertTrue(startup.exists); XCTAssertFalse(startup.isEnabled, "Development fixtures must never change OS Login Items")
-        XCTAssertTrue(sounds.exists); XCTAssertTrue(sounds.isEnabled); XCTAssertTrue(sounds.isHittable)
-        startup.hover(); sounds.hover()
-        capture("\(captureName) startup and sounds", window: settings)
+        startup.hover()
+        capture("\(captureName) startup", window: settings)
         for _ in 0..<6 where !voice.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -120) }
         XCTAssertTrue(voice.exists); XCTAssertTrue(voice.isEnabled); XCTAssertTrue(voice.isHittable)
         voice.hover()

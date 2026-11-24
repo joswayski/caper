@@ -408,7 +408,7 @@ final class VoiceMessageRecorder {
         guard !CallAudioSession.active else { return }
         let session = AVAudioSession.sharedInstance()
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
-        // Interface sounds mix with other apps again (see CaperEffects).
+        // Other apps' audio mixes in again.
         try? session.setCategory(.ambient, mode: .default)
         #endif
     }

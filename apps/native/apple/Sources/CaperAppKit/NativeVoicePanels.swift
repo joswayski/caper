@@ -142,7 +142,7 @@ import CaperCore
     }
     @objc private func muteChanged() {
         let value = muted.state == .on
-        voice.setParticipantMuted(value, participantID: id); VoicePresentation.muteFeedback(value)
+        voice.setParticipantMuted(value, participantID: id)
     }
     func update(_ person: CallPerson, expanded: Bool) {
         self.expanded = expanded
@@ -253,7 +253,6 @@ import CaperCore
         control = AppKitCaperSlider(value: 100, minValue: 0, maxValue: 200, defaultValue: 100) { next in
             let value = Int(next.rounded())
             changed(value)
-            VoicePresentation.sliderFeedback(Double(value))
         }
         super.init(frame: .zero)
         addSubview(control)

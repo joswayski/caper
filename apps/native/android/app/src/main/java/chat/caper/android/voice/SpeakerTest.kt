@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 
 internal class WavPcm(val channels: Int, val sampleRate: Int, val samples: ShortArray)
 
-/** Reads 16-bit PCM WAV files such as web's bundled effects (which carry a LIST chunk). */
+/** Reads 16-bit PCM WAV files such as web's speaker test sound (which carries a LIST chunk). */
 internal fun parseWavPcm(bytes: ByteArray): WavPcm {
     val data = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
     fun tag(at: Int) = String(bytes, at, 4, Charsets.US_ASCII)
@@ -47,12 +47,12 @@ internal fun parseWavPcm(bytes: ByteArray): WavPcm {
     error("WAV file has no audio data.")
 }
 
-/** Web's SpeakerTest: loops channel-join.wav at the speaker volume until canceled. */
+/** Web's SpeakerTest: loops speaker-test.wav at the speaker volume until canceled. */
 internal object SpeakerTest {
     private var cached: WavPcm? = null
 
     suspend fun loop(context: Context, inCall: Boolean, volume: () -> Int) = withContext(Dispatchers.IO) {
-        val clip = cached ?: parseWavPcm(context.assets.open("effects/channel-join.wav").use { it.readBytes() }).also { cached = it }
+        val clip = cached ?: parseWavPcm(context.assets.open("speaker-test.wav").use { it.readBytes() }).also { cached = it }
         val mask = if (clip.channels == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
         val size = AudioTrack.getMinBufferSize(clip.sampleRate, mask, AudioFormat.ENCODING_PCM_16BIT)
         check(size > 0) { "Audio output unavailable." }

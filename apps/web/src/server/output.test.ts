@@ -1,16 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { routeOutput } from "../audio/output.ts";
-import { rosterChanges } from "../audio/roster.ts";
-
-test("roster changes report other people joining and leaving, never self", () => {
-  const ids = (...values: string[]) => new Set(values);
-  assert.deepEqual(rosterChanges(undefined, ids("me", "a"), "me"), { joined: false, left: false });
-  assert.deepEqual(rosterChanges(ids("me"), ids("me", "a"), "me"), { joined: true, left: false });
-  assert.deepEqual(rosterChanges(ids("me", "a"), ids("me"), "me"), { joined: false, left: true });
-  assert.deepEqual(rosterChanges(ids("a"), ids("me", "a"), "me"), { joined: false, left: false });
-  assert.deepEqual(rosterChanges(ids("me", "a"), ids("me", "b"), "me"), { joined: true, left: true });
-});
 
 test("output routing falls back to the system default before reporting failure", async () => {
   const calls: string[] = [];

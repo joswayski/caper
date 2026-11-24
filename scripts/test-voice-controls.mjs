@@ -392,8 +392,8 @@ async function fixture() {
   };
   f.addRemoteAudio = () => {
     const createGain = AudioContext.prototype.createGain;
-    // Capture the remote playback gain (it feeds a stream destination), not the
-    // gains that join/leave sound effects create at the same time.
+    // Capture the remote playback gain (it feeds a stream destination), not
+    // other gains created at the same time.
     AudioContext.prototype.createGain = function () {
       const node = createGain.call(this);
       const connect = node.connect.bind(node);
@@ -2335,36 +2335,8 @@ try {
     browser("mouse", "up", "left");
     wait(`!document.querySelector('dialog[open]')`);
 
-    evaluate(`
-    voiceFixture.effectStarts = 0;
-    voiceFixture.effectDurations = [];
-    const start = AudioBufferSourceNode.prototype.start;
-    AudioBufferSourceNode.prototype.start = function (...args) { voiceFixture.effectStarts++; voiceFixture.effectDurations.push(this.buffer.duration); return start.apply(this, args); };
-    voiceFixture.client.participants = voiceFixture.client.participants.filter(person => person.id !== 'peer');
-    voiceFixture.client.emit();
-  `);
-    wait(`voiceFixture.effectStarts === 1`);
-    evaluate(
-      `voiceFixture.client.participants = [...voiceFixture.client.participants]; voiceFixture.client.emit(); await new Promise(r => setTimeout(r, 200));`,
-    );
-    assert.equal(
-      evaluate(`return voiceFixture.effectStarts;`),
-      1,
-      "A departure plays once; repeated snapshots do not repeat it",
-    );
-    evaluate(
-      `voiceFixture.client.participants = [...voiceFixture.people]; voiceFixture.client.emit(); await new Promise(r => setTimeout(r, 200));`,
-    );
-    // Arrivals chime with the join sound (#179), never the departure sound.
-    wait(`voiceFixture.effectStarts >= 2`);
-    assert.equal(evaluate(`return voiceFixture.effectStarts;`), 2, "An arrival plays one sound");
-    assert.notEqual(
-      evaluate(`return voiceFixture.effectDurations[1];`),
-      evaluate(`return voiceFixture.effectDurations[0];`),
-      "An arrival must not play the departure sound",
-    );
     console.log(
-      "PASS participant audio visibility/dismissal, full list beside resized sidebar, compact menu width, diagnostics copy/dismissal, and departure sound (mock signaling/WebRTC)",
+      "PASS participant audio visibility/dismissal, full list beside resized sidebar, compact menu width, and diagnostics copy/dismissal (mock signaling/WebRTC)",
     );
 
     click("User Settings");
@@ -2450,20 +2422,8 @@ try {
     browser("press", "Escape");
     wait(`!document.querySelector('dialog[open]')`);
     wait(`voiceFixture.sampleGains.every(node => node.context.state === 'closed')`);
-    const beforeDisconnect = evaluate(`return voiceFixture.effectStarts;`);
     click("Leave voice");
     wait(`document.querySelector('[aria-label="Join voice in #general"]') && !document.querySelector('.live-call')`);
-    wait(`voiceFixture.effectStarts === ${beforeDisconnect + 1}`);
-    assert.ok(
-      evaluate(`return Math.abs(voiceFixture.effectDurations.at(-1) - 0.890159) < 0.001;`),
-      "Self-disconnect plays the supplied 0.89-second WAV",
-    );
-    assert.notEqual(
-      evaluate(`return voiceFixture.effectDurations[0];`),
-      evaluate(`return voiceFixture.effectDurations.at(-1);`),
-      "Remote departure and self-disconnect must be distinct sounds",
-    );
-    console.log("PASS supplied self-disconnect sound is distinct from remote departure");
     click("User Settings");
     browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
     wait(`document.querySelector('dialog[open] .mic-test-button')`);

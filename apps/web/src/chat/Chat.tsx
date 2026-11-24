@@ -300,7 +300,6 @@ export default function Chat({
   composerNotice,
   composerBanner,
   onBlockAuthor,
-  messageSounds = true,
   onAuthorChange,
   onHistoryChange,
   onLocalPresenceChange,
@@ -344,7 +343,6 @@ export default function Chat({
   composerNotice?: ReactNode;
   /** Shown above an active composer. */ composerBanner?: ReactNode;
   /** Offers Block in message actions; the caller confirms. */ onBlockAuthor?: (author: ChatAuthor) => void;
-  messageSounds?: boolean;
   onAuthorChange?: (author: ChatAuthor) => void;
   onHistoryChange?: (history: GeneralChatHistory) => void;
   onLocalPresenceChange?: (status: PresenceStatus) => void;
@@ -966,10 +964,9 @@ export default function Chat({
         setState(next);
       },
       channelId,
-      { sounds: messageSounds, initialSession: signedIn ? rememberedAccountSession(accountId, name) : undefined },
+      { initialSession: signedIn ? rememberedAccountSession(accountId, name) : undefined },
     );
     clientRef.current = client;
-    client.setSilencedAuthors(blockedIdsRef.current);
     client.start(initialHistory, initialHistoryError);
     return () => {
       const history = client.snapshotHistory();
@@ -1009,12 +1006,6 @@ export default function Chat({
     lastPending.current = state.pendingSend;
   }, [state.pendingSend]);
 
-  const blockedIdsRef = useRef(blockedIds);
-  useEffect(() => {
-    blockedIdsRef.current = blockedIds;
-    clientRef.current?.setSilencedAuthors(blockedIds);
-  }, [blockedIds]);
-
   useEffect(() => {
     setShowConnectionStatus(false);
     if (state.online) return;
@@ -1029,10 +1020,6 @@ export default function Chat({
     const timer = setInterval(update, 1_000);
     return () => clearInterval(timer);
   }, [state.online, onLocalPresenceChange]);
-
-  useEffect(() => {
-    clientRef.current?.setSounds(messageSounds);
-  }, [messageSounds]);
 
   useEffect(() => {
     if (!signedIn) {

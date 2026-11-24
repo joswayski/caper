@@ -7,7 +7,6 @@ use super::{App, State};
 use crate::app::named;
 use crate::images::Icon;
 use crate::ui::label;
-use caper_client::effects::{Effect, Effects};
 use caper_client::model::{DELETE_ACCOUNT_URL, DM_PRIVACY, NotificationLevel};
 use caper_client::notifications::{self, Change, Scope};
 use caper_client::worker::AccountOperation;
@@ -35,7 +34,6 @@ pub(super) struct SettingsDialog {
     obsidian_card: gtk::Button,
     paper_card: gtk::Button,
     startup_error: gtk::Label,
-    sounds: gtk::Switch,
     voice_send: gtk::Switch,
     levels: Vec<(NotificationLevel, gtk::CheckButton)>,
     voice_started: gtk::CheckButton,
@@ -229,14 +227,6 @@ impl App {
             ),
         }
 
-        section(&root, "Sounds", false);
-        let sounds = switch_row(
-            &root,
-            "Caper sound effects",
-            "Play sounds for messages and app interactions.",
-        );
-        sounds.set_active(self.sound_effects());
-
         section(&root, "Voice messages", false);
         let voice_send = switch_row(
             &root,
@@ -359,12 +349,6 @@ impl App {
             glib::Propagation::Proceed
         });
         let weak = Rc::downgrade(self);
-        sounds.connect_active_notify(move |switch| {
-            if let Some(app) = weak.upgrade() {
-                app.set_sound_effects(switch.is_active());
-            }
-        });
-        let weak = Rc::downgrade(self);
         voice_send.connect_active_notify(move |switch| {
             if let Some(app) = weak.upgrade() {
                 app.set_voice_send_on_stop(switch.is_active());
@@ -401,7 +385,6 @@ impl App {
             obsidian_card,
             paper_card,
             startup_error,
-            sounds,
             voice_send,
             levels,
             voice_started,
@@ -447,25 +430,6 @@ impl App {
             settings.set_gtk_application_prefer_dark_theme(!doc.is_light());
         }
         self.theme_style.load_from_data(&doc.to_gtk_css());
-    }
-
-    pub(super) fn sound_effects(&self) -> bool {
-        self.prefs.get::<bool>("sound-effects-v1").unwrap_or(true)
-    }
-
-    fn set_sound_effects(&self, enabled: bool) {
-        if enabled == self.sound_effects() {
-            return;
-        }
-        self.prefs.set("sound-effects-v1", enabled);
-        *self.effects.borrow_mut() = Effects::new(enabled);
-        if enabled {
-            self.play(Effect::ToggleOn);
-        }
-    }
-
-    pub(super) fn play(&self, effect: Effect) {
-        self.effects.borrow().play(effect);
     }
 
     pub(super) fn load_notifications(&self, state: &mut State) {
@@ -550,7 +514,6 @@ impl App {
             dialog.obsidian_card.add_css_class("selected");
             dialog.paper_card.remove_css_class("selected");
         }
-        dialog.sounds.set_active(self.sound_effects());
         dialog.voice_send.set_active(self.voice_send_on_stop());
         // Notifications: only enabled once loaded.
         let level = settings.notifications.account_level();

@@ -89,7 +89,6 @@ pub enum SPart {
     Text(usize),
     Launch,
     DismissStartup,
-    Sounds,
     VoiceSend,
     CheckUpdates,
     WhatsNew,
@@ -145,10 +144,6 @@ pub enum SPart {
 impl SPart {
     fn switch_text(self) -> (&'static str, &'static str) {
         match self {
-            Self::Sounds => (
-                "Caper sound effects",
-                "Play sounds for messages and app interactions.",
-            ),
             Self::VoiceSend => (
                 "Send voice messages as soon as I stop recording",
                 "Off: a stopped recording waits in the composer with your text and files until you press Send.",
@@ -186,7 +181,6 @@ impl SPart {
             Self::MicTest => 38,
             Self::Meter => 39,
             Self::Sample(e) => 40 + usize::from(e),
-            Self::Sounds => 42,
             Self::VoiceSend => 43,
             Self::CheckUpdates => 44,
             Self::WhatsNew => 45,
@@ -231,7 +225,7 @@ impl SPart {
     pub fn is_toggle(self) -> bool {
         matches!(
             self,
-            Self::Launch | Self::Sounds | Self::VoiceSend | Self::VoiceStarted | Self::UnreadOnly
+            Self::Launch | Self::VoiceSend | Self::VoiceStarted | Self::UnreadOnly
         )
     }
 
@@ -302,7 +296,6 @@ pub struct Snapshot {
     /// Launch at login as the OS has it; None when it can't change here.
     pub launch: Option<bool>,
     pub startup_error: Option<String>,
-    pub sounds: bool,
     pub voice_send: bool,
     pub updates: crate::updates::Check,
     pub highlights: Option<crate::updates::History>,
@@ -450,7 +443,7 @@ impl Settings {
                 )
             }
             SPart::Launch => s.launch.is_some(),
-            SPart::Sounds | SPart::VoiceSend | SPart::WhatsNew => s.highlights.is_some(),
+            SPart::VoiceSend | SPart::WhatsNew => s.highlights.is_some(),
             SPart::CheckUpdates => {
                 s.updates.can_check && s.updates.status != caper_client::updates::Status::Checking
             }
@@ -483,7 +476,6 @@ impl Settings {
         let s = &self.snap;
         match part {
             SPart::Launch => s.launch.unwrap_or(false),
-            SPart::Sounds => s.sounds,
             SPart::VoiceSend => s.voice_send,
             SPart::VoiceStarted => s.voice_started,
             SPart::Level(k) => s.level == Some(LEVELS[k]),
@@ -700,10 +692,6 @@ impl Builder<'_> {
             b.y += 4.0;
             b.button(SPart::DismissStartup, "Dismiss startup error")?;
         }
-        b.separator();
-        b.text("Sounds", Style::Section)?;
-        b.y += 6.0;
-        b.switch_row(SPart::Sounds)?;
         b.separator();
         b.text("Voice messages", Style::Section)?;
         b.y += 6.0;
@@ -1118,7 +1106,7 @@ impl Settings {
                 };
                 text::draw(dc, &l, tx, ty, brush);
             }
-            SPart::Launch | SPart::Sounds | SPart::VoiceSend => {
+            SPart::Launch | SPart::VoiceSend => {
                 let (title, note) = item.part.switch_text();
                 let tw = w - 56.0;
                 let t = g.layout(&gfx::wide(title), &g.formats.dialog_note, tw)?;
@@ -1841,7 +1829,6 @@ impl App {
         let mut snap = Snapshot {
             launch: launch_allowed().then(|| s.is_some_and(|s| s.launch)),
             startup_error: s.and_then(|s| s.startup_error.clone()),
-            sounds: self.live.as_ref().is_none_or(|l| l.preferences.sounds()),
             voice_send: self
                 .live
                 .as_ref()
@@ -1976,11 +1963,6 @@ impl App {
                 self.apply_theme(true);
                 self.settings_changed();
                 return;
-            }
-            SPart::Sounds => {
-                if let Some(live) = &mut self.live {
-                    live.set_sound_effects(!s.snap.sounds);
-                }
             }
             SPart::VoiceSend => {
                 if let Some(live) = &mut self.live {

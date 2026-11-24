@@ -474,10 +474,10 @@ private final class NativeParticipantRow: UIStackView {
     }
     @objc private func adjusted() {
         let value = slider.isTracking && abs(slider.value - 100) <= 4 ? 100 : Int(slider.value.rounded())
-        slider.value = Float(value); voice.setParticipantGain(value, participantID: id); VoicePresentation.sliderFeedback(Double(value))
+        slider.value = Float(value); voice.setParticipantGain(value, participantID: id)
     }
     @objc private func resetGain() { slider.value = 100; adjusted() }
-    @objc private func muted() { voice.setParticipantMuted(localMute.isOn, participantID: id); VoicePresentation.muteFeedback(localMute.isOn) }
+    @objc private func muted() { voice.setParticipantMuted(localMute.isOn, participantID: id) }
 }
 
 final class NativeLiveNowView: UIStackView {

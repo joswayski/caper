@@ -4991,14 +4991,11 @@ public final class ChatModel {
                 requestResync(generation: eventGeneration, channelID: eventChannelID)
                 return
             }
-            let newMessage = (try? Sequence.compare(message.seq, delivery.cursor)) == .orderedDescending
             if delivery.receive(seq: message.seq) {
                 // Our pending send confirmed here keeps its composer card too.
                 let ownPending = message.author.id == session?.author.id ? delivery.pending : nil
                 merge([ownPending?.carryingEmbeds(message) ?? message])
                 onReadCursor?()
-                if newMessage, let author = session?.author, author.id != message.author.id,
-                   !BlockedMessages.isHidden(message, blocked: blockedAuthorIDs, viewerID: author.id) { CaperEffects.shared.play(.message) }
                 if message.threadRootId == delivery.pending?.threadRootId,
                    message.replyTo?.id == delivery.pending?.replyTo?.id,
                    (message.broadcast ?? false) == (delivery.pending?.broadcast ?? false),

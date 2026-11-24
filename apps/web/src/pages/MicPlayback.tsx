@@ -195,7 +195,7 @@ export function SpeakerTest({ output, volume }: { output: string; volume: number
       {playing && (
         <span hidden>
           <RecordingPlayback
-            clip={{ url: "/audio/effects/channel-join.wav", silent: false }}
+            clip={{ url: "/audio/speaker-test.wav", silent: false }}
             label="Speaker test"
             output={output}
             volume={volume}

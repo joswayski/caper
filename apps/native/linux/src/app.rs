@@ -12,7 +12,6 @@ use crate::ui::{Ui, label};
 use crate::uploads::{ChipAction, DraftFile};
 use caper_client::Host;
 use caper_client::api::Api;
-use caper_client::effects::Effect;
 use caper_client::gateway::GatewayEvent;
 use caper_client::mentions;
 use caper_client::model::{
@@ -641,12 +640,10 @@ pub struct App {
     wakes: Wakes,
     settings: RefCell<Option<settings::SettingsDialog>>,
     prefs: Rc<crate::prefs::Prefs>,
-    effects: RefCell<caper_client::effects::Effects>,
     /// A redraw is waiting for the next timed mute to end.
     mute_timer: Cell<bool>,
     /// The voice call, and what the call card last showed.
     voice: RefCell<caper_client::voice::Voice>,
-    heard: RefCell<call::Heard>,
     voice_ticking: Cell<bool>,
     rendered_toggles: Cell<Option<(bool, bool)>>,
     rendered_card: RefCell<String>,
@@ -799,7 +796,6 @@ pub fn start(
     let app = Rc::new(App {
         ui,
         voice: RefCell::new(voice),
-        heard: RefCell::default(),
         voice_ticking: Cell::new(false),
         rendered_toggles: Cell::new(None),
         rendered_card: RefCell::default(),
@@ -888,9 +884,6 @@ pub fn start(
         api: api.clone(),
         admin_window: RefCell::default(),
         confirm_window: RefCell::default(),
-        effects: RefCell::new(caper_client::effects::Effects::new(
-            prefs.get::<bool>("sound-effects-v1").unwrap_or(true),
-        )),
         prefs,
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
@@ -1108,17 +1101,11 @@ impl App {
         });
         let app = self.clone();
         ui.channels_toggle.connect_clicked(move |_| {
-            let expanded = {
+            {
                 let mut state = app.state.borrow_mut();
                 state.channels_collapsed = !state.channels_collapsed;
                 state.layout += 1;
-                !state.channels_collapsed
-            };
-            app.play(if expanded {
-                Effect::ToggleOn
-            } else {
-                Effect::ToggleOff
-            });
+            }
             app.render();
         });
         let app = self.clone();
@@ -5441,7 +5428,7 @@ impl App {
                 }
                 // Their message ends their typing.
                 state.typers.remove(&message.author.id);
-                // Others' messages play the message sound; blocked authors don't.
+                // Others' messages count toward Jump to latest; blocked authors don't.
                 let remote = state
                     .session
                     .as_ref()
@@ -5460,7 +5447,6 @@ impl App {
                 let applied = state.timeline.apply(*message);
                 if matches!(applied, Ok(Apply::Applied)) {
                     if remote {
-                        self.play(caper_client::effects::Effect::Message);
                         // Counted by Jump to latest while it shows; a
                         // detached window never shows it.
                         if lands.0 && !state.has_newer {

@@ -6,7 +6,6 @@
 //! builds, as in the egui client.
 use crate::avatars::Face;
 use crate::model::{self, Conversation, Person, Reaction, Span};
-use caper_client::effects::{Effect, Effects};
 use caper_client::notifications::{Change, Scope};
 use caper_client::reactions::{
     REACTOR_CACHE_LIMIT, Reacted, Reactions, ReactorCache, ReactorState,
@@ -503,9 +502,8 @@ pub struct Live {
     voice_spaces: HashSet<String>,
     voice_activity_at: Option<Instant>,
     voice_activity_pending: bool,
-    /// Your call (the shared engine, as egui's `voice`) and its sounds.
+    /// Your call (the shared engine, as egui's `voice`).
     pub voice: Voice,
-    pub effects: Effects,
     pub preferences: crate::settings::preferences::Preferences,
     pub whats_new: caper_client::whats_new::WhatsNew,
     pub highlights: crate::updates::History,
@@ -519,10 +517,6 @@ pub struct Live {
     pending_join: Option<(String, u64, u64)>,
     /// Joins prepared ahead of a click, by channel (at most every 4 s).
     prepared: HashMap<String, Instant>,
-    /// The call generation whose connection was announced, and who else
-    /// was in it, for the join and leave chimes.
-    announced: Option<u64>,
-    others: Option<(u64, Vec<String>)>,
     /// What voice last showed, so only changes redraw.
     voice_seen: String,
     /// A previewed channel's Join in flight, and why the last one failed.
@@ -700,7 +694,6 @@ impl Live {
             .unwrap_or_default();
         let mut whats_new = caper_client::whats_new::WhatsNew::new(&origin, "windows");
         whats_new.restore(preferences.get(whats_new.key()));
-        let effects = Effects::new(preferences.sounds() && production());
         Live {
             worker,
             input_reported: std::time::Instant::now(),
@@ -799,7 +792,6 @@ impl Live {
             voice_activity_at: None,
             voice_activity_pending: false,
             voice,
-            effects,
             preferences,
             whats_new,
             highlights: Default::default(),
@@ -808,8 +800,6 @@ impl Live {
             join_request: 0,
             pending_join: None,
             prepared: HashMap::new(),
-            announced: None,
-            others: None,
             voice_seen: String::new(),
             joining: false,
             join_error: None,
@@ -863,15 +853,6 @@ impl Live {
             voice,
             preferences,
         )
-    }
-
-    pub fn set_sound_effects(&mut self, enabled: bool) {
-        self.preferences
-            .set("sound-effects-v1", enabled.to_string());
-        self.effects = Effects::new(enabled && production());
-        if enabled {
-            self.effects.play(Effect::ToggleOn);
-        }
     }
 
     pub fn load_highlights(&mut self, manual: bool) {
@@ -4552,12 +4533,8 @@ impl Live {
         }
     }
 
-    /// Leave, or Cancel while joining; only a connected call plays the
-    /// disconnect sound.
+    /// Leave, or Cancel while joining.
     pub fn leave_voice(&mut self) {
-        if matches!(self.voice.state.phase, Phase::Connected(_)) {
-            self.effects.play(Effect::Disconnect);
-        }
         self.pending_join = None;
         self.voice.leave();
         self.queued.push(Update::Voice);
@@ -4566,7 +4543,6 @@ impl Live {
     pub fn toggle_mute(&mut self) {
         let muted = self.voice.state.audio.muted;
         self.voice.command(VoiceOperation::Mute(!muted));
-        self.effects.toggle(muted);
         // An unmute that found no microphone says why; the call's card has
         // room only for its status.
         if muted && self.voice.state.audio.muted && self.voice.microphone_lost {
@@ -4580,7 +4556,6 @@ impl Live {
     pub fn toggle_deafen(&mut self) {
         let deafened = self.voice.state.audio.deafened;
         self.voice.command(VoiceOperation::Deafen(!deafened));
-        self.effects.toggle(deafened);
         self.queued.push(Update::Voice);
     }
 
@@ -4628,9 +4603,8 @@ impl Live {
         })
     }
 
-    /// Reads the call's reports (egui's `receive`): a connection plays the
-    /// join sound, others arriving or leaving their chimes. Whether what
-    /// voice shows changed.
+    /// Reads the call's reports (egui's `receive`). Whether what voice
+    /// shows changed.
     fn receive_voice(&mut self) -> bool {
         let input = self.voice.preferences.input.clone();
         self.voice.receive();
@@ -4644,34 +4618,6 @@ impl Live {
             .is_some_and(|(_, generation, _)| *generation != self.voice.state.generation)
         {
             self.pending_join = None;
-        }
-        let generation = self.voice.state.generation;
-        if matches!(self.voice.state.phase, Phase::Connected(_)) {
-            if self.announced != Some(generation) {
-                self.announced = Some(generation);
-                self.effects.play(Effect::Join);
-            }
-            let me = &self.voice.self_id;
-            let others: Vec<String> = self
-                .voice
-                .participants
-                .iter()
-                .filter(|p| p.id != *me)
-                .map(|p| p.id.clone())
-                .collect();
-            if let Some((g, before)) = &self.others
-                && *g == generation
-                && !me.is_empty()
-            {
-                if before.iter().any(|id| !others.contains(id)) {
-                    self.effects.play(Effect::Leave);
-                } else if others.iter().any(|id| !before.contains(id)) {
-                    self.effects.play(Effect::Join);
-                }
-            }
-            self.others = Some((generation, others));
-        } else {
-            self.others = None;
         }
         // And what the Audio test shows.
         let v = &self.voice;

@@ -1,6 +1,5 @@
 import * as SliderPrimitive from "@radix-ui/react-slider";
 import { useRef } from "react";
-import { playSliderTick } from "../audio/effects";
 
 export default function Slider({
   label,
@@ -52,7 +51,6 @@ export default function Slider({
           pointerDown.current && Math.abs(next - defaultValue) <= Math.max(step, (max - min) * 0.02)
             ? defaultValue
             : next;
-        playSliderTick(max === min ? 0 : (snapped - min) / (max - min));
         onChange(snapped);
       }}
     >

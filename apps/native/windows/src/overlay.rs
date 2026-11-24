@@ -2057,9 +2057,6 @@ impl App {
             }
             Part::Toggle => {
                 d.private = !d.private;
-                if let Some(live) = &mut self.live {
-                    live.effects.toggle(d.private);
-                }
             }
             Part::Primary if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) => {
                 let Some(live) = &mut self.live else { return };

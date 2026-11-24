@@ -39,7 +39,6 @@ vi.mock("./client.ts", async (importOriginal) => {
       return this.state;
     }
     stop() {}
-    setSilencedAuthors() {}
     snapshotHistory() {
       return undefined;
     }
@@ -48,7 +47,6 @@ vi.mock("./client.ts", async (importOriginal) => {
     }
     identify() {}
     async refreshUnreadThreads() {}
-    setSounds() {}
     refreshProfiles() {}
     setTyping() {}
     async openThread(rootId: string) {

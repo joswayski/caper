@@ -2644,17 +2644,17 @@ final class CaperParityUITests: XCTestCase {
         let startup = app.descendants(matching: .any)["launch-at-login"]
         XCTAssertTrue(startup.waitForExistence(timeout: 5))
         XCTAssertFalse(startup.isEnabled, "Parity mode must never change real Login Items")
-        let sounds = app.descendants(matching: .any)["sound-effects"]
-        let original = switchState(sounds)
+        let sendOnStop = app.descendants(matching: .any)["voice-messages-send-on-stop"]
+        let original = switchState(sendOnStop)
         XCTAssertNotNil(original)
-        sounds.tap()
-        XCTAssertNotEqual(switchState(sounds), original)
+        sendOnStop.tap()
+        XCTAssertNotEqual(switchState(sendOnStop), original)
         app.typeKey("w", modifierFlags: .command)
         app.typeKey(",", modifierFlags: .command)
         XCTAssertTrue(startup.waitForExistence(timeout: 3))
-        XCTAssertNotEqual(switchState(sounds), original, "Settings saves without an Apply button")
-        sounds.tap()
-        XCTAssertEqual(switchState(sounds), original)
+        XCTAssertNotEqual(switchState(sendOnStop), original, "Settings saves without an Apply button")
+        sendOnStop.tap()
+        XCTAssertEqual(switchState(sendOnStop), original)
         capture("settings-signed-out", app: app)
     }
     #endif
@@ -3046,12 +3046,12 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["open-settings"].waitForExistence(timeout: 2))
         capture("account-settings-open", app: app)
         XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup must not appear in the quick menu")
-        XCTAssertFalse(app.descendants(matching: .any)["sound-effects"].exists, "Persistent preferences belong in Settings")
+        XCTAssertFalse(app.descendants(matching: .any)["voice-messages-send-on-stop"].exists, "Persistent preferences belong in Settings")
         app.descendants(matching: .any)["open-settings"].tap()
         let startup = app.descendants(matching: .any)["launch-at-login"]
         XCTAssertTrue(startup.waitForExistence(timeout: 2))
         XCTAssertFalse(startup.isEnabled, "Fixture previews must not change real Login Items")
-        XCTAssertTrue(app.descendants(matching: .any)["sound-effects"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["voice-messages-send-on-stop"].exists)
         capture("startup-settings", app: app)
         app.typeKey("w", modifierFlags: .command)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["desktop-settings"])
@@ -3059,11 +3059,6 @@ final class CaperParityUITests: XCTestCase {
         settings.tap()
         #else
         XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup is desktop-only")
-        // iOS 26 builds menu items from UIKit actions, which may expose the
-        // toggle by its title rather than its SwiftUI identifier.
-        let soundEffects = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier == %@ OR label == %@", "sound-effects", "Caper sound effects")).firstMatch
-        XCTAssertTrue(soundEffects.waitForExistence(timeout: 5), "Web keeps Caper sound effects in the settings menu")
         #endif
         let preferences = app.descendants(matching: .any)["Audio test"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 2))

@@ -157,7 +157,7 @@ export default defineConfig(async () => {
             headers: { "cache-control": "public, max-age=31536000, immutable" },
           },
           // Unversioned names: a week, so a replaced file still reaches people.
-          "/audio/effects/**": {
+          "/audio/speaker-test.wav": {
             headers: { "cache-control": "public, max-age=604800" },
           },
           "/fonts/**": {

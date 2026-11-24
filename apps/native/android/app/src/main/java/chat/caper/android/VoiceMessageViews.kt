@@ -181,7 +181,7 @@ internal object VoicePreferences {
     val on = VoicePreferences.sendOnStop(context)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(VoiceMessages.SEND_ON_STOP_LABEL, Modifier.weight(1f), fontSize = 13.sp)
-        androidx.compose.material3.Switch(on, { VoicePreferences.setSendOnStop(context, it); CaperEffects.toggle(it) },
+        androidx.compose.material3.Switch(on, { VoicePreferences.setSendOnStop(context, it) },
             Modifier.semantics { contentDescription = VoiceMessages.SEND_ON_STOP_LABEL }, colors = caperSwitchColors())
     }
 }

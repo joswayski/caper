@@ -246,7 +246,6 @@ class MainActivity : ComponentActivity() {
         // system bars and the keyboard itself, with light bar icons over the dark app.
         val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
-        CaperEffects.init(applicationContext)
         // The emoji catalog (~700 KB of JSON) is decoded off the main thread while the account loads;
         // the composer's first frame would otherwise decode it there.
         lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Default) { EmojiArtwork.catalog(applicationContext) }
@@ -406,7 +405,6 @@ internal data class VoiceJoinIntent(
             viewModel.consumeNotificationInvitation()
         }
     }
-    VoiceChimes(voice)
 
     // Web: closing User Settings, or a panel opened from it, returns focus to its button.
     val settingsFocus = remember { FocusRequester() }
@@ -631,7 +629,6 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     }
     // Your call card's Leave, or Cancel while joining.
     val leaveVoiceNow: () -> Unit = {
-        if (voice.phase == VoiceState.Phase.CONNECTED) CaperEffects.play(CaperEffects.Effect.Disconnect)
         VoiceCallService.stop(context)
     }
     // Stable callbacks that run the latest logic, so channel rows skip while other state changes.
@@ -1322,27 +1319,6 @@ private const val MUTED_ALPHA = 0.5f
     Icon(painterResource(R.drawable.lucide_chevron_down), null, modifier.graphicsLayer { rotationZ = turn }, tint = TextMuted)
 }
 
-/** Web: channel-join when your call connects, and when someone else joins or leaves it. */
-@Composable private fun VoiceChimes(voice: VoiceState) {
-    var announced by remember { mutableStateOf(false) }
-    var previous by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
-    LaunchedEffect(voice.phase, voice.selfId, voice.participants) {
-        if (voice.phase != VoiceState.Phase.CONNECTED || voice.selfId == null) {
-            if (voice.phase == VoiceState.Phase.IDLE || voice.phase == VoiceState.Phase.FAILED || voice.phase == VoiceState.Phase.CONNECTING) announced = false
-            previous = null
-            return@LaunchedEffect
-        }
-        if (!announced) { announced = true; CaperEffects.play(CaperEffects.Effect.Join) }
-        val self = voice.selfId
-        val others = voice.participants.map { it.id }.filter { it != self }.toSet()
-        previous?.takeIf { it.first == self }?.second?.let { before ->
-            if ((before - others).isNotEmpty()) CaperEffects.play(CaperEffects.Effect.Leave)
-            else if ((others - before).isNotEmpty()) CaperEffects.play(CaperEffects.Effect.Join)
-        }
-        previous = self to others
-    }
-}
-
 /** Phones' line under the conversation name: "N members · M in voice", leaving out parts that don't apply. */
 internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull(
     members?.let { "$it ${if (it == 1) "member" else "members"}" },
@@ -1557,9 +1533,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (!narrow && BuildConfig.ENABLE_NATIVE_VOICE) {
                 // Web: mute and deafen wait while the Audio test holds the microphone.
                 val monitoring = Modifier.semantics { if (voice.monitoring) stateDescription = "Stop mic test to change mute" }
-                IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(40.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
+                IconButton({ VoiceCallService.toggleMute(context) }, Modifier.size(40.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
                 AudioOptionsMenu(input = true, voice = voice)
-                IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(40.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
+                IconButton({ VoiceCallService.toggleDeafen(context) }, Modifier.size(40.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
                 AudioOptionsMenu(input = false, voice = voice)
             }
             IconButton({ show(Overlay.Audio) }, Modifier.size(40.dp).then(LocalSettingsFocus.current?.let { Modifier.focusRequester(it) } ?: Modifier)) {
@@ -4598,7 +4574,7 @@ internal fun counterTone(count: Int): Color = when {
         HorizontalDivider(color = Border)
         DangerZone("Delete space", "Delete this space and all its channels for every member.", state.busy) { confirmingDelete = true }
     }
-    if (confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }, warn = true, error = state.error) { viewModel.deleteCurrentSpace { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
+    if (confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }, error = state.error) { viewModel.deleteCurrentSpace { close() } }
     // Manage space stays open behind the confirmation, with the member gone once it succeeds.
     removing?.let { member ->
         key(member.id) {
@@ -4677,7 +4653,7 @@ internal fun counterTone(count: Int): Color = when {
         HorizontalDivider(color = Border)
         DangerZone("Delete channel", "Delete this channel for everyone in the space.", state.busy) { confirmingDelete = true }
     }
-    if (confirmingDelete) ConfirmDialog("Delete channel", "Delete #${channel.name} for everyone? This channel and its messages will disappear from the space. This cannot be undone.", "Delete channel", state.busy, { confirmingDelete = false }, warn = true, error = state.error) { viewModel.deleteChannel(channel) { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
+    if (confirmingDelete) ConfirmDialog("Delete channel", "Delete #${channel.name} for everyone? This channel and its messages will disappear from the space. This cannot be undone.", "Delete channel", state.busy, { confirmingDelete = false }, error = state.error) { viewModel.deleteChannel(channel) { close() } }
     removing?.let { member ->
         key(member.id) {
             ConfirmDialog("Remove ${member.displayName} from #${channel.name}?", "They’ll lose access to this private channel. You can add them again later.", "Remove", state.busy,
@@ -4739,12 +4715,12 @@ internal fun counterTone(count: Int): Color = when {
 internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
     draft.isBlank() || draft == rejectedText
 
-@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).toggleable(value, role = Role.Switch) { CaperEffects.toggle(it); changed(it) }.padding(horizontal = 12.dp), verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
+@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).toggleable(value, role = Role.Switch) { changed(it) }.padding(horizontal = 12.dp), verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
     Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, null, Modifier.minimumInteractiveComponentSize(), colors = caperSwitchColors())
 }
 
 @Composable internal fun ConfirmDialog(
-    title: String, body: String, action: String, busy: Boolean, close: () -> Unit, warn: Boolean = false,
+    title: String, body: String, action: String, busy: Boolean, close: () -> Unit,
     pendingLabel: String = if (action.startsWith("Delete")) "Deleting…" else "Saving…",
     /** The app-wide error, shown once this action has run. */
     error: String? = null,
@@ -4752,8 +4728,6 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     focusCancel: Boolean = false,
     confirm: () -> Unit,
 ) = CaperDialog(title, close, busy = busy) {
-    // Web plays its warning once when a delete confirmation opens.
-    if (warn) LaunchedEffect(Unit) { CaperEffects.play(CaperEffects.Effect.Warning) }
     var confirmed by remember { mutableStateOf(false) }
     val cancelFocus = remember { FocusRequester() }
     if (focusCancel) LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }

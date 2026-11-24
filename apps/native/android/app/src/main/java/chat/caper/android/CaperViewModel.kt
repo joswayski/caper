@@ -3462,17 +3462,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (message.channelId != mutable.value.selectedChannel?.id) return
         if (message.threadRootId != null) refreshThreadUnread()
         val messages = authoritativeMessages()
-        val isNew = messages.none { it.id == message.id }
         // The send this confirms keeps the card its row already showed until the server's own arrive.
         val shown = pendingSends.matching(message)?.let { withPendingEmbeds(message, it.embeds) } ?: message
         mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(shown), unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds, emptiedThreads = emptiedThreads))))
-        if (isNew) {
-            // Web chimes for someone else's new message in the open conversation.
-            // Never for a blocked author or an incoming request.
-            val current = mutable.value
-            if (message.author.id != chatAuthor?.id && !collapsesFor(message, current.blockedIds, chatAuthor?.id) && current.selectedDirect?.incoming != true)
-                chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
-        }
         confirmPending(message)
         markConversationRead(message.channelId, message.seq)
     }

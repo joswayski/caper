@@ -393,8 +393,6 @@ private final class WeakController {
     public static func listedChannels(_ model: AppModel, expanded: Bool) -> [Channel] {
         LiveNow.listed(model.detail?.channels.filter(\.joined) ?? [], expanded: expanded) { channelIsLive(model, $0) }
     }
-    /// The Channels toggle's sound, when sound effects are on.
-    public static func playToggle(_ on: Bool) { CaperEffects.shared.toggle(on) }
 }
 
 /// The counter's colour for a draft of `count` Unicode scalars.
@@ -440,10 +438,6 @@ public struct UIKitTimelineEntry {
 
 /// The account menu's audio settings, stored where SwiftUI keeps them.
 @MainActor public enum UIKitAudioSettings {
-    public static var soundEffects: Bool {
-        get { CaperEffects.shared.soundsEnabled }
-        set { CaperEffects.shared.soundsEnabled = newValue }
-    }
     public static var sendVoiceOnStop: Bool {
         get { VoiceMessageSettings.shared.sendOnStop }
         set { VoiceMessageSettings.shared.sendOnStop = newValue }

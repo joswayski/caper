@@ -181,7 +181,6 @@ impl App {
                         voice.set_master_gain(percent);
                     }
                 }
-                app.effects.borrow_mut().slider(f32::from(percent) / 200.0);
                 app.save_voice();
             });
             pickers.push(Picker {
@@ -269,7 +268,6 @@ impl App {
                 let gain = voice.preferences.input_percent;
                 voice.set_input_processing(gain, strength);
             }
-            app.effects.borrow_mut().slider(f32::from(strength) / 100.0);
             app.save_voice();
             app.render_audio();
         });
@@ -669,7 +667,6 @@ impl App {
         }
         popover.set_child(Some(&items));
         super::popup(&popover, anchor.upcast_ref());
-        self.effects.borrow().toggle(true);
     }
 
     /// The account bar's Input Options or Output Options: the device in
@@ -706,7 +703,6 @@ impl App {
             glib::ControlFlow::Continue
         });
         super::popup(&popover, anchor.upcast_ref());
-        self.effects.borrow().toggle(true);
     }
 
     fn device_key(&self, input: bool) -> String {
@@ -852,7 +848,6 @@ impl App {
                         }
                     }
                 }
-                app.effects.borrow_mut().slider(value as f32 / max as f32);
                 app.save_voice();
             });
             body.append(&scale);

@@ -38,7 +38,7 @@ import UIKit
                 body.addArrangedSubview(Self.button("Delete space") { [weak self] in
                     guard let self, !self.state.pending else { return }
                     self.confirm("Delete space", detail: "Delete \(self.state.model.detail?.space.name ?? "space") for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space") { [state] in
-                        try await state.model.deleteCurrentSpace(); CaperEffects.shared.play(.delete); state.close()
+                        try await state.model.deleteCurrentSpace(); state.close()
                     }
                 })
             }
@@ -106,13 +106,13 @@ import UIKit
         name.text = state.name; name.delegate = self; name.autocapitalizationType = .none; name.autocorrectionType = .no
         name.addAction(UIAction { [weak self] _ in self?.nameChanged() }, for: .editingChanged)
         privacy.accessibilityLabel = "Private channel"; privacy.onTintColor = UIColor(CaperTheme.terracotta)
-        privacy.addAction(UIAction { [weak self] _ in guard let self else { return }; self.state.privateChannel = self.privacy.isOn; CaperEffects.shared.toggle(self.privacy.isOn) }, for: .valueChanged)
+        privacy.addAction(UIAction { [weak self] _ in guard let self else { return }; self.state.privateChannel = self.privacy.isOn }, for: .valueChanged)
         let toggle = UIStackView(arrangedSubviews: [Self.label("Private channel", size: 13, bold: true), privacy]); toggle.spacing = 10
         save = Self.button("Create channel", primary: true) { [state] in state.save() }; reset = Self.button("Reset") { [state] in state.reset() }
         delete = Self.button("Delete channel") { [weak self] in
             guard let self, let channel = self.state.channel else { return }
             self.confirm("Delete channel", detail: "Delete #\(channel.name) for everyone? This channel and its messages will disappear from the space. This cannot be undone.", action: "Delete channel") { [state] in
-                try await state.model.deleteChannel(channel); CaperEffects.shared.play(.delete); state.close()
+                try await state.model.deleteChannel(channel); state.close()
             }
         }
         invite = Self.button("Invite") { [state] in state.invite() }; retry = Self.button("Retry loading members") { [state] in Task { await state.loadMembers() } }
@@ -177,7 +177,7 @@ import UIKit
 
 extension UIKitMessageDialog {
     fileprivate func confirmWorkspaceAction(_ title: String, detail: String, action: String, perform: @escaping () async throws -> Void) {
-        guard presentedViewController == nil else { return }; CaperEffects.shared.play(.warning)
+        guard presentedViewController == nil else { return }
         let confirmation = UIKitConfirmationDialog(title: title, detail: detail, action: action,
             pendingLabel: action.hasPrefix("Delete") ? "Deleting…" : "Removing…",
             close: { [weak self] in self?.presentedViewController?.dismiss(animated: false) }, perform: perform)

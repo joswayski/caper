@@ -85,15 +85,15 @@ import AppKit
         input.setAccessibilityIdentifier("audio-input-device"); output.setAccessibilityIdentifier("audio-output-device")
         inputGain.setAccessibilityLabel("Test microphone volume")
         inputGain.onChange = { [weak self] next in
-            let v = Int(next.rounded()); self?.state.voice.setInputGain(v); CaperEffects.shared.slider(Double(v) / 200)
+            let v = Int(next.rounded()); self?.state.voice.setInputGain(v)
         }
         outputGain.setAccessibilityLabel("Test speaker volume")
         outputGain.onChange = { [weak self] next in
-            let v = Int(next.rounded()); self?.state.voice.setOutputGain(v); CaperEffects.shared.slider(Double(v) / 200)
+            let v = Int(next.rounded()); self?.state.voice.setOutputGain(v)
         }
         strength.setAccessibilityLabel("Voice processing")
         strength.onChange = { [weak self] next in
-            let v = Int(next.rounded()); self?.state.voice.setVoiceProcessingStrength(v); CaperEffects.shared.slider(Double(v) / 100)
+            let v = Int(next.rounded()); self?.state.voice.setVoiceProcessingStrength(v)
         }
         speaker = AppKitKitButton("Test speakers") { [state] in state.speaker.toggle(voice: voice) }; speaker.setAccessibilityIdentifier("speaker-test")
         record = AppKitKitButton("Test microphone", kind: .primary) { [state] in state.record() }; record.setAccessibilityIdentifier("local-mic-test")
@@ -259,7 +259,6 @@ import MediaPlayer
     @objc private func gainChanged(_ slider: UISlider) {
         let value = Int(slider.value.rounded())
         if slider.tag == 0 { state.voice.setInputGain(value) } else if slider.tag == 1 { state.voice.setOutputGain(value) } else { state.voice.setVoiceProcessingStrength(value) }
-        CaperEffects.shared.slider(Double(value) / Double(slider.maximumValue))
     }
 }
 #endif

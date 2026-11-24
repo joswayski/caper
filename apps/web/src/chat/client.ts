@@ -4,7 +4,6 @@ import { getProfiles, withAuthorProfile, withMessageAuthors } from "../account/p
 import { ChatConnection } from "./connection.ts";
 import { cancelUpload, type AttachmentUpload } from "./uploads.ts";
 import type { ChatGif } from "./klipy.ts";
-import { playSound } from "../audio/effects.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { appGateway } from "../gateway/client.ts";
 import { ChatTimeline, type ChatTimelineEvent } from "./timeline.ts";
@@ -401,7 +400,6 @@ export class ChatClient {
   >();
   private readonly changed: (state: ChatViewState) => void;
   private readonly channelId?: string;
-  private sounds: boolean;
   private spaceId?: string;
   private channel?: GeneralChatHistory["channel"];
   private readonly reactionIntents = new Map<
@@ -427,11 +425,10 @@ export class ChatClient {
   constructor(
     changed: (state: ChatViewState) => void,
     channelId?: string,
-    options: { sounds?: boolean; initialSession?: ChatSession } = {},
+    options: { initialSession?: ChatSession } = {},
   ) {
     this.changed = changed;
     this.channelId = channelId;
-    this.sounds = options.sounds ?? true;
     if (options.initialSession) {
       this.session = options.initialSession;
       this.state = { ...initialState, author: options.initialSession.author };
@@ -441,16 +438,6 @@ export class ChatClient {
   start(history?: GeneralChatHistory, error?: string) {
     if (error) this.update({ phase: "error", error });
     else void this.loadInitial(history);
-  }
-
-  /** New-message sounds can be enabled once a visitor engages with an embedded chat. */
-  setSounds(enabled: boolean) {
-    this.sounds = enabled;
-  }
-  private silenced: ReadonlySet<string> = new Set();
-  /** Accounts you blocked: their messages never play a sound. */
-  setSilencedAuthors(ids: ReadonlySet<string>) {
-    this.silenced = ids;
   }
 
   /** The committed replay cursor, without building a whole history snapshot. */
@@ -1512,7 +1499,6 @@ export class ChatClient {
   }
 
   private receiveEvent(event: ChatTimelineEvent) {
-    const visible = new Set(this.timeline.messages.map((item) => item.id));
     const result = this.timeline.applyEvent(event);
     if (!("type" in event)) {
       if (event.threadRootId) this.scheduleThreadUnread();
@@ -1525,16 +1511,6 @@ export class ChatClient {
     if (result !== "buffered" && result !== "overflow") {
       const messages = this.timeline.messages;
       this.update({ messages, pinnedMessages: this.timeline.pinnedMessages });
-      const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
-      if (
-        this.sounds &&
-        (!("type" in event) || event.type !== "message.edited") &&
-        result === "applied" &&
-        messages.some(
-          (item) => !visible.has(item.id) && item.author.id !== ownAuthorId && !this.silenced.has(item.author.id),
-        )
-      )
-        playSound("new-message");
     }
     return result;
   }

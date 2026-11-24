@@ -14,9 +14,8 @@ MODEL="$REPO/apps/web/public/audio/dpdfnet8-v2/dpdfnet8_48khz_hr.onnx"
 echo "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631  $MODEL" | sha256sum -c -
 cp "$MODEL" "$OUT/assets/dpdfnet8_48khz_hr.onnx"
 cp "$(dirname "$MODEL")/LICENSE-APACHE-2.0" "$OUT/assets/LICENSE-DPDFNet.txt"
-# Web's UI sound effects, played by CaperEffects.
-mkdir -p "$OUT/assets/effects"
-cp "$REPO"/apps/web/public/audio/effects/*.wav "$OUT/assets/effects/"
+# Web's speaker test sound, played by SpeakerTest.
+cp "$REPO/apps/web/public/audio/speaker-test.wav" "$OUT/assets/speaker-test.wav"
 
 AAR="$OUT/onnxruntime-android-1.23.2.aar"
 if [[ ! -f "$AAR" ]]; then

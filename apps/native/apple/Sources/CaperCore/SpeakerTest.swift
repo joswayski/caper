@@ -4,8 +4,8 @@ import Observation
 import AudioToolbox
 #endif
 
-/// Web's speaker test (pages/MicPlayback.tsx `SpeakerTest`): loops the join
-/// chime on the selected output at the speaker volume until stopped.
+/// Web's speaker test (pages/MicPlayback.tsx `SpeakerTest`): loops its test
+/// sound on the selected output at the speaker volume until stopped.
 @MainActor @Observable
 final class SpeakerTest {
     private(set) var playing = false
@@ -20,7 +20,7 @@ final class SpeakerTest {
 
     func start(voice: VoiceClient) {
         stop(); error = nil
-        guard let url = Bundle(for: SpeakerTest.self).url(forResource: "channel-join", withExtension: "wav"),
+        guard let url = Bundle(for: SpeakerTest.self).url(forResource: "speaker-test", withExtension: "wav"),
               let file = try? AVAudioFile(forReading: url),
               let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
               (try? file.read(into: buffer)) != nil else { return fail() }

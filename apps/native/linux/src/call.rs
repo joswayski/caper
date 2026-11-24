@@ -7,14 +7,13 @@
 use super::{App, State, clear};
 use crate::images::{Avatar, AvatarView, Icon};
 use crate::ui::label;
-use caper_client::effects::Effect;
 use caper_client::gateway::{GatewayEvent, MAX_MEDIA_CHANNELS, MediaChannel, MediaWatch};
 use caper_client::model::VoiceOccupant;
 use caper_client::state::{CallContext, Phase};
 use caper_client::voice::{self, Preferences, VoiceOperation};
 use caper_client::worker::{Command, LoadError};
 use gtk::{glib, prelude::*};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -44,13 +43,6 @@ enum Action {
     Leave,
     Joining,
     Join { switching: bool, enabled: bool },
-}
-
-/// The call's sounds: Join once connected, then others leaving and arriving.
-#[derive(Default)]
-pub(super) struct Heard {
-    announced: Option<u64>,
-    others: Option<(u64, String, BTreeSet<String>)>,
 }
 
 fn now_ms() -> u64 {
@@ -374,14 +366,10 @@ impl App {
         }
     }
 
-    /// Leave, or Cancel while joining. Only a connected call plays the
-    /// disconnect sound.
+    /// Leave, or Cancel while joining.
     pub(super) fn leave_voice(self: &Rc<Self>) {
         {
             let mut voice = self.voice.borrow_mut();
-            if matches!(voice.state.phase, Phase::Connected(_)) {
-                self.play(Effect::Disconnect);
-            }
             voice.leave();
             voice.error = None;
         }
@@ -393,24 +381,20 @@ impl App {
     }
 
     fn toggle_mute(self: &Rc<Self>) {
-        let muted = {
+        {
             let mut voice = self.voice.borrow_mut();
             let muted = voice.state.audio.muted;
             voice.command(VoiceOperation::Mute(!muted));
-            muted
-        };
-        self.effects.borrow().toggle(muted);
+        }
         self.later_render();
     }
 
     fn toggle_deafen(self: &Rc<Self>) {
-        let deafened = {
+        {
             let mut voice = self.voice.borrow_mut();
             let deafened = voice.state.audio.deafened;
             voice.command(VoiceOperation::Deafen(!deafened));
-            deafened
-        };
-        self.effects.borrow().toggle(deafened);
+        }
         self.later_render();
     }
 
@@ -424,11 +408,10 @@ impl App {
         });
     }
 
-    /// Reads the call's reports and plays its sounds.
+    /// Reads the call's reports.
     pub(super) fn receive_voice(self: &Rc<Self>) {
         self.receive_reports();
         let voice = self.voice.borrow();
-        let mut heard = self.heard.borrow_mut();
         if let Ok(mut state) = self.state.try_borrow_mut()
             && state
                 .calls
@@ -438,36 +421,8 @@ impl App {
         {
             state.calls.pending = None;
         }
-        let connected = matches!(voice.state.phase, Phase::Connected(_));
-        if connected && heard.announced != Some(voice.state.generation) {
-            heard.announced = Some(voice.state.generation);
-            self.play(Effect::Join);
-        }
-        if !connected || voice.self_id.is_empty() {
-            heard.others = None;
-        } else {
-            let generation = voice.state.generation;
-            let others: BTreeSet<String> = voice
-                .participants
-                .iter()
-                .map(|participant| participant.id.clone())
-                .filter(|id| *id != voice.self_id)
-                .collect();
-            if let Some((previous_generation, previous_self, previous)) = &heard.others
-                && *previous_generation == generation
-                && *previous_self == voice.self_id
-            {
-                if previous.iter().any(|id| !others.contains(id)) {
-                    self.play(Effect::Leave);
-                } else if others.iter().any(|id| !previous.contains(id)) {
-                    self.play(Effect::Join);
-                }
-            }
-            heard.others = Some((generation, voice.self_id.clone(), others));
-        }
         let busy = !matches!(voice.state.phase, Phase::Idle);
         drop(voice);
-        drop(heard);
         if busy {
             self.voice_tick();
         }
@@ -1160,25 +1115,10 @@ impl App {
                 }
             }
         };
-        let weak = Rc::downgrade(self);
         let on_volume = apply.clone();
-        volume.connect_value_changed(move |scale| {
-            on_volume();
-            if let Some(app) = weak.upgrade() {
-                app.effects
-                    .borrow_mut()
-                    .slider(scale.value() as f32 / 200.0);
-            }
-        });
-        let weak = Rc::downgrade(self);
-        mute.connect_toggled(move |check| {
-            apply();
-            if let Some(app) = weak.upgrade() {
-                app.effects.borrow().toggle(!check.is_active());
-            }
-        });
+        volume.connect_value_changed(move |_| on_volume());
+        mute.connect_toggled(move |_| apply());
         super::popup(&popover, anchor.upcast_ref());
-        self.effects.borrow().toggle(true);
     }
 
     /// Connects the header's voice button and the account bar's toggles.

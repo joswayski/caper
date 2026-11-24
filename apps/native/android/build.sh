@@ -25,7 +25,7 @@ grep -Fxq 'assets/NOTICE-libavif.txt' "$archive_entries"
 grep -Fxq 'assets/NOTICE-libavif-encoder.txt' "$archive_entries"
 grep -Fxq 'assets/NOTICE-libaom.txt' "$archive_entries"
 grep -Fxq 'assets/NOTICE-Fonts-OFL.txt' "$archive_entries"
-for asset in effects/channel-join.wav effects/disconnect.wav dpdfnet8_48khz_hr.onnx LICENSE-DPDFNet.txt LICENSE-ONNXRuntime.txt NOTICE-ONNXRuntime.txt LICENSE-RNNoise.txt; do
+for asset in speaker-test.wav dpdfnet8_48khz_hr.onnx LICENSE-DPDFNet.txt LICENSE-ONNXRuntime.txt NOTICE-ONNXRuntime.txt LICENSE-RNNoise.txt; do
   grep -Fxq "assets/$asset" "$archive_entries"
 done
 for abi in arm64-v8a armeabi-v7a x86 x86_64; do

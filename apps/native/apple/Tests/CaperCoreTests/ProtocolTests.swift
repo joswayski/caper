@@ -273,20 +273,6 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testSoundEffectsPreferencePersistsBothDirectionsWithoutOpeningOutput() throws {
-        let suite = "caper-effects-test-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let effects = CaperEffects(enabled: false, defaults: defaults)
-        XCTAssertTrue(effects.soundsEnabled)
-        effects.soundsEnabled = false
-        let reopened = CaperEffects(enabled: false, defaults: defaults)
-        XCTAssertFalse(reopened.soundsEnabled)
-        reopened.soundsEnabled = true
-        XCTAssertTrue(CaperEffects(enabled: false, defaults: defaults).soundsEnabled)
-    }
-
-    @MainActor
     func testAudioPreviewRequiresExplicitLoopbackParityMode() {
         var environment = ["CAPER_TEST_MODE": "parity", "CAPER_UI_FIXTURE": "audio-recorded", "CAPER_API_BASE_URL": "http://127.0.0.1:3001"]
         XCTAssertTrue(CaperRuntime.isAudioPreview("audio-recorded", environment: environment))
@@ -376,18 +362,6 @@ final class ProtocolTests: XCTestCase {
     }
 
     #if os(macOS)
-    @MainActor
-    func testAllBundledWebEffectsDecodeWithoutOpeningOutput() throws {
-        for effect in CaperEffects.Effect.allCases {
-            let buffer = try XCTUnwrap(CaperEffects.decode(effect), "Missing canonical \(effect.rawValue) WAV")
-            XCTAssertGreaterThan(buffer.frameLength, 100)
-            let samples = try XCTUnwrap(buffer.floatChannelData).pointee
-            let values = UnsafeBufferPointer(start: samples, count: Int(buffer.frameLength))
-            XCTAssertTrue(values.allSatisfy { $0.isFinite && abs($0) <= 1 })
-            XCTAssertTrue(values.contains { abs($0) > 0.01 })
-        }
-    }
-
     @MainActor
     func testTimedMicrophoneStopSavesBothNaturalAndEnhancedPCMWithoutHardware() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("caper-mic-test-fixture-\(UUID().uuidString).caf")

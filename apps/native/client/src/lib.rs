@@ -17,7 +17,6 @@ pub mod credentials;
 pub mod daily_icon;
 pub mod drafts;
 pub mod edits;
-pub mod effects;
 pub mod embeds;
 pub mod emoji;
 pub mod feedback;
@@ -50,6 +49,7 @@ pub mod profile_dm;
 pub mod profile_edit;
 pub mod reactions;
 pub mod sign_in;
+pub mod speaker_test;
 pub mod startup;
 #[path = "../../desktop/voice-spike/src/state.rs"]
 pub mod state;

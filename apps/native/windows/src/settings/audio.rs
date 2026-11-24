@@ -686,15 +686,12 @@ impl App {
         match part {
             SPart::MicVolume if value.min(200) != input => {
                 v.set_input_processing(value, strength);
-                live.effects.slider(f32::from(value.min(200)) / 200.0);
             }
             SPart::SpeakerVolume if value.min(200) != v.preferences.master_percent => {
                 v.set_master_gain(value);
-                live.effects.slider(f32::from(value.min(200)) / 200.0);
             }
             SPart::Enhancement if value.min(100) != u16::from(strength) => {
                 v.set_input_processing(input, value.min(100) as u8);
-                live.effects.slider(f32::from(value.min(100)) / 100.0);
             }
             _ => {}
         }

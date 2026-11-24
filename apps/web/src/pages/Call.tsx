@@ -44,14 +44,6 @@ const AppearanceSettings = lazy(() => import("../theme/AppearanceSettings"));
 import { getAccount, getRememberedAccount, logout, subscribeAccount, type Account } from "../account/client";
 import { withPicture } from "../account/pictures";
 import { routeOutput } from "../audio/output";
-import { rosterChanges } from "../audio/roster";
-import {
-  getSystemSoundsEnabled,
-  playSound,
-  preloadSoundEffects,
-  setSystemSoundsEnabled,
-  subscribeSystemSounds,
-} from "../audio/effects";
 import Chat, { type FocusTarget } from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import { getVoiceSendOnStop, setVoiceSendOnStop, subscribeVoiceSendOnStop } from "../chat/voice.ts";
@@ -551,7 +543,6 @@ export default function Call({
   composerBanner,
   onBlockAuthor,
 }: CallProps = {}) {
-  const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const voiceSendOnStop = useSyncExternalStore(subscribeVoiceSendOnStop, getVoiceSendOnStop, () => false);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -674,7 +665,6 @@ export default function Call({
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const volumeMenuRef = useRef<HTMLLIElement>(null);
-  const previousVoiceRoster = useRef<{ selfId: string; ids: Set<string> } | undefined>(undefined);
   // Your call card's full list of people (with per-person audio), opened by a
   // right-click or long press on its faces; a plain press opens the call's chat.
   const [everyoneOpen, setEveryoneOpen] = useState(false);
@@ -731,7 +721,6 @@ export default function Call({
   const roster = publicRoster ? (publicParticipants[mediaRoot]?.participants ?? []) : state.participants;
   const identityName = account?.displayName || chatAuthor?.name || name;
   const accountPresence = !!account && !!spaceId && !demo;
-  const joined = useRef(false);
   const focusedJoin = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
     if (
@@ -767,10 +756,6 @@ export default function Call({
   const pendingJoin = state.phase === "joining" && !joiningShown;
   const Root = embedded ? "div" : "main";
 
-  useEffect(() => {
-    if (engaged) void preloadSoundEffects();
-  }, [engaged]);
-
   const presenceAccount = useRef(account?.id);
   useEffect(() => {
     const accountChanged = presenceAccount.current !== account?.id;
@@ -793,30 +778,6 @@ export default function Call({
       setPresenceLive,
     );
   }, [account?.id, spaceId, demo]);
-
-  useEffect(() => {
-    if (connected && !joined.current) {
-      joined.current = true;
-      playSound("channel-join");
-    } else if (idle) joined.current = false;
-  }, [connected, idle]);
-
-  useEffect(() => {
-    const previous = previousVoiceRoster.current;
-    if (!connected || !state.selfId) {
-      previousVoiceRoster.current = undefined;
-      return;
-    }
-    const ids = new Set(state.participants.map((person) => person.id));
-    const { joined, left } = rosterChanges(
-      previous?.selfId === state.selfId ? previous.ids : undefined,
-      ids,
-      state.selfId,
-    );
-    if (left) playSound("channel-leave");
-    else if (joined) playSound("channel-join");
-    previousVoiceRoster.current = { selfId: state.selfId, ids };
-  }, [connected, state.selfId, state.participants]);
 
   // The full list closes on Escape or an outside press, and whenever the call ends.
   useEffect(() => {
@@ -1229,7 +1190,6 @@ export default function Call({
         };
       });
     }
-    if (connected) playSound("disconnect");
     void act(() => clientRef.current!.leave());
   };
   const leaveControl = (
@@ -1248,7 +1208,6 @@ export default function Call({
   const toggleMute = () => {
     if (state.monitoring) return;
     const muted = !state.muted;
-    playSound(muted ? "toggle-off" : "toggle-on");
     setActionError(undefined);
     void clientRef
       .current!.setMuted(muted)
@@ -1257,7 +1216,6 @@ export default function Call({
   const toggleDeafen = () => {
     if (state.monitoring) return;
     const deafened = !state.deafened;
-    playSound(deafened ? "toggle-off" : "toggle-on");
     setActionError(undefined);
     void clientRef
       .current!.setDeafened(deafened)
@@ -1502,7 +1460,6 @@ export default function Call({
                     type="checkbox"
                     checked={mutedParticipants.has(participant.id)}
                     onChange={(event) => {
-                      playSound(event.target.checked ? "toggle-off" : "toggle-on");
                       setMutedParticipants((current) => {
                         const next = new Set(current);
                         event.target.checked ? next.add(participant.id) : next.delete(participant.id);
@@ -2252,21 +2209,6 @@ export default function Call({
                     <input
                       type="checkbox"
                       role="switch"
-                      checked={systemSounds}
-                      onChange={(event) => {
-                        setSystemSoundsEnabled(event.target.checked);
-                        if (event.target.checked) {
-                          void preloadSoundEffects();
-                          playSound("toggle-on");
-                        }
-                      }}
-                    />
-                    <span>Caper sound effects</span>
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      role="switch"
                       checked={voiceSendOnStop}
                       onChange={(event) => setVoiceSendOnStop(event.target.checked)}
                     />
@@ -2363,7 +2305,6 @@ export default function Call({
                 )
               }
               onBlockAuthor={onBlockAuthor}
-              messageSounds={engaged && channelJoined}
               onOnlineChange={onChatOnlineChange}
               mentionMembers={mentionMembers}
               mentionDirectory={mentionDirectory}

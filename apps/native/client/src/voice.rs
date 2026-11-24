@@ -935,7 +935,7 @@ impl Voice {
         let output = self.preferences.output.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<(), String> {
-                let pcm = crate::effects::speaker_test_pcm()
+                let pcm = crate::speaker_test::speaker_test_pcm()
                     .ok_or("speaker test sound is unavailable")?;
                 tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(1)

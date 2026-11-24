@@ -36,7 +36,7 @@ import AppKit
                 rows += [AppKitKit.divider(), Self.heading("Delete space"), Self.note("Delete this space and all its channels for every member."),
                     AppKitKitButton("Delete space", kind: .destructive) { [weak self] in
                         self?.confirm("Delete space", detail: "Delete \(model.detail?.space.name ?? "space") for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space") {
-                            try await model.deleteCurrentSpace(); CaperEffects.shared.play(.delete); close()
+                            try await model.deleteCurrentSpace(); close()
                         }
                     }]
             }
@@ -118,7 +118,7 @@ import AppKit
         subviews.compactMap { $0 as? NSScrollView }.first?.setAccessibilityIdentifier("channel-settings-scroll")
         name.stringValue = state.name; name.placeholderString = "project-updates"; name.delegate = self
         name.setAccessibilityLabel("Channel name")
-        privacy = AppKitKitSwitchRow(title: "Private channel", detail: nil, identifier: "channel-private") { [state] in state.privateChannel = $0; CaperEffects.shared.toggle($0) }
+        privacy = AppKitKitSwitchRow(title: "Private channel", detail: nil, identifier: "channel-private") { [state] in state.privateChannel = $0 }
         invite = AppKitKitButton("Invite") { [state] in state.invite() }; people.changed = { [state] in state.username = $0 }; people.submit = { [state] in state.invite() }
         retry = AppKitKitButton("Retry loading members") { [state] in Task { await state.loadMembers() } }
         save = AppKitKitButton("Create channel", kind: .primary) { [state] in state.save() }
@@ -126,7 +126,7 @@ import AppKit
         delete = AppKitKitButton("Delete channel", kind: .destructive) { [weak self] in
             guard let self, let channel = self.state.channel else { return }
             self.confirm("Delete channel", detail: "Delete #\(channel.name) for everyone? This channel and its messages will disappear from the space. This cannot be undone.", action: "Delete channel") {
-                try await model.deleteChannel(channel); CaperEffects.shared.play(.delete); close()
+                try await model.deleteChannel(channel); close()
             }
         }
         for row in [memberHeading, memberFailure, retry!, people, invite!, memberStatus, members, pendingHeading, invitations] as [NSView] {
@@ -205,7 +205,7 @@ import AppKit
 /// Keep the confirmation open through the request and any retryable failure.
 @MainActor private func appKitConfirmWorkspaceAction(in parent: NSView, title: String, detail: String, action: String,
                                                     perform: @escaping () async throws -> Void) {
-    guard let window = parent.window, window.attachedSheet == nil else { return }; CaperEffects.shared.play(.warning)
+    guard let window = parent.window, window.attachedSheet == nil else { return }
     let sheet = NSWindow()
     let content = AppKitConfirmationDialog(title: title, detail: detail, action: action, close: { [weak sheet] in
         guard let sheet else { return }; sheet.sheetParent?.endSheet(sheet); sheet.orderOut(nil)

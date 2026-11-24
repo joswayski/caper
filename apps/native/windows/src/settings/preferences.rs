@@ -22,8 +22,7 @@ impl Preferences {
                 let old = std::fs::read_to_string(appdata?.join("Caper/data/app.ron")).ok()?;
                 let mut values: HashMap<String, String> = ron::from_str(&old).ok()?;
                 values.retain(|key, _| {
-                    matches!(key.as_str(), "sound-effects-v1" | "voice-send-on-stop-v1")
-                        || key.starts_with("whats-new-v1:")
+                    key == "voice-send-on-stop-v1" || key.starts_with("whats-new-v1:")
                 });
                 Some(values)
             })
@@ -33,12 +32,6 @@ impl Preferences {
 
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
-    }
-
-    pub fn sounds(&self) -> bool {
-        self.get("sound-effects-v1")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(true)
     }
 
     pub fn voice_send_on_stop(&self) -> bool {
@@ -84,19 +77,17 @@ mod tests {
         let source = r#"{"sound-effects-v1":"false","voice-send-on-stop-v1":"true","whats-new-v1:https://caper.chat:windows":"7"}"#;
         std::fs::write(&old, source).unwrap();
         let mut prefs = Preferences::load(Some(root.clone()));
-        assert!(!prefs.sounds());
         assert!(prefs.voice_send_on_stop());
-        prefs.set("sound-effects-v1", "true".into());
+        assert_eq!(prefs.get("sound-effects-v1"), None);
+        prefs.set("voice-send-on-stop-v1", "false".into());
         let restored = Preferences::load(Some(root.clone()));
-        assert!(restored.sounds());
-        assert!(restored.voice_send_on_stop());
+        assert!(!restored.voice_send_on_stop());
         assert_eq!(
             restored.get("whats-new-v1:https://caper.chat:windows"),
             Some("7")
         );
         assert_eq!(std::fs::read_to_string(old).unwrap(), source);
         let isolated = Preferences::load(None);
-        assert!(isolated.sounds());
         assert!(!isolated.voice_send_on_stop());
         std::fs::remove_dir_all(root).unwrap();
     }

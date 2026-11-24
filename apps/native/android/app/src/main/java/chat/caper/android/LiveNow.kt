@@ -559,11 +559,11 @@ private class VoiceListRequest(val openId: String?)
                 if (people.isNotEmpty()) CallFaces(people, voice, account, open) { list = VoiceListRequest(it) }
                 Text(peopleCount(people.size), color = TextMuted, fontSize = 11.sp)
                 Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    CallMuteToggle(voice) { CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }
+                    CallMuteToggle(voice) { VoiceCallService.toggleMute(context) }
                     CallToggle(
                         voice.deafened, if (voice.deafened) R.drawable.lucide_volume_x else R.drawable.lucide_headphones,
                         if (voice.deafened) "Undeafen audio" else "Deafen audio", voice.monitoring, "Stop mic test to change deafen",
-                    ) { CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }
+                    ) { VoiceCallService.toggleDeafen(context) }
                     Spacer(Modifier.weight(1f))
                     TextButton(
                         leave,
@@ -806,11 +806,11 @@ private class VoiceListRequest(val openId: String?)
                 Text("User volume", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Text)
                 Text("$volume%", fontSize = 11.sp, color = TextMuted, style = TabularNumbers)
             }
-            DefaultSlider(volume.toFloat(), { CaperEffects.slider(it / 200f); VoiceCallService.setParticipantVolume(context, person.id, it.toInt()) },
+            DefaultSlider(volume.toFloat(), { VoiceCallService.setParticipantVolume(context, person.id, it.toInt()) },
                 Modifier.semantics { contentDescription = "${person.name} volume" }, valueRange = 0f..200f, defaultValue = 100f)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Mute for me", Modifier.weight(1f), fontSize = 12.sp, color = Text)
-                Switch(locallyMuted, { CaperEffects.toggle(!it); VoiceCallService.toggleParticipantMute(context, person.id) },
+                Switch(locallyMuted, { VoiceCallService.toggleParticipantMute(context, person.id) },
                     modifier = Modifier.semantics { contentDescription = "Mute ${person.name} for me" }, colors = caperSwitchColors())
             }
             Text("Only changes what you hear.", color = TextMuted, fontSize = 10.sp)
@@ -866,7 +866,7 @@ private class VoiceListRequest(val openId: String?)
             phase?.let { Text(it, Modifier.weight(1f, fill = false), color = VoiceAmber, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
         sessionStartedAt?.takeIf { voice.phase != VoiceState.Phase.CONNECTING }?.let { VoiceSessionTimer(it) }
-        CallMuteToggle(voice, toggleMute ?: { CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) })
+        CallMuteToggle(voice, toggleMute ?: { VoiceCallService.toggleMute(context) })
     }
 }
 

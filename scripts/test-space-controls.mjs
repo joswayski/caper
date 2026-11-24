@@ -1040,8 +1040,7 @@ try {
     }
     console.log("PASS: debug-enabled account sees diagnostics; other accounts do not; unused capture is explicit.");
     // The public General demo and guests were retired (#223): footer status
-    // now always comes from account presence (checked above). System sounds
-    // remain an account setting that survives reloads.
+    // now always comes from account presence (checked above).
     const accountUrl = `${url}?space=space1234567&channel=channel12345`;
     browser("open", accountUrl);
     wait('document.querySelector(".account-avatar .presence-dot")?.dataset.status === "online"');
@@ -1055,27 +1054,14 @@ try {
       null,
       "Clicking settings dismisses its tooltip",
     );
-    browser("uncheck", '[role="switch"]');
-    assert.equal(evaluate('localStorage.getItem("caper:system-sounds")'), "off");
-    screenshot("account-system-sounds-off");
-    browser("open", accountUrl);
-    wait('document.querySelector(".account-avatar .presence-dot")?.dataset.status === "online"');
-    browser("click", '[aria-label="User Settings"]');
-    assert.equal(
-      evaluate('document.querySelector("[role=switch]").checked'),
-      false,
-      "System sounds preference survives reload",
-    );
-    browser("check", '[role="switch"]');
-    screenshot("account-system-sounds-on");
+    screenshot("account-settings");
     browser("press", "Escape");
     browser("set", "viewport", "390", "844", "2");
     openBrowse();
     browser("click", '[aria-label="User Settings"]');
-    assert.equal(evaluate('document.querySelector("[role=switch]").checked'), true);
-    screenshot("account-system-sounds-narrow");
+    screenshot("account-settings-narrow");
     browser("set", "viewport", "1280", "900", "2");
-    console.log("PASS: account footer dot and persisted system sounds setting (desktop and narrow).");
+    console.log("PASS: account footer dot and settings menu (desktop and narrow).");
     console.log(
       "PASS: stable loading geometry, full member roster/filter/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).",
     );

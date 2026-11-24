@@ -107,7 +107,7 @@ public enum CaperTheme {
             CaperFontLoader.register()
             if model.phase == .loading { await model.start() }
         }
-        .modifier(VoiceCallEffects(model: model))
+        .modifier(VoiceSpeaking(model: model))
     }
 }
 #endif
@@ -115,34 +115,17 @@ public enum CaperTheme {
 /// The call's speaking rings and chimes: samples who is speaking while
 /// connected, and plays join and leave. SwiftUI's root and the UIKit client's
 /// root host both apply it.
-struct VoiceCallEffects: ViewModifier {
+struct VoiceSpeaking: ViewModifier {
     let model: AppModel
-    @State private var announcedVoice = false
 
     func body(content: Content) -> some View {
         content
-            .task { CaperEffects.shared.preload() }
             .task(id: model.voice.phase) {
                 while !Task.isCancelled && model.voice.phase == .connected {
                     await model.voice.sampleSpeaking()
                     do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
                 }
                 model.voice.clearSpeaking()
-            }
-            .onChange(of: model.voice.participants.map(\.id)) { old, new in
-                // Web chimes when someone else joins or leaves the call you are in.
-                guard model.voice.phase == .connected,
-                      let me = old.first(where: { model.voice.isSelf(participantID: $0) }), new.contains(me) else { return }
-                let before = Set(old).subtracting([me]), after = Set(new).subtracting([me])
-                if !before.subtracting(after).isEmpty { CaperEffects.shared.play(.leave) }
-                else if !after.subtracting(before).isEmpty { CaperEffects.shared.play(.join) }
-            }
-            .onChange(of: model.voice.phase) { _, new in
-                if new == .idle || new == .failed || new == .joining { announcedVoice = false }
-                if new == .connected, !announcedVoice {
-                    announcedVoice = true
-                    CaperEffects.shared.play(.join)
-                }
             }
     }
 }
@@ -1420,7 +1403,7 @@ private struct ChannelSidebar: View {
             // room), above the channels; live rows grow into cards in place.
             LiveNowSection(model: model, narrow: narrow)
             HStack {
-                Button { if !SwipeTapGuard.swiping { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } } label: {
+                Button { if !SwipeTapGuard.swiping { channelsExpanded.toggle() } } label: {
                     HStack(spacing: 6) {
                         // One chevron that turns, as for message requests.
                         CaperIcon(name: "chevron-down")
@@ -2127,17 +2110,14 @@ public struct CallPerson: Identifiable {
     public static var disconnect: Color { LiveNowPalette.disconnect }
 
     public static func toggleMute(_ voice: VoiceClient) {
-        CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) }
+        Task { await voice.setMuted(!voice.muted) }
     }
     public static func toggleDeafen(_ voice: VoiceClient) {
-        CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) }
+        Task { await voice.setDeafened(!voice.deafened) }
     }
     public static func leave(_ model: AppModel) {
-        if model.voice.phase == .connected { CaperEffects.shared.play(.disconnect) }
         model.leaveVoice()
     }
-    public static func sliderFeedback(_ value: Double) { CaperEffects.shared.slider(value / 200) }
-    public static func muteFeedback(_ muted: Bool) { CaperEffects.shared.toggle(!muted) }
 }
 
 /// Everyone in your call: you first, then in the order they joined. Your own
@@ -2519,7 +2499,6 @@ private struct VoiceCallCard<Heading: View>: View {
             Spacer(minLength: 8)
             Button {
                 guard !SwipeTapGuard.swiping else { return }
-                if voice.phase == .connected { CaperEffects.shared.play(.disconnect) }
                 model.leaveVoice()
             } label: {
                 HStack(spacing: 6) {
@@ -2607,7 +2586,7 @@ private struct CallMuteButton: View {
     var body: some View {
         Button {
             guard !SwipeTapGuard.swiping else { return }
-            CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) }
+            Task { await voice.setMuted(!voice.muted) }
         } label: {
             CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 18)
         }
@@ -2626,7 +2605,7 @@ private struct CallDeafenButton: View {
     var body: some View {
         Button {
             guard !SwipeTapGuard.swiping else { return }
-            CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) }
+            Task { await voice.setDeafened(!voice.deafened) }
         } label: {
             CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 18)
         }
@@ -2827,14 +2806,14 @@ private struct VoiceParticipantsList: View {
     private func gain(_ id: String) -> Binding<Double> {
         Binding(
             get: { Double(voice.participantGains[id] ?? 100) },
-            set: { voice.setParticipantGain(Int($0), participantID: id); CaperEffects.shared.slider($0 / 200) }
+            set: { voice.setParticipantGain(Int($0), participantID: id) }
         )
     }
 
     private func mutedForMe(_ id: String) -> Binding<Bool> {
         Binding(
             get: { voice.locallyMutedParticipants.contains(id) },
-            set: { voice.setParticipantMuted($0, participantID: id); CaperEffects.shared.toggle(!$0) }
+            set: { voice.setParticipantMuted($0, participantID: id) }
         )
     }
 }
@@ -3364,7 +3343,6 @@ private struct AccountBar: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     @Binding var sheet: WorkspaceSheet?
-    @Bindable private var effects = CaperEffects.shared
     @Bindable private var voiceMessages = VoiceMessageSettings.shared
     @State private var inputOptions = false
     @State private var outputOptions = false
@@ -3421,8 +3399,6 @@ private struct AccountBar: View {
                     .accessibilityIdentifier("account-profile")
             Menu {
                 Section("Audio settings") {
-                    Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
-                        .accessibilityIdentifier("sound-effects")
                     Toggle(VoiceMessage.sendOnStopTitle, isOn: $voiceMessages.sendOnStop)
                         .accessibilityIdentifier("voice-messages-send-on-stop")
                 }
@@ -3502,11 +3478,11 @@ private struct AccountAudioMenu: View {
             if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
             if input {
                 Text("Input volume · \(voice.inputGain)%").font(CaperTheme.font(12))
-                CaperSlider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1, defaultValue: 100)
+                CaperSlider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)) }), in: 0...200, step: 1, defaultValue: 100)
                     .accessibilityLabel("Input volume")
             } else {
                 Text("Output volume · \(voice.outputGain)%").font(CaperTheme.font(12))
-                CaperSlider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1, defaultValue: 100)
+                CaperSlider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)) }), in: 0...200, step: 1, defaultValue: 100)
                     .accessibilityLabel("Output volume")
             }
         }.padding(16).frame(width: 260).background(CaperTheme.surface)
@@ -8789,7 +8765,7 @@ private struct InvitationSheet: View {
         #if SWIFT_PACKAGE
         Bundle.module
         #else
-        Bundle(for: CaperEffects.self)
+        Bundle(for: SpeakerTest.self)
         #endif
     }
 
@@ -9427,7 +9403,7 @@ private struct SpaceEditor: View {
                             Divider().overlay(CaperTheme.border)
                             Text("Delete space").font(CaperTheme.font(14, weight: .bold))
                             Text("Delete this space and all its channels for every member.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                            Button("Delete space", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(CaperSecondaryButton()).disabled(pending)
+                            Button("Delete space", role: .destructive) { confirmDelete = true }.buttonStyle(CaperSecondaryButton()).disabled(pending)
                         }
                     }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
@@ -9442,7 +9418,6 @@ private struct SpaceEditor: View {
         .sheet(isPresented: $confirmDelete) {
             ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
                 try await model.deleteCurrentSpace()
-                CaperEffects.shared.play(.delete)
                 close()
             }
             .modifier(ConfirmationPresentation())
@@ -9569,7 +9544,7 @@ private struct ChannelEditor: View {
                         Text("Channels are where conversations happen around a topic. Use a name that is easy to find and understand.")
                             .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
                     }
-                    Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0; CaperEffects.shared.toggle($0) })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in \(model.detail?.space.name ?? "this space") can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) }.frame(minHeight: channel == nil ? nil : 32, alignment: .topLeading) }.toggleStyle(.switch)
+                    Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0 })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in \(model.detail?.space.name ?? "this space") can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) }.frame(minHeight: channel == nil ? nil : 32, alignment: .topLeading) }.toggleStyle(.switch)
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                     if channel == nil {
                         HStack {
@@ -9637,7 +9612,7 @@ private struct ChannelEditor: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Delete channel").font(CaperTheme.font(14, weight: .bold))
                             Text("Delete this channel for everyone in the space.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                            Button("Delete channel", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(CaperSecondaryButton()).disabled(pending)
+                            Button("Delete channel", role: .destructive) { confirmDelete = true }.buttonStyle(CaperSecondaryButton()).disabled(pending)
                         }
                     }
                 }.padding(22)
@@ -9661,7 +9636,6 @@ private struct ChannelEditor: View {
             if let channel {
                 ConfirmationSheet(title: "Delete channel", detail: "Delete #\(channel.name) for everyone? This channel and its messages will disappear from the space. This cannot be undone.", action: "Delete channel", close: { confirmDelete = false }) {
                     try await model.deleteChannel(channel)
-                    CaperEffects.shared.play(.delete)
                     close()
                 }
                 .modifier(ConfirmationPresentation())
@@ -10279,13 +10253,13 @@ private struct AudioPreferencesView: View {
     }
 
     private var outputGain: Binding<Double> {
-        Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) })
+        Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)) })
     }
     private var inputGain: Binding<Double> {
-        Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) })
+        Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)) })
     }
     private var liveStrength: Binding<Double> {
-        Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)); CaperEffects.shared.slider($0 / 100) })
+        Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)) })
     }
     private var recordedPreview: Bool { CaperRuntime.isAudioPreview("audio-recorded") }
 }

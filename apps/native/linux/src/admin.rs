@@ -14,7 +14,6 @@ use super::{App, State, clear, popup};
 use crate::images::{Avatar, AvatarView, Icon};
 use crate::people::PeopleField;
 use crate::ui::label;
-use caper_client::effects::Effect;
 use caper_client::invites::{
     self, ExpiryUnit, INVITATION_SENT, InviteLink, InvitePreview, admin_error, invite_error,
 };
@@ -908,9 +907,6 @@ impl App {
             if state.admin.busy {
                 return;
             }
-            if matches!(confirm, Confirm::Delete { .. }) {
-                self.play(Effect::Warning);
-            }
             state.admin.confirm = Some(confirm);
             state.admin.error = None;
         }
@@ -954,12 +950,6 @@ impl App {
                 return;
             }
         };
-        if matches!(
-            result,
-            AdminResult::SpaceDeleted(_) | AdminResult::ChannelDeleted(_)
-        ) {
-            self.play(Effect::Delete);
-        }
         let admin = &mut state.admin;
         match result {
             AdminResult::SpaceCreated(space) => {
@@ -2054,15 +2044,8 @@ impl App {
         }
         if let Some(private) = &widgets.private {
             let weak = Rc::downgrade(self);
-            private.connect_toggled(move |check| {
+            private.connect_toggled(move |_| {
                 if let Some(app) = weak.upgrade() {
-                    if app.state.try_borrow().is_ok() {
-                        app.play(if check.is_active() {
-                            Effect::ToggleOn
-                        } else {
-                            Effect::ToggleOff
-                        });
-                    }
                     app.update_admin();
                 }
             });
@@ -3158,7 +3141,6 @@ impl App {
                     AdminOperation::LeaveSpace { space: id, member }
                 }
                 Confirm::LeaveChannel { space, channel, .. } => {
-                    self.play(Effect::Leave);
                     AdminOperation::LeaveChannel { space, channel }
                 }
                 Confirm::Delete { space, channel, .. } => match channel {

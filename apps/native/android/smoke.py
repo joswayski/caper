@@ -586,15 +586,12 @@ def main() -> None:
     # Inspect prejoin audio controls without starting capture or playback.
     tap(description="User Settings")
     settings = capture("caper-android-audio-settings", "Audio test")
-    for label in ("Caper sound effects", "Audio test"):
-        assert find(settings, text=label) is not None, f"Missing audio settings entry: {label}"
-    effects = toggle(settings, "Caper sound effects")
-    assert effects is not None and effects.get("clickable") == "true", "The sound effects switch is named"
+    assert find(settings, text="Audio test") is not None, "Missing audio settings entry: Audio test"
     voice_started = find(settings, description="When voice starts in a space")
     assert voice_started is not None and voice_started.get("class") == "android.widget.CheckBox", "Checkbox is named"
     assert find(settings, text="Connection details") is None, "Connection details are only offered while connected"
     # Log out ends the menu, below the fold on a phone since Settings shows the version.
-    reveal("Log out", anchor="Caper sound effects")
+    reveal("Log out", anchor="Send voice messages as soon as I stop recording")
     reveal("Audio test", anchor="Log out", up=True)
     tap(text="Audio test")
     audio = capture("caper-android-audio-prejoin", "Only you can hear these tests.")

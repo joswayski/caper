@@ -1210,9 +1210,6 @@ impl App {
                 .as_ref()
                 .is_some_and(|d| d.kind == Kind::InvitePeople)
             {
-                if let Some(live) = &self.live {
-                    live.effects.play(caper_client::effects::Effect::Delete);
-                }
                 self.close_dialog();
             }
             return;
@@ -1256,7 +1253,6 @@ impl App {
     /// Clicks and UIA Invoke on the dialog's own parts.
     pub(crate) fn invite_people_activate(&mut self, part: Part) {
         let hwnd = self.hwnd;
-        let mut warn = false;
         let (Some(d), Some(live)) = (self.dialog.as_mut(), self.live.as_ref()) else {
             return;
         };
@@ -1324,7 +1320,6 @@ impl App {
                     d.error = None;
                     d.field.focused = false;
                     d.suggestions.clear();
-                    warn = true;
                 }
                 Part::Primary if ip.deleting => {
                     d.busy = true;
@@ -1399,10 +1394,6 @@ impl App {
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
             eprintln!("invite action failed: {e:?}");
-        }
-        // Web's DeleteConfirmation warns as it opens.
-        if warn && let Some(live) = &self.live {
-            live.effects.play(caper_client::effects::Effect::Warning);
         }
     }
 

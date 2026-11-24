@@ -101,15 +101,11 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         guard live else { return [] }
         let model = self.model
         // SwiftUI's iPhone "Audio settings" section.
-        let effects = UIAction(title: "Caper sound effects", state: UIKitAudioSettings.soundEffects ? .on : .off) { _ in
-            UIKitAudioSettings.soundEffects.toggle()
-        }
-        effects.accessibilityIdentifier = "sound-effects"
         let sendOnStop = UIAction(title: VoiceMessage.sendOnStopTitle, state: UIKitAudioSettings.sendVoiceOnStop ? .on : .off) { _ in
             UIKitAudioSettings.sendVoiceOnStop.toggle()
         }
         sendOnStop.accessibilityIdentifier = "voice-messages-send-on-stop"
-        var items: [UIMenuElement] = [UIMenu(title: "Audio settings", options: .displayInline, children: [effects, sendOnStop]),
+        var items: [UIMenuElement] = [UIMenu(title: "Audio settings", options: .displayInline, children: [sendOnStop]),
                                       UIAction(title: "Audio test", attributes: model.voice.phase == .leaving ? .disabled : []) { [weak self] _ in self?.dialog(.audio) }]
         if model.voice.phase == .connected {
             items.append(UIAction(title: "Connection details") { [weak self] _ in self?.dialog(.connection) })
@@ -422,7 +418,6 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         cell.toggled = { [weak self] in
             guard let self else { return }
             self.channelsExpanded.toggle()
-            UIKitBrowse.playToggle(self.channelsExpanded)
             self.render()
         }
         cell.create = { [weak self] in self?.dialog(.createChannel) }

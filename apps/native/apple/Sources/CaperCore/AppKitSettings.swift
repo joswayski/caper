@@ -315,13 +315,12 @@ import ServiceManagement
     }
 }
 
-/// Startup, appearance, sounds, voice messages, updates and release notes.
+/// Startup, appearance, voice messages, updates and release notes.
 @MainActor private final class AppKitSettingsController: NSViewController {
     private let whatsNew: WhatsNewModel
     private let loginItem: CaperLoginItem
     private let updater: AppUpdater?
     private let onClose: () -> Void
-    private let effects = CaperEffects.shared
     private let voiceMessages = VoiceMessageSettings.shared
     private let themeStore = CaperThemeStore.shared
     private let observation = AppKitObservation()
@@ -337,8 +336,6 @@ import ServiceManagement
     private lazy var launch = AppKitKitSwitchRow(title: "Launch at login", detail: "Open Caper when you sign in to your computer.",
                                                  identifier: "launch-at-login") { [weak self] on in self?.loginItem.setEnabled(on) }
     private let startupNotes = AppKitKit.stack([], spacing: 8)
-    private lazy var sounds = AppKitKitSwitchRow(title: "Caper sound effects", detail: "Play sounds for messages and app interactions.",
-                                                 identifier: "sound-effects") { [weak self] on in self?.effects.soundsEnabled = on }
     private lazy var sendOnStop = AppKitKitSwitchRow(title: VoiceMessage.sendOnStopTitle, detail: VoiceMessage.sendOnStopDetail,
                                                      identifier: "voice-messages-send-on-stop") { [weak self] on in self?.voiceMessages.sendOnStop = on }
     private let version = NSStackView()
@@ -385,7 +382,6 @@ import ServiceManagement
             header,
             appearance, AppKitKit.divider(),
             section("Startup", [launch, startupNotes]), AppKitKit.divider(),
-            section("Sounds", [sounds]), AppKitKit.divider(),
             section("Voice messages", [sendOnStop]), AppKitKit.divider(),
             updates,
         ], spacing: 18)
@@ -393,7 +389,7 @@ import ServiceManagement
         for view in content.arrangedSubviews where !(view is NSStackView) && !(view is NSButton) && !(view is NSTextField) {
             AppKitKit.fillWidth(view, of: content)
         }
-        for row in [themeCards, launch, sounds, sendOnStop] as [NSView] {
+        for row in [themeCards, launch, sendOnStop] as [NSView] {
             if let stack = row.superview as? NSStackView { AppKitKit.fillWidth(row, of: stack) }
         }
         let scroll = appKitKitScroll(content, insets: NSEdgeInsets(top: 22, left: 24, bottom: 24, right: 24))
@@ -436,7 +432,7 @@ import ServiceManagement
     private func snapshot() -> [AnyHashable] {
         let c = controls
         return [loginItem.registered, loginItem.available, loginItem.status == .requiresApproval, loginItem.error,
-                effects.soundsEnabled, voiceMessages.sendOnStop, themeStore.active.id,
+                voiceMessages.sendOnStop, themeStore.active.id,
                 c.isChecking, c.review != nil, c.check != nil, c.lastSuccessfulCheck, c.installedVersion, c.sourceRevision]
     }
 
@@ -459,7 +455,6 @@ import ServiceManagement
             startupNotes.addArrangedSubview(AppKitKitButton("Dismiss startup error") { [weak self] in self?.loginItem.error = nil })
         }
         startupNotes.isHidden = startupNotes.arrangedSubviews.isEmpty
-        sounds.isOn = effects.soundsEnabled
         sendOnStop.isOn = voiceMessages.sendOnStop
 
         let c = controls
@@ -485,8 +480,8 @@ import ServiceManagement
     private let model: AppModel
     private let observation = AppKitObservation()
     private let readiness = AppKitObservation()
-    private let voiceEffects = AppKitObservation()
-    private lazy var effects = NativeVoiceCallEffects(voice: model.voice)
+    private let voiceSpeaking = AppKitObservation()
+    private lazy var speaking = NativeVoiceSpeaking(voice: model.voice)
     private var sheet: AppKitWhatsNewSheet?
     private weak var owner: NSWindow?
     private var dismissMonitor: Any?
@@ -507,9 +502,9 @@ import ServiceManagement
         observation.start(reading: { [model] in (model.whatsNew.presentation?.id, model.whatsNew.settingsOpen) }) { [weak self] _ in
             self?.sync()
         }
-        // The call's chimes and speaking rings; nothing samples while no
-        // Caper window shows (minimized, covered or on another Space).
-        voiceEffects.start(reading: { [effects] in effects.sync() }, apply: { _ in })
+        // The call's speaking rings; nothing samples while no Caper window
+        // shows (minimized, covered or on another Space).
+        voiceSpeaking.start(reading: { [speaking] in speaking.sync() }, apply: { _ in })
         NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged),
             name: NSApplication.didChangeOcclusionStateNotification, object: nil)
         occlusionChanged()
@@ -526,7 +521,7 @@ import ServiceManagement
         activityChanged()
     }
 
-    @objc private func occlusionChanged() { effects.sampling = NSApp.occlusionState.contains(.visible) }
+    @objc private func occlusionChanged() { speaking.sampling = NSApp.occlusionState.contains(.visible) }
 
     @objc private func activityChanged() {
         if NSApp.isActive, timer == nil {
