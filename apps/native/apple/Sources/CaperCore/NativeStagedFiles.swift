@@ -315,7 +315,6 @@ import UIKit
     private let thumbnail = StagedThumbnail()
     private let waveform = NativeVoiceWaveform(playedColor: UIColor(CaperTheme.text).cgColor, unplayedColor: UIColor(CaperTheme.muted).withAlphaComponent(0.45).cgColor)
     private let preview = UIButton(type: .custom), remove = UIButton(type: .system), edit = UIButton(type: .system), retry = UIButton(type: .system)
-    private let removeFace = CALayer(), editFace = CALayer()
     private let time = UIKitMessageDialog.label("", size: 11)
     private let progress = CAShapeLayer()
     init(_ file: NativeStagedFile) {
@@ -330,12 +329,8 @@ import UIKit
         retry.addAction(UIAction { [weak self] _ in self?.file.retry?() }, for: .touchUpInside)
         for button in [remove, edit, retry] { button.tintColor = UIColor(CaperTheme.text) }
         // Remove and Edit sit on small dark faces, as on Android, so they read over pale pictures.
-        for (button, face) in [(remove, removeFace), (edit, editFace)] {
-            face.backgroundColor = UIColor(CaperTheme.blackout).withAlphaComponent(0.78).cgColor; face.cornerRadius = 11
-            face.borderWidth = 1; face.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
-            button.layer.insertSublayer(face, at: 0)
-            button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 10, weight: .bold), forImageIn: .normal)
-        }
+        // Face and glyph are one image, so nothing can draw between them.
+        remove.setImage(Self.face("xmark"), for: .normal); edit.setImage(Self.face("pencil"), for: .normal)
         progress.fillColor = nil; progress.strokeColor = UIColor(CaperTheme.terracottaBright).cgColor; progress.lineWidth = 2; remove.layer.addSublayer(progress)
         preview.addInteraction(UIContextMenuInteraction(delegate: self)); update(file)
     }
@@ -370,7 +365,17 @@ import UIKit
         retry.frame = CGRect(x: bounds.midX - 22, y: bounds.midY - 22, width: 44, height: 44)
         time.frame = CGRect(x: 6, y: bounds.height - 24, width: max(0, bounds.width - 12), height: 20)
         progress.frame = remove.bounds; progress.path = CGPath(ellipseIn: remove.bounds.insetBy(dx: 11, dy: 11), transform: nil)
-        removeFace.frame = remove.bounds.insetBy(dx: 11, dy: 11); editFace.frame = edit.bounds.insetBy(dx: 11, dy: 11)
+    }
+    /// A 22pt dark circle with a hairline rim and a white symbol, drawn as it is (not tinted).
+    private static func face(_ symbol: String) -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 22, height: 22)).image { _ in
+            let circle = UIBezierPath(ovalIn: CGRect(x: 0.5, y: 0.5, width: 21, height: 21))
+            UIColor(CaperTheme.blackout).withAlphaComponent(0.78).setFill(); circle.fill()
+            UIColor.white.withAlphaComponent(0.12).setStroke(); circle.lineWidth = 1; circle.stroke()
+            let glyph = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold))?
+                .withTintColor(UIColor(CaperTheme.text), renderingMode: .alwaysOriginal)
+            if let glyph { glyph.draw(at: CGPoint(x: (22 - glyph.size.width) / 2, y: (22 - glyph.size.height) / 2)) }
+        }.withRenderingMode(.alwaysOriginal)
     }
     private func menu() -> UIMenu {
         guard file.removable else { return UIMenu() }; var actions: [UIAction] = []
