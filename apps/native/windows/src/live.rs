@@ -3988,6 +3988,8 @@ impl Live {
                 }
             }
             Target::Person(username) => self.create_direct(username.clone()),
+            // The shortcuts sheet's rows only describe keys.
+            Target::Shortcut => {}
         }
     }
 
