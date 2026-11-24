@@ -181,6 +181,8 @@ pub(super) fn payload(alert: &Alert) -> Value {
         payload["notificationId"] = json!(id);
     } else {
         payload["messageId"] = json!(alert.message_id);
+        // Reply and Mark as read (`NotificationActions` in the iPhone app).
+        payload["aps"]["category"] = json!("caper.message");
     }
     if let Some(attachment) = &alert.attachment {
         payload["attachmentUrl"] = json!(attachment.url);

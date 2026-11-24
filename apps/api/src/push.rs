@@ -21,6 +21,7 @@ use sqlx::PgPool;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
 
+mod actions;
 mod apns;
 pub(crate) mod badge;
 mod credentials;
@@ -783,6 +784,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/push/devices", post(register).delete(unregister))
         .merge(settings::routes())
         .merge(inbox::routes())
+        .merge(actions::routes())
 }
 
 fn unavailable() -> ApiError {

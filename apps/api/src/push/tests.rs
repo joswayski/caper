@@ -518,7 +518,7 @@ async fn apns_sends_http2_alerts_with_a_cached_es256_token_and_classifies_replie
     assert_eq!(
         first.body,
         json!({
-            "aps": {"alert": {"title": "Alice · #general (Studio)", "body": "Hello @bob"}, "sound": "default", "thread-id": "chan00000001", "mutable-content": 1},
+            "aps": {"alert": {"title": "Alice · #general (Studio)", "body": "Hello @bob"}, "sound": "default", "thread-id": "chan00000001", "mutable-content": 1, "category": "caper.message"},
             "kind": "mention.user", "messageId": "message00000001", "spaceId": "space0000001", "channelId": "chan00000001",
             "sender": "Alice", "senderId": "alice0000001", "senderAvatarId": 317,
             "conversationTitle": "#general (Studio)", "recipientCount": 2,
@@ -2482,6 +2482,10 @@ async fn invitations_notify_without_grants_and_recheck_consent_before_delivery(p
         format!("invitation:{first}")
     );
     assert_eq!(apns[0].body["aps"]["alert"]["title"], "You’re invited!");
+    assert!(
+        apns[0].body["aps"].get("category").is_none(),
+        "nothing to reply to"
+    );
     assert_eq!(fcm[0].body["message"]["data"]["kind"], "space.invitation");
     assert_eq!(
         call(
@@ -3749,6 +3753,7 @@ async fn deleting_a_message_takes_back_its_delivered_pushes(pool: PgPool) {
     assert_eq!(body["aps"]["badge"], 0);
     assert!(body["aps"].get("sound").is_none());
     assert_eq!(body["kind"], "message.deleted");
+    assert!(body["aps"].get("category").is_none());
     assert_eq!(body["deletedMessageId"], shown.as_str());
     assert!(body.get("messageId").is_none());
     let fcm = h.fcm.take();
@@ -4622,4 +4627,211 @@ async fn voice_alerts_recheck_preferences_access_and_deliver_without_a_message(p
             StatusCode::BAD_REQUEST
         );
     }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn notification_actions_reply_and_read_with_access_and_blocks(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let outsider = person(&pool, "outsider").await;
+    let (space_id, _) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    let secret = channel(&pool, space_id, "secret", true, &[&alice]).await;
+    let first = send(&h, &alice, &general, "First", None).await;
+    let second = send(&h, &alice, &general, "Second", None).await;
+    let root = send(&h, &bob, &general, "My post", None).await;
+    let threaded = send(&h, &alice, &general, "In the thread", Some(&root)).await;
+    let hidden = send(&h, &alice, &secret, "Must not leak", None).await;
+    let action =
+        |message: &str, verb: &str| format!("/api/notifications/messages/{message}/{verb}");
+    let unread = || async {
+        call(
+            &h.app,
+            "GET",
+            "/api/spaces/unread",
+            Some(&bob.token),
+            None,
+            Value::Null,
+        )
+        .await
+        .1
+    };
+    assert_eq!(unread().await["badgeCount"], 3);
+
+    // Reading the first message leaves the later one unread.
+    let (status, read) = call(
+        &h.app,
+        "POST",
+        &action(&first, "read"),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["badgeCount"], 2);
+    // A thread reply reads its thread, never the channel.
+    let (_, read) = call(
+        &h.app,
+        "POST",
+        &action(&threaded, "read"),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(read["badgeCount"], 1);
+    let (_, threads) = call(
+        &h.app,
+        "GET",
+        &format!("/api/chat/channels/{general}/threads/unread"),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(threads["threads"], json!([]));
+
+    // A reply answers the message, reads up to it, and is idempotent on retry.
+    let body = json!({"clientMessageId": Uuid::new_v4(), "text": "On it"});
+    let (status, sent) = call(
+        &h.app,
+        "POST",
+        &action(&second, "reply"),
+        Some(&bob.token),
+        None,
+        body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    let reply = sent["messageId"].as_str().unwrap().to_owned();
+    let (_, again) = call(
+        &h.app,
+        "POST",
+        &action(&second, "reply"),
+        Some(&bob.token),
+        None,
+        body,
+    )
+    .await;
+    assert_eq!(again["messageId"], reply.as_str());
+    let (_, message) = call(
+        &h.app,
+        "GET",
+        &format!("/api/chat/channels/{general}/messages/{reply}"),
+        Some(&bob.token),
+        Some(&bob.chat),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(message["replyTo"]["id"], second.as_str(), "{message}");
+    assert!(message.get("threadRootId").is_none_or(Value::is_null));
+    // Replying to a thread reply answers in the thread.
+    let (_, sent) = call(
+        &h.app,
+        "POST",
+        &action(&threaded, "reply"),
+        Some(&bob.token),
+        None,
+        json!({"clientMessageId": Uuid::new_v4(), "text": "Thanks"}),
+    )
+    .await;
+    let (_, message) = call(
+        &h.app,
+        "GET",
+        &format!(
+            "/api/chat/channels/{general}/messages/{}",
+            sent["messageId"].as_str().unwrap()
+        ),
+        Some(&bob.token),
+        Some(&bob.chat),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(message["threadRootId"], root.as_str(), "{message}");
+
+    // No access: another account, or a private channel without a grant.
+    for (person, message) in [(&outsider, &first), (&bob, &hidden)] {
+        for verb in ["read", "reply"] {
+            let (status, _) = call(
+                &h.app,
+                "POST",
+                &action(message, verb),
+                Some(&person.token),
+                None,
+                if verb == "reply" {
+                    json!({"clientMessageId": Uuid::new_v4(), "text": "Hi"})
+                } else {
+                    Value::Null
+                },
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{verb}");
+        }
+    }
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &action(&first, "read"),
+        None,
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A block stops replies in a DM in either direction.
+    let dm = direct(&h, &alice, "bob").await;
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &format!("/api/dms/{dm}/accept"),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    let (_, chat) = call(
+        &h.app,
+        "POST",
+        "/api/chat/session",
+        Some(&alice.token),
+        None,
+        json!({"name": "Alice"}),
+    )
+    .await;
+    let (status, dm_message) = call(
+        &h.app,
+        "POST",
+        &format!("/api/chat/channels/{dm}/messages"),
+        None,
+        chat["token"].as_str(),
+        json!({"clientMessageId": Uuid::new_v4(), "text": "Hey"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dm_message}");
+    let dm_message = dm_message["id"].as_str().unwrap().to_owned();
+    let (status, _) = call(
+        &h.app,
+        "PUT",
+        &format!("/api/blocks/{}", alice.external_id),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &action(&dm_message, "reply"),
+        Some(&bob.token),
+        None,
+        json!({"clientMessageId": Uuid::new_v4(), "text": "Blocked"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

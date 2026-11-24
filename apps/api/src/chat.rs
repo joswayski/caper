@@ -575,21 +575,42 @@ async fn session(
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
+    let (token, admin) = mint_session(
+        &chat.pool,
+        account.id,
+        name,
+        Sha256::digest(token.as_bytes()).to_vec(),
+    )
+    .await?;
+    Ok(Json(
+        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false,"admin":admin,"avatarId":account.avatar_id,"avatarAsset":account.avatar_asset}}),
+    ))
+}
+
+/// A chat capability for an onboarded account, bound to the account session
+/// whose token hashes to `account_session_hash`. Returns the token and
+/// whether the account is on the feedback team.
+pub(crate) async fn mint_session(
+    pool: &PgPool,
+    user_id: i64,
+    name: &str,
+    account_session_hash: Vec<u8>,
+) -> Result<(String, bool), ApiError> {
     let token = URL_SAFE_NO_PAD.encode(rand::rng().random::<[u8; 32]>());
     let id = random_id(12);
-    let mut tx = chat.pool.begin().await.map_err(database_error)?;
+    let mut tx = pool.begin().await.map_err(database_error)?;
     // Sessions require an account, so limit each account rather than the whole
     // service: clients mint one per conversation they open, and a site-wide
     // budget let a few busy (or retrying) accounts lock everyone out of chat.
     sqlx::query("SELECT pg_advisory_xact_lock(731905, hashtext($1::bigint::text))")
-        .bind(account.id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
     let recent: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM public.chat_sessions WHERE user_id = $1 AND created_at > now() - interval '1 minute'",
     )
-    .bind(account.id)
+    .bind(user_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
@@ -600,14 +621,12 @@ async fn session(
         ));
     }
     sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, user_id, name, account_session_hash) VALUES ($1, $2, $3, $4, $5)")
-        .bind(&id).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(account.id).bind(name)
-        .bind(account_token(&headers).map(|token| Sha256::digest(token.as_bytes()).to_vec()))
+        .bind(&id).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(user_id).bind(name)
+        .bind(account_session_hash)
         .execute(&mut *tx).await.map_err(database_error)?;
-    let admin = crate::feedback::team_member(&mut tx, Some(account.id)).await?;
+    let admin = crate::feedback::team_member(&mut tx, Some(user_id)).await?;
     tx.commit().await.map_err(database_error)?;
-    Ok(Json(
-        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false,"admin":admin,"avatarId":account.avatar_id,"avatarAsset":account.avatar_asset}}),
-    ))
+    Ok((token, admin))
 }
 
 #[derive(Deserialize)]
