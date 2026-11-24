@@ -16,7 +16,7 @@ const aliases = [
             android:enabled="true"
             android:exported="true"
             android:icon="@drawable/ic_caper_app"
-            android:label="Caper (Development)"
+            android:label="\${appLabel}"
             android:targetActivity="chat.caper.android.MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -30,7 +30,7 @@ const aliases = [
             android:enabled="false"
             android:exported="true"
             android:icon="@drawable/ic_caper_app"
-            android:label="Caper (Development)"
+            android:label="\${appLabel}"
             android:targetActivity="chat.caper.android.MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

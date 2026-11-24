@@ -91,12 +91,15 @@ android {
             buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
             buildConfigField("boolean", "FIXTURE_MODE", fixtureMode.get())
             manifestPlaceholders["usesCleartextTraffic"] = fixtureMode.get()
+            // Debug installs beside the release app; the label tells them apart.
+            manifestPlaceholders["appLabel"] = "Caper (Development)"
         }
         release {
             buildConfigField("String", "SOURCE_REVISION", "\"${sourceRevision.get()}\"")
             buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
             buildConfigField("boolean", "FIXTURE_MODE", "false")
             manifestPlaceholders["usesCleartextTraffic"] = "false"
+            manifestPlaceholders["appLabel"] = "Caper"
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
