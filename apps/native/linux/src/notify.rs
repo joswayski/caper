@@ -359,11 +359,9 @@ impl App {
         );
     }
 
-    /// Redraws the sidebar when the next timed mute ends.
+    /// Redraws the sidebar and Settings when the next timed mute or Do Not
+    /// Disturb ends; a sooner end than the one scheduled schedules again.
     pub(super) fn schedule_mute_expiry(self: &Rc<Self>) {
-        if self.mute_timer.get() {
-            return;
-        }
         let Some(delay) = self
             .state
             .borrow()
@@ -373,13 +371,25 @@ impl App {
         else {
             return;
         };
-        self.mute_timer.set(true);
+        let delay = delay + std::time::Duration::from_millis(250);
+        let due = std::time::Instant::now() + delay;
+        if self
+            .mute_timer
+            .get()
+            .is_some_and(|scheduled| scheduled <= due)
+        {
+            return;
+        }
+        self.mute_timer.set(Some(due));
         let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(delay + std::time::Duration::from_millis(250), move || {
+        glib::timeout_add_local_once(delay, move || {
             if let Some(app) = weak.upgrade() {
-                app.mute_timer.set(false);
+                if app.mute_timer.get() == Some(due) {
+                    app.mute_timer.set(None);
+                }
                 app.state.borrow_mut().layout += 1;
                 app.render();
+                app.render_settings();
             }
         });
     }

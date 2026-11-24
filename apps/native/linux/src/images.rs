@@ -115,6 +115,8 @@ icons! {
     Redo => "redo-2",
     Eraser => "eraser",
     ;
+    // Lucide's moon, for Do Not Disturb.
+    Moon => r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>"##,
 }
 
 /// What an avatar shows: an uploaded picture, a Caper mascot, or the
@@ -726,6 +728,14 @@ impl AvatarView {
                 self.initial.set_label(&avatar.initial());
                 self.initial.set_visible(true);
             }
+        }
+    }
+
+    /// Drops the presence dot's tooltip, for an avatar inside a control
+    /// whose own tooltip (and so its description) says more.
+    pub fn quiet_presence(&self) {
+        if let Some(dot) = &self.dot {
+            dot.set_tooltip_text(None);
         }
     }
 

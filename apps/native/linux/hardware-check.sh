@@ -202,7 +202,7 @@ unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME
 "$LINUX" >>"$WORK/app.log" 2>&1 &
 APP=$!
 sleep 3
-ask "Audio test (account bar settings → Audio test): your microphone and speakers are listed, Test speakers plays, and Test microphone records and plays back both the natural and enhanced takes."
+ask "Audio test (account bar gear → Settings → Voice & audio → Audio test): your microphone and speakers are listed, Test speakers plays, and Test microphone records and plays back both the natural and enhanced takes."
 ask "Join a voice channel: the other device hears you clearly, and you hear it, with no echo, crackle or growing delay over two minutes."
 ask "Mute and deafen: the other device sees and hears each change; the speaking ring follows whoever talks."
 ask "Devices: switch the input and output device (Input Options, Output Options) during the call; audio moves without leaving the call. Unplug a headset; Caper falls back to the default."

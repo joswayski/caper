@@ -1,15 +1,18 @@
-//! Settings, as on the egui desktop: Startup (launch at login, and keeping
-//! Caper running when its window closes), Sounds,
-//! Notifications ("Notify me about" and voice starting), Privacy (who can
-//! start a DM, blocked accounts) and Delete account. Account choices save as
-//! soon as they change and revert with an inline error. A child of `app`.
+//! Settings, the one screen every client shares: Profile (Edit profile),
+//! Appearance, Notifications (Do Not Disturb, "Notify me about" and voice
+//! starting), Voice & audio, Startup (launch at login, and keeping Caper
+//! running when its window closes), Privacy & blocked accounts (with Delete
+//! account), About (version, updates, What's new), Log out and Quit Caper.
+//! Your avatar in the account bar opens Do Not Disturb's menu. Account
+//! choices save as soon as they change and revert with an inline error. A
+//! child of `app`.
 
 use super::{App, State};
 use crate::app::named;
-use crate::images::Icon;
+use crate::images::{Avatar, AvatarView, Icon};
 use crate::ui::label;
 use caper_client::model::{DELETE_ACCOUNT_URL, DM_PRIVACY, NotificationLevel};
-use caper_client::notifications::{self, Change, Scope};
+use caper_client::notifications::{self, Change, PAUSE_PRESETS, Scope};
 use caper_client::worker::AccountOperation;
 use gtk::{glib, prelude::*};
 use std::rc::Rc;
@@ -27,15 +30,45 @@ pub(super) struct AccountSettings {
     pub privacy_saving: bool,
     pub privacy_error: Option<String>,
     pub notifications: notifications::Notifications,
+    /// The latest account notification change was Do Not Disturb, so a
+    /// failed save shows its error there.
+    pub pause_last: bool,
     pub blocks_error: Option<String>,
+}
+
+/// What a failed Do Not Disturb change says.
+const PAUSE_ERROR: &str = "That change wasn’t saved. Try again.";
+
+/// Do Not Disturb's end label ("Until 3:45 PM"), or `None` while it is off.
+fn pause_label(notifications: &notifications::Notifications) -> Option<String> {
+    notifications
+        .paused(chrono::Utc::now())
+        .map(|pause| notifications::pause_label(pause, &chrono::Local::now()))
+}
+
+/// The `pausedUntil` a Do Not Disturb preset sends now.
+fn pause_change(preset: notifications::PausePreset) -> Change {
+    Change::Pause(Some(notifications::pause_value(
+        preset,
+        &chrono::Local::now(),
+    )))
 }
 
 pub(super) struct SettingsDialog {
     window: gtk::Window,
+    profile_avatar: AvatarView,
+    profile_name: gtk::Label,
+    profile_username: gtk::Label,
     obsidian_card: gtk::Button,
     paper_card: gtk::Button,
     startup_error: gtk::Label,
     voice_send: gtk::Switch,
+    connection: gtk::Button,
+    diagnostics: gtk::Button,
+    dnd_status: gtk::Label,
+    dnd_presets: Vec<gtk::Button>,
+    dnd_off: gtk::Button,
+    dnd_error: gtk::Label,
     levels: Vec<(NotificationLevel, gtk::CheckButton)>,
     voice_started: gtk::CheckButton,
     notifications_status: gtk::Label,
@@ -172,8 +205,38 @@ impl App {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
         root.add_css_class("dialog-body");
         root.append(&label("Settings", &["dialog-title"]));
+        let signed_in = self.state.borrow().account.is_some();
 
-        section(&root, "Appearance", true);
+        // Profile: your picture, name and @username, and Edit profile,
+        // which opens over Settings and returns to it.
+        let profile_avatar = AvatarView::new(48, false);
+        let profile_name = label("", &["author"]);
+        profile_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let profile_username = label("", &["muted", "small"]);
+        profile_username.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        if signed_in {
+            section(&root, "Profile", true);
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            row.append(&profile_avatar.root);
+            let names = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            names.set_hexpand(true);
+            names.set_valign(gtk::Align::Center);
+            names.append(&profile_name);
+            names.append(&profile_username);
+            row.append(&names);
+            let edit = gtk::Button::with_label("Edit profile");
+            edit.set_valign(gtk::Align::Center);
+            let weak = Rc::downgrade(self);
+            edit.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.open_profile_editor();
+                }
+            });
+            row.append(&edit);
+            root.append(&row);
+        }
+
+        section(&root, "Appearance", !signed_in);
         let theme_note = label(
             "Choose between Obsidian Dark and Paper Light.",
             &["muted", "small"],
@@ -207,56 +270,59 @@ impl App {
             });
         }
 
-        section(&root, "Startup", false);
-        let startup = switch_row(
-            &root,
-            "Launch at login",
-            "Open Caper when you sign in to your computer.",
-        );
-        let startup_error = label("", &["error", "small"]);
-        startup_error.set_wrap(true);
-        root.append(&startup_error);
-        match caper_client::startup::enabled() {
-            Ok(enabled) => {
-                startup.set_active(enabled);
-                status(&startup_error, None, false);
-            }
-            Err(error) => status(
-                &startup_error,
-                Some(&format!("Could not read startup settings: {error}")),
-                true,
-            ),
-        }
-
-        let keep_running = switch_row(
-            &root,
-            caper_client::background::SETTING_TITLE,
-            caper_client::background::SETTING_DETAIL,
-        );
-        keep_running.set_active(self.keep_running());
-        if let Some(row) = keep_running.parent() {
-            row.set_margin_top(8);
-        }
-
-        section(&root, "Voice messages", false);
-        let voice_send = switch_row(
-            &root,
-            "Send voice messages as soon as I stop recording",
-            "Off: a stopped recording waits in the composer with your text and files until you press Send.",
-        );
-        voice_send.set_active(self.voice_send_on_stop());
-        let updates = self.updates_section(&root);
-
-        let signed_in = self.state.borrow().account.is_some();
         let mut levels = Vec::new();
         let mut privacy = Vec::new();
         let voice_started = gtk::CheckButton::with_label("When voice starts in a space");
         let notifications_status = label("", &["small"]);
         let privacy_status = label("", &["small"]);
         let blocked = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let dnd_status = label("", &["muted", "small"]);
+        let mut dnd_presets = Vec::new();
+        let dnd_off: gtk::Button = named("GtkButton", "Turn off Do Not Disturb");
+        crate::app::show_text(&dnd_off, "Turn off");
+        let dnd_error = label("", &["error", "small"]);
         if signed_in {
             section(&root, "Notifications", false);
-            root.append(&label("Notify me about", &["settings-label"]));
+            // Do Not Disturb: its state, the presets, and Turn off.
+            root.append(&label("Do Not Disturb", &["settings-label"]));
+            let state_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            dnd_status.set_hexpand(true);
+            dnd_status.set_xalign(0.0);
+            state_line.append(&dnd_status);
+            dnd_off.set_valign(gtk::Align::Center);
+            state_line.append(&dnd_off);
+            root.append(&state_line);
+            let rows = [
+                gtk::Box::new(gtk::Orientation::Horizontal, 8),
+                gtk::Box::new(gtk::Orientation::Horizontal, 8),
+            ];
+            for (index, (title, preset)) in PAUSE_PRESETS.into_iter().enumerate() {
+                let button = gtk::Button::with_label(title);
+                let weak = Rc::downgrade(self);
+                button.connect_clicked(move |_| {
+                    if let Some(app) = weak.upgrade() {
+                        app.change_notifications(Scope::Account, pause_change(preset));
+                    }
+                });
+                rows[usize::from(index >= 3)].append(&button);
+                dnd_presets.push(button);
+            }
+            for row in rows {
+                root.append(&row);
+            }
+            let weak = Rc::downgrade(self);
+            dnd_off.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.change_notifications(Scope::Account, Change::Pause(None));
+                }
+            });
+            dnd_error.set_wrap(true);
+            root.append(&dnd_error);
+
+            root.append(&label(
+                "Notify me about",
+                &["settings-label", "settings-gap"],
+            ));
             let mut group: Option<gtk::CheckButton> = None;
             for level in LEVELS {
                 let check = gtk::CheckButton::with_label(notifications::account_level_label(level));
@@ -293,8 +359,69 @@ impl App {
             root.append(&voice_started);
             notifications_status.set_wrap(true);
             root.append(&notifications_status);
+        }
 
-            section(&root, "Privacy", false);
+        section(&root, "Voice & audio", false);
+        let voice_send = switch_row(
+            &root,
+            "Send voice messages as soon as I stop recording",
+            "Off: a stopped recording waits in the composer with your text and files until you press Send.",
+        );
+        voice_send.set_active(self.voice_send_on_stop());
+        let audio_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        audio_buttons.add_css_class("settings-gap");
+        let audio_test = gtk::Button::with_label("Audio test");
+        // Connection details show during a call, Audio diagnostics for
+        // debug accounts (`render_settings`).
+        let connection = gtk::Button::with_label("Connection details");
+        let diagnostics = gtk::Button::with_label("Audio diagnostics");
+        for (button, run) in [(&audio_test, 0), (&connection, 1), (&diagnostics, 2)] {
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    match run {
+                        0 => app.open_audio(),
+                        other => app.open_report(other == 1),
+                    }
+                }
+            });
+            audio_buttons.append(button);
+        }
+        root.append(&audio_buttons);
+
+        section(&root, "Startup", false);
+        let startup = switch_row(
+            &root,
+            "Launch at login",
+            "Open Caper when you sign in to your computer.",
+        );
+        let startup_error = label("", &["error", "small"]);
+        startup_error.set_wrap(true);
+        root.append(&startup_error);
+        match caper_client::startup::enabled() {
+            Ok(enabled) => {
+                startup.set_active(enabled);
+                status(&startup_error, None, false);
+            }
+            Err(error) => status(
+                &startup_error,
+                Some(&format!("Could not read startup settings: {error}")),
+                true,
+            ),
+        }
+
+        let keep_running = switch_row(
+            &root,
+            caper_client::background::SETTING_TITLE,
+            caper_client::background::SETTING_DETAIL,
+        );
+        keep_running.set_active(self.keep_running());
+        if let Some(row) = keep_running.parent() {
+            row.set_margin_top(8);
+        }
+
+        if signed_in {
+            section(&root, "Privacy & blocked accounts", false);
             root.append(&label("Who can start a DM with you", &["settings-label"]));
             let mut group: Option<gtk::CheckButton> = None;
             for (value, title, detail) in DM_PRIVACY {
@@ -335,6 +462,33 @@ impl App {
             delete.set_halign(gtk::Align::Start);
             root.append(&delete);
         }
+
+        let updates = self.updates_section(&root);
+
+        let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+        rule.add_css_class("settings-rule");
+        root.append(&rule);
+        // Closing the window can keep Caper running, so it quits from here.
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        if signed_in {
+            let log_out = gtk::Button::with_label("Log out");
+            let weak = Rc::downgrade(self);
+            log_out.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.sign_out();
+                }
+            });
+            actions.append(&log_out);
+        }
+        let quit = gtk::Button::with_label("Quit Caper");
+        let weak = Rc::downgrade(self);
+        quit.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.quit_app();
+            }
+        });
+        actions.append(&quit);
+        root.append(&actions);
 
         let weak = Rc::downgrade(self);
         startup.connect_state_set(move |switch, requested| {
@@ -399,10 +553,19 @@ impl App {
         window.add_controller(keys);
         *self.settings.borrow_mut() = Some(SettingsDialog {
             window: window.clone(),
+            profile_avatar,
+            profile_name,
+            profile_username,
             obsidian_card,
             paper_card,
             startup_error,
             voice_send,
+            connection,
+            diagnostics,
+            dnd_status,
+            dnd_presets,
+            dnd_off,
+            dnd_error,
             levels,
             voice_started,
             notifications_status,
@@ -479,12 +642,98 @@ impl App {
                 self.render_settings();
                 return;
             }
+            if scope == Scope::Account {
+                state.settings.pause_last = matches!(change, Change::Pause(_));
+            }
+            // The account bar shows Do Not Disturb, rows their mutes.
+            state.layout += 1;
             self.account_op(
                 &state,
                 AccountOperation::SaveNotifications { scope, change },
             );
         }
+        self.render_layout();
         self.render_settings();
+    }
+
+    /// The window a dialog opened now sits over: Settings while it is
+    /// open (Edit profile, Audio test, What's new), else the main window.
+    pub(super) fn dialog_parent(&self) -> gtk::Window {
+        self.settings
+            .try_borrow()
+            .ok()
+            .and_then(|dialog| dialog.as_ref().map(|dialog| dialog.window.clone()))
+            .unwrap_or_else(|| self.ui.window.clone().upcast())
+    }
+
+    /// The account bar's moon: "Pause notifications" with the presets
+    /// while Do Not Disturb is off; its end, Turn off and the presets (to
+    /// change the end) while it is on.
+    pub(super) fn dnd_menu(self: &Rc<Self>, anchor: &gtk::Button) {
+        let (paused, ready, error) = {
+            let mut state = self.state.borrow_mut();
+            if !state.settings.notifications.ready() {
+                self.load_notifications(&mut state);
+            }
+            let notifications = &state.settings.notifications;
+            (
+                pause_label(notifications),
+                notifications.ready() && !notifications.saving(&Scope::Account),
+                state.settings.pause_last && notifications.error(&Scope::Account).is_some(),
+            )
+        };
+        let popover = gtk::Popover::new();
+        popover.add_css_class("menu");
+        let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let heading = match &paused {
+            Some(until) => format!("Do Not Disturb · {until}"),
+            None => "Pause notifications".to_owned(),
+        };
+        let title = label(&heading, &["title"]);
+        title.set_xalign(0.0);
+        title.set_margin_start(12);
+        title.set_margin_end(12);
+        title.set_margin_top(6);
+        title.set_margin_bottom(4);
+        items.append(&title);
+        let add = |text: &str, preset: Option<notifications::PausePreset>| {
+            let button = gtk::Button::with_label(text);
+            button.add_css_class("flat");
+            button.add_css_class("menu-item");
+            button.set_sensitive(ready);
+            if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+                label.set_xalign(0.0);
+            }
+            let (weak, menu) = (Rc::downgrade(self), popover.clone());
+            button.connect_clicked(move |_| {
+                menu.popdown();
+                if let Some(app) = weak.upgrade() {
+                    // A preset's time counts from the click.
+                    let change = preset.map_or(Change::Pause(None), pause_change);
+                    app.change_notifications(Scope::Account, change);
+                }
+            });
+            items.append(&button);
+        };
+        if paused.is_some() {
+            add("Turn off", None);
+            items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        }
+        for (text, preset) in PAUSE_PRESETS {
+            add(text, Some(preset));
+        }
+        if error {
+            let line = label(PAUSE_ERROR, &["error", "small"]);
+            line.set_wrap(true);
+            line.set_max_width_chars(28);
+            line.set_xalign(0.0);
+            line.set_margin_start(12);
+            line.set_margin_end(12);
+            line.set_margin_bottom(6);
+            items.append(&line);
+        }
+        popover.set_child(Some(&items));
+        super::popup(&popover, anchor.upcast_ref());
     }
 
     fn save_privacy(self: &Rc<Self>, value: &str) {
@@ -531,10 +780,56 @@ impl App {
             dialog.obsidian_card.add_css_class("selected");
             dialog.paper_card.remove_css_class("selected");
         }
+        if let Some(account) = &state.account {
+            let name = state.name();
+            dialog.profile_avatar.set(
+                &self.images,
+                &Avatar::new(
+                    &name,
+                    account.avatar_id,
+                    &account.avatar_asset,
+                    &account.avatar_url,
+                ),
+            );
+            dialog.profile_name.set_label(&name);
+            dialog.profile_username.set_label(
+                &account
+                    .username
+                    .as_ref()
+                    .map(|username| format!("@{username}"))
+                    .unwrap_or_default(),
+            );
+        }
         dialog.voice_send.set_active(self.voice_send_on_stop());
+        dialog.connection.set_visible(
+            self.voice
+                .try_borrow()
+                .is_ok_and(|voice| voice.diagnostics.is_some()),
+        );
+        dialog.diagnostics.set_visible(
+            state
+                .account
+                .as_ref()
+                .is_some_and(|account| account.debug_enabled),
+        );
         // Notifications: only enabled once loaded.
         let level = settings.notifications.account_level();
         let saving = settings.notifications.saving(&Scope::Account);
+        let account_error = settings.notifications.error(&Scope::Account);
+        // Do Not Disturb.
+        let paused = pause_label(&settings.notifications);
+        dialog.dnd_status.set_label(
+            &paused
+                .as_ref()
+                .map_or_else(|| "Off".to_owned(), |until| format!("On · {until}")),
+        );
+        for button in &dialog.dnd_presets {
+            button.set_sensitive(level.is_some() && !saving);
+        }
+        dialog.dnd_off.set_visible(paused.is_some());
+        dialog.dnd_off.set_sensitive(!saving);
+        let pause_error = settings.pause_last && account_error.is_some();
+        status(&dialog.dnd_error, pause_error.then_some(PAUSE_ERROR), true);
         for (choice, check) in &dialog.levels {
             check.set_sensitive(level.is_some());
             if level == Some(*choice) && !check.is_active() {
@@ -548,7 +843,7 @@ impl App {
         if dialog.voice_started.is_active() != voice {
             dialog.voice_started.set_active(voice);
         }
-        let (text, error) = if let Some(error) = settings.notifications.error(&Scope::Account) {
+        let (text, error) = if let Some(error) = account_error.filter(|_| !pause_error) {
             (Some(error.to_owned()), true)
         } else if level.is_none() {
             match settings.notifications.load_error() {

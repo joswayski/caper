@@ -943,6 +943,32 @@ popover.emoji-picker image.mine {
   font-size: 12.8px;
 }
 
+/* Do Not Disturb: a moon in a sidebar-coloured ring over the presence dot,
+   and the quieter line under your name. */
+.dnd-badge {
+  min-width: 13px;
+  min-height: 13px;
+  border-radius: 9999px;
+  background: @caper_surface_sidebar;
+  margin: 0 -4px -3px 0;
+}
+
+.dnd-badge image {
+  margin: 2px;
+}
+
+.dock .account-status {
+  font-size: 11px;
+}
+
+/* Your avatar is the Do Not Disturb button: no padding around it. */
+.dock button.flat.account-avatar {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-radius: 9999px;
+}
+
 .thread {
   background: @caper_surface_conversation;
 }

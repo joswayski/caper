@@ -666,6 +666,11 @@ pub struct Ui {
     pub directs: gtk::ListBox,
     pub account_avatar: AvatarView,
     pub account_name: gtk::Label,
+    /// "Do Not Disturb" under your name, the moon on your avatar, and your
+    /// avatar's button, which opens its menu.
+    pub account_status: gtk::Label,
+    pub account_moon: gtk::Box,
+    pub dnd: gtk::Button,
     pub settings: gtk::Button,
     pub new_direct: gtk::Button,
     /// The call card above the account bar, and the bar's voice toggles.
@@ -1117,11 +1122,39 @@ impl Ui {
         dock.add_css_class("dock");
         let account_avatar = AvatarView::new(30, true);
         account_avatar.set_presence("online");
+        account_avatar.quiet_presence();
         let account_name = label("", &["author"]);
         account_name.set_hexpand(true);
         account_name.set_ellipsize(pango::EllipsizeMode::End);
         // The voice toggles must not widen the sidebar.
         account_name.set_max_width_chars(10);
+        account_name.set_xalign(0.0);
+        let account_status = label("Do Not Disturb", &["muted", "small", "account-status"]);
+        account_status.set_xalign(0.0);
+        account_status.set_ellipsize(pango::EllipsizeMode::End);
+        account_status.set_max_width_chars(10);
+        account_status.set_visible(false);
+        let names = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        names.set_hexpand(true);
+        names.set_valign(gtk::Align::Center);
+        names.append(&account_name);
+        names.append(&account_status);
+        // Over the presence dot while Do Not Disturb is on.
+        let account_moon = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        account_moon.add_css_class("dnd-badge");
+        account_moon.append(&images.icon_image(Icon::Moon, "#b9bcbe", 9));
+        account_moon.set_halign(gtk::Align::End);
+        account_moon.set_valign(gtk::Align::End);
+        account_moon.set_can_target(false);
+        account_moon.set_visible(false);
+        account_avatar.root.add_overlay(&account_moon);
+        // Your avatar opens Do Not Disturb's menu; your name, your card.
+        let dnd: gtk::Button = crate::app::named("GtkButton", "Do Not Disturb");
+        dnd.set_child(Some(&account_avatar.root));
+        dnd.set_tooltip_text(Some("Do Not Disturb"));
+        dnd.add_css_class("flat");
+        dnd.add_css_class("account-avatar");
+        dnd.set_valign(gtk::Align::Center);
         let settings: gtk::Button = crate::app::named("GtkButton", "User Settings");
         settings.set_child(Some(&images.icon_image(Icon::Settings, "#b9bcbe", 18)));
         settings.set_tooltip_text(Some("User Settings"));
@@ -1147,8 +1180,8 @@ impl Ui {
         };
         let input_options = options("Input Options");
         let output_options = options("Output Options");
-        dock.append(&account_avatar.root);
-        dock.append(&account_name);
+        dock.append(&dnd);
+        dock.append(&names);
         let audio = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         audio.append(&mic);
         audio.append(&input_options);
@@ -1555,6 +1588,9 @@ impl Ui {
             directs,
             account_avatar,
             account_name,
+            account_status,
+            account_moon,
+            dnd,
             settings,
             new_direct,
             call_card,

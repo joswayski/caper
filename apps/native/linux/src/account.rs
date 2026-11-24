@@ -80,7 +80,7 @@ impl App {
         self.close_profile();
         let setup = account.username.is_none() || account.display_name.is_none();
         let window = gtk::Window::builder()
-            .transient_for(&self.ui.window)
+            .transient_for(&self.dialog_parent())
             .modal(true)
             .title("Edit profile")
             .default_width(420)

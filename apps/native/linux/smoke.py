@@ -6,7 +6,9 @@ accessibility bus under Xvfb, against the parity fixture
 It signs in with the fixture's account, waits for #general's messages,
 checks that each row's toolbar, built on hover, is named for its author
 ("Reply to Maya"), and sends a message that must show up in the list. On GTK 4.12 or later, message
-rows must also be named "author, time, text"; GTK 4.8 can't name them.
+rows must also be named "author, time, text"; GTK 4.8 can't name them. Then
+the gear opens Settings with the shared sections in order, and Do Not Disturb
+turns on there and off again, which the account bar's moon reports.
 
 Run under `xvfb-run -a dbus-run-session --` with `--binary` pointing at a
 built `caper-linux` and `--api-url` at the fixture. Needs python3-gi,
@@ -28,6 +30,15 @@ gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi, GLib  # noqa: E402
 
 SENT = "Smoke check from caper-linux"
+SECTIONS = [
+    "Profile",
+    "Appearance",
+    "Notifications",
+    "Voice & audio",
+    "Startup",
+    "Privacy & blocked accounts",
+    "About",
+]
 
 
 def wait(predicate, what, timeout=30):
@@ -94,6 +105,26 @@ def click(node):
     x, y = extents.x + extents.width // 2, extents.y + extents.height // 2
     subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"], check=True)
     time.sleep(0.3)
+
+
+def press(node):
+    """Activates a button through AT-SPI, wherever its window sits."""
+    node.get_action_iface().do_action(0)
+    time.sleep(0.3)
+
+
+def ordered(node):
+    """Visible nodes in reading order, unlike `nodes`."""
+    try:
+        if not node.get_state_set().contains(Atspi.StateType.VISIBLE):
+            return
+        yield node
+        for index in range(node.get_child_count()):
+            child = node.get_child_at_index(index)
+            if child is not None:
+                yield from ordered(child)
+    except GLib.Error:
+        return
 
 
 def hover(node):
@@ -199,6 +230,42 @@ def main():
                 print(node.get_role_name(), repr(node.get_name()))
             raise
         print("sent message showed")
+
+        press(wait(lambda: placed(find(app, name="User Settings")), "the settings gear"))
+        settings = wait(
+            lambda: next(
+                (
+                    node
+                    for node in (app.get_child_at_index(i) for i in range(app.get_child_count()))
+                    if node is not None and node.get_name() == "Settings"
+                ),
+                None,
+            ),
+            "the Settings window",
+        )
+        headings = [
+            node.get_name()
+            for node in ordered(settings)
+            if node.get_role_name() == "label" and node.get_name() in SECTIONS
+        ]
+        print("settings sections:", headings)
+        assert headings == SECTIONS, headings
+        moon = wait(
+            lambda: (
+                find(app, name="Do Not Disturb", role="button") or find(app, name="Do Not Disturb", role="push button")
+            ),
+            "the account bar's moon",
+        )
+        press(wait(lambda: find(settings, name="Until I turn it off"), "the Do Not Disturb presets"))
+        wait(lambda: find(settings, name="On · Until you turn it off"), "Do Not Disturb on in Settings")
+        # Its tooltip, which GTK also reads as its description.
+        wait(
+            lambda: moon.get_description() == "Do Not Disturb · Until you turn it off",
+            "the moon reporting Do Not Disturb",
+        )
+        press(wait(lambda: find(settings, name="Turn off Do Not Disturb"), "Turn off"))
+        wait(lambda: moon.get_description() == "Do Not Disturb · Off", "Do Not Disturb off")
+        print("do not disturb turned on and off")
     finally:
         app_process.terminate()
         try:

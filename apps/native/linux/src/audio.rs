@@ -82,7 +82,7 @@ impl App {
         }
         self.voice.borrow_mut().refresh_devices();
         let window = gtk::Window::builder()
-            .transient_for(&self.ui.window)
+            .transient_for(&self.dialog_parent())
             .modal(true)
             .title("Audio test")
             .default_width(560)
@@ -610,68 +610,6 @@ pub(super) struct ReportDialog {
 }
 
 impl App {
-    /// The account bar's settings button: Settings…, Audio test,
-    /// Connection details during a call, Log out, as on the desktop, and
-    /// Quit Caper, since closing the window keeps it running.
-    pub(super) fn settings_menu(self: &Rc<Self>, anchor: &gtk::Button) {
-        let popover = gtk::Popover::new();
-        popover.add_css_class("menu");
-        let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        let connection = self.voice.borrow().diagnostics.is_some();
-        let debug = self
-            .state
-            .borrow()
-            .account
-            .as_ref()
-            .is_some_and(|account| account.debug_enabled);
-        for (text, item, shown) in [
-            ("Settings…", 0, true),
-            ("Audio test", 1, true),
-            ("Connection details", 2, connection),
-            ("Audio diagnostics", 3, debug),
-            ("Log out", 4, true),
-            ("Quit Caper", 5, true),
-        ] {
-            if !shown {
-                continue;
-            }
-            let button = gtk::Button::with_label(text);
-            button.add_css_class("flat");
-            button.add_css_class("menu-item");
-            if let Some(label) = button.child().and_downcast::<gtk::Label>() {
-                label.set_xalign(0.0);
-            }
-            let (weak, menu, opener) = (Rc::downgrade(self), popover.clone(), anchor.clone());
-            button.connect_clicked(move |_| {
-                menu.popdown();
-                // The window it opens hands focus back to the gear, as on
-                // web, rather than to the rail a closed popover leaves it on.
-                opener.grab_focus();
-                let weak = weak.clone();
-                glib::idle_add_local_once(move || {
-                    if let Some(app) = weak.upgrade() {
-                        match item {
-                            0 => app.open_settings(),
-                            1 => app.open_audio(),
-                            4 => app.sign_out(),
-                            5 => app.quit_app(),
-                            other => app.open_report(other == 2),
-                        }
-                    }
-                });
-            });
-            if item == 4 {
-                items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-            }
-            items.append(&button);
-            if item == 0 {
-                items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-            }
-        }
-        popover.set_child(Some(&items));
-        super::popup(&popover, anchor.upcast_ref());
-    }
-
     /// The account bar's Input Options or Output Options: the device in
     /// use, the others, Refresh devices and the volumes.
     pub(super) fn device_menu(self: &Rc<Self>, input: bool, anchor: &gtk::Button) {
@@ -869,7 +807,7 @@ impl App {
             "Audio diagnostics"
         };
         let window = gtk::Window::builder()
-            .transient_for(&self.ui.window)
+            .transient_for(&self.dialog_parent())
             .modal(true)
             .title(title)
             .default_width(460)

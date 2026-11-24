@@ -260,7 +260,7 @@ impl App {
             return;
         }
         let window = gtk::Window::builder()
-            .transient_for(&self.ui.window)
+            .transient_for(&self.dialog_parent())
             .modal(true)
             .title("What’s new")
             .default_width(480)
@@ -455,12 +455,13 @@ impl App {
         }
     }
 
-    /// The Updates section of Settings, after Sounds.
+    /// Settings' About section: the version, Check for updates and What's
+    /// new.
     pub(super) fn updates_section(self: &Rc<Self>, root: &gtk::Box) -> UpdatesRow {
         let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
         rule.add_css_class("settings-rule");
         root.append(&rule);
-        root.append(&label("Updates", &["settings-section"]));
+        root.append(&label("About", &["settings-section"]));
         root.append(&version_control());
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let check = gtk::Button::with_label("Check for updates");

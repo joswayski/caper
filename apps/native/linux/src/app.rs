@@ -712,7 +712,9 @@ pub struct App {
     /// Closing minimized the window, which hasn't been active since.
     closed_away: Cell<bool>,
     /// A redraw is waiting for the next timed mute to end.
-    mute_timer: Cell<bool>,
+    /// When the scheduled redraw for the next timed mute or Do Not
+    /// Disturb ending fires.
+    mute_timer: Cell<Option<Instant>>,
     /// The voice call, and what the call card last showed.
     voice: RefCell<caper_client::voice::Voice>,
     voice_ticking: Cell<bool>,
@@ -963,7 +965,7 @@ pub fn start(
         profile_dialog: RefCell::default(),
         wakes,
         settings: RefCell::default(),
-        mute_timer: Cell::new(false),
+        mute_timer: Cell::new(None),
         api: api.clone(),
         admin_window: RefCell::default(),
         confirm_window: RefCell::default(),
@@ -1102,11 +1104,10 @@ impl App {
         });
         let app = self.clone();
         ui.first_logout.connect_clicked(move |_| app.sign_out());
-        // Your avatar and name open your own card (Edit profile).
-        for target in [
-            ui.account_avatar.root.clone().upcast::<gtk::Widget>(),
-            ui.account_name.clone().upcast(),
-        ] {
+        // Your name opens your own card (Edit profile); your avatar, Do Not
+        // Disturb's menu.
+        {
+            let target = ui.account_name.clone().upcast::<gtk::Widget>();
             let click = gtk::GestureClick::new();
             let (weak, anchor) = (Rc::downgrade(self), target.clone());
             click.connect_released(move |_, _, _, _| {
@@ -1150,8 +1151,9 @@ impl App {
             app.render();
         });
         let app = self.clone();
-        ui.settings
-            .connect_clicked(move |button| app.settings_menu(button));
+        ui.settings.connect_clicked(move |_| app.open_settings());
+        let app = self.clone();
+        ui.dnd.connect_clicked(move |button| app.dnd_menu(button));
 
         let app = self.clone();
         // Showing or hiding the member list is the reader's choice, kept
@@ -5209,6 +5211,15 @@ impl App {
                 channel,
                 result,
             } => self.voice_checked(state, request, voice_generation, &space, &channel, result),
+            // Account notification settings (Do Not Disturb, level, voice
+            // starts) another device, or this one, saved.
+            Event::Profiles {
+                epoch,
+                event: caper_client::gateway::ProfileEvent::NotificationSettings(settings),
+            } if epoch == state.epoch => {
+                state.settings.notifications.apply_account(settings);
+                state.layout += 1;
+            }
             _ => {}
         }
     }
@@ -7035,6 +7046,22 @@ impl App {
 
         if let Some(account) = &state.account {
             ui.account_name.set_label(&state.name());
+            let paused = state
+                .settings
+                .notifications
+                .paused(chrono::Utc::now())
+                .map(|pause| {
+                    caper_client::notifications::pause_label(pause, &chrono::Local::now())
+                });
+            ui.account_status.set_visible(paused.is_some());
+            ui.account_moon.set_visible(paused.is_some());
+            ui.account_status.set_tooltip_text(paused.as_deref());
+            // Also the moon's accessible description (GTK 4.8 has no other
+            // way to set one after building).
+            ui.dnd.set_tooltip_text(Some(&format!(
+                "Do Not Disturb · {}",
+                paused.as_deref().unwrap_or("Off")
+            )));
             ui.account_avatar.set(
                 &self.images,
                 &Avatar::new(
