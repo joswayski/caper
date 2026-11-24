@@ -110,6 +110,8 @@ import "./chat.css";
 const INITIAL_ITEM_INDEX = 1_000_000_000;
 /** How long an unconfirmed send waits before each automatic retry. */
 const SEND_RETRY_DELAYS_MS = [3_000, 10_000, 30_000];
+/** Older history starts loading this many rows before the reader reaches the top (a page is 50). */
+const OLDER_PREFETCH_ROWS = 25;
 
 const NO_CANDIDATES: MentionCandidate[] = [];
 
@@ -692,6 +694,15 @@ export default function Chat({
   // that page's last group (losing its name and time) and loses its date
   // divider. Remember the top visible message so it can be held in place.
   const prependAnchor = useRef<{ key: string; offset: number } | undefined>(undefined);
+  const lastScroll = useRef(0);
+  useEffect(() => {
+    if (!scroller) return;
+    const scrolled = () => {
+      lastScroll.current = performance.now();
+    };
+    scroller.addEventListener("scroll", scrolled, { passive: true });
+    return () => scroller.removeEventListener("scroll", scrolled);
+  }, [scroller]);
   const goToMessage = async (message: FocusTarget) => {
     const client = clientRef.current;
     if (!client || jumping) return false;
@@ -947,7 +958,11 @@ export default function Chat({
           const visible = next.channelMessages?.filter((message) => !message.deletedAt);
           const prepended = visible?.findIndex((message) => message.id === firstMessageId) ?? -1;
           if (prepended > 0) {
-            prependAnchor.current = topMessage(scrollerRef.current);
+            // A reader still scrolling above the top (a flick's momentum sends no
+            // input event to stop the hold) keeps moving: Virtuoso's own shift
+            // keeps their place there, while the hold would stop them.
+            const moving = !!scrollerRef.current?.scrollTop && performance.now() - lastScroll.current < 200;
+            prependAnchor.current = moving ? undefined : topMessage(scrollerRef.current);
             setFirstItemIndex((index) => index - prepended);
           }
           firstMessageId = visible?.[0]?.id;
@@ -2254,6 +2269,11 @@ export default function Chat({
                 }}
                 startReached={() => {
                   if (!state.olderError) loadOlder();
+                }}
+                // Fetch the next page while the reader still has rows above them,
+                // so scrolling back through history doesn't stall at the top.
+                rangeChanged={({ startIndex }) => {
+                  if (startIndex - firstItemIndex < OLDER_PREFETCH_ROWS && !state.olderError) loadOlder();
                 }}
                 components={listComponents}
                 context={{
