@@ -15,6 +15,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let composer = ComposerView()
+    /// Keeps the message box above a grown attach drawer (`ComposerView.drawerMoved`).
+    private var drawerCeiling: NSLayoutConstraint?
     private lazy var composerPreview = UIKitNativeComposerPreview(chat: model.chat, inThread: true)
     private lazy var composerAccessories = UIKitNativeComposerAccessories(chat: model.chat, inThread: true) { [weak self] in
         if self?.presentedViewController == nil { self?.present($0, animated: false) }
@@ -209,9 +211,17 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             guard let drawer = UIKitHosting.attachDrawer(chat: self.chat, inThread: true, presenter: { [weak self] in self },
                                                          dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
                                                          // Grown, it lifts the message box up to the top of the timeline.
-                                                         dockRoom: { [weak self] in self.map { $0.composer.convert($0.composer.bounds, to: $0.view).minY - $0.collection.frame.minY } ?? 0 },
+                                                         dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
+                                                         dockMoved: { [weak composer] in composer?.drawerMoved?($0) },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
             composer.showDrawer(drawer)
+        }
+        composer.drawerMoved = { [weak self] top in
+            // A grown attach drawer lifts the message box with it.
+            guard let self, let ceiling = self.drawerCeiling else { return }
+            let limit = top.flatMap { top in self.view.window.map { self.view.convert(CGPoint(x: 0, y: top), from: $0.screen.coordinateSpace).y - 8 } }
+            ceiling.constant = limit.map { min(0, $0 - self.view.bounds.height) } ?? 0
+            self.view.layoutIfNeeded()
         }
         composer.emojiTapped = { [weak self] in
             guard let self else { return }
@@ -252,7 +262,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             bottom.topAnchor.constraint(equalTo: collection.bottomAnchor, constant: 4),
             bottom.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            // Just under required: a grown attach drawer lowers the ceiling below.
+            bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 1),
+            { let ceiling = bottom.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor); self.drawerCeiling = ceiling; return ceiling }(),
             // As short as its contents allow: the timeline takes the slack.
             bottom.heightAnchor.constraint(equalToConstant: 0).withPriority(.defaultLow),
             broadcast.topAnchor.constraint(equalTo: broadcastRow.topAnchor),

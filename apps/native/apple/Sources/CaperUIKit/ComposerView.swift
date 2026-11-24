@@ -77,6 +77,9 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         return button
     }()
     var showsDrawer: Bool { drawer != nil }
+    /// The drawer's top edge in screen coordinates as it is dragged, nil once
+    /// it's gone: the owner keeps the message box above it.
+    var drawerMoved: ((CGFloat?) -> Void)?
     var emojiTapped: (() -> Void)?
     /// Who `@` may suggest: the open conversation's context.
     weak var model: AppModel?
@@ -368,7 +371,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     func textViewDidEndEditing(_ textView: UITextView) {
         // Swiped away with the timeline. A camera or picker the drawer opened
         // only covers it; the drawer comes back when that closes.
-        if drawer != nil, !presenting { drawer = nil; textView.inputView = nil; showAttachState() }
+        if drawer != nil, !presenting { drawer = nil; textView.inputView = nil; showAttachState(); drawerMoved?(nil) }
         typing.end()
         self.textView.hideEmojiName()
         suggestions.show(nil)
@@ -553,6 +556,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     func hideDrawer(keyboard: Bool) {
         guard drawer != nil else { return }
         drawer = nil
+        drawerMoved?(nil)
         if keyboard {
             textView.inputView = nil
             if textView.isFirstResponder { textView.reloadInputViews() } else { textView.becomeFirstResponder() }

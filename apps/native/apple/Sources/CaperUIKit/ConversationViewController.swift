@@ -65,6 +65,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let skeleton = MessageSkeletonView(rows: 5, label: "Loading messages")
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
+    /// Keeps the message box above a grown attach drawer (`ComposerView.drawerMoved`).
+    private var drawerCeiling: NSLayoutConstraint?
     private lazy var composerPreview = UIKitNativeComposerPreview(chat: model.chat)
     private lazy var composerAccessories = UIKitNativeComposerAccessories(chat: model.chat, present: presentHosted)
     private lazy var members = MembersPanel(model: model)
@@ -662,9 +664,17 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             guard let drawer = UIKitHosting.attachDrawer(chat: self.model.chat, presenter: { [weak self] in self },
                                                          dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
                                                          // Grown, it lifts the message box up to the top of the timeline.
-                                                         dockRoom: { [weak self] in self.map { $0.composer.convert($0.composer.bounds, to: $0.view).minY - $0.collection.frame.minY } ?? 0 },
+                                                         dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
+                                                         dockMoved: { [weak composer] in composer?.drawerMoved?($0) },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
             composer.showDrawer(drawer)
+        }
+        composer.drawerMoved = { [weak self] top in
+            // A grown attach drawer lifts the message box with it.
+            guard let self, let ceiling = self.drawerCeiling else { return }
+            let limit = top.flatMap { top in self.view.window.map { self.view.convert(CGPoint(x: 0, y: top), from: $0.screen.coordinateSpace).y - 8 } }
+            ceiling.constant = limit.map { min(0, $0 - self.view.bounds.height) } ?? 0
+            self.view.layoutIfNeeded()
         }
         composer.emojiTapped = { [weak self] in
             guard let self else { return }
@@ -675,7 +685,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             composer.topAnchor.constraint(equalTo: typing.bottomAnchor),
             composer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             composer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            // Just under required: a grown attach drawer lowers the ceiling below.
+            composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 1),
+            { let ceiling = composer.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor); self.drawerCeiling = ceiling; return ceiling }(),
         ])
         // An incoming request or a blocked peer replaces the composer.
         view.addSubview(directBar)

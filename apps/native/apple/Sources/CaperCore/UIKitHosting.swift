@@ -13,9 +13,11 @@ import UniformTypeIdentifiers
     /// `presenter` it docks in the keyboard's place (the composer sends, and
     /// `close` hides it) at `dockHeight`, and dragging its handle or flicking
     /// its photos up grows it by up to `dockRoom` over the timeline; otherwise
-    /// it is a sheet with its own Send.
+    /// it is a sheet with its own Send. `dockMoved` reports its top edge in
+    /// screen coordinates, for keeping the message box above it.
     public static func attachDrawer(chat: ChatModel, inThread: Bool = false, presenter: (() -> UIViewController?)? = nil,
                                     dockInset: CGFloat = 0, dockHeight: CGFloat = 0, dockRoom: @escaping () -> CGFloat = { 0 },
+                                    dockMoved: @escaping (CGFloat) -> Void = { _ in },
                                     close: (() -> Void)? = nil) -> UIViewController? {
         guard let target = chat.attachmentTarget(inThread: inThread) else { return nil }
         let draft = AttachDrawerDraft(
@@ -27,7 +29,7 @@ import UniformTypeIdentifiers
             valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })
         let box = WeakController()
         let host = UIKitAttachDrawer(mode: .attach(draft), presenter: presenter, dockInset: dockInset,
-                                     dockHeight: dockHeight, dockRoom: dockRoom) { if let close { close() } else { box.value?.dismiss(animated: false) } }
+                                     dockHeight: dockHeight, dockRoom: dockRoom, dockMoved: dockMoved) { if let close { close() } else { box.value?.dismiss(animated: false) } }
         box.value = host
         return host
     }
