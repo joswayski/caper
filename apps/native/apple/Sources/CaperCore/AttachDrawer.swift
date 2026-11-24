@@ -672,7 +672,7 @@ private struct AttachLibraryGrid: View, Equatable {
                             // A tap shows its place at once (as on Android); the copy
                             // landing in the draft keeps the same number, in tap order.
                             AttachLibraryTile(asset: asset, order: selected?.position ?? queued.map { attached + $0 + 1 },
-                                              dimmed: full && selected == nil && !copying, selectable: !picking)
+                                              dimmed: full && selected == nil && !copying)
                             .id(asset.localIdentifier)
                         }
                         .buttonStyle(.plain)
@@ -880,8 +880,6 @@ private struct AttachLibraryTile: View {
     let asset: PHAsset
     let order: Int?
     let dimmed: Bool
-    /// False when a tap chooses at once: no selection circle.
-    var selectable = true
     @State private var image: UIImage?
     @State private var request: PHImageRequestID?
     @State private var frames: AttachmentOriginal?
@@ -914,10 +912,6 @@ private struct AttachLibraryTile: View {
                         Text("\(order)").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text)
                             .frame(width: 24, height: 24).background(CaperTheme.terracotta, in: Circle())
                             .modifier(Entrance.chip)
-                    } else if selectable {
-                        Circle().strokeBorder(CaperTheme.text.opacity(0.9), lineWidth: 1.5)
-                            .background(CaperTheme.blackout.opacity(0.35), in: Circle())
-                            .frame(width: 24, height: 24)
                     }
                 }
                 .padding(6)

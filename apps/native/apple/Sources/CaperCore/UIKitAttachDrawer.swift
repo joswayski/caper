@@ -246,7 +246,7 @@ import Observation
         let source = AttachDrawer.source(asset.localIdentifier), files = draft?.files() ?? []
         // A tap shows its place at once; the copy joins the draft in tap order.
         let order = files.firstIndex { $0.source == source }.map { $0 + 1 } ?? queue.order.firstIndex(of: source).map { files.count + $0 + 1 }
-        cell.configure(asset, order: order, pending: queue.isPending(source), full: full, selectable: !picking) { [weak self] in self?.choose(asset.localIdentifier) }
+        cell.configure(asset, order: order, pending: queue.isPending(source), full: full) { [weak self] in self?.choose(asset.localIdentifier) }
     }
     /// A toolbar tab: its icon over its name, bright and bold when selected.
     private static func tab(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> UIButton {
@@ -402,8 +402,8 @@ import Observation
     }
 }
 
-/// A library tile: an empty ring to tap, then a green numbered ring over a
-/// darkened, green-edged photo once it's in the draft (in tap order).
+/// A library tile: once it's in the draft, a green numbered badge over a
+/// darkened, green-edged photo (in tap order).
 @MainActor private final class UIKitAttachTile: UICollectionViewCell {
     private let button = UIButton(type: .custom)
     private let picture = UIImageView()
@@ -424,9 +424,8 @@ import Observation
         shade.backgroundColor = UIColor(CaperTheme.blackout).withAlphaComponent(0.3)
         shade.layer.borderColor = UIColor(CaperTheme.terracotta).cgColor; shade.layer.borderWidth = 3; shade.layer.cornerRadius = 8
         ring.font = UIFont(name: "Figtree-Bold", size: 12) ?? .boldSystemFont(ofSize: 12); ring.textColor = UIColor(CaperTheme.text)
-        ring.textAlignment = .center; ring.layer.cornerRadius = 12
-        // A soft shadow keeps the ring readable on pale photos and bright skies.
-        ring.layer.shadowColor = UIColor.black.cgColor; ring.layer.shadowOpacity = 0.45; ring.layer.shadowRadius = 2; ring.layer.shadowOffset = .zero
+        ring.textAlignment = .center; ring.layer.cornerRadius = 12; ring.clipsToBounds = true
+        ring.backgroundColor = UIColor(CaperTheme.terracotta)
         badge.font = (UIFont(name: "Figtree-Bold", size: 11) ?? .boldSystemFont(ofSize: 11)); badge.textColor = UIColor(CaperTheme.text)
         badge.backgroundColor = UIColor(CaperTheme.blackout).withAlphaComponent(0.7); badge.textAlignment = .center
         badge.layer.cornerRadius = 4; badge.clipsToBounds = true
@@ -452,7 +451,7 @@ import Observation
         if let request { PHImageManager.default().cancelImageRequest(request) }; request = nil
         animation?.cancel(); animation = nil; picture.layer.removeAllAnimations(); picture.image = nil
     }
-    func configure(_ asset: PHAsset, order: Int?, pending: Bool, full: Bool, selectable: Bool, pick: @escaping () -> Void) {
+    func configure(_ asset: PHAsset, order: Int?, pending: Bool, full: Bool, pick: @escaping () -> Void) {
         // The same photo keeps its thumbnail, request and GIF frames.
         let same = self.asset.map(AttachGalleryCache.key) == AttachGalleryCache.key(asset)
         if !same { clear() }
@@ -464,11 +463,9 @@ import Observation
         button.accessibilityValue = pending ? "Adding" : order.map { "Attached \($0)" } ?? (full ? "Attachment limit reached" : "")
         button.accessibilityTraits = order == nil ? .button : [.button, .selected]
         shade.isHidden = order == nil
-        ring.isHidden = !selectable
+        // Only picked photos carry a mark; the rest stay clean.
+        ring.isHidden = order == nil
         ring.text = order.map(String.init)
-        // Layer colours, not backgroundColor: the shadow needs the label unclipped.
-        ring.layer.backgroundColor = (order == nil ? UIColor(CaperTheme.blackout).withAlphaComponent(0.15) : UIColor(CaperTheme.terracotta)).cgColor
-        ring.layer.borderWidth = order == nil ? 2 : 0; ring.layer.borderColor = UIColor(CaperTheme.text).withAlphaComponent(0.9).cgColor
         badge.text = asset.mediaType == .video ? "\u{25B6}\u{FE0E} \(VoiceDuration.format(ms: Int(asset.duration * 1000)))" : AttachGalleryCache.isGIF(asset) ? "GIF" : nil
         badge.isHidden = badge.text == nil; setNeedsLayout()
         button.alpha = full && order == nil && !pending ? 0.4 : 1

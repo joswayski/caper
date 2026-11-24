@@ -466,13 +466,11 @@ private fun formatDuration(ms: Long): String {
             .background(Blackout.copy(alpha = 0.7f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp),
             fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Text)
         if (order != null) Box(Modifier.fillMaxSize().background(Blackout.copy(alpha = 0.25f)).border(3.dp, Terracotta))
-        if (!single) Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp)) {
-            if (order != null) Box(
-                Modifier.fillMaxSize().entrance(MOTION_BASE, scale = 0.94f).background(Terracotta, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) { Text("$order", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Text) }
-            else Box(Modifier.fillMaxSize().background(Blackout.copy(alpha = 0.35f), CircleShape).border(1.5.dp, Text.copy(alpha = 0.9f), CircleShape))
-        }
+        // Only picked items carry a mark; the rest stay clean.
+        if (order != null) Box(
+            Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp).entrance(MOTION_BASE, scale = 0.94f).background(Terracotta, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { Text("$order", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Text) }
         if (item.video) Text(
             "▶ ${formatDuration(item.durationMs)}",
             Modifier.align(Alignment.BottomStart).padding(5.dp).background(Blackout.copy(alpha = 0.7f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp),
