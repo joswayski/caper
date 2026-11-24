@@ -903,20 +903,22 @@ impl Dialog {
         (n >= 3000).then(|| format!("{},{:03} / 4,000", n / 1000, n % 1000))
     }
 
-    /// The counter's colour: `muted` at 3,000, warming gradually through gold
-    /// and orange to red near the limit, as web's counter.ts.
+    /// The counter's colour: `muted` at 3,000, easing through gold and orange
+    /// to red near the limit, as web's counter.ts.
     pub fn counter_color(n: usize, muted: u32) -> u32 {
         let ramp = [
-            (3000.0, muted),
-            (3400.0, 0xE2C36B),
-            (3700.0, 0xEDA361),
-            (3950.0, 0xFF827C),
+            (0.0, muted),
+            (0.35, 0xE2C36B),
+            (0.65, 0xEDA361),
+            (1.0, 0xFF827C),
         ];
-        let n = n as f32;
+        // 0 at 3,000, 1 at 3,950; squared, so it stays near gray, then hurries toward red.
+        let linear = ((n as f32 - 3000.0) / 950.0).clamp(0.0, 1.0);
+        let warmth = linear * linear;
         for pair in ramp.windows(2) {
             let ((from, a), (to, b)) = (pair[0], pair[1]);
-            if n < to {
-                let t = ((n - from) / (to - from)).max(0.0);
+            if warmth < to {
+                let t = (warmth - from) / (to - from);
                 let mix = |shift: u32| {
                     let (a, b) = (((a >> shift) & 0xFF) as f32, ((b >> shift) & 0xFF) as f32);
                     ((a + (b - a) * t).round() as u32) << shift

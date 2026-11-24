@@ -16,9 +16,8 @@ import org.junit.Test
 class ComposerCounterTest {
     @Test fun `counter warms gradually through the web's stops`() {
         assertEquals(TextMuted, counterTone(3000))
-        assertEquals(lerp(TextMuted, PinGold, 0.5f), counterTone(3200))
-        assertEquals(PinGold, counterTone(3400))
-        assertEquals(Color(0xFFEDA361), counterTone(3700))
+        // Halfway through the range is only a quarter of the way along the eased ramp.
+        assertEquals(lerp(TextMuted, PinGold, 0.25f / 0.35f), counterTone(3475))
         assertEquals(Color(0xFFFF827C), counterTone(3950))
         assertEquals(Color(0xFFFF827C), counterTone(4001))
     }

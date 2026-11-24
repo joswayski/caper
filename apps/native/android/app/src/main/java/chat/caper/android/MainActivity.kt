@@ -4363,9 +4363,12 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
 /** Web's `.chat-counter` tones at 3,500, 3,750 and 3,900 characters. */
 /** Muted gray at 3,000, warming gradually through gold and orange to red near the limit, as web's counter.ts. */
 internal fun counterTone(count: Int): Color {
-    val ramp = listOf(3000 to TextMuted, 3400 to PinGold, 3700 to Color(0xFFEDA361), 3950 to Color(0xFFFF827C))
+    // 0 at 3,000, 1 at 3,950; squared, so it stays near gray, then hurries toward red.
+    val linear = ((count - 3000) / 950f).coerceIn(0f, 1f)
+    val warmth = linear * linear
+    val ramp = listOf(0f to TextMuted, 0.35f to PinGold, 0.65f to Color(0xFFEDA361), 1f to Color(0xFFFF827C))
     for ((from, to) in ramp.zipWithNext()) {
-        if (count < to.first) return lerp(from.second, to.second, ((count - from.first).toFloat() / (to.first - from.first)).coerceAtLeast(0f))
+        if (warmth < to.first) return lerp(from.second, to.second, (warmth - from.first) / (to.first - from.first))
     }
     return ramp.last().second
 }

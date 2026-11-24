@@ -5141,18 +5141,20 @@ private struct TypingDots: View {
 /// The draft's length under the composer from 3,000 of 4,000 characters,
 /// warming as it nears the limit.
 enum ComposerCounter {
-    /// The theme's muted gray at 3,000, warming gradually through gold and
-    /// orange to red near the limit, as web's counter.ts.
+    /// The theme's muted gray, then gold, orange and red along the eased
+    /// warm-up, as web's counter.ts.
     private static let warm: [(at: Double, rgb: SIMD3<Double>)] = [
-        (3400, [226, 195, 107]), (3700, [237, 163, 97]), (3950, [255, 130, 124]),
+        (0.35, [226, 195, 107]), (0.65, [237, 163, 97]), (1, [255, 130, 124]),
     ]
     /// sRGB components (0–1) for `count`, from the muted gray's components.
     static func rgb(_ count: Int, muted: SIMD3<Double>) -> SIMD3<Double> {
-        var from: (at: Double, rgb: SIMD3<Double>) = (3000, muted * 255)
+        // 0 at 3,000, 1 at 3,950; squared, so it stays near gray, then hurries toward red.
+        let linear = min(1, max(0, Double(count - 3000) / 950))
+        let warmth = linear * linear
+        var from: (at: Double, rgb: SIMD3<Double>) = (0, muted * 255)
         for to in warm {
-            if Double(count) < to.at {
-                let t = max(0, (Double(count) - from.at) / (to.at - from.at))
-                return (from.rgb + (to.rgb - from.rgb) * t) / 255
+            if warmth < to.at {
+                return (from.rgb + (to.rgb - from.rgb) * ((warmth - from.at) / (to.at - from.at))) / 255
             }
             from = to
         }
