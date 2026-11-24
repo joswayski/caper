@@ -131,9 +131,88 @@ pub struct Row {
     pub blocked: bool,
     /// A forward: its card, with the original when it is still available.
     pub forward: Option<Option<Original>>,
+    /// Cards for the message links in its text that have an answer
+    /// (`caper_client::link_cards`), as web's `MessageLinkCards`.
+    pub links: Vec<LinkCard>,
     /// It just arrived at the live end while you watched: it fades and
     /// rises into place (`mark_arrivals`).
     pub arriving: bool,
+}
+
+/// A message link's card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkCard {
+    /// The API answered that this account can't see it.
+    Unavailable,
+    /// The original, live, and the link's channel and message to jump to.
+    Original {
+        channel: String,
+        message: String,
+        original: Box<Original>,
+    },
+}
+
+impl LinkCard {
+    fn new(
+        source: &caper_client::model::ForwardSource,
+        images: &Images,
+        revealed: &crate::media::Revealed,
+        scope: String,
+    ) -> Self {
+        let original = &source.message;
+        let mut shown = Original::new(original, images, revealed, scope, false);
+        // Unlike a forward's snapshot, a linked message brings its previews.
+        if !original.is_deleted() && !original.content.suppress_embeds {
+            shown.content.embeds.clone_from(&original.content.embeds);
+        }
+        Self::Original {
+            channel: original.channel_id.clone(),
+            message: original.id.clone(),
+            original: Box::new(shown),
+        }
+    }
+
+    /// "Linked message", the original and Jump to message; or the muted
+    /// "Message you can't view" pill.
+    fn view(&self, images: &Rc<Images>, handler: &Handler) -> gtk::Widget {
+        let Self::Original {
+            channel,
+            message,
+            original,
+        } = self
+        else {
+            let pill = gtk::Label::builder()
+                .label("\u{1f512} Message you can\u{2019}t view")
+                .xalign(0.0)
+                .halign(gtk::Align::Start)
+                .css_classes(["link-card-locked", "muted", "small"])
+                .build();
+            return pill.upcast();
+        };
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        card.add_css_class("forward-card");
+        card.append(
+            &gtk::Label::builder()
+                .label("Linked message")
+                .xalign(0.0)
+                .css_classes(["muted", "small"])
+                .build(),
+        );
+        card.append(&original.view(images, handler, None));
+        let jump = gtk::Button::with_label("Jump to message");
+        jump.add_css_class("flat");
+        jump.add_css_class("inline");
+        jump.set_halign(gtk::Align::Start);
+        let (handler, channel, message) = (handler.clone(), channel.clone(), message.clone());
+        jump.connect_clicked(move |_| {
+            handler(Action::OpenMessageLink {
+                channel: channel.clone(),
+                message: message.clone(),
+            })
+        });
+        card.append(&jump);
+        card.upcast()
+    }
 }
 
 /// A forwarded original, as its card shows it.
@@ -358,6 +437,7 @@ impl Row {
             blocked_run: Some((key, label, shown)),
             blocked: false,
             forward: None,
+            links: Vec::new(),
             arriving: false,
         }
     }
@@ -583,6 +663,8 @@ struct Key<'a> {
     revealed: [Option<Cow<'a, HashSet<String>>>; 2],
     /// Refreshed URLs of its files and its forwarded original's.
     fresh: Vec<Option<Cow<'a, FreshUrl>>>,
+    /// Its message links' answers, in order.
+    links: Vec<Option<Option<Cow<'a, caper_client::model::ForwardSource>>>>,
 }
 
 impl<'a> Key<'a> {
@@ -633,6 +715,15 @@ impl<'a> Key<'a> {
             fresh: files
                 .map(|file| fresh.get(&file.id).map(Cow::Borrowed))
                 .collect(),
+            links: linked(message)
+                .into_iter()
+                .map(|(_, id)| {
+                    viewer
+                        .link_cards
+                        .card(&id)
+                        .map(|source| source.map(Cow::Borrowed))
+                })
+                .collect(),
         }
     }
 
@@ -659,8 +750,21 @@ impl<'a> Key<'a> {
                 .into_iter()
                 .map(|url| url.map(|url| Cow::Owned(url.into_owned())))
                 .collect(),
+            links: self
+                .links
+                .into_iter()
+                .map(|card| card.map(|source| source.map(|source| Cow::Owned(source.into_owned()))))
+                .collect(),
         }
     }
+}
+
+/// The message links in a live message's text (none in a tombstone).
+fn linked(message: &Message) -> Vec<(String, String)> {
+    if message.is_deleted() || !message.content.text.contains("/m/") {
+        return Vec::new();
+    }
+    caper_client::link_cards::links_in(&message.content.text)
 }
 
 /// A time's row label ("3:04 PM") and its local day ("Monday, May 4, 2026").
@@ -712,6 +816,8 @@ pub struct Viewer<'a> {
     pub reactors: &'a std::collections::BTreeMap<String, caper_client::reactions::ReactorCache>,
     /// Messages whose reply quote shows in full.
     pub expanded_quotes: &'a std::collections::HashSet<String>,
+    /// What each message link in the text resolved to.
+    pub link_cards: &'a caper_client::link_cards::LinkCards,
 }
 
 impl Viewer<'_> {
@@ -867,6 +973,7 @@ pub fn build<'a>(
             blocked_run: None,
             blocked: false,
             forward: None,
+            links: Vec::new(),
             arriving: false,
         };
         let separate = std::mem::take(&mut separate_next);
@@ -1060,6 +1167,20 @@ fn message_row(message: &Message, blocked: bool, markup: &mut Markup, viewer: &V
                     )
                 })
             }),
+        links: linked(message)
+            .into_iter()
+            .filter_map(|(_, id)| {
+                Some(match viewer.link_cards.card(&id)? {
+                    None => LinkCard::Unavailable,
+                    Some(source) => LinkCard::new(
+                        source,
+                        viewer.images,
+                        viewer.revealed,
+                        format!("{}:link:{}:{id}", viewer.surface, message.id),
+                    ),
+                })
+            })
+            .collect(),
     }
 }
 
@@ -1131,6 +1252,11 @@ pub enum Action {
     ToggleBlocked(String),
     /// Open the forwarded conversation behind this forward.
     ViewForward(String),
+    /// Jump to message on a message link's card.
+    OpenMessageLink {
+        channel: String,
+        message: String,
+    },
     /// A person's profile card, from an author or a mention pill.
     Profile {
         id: String,
@@ -1195,6 +1321,7 @@ struct Widgets {
     body: crate::markup::View,
     content: gtk::Box,
     forward: gtk::Box,
+    links: gtk::Box,
     notice: gtk::Label,
     card: gtk::Overlay,
     reactions: gtk::Box,
@@ -1527,6 +1654,8 @@ fn build_widgets() -> Widgets {
     let forward = gtk::Box::new(gtk::Orientation::Vertical, 4);
     forward.add_css_class("forward-card");
     content.append(&forward);
+    let links = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    content.append(&links);
     content.append(&notice);
     content.append(&reactions);
     content.append(&reaction_error);
@@ -1628,6 +1757,7 @@ fn build_widgets() -> Widgets {
         body,
         content: extra,
         forward,
+        links,
         reactions,
         reaction_error,
         reaction_error_label,
@@ -2193,6 +2323,13 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
             ),
         }
     }
+    while let Some(child) = widgets.links.first_child() {
+        widgets.links.remove(&child);
+    }
+    widgets.links.set_visible(!row.links.is_empty());
+    for card in &row.links {
+        widgets.links.append(&card.view(images, handler));
+    }
     // Only the hover cards changed (names loaded): update them in place so
     // a card that is showing follows.
     let same_chips = widgets.row.borrow().as_ref().is_some_and(|shown| {
@@ -2490,6 +2627,7 @@ mod tests {
             blocked_run: None,
             blocked: false,
             forward: None,
+            links: Vec::new(),
             arriving: false,
         }
     }

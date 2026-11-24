@@ -786,7 +786,8 @@ private final class AppKitPointerPassthroughView: NSView {
     public func messageAttachments(_ message: ChatMessage, beforeViewing: (() -> Void)? = nil) -> AppKitAttachmentSurface? {
         let files = message.content.attachments ?? []
         guard !message.isDeleted, !files.isEmpty || message.content.gif != nil || message.forward != nil
-            || !(message.content.embeds ?? []).isEmpty || MentionAutocomplete.asksFeedback(message) else { return nil }
+            || !(message.content.embeds ?? []).isEmpty || MentionAutocomplete.asksFeedback(message)
+            || !MessageLinkCards.shared.cards(for: message).isEmpty else { return nil }
         let content = AppKitMessageExtras(message, chat: model.chat) { [weak self] request in
             beforeViewing?(); self?.showViewer(request)
         }

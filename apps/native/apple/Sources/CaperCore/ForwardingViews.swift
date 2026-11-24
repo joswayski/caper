@@ -72,6 +72,36 @@ struct ForwardCardView: View {
 #endif
 
 #if os(iOS)
+/// Live cards for the message links in a message's text (`MessageLinkCards`):
+/// the original with its previews and Jump to message, or a neutral notice
+/// when this account can't see it.
+struct MessageLinkCardsView: View {
+    let message: ChatMessage
+    var body: some View {
+        ForEach(MessageLinkCards.shared.cards(for: message)) { linked in
+            switch linked.card {
+            case .unavailable:
+                CaperLabel("Message you can\u{2019}t view", icon: "lock", size: 12).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    .accessibilityIdentifier("message-link-locked-\(linked.target.messageID)")
+            case let .original(original):
+                VStack(alignment: .leading, spacing: 8) {
+                    CaperLabel("Linked message", icon: "link", size: 12).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                    SharedOriginalView(message: original)
+                    if !original.isDeleted { MessageEmbedsView(embeds: original.content.embeds ?? []) }
+                    Button("Jump to message") { if !SwipeTapGuard.swiping { MessageLinkCards.shared.jump(linked.target) } }
+                        .buttonStyle(CaperSecondaryButton())
+                        .accessibilityIdentifier("message-link-jump-\(linked.target.messageID)")
+                }.padding(12).background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border) }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("message-link-card-\(linked.target.messageID)")
+            }
+        }
+    }
+}
+#endif
+
+#if os(iOS)
 struct ForwardPickerView: View {
     @Environment(\.dismiss) private var dismiss
     let chat: ChatModel

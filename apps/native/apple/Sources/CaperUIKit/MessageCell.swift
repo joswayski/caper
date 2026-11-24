@@ -48,6 +48,8 @@ struct MessageRowState: Equatable {
     var deleted: Bool
     /// Files, a GIF, link cards or a forward, drawn by CaperCore's native views.
     var extras: ChatMessage?
+    /// Answered cards for the message links in its text (`MessageLinkCards`).
+    var linkCards: [MessageLinkCards.Card] = []
     /// The optimistic row's files, GIF and link card.
     var pendingContent: PendingMessage?
     var reactions: [ReactionChipsView.Chip] = []
@@ -107,6 +109,8 @@ struct MessageRowState: Equatable {
         revision = message.revision ?? 1
         deleted = message.isDeleted
         extras = UIKitNativeMessageExtras.shows(message) ? message : nil
+        // Answers for its message links: a change reconfigures the row.
+        linkCards = MainActor.assumeIsolated { MessageLinkCards.shared.cards(for: message).map { $0.card } }
         pendingContent = nil
         pending = false
         pendingError = nil

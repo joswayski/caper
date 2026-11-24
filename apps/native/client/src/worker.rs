@@ -189,11 +189,13 @@ pub enum Command {
         seq: String,
     },
     /// A message link: where its message is, if this account may see it.
+    /// `open`: to go there; otherwise for its card (`link_cards`).
     ResolveMessageLink {
         epoch: u64,
         token: String,
         channel: String,
         message: String,
+        open: bool,
     },
     Restore {
         generation: u64,
@@ -806,6 +808,7 @@ pub enum Event {
         epoch: u64,
         channel: String,
         message: String,
+        open: bool,
         result: Result<Option<Box<crate::model::ForwardSource>>, String>,
     },
     MembershipRefreshed {
@@ -2250,8 +2253,10 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
             token,
             channel,
             message,
+            open,
         } => Event::MessageLinkResolved {
             epoch,
+            open,
             result: api
                 .resolve_message_link(&token, &channel, &message)
                 .map(|source| source.map(Box::new))

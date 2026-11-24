@@ -1996,13 +1996,14 @@ them, and every client runs `shared/messages/message-link-cases.json`. Only
   `/m/*`), Android (verified App Link `/m/`) and every app's `caper://m/...`
   open the same way. A link the reader can't open shows "You can’t view that
   message."
-- On web and Android, a message link in a message's text renders below it as a
+- On every client, a message link in a message's text renders below it as a
   live card of the original (author, text, attachments, embeds) with **Jump to
   message**, for readers the API lets see it; everyone else sees a neutral
-  "Message you can’t view" pill. The Apple, Windows and Linux apps show the
-  link as text that opens the message in place (the same API check decides). Cards refresh while shown (every 30 seconds on web), so edits,
-  reactions and deletions follow the original. Up to five distinct links per
-  message get cards. Message links get no link-preview embed, in the composer or
+  "Message you can’t view" pill. Until the first answer, or when it fails, the
+  link stays text that opens the message. Cards refresh every 30 seconds while
+  shown, so edits, reactions and deletions follow the original. Up to five
+  distinct links per message get cards. The desktop apps keep answers in
+  `apps/native/client/src/link_cards.rs`; Apple in `MessageLinkCards`. Message links get no link-preview embed, in the composer or
   after sending.
 
 **Mark unread** moves your read position to just before that message, synced

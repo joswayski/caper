@@ -778,6 +778,10 @@ public final class AppModel {
         chatModel.reactionAdded = { [weak self] in self?.refreshQuickReactions() }
         chatModel.profileDirectory = { [weak self] in self?.profileUpdates ?? ProfileDirectory() }
         chatModel.onOpenForward = { [weak self] message in await self?.openForwardedConversation(message) ?? false }
+        // Message link cards ask this account's API and jump like an opened link.
+        let cards = MessageLinkCards.shared
+        cards.resolve = { [api] target in try await api.messageLink(target) }
+        cards.open = { [weak self] url in self?.openMessageLink(url) ?? false }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
         chatModel.unblockAccount = { [weak self] accountID in try await self?.unblock(accountID: accountID) }
         chatModel.onDirectMessageBlocked = { [weak self] in
@@ -1176,6 +1180,7 @@ public final class AppModel {
         openingSpaceID = nil; openingChannelID = nil
         limits = nil; navigationOpen = false; restoringWorkspace = false
         openedInviteLink = nil; lastOpenedInvite = nil
+        MessageLinkCards.shared.clear()
         ShareInbox.saveRecents(nil); shareRecentsAt = nil
         busy = false; phase = .signedOut
         async let revoke: Void = api.logout()

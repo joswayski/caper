@@ -861,12 +861,12 @@ impl App {
             self.dirty.overlay = true;
             self.need = true;
         }
-        if self
-            .c
-            .messages
-            .iter()
-            .any(|m| !m.attachments.is_empty() || !m.embeds.is_empty() || m.forward.is_some())
-        {
+        if self.c.messages.iter().any(|m| {
+            !m.attachments.is_empty()
+                || !m.embeds.is_empty()
+                || m.forward.is_some()
+                || !m.links.is_empty()
+        }) {
             self.drawn = None;
             self.events |= crate::EV_ROWS;
             self.need = true;

@@ -1679,6 +1679,14 @@ popover.pins > contents {
   padding: 4px 0;
 }
 
+/* A message link the reader can't open: a neutral pill, no card. */
+.link-card-locked {
+  border: 1px solid @caper_border;
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin: 4px 0 2px;
+}
+
 .forward-list {
   border: 1px solid @caper_border;
   border-radius: 8px;

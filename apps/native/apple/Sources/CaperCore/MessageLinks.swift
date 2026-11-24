@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 @_implementationOnly import CaperMobile
 
 /// One run of message text: plain text, or a link with the address it opens.
@@ -71,5 +72,98 @@ public struct MessageLinkTarget: Equatable, Sendable {
     /// The link Copy link puts on the clipboard.
     public static func url(channelID: String, messageID: String) -> String {
         "https://caper.chat/m/\(channelID)/\(messageID)"
+    }
+}
+
+/// Live cards for the message links in message text, as web's
+/// `MessageLinkCards`: up to five distinct links per message, each resolved
+/// through `GET /api/chat/message-links/{channel}/{message}`, which answers
+/// only for readers who can see the original. Until the first answer, or
+/// when it fails, no card shows and the link stays plain text. A link still
+/// being shown asks again every `refresh`, so edits, reactions and deletions
+/// follow the original. `AppModel` supplies `resolve` and `open`.
+@MainActor @Observable public final class MessageLinkCards {
+    public static let shared = MessageLinkCards()
+    nonisolated public static let maximum = 5
+    static let refresh: TimeInterval = 30
+
+    public enum Card: Equatable, Sendable {
+        /// The API answered that this account can't see it.
+        case unavailable
+        case original(ChatMessage)
+    }
+
+    /// One link and its answer.
+    public struct Linked: Identifiable, Sendable {
+        public let target: MessageLinkTarget
+        public let card: Card
+        public var id: String { target.messageID }
+    }
+
+    /// Advanced whenever an answer changes a card.
+    public private(set) var revision = 0
+    private var cards: [String: Card] = [:]
+    @ObservationIgnored private var asked: [String: Date] = [:]
+    @ObservationIgnored private var pending: Set<String> = []
+    @ObservationIgnored private var shown: [String: Date] = [:]
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored var resolve: ((MessageLinkTarget) async throws -> ForwardSource?)?
+    @ObservationIgnored var open: ((URL) -> Bool)?
+
+    /// The distinct message links in `text`, at most `maximum`.
+    nonisolated public static func targets(in text: String) -> [MessageLinkTarget] {
+        guard text.contains("/m/") else { return [] }
+        var found: [MessageLinkTarget] = []
+        for href in MessageLinks.segments(in: text).compactMap(\.href) {
+            guard let target = MessageLinkTarget(href), !found.contains(where: { $0.messageID == target.messageID }) else { continue }
+            found.append(target)
+            if found.count == maximum { break }
+        }
+        return found
+    }
+
+    nonisolated public static func hasLinks(_ message: ChatMessage) -> Bool {
+        !message.isDeleted && !targets(in: message.content.text).isEmpty
+    }
+
+    /// The answered cards for `message`'s links, in order; asks about any
+    /// that are due. Reading it observes the answers.
+    public func cards(for message: ChatMessage) -> [Linked] {
+        guard !message.isDeleted else { return [] }
+        let targets = Self.targets(in: message.content.text)
+        let now = Date()
+        for target in targets { shown[target.messageID] = now; ask(target, now: now) }
+        return targets.compactMap { target in cards[target.messageID].map { Linked(target: target, card: $0) } }
+    }
+
+    /// Jump to message: opens it where it lives, as an opened link does.
+    public func jump(_ target: MessageLinkTarget) {
+        if let url = URL(string: MessageLinkTarget.url(channelID: target.channelID, messageID: target.messageID)) { _ = open?(url) }
+    }
+
+    /// Signed out or another account: nothing carries over.
+    public func clear() {
+        generation += 1
+        cards = [:]; asked = [:]; pending = []; shown = [:]; revision += 1
+    }
+
+    private func ask(_ target: MessageLinkTarget, now: Date) {
+        let id = target.messageID
+        guard let resolve, !pending.contains(id), asked[id].map({ now.timeIntervalSince($0) >= Self.refresh }) ?? true else { return }
+        pending.insert(id); asked[id] = now
+        let attempt = generation
+        Task { [weak self] in
+            var answer: Card?
+            do {
+                if let source = try await resolve(target) { answer = .original(source.message) } else { answer = .unavailable }
+            } catch { answer = nil } // Asked again at the next refresh; the last answer stays.
+            guard let self, self.generation == attempt else { return }
+            self.pending.remove(id)
+            if let answer, self.cards[id] != answer { self.cards[id] = answer; self.revision += 1 }
+            // Shown cards keep following the original while they are on screen.
+            try? await Task.sleep(for: .seconds(Self.refresh))
+            guard self.generation == attempt, let seen = self.shown[id], Date().timeIntervalSince(seen) < 10 * 60 else { return }
+            self.ask(target, now: Date())
+        }
     }
 }

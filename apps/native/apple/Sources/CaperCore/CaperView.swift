@@ -5378,6 +5378,7 @@ private struct MessageRow: View {
                         guard !SwipeTapGuard.swiping else { return }
                         Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
                     }
+                    MessageLinkCardsView(message: message)
                     ReactionRow(message: message, chat: chat, reactors: reactors, showReactionPicker: addReaction)
                     if let error = chat.pinErrors[message.id] {
                         HStack(spacing: 8) {

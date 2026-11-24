@@ -1507,6 +1507,8 @@ impl Live {
         self.load_notifications();
         // Mentions and DMs toast while the window isn't showing them.
         self.account_epoch = self.generation;
+        // Another account's answers say nothing about this one's access.
+        LINK_CARDS.with(|cards| cards.borrow_mut().clear());
         self.voice_spaces.clear();
         self.voice_activity_at = None;
         self.voice_activity_pending = false;
@@ -3174,7 +3176,34 @@ impl Live {
             token,
             channel: channel.to_owned(),
             message: message.to_owned(),
+            open: true,
         });
+    }
+
+    /// Asks about the message links in loaded messages whose cards are due
+    /// (never asked, or older than `link_cards::REFRESH`).
+    fn request_link_cards(&mut self) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let now = Instant::now();
+        let due: Vec<(String, String)> = LINK_CARDS.with(|cards| {
+            let mut cards = cards.borrow_mut();
+            self.timeline
+                .messages()
+                .filter(|m| !m.is_deleted() && m.content.text.contains("/m/"))
+                .flat_map(|m| cards.due(&m.content.text, now))
+                .collect()
+        });
+        for (channel, message) in due {
+            self.worker.send(Command::ResolveMessageLink {
+                epoch: self.account_epoch,
+                token: token.clone(),
+                channel,
+                message,
+                open: false,
+            });
+        }
     }
 
     /// The signed-in, non-guest author of `m` may delete it (and edit it,
@@ -5257,6 +5286,7 @@ impl Live {
             self.handle(event, &mut out);
         }
         self.poll_voice_activity();
+        self.request_link_cards();
         if let Ok(mut r) = self.host.requests.lock() {
             r.draining = false;
         }
@@ -5846,6 +5876,36 @@ impl Live {
                     ));
                 }
             },
+            Event::MessageLinkResolved {
+                epoch,
+                message,
+                open: false,
+                result,
+                ..
+            } if epoch == self.account_epoch => {
+                let changed = LINK_CARDS.with(|cards| {
+                    cards
+                        .borrow_mut()
+                        .resolved(&message, result.map(|source| source.map(|source| *source)))
+                });
+                // Rows quoting it rebuild with their card.
+                if changed {
+                    let mut thread = false;
+                    for m in self
+                        .timeline
+                        .messages()
+                        .filter(|m| !m.is_deleted() && m.content.text.contains(message.as_str()))
+                    {
+                        thread |= self.in_thread(&m.id);
+                        if self.in_channel(m) {
+                            out.push(Update::Message(Box::new(self.shown(m))));
+                        }
+                    }
+                    if thread {
+                        out.push(Update::Thread);
+                    }
+                }
+            }
             Event::MessageLinkResolved { epoch, result, .. } if epoch == self.account_epoch => {
                 match result {
                     Ok(Some(source)) if source.message.is_deleted() => {
@@ -6623,6 +6683,32 @@ fn time_label(created_at: &str) -> String {
         .unwrap_or_default()
 }
 
+thread_local! {
+    /// What each message link in loaded messages resolved to, for the rows'
+    /// cards (`caper_client::link_cards`). The UI thread owns it.
+    static LINK_CARDS: std::cell::RefCell<caper_client::link_cards::LinkCards> =
+        std::cell::RefCell::default();
+}
+
+/// Cards for the message links in `m`'s text that have an answer.
+fn link_cards(m: &core::Message) -> Vec<model::LinkCard> {
+    if m.is_deleted() || !m.content.text.contains("/m/") {
+        return Vec::new();
+    }
+    LINK_CARDS.with(|cards| {
+        let cards = cards.borrow();
+        caper_client::link_cards::links_in(&m.content.text)
+            .into_iter()
+            .filter_map(|(_, id)| {
+                Some(match cards.card(&id)? {
+                    None => model::LinkCard::Locked,
+                    Some(source) => model::LinkCard::Original(Box::new(source.message.clone())),
+                })
+            })
+            .collect()
+    })
+}
+
 /// The displayed conversation for one channel's history.
 pub fn conversation(
     spaces: &core::Spaces,
@@ -6957,6 +7043,7 @@ pub fn message(
         },
         forward: m.forward.clone().filter(|_| !deleted),
         forward_revealed: Default::default(),
+        links: link_cards(m),
     }
 }
 

@@ -47,6 +47,31 @@ import AppKit
             } else { card.addArrangedSubview(AppKitKit.label("Original conversation unavailable.", size: 12, color: AppKitKit.muted)) }
             append(card)
         }
+        // Message links in the text: a live card of each original this
+        // account can see (the API decides), else a neutral notice.
+        for linked in MessageLinkCards.shared.cards(for: message) {
+            let target = linked.target
+            guard case let .original(original) = linked.card else {
+                let locked = AppKitKit.label("Message you can\u{2019}t view", size: 12, color: AppKitKit.muted)
+                locked.setAccessibilityIdentifier("message-link-locked-\(target.messageID)"); append(locked); continue
+            }
+            let card = AppKitKit.stack([AppKitKit.label("Linked message", size: 11, color: AppKitKit.muted)], spacing: 8)
+            card.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+            card.wantsLayer = true; card.layer?.backgroundColor = AppKitKit.surface.cgColor
+            card.layer?.cornerRadius = 8; card.layer?.borderWidth = 1; card.layer?.borderColor = AppKitKit.border.cgColor
+            card.setAccessibilityElement(true); card.setAccessibilityRole(.group); card.setAccessibilityLabel("Linked message")
+            card.setAccessibilityIdentifier("message-link-card-\(target.messageID)")
+            let preview = AppKitOriginalMessage(original, show: show)
+            card.addArrangedSubview(preview); AppKitKit.fillWidth(preview, of: card)
+            preview.heightChanged = { [weak self] in self?.heightChanged?() }
+            if !original.isDeleted, let cards = original.content.embeds, !cards.isEmpty {
+                let embeds = AppKitMessageEmbeds(); embeds.update(cards)
+                card.addArrangedSubview(embeds); AppKitKit.fillWidth(embeds, of: card)
+            }
+            let jump = AppKitKitButton("Jump to message") { MessageLinkCards.shared.jump(target) }
+            jump.setAccessibilityIdentifier("message-link-jump-\(target.messageID)"); card.addArrangedSubview(jump)
+            append(card)
+        }
         files.heightChanged = { [weak self] in self?.heightChanged?() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -145,13 +170,16 @@ import UIKit
     private let embeds = UIKitMessageEmbeds()
     private let notified = UIKitMessageDialog.label(FeedbackInbox.notified, size: 11)
     private var forward: UIStackView?, original: UIKitOriginalMessage?, forwardButton: UIButton?
+    /// Message link cards, rebuilt only when their answers change.
+    private var shownLinks: [MessageLinkCards.Card] = [], linkViews: [UIView] = []
     public init(chat: ChatModel, present: @escaping UIKitHosting.Present, openForward: @escaping (ChatMessage) -> Void) {
         self.chat = chat; self.present = present; self.openForward = openForward
         super.init(frame: .zero); axis = .vertical; spacing = 5
     }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     public static func shows(_ message: ChatMessage) -> Bool {
-        !message.isDeleted && (!(message.content.attachments ?? []).isEmpty || message.content.gif != nil || !(message.content.embeds ?? []).isEmpty || message.forward != nil || MentionAutocomplete.asksFeedback(message))
+        !message.isDeleted && (!(message.content.attachments ?? []).isEmpty || message.content.gif != nil || !(message.content.embeds ?? []).isEmpty || message.forward != nil || MentionAutocomplete.asksFeedback(message)
+            || MessageLinkCards.hasLinks(message))
     }
     public static func shows(_ pending: PendingMessage) -> Bool { !pending.attachments.isEmpty || pending.gif != nil || !pending.embeds.isEmpty }
     public func update(_ message: ChatMessage) {
@@ -162,7 +190,30 @@ import UIKit
         if self.pending?.id != pending.id || message != nil { reset() }
         self.pending = pending; message = nil; render()
     }
-    private func reset() { arrangedSubviews.forEach { $0.removeFromSuperview() }; files = nil; gif = nil; forward = nil; original = nil; forwardButton = nil }
+    private func reset() {
+        arrangedSubviews.forEach { $0.removeFromSuperview() }; files = nil; gif = nil; forward = nil; original = nil; forwardButton = nil
+        shownLinks = []; linkViews = []
+    }
+    /// A message link's card: the original with its previews and Jump to
+    /// message, or a neutral notice when this account can't see it.
+    private func linkCard(_ target: MessageLinkTarget, _ card: MessageLinkCards.Card) -> UIView {
+        guard case let .original(source) = card else {
+            let locked = UIKitMessageDialog.label("Message you can\u{2019}t view", size: 12)
+            locked.accessibilityIdentifier = "message-link-locked-\(target.messageID)"; return locked
+        }
+        let stack = UIStackView(); stack.axis = .vertical; stack.spacing = 8
+        stack.isLayoutMarginsRelativeArrangement = true; stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        stack.backgroundColor = UIColor(CaperTheme.surface); stack.layer.cornerRadius = 8; stack.layer.borderWidth = 1; stack.layer.borderColor = UIColor(CaperTheme.border).cgColor
+        stack.accessibilityIdentifier = "message-link-card-\(target.messageID)"
+        stack.addArrangedSubview(UIKitMessageDialog.label("Linked message", size: 11))
+        stack.addArrangedSubview(UIKitOriginalMessage(source, show: { [weak self] in self?.show($0) }))
+        if !source.isDeleted, let cards = source.content.embeds, !cards.isEmpty {
+            let embeds = UIKitMessageEmbeds(); embeds.update(cards); stack.addArrangedSubview(embeds)
+        }
+        let jump = UIKitMessageDialog.button("Jump to message") { if !SwipeTapGuard.swiping { MessageLinkCards.shared.jump(target) } }
+        jump.accessibilityIdentifier = "message-link-jump-\(target.messageID)"; stack.addArrangedSubview(jump)
+        return stack
+    }
     private func available() -> Bool {
         guard let message else { return pending != nil }
         return chat.channelID == message.channelId && (chat.displayedMessages.first { $0.id == message.id }
@@ -218,6 +269,12 @@ import UIKit
             }
             if let forward { rows.append(forward) }
         }
+        let linked = message.map { MessageLinkCards.shared.cards(for: $0) } ?? []
+        if linked.map({ $0.card }) != shownLinks {
+            shownLinks = linked.map { $0.card }
+            linkViews = linked.map { linkCard($0.target, $0.card) }
+        }
+        rows += linkViews
         for view in arrangedSubviews where !rows.contains(where: { $0 === view }) { view.removeFromSuperview() }
         for (index, view) in rows.enumerated() where !arrangedSubviews.indices.contains(index) || arrangedSubviews[index] !== view {
             removeArrangedSubview(view); insertArrangedSubview(view, at: index)

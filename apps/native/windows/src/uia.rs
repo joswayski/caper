@@ -1335,7 +1335,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::MembersToggle => (39, 2),
         Id::PinsButton => (39, 3),
         Id::Inbox(k) => (39, 4 + k),
-        // Groups 70–76 and 80–86 belong to forwarded cards (`ForwardPart`).
+        // Groups 70–77 and 80–87 belong to forwarded cards (`ForwardPart`).
         Id::Pins(PinPart::Close) => (54, 0),
         Id::Pins(PinPart::Card(k)) => (54, 1 + 2 * k),
         Id::Pins(PinPart::Go(k)) => (54, 2 + 2 * k),

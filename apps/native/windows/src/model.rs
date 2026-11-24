@@ -107,6 +107,17 @@ pub struct Message {
     pub forward: Option<Box<caper_client::model::MessageForward>>,
     /// Spoiler reveals belong to this forward, not to its wrapper or siblings.
     pub forward_revealed: std::collections::HashSet<String>,
+    /// Cards for the message links in its text, as web's `MessageLinkCards`.
+    pub links: Vec<LinkCard>,
+}
+
+/// A message link's card.
+#[derive(PartialEq)]
+pub enum LinkCard {
+    /// The API answered that this account can't see it.
+    Locked,
+    /// The original, live: Jump to message opens it.
+    Original(Box<caper_client::model::Message>),
 }
 
 pub struct Channel {
@@ -673,6 +684,7 @@ impl Conversation {
             embeds: Vec::new(),
             forward: None,
             forward_revealed: Default::default(),
+            links: Vec::new(),
         });
     }
 }
@@ -710,6 +722,7 @@ impl Conversation {
             embeds: Vec::new(),
             forward: None,
             forward_revealed: Default::default(),
+            links: Vec::new(),
         });
     }
 }

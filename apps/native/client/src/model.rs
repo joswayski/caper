@@ -1785,7 +1785,7 @@ pub struct ForwardDestinations {
     pub destinations: Vec<ForwardDestination>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ForwardSource {
     pub space_id: Option<String>,

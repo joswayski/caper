@@ -54,6 +54,9 @@ pub struct Row {
     pub embeds_y: f32,
     pub forward: Option<Box<ForwardCard>>,
     pub forward_y: f32,
+    /// Cards for the message links in its text (`model::LinkCard`), below
+    /// the forward, each placed at its own `y`.
+    pub link_cards: Vec<ForwardCard>,
     /// Each reaction chip's label, its width and whether it is yours.
     pub reactions: Vec<(IDWriteTextLayout, f32, bool)>,
     pub reactions_y: f32,
@@ -167,7 +170,11 @@ pub struct ForwardCard {
     summary: IDWriteTextLayout,
     summary_text: String,
     view: IDWriteTextLayout,
+    /// "View conversation", or "Jump to message" on a message link's card.
+    view_text: &'static str,
     height: f32,
+    /// A link card's top, from the row's content top.
+    y: f32,
 }
 
 const FORWARD_PAD: f32 = 12.0;
@@ -183,6 +190,8 @@ pub enum ForwardPart {
     File(usize),
     Hide(usize),
     Transcript(usize),
+    /// Jump to message on the row's `k`th message link card.
+    Jump(usize),
 }
 
 impl ForwardPart {
@@ -195,6 +204,7 @@ impl ForwardPart {
             Self::Hide(k) => (4, k),
             Self::Transcript(k) => (5, k),
             Self::Conversation => (6, 0),
+            Self::Jump(k) => (7, k),
         }
     }
 }
@@ -204,10 +214,51 @@ impl ForwardCard {
         let Some(forward) = &m.forward else {
             return Ok(None);
         };
+        Self::card(
+            g,
+            forward.message.as_ref(),
+            &m.forward_revealed,
+            false,
+            "Forwarded",
+            "View conversation",
+            "Original conversation unavailable.",
+            width,
+        )
+        .map(|card| Some(Box::new(card)))
+    }
+
+    /// A message link's card: the original with its previews and Jump to
+    /// message, or "Message you can't view".
+    fn link(g: &Gfx, card: &crate::model::LinkCard, width: f32) -> Result<Self> {
+        let source = match card {
+            crate::model::LinkCard::Original(source) => Some(&**source),
+            crate::model::LinkCard::Locked => None,
+        };
+        Self::card(
+            g,
+            source,
+            &Default::default(),
+            true,
+            "Linked message",
+            "Jump to message",
+            "\u{1f512} Message you can\u{2019}t view",
+            width,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn card(
+        g: &Gfx,
+        source: Option<&caper_client::model::Message>,
+        revealed: &std::collections::HashSet<String>,
+        embeds: bool,
+        label: &str,
+        view: &'static str,
+        unavailable: &str,
+        width: f32,
+    ) -> Result<Self> {
         let inner = (width - 2.0 * FORWARD_PAD).max(1.0);
-        let original = forward
-            .message
-            .as_ref()
+        let original = source
             .map(|source| -> Result<_> {
                 let author = crate::live::person(
                     &source.author.id,
@@ -229,9 +280,12 @@ impl ForwardCard {
                 shown.thread_replies = None;
                 shown.thread_context = false;
                 shown.forward = None;
+                shown.links.clear();
                 shown.reactions.clear();
-                shown.embeds.clear();
-                shown.revealed.clone_from(&m.forward_revealed);
+                if !embeds {
+                    shown.embeds.clear();
+                }
+                shown.revealed.clone_from(revealed);
                 let c = Conversation::live(Vec::new(), 0, Vec::new(), 0, vec![author], vec![shown]);
                 let row = build(g, &c, 0, (inner - BODY_X + PAD_X).max(1.0))?;
                 if let Some(h) = &row.header {
@@ -249,8 +303,8 @@ impl ForwardCard {
                 Ok((c, Box::new(row)))
             })
             .transpose()?;
-        let summary = match forward.message.as_ref() {
-            None => "Original conversation unavailable.".into(),
+        let summary = match source {
+            None => unavailable.into(),
             Some(source) if source.is_deleted() => String::new(),
             Some(source) => source
                 .reactions
@@ -262,14 +316,16 @@ impl ForwardCard {
         };
         let summary_layout = g.layout(&gfx::wide(&summary), &g.formats.quote_meta, inner)?;
         emoji::apply(&summary_layout, &summary, 12.0, 1.0)?;
-        Ok(Some(Box::new(Self {
-            label: g.layout(&gfx::wide("Forwarded"), &g.formats.quote_meta, inner)?,
+        Ok(Self {
+            label: g.layout(&gfx::wide(label), &g.formats.quote_meta, inner)?,
             original,
             summary: summary_layout,
             summary_text: summary,
-            view: g.layout(&gfx::wide("View conversation"), &g.formats.button, inner)?,
+            view: g.layout(&gfx::wide(view), &g.formats.button, inner)?,
+            view_text: view,
             height: 0.0,
-        })))
+            y: 0.0,
+        })
     }
 
     fn place(&mut self, width: f32) {
@@ -307,6 +363,34 @@ impl Row {
     /// Card controls in row coordinates. Wrapped links/spoilers retain their
     /// individual line rectangles for hit testing, rather than a bounding box.
     pub fn forward_parts(&self, grouped: bool) -> Vec<(ForwardPart, Common::D2D_RECT_F, String)> {
+        let mut out = self.forward_card_parts(grouped);
+        // Each link card's Jump to message (its original stays read-only
+        // here; the jump opens it where it lives).
+        for (k, card) in self.link_cards.iter().enumerate() {
+            let top = content_top(grouped) + card.y;
+            let Some((c, _)) = &card.original else {
+                out.push((
+                    ForwardPart::Jump(k),
+                    rect(BODY_X, top, BODY_X + self.width, top + card.height),
+                    "Message you can\u{2019}t view".into(),
+                ));
+                continue;
+            };
+            out.push((
+                ForwardPart::Jump(k),
+                rect(
+                    BODY_X + FORWARD_PAD,
+                    top + card.height - FORWARD_PAD - 32.0,
+                    BODY_X + self.width - FORWARD_PAD,
+                    top + card.height - FORWARD_PAD,
+                ),
+                format!("Jump to message from {}", c.members[0].name),
+            ));
+        }
+        out
+    }
+
+    fn forward_card_parts(&self, grouped: bool) -> Vec<(ForwardPart, Common::D2D_RECT_F, String)> {
         let Some(card) = &self.forward else {
             return Vec::new();
         };
@@ -329,7 +413,7 @@ impl Row {
                 BODY_X + self.width - FORWARD_PAD,
                 top + card.height - FORWARD_PAD,
             ),
-            "View conversation".into(),
+            card.view_text.into(),
         ));
         let (x, y) = (
             FORWARD_X + BODY_X,
@@ -923,6 +1007,11 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         embeds_y: 0.0,
         forward: ForwardCard::new(g, m, width)?,
         forward_y: 0.0,
+        link_cards: m
+            .links
+            .iter()
+            .map(|card| ForwardCard::link(g, card, width))
+            .collect::<Result<_>>()?,
         add: c.is_live() && !m.deleted && !reactions.is_empty(),
         reactions,
         reactions_y: 0.0,
@@ -1059,6 +1148,12 @@ fn place(row: &mut Row, m: &crate::model::Message) {
     if let Some(forward) = &mut row.forward {
         forward.place(row.width);
         y += 6.0 + forward.height;
+    }
+    let width = row.width;
+    for card in &mut row.link_cards {
+        card.place(width);
+        card.y = y + 6.0;
+        y += 6.0 + card.height;
     }
     row.reactions_y = y + 6.0;
     if !row.reactions.is_empty() {
@@ -1797,8 +1892,15 @@ fn draw_content(
                 top + row.embeds_y,
             )?;
         }
-        if let Some(card) = &row.forward {
-            let fy = top + row.forward_y;
+        // The forward's card, then each message link's.
+        let cards = row
+            .forward
+            .as_deref()
+            .map(|card| (card, row.forward_y))
+            .into_iter()
+            .chain(row.link_cards.iter().map(|card| (card, card.y)));
+        for (card, card_y) in cards {
+            let fy = top + card_y;
             let bounds = rect(BODY_X, fy, BODY_X + row.width, fy + card.height);
             fill_round(dc, bounds, 8.0, &g.brushes.surface);
             stroke_round(dc, bounds, 8.0, &g.brushes.border);
@@ -1818,8 +1920,19 @@ fn draw_content(
                 inset.M31 += FORWARD_X * transform.M11;
                 inset.M32 += FORWARD_X * transform.M12;
                 dc.SetTransform(&inset);
-                let drawn =
-                    draw_content(g, dc, c, nested, 0, media_row, sy, None, None, files, false);
+                let drawn = draw_content(
+                    g,
+                    dc,
+                    c,
+                    nested,
+                    0,
+                    media_row,
+                    sy,
+                    None,
+                    None,
+                    files.as_deref_mut(),
+                    false,
+                );
                 dc.SetTransform(&transform);
                 dc.PopAxisAlignedClip();
                 drawn?;
@@ -2004,6 +2117,27 @@ impl crate::App {
     }
 
     pub fn forward_activate(&mut self, thread: bool, i: usize, part: ForwardPart) {
+        if let ForwardPart::Jump(k) = part {
+            let c = if thread {
+                self.thread.as_ref().map(|t| &t.c)
+            } else {
+                Some(&self.c)
+            };
+            // The API checks access again and opens it like a notification.
+            let target = c
+                .and_then(|c| c.messages.get(i))
+                .and_then(|m| m.links.get(k))
+                .and_then(|card| match card {
+                    crate::model::LinkCard::Original(m) => {
+                        Some((m.channel_id.clone(), m.id.clone()))
+                    }
+                    crate::model::LinkCard::Locked => None,
+                });
+            if let (Some((channel, message)), Some(live)) = (target, self.live.as_mut()) {
+                live.open_message_link(&channel, &message);
+            }
+            return;
+        }
         if part == ForwardPart::Conversation {
             let c = if thread {
                 self.thread.as_ref().map(|t| &t.c)
@@ -2034,7 +2168,7 @@ impl crate::App {
         let m = &original.messages[0];
         let mut toggle = None;
         match part {
-            ForwardPart::Body | ForwardPart::Conversation => return,
+            ForwardPart::Body | ForwardPart::Conversation | ForwardPart::Jump(_) => return,
             ForwardPart::Link(k) => {
                 if let Some((_, _, href)) = row.links.get(k) {
                     crate::open_link(href);

@@ -48,6 +48,8 @@ enum PendingAction { case retry, edit, dismiss }
     var newMessagesID: String?
     /// The divider the rows were last laid out with.
     private var shownNewMessagesID: String?
+    /// The message link answers the rows were last built with.
+    private var shownLinkCards = -1
     var canLoadOlder = false
     /// The loaded history reaches the live end (no newer page after a jump).
     /// Set it before `update`.
@@ -201,6 +203,12 @@ enum PendingAction { case retry, edit, dismiss }
                 || continues(at: oldIndex, in: entries, pending: oldActivePending, author: oldPendingAuthor)
                     != continues(at: index, in: next, pending: nextActivePending, author: pendingAuthor)
                 || errorsChanged || self.canInteract != canInteract { invalid.insert(id) }
+        }
+        // A message link's card answered: rows quoting links rebuild theirs.
+        let linkCards = MessageLinkCards.shared.revision
+        if shownLinkCards != linkCards {
+            shownLinkCards = linkCards
+            for entry in next { if case .message(let m) = entry, MessageLinkCards.hasLinks(m) { invalid.insert(key(entry)) } }
         }
         if shownNewMessagesID != newMessagesID {
             // The divider's row gains or loses its line and header, and the row
@@ -612,6 +620,8 @@ enum PendingAction { case retry, edit, dismiss }
 
 @MainActor final class MessageCell: NativeView {
     let body = MessageTextView()
+    /// The message link cards its extras were built with.
+    private var linkCards: [MessageLinkCards.Card] = []
     private let author = NativeStyle.label("", size: 13, bold: true)
     private let adminBadge = MessageBadge("ADMIN", admin: true, accessibilityLabel: "Admin")
     private let guestBadge = MessageBadge("GUEST", admin: false, accessibilityLabel: "Guest")
@@ -1042,7 +1052,8 @@ enum PendingAction { case retry, edit, dismiss }
 
     func configure(_ message: ChatMessage, grouped: Bool, continued: Bool = false, day: String?, newMessages: Bool = false, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, inPins: Bool = false, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
         let wasPending = self.pending != nil
-        guard wasPending || self.message != message || self.grouped != grouped || self.continued != continued || self.day.stringValue != (day ?? "") || unread.isHidden == newMessages || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
+        let linkCards = MessageLinkCards.shared.cards(for: message).map { $0.card }
+        guard wasPending || self.message != message || self.linkCards != linkCards || self.grouped != grouped || self.continued != continued || self.day.stringValue != (day ?? "") || unread.isHidden == newMessages || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
         let range = body.selectedRange()
         // Another message, or edited text, hides its spoilers again.
         if self.message?.id != message.id || self.message?.content.text != message.content.text { revealedSpoilers = [] }
@@ -1055,7 +1066,8 @@ enum PendingAction { case retry, edit, dismiss }
             }
         }
         if wasPending || self.message?.content.attachments != message.content.attachments || self.message?.content.gif != message.content.gif
-            || self.message?.content.embeds != message.content.embeds || self.message?.forward != message.forward || self.message?.isDeleted != message.isDeleted {
+            || self.message?.content.embeds != message.content.embeds || self.message?.forward != message.forward || self.message?.isDeleted != message.isDeleted
+            || self.linkCards != linkCards {
             attachments?.removeFromSuperview()
             attachments = makeAttachments?(message)
             if let attachments {
@@ -1071,6 +1083,7 @@ enum PendingAction { case retry, edit, dismiss }
         self.pendingCanEdit = true
         for item in [pendingFailure, retrySend, editPending, dismissPending] { item.isHidden = true }
         self.message = message; self.grouped = grouped; self.continued = continued; self.viewerID = viewerID
+        self.linkCards = linkCards
         self.canInteract = canInteract
         self.pinPending = pinPending
         self.showsAdmin = message.author.isAdmin

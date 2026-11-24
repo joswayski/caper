@@ -328,6 +328,8 @@ struct State {
     /// and the message "New messages" goes above. Reads there pause until
     /// you leave the conversation.
     marked: Option<(String, Option<String>, String)>,
+    /// Cards for message links in shown messages (`caper_client::link_cards`).
+    link_cards: caper_client::link_cards::LinkCards,
     /// The visit's read snapshot is on its way; marking read waits for it.
     unread_visit_pending: bool,
     /// The read snapshot a navigation requested beside its history, by
@@ -1670,6 +1672,8 @@ impl App {
 
     fn establish(&self, state: &mut State, token: String, account: Account, spaces: Spaces) {
         state.epoch += 1;
+        // Another account's answers say nothing about this one's access.
+        state.link_cards.clear();
         state.token = Some(token);
         crate::rows::set_quick_reactions(account.quick_reactions());
         state.drafts.open_for(Some(&drafts_dir()), &account.id);
@@ -2388,6 +2392,7 @@ impl App {
                 thread_unread: &state.thread_unread,
                 reactors: &state.reactors,
                 expanded_quotes: &state.expanded_quotes,
+                link_cards: &state.link_cards,
                 revealed: &revealed,
                 blocked: &blocked,
                 shown_blocked: &state.shown_blocked,
@@ -2762,7 +2767,38 @@ impl App {
             token,
             channel,
             message,
+            open: true,
         });
+    }
+
+    /// Asks about the message links in loaded messages whose cards are due
+    /// (never asked, or older than `link_cards::REFRESH`).
+    fn request_link_cards(&self) {
+        let mut state = self.state.borrow_mut();
+        let Some(token) = state.token.clone() else {
+            return;
+        };
+        let now = Instant::now();
+        let state = &mut *state;
+        let mut due = Vec::new();
+        for message in state
+            .timeline
+            .messages()
+            .filter(|message| !message.is_deleted())
+        {
+            if message.content.text.contains("/m/") {
+                due.extend(state.link_cards.due(&message.content.text, now));
+            }
+        }
+        for (channel, message) in due {
+            self.worker.send(Command::ResolveMessageLink {
+                epoch: state.epoch,
+                token: token.clone(),
+                channel,
+                message,
+                open: false,
+            });
+        }
     }
 
     /// Marks the open conversation read through its newest message.
@@ -3903,6 +3939,9 @@ impl App {
             }
             Action::Profile { id, author, anchor } => self.open_profile(id, author, &anchor),
             Action::ViewForward(id) => self.view_forward(&id),
+            Action::OpenMessageLink { channel, message } => {
+                self.open_message_link(channel, message)
+            }
         }
     }
 
@@ -4430,6 +4469,7 @@ impl App {
         self.render_updates();
         self.poll_whats_new();
         self.poll_invite_links();
+        self.request_link_cards();
         self.poll_web_player();
         self.render_settings();
         self.render_start_direct();
@@ -4742,6 +4782,17 @@ impl App {
                     state.error = Some("Couldn’t mark unread. Try again.".into());
                 }
             },
+            Event::MessageLinkResolved {
+                epoch,
+                message,
+                open: false,
+                result,
+                ..
+            } if epoch == state.epoch => {
+                state
+                    .link_cards
+                    .resolved(&message, result.map(|source| source.map(|source| *source)));
+            }
             Event::MessageLinkResolved { epoch, result, .. } if epoch == state.epoch => {
                 match result {
                     Ok(Some(source)) if source.message.is_deleted() => {
@@ -6339,6 +6390,7 @@ impl App {
                 thread_unread: &state.thread_unread,
                 reactors: &state.reactors,
                 expanded_quotes: &state.expanded_quotes,
+                link_cards: &state.link_cards,
                 revealed: &revealed,
                 blocked: &blocked,
                 shown_blocked: &state.shown_blocked,

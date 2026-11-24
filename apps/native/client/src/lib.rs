@@ -30,6 +30,7 @@ pub mod host;
 pub mod invites;
 pub mod jump;
 pub mod klipy;
+pub mod link_cards;
 /// Link segments in message text, shared by every client (`shared/messages`).
 #[path = "../../../../shared/messages/links.rs"]
 pub mod links;

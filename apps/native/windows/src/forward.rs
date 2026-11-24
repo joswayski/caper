@@ -125,6 +125,7 @@ impl Original {
         shown.thread_replies = None;
         shown.thread_context = false;
         shown.forward = None;
+        shown.links.clear();
         shown.reactions.clear();
         // As on web and GTK, the original shows its pictures and files.
         shown.embeds.clear();
