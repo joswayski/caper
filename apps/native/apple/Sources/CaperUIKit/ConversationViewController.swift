@@ -666,6 +666,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                                                          // Grown, it lifts the message box up to the top of the timeline.
                                                          dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
                                                          dockMoved: { [weak composer] in composer?.drawerDidMove($0) },
+                                                         dockOverflow: { [weak composer] in composer?.drawerOverflow ?? 0 },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
             composer.showDrawer(drawer)
         }

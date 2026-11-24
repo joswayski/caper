@@ -14,10 +14,11 @@ import UniformTypeIdentifiers
     /// `close` hides it) at `dockHeight`, and dragging its handle or flicking
     /// its photos up grows it by up to `dockRoom` over the timeline; otherwise
     /// it is a sheet with its own Send. `dockMoved` reports its top edge in
-    /// screen coordinates, for keeping the message box above it.
+    /// screen coordinates, for keeping the message box above it; `dockOverflow`
+    /// says how much more height the box needs than a grown drawer leaves it.
     public static func attachDrawer(chat: ChatModel, inThread: Bool = false, presenter: (() -> UIViewController?)? = nil,
                                     dockInset: CGFloat = 0, dockHeight: CGFloat = 0, dockRoom: @escaping () -> CGFloat = { 0 },
-                                    dockMoved: @escaping (CGFloat) -> Void = { _ in },
+                                    dockMoved: @escaping (CGFloat) -> Void = { _ in }, dockOverflow: @escaping () -> CGFloat = { 0 },
                                     close: (() -> Void)? = nil) -> UIViewController? {
         guard let target = chat.attachmentTarget(inThread: inThread) else { return nil }
         let draft = AttachDrawerDraft(
@@ -29,14 +30,9 @@ import UniformTypeIdentifiers
             valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })
         let box = WeakController()
         let host = UIKitAttachDrawer(mode: .attach(draft), presenter: presenter, dockInset: dockInset,
-                                     dockHeight: dockHeight, dockRoom: dockRoom, dockMoved: dockMoved) { if let close { close() } else { box.value?.dismiss(animated: false) } }
+                                     dockHeight: dockHeight, dockRoom: dockRoom, dockMoved: dockMoved, dockOverflow: dockOverflow) { if let close { close() } else { box.value?.dismiss(animated: false) } }
         box.value = host
         return host
-    }
-
-    /// A grown docked drawer gives back `overflow` points so the message box above it stays in view.
-    public static func shrinkAttachDrawer(_ drawer: UIViewController, by overflow: CGFloat) {
-        (drawer as? UIKitAttachDrawer)?.shrink(by: overflow)
     }
 
     /// Prepares the drawer's gallery while the composer is up.

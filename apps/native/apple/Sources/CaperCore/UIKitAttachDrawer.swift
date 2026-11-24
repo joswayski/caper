@@ -27,6 +27,8 @@ import Observation
     /// keyboard layout guide doesn't follow a self-sized input view, so the
     /// conversation keeps its message box above this.
     private let dockMoved: (CGFloat) -> Void
+    /// How much taller the message box needs to be than a grown drawer leaves it.
+    private let dockOverflow: () -> CGFloat
     private var dockView: UIKitAttachDockView? { view as? UIKitAttachDockView }
     private var dockExpanded: CGFloat = 0
     private var docked: Bool { presenter != nil }
@@ -65,9 +67,10 @@ import Observation
     private var cameraAvailable: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
 
     init(mode: AttachDrawerMode, presenter: (() -> UIViewController?)? = nil, dockInset: CGFloat = 0, dockHeight: CGFloat = 0,
-         dockRoom: @escaping () -> CGFloat = { 0 }, dockMoved: @escaping (CGFloat) -> Void = { _ in }, close: @escaping () -> Void) {
+         dockRoom: @escaping () -> CGFloat = { 0 }, dockMoved: @escaping (CGFloat) -> Void = { _ in },
+         dockOverflow: @escaping () -> CGFloat = { 0 }, close: @escaping () -> Void) {
         self.mode = mode; self.close = close; self.presenter = presenter; self.dockInset = dockInset
-        self.dockRest = dockHeight; self.dockRoom = dockRoom; self.dockMoved = dockMoved
+        self.dockRest = dockHeight; self.dockRoom = dockRoom; self.dockMoved = dockMoved; self.dockOverflow = dockOverflow
         let layout = UICollectionViewFlowLayout(); layout.minimumInteritemSpacing = Self.spacing; layout.minimumLineSpacing = Self.spacing
         grid = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(nibName: nil, bundle: nil); modalPresentationStyle = .overFullScreen
@@ -224,6 +227,8 @@ import Observation
             }
         }
         let files = draft?.files() ?? []
+        // A staged row (or one fewer) changes the message box's height: a grown drawer makes room.
+        if docked, expanded, files != displayedFiles { fitBox() }
         if displayedAssets !== library.assets {
             displayedAssets = library.assets; displayedFiles = files; displayedPending = queue.order; displayedFull = full; grid.reloadData()
         } else if displayedFiles != files || displayedPending != queue.order || displayedFull != full {
@@ -257,12 +262,18 @@ import Observation
             if docked { resizeDock(animated: true) } else { resizePanel(animated: true) }
         } else if docked { resizeDock(animated: false) } else { resizePanel(animated: false) }
     }
-    /// Grown, the drawer gives back `overflow` when the message box above it
-    /// grows (a staged file's row), so the box stays in view.
-    func shrink(by overflow: CGFloat) {
-        guard docked, expanded, drag == 0, let dockView, overflow > 0 else { return }
-        dockExpanded = max(dockRest, dockView.height - overflow)
-        resizeDock(animated: true)
+    /// Grown, the drawer gives back what the message box above it needs once
+    /// a staged file's row appears (measured after the box has updated), so the box stays in view.
+    private func fitBox() {
+        for delay in [0.05, 0.3] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.docked, self.expanded, self.drag == 0, let dockView = self.dockView else { return }
+                let overflow = self.dockOverflow()
+                guard overflow > 1 else { return }
+                self.dockExpanded = max(self.dockRest, dockView.height - overflow)
+                self.resizeDock(animated: true)
+            }
+        }
     }
     private func setExpanded(_ value: Bool) {
         guard value != expanded else { return }

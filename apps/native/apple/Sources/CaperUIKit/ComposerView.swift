@@ -83,6 +83,15 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     private var drawerTop: CGFloat?
     /// The docked drawer moved (nil: it's gone): remember its edge and let the owner follow.
     func drawerDidMove(_ top: CGFloat?) { drawerTop = top; drawerMoved?(top) }
+    /// How much more height the box needs than a grown drawer leaves it: squeezed
+    /// under the header (a staged file's row), or reaching past the drawer's edge.
+    var drawerOverflow: CGFloat {
+        guard drawer != nil, let drawerTop, let window else { return 0 }
+        superview?.layoutIfNeeded()
+        let wanted = systemLayoutSizeFitting(CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height),
+                                             withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
+        return max(0, wanted - bounds.height) + convert(bounds, to: window.screen.coordinateSpace).maxY + 8 - drawerTop
+    }
     var emojiTapped: (() -> Void)?
     /// Who `@` may suggest: the open conversation's context.
     weak var model: AppModel?
@@ -651,14 +660,6 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // A staged file's row needs more height than a grown drawer leaves the box
-        // (the box is squeezed under the header, not pushed into the drawer): the drawer makes room.
-        if let drawer, let drawerTop, let window {
-            let wanted = systemLayoutSizeFitting(CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height),
-                                                 withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
-            let overflow = max(0, wanted - bounds.height) + convert(bounds, to: window.screen.coordinateSpace).maxY + 8 - drawerTop
-            if overflow > 1 { DispatchQueue.main.async { UIKitHosting.shrinkAttachDrawer(drawer, by: overflow) } }
-        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         shellDepth.frame = fieldShell.bounds
