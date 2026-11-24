@@ -25,7 +25,8 @@ final class ShareInboxTests: XCTestCase {
 
         let taken = try XCTUnwrap(ShareInbox.takeNewest(base: base, now: now))
         XCTAssertEqual(taken.items.text, "newer")
-        XCTAssertEqual(taken.folder, newer)
+        // Directory listings resolve /var to /private/var on macOS.
+        XCTAssertEqual(taken.folder.resolvingSymlinksInPath().path, newer.resolvingSymlinksInPath().path)
         XCTAssertFalse(FileManager.default.fileExists(atPath: older.path), "an older share is dropped")
         XCTAssertTrue(FileManager.default.fileExists(atPath: copying.path), "a share still being written is left alone")
     }
