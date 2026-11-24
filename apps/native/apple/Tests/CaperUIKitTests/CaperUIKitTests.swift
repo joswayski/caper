@@ -476,10 +476,10 @@ final class CaperUIKitTests: XCTestCase {
         // Docked below the message box: the pick waits in the composer, which sends it.
         XCTAssertTrue(app.descendants(matching: .any)["Files to send"].waitForExistence(timeout: 10), "The photo waits above the composer")
         XCTAssertFalse(app.buttons["attach-drawer-send"].exists, "The composer's Send sends; the drawer has none")
-        XCTAssertTrue(app.buttons["send-message"].isHittable, "The composer stays visible above the drawer")
+        let drawer = app.otherElements["attach-drawer"]
+        XCTAssertLessThanOrEqual(app.buttons["send-message"].frame.maxY, drawer.frame.minY + 1, "The composer stays visible above the drawer")
         screenshot("uikit-attach-drawer")
         // While the drawer is up, the composer's + is an ✕ that closes it.
-        let drawer = app.otherElements["attach-drawer"]
         XCTAssertEqual(attach.label, "Close attachments")
         attach.tap()
         _ = drawer.waitForNonExistence(timeout: 3)
