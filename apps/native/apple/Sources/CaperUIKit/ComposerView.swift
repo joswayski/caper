@@ -651,9 +651,12 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // A staged file's row grew the box past a grown drawer's edge: the drawer makes room.
+        // A staged file's row needs more height than a grown drawer leaves the box
+        // (the box is squeezed under the header, not pushed into the drawer): the drawer makes room.
         if let drawer, let drawerTop, let window {
-            let overflow = convert(bounds, to: window.screen.coordinateSpace).maxY + 8 - drawerTop
+            let wanted = systemLayoutSizeFitting(CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height),
+                                                 withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
+            let overflow = max(0, wanted - bounds.height) + convert(bounds, to: window.screen.coordinateSpace).maxY + 8 - drawerTop
             if overflow > 1 { DispatchQueue.main.async { UIKitHosting.shrinkAttachDrawer(drawer, by: overflow) } }
         }
         CATransaction.begin()
