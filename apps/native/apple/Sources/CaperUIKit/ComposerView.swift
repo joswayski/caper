@@ -556,12 +556,23 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// screen, and it resigned; back on screen, the drawer comes back with it.
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        restoreDrawer()
+    }
+
+    /// The field returns while the cover is still closing, so wait for its
+    /// dismissal to finish before taking focus back.
+    private func restoreDrawer(attempt: Int = 0) {
         guard window != nil, drawer != nil, !textView.isFirstResponder else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.window != nil, self.drawer != nil, !self.textView.isFirstResponder, !self.presenting else { return }
-            if !self.textView.becomeFirstResponder() {
-                self.drawer = nil; self.textView.inputView = nil; self.showAttachState(); self.drawerMoved?(nil)
+        if let covering = presentedController {
+            if let coordinator = covering.transitionCoordinator {
+                coordinator.animate(alongsideTransition: nil) { [weak self] _ in DispatchQueue.main.async { self?.restoreDrawer() } }
+            } else if attempt < 20 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.restoreDrawer(attempt: attempt + 1) }
             }
+            return
+        }
+        if !textView.becomeFirstResponder() {
+            drawer = nil; textView.inputView = nil; showAttachState(); drawerMoved?(nil)
         }
     }
 
@@ -597,13 +608,16 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     /// A camera or picker the drawer opened is up or still closing; the field
     /// gets its drawer back when it does.
-    private var presenting: Bool {
+    private var presenting: Bool { presentedController != nil }
+
+    /// Whatever the composer's screen presents: up, or still closing.
+    private var presentedController: UIViewController? {
         var responder: UIResponder? = self
         while let next = responder?.next {
-            if let controller = next as? UIViewController { return controller.presentedViewController != nil }
+            if let controller = next as? UIViewController { return controller.presentedViewController }
             responder = next
         }
-        return false
+        return nil
     }
 
     @objc private func keyboardWillChange(_ notification: Notification) {
