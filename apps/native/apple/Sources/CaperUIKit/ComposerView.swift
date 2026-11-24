@@ -552,6 +552,19 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         return Self.keyboardHeight > 0 ? Self.keyboardHeight : min(380, max(300, (bounds.height * 0.38).rounded()))
     }
 
+    /// A full-screen camera or preview the drawer opened took the field off
+    /// screen, and it resigned; back on screen, the drawer comes back with it.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil, drawer != nil, !textView.isFirstResponder else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil, self.drawer != nil, !self.textView.isFirstResponder, !self.presenting else { return }
+            if !self.textView.becomeFirstResponder() {
+                self.drawer = nil; self.textView.inputView = nil; self.showAttachState(); self.drawerMoved?(nil)
+            }
+        }
+    }
+
     /// Takes the drawer down: back to the keyboard, or away entirely.
     func hideDrawer(keyboard: Bool) {
         guard drawer != nil else { return }
