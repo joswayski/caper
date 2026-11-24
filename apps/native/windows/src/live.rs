@@ -4258,6 +4258,15 @@ impl Live {
         }
     }
 
+    /// The open space's custom icon link, for its menu's Copy space icon link.
+    pub fn space_icon_url(&self, scope: &Scope) -> Option<String> {
+        let d = self.detail.as_ref()?;
+        match scope {
+            Scope::Space(space) if *space == d.space.id => d.space.icon()?.url.map(str::to_owned),
+            _ => None,
+        }
+    }
+
     /// Whether a menu offers Space settings or Channel settings: the open
     /// space you own, or any of its channels.
     pub fn can_manage(&self, scope: &Scope) -> bool {

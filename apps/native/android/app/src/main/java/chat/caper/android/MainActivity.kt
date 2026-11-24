@@ -1147,6 +1147,17 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             },
                             after = {
                                 if (owner) DropdownMenuItem({ Text("Invite people…") }, { closeSpaceMenu(); show(Overlay.InvitePeople()) })
+                                pictureOf(detail.space.iconAsset, detail.space.iconUrl)?.let { icon ->
+                                    DropdownMenuItem({ Text("Copy space icon link") }, {
+                                        closeSpaceMenu()
+                                        // Android 13+ shows its own clipboard confirmation.
+                                        val copied = runCatching {
+                                            context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Space icon link", icon.url))
+                                        }.isSuccess
+                                        if (!copied) android.widget.Toast.makeText(context, "Couldn’t copy. Try again.", android.widget.Toast.LENGTH_SHORT).show()
+                                        else if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) android.widget.Toast.makeText(context, "Space icon link copied.", android.widget.Toast.LENGTH_SHORT).show()
+                                    }, leadingIcon = { Icon(painterResource(R.drawable.lucide_link), null, Modifier.size(16.dp)) })
+                                }
                                 if (owner) DropdownMenuItem({ Text("Space settings") }, { closeSpaceMenu(); show(Overlay.ManageSpace) },
                                     leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
                                 else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { closeSpaceMenu(); show(Overlay.LeaveSpace) },

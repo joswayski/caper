@@ -698,6 +698,13 @@ import CaperCore
             items += [.separator()] + NavigationMenus.space(model, id: space.id) + [.separator()]
             if space.ownerId == account.id {
                 items.append(NavigationMenuItem("Invite people…") { [weak self] in run { self?.show?(.invitePeople(spaceID: space.id, channelID: nil)) } })
+            }
+            if let icon = space.iconPicture {
+                items.append(NavigationMenuItem("Copy space icon link") {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(icon.url.absoluteString, forType: .string)
+                })
+            }
+            if space.ownerId == account.id {
                 items.append(NavigationMenuItem("Space settings") { [weak self] in run { self?.show?(.manageSpace) } })
             } else { items.append(NavigationMenuItem("Leave space…", role: .destructive) { [weak self] in run { self?.show?(.leaveSpace) } }) }
         }

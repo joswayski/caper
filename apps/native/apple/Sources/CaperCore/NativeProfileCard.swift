@@ -58,7 +58,7 @@ import AppKit
             let open = icon("", label: "Open \(person.title)’s profile picture", id: "mention-card-picture") { [weak self] in self?.openPicture() }
             open.frame = avatar.frame; open.translatesAutoresizingMaskIntoConstraints = true
             let menu = NSMenu()
-            for (title, action) in [("Open full-size picture", #selector(openPicture)), ("Copy image", #selector(copyPicture)), ("Open in browser", #selector(openPictureURL))] {
+            for (title, action) in [("Open full-size picture", #selector(openPicture)), ("Copy image", #selector(copyPicture)), ("Copy image link", #selector(copyPictureLink)), ("Open in browser", #selector(openPictureURL))] {
                 let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
             }
             open.menu = menu; picture.addSubview(open)
@@ -189,6 +189,10 @@ import AppKit
         view.subviews.forEach { $0.isHidden = false }; dismissChanged(nil); view.needsLayout = true
     }
     @objc private func openPictureURL() { if let url = state.person.picture?.url { NSWorkspace.shared.open(url) } }
+    @objc private func copyPictureLink() {
+        guard let url = state.person.picture?.url else { return }
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string)
+    }
     @objc private func copyPicture() {
         guard let url = state.person.picture?.url else { return }
         Task { [weak self] in
@@ -415,6 +419,7 @@ import Observation
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(children: [UIAction(title: "Open full-size picture") { _ in self?.openPicture() },
                 UIAction(title: "Copy image") { _ in self?.copyPicture(picture.url) },
+                UIAction(title: "Copy image link") { _ in UIPasteboard.general.url = picture.url },
                 UIAction(title: "Open in browser") { _ in UIApplication.shared.open(picture.url) }])
         }
     }

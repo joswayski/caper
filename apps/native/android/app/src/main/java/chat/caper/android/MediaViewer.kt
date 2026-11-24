@@ -284,6 +284,16 @@ private const val DOUBLE_TAP_ZOOM = 2f
                             },
                         )
                         DropdownMenuItem(
+                            text = { Text("Copy media link", color = Text) },
+                            leadingIcon = { Icon(painterResource(R.drawable.lucide_link), null, tint = Text) },
+                            onClick = {
+                                actionsOpen = false
+                                if (url != null) notice = if (runCatching {
+                                        context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Media link", url))
+                                    }.isSuccess) "Media link copied." else "Couldn’t copy the media link."
+                            },
+                        )
+                        DropdownMenuItem(
                             text = { Text("Open in browser", color = Text) },
                             leadingIcon = { Icon(painterResource(R.drawable.lucide_external_link), null, tint = Text) },
                             onClick = { actionsOpen = false; url?.let(open) },

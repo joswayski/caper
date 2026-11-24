@@ -1487,6 +1487,9 @@ private struct ChannelSidebar: View {
             Divider()
             SpaceNotificationItems(model: model, spaceID: space.id)
             Divider()
+            if let icon = space.iconPicture {
+                Button("Copy space icon link") { UIPasteboard.general.url = icon.url }
+            }
         }
         if model.isOwner {
             if let space = model.detail?.space, space.demo != true {
@@ -5982,6 +5985,7 @@ struct MentionCardView: View {
                             copyingPicture = false
                         }
                     }.disabled(copyingPicture)
+                    Button("Copy image link") { UIPasteboard.general.url = picture.url }
                     Button("Open in browser") { openURL(picture.url) }
                 }
                 .alert("Couldn’t copy image. Try opening it and saving it instead.", isPresented: $pictureCopyError) {

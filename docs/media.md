@@ -1406,8 +1406,8 @@ starting at the one clicked: arrows, Left/Right or a swipe move between them (no
 wrap) with an \"n / m\" counter. Images show the preview until the original loads,
 zoom with double-click/tap, pinch or Ctrl+scroll, and pan while zoomed; animated
 GIF/WebP play. Videos autoplay with sound and pause when you move away or close;
-`animated` videos loop muted. Each viewer has Save/Download, Open in browser and
-Close (Esc, the dark area, or a swipe down on phones). The header shows the stored
+`animated` videos loop muted. Each viewer has Save/Download, **Copy media link**,
+Open in browser and Close (Esc, the dark area, or a swipe down on phones). The header shows the stored
 `size`; narrow screens truncate the author and time first. The client-reported
 pre-compression size (`assets.source_byte_size`) stays internal. URLs come from
 each client's fresh-URL cache, and a refused load asks for one refresh. Audio and
@@ -5084,7 +5084,12 @@ device rejects a stale draft. Space icons have no history picker.
 
 Clicking a custom picture inside a profile card opens the original in the media
 viewer (chat avatars open the profile first). Web keeps native right-click image
-actions; native cards offer equivalent context-menu or long-press actions.
+actions; native cards offer equivalent context-menu or long-press actions,
+including **Copy image link** (Android's long press opens the viewer's menu, with
+**Copy media link**). Every member's space menu offers **Copy space icon link**
+while the open space has a custom icon. Copied links are the signed CDN URLs
+clients already hold, so they stop working when the signature expires (one to
+two days for pictures and icons, one to two hours for message files).
 
 `node scripts/test-pictures.mjs <loopback-web-url>` runs the mocked browser suite
 (`PICTURE_VIEWER_ONLY=1` and `PICTURE_GALLERY_ONLY=1` narrow it).

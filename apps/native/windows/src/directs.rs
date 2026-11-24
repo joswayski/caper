@@ -87,6 +87,8 @@ pub enum MenuItem {
     /// "Invite people…", for the open space's owner (the space's menu
     /// and its public channels').
     Invite,
+    /// "Copy space icon link", when the open space has a custom icon.
+    CopyIconLink,
     /// The owner's "Space settings" and "Channel settings".
     SpaceSettings,
     ChannelSettings,
@@ -114,6 +116,7 @@ impl MenuItem {
             Self::Leave(false) => "Leave channel".into(),
             Self::Browse => "Browse channels".into(),
             Self::Invite => "Invite people\u{2026}".into(),
+            Self::CopyIconLink => "Copy space icon link".into(),
             Self::SpaceSettings => "Space settings".into(),
             Self::ChannelSettings => "Channel settings".into(),
         }
@@ -131,6 +134,7 @@ impl MenuItem {
                 | Self::Leave(_)
                 | Self::Browse
                 | Self::Invite
+                | Self::CopyIconLink
                 | Self::SpaceSettings
                 | Self::ChannelSettings
         )
@@ -146,6 +150,7 @@ impl MenuItem {
                     Self::Leave(_)
                         | Self::Browse
                         | Self::Invite
+                        | Self::CopyIconLink
                         | Self::SpaceSettings
                         | Self::ChannelSettings
                 ))
@@ -1115,8 +1120,12 @@ impl App {
         // as egui's (an owner can't leave a space).
         if let Scope::Space(_) = &m.scope {
             items.insert(0, MenuItem::Browse);
-            if live.can_invite(&m.scope) {
+            let invite = live.can_invite(&m.scope);
+            if invite {
                 items.insert(1, MenuItem::Invite);
+            }
+            if live.space_icon_url(&m.scope).is_some() {
+                items.insert(1 + usize::from(invite), MenuItem::CopyIconLink);
             }
         }
         if matches!(m.scope, Scope::Channel { .. }) && live.can_invite(&m.scope) {
@@ -1393,6 +1402,14 @@ impl App {
                 _ => None,
             };
             return self.open_invite_people(channel);
+        }
+        if *item == MenuItem::CopyIconLink {
+            self.dm_menu = None;
+            self.dm_menu_changed();
+            if let Some(url) = self.live.as_ref().and_then(|l| l.space_icon_url(&scope)) {
+                crate::set_clipboard(self.hwnd, &crate::gfx::wide(&url));
+            }
+            return;
         }
         if *item == MenuItem::SpaceSettings {
             self.dm_menu = None;

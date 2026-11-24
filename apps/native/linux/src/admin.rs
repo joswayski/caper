@@ -408,7 +408,7 @@ impl App {
     pub(super) fn install_admin_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 8] = [
+        let actions: [(&str, Run); 9] = [
             ("create-space", |app, _| app.open_create_space()),
             ("join", |app, _| app.open_join_invite()),
             ("manage-space", |app, _| app.open_manage_space()),
@@ -416,6 +416,17 @@ impl App {
                 app.open_invite_people(Some(channel).filter(|id| !id.is_empty()))
             }),
             ("browse", |app, _| app.open_browse()),
+            ("copy-icon-link", |app, _| {
+                let url = app.state.borrow().detail.as_ref().and_then(|detail| {
+                    detail
+                        .space
+                        .icon()
+                        .and_then(|icon| icon.url.map(str::to_owned))
+                });
+                if let Some(url) = url {
+                    app.ui.window.clipboard().set_text(&url);
+                }
+            }),
             ("manage-channel", |app, id| app.open_manage_channel(&id)),
             ("leave-space", |app, _| {
                 let confirm = {
@@ -532,6 +543,11 @@ impl App {
             Scope::Space(space) if *space == detail.space.id => {
                 if owner {
                     menu.append_item(&item("Invite people…", "admin.invite", ""));
+                }
+                if detail.space.icon().is_some_and(|icon| icon.url.is_some()) {
+                    menu.append_item(&item("Copy space icon link", "admin.copy-icon-link", ""));
+                }
+                if owner {
                     menu.append_item(&item("Space settings", "admin.manage-space", ""));
                 } else if state.can_leave_space() {
                     menu.append_item(&item("Leave space…", "admin.leave-space", ""));
@@ -575,6 +591,9 @@ impl App {
             top.append_item(&item("Browse channels", "admin.browse"));
             if state.owner() {
                 top.append_item(&item("Invite people…", "admin.invite"));
+            }
+            if detail.space.icon().is_some_and(|icon| icon.url.is_some()) {
+                top.append_item(&item("Copy space icon link", "admin.copy-icon-link"));
             }
             menu.append_section(None, &top);
             Self::notification_sections(&state, &Scope::Space(detail.space.id.clone()), &menu);

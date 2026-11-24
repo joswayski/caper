@@ -908,6 +908,9 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         guard space.demo != true, let account = model.account else { return items }
         model.refreshNotificationSettingsIfStale()
         items.append(UIMenu(options: .displayInline, children: NotificationMenus.space(model, spaceID: space.id)))
+        if let icon = space.iconPicture {
+            items.append(UIAction(title: "Copy space icon link", image: UIImage(systemName: "link")) { _ in UIPasteboard.general.url = icon.url })
+        }
         if space.ownerId == account.id {
             items.append(UIMenu(options: .displayInline, children: [
                 UIAction(title: "Invite people…") { [weak self] _ in

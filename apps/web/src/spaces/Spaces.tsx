@@ -22,6 +22,7 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   Hash,
+  Link,
   LockKeyhole,
   LogOut,
   MessageCircle,
@@ -65,7 +66,7 @@ import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
 import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
-import { withSpaceIcon } from "../account/pictures";
+import { pictureUrl, withSpaceIcon } from "../account/pictures";
 import { usePeopleSuggestions } from "../components/PeopleSuggestions";
 import { Dialog } from "./Dialog";
 import Call, { type VoiceSlot } from "../pages/Call";
@@ -4001,6 +4002,23 @@ export default function Spaces({
           <button type="button" onClick={() => run("invite")}>
             <Plus aria-hidden="true" />
             Invite people…
+          </button>
+        )}
+        {space.iconAsset && pictureUrl(space.iconUrl) && (
+          <button
+            type="button"
+            onClick={() => {
+              // Copying needs no space change, so it closes whichever menu is open itself.
+              setRailMenu(undefined);
+              if (spaceMenu.current?.open) closeMenu(spaceMenu.current);
+              navigator.clipboard.writeText(space.iconUrl!).then(
+                () => setNotice("Space icon link copied."),
+                () => setNotice("Couldn’t copy the space icon link. Check clipboard permissions."),
+              );
+            }}
+          >
+            <Link aria-hidden="true" />
+            Copy space icon link
           </button>
         )}
         <LevelNotificationItems

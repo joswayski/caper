@@ -351,6 +351,9 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
         var actions: [UIAction] = []
         if item?.kind == .image { actions.append(UIAction(title: "Copy image", image: UIImage(systemName: "doc.on.doc")) { [state] _ in state.copyImage() }) }
         actions.append(UIAction(title: "Save or share", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in self?.shareFile() })
+        actions.append(UIAction(title: "Copy media link", image: UIImage(systemName: "link")) { [state] _ in
+            state.perform { _, url in await MainActor.run { UIPasteboard.general.url = url }; return "Media link copied" }
+        })
         actions.append(UIAction(title: "Open in browser", image: UIImage(systemName: "arrow.up.right.square")) { [state] _ in
             state.perform { _, url in await UIApplication.shared.open(url); return nil }
         })
