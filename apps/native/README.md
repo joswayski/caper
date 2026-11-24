@@ -49,6 +49,11 @@ against the parity fixture (`scripts/native-parity-fixture.mjs`).
   colour and size, undo/redo/reset), re-uploading the original with the edits.
   Rust desktop cannot draw on videos because its bundled FFmpeg lacks the
   `overlay` filter. See [editing attachments](../../docs/media.md#editing-attachments-before-sending).
+- Sharing into Caper from other apps' share sheets: a recent-first, searchable
+  conversation picker, then that composer with the files staged and the text in
+  place. Android has a share target with Sharing Shortcuts; macOS a Share
+  extension (iPhone's is built but off until its App ID is registered). See
+  [sharing into Caper](../../docs/media.md#sharing-into-caper).
 - Live forwarding: a channel/DM picker with an optional note, a live original
   card, and a read-only shared conversation. See
   [live message forwarding](../../docs/media.md#live-message-forwarding).

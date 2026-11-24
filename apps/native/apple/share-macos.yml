@@ -1,0 +1,40 @@
+# The Mac Share extension (docs/media.md, "Sharing into Caper"). project.yml
+# includes it when CAPER_MAC_SHARE_EXTENSION is true; sign-and-notarize.sh gives
+# it and Caper.app their team-prefixed App Group.
+targets:
+  CaperShareMacOS:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Sources/CaperShare
+      - Sources/CaperCore/ShareInbox.swift
+    info:
+      path: Configuration/Share-macOS-Info.plist
+      properties:
+        CFBundleDisplayName: Caper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsAttachmentsWithMaxCount: 10
+              NSExtensionActivationSupportsFileWithMaxCount: 10
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsMovieWithMaxCount: 10
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CAPER_MACOS_BUNDLE_ID).share
+        PRODUCT_NAME: CaperShare
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_ENTITLEMENTS: Configuration/Share-macOS.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+  CaperMacAppKit:
+    dependencies:
+      - target: CaperShareMacOS
+        embed: true

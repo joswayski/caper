@@ -788,6 +788,8 @@ public struct ForwardDestination: Codable, Identifiable, Sendable {
     public let name: String
     public let spaceName: String
     public let direct: Bool
+    /// Set for channels; sharing into Caper opens the channel in its space.
+    public var spaceId: String? = nil
 }
 public struct ForwardDestinations: Decodable, Sendable { public let destinations: [ForwardDestination] }
 public struct ForwardSource: Decodable, Sendable {

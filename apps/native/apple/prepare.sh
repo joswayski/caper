@@ -122,4 +122,9 @@ if [[ ! -d "$XCODEGEN/.git" ]]; then
 fi
 git -C "$XCODEGEN" checkout --quiet --detach "$XCODEGEN_COMMIT"
 test "$(git -C "$XCODEGEN" rev-parse HEAD)" = "$XCODEGEN_COMMIT"
+# Share extensions (docs/media.md, "Sharing into Caper"). The Mac one needs no
+# registration (Developer ID, team-prefixed App Group). The iPhone one stays off
+# until its App ID and App Group are registered for the team.
+export CAPER_MAC_SHARE_EXTENSION="${CAPER_MAC_SHARE_EXTENSION:-true}"
+export CAPER_IOS_SHARE_EXTENSION="${CAPER_IOS_SHARE_EXTENSION:-false}"
 swift run --package-path "$XCODEGEN" xcodegen --spec "$ROOT/project.yml" --project "$ROOT"

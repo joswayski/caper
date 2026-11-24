@@ -30,21 +30,39 @@ if [[ -n "${CAPER_UPDATER_BINARY:-}" ]]; then
   sign "$APP/Contents/MacOS/caper-updater"
 fi
 
-# Inside out: nested dylibs and frameworks first, deepest paths first, then the app.
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# The app and its Share extension exchange shares through a team-prefixed App
+# Group, which Developer ID allows without a provisioning profile.
+team="$(sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p' <<<"$APPLE_SIGNING_IDENTITY")"
+[[ -n "$team" ]] || { echo "Couldn't read the team ID from APPLE_SIGNING_IDENTITY." >&2; exit 1; }
+group="$team.$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+with_group() {
+  cp "$1" "$2"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" -c "Add :com.apple.security.application-groups:0 string $group" "$2"
+}
+with_group "$ENTITLEMENTS" "$work/app.entitlements"
+with_group "$ROOT/Configuration/Share-macOS.entitlements" "$work/share.entitlements"
+
+# Inside out: nested dylibs and frameworks first, deepest paths first, then the
+# Share extension, then the app.
 while IFS= read -r item; do
   sign "$item"
 done < <(find "$APP/Contents/Frameworks" \( -name '*.dylib' -o -name '*.framework' \) -print \
   | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
-sign --entitlements "$ENTITLEMENTS" "$APP"
+for extension in "$APP"/Contents/PlugIns/*.appex; do
+  if [[ -d "$extension" ]]; then sign --entitlements "$work/share.entitlements" "$extension"; fi
+done
+sign --entitlements "$work/app.entitlements" "$APP"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 if [[ -n "${CAPER_UPDATER_BINARY:-}" ]]; then
   codesign --verify --strict "$APP/Contents/MacOS/caper-updater"
 fi
 codesign -d --entitlements - "$APP" 2>/dev/null | grep -q 'com.apple.security.device.audio-input'
+codesign -d --entitlements - "$APP" 2>/dev/null | grep -q "$group"
 
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
 notarize() {
   xcrun notarytool submit "$1" \
     --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \

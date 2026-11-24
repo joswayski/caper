@@ -48,6 +48,8 @@ case "$MODE" in
     test "$(plutil -extract CaperSourceRevision raw -o - "$ROOT/dist/Caper.app/Contents/Info.plist")" = "$source_revision"
     [[ -z "${CAPER_BUILD_NUMBER:-}" ]] || test "$(plutil -extract CaperVersion raw -o - "$ROOT/dist/Caper.app/Contents/Info.plist")" = "$CAPER_VERSION"
     test -x "$ROOT/dist/Caper.app/Contents/MacOS/Caper"
+    # The Share extension (prepare.sh includes it unless CAPER_MAC_SHARE_EXTENSION=false).
+    [[ "${CAPER_MAC_SHARE_EXTENSION:-true}" != true ]] || test -x "$ROOT/dist/Caper.app/Contents/PlugIns/CaperShare.appex/Contents/MacOS/CaperShare"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/CaperRTCBridge.framework/CaperRTCBridge"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/libonnxruntime.1.23.2.dylib"

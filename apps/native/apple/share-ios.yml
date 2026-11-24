@@ -1,0 +1,48 @@
+# The iPhone Share extension (docs/media.md, "Sharing into Caper"). project.yml
+# includes it when CAPER_IOS_SHARE_EXTENSION is true, which needs the
+# $(CAPER_IOS_BUNDLE_ID).share App ID and the group.$(CAPER_IOS_BUNDLE_ID) App
+# Group registered for the team first.
+targets:
+  CaperShareIOS:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Sources/CaperShare
+      - Sources/CaperCore/ShareInbox.swift
+    info:
+      path: Configuration/Share-iOS-Info.plist
+      properties:
+        CFBundleDisplayName: Caper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CaperAppGroup: group.$(CAPER_IOS_BUNDLE_ID)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsAttachmentsWithMaxCount: 10
+              NSExtensionActivationSupportsFileWithMaxCount: 10
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsMovieWithMaxCount: 10
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CAPER_IOS_BUNDLE_ID).share
+        PRODUCT_NAME: CaperShare
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Configuration/Share-iOS.entitlements
+        # Opening Caper from the extension walks the responder chain to the app.
+        APPLICATION_EXTENSION_API_ONLY: NO
+        SKIP_INSTALL: YES
+  CaperIOSUIKit:
+    dependencies:
+      - target: CaperShareIOS
+        embed: true
+    info:
+      properties:
+        CaperAppGroup: group.$(CAPER_IOS_BUNDLE_ID)
+    settings:
+      base:
+        CAPER_ENTITLEMENTS_SUFFIX: -Share

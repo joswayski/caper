@@ -13,6 +13,13 @@ packages:
   libwebp:
     url: https://github.com/SDWebImage/libwebp-Xcode.git
     exactVersion: 1.6.0
+# The Share extensions join only when switched on (docs/media.md, "Sharing into
+# Caper"): the iPhone one needs its bundle ID and App Group registered first.
+include:
+  - path: share-macos.yml
+    enable: ${CAPER_MAC_SHARE_EXTENSION}
+  - path: share-ios.yml
+    enable: ${CAPER_IOS_SHARE_EXTENSION}
 configFiles:
   Release: .build/SourceRevision.xcconfig
 settings:
@@ -335,12 +342,13 @@ targets:
         CODE_SIGN_STYLE: Automatic
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
       configs:
+        # share-ios.yml sets CAPER_ENTITLEMENTS_SUFFIX to -Share, adding its App Group.
         Debug:
           CAPER_APNS_ENVIRONMENT: development
-          CODE_SIGN_ENTITLEMENTS: Configuration/iOS-Debug.entitlements
+          CODE_SIGN_ENTITLEMENTS: Configuration/iOS-Debug$(CAPER_ENTITLEMENTS_SUFFIX).entitlements
         Release:
           CAPER_APNS_ENVIRONMENT: production
-          CODE_SIGN_ENTITLEMENTS: Configuration/iOS-Release.entitlements
+          CODE_SIGN_ENTITLEMENTS: Configuration/iOS-Release$(CAPER_ENTITLEMENTS_SUFFIX).entitlements
   CaperNotificationService:
     type: app-extension
     platform: iOS
@@ -402,6 +410,7 @@ targets:
       - Tests/CaperCoreTests/MessageFormattingTests.swift
       - Tests/CaperCoreTests/DraftLinkTests.swift
       - Tests/CaperCoreTests/FileDropTests.swift
+      - Tests/CaperCoreTests/ShareInboxTests.swift
       - Tests/CaperCoreTests/AttachmentEditTests.swift
       - Tests/CaperCoreTests/AttachmentTests.swift
       - Tests/CaperCoreTests/MessageGroupingTests.swift

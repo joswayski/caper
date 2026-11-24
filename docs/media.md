@@ -1223,6 +1223,53 @@ The server sees an ordinary upload.
 | Apple | `AttachmentEditor.swift`: full-screen cover on iPhone/iPad, window overlay on Mac (inside the profile popover there); system `ColorPicker` | `AttachmentEditRenderer` (CoreGraphics/CoreText), then the existing encoders | The BT.709 composition read as BGRA, each frame turned, cropped, scaled and overlaid with Core Image, written through a pixel-buffer adaptor |
 | Rust desktop | Full-window modal: `attachment_editor.rs` (Windows), `editor.rs` (Linux) | `attachment_edit.rs`: tiny-skia strokes, Inrond 40 Bold through ab_glyph, then the existing encoders; HEIC/AVIF decode through the bundled FFmpeg | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or tone map. Marks need `overlay` with `png_pipe` input, which the bundled FFmpeg lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables them; the app detects them once present. Videos show a frame from 1 s in |
 
+### Sharing into Caper
+
+Photos, videos, files, links and text shared from another app's share sheet land
+in a conversation's composer, staged exactly like picked files: the usual
+compression and metadata stripping, presigned uploads, the attachment editor,
+spoilers and Remove. Nothing is sent until you press Send. Shared text and links
+go after the conversation's draft, on their own line. Up to 10 files are
+attached; the rest are dropped with the usual notice.
+
+The conversation picker lists `GET /api/chat/forward-destinations`, which
+returns joined channels and DMs ordered by their newest message (then by name);
+it is searchable by name and space. Forward pickers still sort by name.
+
+- **Android**: `ShareActivity` takes `ACTION_SEND`/`ACTION_SEND_MULTIPLE` for any
+  MIME type and hands the `content:` URIs (never `file:` paths or Caper's own
+  providers) to `MainActivity` in Caper's task. Signed out, the share waits in
+  memory until sign-in finishes. Sharing Shortcuts (`res/xml/shortcuts.xml`,
+  `ShareShortcuts.kt`) publish the eight most recent conversations as direct
+  share targets, refreshed when home loads and when Caper goes to the
+  background, at most once a minute, and removed on sign-out. A shortcut skips
+  the picker.
+- **macOS and iPhone**: a Share extension (`Sources/CaperShare`, targets in
+  `share-macos.yml` and `share-ios.yml`) lists recent conversations from
+  `recents.json` in the App Group container, which the app writes when the
+  workspace opens and when it leaves the foreground. The extension never holds
+  the session or uploads: it copies the shared items into
+  `Sharing/Inbox/<uuid>/` with an `items.json` written last, then opens
+  `caper://share`. The app takes the newest finished share (others and ones
+  older than a day are removed) when that link opens, when it becomes active and
+  once the workspace loads, and drops shares made for another account. Sign-out
+  removes `recents.json`.
+  - macOS: `prepare.sh` includes the extension by default
+    (`CAPER_MAC_SHARE_EXTENSION=false` leaves it out). `sign-and-notarize.sh`
+    signs the sandboxed extension and the app with the team-prefixed group
+    `<TEAM_ID>.<CAPER_MACOS_BUNDLE_ID>`, which Developer ID allows without a
+    provisioning profile.
+  - iPhone: off until the team registers the `<CAPER_IOS_BUNDLE_ID>.share` App ID
+    and the `group.<CAPER_IOS_BUNDLE_ID>` App Group (on both App IDs). Then set
+    `CAPER_IOS_SHARE_EXTENSION=true` for `prepare.sh` (the TestFlight job in
+    `release.yml`); it adds the group to the app's entitlements and its
+    `CaperAppGroup` Info.plist key. Without the group the app ignores shares.
+- **Web**: no Web Share Target. `site.webmanifest` uses `"display": "browser"`
+  and the site has no service worker, so it isn't installable as an app.
+- **Windows and Linux** have no general share sheet for desktop apps. Files
+  dragged onto a conversation or pasted (Ctrl+V) attach the same way; text and
+  links paste into the composer.
+
 ### Editing attachments after sending
 
 **API only:** the server accepts these edits, but no client offers them yet. The

@@ -488,6 +488,8 @@ public final class AppModel {
     /// takes it (see `openInviteLink`). Memory only: never kept across launches.
     public private(set) var openedInviteLink: OpenedInviteLink?
     @ObservationIgnored private var lastOpenedInvite: (code: String, at: Date)?
+    @ObservationIgnored private var placingShare = false
+    @ObservationIgnored private var shareRecentsAt: Date?
     @ObservationIgnored private var notificationRouteRevision = 0
     public var previewingChannel: Bool { selectedChannel?.joined == false }
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
@@ -1051,6 +1053,7 @@ public final class AppModel {
         openingSpaceID = nil; openingChannelID = nil
         limits = nil; navigationOpen = false; restoringWorkspace = false
         openedInviteLink = nil; lastOpenedInvite = nil
+        ShareInbox.saveRecents(nil); shareRecentsAt = nil
         busy = false; phase = .signedOut
         async let revoke: Void = api.logout()
         await chat.stop(discardingDrafts: true)
@@ -1089,6 +1092,8 @@ public final class AppModel {
         guard generation == attempt, account != nil else { requests.cancel(); return }
         restoringWorkspace = false
         startDirectMessageRefresh(prefetched: requests)
+        refreshShareRecents(force: true)
+        receiveShares()
     }
 
     public func loadSpaces() async { await loadSpaces(prefetched: nil) }
@@ -1762,6 +1767,7 @@ public final class AppModel {
 
     public func applicationActivityChanged(active: Bool) {
         foreground = active
+        if active { receiveShares() } else { refreshShareRecents() }
         if active, account != nil {
             chat.refreshDraftUploads()
             markSelectedDirectRead()
@@ -2442,6 +2448,8 @@ public final class AppModel {
     /// the link waits for sign-in and onboarding. A newer link replaces a
     /// waiting one; anything that is not an invite link is ignored.
     public func openInviteLink(_ url: URL) {
+        // caper://share: the Share extension handed something over.
+        if url.scheme?.lowercased() == ShareInbox.urlScheme, url.host?.lowercased() == ShareInbox.urlHost { receiveShares(); return }
         guard let code = InviteLinks.code(opening: url) else { return }
         // One universal link can arrive both as a URL and as a browsing activity.
         let now = Date()
@@ -2462,6 +2470,68 @@ public final class AppModel {
         guard let link = deliverableInviteLink else { return nil }
         openedInviteLink = nil
         return link
+    }
+
+    // MARK: Sharing into Caper
+
+    /// Opens the conversation the newest share from the Share extension picked
+    /// (ShareInbox), with its files staged in the composer, where the attachment
+    /// editor works as for picked files, and its text after the draft. Nothing
+    /// is sent until you press Send. Runs on `caper://share`, when the app
+    /// becomes active and once the workspace is ready; a share for another
+    /// account is dropped.
+    public func receiveShares() {
+        guard phase == .ready, let account, spacesLoaded, !restoringWorkspace, !placingShare,
+              let share = ShareInbox.takeNewest() else { return }
+        guard share.items.accountId == account.id else { ShareInbox.remove(share.folder); return }
+        placingShare = true
+        Task { [weak self] in
+            await self?.place(share.items, from: share.folder)
+            ShareInbox.remove(share.folder)
+            self?.placingShare = false
+        }
+    }
+
+    private func place(_ items: SharedItems, from folder: URL) async {
+        let attempt = generation
+        let destination = items.destination
+        if destination.direct { await openDirectMessage(id: destination.id) }
+        else if let spaceID = destination.spaceId { await openChannel(spaceID: spaceID, channelID: destination.id) }
+        guard generation == attempt else { return }
+        guard chat.channelID == destination.id else {
+            error = "That conversation isn’t available anymore, so nothing was shared."
+            return
+        }
+        if !items.text.isEmpty {
+            chat.draft = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? items.text : chat.draft.replacingOccurrences(
+                of: "\\s+$", with: "", options: .regularExpression) + "\n" + items.text
+        }
+        guard !items.files.isEmpty else { return }
+        // The conversation's upload check answers just after it opens.
+        for _ in 0..<60 where !chat.uploadsChecked { try? await Task.sleep(for: .milliseconds(250)) }
+        guard generation == attempt, chat.channelID == destination.id else { return }
+        guard chat.canAttach else {
+            error = "File uploads are unavailable right now, so the shared files weren’t attached."
+            return
+        }
+        chat.addAttachments(items.files.compactMap { try? AttachmentStaging.stage(copying: folder.appendingPathComponent($0)) })
+    }
+
+    /// Writes your channels and DMs, most recent first, where the Share
+    /// extension lists them (it never holds your session). Refreshed when the
+    /// workspace opens and when you leave the app, at most once a minute.
+    func refreshShareRecents(force: Bool = false) {
+        guard ShareInbox.root != nil, let accountID = account?.id else { return }
+        if !force, let at = shareRecentsAt, Date().timeIntervalSince(at) < 60 { return }
+        shareRecentsAt = Date()
+        let attempt = generation
+        Task { [weak self] in
+            guard let self, let destinations = try? await self.api.forwardDestinations(),
+                  self.generation == attempt, self.account?.id == accountID else { return }
+            ShareInbox.saveRecents(ShareRecents(accountId: accountID, destinations: destinations.map {
+                ShareDestination(id: $0.id, name: $0.name, spaceName: $0.spaceName, spaceId: $0.spaceId, direct: $0.direct)
+            }))
+        }
     }
 
     public func invitePreview(code: String) async throws -> InvitePreview {
