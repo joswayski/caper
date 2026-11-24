@@ -785,6 +785,11 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
     assert!(destinations("alice").await.contains(&request_dm));
     assert_eq!(send("alice", request_dm.clone()).await.0, StatusCode::OK);
     assert_eq!(
+        destinations("alice").await.first(),
+        Some(&request_dm),
+        "the conversation with the newest message comes first"
+    );
+    assert_eq!(
         status("bob", request_dm.clone()).await,
         None,
         "new messages don't resurface it"

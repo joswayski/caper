@@ -34,19 +34,25 @@ async fn destinations(
     let user = request_user(&chat.pool, &headers)
         .await?
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "sign in required"))?;
+    // Most recent conversation first (the share pickers keep this order;
+    // forward pickers sort by name), then by name.
     let rows: Vec<Value> = sqlx::query_scalar(
-        "SELECT jsonb_build_object('id',c.external_id,'name',c.name,'spaceId',s.external_id,'spaceName',s.name,'direct',false)
+        "SELECT destination FROM (
+         SELECT jsonb_build_object('id',c.external_id,'name',c.name,'spaceId',s.external_id,'spaceName',s.name,'direct',false) destination,
+           (SELECT max(m.created_at) FROM public.messages m WHERE m.channel_id=c.id) latest, c.name
          FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
          WHERE c.deleted_at IS NULL AND s.deleted_at IS NULL AND NOT s.demo
            AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$1 AND sm.deleted_at IS NULL)
            AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$1 AND cj.deleted_at IS NULL)
            AND (NOT c.private OR s.owner_id=$1 OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$1 AND cm.deleted_at IS NULL))
          UNION ALL
-         SELECT jsonb_build_object('id',c.external_id,'name',u.display_name,'spaceName','Direct messages','direct',true)
+         SELECT jsonb_build_object('id',c.external_id,'name',u.display_name,'spaceName','Direct messages','direct',true),
+           (SELECT max(m.created_at) FROM public.messages m WHERE m.channel_id=c.id), u.display_name
          FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id
          JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$1 THEN d.high_user_id ELSE d.low_user_id END
          WHERE $1 IN(d.low_user_id,d.high_user_id) AND c.deleted_at IS NULL AND u.deleted_at IS NULL
-           AND (d.accepted_at IS NOT NULL OR d.requested_by=$1 OR d.declined_at IS NULL)",
+           AND (d.accepted_at IS NOT NULL OR d.requested_by=$1 OR d.declined_at IS NULL)
+         ) destinations ORDER BY latest DESC NULLS LAST, name",
     ).bind(user).fetch_all(&chat.pool).await.map_err(database_error)?;
     Ok(Json(json!({"destinations":rows})))
 }
