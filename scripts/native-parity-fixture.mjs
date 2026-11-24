@@ -520,6 +520,14 @@ const yearMs = 365 * 24 * 60 * 60 * 1000;
 // Mutes read as null once they expire; stored times are whole UTC seconds.
 const activeMute = (mutedUntil) =>
   mutedUntil === "forever" || (mutedUntil && Date.parse(mutedUntil) > Date.now()) ? mutedUntil : null;
+// A mute's or Do Not Disturb's end: null, "forever", or a time within the next
+// year as whole UTC seconds. undefined when invalid.
+const untilValue = (value) => {
+  if (value === null || value === "forever") return value;
+  const at = typeof value === "string" && rfc3339.test(value) ? Date.parse(value) : NaN;
+  if (!(at > Date.now() && at <= Date.now() + yearMs)) return undefined;
+  return new Date(Math.floor(at / 1000) * 1000).toISOString().replace(".000Z", "Z");
+};
 // Same rules and messages as push::settings::OverrideInput. Missing keys keep the field.
 // Only spaces take voiceStarted (a boolean, or null to reset); channels and DMs refuse it.
 function overrideChanges(body, direct, space) {
@@ -535,14 +543,9 @@ function overrideChanges(body, direct, space) {
     changes.level = body.level;
   }
   if ("mutedUntil" in body) {
-    const value = body.mutedUntil;
-    if (value === null || value === "forever") changes.mutedUntil = value;
-    else {
-      const at = typeof value === "string" && rfc3339.test(value) ? Date.parse(value) : NaN;
-      if (!(at > Date.now() && at <= Date.now() + yearMs))
-        return { error: "mutedUntil must be forever or a time within the next year" };
-      changes.mutedUntil = new Date(Math.floor(at / 1000) * 1000).toISOString().replace(".000Z", "Z");
-    }
+    const value = untilValue(body.mutedUntil);
+    if (value === undefined) return { error: "mutedUntil must be forever or a time within the next year" };
+    changes.mutedUntil = value;
   }
   if ("voiceStarted" in body) {
     if (!space) return { error: "invalid notification settings" };
@@ -2042,12 +2045,11 @@ export async function startFixture({
         if (method === "POST") state.pushDevices.push(device);
         return json(response, 204);
       }
-      const settingsFor = (user) => ({
-        level: "all",
-        mobile: "whenInactive",
-        voiceStarted: true,
-        ...state.notificationSettings.get(user.id),
-      });
+      const settingsFor = (user) => {
+        const settings = { level: "all", mobile: "whenInactive", voiceStarted: true, pausedUntil: null };
+        Object.assign(settings, state.notificationSettings.get(user.id));
+        return { ...settings, pausedUntil: activeMute(settings.pausedUntil) };
+      };
       const overrideTarget = (user, { spaceId, channelId, conversationId }) => {
         if (conversationId !== undefined) {
           const channel = channelFor(conversationId);
@@ -2085,15 +2087,28 @@ export async function startFixture({
           if (!body || typeof body !== "object" || Array.isArray(body))
             return reject(response, 400, "invalid notification settings");
           // Like push::settings::update_settings: voiceStarted must be a boolean, never null.
-          if (Object.keys(body).some((key) => !["level", "mobile", "voiceStarted"].includes(key)))
+          if (Object.keys(body).some((key) => !["level", "mobile", "voiceStarted", "pausedUntil"].includes(key)))
             return reject(response, 400, "invalid notification settings");
+          const changes = { ...body };
+          if ("pausedUntil" in body) {
+            const paused = untilValue(body.pausedUntil);
+            if (paused === undefined)
+              return reject(response, 400, "pausedUntil must be forever or a time within the next year");
+            changes.pausedUntil = paused;
+          }
           if ("voiceStarted" in body && typeof body.voiceStarted !== "boolean")
             return reject(response, 400, "invalid notification settings");
           if ("level" in body && !notificationLevels.includes(body.level))
             return reject(response, 400, "level must be all, mentions or nothing");
           if ("mobile" in body && !["always", "whenInactive"].includes(body.mobile))
             return reject(response, 400, "mobile must be always or whenInactive");
-          state.notificationSettings.set(user.id, { ...settingsFor(user), ...body });
+          state.notificationSettings.set(user.id, { ...settingsFor(user), ...changes });
+          // Every session of the account follows (Do Not Disturb included).
+          const { overrides: _, ...settings } = settingsDTO(user);
+          for (const client of sockets)
+            for (const [id, sub] of client.subscriptions)
+              if (sub.kind === "profiles" && client.userId === user.id)
+                client.send({ type: "event", id, event: { type: "notifications.updated", settings } });
         }
         return json(response, 200, settingsDTO(user));
       }

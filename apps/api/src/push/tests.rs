@@ -1200,7 +1200,7 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
         get_settings(app, &alice.token).await,
         (
             StatusCode::OK,
-            json!({"level": "all", "mobile": "whenInactive", "voiceStarted": true, "overrides": []})
+            json!({"level": "all", "mobile": "whenInactive", "voiceStarted": true, "pausedUntil": null, "overrides": []})
         )
     );
     for (body, error) in [
@@ -1231,7 +1231,7 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
         )
         .await
         .1,
-        json!({"level": "mentions", "mobile": "whenInactive", "voiceStarted": true, "overrides": []})
+        json!({"level": "mentions", "mobile": "whenInactive", "voiceStarted": true, "pausedUntil": null, "overrides": []})
     );
     assert_eq!(
         put_json(
@@ -1242,7 +1242,100 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
         )
         .await
         .1,
-        json!({"level": "mentions", "mobile": "always", "voiceStarted": true, "overrides": []})
+        json!({"level": "mentions", "mobile": "always", "voiceStarted": true, "pausedUntil": null, "overrides": []})
+    );
+
+    // Do Not Disturb: forever, a time (whole seconds, UTC), then off again,
+    // leaving the other account settings alone.
+    let token = alice.token.as_str();
+    let pause = |body: Value| async move {
+        put_json(app, "/api/notifications/settings", token, body).await
+    };
+    for until in [
+        json!("soon"),
+        json!(true),
+        json!(now() - 1),
+        json!(
+            chrono::DateTime::from_timestamp(now() - 60, 0)
+                .unwrap()
+                .to_rfc3339()
+        ),
+        json!(
+            chrono::DateTime::from_timestamp(now() + 367 * 86400, 0)
+                .unwrap()
+                .to_rfc3339()
+        ),
+    ] {
+        assert_eq!(
+            pause(json!({"pausedUntil": until})).await,
+            (
+                StatusCode::BAD_REQUEST,
+                json!({"error": "pausedUntil must be forever or a time within the next year"})
+            )
+        );
+    }
+    let mut feed = redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap())
+        .unwrap()
+        .get_async_pubsub()
+        .await
+        .unwrap();
+    feed.subscribe(crate::chat::PROFILE_TOPIC).await.unwrap();
+    assert_eq!(
+        pause(json!({"pausedUntil": "forever"})).await.1["pausedUntil"],
+        "forever"
+    );
+    // Alice's other sessions hear about it, without the overrides.
+    let published: Value = loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), feed.on_message().next())
+            .await
+            .unwrap()
+            .unwrap();
+        let update: Value =
+            serde_json::from_str(&message.get_payload::<String>().unwrap()).unwrap();
+        // Other tests share the channel.
+        if update["event"]["type"] == "notifications.updated"
+            && update["audience"] == json!([alice.id])
+        {
+            break update;
+        }
+    };
+    assert_eq!(
+        published,
+        json!({"audience": [alice.id], "event": {"type": "notifications.updated", "settings":
+            {"level": "mentions", "mobile": "always", "voiceStarted": true, "pausedUntil": "forever"}}})
+    );
+    drop(feed);
+    let paused_until = chrono::DateTime::from_timestamp(now() + 1800, 0).unwrap();
+    assert_eq!(
+        pause(json!({"pausedUntil": paused_until.with_timezone(&chrono::FixedOffset::west_opt(5 * 3600).unwrap()).to_rfc3339()}))
+            .await
+            .1,
+        json!({"level": "mentions", "mobile": "always", "voiceStarted": true,
+               "pausedUntil": paused_until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true), "overrides": []})
+    );
+    assert_eq!(
+        get_settings(app, &alice.token).await.1["pausedUntil"],
+        paused_until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+    // Other changes keep the pause.
+    assert_eq!(
+        pause(json!({"level": "mentions"})).await.1["pausedUntil"],
+        paused_until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+    // An elapsed pause reads as off.
+    sqlx::query("UPDATE public.notification_settings SET paused_until=now()-interval '1 second' WHERE user_id=$1")
+        .bind(alice.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        get_settings(app, &alice.token).await.1["pausedUntil"],
+        Value::Null
+    );
+    pause(json!({"pausedUntil": "forever"})).await;
+    assert_eq!(
+        pause(json!({"pausedUntil": null})).await.1["pausedUntil"],
+        Value::Null
     );
 
     // Overrides.
@@ -2673,9 +2766,18 @@ async fn invitation_delivery_respects_account_pause_presence_and_expired_consent
             StatusCode::OK
         );
         if case == "paused" {
-            // Pause storage is supported; the account API does not expose DND yet.
-            sqlx::query("UPDATE public.notification_settings SET paused_until=now()+interval '1 hour' WHERE user_id=$1")
-                .bind(recipient.id).execute(&pool).await.unwrap();
+            let until = chrono::DateTime::from_timestamp(now() + 3600, 0).unwrap();
+            assert_eq!(
+                put_json(
+                    &h.app,
+                    "/api/notifications/settings",
+                    &recipient.token,
+                    json!({"pausedUntil": until.to_rfc3339()})
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
         }
         assert_eq!(
             call(

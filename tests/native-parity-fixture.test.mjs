@@ -2509,7 +2509,7 @@ test("activity inbox private invitations grant no access until accepted and read
 
 test("notification settings and overrides validate, persist in memory and reset", async (t) => {
   const { request } = await setup(t);
-  const defaults = { level: "all", mobile: "whenInactive", voiceStarted: true, overrides: [] };
+  const defaults = { level: "all", mobile: "whenInactive", voiceStarted: true, pausedUntil: null, overrides: [] };
   assert.equal((await request("/api/notifications/settings")).response.status, 401);
   assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value, defaults);
   const put = (path, body, auth = true) =>
@@ -2533,9 +2533,23 @@ test("notification settings and overrides validate, persist in memory and reset"
   ]);
   assert.deepEqual(
     await put("/api/notifications/settings", { mobile: "always" }),
-    [200, { level: "mentions", mobile: "always", voiceStarted: false, overrides: [] }],
+    [200, { level: "mentions", mobile: "always", voiceStarted: false, pausedUntil: null, overrides: [] }],
     "a missing voiceStarted keeps the saved choice",
   );
+  // Do Not Disturb, as push::settings: forever or a time within a year, null ends it.
+  for (const pausedUntil of ["soon", 5, new Date(Date.now() - 1000).toISOString()])
+    assert.deepEqual(await put("/api/notifications/settings", { pausedUntil }), [
+      400,
+      { error: "pausedUntil must be forever or a time within the next year" },
+    ]);
+  const pauseEnd = new Date(Math.floor((Date.now() + 3600 * 1000) / 1000) * 1000);
+  assert.equal(
+    (await put("/api/notifications/settings", { pausedUntil: pauseEnd.toISOString() }))[1].pausedUntil,
+    pauseEnd.toISOString().replace(".000Z", "Z"),
+  );
+  assert.equal((await put("/api/notifications/settings", { pausedUntil: "forever" }))[1].pausedUntil, "forever");
+  assert.equal((await put("/api/notifications/settings", { level: "mentions" }))[1].pausedUntil, "forever");
+  assert.equal((await put("/api/notifications/settings", { pausedUntil: null }))[1].pausedUntil, null);
 
   const space = `/api/spaces/${ids.space}/notifications`;
   const channel = `/api/spaces/${ids.space}/channels/${ids.design}/notifications`;
@@ -2587,6 +2601,7 @@ test("notification settings and overrides validate, persist in memory and reset"
     level: "mentions",
     mobile: "always",
     voiceStarted: false,
+    pausedUntil: null,
     overrides: [
       { spaceId: ids.space, level: "mentions", mutedUntil: muted, voiceStarted: false },
       { spaceId: ids.space, channelId: ids.design, level: null, mutedUntil: "forever" },

@@ -1,7 +1,7 @@
 //! Account notification settings and space, channel and DM overrides.
 //! Levels and mutes are stored in place; `muted_until = 'infinity'` is forever.
 use super::{Level, bad_request, database_error, pool};
-use crate::{ApiError, AppState, auth::Principal, spaces::channel_access};
+use crate::{ApiError, AppState, auth::Principal, chat::PROFILE_TOPIC, spaces::channel_access};
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
@@ -45,6 +45,31 @@ enum Mute {
     Until(DateTime<Utc>),
 }
 
+/// A mute's or pause's end: `"forever"` or a time within the next year.
+/// `None`: leave the field unchanged. `Some(None)`: reset it.
+fn until(
+    value: Option<&Value>,
+    now: DateTime<Utc>,
+    message: &'static str,
+) -> Result<Option<Option<Mute>>, ApiError> {
+    Ok(match value {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(value)) if value == "forever" => Some(Some(Mute::Forever)),
+        Some(value) => {
+            let until = value
+                .as_str()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|until| until.with_timezone(&Utc))
+                .filter(|until| *until > now && *until <= now + LONGEST_MUTE)
+                .ok_or_else(|| bad_request(message))?;
+            // Whole seconds, as every response formats them.
+            let seconds = DateTime::from_timestamp(until.timestamp(), 0).unwrap_or(until);
+            Some(Some(Mute::Until(seconds)))
+        }
+    })
+}
+
 /// `None`: leave the field unchanged. `Some(None)`: reset it.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct OverrideInput {
@@ -86,24 +111,11 @@ fn override_input(
                 })?,
         )),
     };
-    let muted_until = match object.get("mutedUntil") {
-        None => None,
-        Some(Value::Null) => Some(None),
-        Some(Value::String(value)) if value == "forever" => Some(Some(Mute::Forever)),
-        Some(value) => {
-            let until = value
-                .as_str()
-                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-                .map(|until| until.with_timezone(&Utc))
-                .filter(|until| *until > now && *until <= now + LONGEST_MUTE)
-                .ok_or_else(|| {
-                    bad_request("mutedUntil must be forever or a time within the next year")
-                })?;
-            // Whole seconds, as every response formats them.
-            let seconds = DateTime::from_timestamp(until.timestamp(), 0).unwrap_or(until);
-            Some(Some(Mute::Until(seconds)))
-        }
-    };
+    let muted_until = until(
+        object.get("mutedUntil"),
+        now,
+        "mutedUntil must be forever or a time within the next year",
+    )?;
     Ok(OverrideInput {
         level,
         muted_until,
@@ -286,17 +298,23 @@ struct Listed {
     stored: Stored,
 }
 
+/// Level, mobile, voice starts, paused forever, and a pause's end while it lasts.
+type AccountRow = (Option<String>, String, bool, bool, Option<DateTime<Utc>>);
+
 /// Account settings plus every override still in effect for a scope the
 /// account can still read.
 async fn settings(pool: &PgPool, user: i64) -> Result<Value, ApiError> {
-    let account: Option<(Option<String>, String, bool)> = sqlx::query_as(
-        "SELECT default_level, mobile, voice_started FROM public.notification_settings WHERE user_id=$1",
+    let account: Option<AccountRow> = sqlx::query_as(
+        "SELECT default_level, mobile, voice_started, COALESCE(paused_until = 'infinity', false),
+                CASE WHEN paused_until > now() AND paused_until <> 'infinity' THEN paused_until END
+         FROM public.notification_settings WHERE user_id=$1",
     )
     .bind(user)
     .fetch_optional(pool)
     .await
     .map_err(database_error)?;
-    let (level, mobile, voice_started) = account.unwrap_or((None, "whenInactive".into(), true));
+    let (level, mobile, voice_started, paused_forever, paused_until) =
+        account.unwrap_or((None, "whenInactive".into(), true, false, None));
     let rows: Vec<Listed> = sqlx::query_as(
         "SELECT s.external_id AS space_id, c.external_id AS channel_id, c.id IS NOT NULL AND c.space_id IS NULL AS direct,
                 o.level, o.voice_started, COALESCE(o.muted_until = 'infinity', false) AS forever,
@@ -341,10 +359,17 @@ async fn settings(pool: &PgPool, user: i64) -> Result<Value, ApiError> {
             entry
         })
         .collect();
+    let paused = Stored {
+        level: None,
+        forever: paused_forever,
+        muted_until: paused_until,
+        voice_started: None,
+    };
     Ok(json!({
         "level": level.as_deref().and_then(Level::parse).unwrap_or(Level::All).name(),
         "mobile": mobile,
         "voiceStarted": voice_started,
+        "pausedUntil": paused.muted_until(),
         "overrides": overrides,
     }))
 }
@@ -361,7 +386,17 @@ async fn update_settings(
     Extension(principal): Extension<Principal>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let object = object(&body, &["level", "mobile", "voiceStarted"])?;
+    let object = object(&body, &["level", "mobile", "voiceStarted", "pausedUntil"])?;
+    let paused_until = until(
+        object.get("pausedUntil"),
+        Utc::now(),
+        "pausedUntil must be forever or a time within the next year",
+    )?;
+    let (paused_forever, paused_at) = match paused_until.as_ref().and_then(Option::as_ref) {
+        Some(Mute::Forever) => (true, None),
+        Some(Mute::Until(until)) => (false, Some(*until)),
+        None => (false, None),
+    };
     let voice_started = object
         .get("voiceStarted")
         .map(|value| value.as_bool().ok_or_else(invalid))
@@ -386,12 +421,14 @@ async fn update_settings(
         .transpose()?;
     let pool = pool(&state)?;
     sqlx::query(
-        "INSERT INTO public.notification_settings (user_id, default_level, mobile, voice_started)
-         VALUES ($1, $3, COALESCE($5, 'whenInactive'), COALESCE($6,true))
+        "INSERT INTO public.notification_settings (user_id, default_level, mobile, voice_started, paused_until)
+         VALUES ($1, $3, COALESCE($5, 'whenInactive'), COALESCE($6,true),
+                 CASE WHEN $8 THEN 'infinity'::timestamptz ELSE $9 END)
          ON CONFLICT (user_id) DO UPDATE SET
              default_level = CASE WHEN $2 THEN EXCLUDED.default_level ELSE notification_settings.default_level END,
              mobile = CASE WHEN $4 THEN EXCLUDED.mobile ELSE notification_settings.mobile END,
              voice_started = COALESCE($6,notification_settings.voice_started),
+             paused_until = CASE WHEN $7 THEN EXCLUDED.paused_until ELSE notification_settings.paused_until END,
              updated_at = now()",
     )
     .bind(principal.user.id)
@@ -400,10 +437,27 @@ async fn update_settings(
     .bind(mobile.is_some())
     .bind(mobile)
     .bind(voice_started)
+    .bind(paused_until.is_some())
+    .bind(paused_forever)
+    .bind(paused_at)
     .execute(pool)
     .await
     .map_err(database_error)?;
-    Ok(Json(settings(pool, principal.user.id).await?))
+    let settings = settings(pool, principal.user.id).await?;
+    // The account's other sessions follow, so Do Not Disturb shows the same
+    // everywhere. Best effort: each client reloads settings when it reconnects.
+    if let Some(chat) = &state.chat {
+        let mut account = settings.clone();
+        if let Some(account) = account.as_object_mut() {
+            account.remove("overrides");
+        }
+        chat.publish(
+            PROFILE_TOPIC,
+            &json!({"audience":[principal.user.id],"event":{"type":"notifications.updated","settings":account}}),
+        )
+        .await;
+    }
+    Ok(Json(settings))
 }
 
 #[cfg(test)]
