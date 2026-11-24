@@ -1,18 +1,19 @@
-//! Settings, as in the egui client: a card over the conversation with
-//! Startup (launch at login), Notifications ("Notify me about" and voice
-//! starting), Privacy (who can start a DM, blocked accounts) and Delete
-//! account. Account choices save as soon as they change and revert with an
-//! inline error (the shared `Notifications` and the core's Account
-//! operations, kept in `Live`). Also the sidebar's account footer: your
-//! avatar and name, and its gear's menu (Settings…, Log out), with
-//! "Notifications" (and "Feedback" for the feedback team) stacked above
-//! them in the same panel.
+//! Settings, one card over the conversation with every client's sections
+//! in order: Profile (Edit profile), Appearance, Notifications (Do Not
+//! Disturb, "Notify me about" and voice starting), Voice & audio (voice
+//! messages and the Audio test, `audio`), Startup (launch at login),
+//! Privacy & blocked accounts (and Delete account), About (the version,
+//! updates and What's new) and Log out. Account choices save as soon as
+//! they change and revert with an inline error (the shared `Notifications`
+//! and the core's Account operations, kept in `Live`). Also the sidebar's
+//! account footer: your avatar and name (Do Not Disturb's moon and menu),
+//! and its gear, which opens Settings, with "Notifications" (and "Feedback"
+//! for the feedback team) stacked above them in the same panel.
 //!
 //! The same card shows the notification inbox (egui's `activity_dialog`):
 //! the filters, Unread only with the count, each notification (opening it
 //! closes the inbox over its conversation; its check marks it read), and
 //! Load more. The shared `caper_client::activity::Inbox` keeps its state.
-//! And the Audio test (`audio`).
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::overlay::{Rect, Tone};
@@ -21,7 +22,7 @@ use crate::{App, EV_FOCUS, EV_SCREEN, text};
 use audio::Mic;
 use caper_client::activity::Filter;
 use caper_client::model::{DELETE_ACCOUNT_URL, DM_PRIVACY, NotificationLevel};
-use caper_client::notifications::{Change, Scope, account_level_label};
+use caper_client::notifications::{Change, PAUSE_PRESETS, Scope, account_level_label};
 use windows::Win32::Foundation::{LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -69,14 +70,15 @@ const INBOX_ROW_H: f32 = 30.0;
 const INBOX_PAD: f32 = 4.0;
 const MENU_W: f32 = 232.0;
 const MENU_ITEM_H: f32 = 32.0;
-pub const MENU_ITEMS: [&str; 6] = [
-    "Settings\u{2026}",
-    "Audio test",
-    "Log out",
-    "Edit profile",
-    "Connection details",
-    "Audio diagnostics",
-];
+/// The Do Not Disturb menu's heading row above its items.
+const MENU_HEAD_H: f32 = 30.0;
+/// The Do Not Disturb menu's item after the presets (`PAUSE_PRESETS`).
+pub const MENU_TURN_OFF: usize = PAUSE_PRESETS.len();
+
+/// The Do Not Disturb menu's item `k`: a preset, or Turn off.
+pub fn menu_item(k: usize) -> &'static str {
+    PAUSE_PRESETS.get(k).map_or("Turn off", |p| p.0)
+}
 
 fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
@@ -109,6 +111,12 @@ pub enum SPart {
     Unblock(usize),
     RetryBlocks,
     Delete,
+    /// Profile's Edit profile, Do Not Disturb's presets
+    /// (`PAUSE_PRESETS`) and Turn off, and Log out.
+    EditProfile,
+    Pause(usize),
+    PauseOff,
+    Logout,
     /// The inbox: a filter (`Filter::ALL`), Unread only, a shown row
     /// (opens it), a row's mark read check, Load more and Retry.
     Filter(usize),
@@ -203,6 +211,10 @@ impl SPart {
             Self::ThemeObsidian => 57,
             Self::ThemePaper => 58,
             Self::KeepRunning => 59,
+            Self::EditProfile => 60,
+            Self::PauseOff => 61,
+            Self::Logout => 62,
+            Self::Pause(k) => 63 + k,
             Self::FeedbackOpen(k) => 2_000_000 + 2 * k,
             Self::FeedbackArchive(k) => 2_000_001 + 2 * k,
             Self::ReleaseRevision(k) => 4000 + k,
@@ -271,6 +283,10 @@ impl SPart {
                 | Self::FeedbackArchive(_)
                 | Self::ThemeObsidian
                 | Self::ThemePaper
+                | Self::EditProfile
+                | Self::Pause(_)
+                | Self::PauseOff
+                | Self::Logout
         )
     }
 }
@@ -317,6 +333,12 @@ pub struct Snapshot {
     pub account: bool,
     pub level: Option<NotificationLevel>,
     pub voice_started: bool,
+    /// Do Not Disturb's end ("Until 3:45 PM") while it is on, and why its
+    /// last change failed.
+    pub pause: Option<String>,
+    pub pause_error: Option<String>,
+    /// Your name, @username, colour, initials and avatar (Profile).
+    pub me: Option<(String, String, u32, String, crate::avatars::Avatar)>,
     pub notify_saving: bool,
     pub notify_load_error: Option<String>,
     pub notify_error: Option<String>,
@@ -331,6 +353,8 @@ pub struct Snapshot {
     pub inbox: Option<InboxSnap>,
     /// The Audio test's state.
     pub audio: Option<audio::AudioSnap>,
+    /// Voice has statistics: Connection details can open.
+    pub connection: bool,
     pub support: Option<support::Snapshot>,
     pub debug_enabled: bool,
     /// The version was just copied: it reads "Copied".
@@ -380,7 +404,6 @@ pub struct InboxRow {
 pub enum Page {
     Settings,
     Inbox,
-    Audio,
     WhatsNew,
     Feedback,
     Connection,
@@ -463,7 +486,9 @@ impl Settings {
                 s.updates.can_check && s.updates.status != caper_client::updates::Status::Checking
             }
             SPart::RetryHighlights => s.highlights.as_ref().is_some_and(|h| !h.loading),
-            SPart::Level(_) | SPart::VoiceStarted => s.level.is_some() && !s.notify_saving,
+            SPart::Level(_) | SPart::VoiceStarted | SPart::Pause(_) | SPart::PauseOff => {
+                s.level.is_some() && !s.notify_saving
+            }
             SPart::Privacy(_) => s.privacy.is_some(),
             SPart::Unblock(_) => !s.block_busy,
             SPart::Open(k) => {
@@ -515,7 +540,6 @@ impl Settings {
     pub fn name(&self, part: SPart) -> String {
         match part {
             SPart::Close if self.page == Page::Inbox => "Close notifications".into(),
-            SPart::Close if self.page == Page::Audio => "Close audio test".into(),
             SPart::Close if self.page == Page::WhatsNew => "Close What’s new".into(),
             SPart::Close if self.page == Page::Feedback => "Close feedback".into(),
             SPart::Close if self.page == Page::Connection => "Close connection details".into(),
@@ -632,12 +656,6 @@ impl Settings {
         };
         if let (Page::Inbox, Some(inbox)) = (self.page, &snap.inbox) {
             b.inbox(inbox)?;
-        } else if let (Page::Audio, Some(a)) = (self.page, &snap.audio) {
-            b.audio(a)?;
-            if snap.debug_enabled {
-                b.separator();
-                b.button(SPart::Diagnostics, "Audio diagnostics")?;
-            }
         } else if self.page == Page::Settings {
             b.settings(&snap)?;
         } else if let (Page::WhatsNew, Some(history)) = (self.page, &snap.highlights) {
@@ -667,10 +685,18 @@ impl Settings {
 }
 
 impl Builder<'_> {
-    /// Settings' sections.
+    /// Settings' sections, in every client's order.
     fn settings(&mut self, snap: &Snapshot) -> Result<()> {
         let b = self;
         let inner = b.inner;
+        if snap.account {
+            b.text("Profile", Style::Section)?;
+            b.y += 6.0;
+            if let Some((name, username, color, initials, avatar)) = &snap.me {
+                b.profile(name, username, *color, initials, avatar)?;
+            }
+            b.separator();
+        }
         b.text("Appearance", Style::Section)?;
         b.y += 4.0;
         b.text(
@@ -698,73 +724,41 @@ impl Builder<'_> {
             });
         }
         b.y += card_h;
-        b.separator();
-        b.text("Startup", Style::Section)?;
-        b.y += 6.0;
-        b.switch_row(SPart::Launch)?;
-        if let Some(e) = &snap.startup_error {
-            b.y += 6.0;
-            b.text(e, Style::Error)?;
-            b.y += 4.0;
-            b.button(SPart::DismissStartup, "Dismiss startup error")?;
-        }
-        b.y += 12.0;
-        b.switch_row(SPart::KeepRunning)?;
-        b.separator();
-        b.text("Voice messages", Style::Section)?;
-        b.y += 6.0;
-        b.switch_row(SPart::VoiceSend)?;
-        b.separator();
-        b.text("Updates", Style::Section)?;
-        b.y += 6.0;
-        let installed = caper_client::updates::InstalledVersion::current();
-        if installed.copy_text.is_none() {
-            b.text(&installed.label, Style::Label)?;
-        } else {
-            // Body text like GTK's and Anybase's, not a second button over
-            // Check for updates; "Copied" takes its place.
-            let label = if snap.version_copied {
-                caper_client::updates::VERSION_COPIED
-            } else {
-                installed.label.as_str()
-            };
-            let h = b.measure(label, Style::Label, b.inner)?;
-            let w = b.width(label, Style::Label)?;
-            b.items.push(Item {
-                part: SPart::CopyVersion,
-                rect: (0.0, b.y + 4.0, w, h),
-                text: label.into(),
-                style: Style::Label,
-                face: None,
-            });
-            b.y += h + 12.0;
-        }
-        // Check for updates and What's new side by side.
-        let mut x = 0.0;
-        for (part, label) in [
-            (SPart::CheckUpdates, "Check for updates"),
-            (SPart::WhatsNew, "What’s new"),
-        ] {
-            let w = b.width(label, Style::Label)? + 24.0;
-            b.items.push(Item {
-                part,
-                rect: (x, b.y, w, BUTTON_H),
-                text: label.into(),
-                style: Style::Label,
-                face: None,
-            });
-            x += w + 8.0;
-        }
-        b.y += BUTTON_H + 8.0;
-        // A check's result or error; nothing while idle, so no blank row.
-        let (message, error) = snap.updates.message();
-        if !message.is_empty() {
-            b.text(&message, Style::Status(error))?;
-        }
         if snap.account {
             b.separator();
             b.text("Notifications", Style::Section)?;
             b.y += 6.0;
+            b.text("Do Not Disturb", Style::Label)?;
+            match (&snap.pause, snap.level) {
+                (Some(until), _) => b.text(&format!("On \u{b7} {until}"), Style::Detail)?,
+                (None, Some(_)) => b.text("Off", Style::Detail)?,
+                (None, None) => {}
+            }
+            b.y += 6.0;
+            // The presets wrap like the inbox's filters; Turn off while on.
+            let mut x = 0.0;
+            let mut buttons: Vec<(SPart, &str)> = PAUSE_PRESETS
+                .iter()
+                .enumerate()
+                .map(|(k, (label, _))| (SPart::Pause(k), *label))
+                .collect();
+            if snap.pause.is_some() {
+                buttons.push((SPart::PauseOff, "Turn off"));
+            }
+            for (part, label) in buttons {
+                let w = b.width(label, Style::Label)? + 24.0;
+                if x > 0.0 && x + w > inner {
+                    x = 0.0;
+                    b.y += BUTTON_H + 8.0;
+                }
+                b.push(part, (x, b.y, w, BUTTON_H), label);
+                x += w + 8.0;
+            }
+            b.y += BUTTON_H + 6.0;
+            if let Some(e) = &snap.pause_error {
+                b.text(e, Style::Error)?;
+            }
+            b.y += 12.0;
             b.text("Notify me about", Style::Label)?;
             for (k, level) in LEVELS.iter().enumerate() {
                 b.row(SPart::Level(k), account_level_label(*level));
@@ -782,8 +776,40 @@ impl Builder<'_> {
             if let Some(e) = &snap.notify_error {
                 b.text(e, Style::Error)?;
             }
+        }
+        b.separator();
+        b.text("Voice & audio", Style::Section)?;
+        b.y += 6.0;
+        b.switch_row(SPart::VoiceSend)?;
+        if let Some(a) = &snap.audio {
+            b.y += 14.0;
+            b.text("Audio test", Style::Label)?;
+            b.audio(a)?;
+        }
+        if snap.connection || snap.debug_enabled {
+            b.y += 10.0;
+        }
+        if snap.connection {
+            b.button(SPart::Connection, "Connection details")?;
+        }
+        if snap.debug_enabled {
+            b.button(SPart::Diagnostics, "Audio diagnostics")?;
+        }
+        b.separator();
+        b.text("Startup", Style::Section)?;
+        b.y += 6.0;
+        b.switch_row(SPart::Launch)?;
+        if let Some(e) = &snap.startup_error {
+            b.y += 6.0;
+            b.text(e, Style::Error)?;
+            b.y += 4.0;
+            b.button(SPart::DismissStartup, "Dismiss startup error")?;
+        }
+        b.y += 12.0;
+        b.switch_row(SPart::KeepRunning)?;
+        if snap.account {
             b.separator();
-            b.text("Privacy", Style::Section)?;
+            b.text("Privacy & blocked accounts", Style::Section)?;
             b.y += 6.0;
             b.text("Who can start a DM with you", Style::Label)?;
             for (k, (_, label, detail)) in DM_PRIVACY.iter().enumerate() {
@@ -838,6 +864,89 @@ impl Builder<'_> {
             });
             b.y += dh;
         }
+        b.separator();
+        b.text("About", Style::Section)?;
+        b.y += 6.0;
+        let installed = caper_client::updates::InstalledVersion::current();
+        if installed.copy_text.is_none() {
+            b.text(&installed.label, Style::Label)?;
+        } else {
+            // Body text like GTK's and Anybase's, not a second button over
+            // Check for updates; "Copied" takes its place.
+            let label = if snap.version_copied {
+                caper_client::updates::VERSION_COPIED
+            } else {
+                installed.label.as_str()
+            };
+            let h = b.measure(label, Style::Label, b.inner)?;
+            let w = b.width(label, Style::Label)?;
+            b.items.push(Item {
+                part: SPart::CopyVersion,
+                rect: (0.0, b.y + 4.0, w, h),
+                text: label.into(),
+                style: Style::Label,
+                face: None,
+            });
+            b.y += h + 12.0;
+        }
+        // Check for updates and What's new side by side.
+        let mut x = 0.0;
+        for (part, label) in [
+            (SPart::CheckUpdates, "Check for updates"),
+            (SPart::WhatsNew, "What’s new"),
+        ] {
+            let w = b.width(label, Style::Label)? + 24.0;
+            b.items.push(Item {
+                part,
+                rect: (x, b.y, w, BUTTON_H),
+                text: label.into(),
+                style: Style::Label,
+                face: None,
+            });
+            x += w + 8.0;
+        }
+        b.y += BUTTON_H + 8.0;
+        // A check's result or error; nothing while idle, so no blank row.
+        let (message, error) = snap.updates.message();
+        if !message.is_empty() {
+            b.text(&message, Style::Status(error))?;
+        }
+        if snap.account {
+            b.separator();
+            b.button(SPart::Logout, "Log out")?;
+        }
+        Ok(())
+    }
+
+    /// Profile: your picture, name and @username, then Edit profile.
+    fn profile(
+        &mut self,
+        name: &str,
+        username: &str,
+        color: u32,
+        initials: &str,
+        avatar: &crate::avatars::Avatar,
+    ) -> Result<()> {
+        let edit = self.width("Edit profile", Style::Label)? + 24.0;
+        let label = if username.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{name} @{username}")
+        };
+        self.items.push(Item {
+            part: SPart::Text(self.texts),
+            rect: (0.0, self.y, self.inner - edit - 8.0, 32.0),
+            text: label,
+            style: Style::Person(color),
+            face: Some((initials.into(), avatar.clone())),
+        });
+        self.texts += 1;
+        self.push(
+            SPart::EditProfile,
+            (self.inner - edit, self.y + 1.0, edit, BUTTON_H),
+            "Edit profile",
+        );
+        self.y += 36.0;
         Ok(())
     }
 
@@ -996,7 +1105,6 @@ impl Settings {
             let heading = match self.page {
                 Page::Settings => "Settings",
                 Page::Inbox => "Notifications",
-                Page::Audio => "Audio test",
                 Page::WhatsNew => "What’s new",
                 Page::Feedback
                     if matches!(
@@ -1701,8 +1809,8 @@ fn launch_allowed() -> bool {
 }
 
 impl App {
-    /// Opens Settings (egui's `open_settings`): reads launch at login and
-    /// loads the account's choices.
+    /// Opens Settings (egui's `open_settings`): reads launch at login,
+    /// loads the account's choices and finds the audio devices again.
     pub fn open_settings(&mut self) {
         self.close_settings();
         self.account_menu = None;
@@ -1723,6 +1831,7 @@ impl App {
         self.settings = Some(Settings::new(launch, error));
         if let Some(live) = &mut self.live {
             live.load_settings();
+            live.voice.refresh_devices();
         }
         self.settings_changed();
         self.events |= EV_SCREEN | EV_FOCUS;
@@ -1818,7 +1927,7 @@ impl App {
                 live.whats_new.dismiss();
                 live.save_highlights_read();
             }
-            if s.page == Page::Audio {
+            if s.page == Page::Settings {
                 self.audio_closed();
             }
             if s.page == Page::Inbox {
@@ -1865,8 +1974,9 @@ impl App {
             if s.is_some_and(|s| s.page == Page::Inbox) {
                 snap.inbox = Some(live.inbox_snapshot());
             }
-            if s.is_some_and(|s| s.page == Page::Audio) {
+            if s.is_some_and(|s| s.page == Page::Settings) {
                 snap.audio = Some(audio::snapshot(&live.voice));
+                snap.connection = live.voice.diagnostics.is_some();
             }
         }
         snap
@@ -1887,7 +1997,7 @@ impl App {
                 self.events |= EV_FOCUS;
             }
         }
-        if let Some(s) = self.settings.as_ref().filter(|s| s.page == Page::Audio) {
+        if let Some(s) = self.settings.as_ref().filter(|s| s.page == Page::Settings) {
             self.arm_audio_timer(
                 s.snap
                     .audio
@@ -2020,6 +2130,16 @@ impl App {
             }
             SPart::DismissStartup => s.startup_error = None,
             SPart::Delete => crate::open_link(DELETE_ACCOUNT_URL),
+            SPart::Logout => return self.logout(),
+            // Closing the editor comes back here (`dismiss_dialog`).
+            SPart::EditProfile => {
+                self.settings_back = Some(part);
+                self.open_profile_editor();
+                if self.settings.is_some() {
+                    self.settings_back = None;
+                }
+                return;
+            }
             SPart::Text(_) => {}
             _ => {
                 let voice = !s.snap.voice_started;
@@ -2031,6 +2151,8 @@ impl App {
                     SPart::VoiceStarted => {
                         live.change_notifications(Scope::Account, Change::VoiceStarted(Some(voice)))
                     }
+                    SPart::Pause(k) => live.pause(Some(k)),
+                    SPart::PauseOff => live.pause(None),
                     SPart::RetryNotifications => live.load_notifications(),
                     SPart::Privacy(k) => live.save_privacy(DM_PRIVACY[k].0),
                     SPart::RetryPrivacy => live.load_privacy(),
@@ -2203,6 +2325,27 @@ impl App {
         self.foot_shown() && contains(self.gear_rect(), x, y)
     }
 
+    /// Your avatar and name before the gear (client DIPs): Do Not
+    /// Disturb's menu.
+    pub fn me_rect(&self) -> Rect {
+        let (x, _) = self.foot_span();
+        let (gx, gy, _, gh) = self.gear_rect();
+        (x + 4.0, gy - 4.0, gx - 4.0 - (x + 4.0), gh + 8.0)
+    }
+
+    pub fn on_me(&self, x: f32, y: f32) -> bool {
+        self.foot_shown() && contains(self.me_rect(), x, y)
+    }
+
+    /// The menu's heading, and the footer's tooltip and help text: Do Not
+    /// Disturb's end while it is on.
+    pub fn pause_heading(&self) -> String {
+        match self.live.as_ref().and_then(crate::live::Live::paused) {
+            Some(until) => format!("Do Not Disturb \u{b7} {until}"),
+            None => "Pause notifications".into(),
+        }
+    }
+
     /// The panel's rows above the account row, while the footer shows.
     pub fn inbox_rows(&self) -> Vec<crate::directs::Row> {
         if !self.foot_shown() {
@@ -2279,16 +2422,11 @@ impl App {
         }
     }
 
-    /// The gear's menu (client DIPs), above the gear.
+    /// Do Not Disturb's menu (client DIPs), above your avatar.
     pub fn account_menu_rect(&self) -> Rect {
-        let h = self.account_items().len() as f32 * MENU_ITEM_H + 12.0;
-        let (gx, gy, gw, _) = self.gear_rect();
-        (
-            (gx + gw - MENU_W).max(RAIL_W + 4.0),
-            gy - 6.0 - h,
-            MENU_W,
-            h,
-        )
+        let h = MENU_HEAD_H + self.account_items().len() as f32 * MENU_ITEM_H + 12.0;
+        let (mx, my, _, _) = self.me_rect();
+        (mx, my - 6.0 - h, MENU_W, h)
     }
 
     pub fn account_item_rect(&self, k: usize) -> Rect {
@@ -2298,7 +2436,7 @@ impl App {
         };
         (
             x + 6.0,
-            y + 6.0 + k as f32 * MENU_ITEM_H,
+            y + 6.0 + MENU_HEAD_H + k as f32 * MENU_ITEM_H,
             w - 12.0,
             MENU_ITEM_H,
         )
@@ -2319,14 +2457,15 @@ impl App {
         self.account_menu = None;
         self.dirty.settings = true;
         self.need = true;
-        match k {
-            0 => self.open_settings(),
-            1 => self.open_audio(),
-            2 => self.logout(),
-            3 => self.open_profile_editor(),
-            4 => self.open_support(Page::Connection),
-            5 => self.open_support(Page::Diagnostics),
-            _ => {}
+        self.dirty.sidebar = true;
+        self.events |= EV_SCREEN | EV_FOCUS;
+        if let Some(live) = &mut self.live {
+            live.pause((k < MENU_TURN_OFF).then_some(k));
+        }
+        // The moon and status follow at once; a failed save reverts them.
+        self.mutes_changed();
+        if self.settings.is_some() {
+            self.settings_changed();
         }
     }
 
@@ -2345,7 +2484,7 @@ impl App {
             .copied()
             .find(|&k| contains(self.account_item_rect(k), x, y));
         let inside = contains(self.account_menu_rect(), x, y);
-        let gear = self.on_gear(x, y);
+        let me = self.on_me(x, y);
         let m = self.account_menu.as_mut()?;
         match msg {
             WM_MOUSEMOVE => {
@@ -2365,8 +2504,8 @@ impl App {
                     return done;
                 }
                 self.toggle_account_menu();
-                // The gear's own click only closes it.
-                if gear { done } else { None }
+                // Your avatar's own click only closes it.
+                if me { done } else { None }
             }
             WM_KEYDOWN => {
                 let n = items.len();
@@ -2476,10 +2615,40 @@ impl App {
                 stroke_round(dc, f, RADIUS, &g.brushes.terracotta);
             }
         }
+        // Your avatar and name open Do Not Disturb's menu.
+        if self.me_hover || self.account_menu.is_some() {
+            let (mx, my, mw, mh) = self.me_rect();
+            fill_round(
+                dc,
+                rect(mx - dx, my, mx - dx + mw, my + mh),
+                6.0,
+                &g.brushes.hover,
+            );
+        }
         let me = live.account_id.as_deref().unwrap_or_default();
         let p = crate::live::person(me, &live.account_name, live.account_avatar.clone());
         let (cx, cy) = (12.0 + 8.0 + 15.0, top + FOOT_CARD_H / 2.0);
         crate::avatars::circle(g, dc, &p.avatar, (cx, cy, 15.0), p.color, &p.initials)?;
+        let paused = live.paused().is_some();
+        if paused {
+            // Do Not Disturb's moon on the avatar's corner.
+            let badge = D2D1_ELLIPSE {
+                point: windows_numerics::Vector2 {
+                    X: cx + 11.0,
+                    Y: cy + 11.0,
+                },
+                radiusX: 7.5,
+                radiusY: 7.5,
+            };
+            unsafe { dc.FillEllipse(&badge, &g.brushes.raised) };
+            icons::draw(
+                dc,
+                Icon::Moon,
+                rect(cx + 6.0, cy + 6.0, cx + 16.0, cy + 16.0),
+                crate::theme::text(),
+                1.0,
+            );
+        }
         let name_w = width - 12.0 - 8.0 - 28.0 - 8.0 - (cx + 21.0);
         let name = g.layout(
             &gfx::wide(&live.account_name),
@@ -2489,10 +2658,28 @@ impl App {
         unsafe { name.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
         crate::emoji::apply(&name, &live.account_name, 13.0, 1.0)?;
         let nm = gfx::metrics(&name);
-        text::draw(dc, &name, cx + 21.0, cy - nm.height / 2.0, &g.brushes.text);
+        if paused {
+            let note = g.layout(
+                &gfx::wide("Do Not Disturb"),
+                &g.formats.direct_note,
+                name_w.max(1.0),
+            )?;
+            unsafe { note.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
+            let h = nm.height + gfx::metrics(&note).height;
+            text::draw(dc, &name, cx + 21.0, cy - h / 2.0, &g.brushes.text);
+            text::draw(
+                dc,
+                &note,
+                cx + 21.0,
+                cy - h / 2.0 + nm.height,
+                &g.brushes.muted,
+            );
+        } else {
+            text::draw(dc, &name, cx + 21.0, cy - nm.height / 2.0, &g.brushes.text);
+        }
         let (gx, gy, gw, gh) = self.gear_rect();
         let gx = gx - if self.is_narrow() { 0.0 } else { RAIL_W };
-        let lit = self.gear_hover || self.account_menu.is_some();
+        let lit = self.gear_hover;
         if lit {
             fill_round(dc, rect(gx, gy, gx + gw, gy + gh), 6.0, &g.brushes.hover);
         }
@@ -2551,18 +2738,35 @@ impl App {
             .collect();
         self.settings_p.ensure(g, px(mw), px(mh))?;
         self.settings_p.offset((mx * s).round(), (my * s).round())?;
+        let heading = self.pause_heading();
+        // Until notification settings load, the choices can't save.
+        let brush = if self.live.as_ref().is_some_and(crate::live::Live::can_pause) {
+            &g.brushes.text
+        } else {
+            &g.brushes.muted
+        };
         self.settings_p.draw(s, |dc| {
             unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
             let r = rect(0.5, 0.5, mw - 0.5, mh - 0.5);
             fill_round(dc, r, RADIUS, &g.brushes.surface);
             stroke_round(dc, r, RADIUS, &g.brushes.border);
+            let l = g.layout(&gfx::wide(&heading), &g.formats.direct_note, mw - 32.0)?;
+            unsafe { l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
+            let lm = gfx::metrics(&l);
+            text::draw(
+                dc,
+                &l,
+                16.0,
+                6.0 + (MENU_HEAD_H - lm.height) / 2.0,
+                &g.brushes.muted,
+            );
             for (k, (x, y, w, h)) in &items {
                 if m.hover == Some(*k) {
                     fill_round(dc, rect(*x, *y, x + w, y + h), 6.0, &g.brushes.hover);
                 }
-                let l = g.layout(&gfx::wide(MENU_ITEMS[*k]), &g.formats.dialog_note, *w)?;
+                let l = g.layout(&gfx::wide(menu_item(*k)), &g.formats.dialog_note, *w)?;
                 let lm = gfx::metrics(&l);
-                text::draw(dc, &l, x + 10.0, y + (h - lm.height) / 2.0, &g.brushes.text);
+                text::draw(dc, &l, x + 10.0, y + (h - lm.height) / 2.0, brush);
             }
             Ok(())
         })

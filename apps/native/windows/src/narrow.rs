@@ -464,6 +464,8 @@ impl App {
             match msg {
                 WM_LBUTTONDOWN => {
                     if self.on_gear(at.0, at.1) {
+                        self.open_settings();
+                    } else if self.on_me(at.0, at.1) {
                         self.toggle_account_menu();
                     } else if let Some(k) = self.inbox_at(at.0, at.1) {
                         self.open_inbox_row(k);

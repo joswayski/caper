@@ -71,8 +71,10 @@ pub enum Id {
     /// The account panel's Notifications and Feedback rows, above the
     /// account row.
     Inbox(usize),
-    /// The account footer's gear, its menu and the menu's items.
+    /// The account footer's gear (Settings), your avatar ("Do Not
+    /// Disturb"), its menu and the menu's items.
     Gear,
+    Me,
     /// The header's Show/Hide member list button.
     MembersToggle,
     /// The header's Pins button, and the Pins dialog's parts, which replace
@@ -456,6 +458,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             }
             out.extend((0..a.inbox_rows().len()).map(Id::Inbox));
             if a.foot_shown() {
+                out.push(Id::Me);
                 out.push(Id::Gear);
             }
             out.extend(a.account_menu.as_ref().map(|_| Id::AccountMenu));
@@ -641,6 +644,7 @@ fn surface_shown(a: &App, id: Id) -> bool {
         | Id::Directs
         | Id::Inbox(_)
         | Id::Gear
+        | Id::Me
         | Id::UpdateDock
         | Id::Voice(crate::call::VPart::Join(_)) => a.navigation_shown(),
         Id::Voice(_) => a.navigation_shown() || a.inline_voice_error(),
@@ -708,7 +712,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Waiting => a.note.is_some(),
         Id::Typing => a.typing_label().is_some(),
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
-        Id::Gear => a.foot_shown(),
+        Id::Gear | Id::Me => a.foot_shown(),
         Id::Inbox(k) => k < a.inbox_rows().len(),
         Id::MembersToggle => a.members_toggle_rect().is_some() && a.dialog.is_none(),
         Id::PinsButton => a.pins_button_rect().is_some() && a.dialog.is_none(),
@@ -856,7 +860,9 @@ fn name(a: &App, id: Id) -> String {
         Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
         Id::Typing => a.typing_label().unwrap_or_default(),
         Id::Settings(p) => a.settings.as_ref().map_or_else(String::new, |s| s.name(p)),
-        Id::Gear | Id::AccountMenu => "User Settings".into(),
+        Id::Gear => "User Settings".into(),
+        Id::Me => "Do Not Disturb".into(),
+        Id::AccountMenu => a.pause_heading(),
         Id::PinsButton => "Pins".into(),
         Id::Pins(PinPart::Card(k)) => a.pins.as_ref().map_or_else(String::new, |p| {
             row_name(&p.c, k, p.rows.row(k).map(crate::list::Row::spoken))
@@ -893,9 +899,7 @@ fn name(a: &App, id: Id) -> String {
             .1
             .get(k)
             .map_or_else(String::new, crate::directs::MenuItem::label),
-        Id::AccountItem(k) => crate::settings::MENU_ITEMS
-            .get(k)
-            .map_or_else(String::new, |s| (*s).into()),
+        Id::AccountItem(k) => crate::settings::menu_item(k).into(),
         Id::Direct(k) => a
             .direct_rows()
             .get(k)
@@ -1232,7 +1236,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Settings(crate::settings::SPart::Delete) => UIA_HyperlinkControlTypeId,
         Id::Settings(p) if p.is_radio() => UIA_RadioButtonControlTypeId,
         Id::Settings(p) if p.is_toggle() => UIA_CheckBoxControlTypeId,
-        Id::Settings(_) | Id::Gear | Id::Inbox(_) | Id::UpdateDock | Id::MembersToggle => {
+        Id::Settings(_) | Id::Gear | Id::Me | Id::Inbox(_) | Id::UpdateDock | Id::MembersToggle => {
             UIA_ButtonControlTypeId
         }
         Id::PinsButton | Id::Pins(PinPart::Close | PinPart::Go(_)) => UIA_ButtonControlTypeId,
@@ -1326,6 +1330,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
             p.index(),
         ),
         Id::Gear => (39, 0),
+        Id::Me => (98, 0),
         Id::UpdateDock => (39, 1),
         Id::MembersToggle => (39, 2),
         Id::PinsButton => (39, 3),
@@ -1540,6 +1545,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .and_then(|s| s.part_rect(p))
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Gear => a.gear_rect(),
+        Id::Me => a.me_rect(),
         Id::Inbox(k) => a.inbox_rect(k),
         Id::MembersToggle => a.members_toggle_rect().unwrap_or_default(),
         Id::PinsButton => a.pins_button_rect().unwrap_or_default(),
@@ -1823,6 +1829,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Settings(_)
             | Id::Voice(_)
             | Id::Gear
+            | Id::Me
             | Id::Inbox(_)
             | Id::MembersToggle
             | Id::PinsButton
@@ -2011,6 +2018,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     }
                     // egui's tooltip on its dock.
                     Id::UpdateDock => VARIANT::from(BSTR::from(a.update_dock_help())),
+                    // Do Not Disturb's state and end, as the tooltip says.
+                    Id::Me => VARIANT::from(BSTR::from(a.pause_heading())),
                     Id::Settings(SPart::CopyVersion) => {
                         caper_client::updates::InstalledVersion::current()
                             .details
@@ -2094,6 +2103,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Invite(_)
                         | Id::Inbox(_)
                         | Id::Gear
+                        | Id::Me
                         | Id::MembersToggle
                         | Id::PinsButton
                         | Id::Pins(PinPart::Close | PinPart::Go(_))
@@ -2448,7 +2458,8 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Settings(p) => a.settings_activate(p),
                 Id::Narrow(p) => a.narrow_activate(p),
                 Id::Voice(p) => a.voice_activate(p),
-                Id::Gear => a.toggle_account_menu(),
+                Id::Gear => a.open_settings(),
+                Id::Me => a.toggle_account_menu(),
                 Id::Inbox(k) => a.pick_inbox(k),
                 Id::MembersToggle => a.toggle_members(),
                 Id::PinsButton => a.open_pins(),
@@ -3467,6 +3478,7 @@ pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))>
     let text = match id {
         Id::Space(i) => a.c.spaces.get(i)?.name.clone(),
         Id::UpdateDock => a.update_dock_help(),
+        Id::Me => a.pause_heading(),
         Id::Settings(SPart::CopyVersion) => {
             caper_client::updates::InstalledVersion::current().details?
         }

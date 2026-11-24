@@ -384,10 +384,14 @@ pub struct App {
     bar_pressed: Option<directs::BarPart>,
     /// The channel composer's hovered control (Attach, GIF, Emoji, Dictate).
     box_hover: Option<uploads::Part>,
-    /// Settings, the account footer's menu and whether its gear is
-    /// hovered, and their surface.
+    /// Settings, the account footer's Do Not Disturb menu and whether its
+    /// gear or your avatar is hovered, and their surface.
     pub settings: Option<settings::Settings>,
     pub account_menu: Option<settings::AccountMenu>,
+    me_hover: bool,
+    /// Edit profile opened from Settings: closing it returns there, to
+    /// this part.
+    pub settings_back: Option<settings::SPart>,
     /// A conversation's open options menu, and its surface.
     pub dm_menu: Option<directs::DmMenu>,
     /// A rail menu's item waiting for its space ("id") to open.
@@ -822,6 +826,8 @@ impl App {
                 box_hover: None,
                 settings: None,
                 account_menu: None,
+                me_hover: false,
+                settings_back: None,
                 dm_menu: None,
                 rail_action: None,
                 dm_menu_p,
@@ -1696,6 +1702,9 @@ impl App {
         self.dirty.rail = true;
         self.dirty.sidebar = true;
         self.dirty.dm_menu = true;
+        // The account footer's Do Not Disturb, wide and narrow, and its menu.
+        self.dirty.narrow = true;
+        self.dirty.settings = true;
         self.events |= EV_ROWS;
         self.need = true;
         let wait = self.live.as_ref().and_then(|l| l.next_mute_expiry());
@@ -2420,6 +2429,13 @@ impl App {
             self.dirty.sidebar = true;
             self.need = true;
         }
+        let me = self.pointer.is_some_and(|(x, y)| self.on_me(x, y));
+        if me != self.me_hover {
+            self.me_hover = me;
+            self.dirty.sidebar = true;
+            self.dirty.narrow = true;
+            self.need = true;
+        }
         self.track_inbox_hover();
         let dock = self.pointer.is_some_and(|(x, y)| self.on_update_dock(x, y));
         if dock != self.update_dock_hover {
@@ -2767,7 +2783,13 @@ impl App {
                 thread::TIMER_MEDIA => self.thread_media_tick(),
                 pins::TIMER_PINS => self.pins_tick(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
-                TIMER_MUTE => self.mutes_changed(),
+                TIMER_MUTE => {
+                    // Do Not Disturb's status in Settings ends with it.
+                    if self.settings.is_some() {
+                        self.settings_changed();
+                    }
+                    self.mutes_changed();
+                }
                 updates::TIMER_SHINE => self.shine_tick(),
                 updates::TIMER_RELEASE => {
                     self.dirty.overlay = true;
@@ -2861,6 +2883,8 @@ impl App {
                 } else if self.jump_at(x, y) {
                     // The rest of the toast keeps the click off the rows.
                 } else if self.on_gear(x, y) {
+                    self.open_settings();
+                } else if self.on_me(x, y) {
                     self.toggle_account_menu();
                 } else if let Some(k) = self.inbox_at(x, y) {
                     self.pick_inbox(k);
@@ -3073,6 +3097,7 @@ impl App {
                             || self.tool_at(x, y).is_some()
                             || self.on_head_button(x, y)
                             || self.on_gear(x, y)
+                            || self.on_me(x, y)
                             || self.inbox_at(x, y).is_some()
                             || self.on_members_toggle(x, y)
                             || self.on_pins_button(x, y)

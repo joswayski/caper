@@ -2026,6 +2026,9 @@ impl App {
 
     pub fn close_dialog(&mut self) {
         if let Some(d) = self.dialog.take() {
+            if d.kind == Kind::Profile {
+                self.settings_back = None;
+            }
             // Closing the review is Later; the dock stays.
             if d.kind == Kind::Update {
                 self.updates.dismiss();
@@ -2040,9 +2043,22 @@ impl App {
 
     /// The reader dismissed the dialog (Close, Cancel, Escape, a click
     /// outside) or what it showed went away: the keyboard goes back to the
-    /// composer rather than to nothing.
+    /// composer rather than to nothing. Edit profile opened from Settings
+    /// returns there instead.
     pub fn dismiss_dialog(&mut self) {
+        let back = self
+            .dialog
+            .as_ref()
+            .filter(|d| d.kind == Kind::Profile)
+            .and(self.settings_back);
         self.close_dialog();
+        if let Some(part) = back {
+            self.open_settings();
+            if let Some(s) = &mut self.settings {
+                s.focus_part(part);
+            }
+            return;
+        }
         self.set_composer_focus(true);
     }
 

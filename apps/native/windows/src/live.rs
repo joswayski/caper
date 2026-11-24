@@ -26,6 +26,9 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 /// Posted to the window when the worker has news; drained on the UI thread.
 pub const WM_LIVE: u32 = WM_APP + 1;
 
+/// A Do Not Disturb change that did not save, as every client words it.
+pub const PAUSE_FAILED: &str = "That change wasn\u{2019}t saved. Try again.";
+
 /// What the worker asked of the window, applied on the UI thread (timers
 /// and titles belong to the window's own thread).
 #[derive(Default)]
@@ -487,6 +490,9 @@ pub struct Live {
     block_busy: bool,
     block_error: Option<String>,
     notifications: caper_client::notifications::Notifications,
+    /// A Do Not Disturb save is in flight, and the last one failed.
+    pause_saving: bool,
+    pause_error: bool,
     /// When the unread badges are read again after a notification arrived.
     unread_due: Option<Instant>,
     /// The signed-in account's epoch, as egui's `account_epoch`: what its
@@ -788,6 +794,8 @@ impl Live {
             block_busy: false,
             block_error: None,
             notifications: Default::default(),
+            pause_saving: false,
+            pause_error: false,
             unread_due: None,
             account_epoch: 0,
             activity: Default::default(),
@@ -926,8 +934,34 @@ impl Live {
     /// reverts with an inline error.
     pub fn change_notifications(&mut self, scope: Scope, change: Change) {
         if self.token.is_some() && self.notifications.begin(&scope, &change) {
+            if scope == Scope::Account {
+                self.pause_saving = matches!(change, Change::Pause(_));
+                self.pause_error = false;
+            }
             self.account(AccountOperation::SaveNotifications { scope, change });
         }
+    }
+
+    /// Do Not Disturb by `PAUSE_PRESETS` index, or `None` to turn it off.
+    pub fn pause(&mut self, preset: Option<usize>) {
+        use caper_client::notifications::{PAUSE_PRESETS, pause_value};
+        let until = preset.map(|k| pause_value(PAUSE_PRESETS[k].1, &chrono::Local::now()));
+        self.change_notifications(Scope::Account, Change::Pause(until));
+    }
+
+    /// When Do Not Disturb ends ("Until 3:45 PM"), while it is on.
+    pub fn paused(&self) -> Option<String> {
+        self.notifications
+            .paused(chrono::Utc::now())
+            .map(|p| caper_client::notifications::pause_label(p, &chrono::Local::now()))
+    }
+
+    /// Whether Do Not Disturb can change now: loaded, and no account save
+    /// in flight.
+    pub fn can_pause(&self) -> bool {
+        self.token.is_some()
+            && self.notifications.account_level().is_some()
+            && !self.notifications.saving(&Scope::Account)
     }
 
     /// How long until the earliest timed mute ends.
@@ -1093,6 +1127,21 @@ impl Live {
         snap.notify_saving = n.saving(&Scope::Account);
         snap.notify_load_error = n.load_error().map(str::to_owned);
         snap.notify_error = n.error(&Scope::Account).map(str::to_owned);
+        snap.pause = self.paused();
+        // A failed Do Not Disturb change says so in its own group.
+        if self.pause_error && snap.notify_error.take().is_some() {
+            snap.pause_error = Some(PAUSE_FAILED.into());
+        }
+        if let Some(me) = &self.account_id {
+            let p = person(me, &self.account_name, self.account_avatar.clone());
+            snap.me = Some((
+                self.account_name.clone(),
+                self.username.clone().unwrap_or_default(),
+                p.color,
+                p.initials,
+                p.avatar,
+            ));
+        }
         snap.privacy.clone_from(&self.privacy);
         snap.privacy_error.clone_from(&self.privacy_error);
         snap.blocks = self.blocks.as_ref().map(|list| {
@@ -1192,6 +1241,12 @@ impl Live {
                 self.notifications.finish_load(revision, result);
             }
             AccountResult::NotificationsSaved { scope, result } => {
+                if scope == Scope::Account && std::mem::take(&mut self.pause_saving) {
+                    self.pause_error = result.is_err();
+                    if self.pause_error {
+                        out.push(Update::Warning(PAUSE_FAILED.into()));
+                    }
+                }
                 self.notifications.finish_save(&scope, result);
             }
             AccountResult::Invitation {
@@ -6432,6 +6487,15 @@ impl Live {
                     }
                 }
                 out.push(Update::Inbox);
+            }
+            // Another device (or this one) changed the account's
+            // notification settings, Do Not Disturb included.
+            Event::Profiles {
+                epoch,
+                event: gateway::ProfileEvent::NotificationSettings(settings),
+            } if epoch == self.account_epoch => {
+                self.notifications.apply_account(settings);
+                out.push(Update::Settings);
             }
             // Everything else (reactions, edits, threads, voice...) is not
             // shown by this client yet.

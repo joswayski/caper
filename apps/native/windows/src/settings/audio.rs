@@ -1,16 +1,16 @@
-//! The Audio test page (egui's `audio_test` dialog) on the Settings card:
+//! The Audio test (egui's `audio_test` dialog) in Settings' Voice & audio:
 //! the microphone and the speaker, each with its system default and
 //! devices and its volume, Test speakers and Refresh devices, then the
 //! microphone test (Voice enhancement, Test microphone with the input
 //! meter, and the Natural and Enhanced samples). The shared
-//! `caper_client::voice::Voice` runs the devices and tests; closing the page
+//! `caper_client::voice::Voice` runs the devices and tests; closing Settings
 //! ends them, as closing egui's dialog does. The choices persist as egui's
 //! "audio-preferences-v1", and only against the production server, as
 //! Launch at login.
 use super::{Builder, Item, Page, SPart, Settings, Style, launch_allowed};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::overlay::Rect;
-use crate::{App, EV_FOCUS, EV_SCREEN, text};
+use crate::{App, text};
 use caper_client::voice::{MicrophoneState, Preferences, Voice, VoiceOperation};
 use std::time::Instant;
 use windows::Win32::Graphics::Direct2D::*;
@@ -428,13 +428,6 @@ impl Builder<'_> {
 }
 
 impl Settings {
-    pub fn audio() -> Self {
-        Self {
-            page: Page::Audio,
-            ..Self::new(false, None)
-        }
-    }
-
     /// A slider's value, maximum and default.
     pub fn gauge(&self, part: SPart) -> Option<(u16, u16, u16)> {
         let a = self.snap.audio.as_ref()?;
@@ -603,25 +596,7 @@ impl Settings {
 }
 
 impl App {
-    /// Opens the Audio test (egui's account menu item): it finds the
-    /// devices again.
-    pub fn open_audio(&mut self) {
-        self.close_settings();
-        self.account_menu = None;
-        self.close_dm_menu();
-        self.close_menu();
-        self.close_dialog();
-        self.close_gifs(false);
-        self.set_composer_focus(false);
-        self.settings = Some(Settings::audio());
-        if let Some(live) = &mut self.live {
-            live.voice.refresh_devices();
-        }
-        self.settings_changed();
-        self.events |= EV_SCREEN | EV_FOCUS;
-    }
-
-    /// The page closed: its tests end and its choices are kept.
+    /// Settings closed: its tests end and its choices are kept.
     pub(super) fn audio_closed(&mut self) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_AUDIO);
@@ -650,7 +625,7 @@ impl App {
         if !self
             .settings
             .as_ref()
-            .is_some_and(|s| s.page == Page::Audio)
+            .is_some_and(|s| s.page == Page::Settings)
         {
             return;
         }

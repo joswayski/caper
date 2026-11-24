@@ -81,6 +81,8 @@ icons! {
     // `shared/reply-socket.svg`, in a square viewBox: the reply string's
     // ends. Its mouth sits at (12, 8) of the 16-unit square.
     ReplySocket => r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="-14 -8 16 16" fill="none"><defs><linearGradient id="metal" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#646b70"/><stop offset=".32" stop-color="#a2a9ad"/><stop offset=".55" stop-color="#70787d"/><stop offset="1" stop-color="#30363a"/></linearGradient></defs><path d="M-12 -2.4Q-13 0 -12 2.4L-1 4.5V-4.5Z" fill="url(#metal)" stroke="#34383b" stroke-width=".6"/><path d="M-11 -1.6L-3 -3" stroke="#c3c8cb" stroke-opacity=".35" stroke-width=".6" stroke-linecap="round"/><ellipse cx="-1" rx="1.6" ry="4.5" fill="#252a2d" stroke="#b64d32" stroke-width=".8"/><ellipse cx="-1" rx=".7" ry="3.4" fill="#151719"/></svg>"##,
+    // Do Not Disturb's badge (Lucide `moon`).
+    Moon => r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>"##,
     TextQuote => r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 6H3"/><path d="M21 12H8"/><path d="M21 18H8"/><path d="M3 12v6"/></svg>"##,
 }
 

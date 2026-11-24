@@ -182,20 +182,17 @@ impl Builder<'_> {
 }
 
 impl App {
+    /// Do Not Disturb's menu items (`super::menu_item`): the presets, after
+    /// Turn off while it is on.
     pub fn account_items(&self) -> Vec<usize> {
-        let mut items = vec![0, 1];
-        if self
-            .live
-            .as_ref()
-            .is_some_and(|l| l.voice.diagnostics.is_some())
-        {
-            items.push(4);
+        let presets = 0..super::MENU_TURN_OFF;
+        if self.live.as_ref().is_some_and(|l| l.paused().is_some()) {
+            std::iter::once(super::MENU_TURN_OFF)
+                .chain(presets)
+                .collect()
+        } else {
+            presets.collect()
         }
-        if self.live.as_ref().is_some_and(|l| l.debug_enabled) {
-            items.push(5);
-        }
-        items.extend([2, 3]);
-        items
     }
 
     pub fn open_support(&mut self, page: Page) {
