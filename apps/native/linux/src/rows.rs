@@ -112,8 +112,10 @@ pub struct Row {
     pub mentioned: bool,
     /// Someone replied to you: the same row, tinted a little deeper.
     pub replied: bool,
-    /// The message opened from elsewhere (a forward's original): highlighted.
-    pub focused: bool,
+    /// The message a jump opened ("View original", a forward's original):
+    /// when that jump began (monotonic µs), for its fading highlight
+    /// (`flash`).
+    pub focused: Option<i64>,
     /// The first message that was unread when you opened the conversation:
     /// a "New messages" divider above it.
     pub unread: bool,
@@ -428,7 +430,7 @@ impl Row {
             broadcast: false,
             mentioned: false,
             replied: false,
-            focused: false,
+            focused: None,
             unread: false,
             beginning: false,
             team_notice: false,
@@ -964,7 +966,7 @@ pub fn build<'a>(
             broadcast: false,
             mentioned: false,
             replied: false,
-            focused: false,
+            focused: None,
             unread: false,
             beginning: false,
             team_notice: false,
@@ -1102,7 +1104,7 @@ fn message_row(message: &Message, blocked: bool, markup: &mut Markup, viewer: &V
             }),
         broadcast: !viewer.in_thread && message.broadcast && message.thread_root_id.is_some(),
         // As desktop: a pinned row keeps its pin wash instead.
-        focused: false,
+        focused: None,
         unread: false,
         beginning: false,
         mentioned: !deleted
@@ -1290,6 +1292,8 @@ struct Widgets {
     root: gtk::Box,
     /// Draws the string from a reply's avatar up to its quote.
     connector: gtk::DrawingArea,
+    /// A jump's fading highlight under the message.
+    flash: Rc<Flash>,
     day: gtk::Label,
     /// The day's centered label between two rules.
     day_row: gtk::Box,
@@ -1692,8 +1696,13 @@ fn build_widgets() -> Widgets {
     // connector between them, as egui, web and Android do.
     let connector = gtk::DrawingArea::new();
     connector.set_can_target(false);
+    // A jump's highlight lies under the message, below its own wash, hover
+    // and text; the message sizes the layer.
+    let flash = Flash::new();
     let layered = gtk::Overlay::new();
-    layered.set_child(Some(&message));
+    layered.set_child(Some(&flash.layer));
+    layered.add_overlay(&message);
+    layered.set_measure_overlay(&message, true);
     layered.add_overlay(&connector);
     message.append(&reply);
     let quote_more = gtk::Button::with_label("Show more");
@@ -1705,16 +1714,15 @@ fn build_widgets() -> Widgets {
     message.append(&thread_context);
     message.append(&overlay);
     {
-        let (area, quote, heading, quote_avatar, avatar) = (
+        let (area, quote, quote_avatar, avatar) = (
             connector.downgrade(),
             reply.clone(),
-            quote_heading.clone(),
             quote_avatar.root.clone().upcast::<gtk::Widget>(),
             avatar.root.clone().upcast::<gtk::Widget>(),
         );
         connector.set_draw_func(move |_, cr, _, _| {
             if let Some(area) = area.upgrade() {
-                draw_connector(&area, cr, &quote, &heading, &quote_avatar, &avatar);
+                draw_connector(&area, cr, &quote, &quote_avatar, &avatar);
             }
         });
     }
@@ -1739,6 +1747,7 @@ fn build_widgets() -> Widgets {
         beginning,
         reply,
         connector,
+        flash,
         footer,
         quote_heading,
         quote_avatar,
@@ -2216,11 +2225,9 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     if row.arriving {
         classes.push("arriving");
     }
-    // The wash: the focused message wins, as desktop.
+    // The wash. A jump's highlight lies under it (`Flash`).
     if row.blocked_run.is_none() {
-        if row.focused {
-            classes.push("focused");
-        } else if row.pinned_own {
+        if row.pinned_own {
             classes.push("pin-wash-own");
         } else if row.pinned_by.is_some() {
             classes.push("pin-wash");
@@ -2244,6 +2251,9 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
         classes.push("menu-open");
     }
     widgets.root.set_css_classes(&classes);
+    widgets
+        .flash
+        .show(row.focused.filter(|_| row.blocked_run.is_none()));
     widgets.beginning.set_visible(row.beginning);
     widgets.blocked.set_visible(row.blocked_run.is_some());
     widgets.card.set_visible(row.blocked_run.is_none());
@@ -2485,29 +2495,149 @@ fn dress(toolbar: &Toolbar, row: &Row) {
     toolbar.more.set_visible(row.offers.act);
 }
 
-/// egui's reply string (`reply_connector`), at rest: a muted curve from
-/// beside the reply's avatar up to the quote's heading, a metal socket at
-/// each end. Not for a blocked author's quote, which shows no avatar.
+/// How long a jump's highlight holds at full strength, then fades (µs).
+const FLASH_HOLD: i64 = 1_000_000;
+const FLASH_FADE: i64 = 4_000_000;
+
+/// A jump's highlight `elapsed` µs after it began, 1 to 0: full for
+/// `FLASH_HOLD`, then a quadratic ease-out, (1 − t)², over `FLASH_FADE` (web's
+/// cubic-bezier(0.33, 0.67, 0.67, 1)). Without animations it stays full
+/// until both have passed, then goes at once.
+fn flash_strength(elapsed: i64, animate: bool) -> f64 {
+    let t = (elapsed - FLASH_HOLD) as f64 / FLASH_FADE as f64;
+    if t >= 1.0 {
+        0.0
+    } else if t <= 0.0 || !animate {
+        1.0
+    } else {
+        (1.0 - t).powi(2)
+    }
+}
+
+/// A jump's highlight under a row's message (`Row::focused`): web's 12%
+/// accent and 3px edge (`.flash` in style.css) at `flash_strength`, as the
+/// layer's opacity. Only the look fades: the row stays the jump's target.
+struct Flash {
+    layer: gtk::Box,
+    /// When the jump it shows began (monotonic µs).
+    start: std::cell::Cell<Option<i64>>,
+    /// The wait for the fade (or, without animations, for the end).
+    timer: RefCell<Option<glib::SourceId>>,
+    /// The fade, frame by frame.
+    tick: RefCell<Option<gtk::TickCallbackId>>,
+}
+
+impl Flash {
+    fn new() -> Rc<Self> {
+        let layer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        layer.add_css_class("flash");
+        layer.set_can_target(false);
+        layer.set_opacity(0.0);
+        Rc::new(Self {
+            layer,
+            start: Default::default(),
+            timer: RefCell::default(),
+            tick: RefCell::default(),
+        })
+    }
+
+    /// Shows the jump that began at `start`, or none. The same jump carries
+    /// on through re-fills; another one, even to the same message, restarts.
+    fn show(self: &Rc<Self>, start: Option<i64>) {
+        if self.start.replace(start) == start {
+            return;
+        }
+        if let Some(timer) = self.timer.take() {
+            timer.remove();
+        }
+        if let Some(tick) = self.tick.take() {
+            tick.remove();
+        }
+        let animate = crate::images::motion();
+        let Some(start) = start else {
+            self.layer.set_opacity(0.0);
+            return;
+        };
+        let elapsed = glib::monotonic_time() - start;
+        let strength = flash_strength(elapsed, animate);
+        self.layer.set_opacity(strength);
+        if strength == 0.0 {
+            return;
+        }
+        let wait = if animate {
+            FLASH_HOLD
+        } else {
+            FLASH_HOLD + FLASH_FADE
+        } - elapsed;
+        if wait <= 0 {
+            self.fade(start);
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let timer = glib::timeout_add_local_once(
+            std::time::Duration::from_micros(wait as u64),
+            move || {
+                let Some(flash) = weak.upgrade() else {
+                    return;
+                };
+                // It has run: nothing to remove any more.
+                flash.timer.take();
+                if animate {
+                    flash.fade(start);
+                } else {
+                    flash.layer.set_opacity(0.0);
+                }
+            },
+        );
+        *self.timer.borrow_mut() = Some(timer);
+    }
+
+    fn fade(self: &Rc<Self>, start: i64) {
+        let weak = Rc::downgrade(self);
+        let tick = self.layer.add_tick_callback(move |layer, clock| {
+            let strength = flash_strength(clock.frame_time() - start, true);
+            layer.set_opacity(strength);
+            if strength > 0.0 {
+                return glib::ControlFlow::Continue;
+            }
+            if let Some(flash) = weak.upgrade() {
+                flash.tick.take();
+            }
+            glib::ControlFlow::Break
+        });
+        *self.tick.borrow_mut() = Some(tick);
+    }
+}
+
+/// egui's reply string (`reply_connector`), at rest, as web's: a muted
+/// curve from the reply's avatar up to the quote's, a metal cup at each end
+/// with its mouth on the avatar's left edge at its vertical center, where
+/// the circle (or a picture clipped to it) meets that edge. Not for a
+/// blocked author's quote, which shows no avatar.
 fn draw_connector(
     area: &gtk::DrawingArea,
     cr: &gtk::cairo::Context,
     quote: &gtk::Box,
-    heading: &gtk::Box,
     quote_avatar: &gtk::Widget,
     avatar: &gtk::Widget,
 ) {
     if !quote.is_visible() || !quote_avatar.is_visible() || !avatar.is_visible() {
         return;
     }
-    let (Some(source), Some(target)) = (heading.compute_bounds(area), avatar.compute_bounds(area))
-    else {
+    let (Some(source), Some(target)) = (
+        quote_avatar.compute_bounds(area),
+        avatar.compute_bounds(area),
+    ) else {
         return;
     };
     let source = (
         f64::from(source.x()),
         f64::from(source.y() + source.height() / 2.0),
     );
-    let target = (f64::from(target.x()), f64::from(target.y()) + 16.0);
+    let target = (
+        f64::from(target.x()),
+        f64::from(target.y() + target.height() / 2.0),
+    );
     let start = (target.0 - 12.0, target.1);
     let end = (source.0 - 12.0, source.1);
     let span = start.1 - end.1;
@@ -2618,7 +2748,7 @@ mod tests {
             broadcast: false,
             mentioned: false,
             replied: false,
-            focused: false,
+            focused: None,
             unread: false,
             beginning: false,
             team_notice: false,
@@ -2786,6 +2916,20 @@ mod tests {
                 insert: 0..1
             }]
         );
+    }
+
+    #[test]
+    fn a_jump_highlight_holds_then_eases_out() {
+        let second = 1_000_000;
+        assert_eq!(flash_strength(0, true), 1.0);
+        assert_eq!(flash_strength(second, true), 1.0);
+        // Halfway through the fade: (1 - 0.5)².
+        assert_eq!(flash_strength(3 * second, true), 0.25);
+        assert_eq!(flash_strength(5 * second, true), 0.0);
+        assert_eq!(flash_strength(9 * second, true), 0.0);
+        // Without animations: full for five seconds, then gone.
+        assert_eq!(flash_strength(4 * second, false), 1.0);
+        assert_eq!(flash_strength(5 * second, false), 0.0);
     }
 
     #[test]

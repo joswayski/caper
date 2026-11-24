@@ -553,12 +553,18 @@ listview.messages > row:focus-within .message > overlay > .body,
   background-image: linear-gradient(@caper_surface_hover, @caper_surface_hover);
 }
 
-/* Washes, as desktop: 8% for a mention of you, 12% for a reply to you, 14%
-   for the message opened from elsewhere, each with a 2px edge. */
+/* Washes, as desktop: 8% for a mention of you, 12% for a reply to you,
+   each with a 2px edge. */
 .message.mentioned > overlay > .body,
-.message.replied > overlay > .body,
-.message.focused > overlay > .body {
+.message.replied > overlay > .body {
   box-shadow: inset 2px 0 @caper_terracotta;
+}
+
+/* A jump's target ("View original", a forward's original), as web: 12%
+   with a 3px edge, under the message's own wash. rows::Flash fades it. */
+.message > overlay > .flash {
+  background-color: alpha(@caper_terracotta, 0.12);
+  box-shadow: inset 3px 0 @caper_terracotta;
 }
 
 .message.mentioned > overlay > .body {
@@ -577,10 +583,6 @@ listview.messages > row:focus-within .message > overlay > .body,
 
 .message.replied > overlay > .body {
   background-color: alpha(@caper_terracotta, 0.12);
-}
-
-.message.focused > overlay > .body {
-  background-color: alpha(@caper_terracotta, 0.14);
 }
 
 .notice {

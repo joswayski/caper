@@ -47,6 +47,7 @@ impl App {
             {
                 let mut state = self.state.borrow_mut();
                 state.focused = Some(id.clone());
+                state.focused_at = None;
                 state.jump_to = Some(id);
             }
             self.render_rows();
@@ -142,6 +143,7 @@ impl App {
             state.context_window = Some(Window { start, end });
             state.has_more = page.has_more;
             state.focused = Some(anchor.to_owned());
+            state.focused_at = None;
             state.jump_to = Some(anchor.to_owned());
             self.follow.set(false);
         }

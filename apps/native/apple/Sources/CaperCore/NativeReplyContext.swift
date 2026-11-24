@@ -8,9 +8,13 @@ import SwiftUI
     let layer = CALayer()
     private let wire = CAShapeLayer(), upper = CALayer(), lower = CALayer()
     private let seed: UInt32
+    /// The replying author's avatar's left edge in the context's coordinates:
+    /// the lower cup's mouth rests on it, as on web and SwiftUI.
+    private let avatarX: CGFloat
     private var y: CGFloat?, displacement: CGFloat = 0, velocity: CGFloat = 0, height: CGFloat = 0
     private var motion: Task<Void, Never>?
-    init(key: String) {
+    init(key: String, avatarX: CGFloat = 0) {
+        self.avatarX = avatarX
         seed = key.utf8.reduce(UInt32(2166136261)) { ($0 ^ UInt32($1)) &* 16777619 }
         #if os(macOS)
         let border = AppKitKit.border.cgColor, surface = AppKitKit.surface.cgColor, accent = AppKitKit.terracotta.cgColor
@@ -68,10 +72,11 @@ import SwiftUI
     private func draw() {
         CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
         let angle = displacement * 0.025, dx = 12 * cos(angle), dy = 12 * sin(angle)
-        let bottom = height + 23, start = CGPoint(x: -dx, y: bottom + dy), end = CGPoint(x: 56 - dx, y: 20 - dy), span = start.y - end.y
+        // The row's avatar is centered 22pt under the context (iOS: 5 + 17; macOS: 4 + 18).
+        let bottom = height + 22, start = CGPoint(x: avatarX - dx, y: bottom + dy), end = CGPoint(x: avatarX + 56 - dx, y: 20 - dy), span = start.y - end.y
         let path = CGMutablePath(); path.move(to: start)
         path.addCurve(to: end, control1: CGPoint(x: start.x + 8 + displacement, y: start.y - span * 0.3), control2: CGPoint(x: end.x - 30 + displacement, y: end.y + span * 0.3))
-        wire.path = path; upper.position = CGPoint(x: 56, y: 20); lower.position = CGPoint(x: 0, y: bottom)
+        wire.path = path; upper.position = CGPoint(x: avatarX + 56, y: 20); lower.position = CGPoint(x: avatarX, y: bottom)
         upper.setAffineTransform(CGAffineTransform(rotationAngle: angle)); lower.setAffineTransform(CGAffineTransform(rotationAngle: -angle))
     }
 }
@@ -218,12 +223,15 @@ import UIKit
     private let open = UIButton(type: .custom), expand = UIButton(type: .system), thumbnails = UIStackView()
     private var loads: [Task<Void, Never>] = [], scrolling: NSKeyValueObservation?
     private var expanded = false, blocked = false, generation = 0, lastHeight: CGFloat = 0
+    /// The card spans the text column; the row's 34pt avatar and its 10pt gap
+    /// sit to its left, where the string runs down to the avatar.
+    private static let avatarX: CGFloat = -44
     /// The width a self-sizing cell is about to give this view. A new view
     /// is measured before its first layout, while its bounds are still zero,
     /// and the cell keeps that height, so it measures at this width instead.
     public var fittingWidth: CGFloat = 0 { didSet { if fittingWidth != oldValue { invalidateIntrinsicContentSize() } } }
     public init(reference: MessageReply, motionKey: String, chat: ChatModel) {
-        self.reference = reference; self.motionKey = motionKey; self.chat = chat; wire = NativeReplyWire(key: motionKey)
+        self.reference = reference; self.motionKey = motionKey; self.chat = chat; wire = NativeReplyWire(key: motionKey, avatarX: Self.avatarX)
         super.init(frame: .zero); layer.addSublayer(panel); layer.addSublayer(wire.layer)
         panel.cornerRadius = 8; panel.backgroundColor = UIColor(CaperTheme.surface).cgColor; panel.borderWidth = 1; panel.borderColor = UIColor(CaperTheme.border).withAlphaComponent(0.7).cgColor
         open.addAction(UIAction { [weak self] _ in
@@ -240,7 +248,7 @@ import UIKit
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     isolated deinit { loads.forEach { $0.cancel() }; NotificationCenter.default.removeObserver(self) }
     public func update(reference: MessageReply, motionKey: String) {
-        if self.motionKey != motionKey { expanded = false; wire.stop(); wire.layer.removeFromSuperlayer(); wire = NativeReplyWire(key: motionKey); layer.addSublayer(wire.layer) }
+        if self.motionKey != motionKey { expanded = false; wire.stop(); wire.layer.removeFromSuperlayer(); wire = NativeReplyWire(key: motionKey, avatarX: Self.avatarX); layer.addSublayer(wire.layer) }
         let changed = self.reference != reference; self.reference = reference; self.motionKey = motionKey
         render(); if changed { makeThumbnails() }
     }
@@ -286,23 +294,23 @@ import UIKit
         if attachments.count > 3 { thumbnails.addArrangedSubview(UIKitMessageDialog.label("+\(attachments.count - 3)", size: 12)) }
     }
     private func metrics(_ width: CGFloat) -> (text: CGFloat, expand: Bool, height: CGFloat) {
-        let full = blocked ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.text ?? "", attributes: [.font: excerpt.font!]), width: max(1, width - 68))
+        let full = blocked ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.text ?? "", attributes: [.font: excerpt.font!]), width: max(1, width - 24))
         let limit = ceil(excerpt.font.lineHeight * 3), more = !blocked && reference.deleted != true && (expanded || full > limit), text = expanded ? full : min(limit, full)
         return (text, more, max(44, 40 + text + (thumbnails.arrangedSubviews.isEmpty ? 0 : 47)) + (more ? 44 : 0) + 13)
     }
     public override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: metrics(fittingWidth > 0 ? fittingWidth : bounds.width).height) }
     public override func layoutSubviews() {
         super.layoutSubviews(); if bounds.width > 0 { fittingWidth = bounds.width }
-        let width = max(1, bounds.width - 68), m = metrics(bounds.width)
-        CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 44, y: 0, width: max(1, bounds.width - 44), height: m.height - 13); CATransaction.commit()
-        avatar.frame = CGRect(x: 56, y: 12, width: 16, height: 16)
-        let nameX: CGFloat = blocked ? 56 : 78
+        let width = max(1, bounds.width - 24), m = metrics(bounds.width)
+        CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 0, y: 0, width: bounds.width, height: m.height - 13); CATransaction.commit()
+        avatar.frame = CGRect(x: 12, y: 12, width: 16, height: 16)
+        let nameX: CGFloat = blocked ? 12 : 34
         name.frame = CGRect(x: nameX, y: 10, width: max(1, bounds.width - nameX - (hint.isHidden ? 12 : 86)), height: 20)
-        hint.frame = CGRect(x: max(56, bounds.width - 86), y: 10, width: 74, height: 20)
-        excerpt.frame = CGRect(x: 56, y: 33, width: width, height: m.text); thumbnails.frame = CGRect(x: 56, y: 36 + m.text, width: width, height: 44)
+        hint.frame = CGRect(x: max(12, bounds.width - 86), y: 10, width: 74, height: 20)
+        excerpt.frame = CGRect(x: 12, y: 33, width: width, height: m.text); thumbnails.frame = CGRect(x: 12, y: 36 + m.text, width: width, height: 44)
         let bottom = m.height - 13 - (m.expand ? 44 : 0)
-        open.frame = CGRect(x: 44, y: 0, width: max(1, bounds.width - 44), height: bottom)
-        expand.isHidden = !m.expand; expand.frame = CGRect(x: 56, y: bottom - 4, width: width, height: 44)
+        open.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bottom)
+        expand.isHidden = !m.expand; expand.frame = CGRect(x: 12, y: bottom - 4, width: width, height: 44)
         moveWire(); if lastHeight != m.height { lastHeight = m.height; invalidateIntrinsicContentSize() }
     }
     private func moveWire() { wire.update(y: convert(CGPoint.zero, to: nil).y, height: intrinsicContentSize.height, hidden: blocked) }

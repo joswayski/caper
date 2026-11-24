@@ -319,6 +319,10 @@ struct State {
     /// The message opened from elsewhere, highlighted until the
     /// conversation or thread changes.
     focused: Option<String>,
+    /// When that jump's target first showed (monotonic µs): its highlight
+    /// fades from then. Each jump sets it back to `None`, so another jump,
+    /// even to the same message, starts the highlight again.
+    focused_at: Option<i64>,
     /// Each channel's read and last sequence from the latest unread load.
     reads: HashMap<String, (u64, u64)>,
     /// What was unread in the open channel when you arrived: "New messages"
@@ -3762,6 +3766,7 @@ impl App {
         {
             let mut state = self.state.borrow_mut();
             state.focused = focus.clone();
+            state.focused_at = None;
             state.files_revision += 1;
             let Some(channel) = state.channel.clone() else {
                 return;
@@ -6485,10 +6490,14 @@ impl App {
             {
                 first.beginning = true;
             }
-            // A jump's target stays highlighted until you move on.
-            if let Some(focused) = &state.focused {
+            // A jump's target stays the target until you move on; its
+            // highlight fades from when it first shows (`rows::Flash`).
+            if let Some(focused) = &state.focused
+                && main.iter().any(|row| row.id == *focused)
+            {
+                let at = *state.focused_at.get_or_insert_with(glib::monotonic_time);
                 for row in &mut main {
-                    row.focused = row.id == *focused;
+                    row.focused = (row.id == *focused).then_some(at);
                 }
             }
             let timeline = &state.timeline;
@@ -6528,9 +6537,12 @@ impl App {
                 None => Vec::new(),
             };
             let mut thread = thread;
-            if let Some(focused) = &state.focused {
+            if let Some(focused) = &state.focused
+                && thread.iter().any(|row| row.id == *focused)
+            {
+                let at = *state.focused_at.get_or_insert_with(glib::monotonic_time);
                 for row in &mut thread {
-                    row.focused = row.id == *focused;
+                    row.focused = (row.id == *focused).then_some(at);
                 }
             }
             // As desktop, an empty thread invites the first reply under its

@@ -428,7 +428,8 @@ export default function Chat({
   const [showPins, setShowPins] = useState(false);
   const [jumping, setJumping] = useState<string>();
   const [jumpError, setJumpError] = useState<string>();
-  const [jumpMessage, setJumpMessage] = useState<string>();
+  /** The message a jump landed on, and when (performance.now()), so its highlight fades on the same clock. */
+  const [jumpMessage, setJumpMessage] = useState<{ id: string; at: number }>();
   // Mark unread, this visit: the New messages divider sits at that message and
   // the conversation (or thread) stops acknowledging until the reader leaves it.
   const [markedUnread, setMarkedUnread] = useState<{ channelId: string; rootId?: string; messageId: string }>();
@@ -739,7 +740,7 @@ export default function Chat({
     try {
       if ((await client.loadMessageContext(message)) && clientRef.current === client) {
         setShowPins(false);
-        setJumpMessage(message.id);
+        setJumpMessage({ id: message.id, at: performance.now() });
         if (!message.threadRootId) {
           // Cancel the previous window's queued follow/measurement corrections.
           setListWindow((window) => window + 1);
@@ -1538,7 +1539,7 @@ export default function Chat({
     ]);
   }, [state.messages, threadRootId, blockedIds, ownId]);
   useLayoutEffect(() => {
-    const target = state.messages.find((message) => message.id === jumpMessage);
+    const target = state.messages.find((message) => message.id === jumpMessage?.id);
     const run = target && (target.threadRootId ? threadRuns : channelRuns).get(target.clientMessageId);
     if (run) setRevealedRuns((current) => (current.has(run.first) ? current : new Set([...current, run.first])));
   }, [jumpMessage, state.messages, threadRuns, channelRuns]);
@@ -1854,7 +1855,7 @@ export default function Chat({
           continued={joinsPrevious(message, inThread ? nextInThread : messages[index + 1], inThread)}
           newMessages={!pending && message.id === (inThread ? threadNewMessagesId : newMessagesId)}
           arriving={!!arrivals.current?.has(message.clientMessageId)}
-          jumpTarget={!pending && jumpMessage === message.id}
+          jumpAt={!pending && jumpMessage?.id === message.id ? jumpMessage.at : undefined}
           threadActive={!inThread && !pending && state.thread?.rootId === message.id}
           threadUnread={!pending && !!state.unreadThreads?.[message.id]}
           actionMode={!pending && actionTarget?.messageId === message.id ? actionTarget.mode : undefined}

@@ -343,6 +343,11 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let column = UIStackView()
     private let accent = UIView()
     private let tint = UIView()
+    /// View original's highlight, over the row's own tint and bar while it fades (`JumpHighlight`).
+    private let jumpTint = UIView()
+    private let jumpAccent = UIView()
+    private var jumpStart: Date?
+    private var jumpFade: Task<Void, Never>?
     /// Pointer hover highlight on iPadOS/trackpad, layered over mention/pin tints.
     private let hover = UIView()
     /// SwiftUI's press highlight: a faint wash while a finger is down on the row.
@@ -370,6 +375,13 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         accent.translatesAutoresizingMaskIntoConstraints = false
         accent.backgroundColor = UIKitStyle.terracotta
         self.addSubview(tint)
+        for (view, color) in [(jumpTint, UIKitStyle.terracotta.withAlphaComponent(0.12)), (jumpAccent, UIKitStyle.terracotta)] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.backgroundColor = color
+            view.isUserInteractionEnabled = false
+            view.alpha = 0
+        }
+        self.addSubview(jumpTint)
         hover.translatesAutoresizingMaskIntoConstraints = false
         hover.backgroundColor = UIKitStyle.text.withAlphaComponent(0.06)
         hover.isUserInteractionEnabled = false
@@ -381,6 +393,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         press.isHidden = true
         self.addSubview(press)
         self.addSubview(accent)
+        self.addSubview(jumpAccent)
 
         header.axis = .horizontal
         header.alignment = .firstBaseline
@@ -487,6 +500,14 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             tint.trailingAnchor.constraint(equalTo: self.trailingAnchor),
             tintTop,
             tint.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            jumpTint.leadingAnchor.constraint(equalTo: tint.leadingAnchor),
+            jumpTint.trailingAnchor.constraint(equalTo: tint.trailingAnchor),
+            jumpTint.topAnchor.constraint(equalTo: tint.topAnchor),
+            jumpTint.bottomAnchor.constraint(equalTo: tint.bottomAnchor),
+            jumpAccent.leadingAnchor.constraint(equalTo: accent.leadingAnchor),
+            jumpAccent.widthAnchor.constraint(equalTo: accent.widthAnchor),
+            jumpAccent.topAnchor.constraint(equalTo: accent.topAnchor),
+            jumpAccent.bottomAnchor.constraint(equalTo: accent.bottomAnchor),
             hover.leadingAnchor.constraint(equalTo: self.leadingAnchor),
             hover.trailingAnchor.constraint(equalTo: self.trailingAnchor),
             hover.topAnchor.constraint(equalTo: tint.topAnchor),
@@ -571,9 +592,11 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             .filter { !$0.isEmpty }.joined(separator: ", ")
 
         tint.backgroundColor = Self.background(row)
-        let highlighted = row.focused || (row.pinnedBy == nil && (row.mentionsViewer || row.repliesToViewer))
+        let highlighted = row.pinnedBy == nil && (row.mentionsViewer || row.repliesToViewer)
         accent.isHidden = !(highlighted || row.revealedBlocked)
         accent.backgroundColor = highlighted ? UIKitStyle.terracotta : UIKitStyle.border
+        jumpStart = row.focused ? host?.chat.focusedAt : nil
+        paintJump()
 
         if let host, row.extras != nil || row.pendingContent.map(UIKitNativeMessageExtras.shows) == true {
             if nativeExtras == nil {
@@ -764,10 +787,26 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         else { chat.pinErrors[state.messageID] = nil }
     }
 
-    /// SwiftUI's rowBackground: the jump target, then pins, then mentions of you.
+    /// Crossfades the jump highlight back to the row's own tint and bar, a frame at a time while it fades.
+    @discardableResult private func paintJump() -> CGFloat {
+        let strength = jumpStart.map { JumpHighlight.strength(since: $0) } ?? 0
+        jumpTint.alpha = strength; jumpAccent.alpha = strength; tint.alpha = 1 - strength
+        if strength > 0, jumpFade == nil {
+            jumpFade = Task { [weak self] in
+                while true {
+                    do { try await Task.sleep(for: .milliseconds(33)) } catch { return }
+                    guard let self else { return }
+                    if self.paintJump() == 0 { self.jumpFade = nil; return }
+                }
+            }
+        }
+        return strength
+    }
+
+    /// SwiftUI's rowBackground: pins, then mentions of you. The jump target's
+    /// highlight fades over it (`paintJump`).
     private static func background(_ row: MessageRowState) -> UIColor {
         if row.inPins { return .clear }
-        if row.focused { return UIKitStyle.terracotta.withAlphaComponent(0.12) }
         if row.pinnedBy != nil { return row.pinMine ? UIKitStyle.terracotta.withAlphaComponent(0.12) : UIKitStyle.pinGold.withAlphaComponent(0.06) }
         if row.repliesToViewer { return UIKitStyle.terracotta.withAlphaComponent(0.12) }
         if row.mentionsViewer { return UIKitStyle.terracotta.withAlphaComponent(0.08) }

@@ -38,6 +38,8 @@ enum PendingAction { case retry, edit, dismiss }
     private var followEnd = true
     private var selection: [String: (text: String, range: NSRange)] = [:]
     private var focusedID: String?
+    /// When the latest jump landed: its row's highlight fades from here (`JumpHighlight`).
+    private var focusedAt = Date.distantPast
     private var pendingFocus: String?
     private var activeMessageID: String?
     private weak var observedWindow: NSWindow?
@@ -286,6 +288,7 @@ enum PendingAction { case retry, edit, dismiss }
         pendingFocus = nil
         followEnd = false
         focusedID = id
+        focusedAt = Date()
         revealed.insert(id)
         update(messages, conversationID: conversationID, viewerID: viewerID, blocked: blocked,
             pending: pending, pendingAuthor: pendingAuthor, pendingError: pendingError,
@@ -567,7 +570,7 @@ enum PendingAction { case retry, edit, dismiss }
                     pinErrors: self.pinErrors, pendingPins: self.pendingPins)
             }
         }
-        if focused { row.markJumpTarget() }
+        row.markJumpTarget(since: focused ? focusedAt : nil)
         if let saved = selection.removeValue(forKey: id), saved.text == row.body.string,
            NSMaxRange(saved.range) <= row.body.string.utf16.count {
             row.body.setSelectedRange(saved.range)
@@ -726,6 +729,11 @@ enum PendingAction { case retry, edit, dismiss }
     private let mentionTint = CALayer()
     let hoverTint = CALayer()
     private let mentionBar = CALayer()
+    /// View original's highlight, over the row's own tint and bar while it fades.
+    private let jumpTint = CALayer()
+    private let jumpBar = CALayer()
+    private var jumpStart: Date?
+    private var jumpFade: Task<Void, Never>?
     private let blockedBar = CALayer()
     private var blockedRun: BlockedRun?
     private var revealedBlocked = false
@@ -784,6 +792,9 @@ enum PendingAction { case retry, edit, dismiss }
         hoverTint.backgroundColor = NativeStyle.hoverWash.cgColor
         hoverTint.isHidden = true
         mentionBar.backgroundColor = NativeStyle.accent.cgColor
+        jumpTint.backgroundColor = NativeStyle.accent.withAlphaComponent(0.12).cgColor
+        jumpBar.backgroundColor = NativeStyle.accent.cgColor
+        jumpTint.opacity = 0; jumpBar.opacity = 0
         blockedBar.backgroundColor = NativeStyle.border.cgColor
         blockedBar.isHidden = true
         blockedToggle.alignment = .left; blockedToggle.font = NativeStyle.font(12, bold: true)
@@ -791,7 +802,7 @@ enum PendingAction { case retry, edit, dismiss }
         blockedToggle.layer?.backgroundColor = NSColor.clear.cgColor
         blockedToggle.setAccessibilityIdentifier("blocked-run-toggle")
         blockedToggle.isHidden = true
-        [blockedBar, mentionTint, hoverTint, mentionBar, dayLeading, dayTrailing, unreadLeading, unreadTrailing].forEach { layer?.addSublayer($0) }
+        [blockedBar, mentionTint, jumpTint, hoverTint, mentionBar, jumpBar, dayLeading, dayTrailing, unreadLeading, unreadTrailing].forEach { layer?.addSublayer($0) }
         body.isEditable = false; body.isSelectable = true
         body.isRichText = true; body.drawsBackground = false
         body.textContainerInset = .zero
@@ -945,6 +956,8 @@ enum PendingAction { case retry, edit, dismiss }
         unreadTrailing.backgroundColor = NativeStyle.accent.cgColor
         hoverTint.backgroundColor = NativeStyle.hoverWash.cgColor
         mentionBar.backgroundColor = NativeStyle.accent.cgColor
+        jumpTint.backgroundColor = NativeStyle.accent.withAlphaComponent(0.12).cgColor
+        jumpBar.backgroundColor = NativeStyle.accent.cgColor
         blockedBar.backgroundColor = NativeStyle.border.cgColor
         adminBadge.applyTheme()
         guestBadge.applyTheme()
@@ -1024,6 +1037,7 @@ enum PendingAction { case retry, edit, dismiss }
         hoverTint.isHidden = true
         mentionBar.isHidden = true
         CATransaction.commit()
+        markJumpTarget(since: nil)
         self.author.stringValue = author?.name ?? "Guest"
         self.author.setAccessibilityElement(true)
         authorAction.isHidden = true
@@ -1342,8 +1356,10 @@ enum PendingAction { case retry, edit, dismiss }
         // Date dividers and inter-group gaps remain neutral when hovered or tinted.
         let messageRect = messageBounds
         mentionTint.frame = messageRect
+        jumpTint.frame = messageRect
         hoverTint.frame = messageRect
         mentionBar.frame = NSRect(x: 0, y: messageRect.minY, width: 3, height: messageRect.height)
+        jumpBar.frame = mentionBar.frame
         blockedBar.frame = NSRect(x: 0, y: messageRect.minY, width: 2, height: messageRect.height)
         CATransaction.commit()
         if trackingRect != messageRect { updateTrackingAreas() }
@@ -1457,12 +1473,26 @@ enum PendingAction { case retry, edit, dismiss }
     }
     /// The message a link, quote or search opened: a selection, as on web —
     /// a 12% accent wash and 3pt edge under its date divider, never an outline.
-    func markJumpTarget() {
+    /// It holds a second, then crossfades back to the row's own look over four
+    /// (`JumpHighlight`). Nil clears it from a reused row.
+    func markJumpTarget(since start: Date?) {
+        jumpStart = start; paintJump()
+    }
+    @discardableResult private func paintJump() -> Float {
+        let strength = Float(jumpStart.map { JumpHighlight.strength(since: $0) } ?? 0)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        mentionTint.backgroundColor = NativeStyle.accent.withAlphaComponent(0.12).cgColor
-        mentionTint.isHidden = false
-        mentionBar.isHidden = false
+        jumpTint.opacity = strength; jumpBar.opacity = strength; mentionTint.opacity = 1 - strength
         CATransaction.commit()
+        if strength > 0, jumpFade == nil {
+            jumpFade = Task { [weak self] in
+                while true {
+                    do { try await Task.sleep(for: .milliseconds(33)) } catch { return }
+                    guard let self else { return }
+                    if self.paintJump() == 0 { self.jumpFade = nil; return }
+                }
+            }
+        }
+        return strength
     }
     func clearHover() {
         guard hovered else { return }

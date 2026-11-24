@@ -30,6 +30,21 @@ public enum CaperAccessibility {
     }
 }
 
+/// View original's highlight on the message it jumped to: full strength for a
+/// second, then a four-second quadratic ease-out back to the row's own look
+/// (web's cubic-bezier(0.33, 0.67, 0.67, 1)). Reduce Motion holds it for the
+/// five seconds and drops it without the fade.
+public enum JumpHighlight {
+    public static let duration: TimeInterval = 5
+    public static func strength(since start: Date, now: Date = Date(), reduceMotion: Bool = CaperAccessibility.reduceMotion) -> CGFloat {
+        let elapsed = now.timeIntervalSince(start)
+        if elapsed >= duration { return 0 }
+        if reduceMotion || elapsed <= 1 { return 1 }
+        let remaining = 1 - (elapsed - 1) / (duration - 1)
+        return CGFloat(remaining * remaining)
+    }
+}
+
 /// The shared motion tokens (shared/design.css --motion-*, --ease-out).
 enum CaperMotion {
     static let fast: Double = 0.14

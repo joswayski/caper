@@ -533,6 +533,8 @@ pub struct App {
     redraw_foot: bool,
     foot_hover: bool,
     focused: Option<String>,
+    /// When the latest jump started its highlight's hold and fade.
+    focus_at: Option<Instant>,
     /// The who-reacted card, the chip it follows (message id and emoji),
     /// and its surface.
     card: Option<card::Card>,
@@ -919,6 +921,7 @@ impl App {
                 redraw_foot: false,
                 foot_hover: false,
                 focused: None,
+                focus_at: None,
                 kb: None,
                 card: None,
                 card_target: None,
@@ -2780,6 +2783,7 @@ impl App {
                 autoscroll::TIMER_AUTOSCROLL => self.autoscroll_tick(),
                 motion::TIMER_ARRIVAL => self.arrivals_tick(),
                 jump::TIMER_JUMP => self.jump_tick(),
+                history::TIMER_FOCUS => self.focus_tick(),
                 video::TIMER_VIDEO => self.inline_video_tick(),
                 thread::TIMER_MEDIA => self.thread_media_tick(),
                 pins::TIMER_PINS => self.pins_tick(),
@@ -4065,10 +4069,13 @@ impl App {
             )
         })
         .filter(|(y, ..)| *y < (y1 - y0) as f32 / s && *y + list::HEAD_H > 0.0);
+        // The jump highlight, while its fade has strength left.
+        let strength = self.focus_strength();
         let focused = self
             .focused
             .as_ref()
-            .and_then(|id| self.ids.rows.get(id).copied());
+            .and_then(|id| self.ids.rows.get(id).copied())
+            .filter(|_| strength > 0.0);
         let kb = self.kb_control();
         let voice = self.voice_message_view();
         let video = self.inline_video_view();
@@ -4097,10 +4104,18 @@ impl App {
                     .row(i)
                     .map_or(0.0, |r| list::highlight_top(r, c.messages[i].grouped));
                 if focused == Some(i) {
+                    g.brushes.focused.SetOpacity(strength);
                     dc.FillRectangle(&rect(0.0, y + top, lw, y + h), &g.brushes.focused);
+                    g.brushes.focused.SetOpacity(1.0);
                 }
                 if hover == Some(i) {
                     dc.FillRectangle(&rect(0.0, y + top, lw, y + h), &g.brushes.hover);
+                }
+                // Web's 3px accent bar at the highlight's left edge.
+                if focused == Some(i) {
+                    g.brushes.terracotta.SetOpacity(strength);
+                    dc.FillRectangle(&rect(0.0, y + top, 3.0, y + h), &g.brushes.terracotta);
+                    g.brushes.terracotta.SetOpacity(1.0);
                 }
                 list::draw_row(g, dc, c, rows, i, y, rs, media.as_mut())?;
                 if hover == Some(i) || focused == Some(i) {

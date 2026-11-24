@@ -1056,12 +1056,25 @@ button.chat-reply-source {
   outline: 2px solid var(--link);
   outline-offset: 2px;
 }
-/* Including hover/focus, so the semantic tint stays visible under the hover wash. */
-.chat-message-jump-target,
-.chat-message-jump-target:hover,
-.chat-message-jump-target:focus-within {
-  background-color: rgb(var(--accent-rgb) / 12%);
-  box-shadow: inset 3px 0 var(--terracotta);
+/* The message a jump landed on holds its highlight for a second, then eases
+   back over four to the row's own look (its mention tint, hover wash). The end
+   keyframe is left to the row's own styles, which an animation overrides, so
+   the highlight shows under the hover wash too. MessageRow restarts it. */
+.chat-message-jump-target {
+  animation: chat-jump-highlight 5s cubic-bezier(0.33, 0.67, 0.67, 1);
+}
+@keyframes chat-jump-highlight {
+  from,
+  20% {
+    background-color: rgb(var(--accent-rgb) / 12%);
+    box-shadow: inset 3px 0 var(--terracotta);
+  }
+}
+/* Reduced motion: the same five seconds, then gone without a fade. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-jump-target {
+    animation-timing-function: step-end;
+  }
 }
 /* Direct children only (article > header/p in Pins, article > div > header/p in
    the timeline): forwarded cards bring their own header and paragraphs.

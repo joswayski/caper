@@ -100,6 +100,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -2824,6 +2825,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val loadingNewer = state.loadingNewer
     val threadRootId = state.thread?.rootId
     val focusedId = state.focusedMessageId
+    // Paint only: the highlight fades while [focusedId] keeps steering scrolling, paging and following.
+    val jumpGlow = rememberJumpHighlight(focusedId, state.focusRevision)
     val ownId = state.account?.id ?: state.chatAuthorId
     val unreadThreads = state.unreadThreads
     val rowPendingStatus by rememberUpdatedState(pendingStatus)
@@ -2875,14 +2878,22 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     BlockedRunRow(row.run.messages.size, row.run.revealed) {
                         revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
                     }
-                } else Column(Modifier.arrival(arrivals, message.clientMessageId).then(
+                } else Column(Modifier.arrival(arrivals, message.clientMessageId).then(run {
                     // Selections and your pins are terracotta; other people's pins are faded gold.
-                    if (!inThread && threadRootId == message.id) Modifier.background(if (focusedId == message.id) TerracottaWash else Terracotta.copy(alpha = 0.12f)).drawBehind {
-                        val edge = 3.dp.toPx()
-                        drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
-                    } else Modifier.background(if (focusedId == message.id) TerracottaWash else if (message.pin != null) {
+                    val threadRoot = !inThread && threadRootId == message.id
+                    val base = if (threadRoot) Terracotta.copy(alpha = 0.12f) else if (message.pin != null) {
                         if (message.pin.author.id == ownId) Terracotta.copy(alpha = 0.12f) else PinGoldWash
-                    } else Color.Transparent))) {
+                    } else Terracotta.copy(alpha = 0f)
+                    val glow = jumpGlow.takeIf { it.id == message.id }
+                    // A jump's 12% tint and 3dp edge (web's .chat-message-jump-target) crossfade back to the row's own look.
+                    Modifier.drawBehind {
+                        val strength = glow?.strength ?: 0f
+                        drawRect(lerp(base, Terracotta.copy(alpha = 0.12f), strength))
+                        val edge = 3.dp.toPx()
+                        val bar = if (threadRoot) 1f else strength
+                        if (bar > 0f) drawRect(Terracotta.copy(alpha = bar), topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
+                    }
+                })) {
                     ReactionMessageRow(
                         message, rowState, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
@@ -2899,6 +2910,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onAttachmentFailed = viewModel::reportAttachmentFailure,
                         grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, focusedId),
                         highlighted = actionTarget?.id == message.id || pickerTarget?.id == message.id,
+                        jumpGlow = jumpGlow.takeIf { it.id == message.id },
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                         val summary = message.thread?.takeIf { message.threadRootId == null }
@@ -3330,6 +3342,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     inPins: Boolean = false,
     /** Kept highlighted while the message's action sheet or reaction picker is open. */
     highlighted: Boolean = false,
+    /** This row's jump highlight, while it shows: its reply tint steps back under it, returning as it fades. */
+    jumpGlow: JumpHighlight? = null,
     /** Only pinned cards opt in; nested links and controls consume their own taps. */
     openMessage: (() -> Unit)? = null,
     openActions: (ChatMessage) -> Unit,
@@ -3345,13 +3359,20 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val deleted = message.deletedAt != null
     // Pin ownership takes precedence over the mention wash; inline mention pills remain visible.
     val mentioned = message.pin == null && mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
-    val replyWash = !deleted && message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.threadRootId != message.id
+    val replyWash = !deleted && message.replyTo != null && message.pin == null && state.threadRootId != message.id
     val replyToMe = replyWash && own != null && message.author.id != own && message.replyTo?.author?.id == own
+    val replyWashColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f)
     val groupGap = if (grouped || inPins) 0.dp else 12.dp
-    Column(Modifier.padding(top = groupGap).then(if (!mentioned && !replyToMe) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = if (replyToMe) 0.12f else 0.08f)).drawBehind {
-        val edge = 2.dp.toPx()
-        drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
-    }).hoverable(interaction).drawBehind {
+    Column(Modifier.padding(top = groupGap).drawBehind {
+        // The reply tint gives way to a jump's highlight (web's jump target wins); a mention's stays.
+        val reply = 1f - (jumpGlow?.strength ?: 0f)
+        val tint = if (replyToMe) (if (mentioned) 0.08f + 0.04f * reply else 0.12f * reply) else if (mentioned) 0.08f else 0f
+        if (tint > 0f) {
+            drawRect(Terracotta.copy(alpha = tint))
+            val edge = 2.dp.toPx()
+            drawRect(Terracotta.copy(alpha = if (mentioned) 1f else reply), topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
+        } else if (replyWash && reply > 0f) drawRect(replyWashColor.copy(alpha = replyWashColor.alpha * reply))
+    }.hoverable(interaction).drawBehind {
         if (pressing) drawRect(Text.copy(alpha = 0.08f))
         else if (hovered || highlighted) drawRect(hoverWash)
     }) {
@@ -3740,6 +3761,8 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
     var displacement by remember(motionKey) { mutableFloatStateOf(0f) }
     var velocity by remember(motionKey) { mutableFloatStateOf(0f) }
     var motion by remember(motionKey) { mutableStateOf<Job?>(null) }
+    // The heading row grows with the text size; the upper cup follows its avatar's centre.
+    var headingHeight by remember { mutableIntStateOf(0) }
     DisposableEffect(motionKey, hidden, still) {
         onDispose { motion?.cancel(); displacement = 0f; velocity = 0f }
     }
@@ -3766,8 +3789,11 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
     }.drawWithContent {
         drawContent()
         if (hidden) return@drawWithContent
-        val sourceX = 74.dp.toPx(); val sourceY = 24.dp.toPx()
-        val targetX = 18.dp.toPx(); val bottom = size.height + 27.dp.toPx()
+        // Each cup's mouth meets its avatar's left edge at the avatar's vertical centre: the quoted author's 16dp
+        // avatar opens the heading row, inside the card (62dp, as the text column) and its 12dp padding, below the
+        // 4dp top and 10dp padding; the replying author's 34dp avatar sits 4dp below this context, 18dp in.
+        val sourceX = 74.dp.toPx(); val sourceY = 14.dp.toPx() + (if (headingHeight > 0) headingHeight.toFloat() else 20.dp.toPx()) / 2
+        val targetX = 18.dp.toPx(); val bottom = size.height + 21.dp.toPx()
         val angle = displacement * 0.025f
         val dx = 12.dp.toPx() * cos(angle); val dy = 12.dp.toPx() * sin(angle)
         val start = Offset(targetX - dx, bottom + dy)
@@ -3787,7 +3813,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border.copy(alpha = 0.7f))) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                 Column(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Row(Modifier.heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.heightIn(min = 20.dp).onSizeChanged { headingHeight = it.height }, verticalAlignment = Alignment.CenterVertically) {
                         if (!hidden) {
                             Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId, avatarAsset = reference.author.avatarAsset, avatarUrl = reference.author.avatarUrl)
                             Spacer(Modifier.width(6.dp))

@@ -1771,7 +1771,7 @@ fn draw_content(
         if row.quote.is_some() && row.header.is_some() {
             let qy = y + row.lead + 4.0;
             let source = (BODY_X + QUOTE_PAD_X, qy + QUOTE_PAD_Y + QUOTE_HEADING / 2.0);
-            reply_string(g, dc, source, (PAD_X, hy + 16.0));
+            reply_string(g, dc, source, (PAD_X, hy + AVATAR / 2.0));
         }
         if let Some(l) = &row.context {
             crate::text::draw(dc, l, BODY_X, top + row.context_y, &g.brushes.muted);
@@ -2253,9 +2253,11 @@ impl crate::App {
     }
 }
 
-/// egui's reply string (`reply_connector`), at rest: a muted curve from
-/// beside the reply's avatar (`target`) up to its quote's heading
-/// (`source`), with a metal socket at each end.
+/// Web's reply string (`chat-reply-connector`), at rest: a muted curve from
+/// the reply's avatar (`target`, its left edge at its vertical center: the
+/// leftmost point of a mascot's circle or a picture's rounded square) up to
+/// its quote's small avatar (`source`, likewise), with a metal cup at each
+/// end, its mouth on the avatar and its body and string to the left.
 fn reply_string(g: &Gfx, dc: &ID2D1DeviceContext, source: (f32, f32), target: (f32, f32)) {
     let point = |(x, y): (f32, f32)| windows_numerics::Vector2 { X: x, Y: y };
     let start = (target.0 - 12.0, target.1);

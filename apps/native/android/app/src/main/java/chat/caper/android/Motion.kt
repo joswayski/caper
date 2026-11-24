@@ -15,7 +15,10 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asComposeRenderEffect
@@ -25,6 +28,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 // shared/design.css motion tokens (web's motion.css uses the same values).
@@ -88,6 +92,45 @@ internal fun Modifier.displacementViewport(motion: TimelineDisplacement): Modifi
         awaitDispose { resolver.unregisterContentObserver(observer) }
     }
     return still
+}
+
+/** A jumped-to row's highlight: full for a second, then (1 - t)² over four (web's cubic-bezier(0.33, 0.67, 0.67, 1)). */
+internal fun jumpHighlightStrength(elapsedMillis: Long): Float = when {
+    elapsedMillis <= 1_000 -> 1f
+    elapsedMillis >= 5_000 -> 0f
+    else -> (1f - (elapsedMillis - 1_000) / 4_000f).let { it * it }
+}
+
+/** Which row a jump highlights ([id]) and how strongly; rows read [strength] while drawing. */
+internal class JumpHighlight {
+    var id by mutableStateOf<String?>(null)
+    var strength by mutableFloatStateOf(0f)
+}
+
+/**
+ * The visual highlight of the jump [target], restarted by each jump ([revision]), even to the same row.
+ * Only the paint fades: the focused message that steers scrolling and following stays as it is.
+ * With Remove animations it holds for five seconds, then goes without fading.
+ */
+@Composable internal fun rememberJumpHighlight(target: String?, revision: Long): JumpHighlight {
+    val highlight = remember { JumpHighlight() }
+    val still by rememberUpdatedState(reducedMotion())
+    LaunchedEffect(target, revision) {
+        highlight.id = target
+        highlight.strength = if (target == null) 0f else 1f
+        if (target == null) return@LaunchedEffect
+        if (still) delay(5_000) else {
+            val start = withFrameNanos { it }
+            delay(1_000)
+            do {
+                val elapsed = (withFrameNanos { it } - start) / 1_000_000
+                highlight.strength = jumpHighlightStrength(elapsed)
+            } while (elapsed < 5_000)
+        }
+        highlight.id = null
+        highlight.strength = 0f
+    }
+    return highlight
 }
 
 /**

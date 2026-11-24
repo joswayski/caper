@@ -2,6 +2,8 @@ import {
   Fragment,
   memo,
   useContext,
+  useLayoutEffect,
+  useRef,
   useState,
   useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
@@ -297,7 +299,8 @@ export interface MessageRowProps {
   newMessages: boolean;
   /** Arrived while the reader watched the live end, so it animates in. */
   arriving: boolean;
-  jumpTarget: boolean;
+  /** A jump (View original, a link or search) landed here at this performance.now(); its highlight fades from then. */
+  jumpAt?: number;
   threadActive: boolean;
   threadUnread: boolean;
   /** Which of this message's menus is open. */
@@ -339,7 +342,7 @@ function MessageRowView({
   continued,
   newMessages,
   arriving,
-  jumpTarget,
+  jumpAt,
   threadActive,
   threadUnread,
   actionMode,
@@ -370,6 +373,20 @@ function MessageRowView({
   // hidden until the pointer or focus is in it. Their icons were a third of each
   // row's elements, so only a row that shows its buttons draws them.
   const [engaged, setEngaged] = useState(false);
+  const row = useRef<HTMLElement>(null);
+  // The jump highlight fades on the jump's clock: a new jump to this row
+  // restarts it, and a row the list remounts mid-fade picks it up there.
+  useLayoutEffect(() => {
+    const element = row.current;
+    if (!element || jumpAt === undefined) return;
+    element.style.animation = "none";
+    void element.offsetWidth;
+    element.style.animation = "";
+    element.style.animationDelay = `${jumpAt - performance.now()}ms`;
+    return () => {
+      element.style.removeProperty("animation-delay");
+    };
+  }, [jumpAt]);
   const tools = useSyncExternalStore(subscribeToolsShown, toolsAlwaysShown, () => false) || engaged || !!actionMode;
   // A new quick-reaction list waits until the pointer and focus leave, so a
   // button never moves under them.
@@ -451,7 +468,8 @@ function MessageRowView({
           </div>
         )}
         <article
-          className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${!pending && message.pin ? ` chat-message-pinned${message.pin.author.id === viewerId ? " chat-message-pinned-own" : ""}` : ""}${arriving ? " chat-message-arrive" : ""}${jumpTarget ? " chat-message-jump-target" : ""}${!pending && !message.pin && mentionsAccount(message, ownId) ? " chat-message-mentioned" : ""}${threadActive ? " chat-message-thread-active" : ""}`}
+          ref={row}
+          className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${!pending && message.pin ? ` chat-message-pinned${message.pin.author.id === viewerId ? " chat-message-pinned-own" : ""}` : ""}${arriving ? " chat-message-arrive" : ""}${jumpAt !== undefined ? " chat-message-jump-target" : ""}${!pending && !message.pin && mentionsAccount(message, ownId) ? " chat-message-mentioned" : ""}${threadActive ? " chat-message-thread-active" : ""}`}
           data-message-key={message.clientMessageId}
           data-message-id={"id" in message ? message.id : undefined}
           data-reply-to-me={

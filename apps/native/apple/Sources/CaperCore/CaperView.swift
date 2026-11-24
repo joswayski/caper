@@ -5313,6 +5313,8 @@ private struct MessageRow: View {
     @State private var history = false
     @State private var confirmingDelete = false
     @State private var pressing = false
+    @State private var jumpStrength: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pressWash: Task<Void, Never>?
     var body: some View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
@@ -5428,10 +5430,15 @@ private struct MessageRow: View {
         }.padding(.horizontal, 18).padding(.top, grouped ? 2 : 10).padding(.bottom, continued ? 2 : 10)
             .coordinateSpace(name: "reply-row-\(message.id)")
             .background(CaperTheme.text.opacity(pressing ? 0.08 : 0))
-            .background(rowBackground(mentionsMe: mentionsMe))
+            .background(rowBackground(mentionsMe: mentionsMe).opacity(1 - jumpStrength))
+            .background(CaperTheme.terracotta.opacity(0.12 * jumpStrength))
             .overlay(alignment: .leading) {
-                if showsAccentBar(mentionsMe: mentionsMe) { Rectangle().fill(CaperTheme.terracotta).frame(width: 3).accessibilityHidden(true) }
+                if showsAccentBar(mentionsMe: mentionsMe) || jumpStrength > 0 {
+                    Rectangle().fill(CaperTheme.terracotta).frame(width: 3)
+                        .opacity(showsAccentBar(mentionsMe: mentionsMe) ? 1 : jumpStrength).accessibilityHidden(true)
+                }
             }
+            .task(id: jumpTarget ? chat.focusedAt : nil) { await fadeJump() }
             // An identifier on a plain container is copied onto every child,
             // replacing their own (add-reaction-…, reaction chips). Make the
             // row a containing element so children keep their identifiers.
@@ -5470,17 +5477,31 @@ private struct MessageRow: View {
     /// The jump target (a link or search result) and the open thread's root
     /// are selections: terracotta, like web. Other people's pins are faded gold.
     private var jumpTarget: Bool { !inPins && chat.focusedMessageID == message.id }
+    /// Holds a second, then fades over four (`JumpHighlight`); a row built
+    /// mid-fade picks it up where the clock says it is.
+    private func fadeJump() async {
+        let start = chat.focusedAt
+        jumpStrength = jumpTarget ? JumpHighlight.strength(since: start, reduceMotion: reduceMotion) : 0
+        guard jumpStrength > 0 else { return }
+        let elapsed = Date().timeIntervalSince(start)
+        if elapsed < 1 || reduceMotion {
+            do { try await Task.sleep(for: .seconds((reduceMotion ? JumpHighlight.duration : 1) - elapsed)) } catch { return }
+        }
+        withAnimation(reduceMotion ? nil : .timingCurve(0.33, 0.67, 0.67, 1, duration: JumpHighlight.duration - max(1, Date().timeIntervalSince(start)))) {
+            jumpStrength = 0
+        }
+    }
     private var threadOpen: Bool { !inPins && !inThread && chat.threadRootID == message.id }
     private var repliesToMe: Bool {
         !message.isDeleted && message.author.id != currentUserID
             && message.replyTo?.author.id == currentUserID
     }
     /// Web's inset 3px terracotta bar on selected rows and mentions of you.
-    private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || (message.pin == nil && (mentionsMe || repliesToMe)) }
+    private func showsAccentBar(mentionsMe: Bool) -> Bool { threadOpen || (message.pin == nil && (mentionsMe || repliesToMe)) }
     private func rowBackground(mentionsMe: Bool) -> Color {
         // Pins paints the whole card, including its navigation footer.
         if inPins { return .clear }
-        if jumpTarget || threadOpen { return CaperTheme.terracotta.opacity(0.12) }
+        if threadOpen { return CaperTheme.terracotta.opacity(0.12) }
         if let pin = message.pin {
             return pin.author.id == currentUserID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06)
         }

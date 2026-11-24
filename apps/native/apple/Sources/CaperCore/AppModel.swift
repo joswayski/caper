@@ -3517,7 +3517,7 @@ extension AppModel {
         else { chat.closeThread() }
         guard chat.channelID == target.channelID else { return }
         chat.focusedMessageID = target.messageID
-        chat.focusRevision += 1
+        chat.focusRevision += 1; chat.focusedAt = Date()
     }
 
     /// Closes the visit on wider layouts, back to the conversation shown before it.
@@ -3694,6 +3694,8 @@ public final class ChatModel {
     public var loadingNewer = false
     public var focusedMessageID: String?
     public var focusRevision = 0
+    /// When the latest jump landed: its highlight fades from here (`JumpHighlight`).
+    public var focusedAt = Date.distantPast
     public var jumpingToMessage = false
     public var jumpError: String?
     private var historyAnchorRequest = 0
@@ -4536,7 +4538,7 @@ public final class ChatModel {
                 threadOnlyRows.subtract(page.messages.map(\.id)); merge(page.messages)
                 hasMore = page.hasMore; hasNewer = page.hasNewer; closeThread()
             }
-            focusedMessageID = id; focusRevision += 1
+            focusedMessageID = id; focusRevision += 1; focusedAt = Date()
             return true
         } catch {
             if generation == requestGeneration && request == historyAnchorRequest { jumpError = error.localizedDescription }

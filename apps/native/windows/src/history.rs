@@ -10,7 +10,29 @@ use crate::list::{self, HEAD_H, Head};
 use crate::live::{self, Older};
 use crate::model::Conversation;
 use crate::{App, EV_ROWS, side_layouts};
+use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use windows::core::Result;
+
+/// Steps the jumped-to message's highlight while it holds and fades.
+pub const TIMER_FOCUS: usize = 50;
+/// The highlight holds at full strength, then fades to nothing.
+const FOCUS_HOLD: f64 = 1.0;
+const FOCUS_FADE: f64 = 4.0;
+
+/// The highlight's strength `elapsed` seconds after a jump: 1 for the first
+/// second, then the quadratic ease-out (1 - t)² over four seconds, as web's
+/// cubic-bezier(0.33, 0.67, 0.67, 1). With reduced motion it holds the five
+/// seconds and then goes at once.
+pub fn focus_strength(elapsed: f64, motion: bool) -> f32 {
+    if elapsed >= FOCUS_HOLD + FOCUS_FADE {
+        0.0
+    } else if elapsed < FOCUS_HOLD || !motion {
+        1.0
+    } else {
+        let t = (elapsed - FOCUS_HOLD) / FOCUS_FADE;
+        ((1.0 - t) * (1.0 - t)) as f32
+    }
+}
 
 impl App {
     /// The head's height: shown above the first message of a live channel
@@ -208,6 +230,9 @@ impl App {
             return Ok(());
         }
         self.set_focused(Some(id.to_owned()));
+        // Every jump, to the same message too, restarts the highlight.
+        self.focus_at = Some(std::time::Instant::now());
+        self.focus_tick();
         // A fresh history has no width yet; measure at the drawn one so the
         // frame's rewrap does not move the rows under the new scroll.
         self.rows.set_width(list::Rows::body_width(self.list_w()));
@@ -238,6 +263,47 @@ impl App {
         }
         self.focused = id;
         self.need = true;
+    }
+
+    /// The highlight's current strength. It fades on its own clock and
+    /// leaves `focused`, which the foot and the scroll position follow, as is.
+    pub fn focus_strength(&self) -> f32 {
+        self.focus_at.map_or(0.0, |at| {
+            focus_strength(at.elapsed().as_secs_f64(), crate::files::motion())
+        })
+    }
+
+    /// Redraws the highlighted row and waits for its next change: the end
+    /// of the hold, the next fade frame, or (reduced motion) its removal.
+    pub fn focus_tick(&mut self) {
+        let elapsed = self
+            .focus_at
+            .map_or(f64::INFINITY, |at| at.elapsed().as_secs_f64());
+        if let Some(&i) = self.focused.as_ref().and_then(|id| self.ids.rows.get(id)) {
+            self.redraw.push(i);
+            self.need = true;
+        }
+        let end = FOCUS_HOLD + FOCUS_FADE;
+        let wait = if elapsed >= end {
+            None
+        } else if elapsed < FOCUS_HOLD {
+            Some(FOCUS_HOLD - elapsed)
+        } else if crate::files::motion() {
+            Some(0.016)
+        } else {
+            Some(end - elapsed)
+        };
+        unsafe {
+            match wait {
+                Some(s) => {
+                    let ms = (s * 1000.0).ceil().max(1.0) as u32;
+                    SetTimer(Some(self.hwnd), TIMER_FOCUS, ms, None);
+                }
+                None => {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_FOCUS);
+                }
+            }
+        }
     }
 
     /// Newer messages arrived as the whole window again. When the shown
