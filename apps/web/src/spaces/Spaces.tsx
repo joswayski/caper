@@ -97,6 +97,8 @@ import {
   type SpaceLanding,
 } from "./navigation";
 import { transitionBrowse } from "./browseTransition";
+import { QuickSwitcher, ShortcutHelp, type SwitcherItem } from "./QuickSwitcher";
+import { adjacentConversation, primaryModifier } from "./shortcuts";
 import {
   beforeSpaces,
   acceptChannelInvitation,
@@ -3429,6 +3431,31 @@ export default function Spaces({
     [],
   );
   const onRefreshDirects = useCallback(() => sidebarActions.current.refreshDirects(), []);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [shortcutHelp, setShortcutHelp] = useState(false);
+  // Other spaces' channels for the quick switcher, read again each time it opens.
+  const [switcherDetails, setSwitcherDetails] = useState<Record<string, SpaceDetail>>({});
+  useEffect(() => {
+    if (!switcherOpen) return;
+    let current = true;
+    for (const space of spaces) {
+      if (space.demo || space.id === activeSpace.current) continue;
+      void getSpace(space.id).then(
+        (loaded) => current && setSwitcherDetails((details) => ({ ...details, [space.id]: loaded })),
+        () => undefined,
+      );
+    }
+    return () => {
+      current = false;
+    };
+  }, [switcherOpen, spaces]);
+  // Set each render once the sidebar is known; a window listener reads the latest.
+  const shortcutKeys = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => shortcutKeys.current(event);
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, []);
 
   const directNavigation = (
     <DirectNavigation
@@ -3572,6 +3599,7 @@ export default function Spaces({
     />
   );
 
+  shortcutKeys.current = () => undefined;
   if (loading) return <SpacesLoading />;
   if (invitation)
     return (
@@ -3658,6 +3686,130 @@ export default function Spaces({
   const joinedChannels = detail.channels.filter((item) => item.joined !== false);
   const spaceNotifications = overrideFor(notifications, { spaceId: detail.space.id });
   const spaceMuted = isMuted(spaceNotifications?.mutedUntil);
+  const channelUnread = (spaceId: string, channelId: string) =>
+    unreadSpaces.some((space) => space.id === spaceId && space.channels.some((entry) => entry.id === channelId));
+  const directListed = (conversation: DirectConversation) =>
+    !isMuted(overrideFor(notifications, { conversationId: conversation.id })?.mutedUntil) &&
+    !blockedIds.has(conversation.peer.id) &&
+    directUnread(conversation);
+  // The sidebar's conversations in its order: this space's channels, then your
+  // notes and DMs (requests stay behind their toggle).
+  const sidebarOrder = [
+    ...joinedChannels.map((item) => ({
+      id: item.id,
+      unread: channelUnread(detail.space.id, item.id),
+      open: () => choose(detail.space.id, item.id),
+    })),
+    ...[...(selfDirect ? [selfDirect] : []), ...directs.filter((item) => item !== selfDirect)]
+      .filter((item) => directStatus(item) !== "incoming")
+      .map((item) => ({ id: item.id, unread: directListed(item), open: () => openDirect(item) })),
+  ];
+  shortcutKeys.current = (event) => {
+    if (event.defaultPrevented || event.isComposing || event.repeat) return;
+    const key = event.key.toLowerCase();
+    const modal = !!document.querySelector("dialog[open], [aria-modal='true']");
+    if (primaryModifier(event) && !event.altKey && !event.shiftKey && key === "k") {
+      event.preventDefault();
+      if (switcherOpen || !modal) setSwitcherOpen((open) => !open);
+      setShortcutHelp(false);
+      return;
+    }
+    if (primaryModifier(event) && !event.altKey && (key === "/" || event.code === "Slash")) {
+      event.preventDefault();
+      if (shortcutHelp || !modal) setShortcutHelp((open) => !open);
+      setSwitcherOpen(false);
+      return;
+    }
+    if (modal) return;
+    if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      const currentId = directView?.conversation.id ?? (visitView ? undefined : channel?.id);
+      const index = sidebarOrder.findIndex((item) => item.id === currentId);
+      const next = adjacentConversation(
+        sidebarOrder.map((item) => item.unread),
+        index < 0 ? null : index,
+        event.key === "ArrowDown",
+        event.shiftKey,
+      );
+      event.preventDefault();
+      if (next !== null) sidebarOrder[next].open();
+      return;
+    }
+    // Escape marks the open conversation read up to its latest message, even
+    // scrolled back in history. Menus, dialogs and suggestions take it first.
+    if (event.key === "Escape" && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      if (document.querySelector("details[open], [popover]:popover-open, [role='listbox']")) return;
+      if (currentDirect) {
+        if (BigInt(currentDirect.lastSeq) > BigInt(currentDirect.readSeq)) readDirect(currentDirect.lastSeq);
+      } else if (channel && !visitView) {
+        const entry = unreadSpaces
+          .find((space) => space.id === detail.space.id)
+          ?.channels.find((item) => item.id === channel.id);
+        if (entry) readSpaceChannel(entry.lastSeq);
+      }
+    }
+  };
+  const switcherItems: SwitcherItem[] = [];
+  if (switcherOpen) {
+    const seen = new Set<string>();
+    const spaceChannels = (spaceDetail: SpaceDetail) => {
+      for (const item of spaceDetail.channels) {
+        if (item.joined === false || seen.has(item.id)) continue;
+        seen.add(item.id);
+        switcherItems.push({
+          key: `channel:${item.id}`,
+          name: item.name,
+          detail: spaceDetail.space.name,
+          unread: channelUnread(spaceDetail.space.id, item.id),
+          icon: item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />,
+          open: () => choose(spaceDetail.space.id, item.id),
+        });
+      }
+    };
+    if (detail.space.id) spaceChannels(detail);
+    for (const space of spaces) if (switcherDetails[space.id]) spaceChannels(switcherDetails[space.id]);
+    const directPeers = new Set<string>();
+    for (const conversation of directs) {
+      directPeers.add(conversation.peer.id);
+      const self = conversation.peer.id === account?.id;
+      switcherItems.push({
+        key: `dm:${conversation.id}`,
+        name: self ? `${conversation.peer.displayName} (you)` : conversation.peer.displayName,
+        alternates: [conversation.peer.username],
+        detail: `@${conversation.peer.username}`,
+        unread: directStatus(conversation) === "incoming" || directListed(conversation),
+        icon: <Avatar person={conversation.peer} name={conversation.peer.displayName} />,
+        open: () => openDirect(conversation),
+      });
+    }
+    for (const space of spaces) {
+      if (space.demo) continue;
+      switcherItems.push({
+        key: `space:${space.id}`,
+        name: space.name,
+        detail: "Space",
+        unread: unreadSpaces.some((entry) => entry.id === space.id),
+        icon: (
+          <span className="quick-switcher-space">
+            <SpaceIcon space={space} />
+          </span>
+        ),
+        open: () => choose(space.id),
+      });
+    }
+    // People you share a space with but have no DM with yet: opening one starts it.
+    for (const person of people ?? []) {
+      if (person.id === account?.id || directPeers.has(person.id) || blockedIds.has(person.id)) continue;
+      switcherItems.push({
+        key: `person:${person.id}`,
+        name: person.displayName,
+        alternates: [person.username],
+        detail: `@${person.username}`,
+        unread: false,
+        icon: <Avatar person={person} name={person.displayName} />,
+        open: () => void messagePerson(person.username).catch((reason) => setDirectError(errorMessage(reason))),
+      });
+    }
+  }
   const channelDialogs = (
     <>
       {browseOpen && (
@@ -4399,6 +4551,8 @@ export default function Spaces({
       )}
       {channelDialogs}
       {directDialogs}
+      {switcherOpen && <QuickSwitcher items={switcherItems} onClose={() => setSwitcherOpen(false)} />}
+      {shortcutHelp && <ShortcutHelp onClose={() => setShortcutHelp(false)} />}
       {accessNotice}
       {railInvitation && (
         <InvitationDialog

@@ -1,0 +1,68 @@
+{
+  "about": "Quick switcher matching and keyboard conversation stepping, run by every client's tests. match: the query is trimmed and loses one leading # or @; both sides are lowercased and compared by Unicode scalar. Equal 1000, prefix 900, at a word start (after a character that is not a letter or digit) 800, anywhere 700. Otherwise a leftmost greedy subsequence scores 100, +10 per character right after the previous match, +5 per character at a word start, -1 per character skipped, clamped to 1..699; null when the characters do not all appear in order. An empty query scores 0. An item scores its best text (name, then alternates). rank: items that match, by score plus 50 when unread, highest first, then in list order. adjacent: from `current` (null when no listed conversation is open), the next (forward) or previous item, wrapping, never returning `current`; with unreadOnly only unread items count; null when there is none.",
+  "match": [
+    { "query": "gen", "text": "general", "score": 900 },
+    { "query": "general", "text": "General", "score": 1000 },
+    { "query": "crew", "text": "weekend crew", "score": 800 },
+    { "query": "end", "text": "weekend", "score": 700 },
+    { "query": "#gen", "text": "general", "score": 900 },
+    { "query": "@ana", "text": "Ana Lopez", "score": 900 },
+    { "query": "  gen ", "text": "general", "score": 900 },
+    { "query": "café", "text": "Café Bustelo", "score": 900 },
+    { "query": "gnl", "text": "general", "score": 101 },
+    { "query": "wc", "text": "weekend crew", "score": 103 },
+    { "query": "ab", "text": "a-b", "score": 109 },
+    { "query": "geer", "text": "general", "score": 124 },
+    { "query": "xyz", "text": "general", "score": null },
+    { "query": "generals", "text": "general", "score": null },
+    { "query": "", "text": "anything", "score": 0 }
+  ],
+  "rank": [
+    {
+      "note": "No query: unread first, then list order.",
+      "query": "",
+      "items": [
+        { "name": "general", "alternates": [], "unread": false },
+        { "name": "random", "alternates": [], "unread": true },
+        { "name": "design", "alternates": [], "unread": false },
+        { "name": "ops", "alternates": [], "unread": true }
+      ],
+      "order": [1, 3, 0, 2]
+    },
+    {
+      "note": "Unread lifts a match within its kind but never a subsequence over a prefix.",
+      "query": "gen",
+      "items": [
+        { "name": "engineering", "alternates": [], "unread": true },
+        { "name": "general", "alternates": [], "unread": false },
+        { "name": "gen-z", "alternates": [], "unread": true },
+        { "name": "random", "alternates": [], "unread": true }
+      ],
+      "order": [2, 1, 0]
+    },
+    {
+      "note": "Alternates such as usernames match too; ties keep list order.",
+      "query": "ana",
+      "items": [
+        { "name": "Ana Lopez", "alternates": ["alopez"], "unread": false },
+        { "name": "Dan", "alternates": ["ana_banana"], "unread": false },
+        { "name": "Banana", "alternates": [], "unread": true }
+      ],
+      "order": [0, 1, 2]
+    }
+  ],
+  "adjacent": [
+    { "unread": [false, false, false], "current": 0, "forward": true, "unreadOnly": false, "result": 1 },
+    { "unread": [false, false, false], "current": 2, "forward": true, "unreadOnly": false, "result": 0 },
+    { "unread": [false, false, false], "current": 0, "forward": false, "unreadOnly": false, "result": 2 },
+    { "unread": [false, true, false, true], "current": 1, "forward": true, "unreadOnly": true, "result": 3 },
+    { "unread": [false, true, false, true], "current": 3, "forward": true, "unreadOnly": true, "result": 1 },
+    { "unread": [false, true, false, true], "current": 1, "forward": false, "unreadOnly": true, "result": 3 },
+    { "unread": [false, true, false, false], "current": 1, "forward": true, "unreadOnly": true, "result": null },
+    { "unread": [true, false, false], "current": null, "forward": true, "unreadOnly": false, "result": 0 },
+    { "unread": [true, false, false], "current": null, "forward": false, "unreadOnly": false, "result": 2 },
+    { "unread": [false, false, true], "current": null, "forward": true, "unreadOnly": true, "result": 2 },
+    { "unread": [], "current": null, "forward": true, "unreadOnly": false, "result": null },
+    { "unread": [false], "current": 0, "forward": true, "unreadOnly": false, "result": null }
+  ]
+}

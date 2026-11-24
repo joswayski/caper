@@ -3376,3 +3376,187 @@ html[data-resizing-sections] * {
 .feedback-toggle {
   color: var(--text-muted);
 }
+
+/* Quick switcher (Ctrl/Cmd+K): a search field over a ranked list. */
+.quick-switcher {
+  width: min(560px, calc(100vw - 32px));
+}
+.quick-switcher-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.quick-switcher-field svg {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+}
+.quick-switcher-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 1rem;
+}
+.quick-switcher-results {
+  max-height: min(400px, 55dvh);
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+.quick-switcher-results li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.quick-switcher-results li[aria-selected="true"] {
+  background: var(--surface-hover);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+}
+.quick-switcher-icon {
+  flex: 0 0 22px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  overflow: hidden;
+  border-radius: 6px;
+  color: var(--text-muted);
+}
+.quick-switcher-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.quick-switcher-space {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text);
+  background: var(--surface-raised);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.quick-switcher-space img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.quick-switcher-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86rem;
+}
+.quick-switcher-results small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+}
+.quick-switcher-unread {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--text);
+}
+.quick-switcher-empty {
+  margin: 0;
+  padding: 22px 18px;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+.quick-switcher-hint {
+  margin: 0;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+:is(.quick-switcher-hint, .shortcut-help) kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 1px 6px;
+  border: 1px solid var(--border-solid);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font: inherit;
+  font-size: 0.72rem;
+  text-align: center;
+}
+.quick-switcher-hint kbd + kbd {
+  margin-left: 3px;
+}
+@media (hover: none) and (pointer: coarse) {
+  .quick-switcher-hint {
+    display: none;
+  }
+}
+
+/* Keyboard shortcuts sheet (Ctrl/Cmd+/). */
+.shortcut-help {
+  display: grid;
+  gap: 18px;
+  margin: 18px 22px 22px;
+}
+.shortcut-help h3 {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.shortcut-help dl {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+.shortcut-help dl > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.shortcut-help dt {
+  font-size: 0.82rem;
+}
+.shortcut-help dd {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
+.shortcut-combo {
+  display: inline-flex;
+  gap: 3px;
+}
+.shortcut-or {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}

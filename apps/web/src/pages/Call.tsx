@@ -1,3 +1,4 @@
+import { primaryModifier } from "../spaces/shortcuts";
 import {
   Fragment,
   lazy,
@@ -712,6 +713,23 @@ export default function Call({
     client.watchDiagnostics(true);
     return () => client.watchDiagnostics(false);
   }, [diagnosticsShown, connected]);
+  // Ctrl/Cmd+Shift+M mutes and Ctrl/Cmd+Shift+D deafens while in a call, from
+  // anywhere on the page, as the buttons do. Set below once they are defined.
+  const callKeys = useRef<{ mute: () => void; deafen: () => void }>(undefined);
+  useEffect(() => {
+    if (!connected) return;
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat || event.altKey || !event.shiftKey) return;
+      if (!primaryModifier(event)) return;
+      const key = event.code === "KeyM" ? "m" : event.code === "KeyD" ? "d" : event.key.toLowerCase();
+      if (key !== "m" && key !== "d") return;
+      event.preventDefault();
+      if (key === "m") callKeys.current?.mute();
+      else callKeys.current?.deafen();
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [connected]);
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const joinUnavailable = available !== true;
   const controlsDisabled = (!idle && !connected) || actionPending;
@@ -1221,6 +1239,7 @@ export default function Call({
       .current!.setDeafened(deafened)
       .catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared."));
   };
+  callKeys.current = { mute: toggleMute, deafen: toggleDeafen };
   const closeAudioPanel = () => {
     if (audioPanel === "mic") {
       ++actionGeneration.current;
