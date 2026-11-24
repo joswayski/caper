@@ -338,7 +338,9 @@ impl Api {
             ),
             Some(token),
             None,
-            Some(json!({"clientMessageId": client_message_id, "text": text})),
+            // As text: uuid's serde feature is on only where another
+            // dependency enables it (Linux), not on Windows.
+            Some(json!({"clientMessageId": client_message_id.to_string(), "text": text})),
         )
     }
 
