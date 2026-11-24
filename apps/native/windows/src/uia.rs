@@ -1025,6 +1025,8 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Title => d.title(),
                 DPart::Note => d.note(),
                 DPart::Field if d.kind == Kind::StartDirect => "Username".into(),
+                DPart::Field if d.shortcut_help() => "Search shortcuts".into(),
+                DPart::Field if d.switcher() => "Find a conversation".into(),
                 DPart::Field if d.kind == Kind::Browse => "Search channels".into(),
                 DPart::Field if d.kind == Kind::JoinInvite => "Invite link".into(),
                 DPart::Field if d.kind == Kind::InvitePeople => "Exact username".into(),

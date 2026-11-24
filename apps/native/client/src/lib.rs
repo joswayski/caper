@@ -55,6 +55,7 @@ pub mod speaker_test;
 pub mod startup;
 #[path = "../../desktop/voice-spike/src/state.rs"]
 pub mod state;
+pub mod switcher;
 pub mod themes;
 pub mod updates;
 pub mod uploads;

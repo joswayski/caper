@@ -18,7 +18,46 @@ const FIELD_H: f32 = 42.0;
 const FIELD_PAD_X: f32 = 10.0;
 const CLOSE: f32 = 32.0;
 
-/// One of the space's channels.
+/// What a row opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// A channel, in this space.
+    Channel(String),
+    Direct,
+    Space,
+    /// Someone you have no DM with yet, by username: opening starts one.
+    Person(String),
+    /// A line of the keyboard shortcuts sheet (Ctrl+/): opening closes it.
+    Shortcut,
+}
+
+/// The keyboard shortcuts sheet's lines: what each does, and its keys.
+const SHORTCUTS: &[(&str, &str)] = &[
+    ("Quick switcher", "Ctrl+K"),
+    (
+        "Previous or next conversation",
+        "Alt+\u{2191} / Alt+\u{2193}",
+    ),
+    (
+        "Previous or next unread conversation",
+        "Alt+Shift+\u{2191} / Alt+Shift+\u{2193}",
+    ),
+    ("Mark as read", "Esc"),
+    (
+        "Edit your last message (in an empty message box)",
+        "\u{2191}",
+    ),
+    ("Jump to latest (from the messages)", "End"),
+    ("New line", "Shift+Enter"),
+    ("Bold, italic, underline, code", "Ctrl+B / I / U / E"),
+    ("Mute or unmute (in a call)", "Ctrl+Shift+M"),
+    ("Deafen or undeafen (in a call)", "Ctrl+Shift+D"),
+    ("Settings", "Ctrl+,"),
+    ("Zoom in, out, reset", "Ctrl+= / Ctrl+\u{2212} / Ctrl+0"),
+    ("Keyboard shortcuts", "Ctrl+/"),
+];
+
+/// One of the space's channels, or in the quick switcher, any destination.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub id: String,
@@ -26,21 +65,44 @@ pub struct Row {
     pub private: bool,
     pub joined: bool,
     pub unread: bool,
+    /// The switcher's second line: the space, a username, or "Space".
+    pub detail: String,
+    /// Other names the switcher matches, such as a username.
+    pub alternates: Vec<String>,
+    pub target: Target,
 }
 
-/// What the dialog browses: the open space and its channels.
+/// What the dialog browses: the open space and its channels, or with
+/// `switcher` (Ctrl+K), every channel, DM, space and person ranked as web's
+/// quick switcher, with Up/Down and Enter.
 pub struct Browse {
     pub space: String,
     pub space_name: String,
     pub rows: Vec<Row>,
     /// Whether you own the space: each row then has Manage.
     pub owner: bool,
+    pub switcher: bool,
+    /// The keyboard shortcuts sheet: the switcher's list of `SHORTCUTS`.
+    pub help: bool,
 }
 
 impl Browse {
     /// The rows the search shows, as web filters them: its text without a
     /// leading `#` (people type the name as it is shown), in the name.
     pub fn shown(&self, query: &str) -> Vec<&Row> {
+        if self.switcher {
+            let ranked = caper_client::switcher::rank(
+                self.rows.iter().map(|r| {
+                    (
+                        std::iter::once(r.name.as_str())
+                            .chain(r.alternates.iter().map(String::as_str)),
+                        r.unread,
+                    )
+                }),
+                query,
+            );
+            return ranked.into_iter().take(50).map(|k| &self.rows[k]).collect();
+        }
         let query = query.trim().trim_start_matches('#').trim().to_lowercase();
         self.rows
             .iter()
@@ -69,6 +131,43 @@ impl Dialog {
         d
     }
 
+    /// Whether this is the keyboard shortcuts sheet.
+    pub fn shortcut_help(&self) -> bool {
+        self.switcher() && self.browse.as_ref().is_some_and(|b| b.help)
+    }
+
+    /// Whether this is the quick switcher (or the shortcuts sheet, which
+    /// lists and filters the same way) rather than Browse channels.
+    pub fn switcher(&self) -> bool {
+        self.kind == Kind::Browse && self.browse.as_ref().is_some_and(|b| b.switcher)
+    }
+
+    /// The switcher's highlighted row, kept on the list as it narrows.
+    pub fn switcher_selected(&self) -> usize {
+        self.selected
+            .min(self.browse_shown().len().saturating_sub(1))
+    }
+
+    pub fn browse_target_count(&self) -> usize {
+        self.browse_shown().len()
+    }
+
+    /// Scrolls the switcher's highlighted row into the list's view.
+    pub fn reveal_switcher_row(&mut self) {
+        let top = self.switcher_selected() as f32 * ROW_H;
+        let view = self.body.3;
+        if top < self.scroll {
+            self.scroll = top;
+        } else if top + ROW_H > self.scroll + view {
+            self.scroll = top + ROW_H - view;
+        }
+    }
+
+    /// Shown row `k`, for the switcher to open.
+    pub fn browse_target(&self, k: usize) -> Option<Row> {
+        self.browse_shown().get(k).map(|r| (*r).clone())
+    }
+
     fn browse_shown(&self) -> Vec<&Row> {
         let query = self.draft();
         self.browse
@@ -78,6 +177,16 @@ impl Dialog {
 
     /// Shown row `k`'s accessible name, as web's button.
     pub fn browse_row_name(&self, k: usize) -> String {
+        if self.switcher() {
+            return self.browse_shown().get(k).map_or_else(String::new, |r| {
+                format!(
+                    "{}, {}{}",
+                    r.name,
+                    r.detail,
+                    if r.unread { ", unread" } else { "" }
+                )
+            });
+        }
         self.browse_shown().get(k).map_or_else(String::new, |r| {
             format!(
                 "Preview #{}{}{}",
@@ -97,6 +206,13 @@ impl Dialog {
 
     /// The note when no row is shown.
     pub fn browse_empty(&self) -> &'static str {
+        if self.switcher() {
+            return if self.draft().trim().is_empty() {
+                "Nothing to switch to yet."
+            } else {
+                "No matches."
+            };
+        }
         if self.draft().trim().is_empty() {
             "This space has no channels yet."
         } else {
@@ -228,7 +344,14 @@ impl Dialog {
                         );
                     }
                     let (ox, oy) = self.text_origin();
-                    let hint = layout(g, "Search by name", &g.formats.composer, 1e6)?;
+                    let hint = if self.shortcut_help() {
+                        "Search shortcuts"
+                    } else if self.switcher() {
+                        "Find a channel, DM, space or person"
+                    } else {
+                        "Search by name"
+                    };
+                    let hint = layout(g, hint, &g.formats.composer, 1e6)?;
                     self.field
                         .draw_text(g, dc, ox, oy, Some((&hint, &g.brushes.muted)));
                     unsafe { dc.PopAxisAlignedClip() };
@@ -257,10 +380,17 @@ impl Dialog {
             }
             let manage = self.part_rect(Part::ManageRow(k));
             let full = manage.map_or(x + w, |(mx, _, mw, _)| mx + mw + 8.0);
-            if self.hover == Some(*part) || self.hover == Some(Part::ManageRow(k)) {
+            let selected = self.switcher() && k == self.switcher_selected();
+            if self.hover == Some(*part) || self.hover == Some(Part::ManageRow(k)) || selected {
                 fill_round(dc, rect(x, y, full, y + h), 6.0, &g.brushes.hover);
             }
-            let mark = if row.private { "\u{1F512}" } else { "#" };
+            let mark = match row.target {
+                Target::Channel(_) if row.private => "\u{1F512}",
+                Target::Channel(_) => "#",
+                Target::Direct | Target::Person(_) => "@",
+                Target::Space => "\u{25C6}",
+                Target::Shortcut => "\u{2328}",
+            };
             let l = layout(g, mark, &g.formats.channel, 40.0)?;
             crate::emoji::apply(&l, mark, 15.0, 0.9)?;
             crate::text::draw(
@@ -277,7 +407,9 @@ impl Dialog {
             };
             let tw = (right - (x + 36.0)).max(1.0);
             let name = layout(g, &row.name, &g.formats.direct_name, tw)?;
-            let status = if row.joined {
+            let status = if self.switcher() {
+                row.detail.as_str()
+            } else if row.joined {
                 "Joined"
             } else {
                 "Read-only preview"
@@ -319,6 +451,45 @@ impl Dialog {
 }
 
 impl App {
+    /// Ctrl+K: the quick switcher; again closes it.
+    pub fn open_switcher(&mut self) {
+        if self.dialog.as_ref().is_some_and(|d| d.switcher()) {
+            return self.dismiss_dialog();
+        }
+        let Some(switcher) = self.live.as_ref().map(|l| l.switcher()) else {
+            return;
+        };
+        self.open_dialog(Dialog::browse(switcher));
+    }
+
+    /// Ctrl+/: every keyboard shortcut; again closes it.
+    pub fn open_shortcut_help(&mut self) {
+        if self.dialog.as_ref().is_some_and(|d| d.shortcut_help()) {
+            return self.dismiss_dialog();
+        }
+        let rows = SHORTCUTS
+            .iter()
+            .map(|(action, keys)| Row {
+                id: (*action).into(),
+                name: (*action).into(),
+                private: false,
+                joined: true,
+                unread: false,
+                detail: (*keys).into(),
+                alternates: vec![(*keys).into()],
+                target: Target::Shortcut,
+            })
+            .collect();
+        self.open_dialog(Dialog::browse(Browse {
+            space: String::new(),
+            space_name: String::new(),
+            rows,
+            owner: false,
+            switcher: true,
+            help: true,
+        }));
+    }
+
     /// The space menu's Browse channels.
     pub fn open_browse(&mut self) {
         let Some(browse) = self.live.as_ref().and_then(|l| l.browse()) else {
@@ -339,6 +510,16 @@ impl App {
     /// A row opens its channel (a preview until you join it) and closes
     /// the dialog.
     pub fn browse_open(&mut self, k: usize) {
+        if self.dialog.as_ref().is_some_and(|d| d.switcher()) {
+            let row = self.dialog.as_ref().and_then(|d| d.browse_target(k));
+            self.close_dialog();
+            if let (Some(row), Some(live)) = (row, &mut self.live)
+                && row.target != Target::Shortcut
+            {
+                live.switch_to(&row);
+            }
+            return;
+        }
         let Some((space, channel)) = self.dialog.as_ref().and_then(|d| d.browse_row(k)) else {
             return;
         };
@@ -361,12 +542,17 @@ mod tests {
             private: false,
             joined: true,
             unread: false,
+            detail: String::new(),
+            alternates: Vec::new(),
+            target: Target::Channel("s".into()),
         };
         let browse = Browse {
             space: "s".into(),
             space_name: "Studio".into(),
             rows: vec![row("design"), row("dev"), row("c#-tips")],
             owner: false,
+            switcher: false,
+            help: false,
         };
         let names = |q: &str| {
             browse

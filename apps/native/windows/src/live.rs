@@ -3781,9 +3781,234 @@ impl Live {
                     private: c.private,
                     joined: c.joined,
                     unread: unread(&c.id),
+                    detail: String::new(),
+                    alternates: Vec::new(),
+                    target: crate::browse::Target::Channel(detail.space.id.clone()),
                 })
                 .collect(),
+            switcher: false,
+            help: false,
         })
+    }
+
+    fn channel_unread(&self, space: &str, channel: &str) -> bool {
+        self.unread_spaces
+            .iter()
+            .any(|s| s.id == space && s.channels.iter().any(|c| c.id == channel))
+    }
+
+    fn direct_unread(&self, d: &core::DirectConversation) -> bool {
+        d.status != core::DirectStatus::Incoming
+            && !d.blocked
+            && !self.is_blocked(&d.peer.id)
+            && d.has_unread()
+    }
+
+    /// The quick switcher (Ctrl+K): every channel of the open space, DMs,
+    /// spaces and people you have no DM with, ranked as web's.
+    pub fn switcher(&self) -> crate::browse::Browse {
+        use crate::browse::{Row, Target};
+        let me = self.account_id.as_deref();
+        let mut rows = Vec::new();
+        if let Some(detail) = &self.detail {
+            for c in detail.channels.iter().filter(|c| c.joined) {
+                rows.push(Row {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    private: c.private,
+                    joined: true,
+                    unread: self.channel_unread(&detail.space.id, &c.id),
+                    detail: detail.space.name.clone(),
+                    alternates: Vec::new(),
+                    target: Target::Channel(detail.space.id.clone()),
+                });
+            }
+        }
+        for d in &self.directs {
+            let own = Some(d.peer.id.as_str()) == me;
+            rows.push(Row {
+                id: d.id.clone(),
+                name: if own {
+                    format!("{} (you)", d.peer.display_name)
+                } else {
+                    d.peer.display_name.clone()
+                },
+                private: false,
+                joined: true,
+                unread: d.status == core::DirectStatus::Incoming || self.direct_unread(d),
+                detail: format!("@{}", d.peer.username),
+                alternates: vec![d.peer.username.clone()],
+                target: Target::Direct,
+            });
+        }
+        for space in self
+            .spaces
+            .iter()
+            .flat_map(|s| &s.spaces)
+            .filter(|s| !s.demo)
+        {
+            rows.push(Row {
+                id: space.id.clone(),
+                name: space.name.clone(),
+                private: false,
+                joined: true,
+                unread: self.unread_spaces.iter().any(|s| s.id == space.id),
+                detail: "Space".into(),
+                alternates: Vec::new(),
+                target: Target::Space,
+            });
+        }
+        for p in &self.people {
+            if Some(p.id.as_str()) == me
+                || self.is_blocked(&p.id)
+                || self.directs.iter().any(|d| d.peer.id == p.id)
+            {
+                continue;
+            }
+            rows.push(Row {
+                id: p.id.clone(),
+                name: p.display_name.clone(),
+                private: false,
+                joined: true,
+                unread: false,
+                detail: format!("@{}", p.username),
+                alternates: vec![p.username.clone()],
+                target: Target::Person(p.username.clone()),
+            });
+        }
+        crate::browse::Browse {
+            owner: false,
+            space: self.space.clone().unwrap_or_default(),
+            space_name: String::new(),
+            rows,
+            switcher: true,
+            help: false,
+        }
+    }
+
+    /// Opens a quick switcher row.
+    pub fn switch_to(&mut self, row: &crate::browse::Row) {
+        use crate::browse::Target;
+        match &row.target {
+            Target::Channel(space) => {
+                if self.direct.is_some() || self.channel.as_deref() != Some(row.id.as_str()) {
+                    self.navigate(Some(space.clone()), Some(row.id.clone()));
+                }
+            }
+            Target::Direct => self.open_direct(row.id.clone()),
+            Target::Space => {
+                if self.direct.is_some() || self.space.as_deref() != Some(row.id.as_str()) {
+                    self.navigate(Some(row.id.clone()), None);
+                }
+            }
+            Target::Person(username) => self.create_direct(username.clone()),
+        }
+    }
+
+    /// Alt+Up/Down: the previous or next conversation in the sidebar's
+    /// order (the space's joined channels, then your notes and DMs); with
+    /// `unread_only` (Alt+Shift), the previous or next unread one.
+    pub fn step_conversation(&mut self, forward: bool, unread_only: bool) {
+        let me = self.account_id.as_deref();
+        let mut order: Vec<(Option<String>, String, bool)> = Vec::new();
+        if let Some(detail) = &self.detail {
+            for c in detail.channels.iter().filter(|c| c.joined) {
+                let unread = self.channel_unread(&detail.space.id, &c.id);
+                order.push((Some(detail.space.id.clone()), c.id.clone(), unread));
+            }
+        }
+        let own = self
+            .directs
+            .iter()
+            .filter(|d| Some(d.peer.id.as_str()) == me);
+        let others = self
+            .directs
+            .iter()
+            .filter(|d| Some(d.peer.id.as_str()) != me);
+        for d in own
+            .chain(others)
+            .filter(|d| d.status != core::DirectStatus::Incoming)
+        {
+            order.push((None, d.id.clone(), self.direct_unread(d)));
+        }
+        let current = order.iter().position(|(space, id, _)| match space {
+            Some(_) => self.direct.is_none() && self.channel.as_deref() == Some(id.as_str()),
+            None => self.direct.as_deref() == Some(id.as_str()),
+        });
+        let unread: Vec<bool> = order.iter().map(|(_, _, unread)| *unread).collect();
+        if let Some(next) = caper_client::switcher::adjacent(&unread, current, forward, unread_only)
+        {
+            let (space, id, _) = order.swap_remove(next);
+            match space {
+                Some(space) => self.navigate(Some(space), Some(id)),
+                None => self.open_direct(id),
+            }
+        }
+    }
+
+    /// Escape in a conversation: marks it read through its newest message,
+    /// even while reading further back. Whether there was anything to read.
+    pub fn mark_open_read(&mut self) -> bool {
+        if self.feedback_visit.is_some() {
+            return false;
+        }
+        let (Some(channel), Some(token)) = (self.channel.clone(), self.token.clone()) else {
+            return false;
+        };
+        if self.direct.as_ref() == Some(&channel) {
+            let blocked = |d: &core::DirectConversation| self.is_blocked(&d.peer.id);
+            let Some(index) = self.directs.iter().position(|d| {
+                d.id == channel
+                    && d.status != core::DirectStatus::Incoming
+                    && d.has_unread()
+                    && !blocked(d)
+            }) else {
+                return false;
+            };
+            let d = &mut self.directs[index];
+            d.read_seq.clone_from(&d.last_seq);
+            d.unread_count = Some(0);
+            let seq = d.last_seq.clone();
+            self.queued.push(Update::Badges);
+            self.worker.send(Command::ReadDirect {
+                token,
+                id: channel,
+                seq,
+            });
+            return true;
+        }
+        let Some(space) = self.space.clone() else {
+            return false;
+        };
+        let Some(seq) = self
+            .unread_spaces
+            .iter()
+            .filter(|s| s.id == space)
+            .flat_map(|s| &s.channels)
+            .find(|c| c.id == channel)
+            .map(|c| c.last_seq.clone())
+        else {
+            return false;
+        };
+        for s in &mut self.unread_spaces {
+            s.channels.retain(|c| c.id != channel);
+        }
+        self.unread_spaces.retain(|s| !s.channels.is_empty());
+        self.reads.insert(channel.clone(), seq.clone());
+        self.queued.push(Update::Badges);
+        self.worker.send(Command::ReadChannel {
+            epoch: 0,
+            token,
+            space,
+            channel,
+            seq,
+        });
+        true
+    }
+
+    /// Connected to a voice channel, where Ctrl+Shift+M and +D apply.
+    pub fn in_call(&self) -> bool {
+        matches!(self.voice.state.phase, Phase::Connected(_))
     }
 
     /// Joins the previewed channel; it opens joined once the server

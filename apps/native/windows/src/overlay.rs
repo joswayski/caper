@@ -703,6 +703,8 @@ impl Dialog {
                     .as_ref()
                     .map_or("", |(a, _)| a.display_name.as_str())
             ),
+            Kind::Browse if self.shortcut_help() => "Keyboard shortcuts".into(),
+            Kind::Browse if self.switcher() => "Quick switcher".into(),
             Kind::Browse => "Browse channels".into(),
             Kind::JoinInvite | Kind::Invitation => self.invite_title(),
             Kind::CreateSpace => "Create a space".into(),
@@ -734,6 +736,10 @@ impl Dialog {
             ),
             Kind::StartDirect => "Enter an exact username.".into(),
             Kind::Block => "You won't see their messages unless you choose to, and they can't send you DMs or requests.".into(),
+            Kind::Browse if self.shortcut_help() => "Type to filter. Esc closes.".into(),
+            Kind::Browse if self.switcher() => {
+                "Channels, direct messages, spaces and people. Unread first; Enter opens.".into()
+            }
             Kind::Browse => format!(
                 "Find conversations in {}. Previewing a channel doesn\u{2019}t join it.",
                 self.browse.as_ref().map_or("", |b| b.space_name.as_str())
@@ -2617,6 +2623,28 @@ impl App {
                         }
                         self.dialog_changed();
                     }
+                    // The quick switcher's highlight follows Up and Down;
+                    // Enter opens it.
+                    VK_DOWN | VK_UP | VK_RETURN if d.switcher() && !ctrl => {
+                        let n = d.browse_target_count();
+                        if vk == VK_RETURN {
+                            if n > 0 {
+                                let k = d.switcher_selected();
+                                self.dialog_activate(Part::Channel(k));
+                            }
+                            return done;
+                        }
+                        if n > 0 {
+                            let k = d.switcher_selected();
+                            d.selected = if vk == VK_DOWN {
+                                (k + 1) % n
+                            } else {
+                                (k + n - 1) % n
+                            };
+                            d.reveal_switcher_row();
+                        }
+                        self.dialog_changed();
+                    }
                     VK_ESCAPE if d.kind == Kind::InvitePeople && d.invite_layered() => {
                         d.invite_back();
                         self.dialog_changed();
@@ -2701,6 +2729,11 @@ impl App {
                         && d.field
                             .edit_key(hwnd, vk, ctrl, shift, d.kind == Kind::Edit) =>
                     {
+                        // A new query highlights its best match.
+                        if d.switcher() {
+                            d.selected = 0;
+                            d.scroll = 0.0;
+                        }
                         self.dialog_changed();
                     }
                     _ => return Some(None),
@@ -2709,6 +2742,10 @@ impl App {
             }
             WM_CHAR => {
                 let c = wp.0 as u16;
+                if d.switcher() {
+                    d.selected = 0;
+                    d.scroll = 0.0;
+                }
                 // Expire after and Max uses take their own characters.
                 if d.kind == Kind::InvitePeople
                     && !ctrl

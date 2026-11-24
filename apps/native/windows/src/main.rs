@@ -2008,6 +2008,67 @@ impl App {
         }
     }
 
+    /// The keyboard navigation every client has: Ctrl+K opens the quick
+    /// switcher, Ctrl+/ the shortcuts sheet, Alt+Up/Down steps through the
+    /// sidebar's conversations (with Shift, the unread ones), and
+    /// Ctrl+Shift+M and +D mute and deafen while in a call. Other surfaces
+    /// (Settings, viewers, dialogs) keep their keys.
+    fn navigation_key(&mut self, wp: WPARAM, ctrl: bool, shift: bool) -> Option<LRESULT> {
+        let alt = unsafe { GetKeyState(VK_MENU.0 as i32) } < 0;
+        let vk = VIRTUAL_KEY(wp.0 as u16);
+        if !self.c.is_live() || self.live.as_ref().is_none_or(|l| l.account_id.is_none()) {
+            return None;
+        }
+        let covered = self.settings.is_some()
+            || self.pins.is_some()
+            || self.profile.is_some()
+            || self.signin.is_some()
+            || self.viewer.is_some()
+            || self.attachment_editor.is_some();
+        let other_dialog = self.dialog.as_ref().is_some_and(|d| !d.switcher());
+        match vk {
+            VK_K if ctrl && !alt && !shift && !covered && !other_dialog => self.open_switcher(),
+            VK_OEM_2 if ctrl && !alt && !covered && !other_dialog => self.open_shortcut_help(),
+            VK_UP | VK_DOWN if alt && !ctrl && !covered && self.dialog.is_none() => {
+                if let Some(live) = &mut self.live {
+                    live.step_conversation(vk == VK_DOWN, shift);
+                }
+                self.set_browsing(false);
+            }
+            VK_M | VK_D
+                if ctrl && shift && !alt && self.live.as_ref().is_some_and(|l| l.in_call()) =>
+            {
+                if let Some(live) = &mut self.live {
+                    if vk == VK_M {
+                        live.toggle_mute();
+                    } else {
+                        live.toggle_deafen();
+                    }
+                }
+                self.voice_changed();
+            }
+            _ => return None,
+        }
+        unsafe {
+            let _ = PostMessageW(Some(self.hwnd), live::WM_LIVE, WPARAM(0), LPARAM(0));
+        }
+        self.need = true;
+        Some(LRESULT(0))
+    }
+
+    /// Escape in the conversation, once nothing else used it: marks it read
+    /// through its newest message.
+    pub fn mark_open_read(&mut self) -> bool {
+        let read = self.live.as_mut().is_some_and(|l| l.mark_open_read());
+        if read {
+            unsafe {
+                let _ = PostMessageW(Some(self.hwnd), live::WM_LIVE, WPARAM(0), LPARAM(0));
+            }
+            self.need = true;
+        }
+        read
+    }
+
     pub fn select_space(&mut self, i: usize) {
         if let Some(live) = &mut self.live {
             // Its first joined channel opens once the worker has read it.
@@ -2531,6 +2592,12 @@ impl App {
                 self.zoom_by(steps);
                 return Some(LRESULT(0));
             }
+        }
+        // Ctrl+K, Ctrl+/, Alt+Up/Down and Ctrl+Shift+M/D, as on web.
+        if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN)
+            && let Some(r) = self.navigation_key(wp, ctrl, shift)
+        {
+            return Some(r);
         }
         // A click Caper saw was outside the player: keys come back here.
         if matches!(msg, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
@@ -3519,6 +3586,8 @@ impl App {
                 }
                 // As on web, Escape closes the thread when nothing else takes it.
                 VK_ESCAPE if self.thread.is_some() => self.dismiss_thread(),
+                // Otherwise it marks the conversation read, as on web.
+                VK_ESCAPE if !ctrl && !shift => return self.mark_open_read(),
                 _ => return false,
             }
             return true;
@@ -3539,7 +3608,10 @@ impl App {
                 }
                 return true;
             }
+            // Escape marks the conversation read, as on web, and leaves the
+            // message box.
             VK_ESCAPE => {
+                self.mark_open_read();
                 self.set_composer_focus(false);
                 return true;
             }

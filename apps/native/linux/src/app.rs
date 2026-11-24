@@ -81,6 +81,8 @@ mod recording;
 mod requests;
 #[path = "settings.rs"]
 mod settings;
+#[path = "switcher.rs"]
+mod switcher;
 #[path = "updates.rs"]
 mod updates;
 
@@ -639,6 +641,8 @@ pub struct App {
     /// The open profile card's widgets.
     profile: RefCell<Option<profile::Card>>,
     forwarding: RefCell<forward::Forwarding>,
+    /// The open quick switcher (Ctrl+K).
+    switcher: RefCell<Option<switcher::Switcher>>,
     profile_dialog: RefCell<Option<account::ProfileDialog>>,
     /// Wakes the main loop from other threads.
     wakes: Wakes,
@@ -895,6 +899,7 @@ pub fn start(
         pins: RefCell::default(),
         profile: RefCell::default(),
         forwarding: RefCell::default(),
+        switcher: RefCell::default(),
         profile_dialog: RefCell::default(),
         wakes,
         settings: RefCell::default(),
@@ -1343,8 +1348,8 @@ impl App {
 
     /// The row menu's actions, each taking the message id.
     /// Window shortcuts the desktop has: Ctrl+, opens Settings, End jumps
-    /// to the latest message (outside text fields), and Ctrl+= / Ctrl+− /
-    /// Ctrl+0 zoom the interface.
+    /// to the latest message (outside text fields), Ctrl+= / Ctrl+− /
+    /// Ctrl+0 zoom the interface, and the navigation keys (`switcher`).
     fn install_shortcuts(self: &Rc<Self>) {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -1353,6 +1358,9 @@ impl App {
             let Some(app) = weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
+            if app.navigation_key(key, modifiers) {
+                return glib::Propagation::Stop;
+            }
             let control = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
             let others =
                 modifiers.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK);
@@ -1393,6 +1401,19 @@ impl App {
             }
         });
         self.ui.window.add_controller(keys);
+        // Escape marks the open conversation read once nothing else used
+        // it: popovers, suggestions, the thread and dialogs take it first.
+        let escape = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(self);
+        escape.connect_key_pressed(move |_, key, _, modifiers| match weak.upgrade() {
+            Some(app)
+                if key == gdk::Key::Escape && modifiers.is_empty() && app.mark_open_read() =>
+            {
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        self.ui.window.add_controller(escape);
         // Zoom also works from Settings and every other dialog window, as
         // on the desktop: each gets the same keys when it opens.
         let weak = Rc::downgrade(self);

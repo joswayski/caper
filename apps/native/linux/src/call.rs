@@ -380,7 +380,12 @@ impl App {
         self.later_render();
     }
 
-    fn toggle_mute(self: &Rc<Self>) {
+    /// Connected to a voice channel, where Ctrl+Shift+M and +D apply.
+    pub(super) fn in_call(&self) -> bool {
+        matches!(self.voice.borrow().state.phase, Phase::Connected(_))
+    }
+
+    pub(super) fn toggle_mute(self: &Rc<Self>) {
         {
             let mut voice = self.voice.borrow_mut();
             let muted = voice.state.audio.muted;
@@ -389,7 +394,7 @@ impl App {
         self.later_render();
     }
 
-    fn toggle_deafen(self: &Rc<Self>) {
+    pub(super) fn toggle_deafen(self: &Rc<Self>) {
         {
             let mut voice = self.voice.borrow_mut();
             let deafened = voice.state.audio.deafened;
