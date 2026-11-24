@@ -67,6 +67,8 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         window.title = shipping ? "Caper" : "Caper — AppKit development (not feature complete)"
         window.identifier = NSUserInterfaceItemIdentifier(shipping ? "caper-main" : "caper-appkit-development")
         window.contentMinSize = NSSize(width: 390, height: 578)
+        // Closing only hides it while Caper keeps running; the Dock brings it back.
+        window.isReleasedWhenClosed = false
         window.contentViewController = AppKitRootController(model: model, settings: settings, updater: updater)
         window.setContentSize(NSSize(width: fixture ? 1440 : 1180, height: fixture ? 900 : 760))
         window.center()
@@ -76,6 +78,8 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         for name in [NSWindow.didChangeScreenNotification, NSApplication.didChangeScreenParametersNotification] {
             center.addObserver(self, selector: #selector(trackDisplayColorSpace), name: name, object: nil)
         }
+        center.addObserver(self, selector: #selector(windowWillClose(_:)), name: NSWindow.willCloseNotification, object: window)
+        center.addObserver(self, selector: #selector(showMainWindow(_:)), name: .caperShowMainWindow, object: nil)
         trackDisplayColorSpace()
         installMenus()
         window.makeKeyAndOrderFront(nil)
@@ -89,18 +93,70 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let model else { pendingLinks += urls; return }
         urls.forEach(model.openInviteLink)
-        window?.deminiaturize(nil)
-        window?.makeKeyAndOrderFront(nil)
+        showMainWindow(nil)
     }
 
+    /// The Dock icon, or opening Caper again, brings the main window back,
+    /// even while Settings is open on its own.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { window?.makeKeyAndOrderFront(nil) }
+        if window?.isVisible != true { showMainWindow(nil) }
         return true
     }
 
-    func applicationDidBecomeActive(_ notification: Notification) { model?.applicationActivityChanged(active: true) }
+    @objc private func showMainWindow(_ sender: Any?) {
+        let closed = window?.isVisible != true
+        window?.deminiaturize(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        // Reading resumes in a window that closed while Caper stayed active.
+        if closed { model?.applicationActivityChanged(active: true) }
+    }
+
+    /// Whether you are in a call, from joining until it has left.
+    private var inCall: Bool {
+        guard let phase = model?.voice.phase else { return false }
+        return phase == .joining || phase == .connected || phase == .reconnecting
+    }
+
+    /// Nothing is read with the window closed, even while Caper stays the
+    /// active app; and when a call goes on, the close says so.
+    @objc private func windowWillClose(_ notification: Notification) {
+        model?.applicationActivityChanged(active: false)
+        guard DesktopWindowSettings.shared.keepRunning, inCall, let call = model?.voice.context else { return }
+        BackgroundCallNotice.post(channelName: call.channelName)
+    }
+
+    /// The Dock icon's menu: your call's controls while you are in one. macOS
+    /// adds the open windows and Quit.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        guard inCall, let voice = model?.voice else { return nil }
+        let menu = NSMenu()
+        if window?.isVisible != true {
+            menu.addItem(withTitle: "Open Caper", action: #selector(showMainWindow(_:)), keyEquivalent: "").target = self
+            menu.addItem(.separator())
+        }
+        let mute = menu.addItem(withTitle: "Mute", action: #selector(toggleMute(_:)), keyEquivalent: "")
+        mute.target = self; mute.state = voice.muted ? .on : .off
+        let deafen = menu.addItem(withTitle: "Deafen", action: #selector(toggleDeafen(_:)), keyEquivalent: "")
+        deafen.target = self; deafen.state = voice.deafened ? .on : .off
+        menu.addItem(withTitle: voice.phase == .joining ? "Cancel joining" : "Leave call",
+                     action: #selector(leaveCall(_:)), keyEquivalent: "").target = self
+        return menu
+    }
+
+    @objc private func toggleMute(_ sender: Any?) { if let model { VoicePresentation.toggleMute(model.voice) } }
+    @objc private func toggleDeafen(_ sender: Any?) { if let model { VoicePresentation.toggleDeafen(model.voice) } }
+    @objc private func leaveCall(_ sender: Any?) { if let model { VoicePresentation.leave(model) } }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        model?.applicationActivityChanged(active: window?.isVisible == true)
+    }
     func applicationDidResignActive(_ notification: Notification) { model?.applicationActivityChanged(active: false) }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// As Mac apps do, closing the window leaves Caper running (calls and
+    /// notifications carry on) unless that setting is off.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !DesktopWindowSettings.shared.keepRunning
+    }
 
     @objc private func trackDisplayColorSpace() {
         DisplayPixels.colorSpace = (window?.screen ?? NSScreen.main)?.colorSpace?.cgColorSpace
@@ -148,6 +204,13 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             entry.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
         }
         edit.submenu = editMenu; menu.addItem(edit)
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(.separator())
+        // Brings the main window back after it was closed.
+        windowMenu.addItem(withTitle: "Caper", action: #selector(showMainWindow(_:)), keyEquivalent: "0").target = self
+        windowItem.submenu = windowMenu; menu.addItem(windowItem)
         NSApp.mainMenu = menu
     }
 }

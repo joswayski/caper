@@ -2,6 +2,27 @@
 import AppKit
 import UserNotifications
 
+public extension Notification.Name {
+    /// Asks the app to show its main window, which may be closed while Caper
+    /// keeps running (a notification was clicked).
+    static let caperShowMainWindow = Notification.Name("CaperShowMainWindow")
+}
+
+/// The main window closed during a call while Caper keeps running
+/// (`DesktopWindowSettings`): says so, every time. A click brings it back.
+@MainActor public enum BackgroundCallNotice {
+    static let identifier = "caper-background-call"
+
+    public static func post(channelName: String) {
+        guard ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] != "parity",
+              Bundle.main.bundleURL.pathExtension == "app" else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "You’re still in the call in \(channelName)"
+        content.body = "Caper keeps running. Right-click Caper in the Dock to mute, deafen or leave the call."
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { _ in }
+    }
+}
+
 /// Local notifications while the Mac app runs; this is not APNs after quit.
 @MainActor
 final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
@@ -110,7 +131,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         // `quiet`: another device of this account was used more recently and alerts instead.
         guard let date, (-30...120).contains(Date().timeIntervalSince(date)), !isRetracted(event),
               event["quiet"] as? Bool != true else { return }
-        if NSApp.isActive && !model.navigationOpen && model.isShowing(route) { return }
+        if model.foreground && !model.navigationOpen && model.isShowing(route) { return }
         let content = UNMutableNotificationContent()
         content.title = title; content.body = body; content.sound = .default; content.userInfo = event
         if NotificationActions.actionable(event) { content.categoryIdentifier = NotificationActions.category }
@@ -131,7 +152,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         Task { [weak self] in
             let media = await NotificationAttachment.load(event)
             guard let self, self.accountID == account, self.epoch == generation, !self.isRetracted(event),
-                  !(NSApp.isActive && !model.navigationOpen && model.isShowing(route)) else {
+                  !(model.foreground && !model.navigationOpen && model.isShowing(route)) else {
                 if let media { try? FileManager.default.removeItem(at: media.url) }
                 if let senderTemporary { try? FileManager.default.removeItem(at: senderTemporary) }
                 return
@@ -147,14 +168,20 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        if notification.request.identifier == BackgroundCallNotice.identifier { return [.banner, .list] }
         guard let model, model.account?.id == accountID,
               notification.request.identifier.hasPrefix("\(accountID ?? ""):\(epoch):") else { return [] }
         model.scheduleUnreadRefresh()
-        if let route = NotificationRoute(userInfo: notification.request.content.userInfo), NSApp.isActive && !model.navigationOpen && model.isShowing(route) { return [] }
+        if let route = NotificationRoute(userInfo: notification.request.content.userInfo), model.foreground && !model.navigationOpen && model.isShowing(route) { return [] }
         return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        if response.notification.request.identifier == BackgroundCallNotice.identifier {
+            NSApp.activate(ignoringOtherApps: true)
+            NotificationCenter.default.post(name: .caperShowMainWindow, object: nil)
+            return
+        }
         guard let model, model.account?.id == accountID,
               response.notification.request.identifier.hasPrefix("\(accountID ?? ""):\(epoch):"),
               let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
@@ -164,6 +191,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
             return
         }
         NSApp.activate(ignoringOtherApps: true)
+        NotificationCenter.default.post(name: .caperShowMainWindow, object: nil)
         await model.open(route)
     }
 }

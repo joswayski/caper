@@ -605,7 +605,9 @@ public final class AppModel {
     @ObservationIgnored private var notificationFeedID: String?
     @ObservationIgnored private var notificationFeedRefused = false
     #endif
-    private var foreground = false
+    /// Active with the conversation on screen: the Mac app's window may be
+    /// closed while Caper stays active (CaperAppKitApp).
+    private(set) var foreground = false
     #if os(macOS)
     @ObservationIgnored private lazy var desktopNotifications = DesktopNotifications(model: self)
     #endif

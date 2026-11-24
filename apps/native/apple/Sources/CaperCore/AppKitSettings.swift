@@ -1,6 +1,27 @@
 #if os(macOS)
 import AppKit
+import Observation
 import ServiceManagement
+
+/// "Keep Caper running when the window closes": a per-device setting, on by
+/// default. On, closing the window hides it as Mac apps do, so a call and
+/// notifications carry on and the Dock icon brings it back; off, closing it
+/// quits. Windows and Linux keep the same setting (caper_client::background).
+@MainActor @Observable public final class DesktopWindowSettings {
+    public static let shared = DesktopWindowSettings()
+    static let key = "keep-running-when-closed-v1"
+    public static let title = "Keep Caper running when the window closes"
+    static let detail = "Closing the window hides Caper, so calls and notifications keep going; click Caper in the Dock to bring it back. Off: closing the window quits Caper."
+    @ObservationIgnored private let defaults: UserDefaults
+    public var keepRunning: Bool {
+        didSet { defaults.set(keepRunning, forKey: Self.key) }
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        keepRunning = defaults.object(forKey: Self.key) as? Bool ?? true
+    }
+}
 
 /// One Settings window shares the shipping preferences and release history.
 /// The development host passes no login item or updater, so it never registers
@@ -322,6 +343,7 @@ import ServiceManagement
     private let updater: AppUpdater?
     private let onClose: () -> Void
     private let voiceMessages = VoiceMessageSettings.shared
+    private let closing = DesktopWindowSettings.shared
     private let themeStore = CaperThemeStore.shared
     private let observation = AppKitObservation()
 
@@ -336,6 +358,8 @@ import ServiceManagement
     private lazy var launch = AppKitKitSwitchRow(title: "Launch at login", detail: "Open Caper when you sign in to your computer.",
                                                  identifier: "launch-at-login") { [weak self] on in self?.loginItem.setEnabled(on) }
     private let startupNotes = AppKitKit.stack([], spacing: 8)
+    private lazy var keepRunning = AppKitKitSwitchRow(title: DesktopWindowSettings.title, detail: DesktopWindowSettings.detail,
+                                                      identifier: "keep-running-when-closed") { [weak self] on in self?.closing.keepRunning = on }
     private lazy var sendOnStop = AppKitKitSwitchRow(title: VoiceMessage.sendOnStopTitle, detail: VoiceMessage.sendOnStopDetail,
                                                      identifier: "voice-messages-send-on-stop") { [weak self] on in self?.voiceMessages.sendOnStop = on }
     private let version = NSStackView()
@@ -381,7 +405,7 @@ import ServiceManagement
         let content = AppKitKit.stack([
             header,
             appearance, AppKitKit.divider(),
-            section("Startup", [launch, startupNotes]), AppKitKit.divider(),
+            section("Startup", [launch, startupNotes, keepRunning]), AppKitKit.divider(),
             section("Voice messages", [sendOnStop]), AppKitKit.divider(),
             updates,
         ], spacing: 18)
@@ -389,7 +413,7 @@ import ServiceManagement
         for view in content.arrangedSubviews where !(view is NSStackView) && !(view is NSButton) && !(view is NSTextField) {
             AppKitKit.fillWidth(view, of: content)
         }
-        for row in [themeCards, launch, sendOnStop] as [NSView] {
+        for row in [themeCards, launch, keepRunning, sendOnStop] as [NSView] {
             if let stack = row.superview as? NSStackView { AppKitKit.fillWidth(row, of: stack) }
         }
         let scroll = appKitKitScroll(content, insets: NSEdgeInsets(top: 22, left: 24, bottom: 24, right: 24))
@@ -432,7 +456,7 @@ import ServiceManagement
     private func snapshot() -> [AnyHashable] {
         let c = controls
         return [loginItem.registered, loginItem.available, loginItem.status == .requiresApproval, loginItem.error,
-                voiceMessages.sendOnStop, themeStore.active.id,
+                voiceMessages.sendOnStop, closing.keepRunning, themeStore.active.id,
                 c.isChecking, c.review != nil, c.check != nil, c.lastSuccessfulCheck, c.installedVersion, c.sourceRevision]
     }
 
@@ -456,6 +480,7 @@ import ServiceManagement
         }
         startupNotes.isHidden = startupNotes.arrangedSubviews.isEmpty
         sendOnStop.isOn = voiceMessages.sendOnStop
+        keepRunning.isOn = closing.keepRunning
 
         let c = controls
         status.stringValue = c.isChecking ? "Checking for updates…" : c.review != nil ? "An update is available."
