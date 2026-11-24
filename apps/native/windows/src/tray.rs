@@ -85,10 +85,6 @@ impl Tray {
         }
     }
 
-    pub fn shown(&self) -> bool {
-        self.shown
-    }
-
     fn data(&self) -> NOTIFYICONDATAW {
         NOTIFYICONDATAW {
             cbSize: size_of::<NOTIFYICONDATAW>() as u32,
