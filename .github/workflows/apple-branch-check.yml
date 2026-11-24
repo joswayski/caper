@@ -1,0 +1,112 @@
+# Temporary: checks the Apple clients for this branch on GitHub-hosted Macs
+# while the self-hosted Mac is offline. Removed before the branch lands.
+name: Apple branch check
+on:
+  push:
+    branches: [native-floating-composer]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  appkit:
+    name: Apple / AppKit development host
+    # A sibling job, not a dependency of the shipping Apple clients.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest installed Xcode
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >>"$GITHUB_ENV"
+          DEVELOPER_DIR="$xcode/Contents/Developer" xcodebuild -version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
+      - name: Prepare the isolated native project
+        run: |
+          bash apps/native/apple/prepare.sh
+          apps/native/apple/.build/xcodegen-21ac9944b0ab546a07422dbed86f33dd2ebd76f8/.build/debug/xcodegen generate \
+            --spec apps/native/apple/native-project.yml --project apps/native/apple
+      - name: Test AppKit timeline and shared Apple contracts
+        run: |
+          set -o pipefail
+          xcodebuild -project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKit \
+            -configuration Debug -destination "platform=macOS,arch=$(uname -m)" \
+            -derivedDataPath apps/native/apple/.build/NativeDerivedData \
+            -resultBundlePath "$RUNNER_TEMP/AppKitTests.xcresult" \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 300 \
+            -maximum-test-execution-time-allowance 600 test | tee "$RUNNER_TEMP/appkit-tests.log"
+      - name: Compile the development-only AppKit host
+        run: |
+          set -o pipefail
+          xcodebuild -project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKit \
+            -configuration Release -destination "platform=macOS,arch=$(uname -m)" \
+            -derivedDataPath apps/native/apple/.build/NativeDerivedData \
+            ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES build | tee "$RUNNER_TEMP/appkit-build.log"
+          app=apps/native/apple/.build/NativeDerivedData/Build/Products/Release/CaperAppKit.app
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" = chat.caper.appkit-development
+          test -x "$app/Contents/MacOS/CaperAppKit"
+          codesign --verify --deep --strict "$app"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: caper-appkit-checks-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/AppKitTests.xcresult/
+            ${{ runner.temp }}/appkit-tests.log
+            ${{ runner.temp }}/appkit-build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  uikit:
+    name: Apple / UIKit development client
+    # A sibling job, never part of the shipping iOS build or release.yml. Its
+    # UI tests drive the iOS simulator, so it shares the simulator VM.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest installed Xcode
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >>"$GITHUB_ENV"
+          DEVELOPER_DIR="$xcode/Contents/Developer" xcodebuild -version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Create the iPhone 16 simulator the UI tests target
+        # As for the shipping iOS job: the Xcode 27 image has the device type
+        # but no device, and iOS 27 runtimes refuse it.
+        if: runner.environment != 'self-hosted'
+        run: |
+          set -euo pipefail
+          if ! xcrun simctl list devices available | grep -q '^ *iPhone 16 ('; then
+            for runtime in $(xcrun simctl list runtimes available | sed -n 's/^iOS .* - \(com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]*\)$/\1/p' | sort -t- -k2,2nr -k3,3nr); do
+              xcrun simctl create 'iPhone 16' com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime" >/dev/null 2>&1 && break
+            done
+          fi
+          xcrun simctl list devices available | grep '^ *iPhone 16 ('
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
+      - name: Build and UI-test the UIKit client against the bench fixture
+        run: bash apps/native/apple/uikit.sh test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: caper-uikit-${{ github.sha }}
+          path: |
+            apps/native/apple/uikit-artifacts/
+            apps/native/apple/UIKitResults.xcresult/
+          if-no-files-found: warn
+          retention-days: 14
+
