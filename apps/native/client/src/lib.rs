@@ -49,6 +49,7 @@ pub mod player;
 pub mod profile_dm;
 pub mod profile_edit;
 pub mod reactions;
+pub mod saved_drafts;
 pub mod sign_in;
 pub mod speaker_test;
 pub mod startup;

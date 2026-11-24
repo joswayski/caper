@@ -187,7 +187,7 @@ impl App {
     /// next request opens, else the first space.
     pub(super) fn leave_request(&self, state: &mut State, id: &str) {
         state.directs.retain(|direct| direct.id != id);
-        state.drafts.remove(id);
+        state.drafts.set(id, "");
         state.layout += 1;
         if state.direct.as_deref() != Some(id) {
             return;

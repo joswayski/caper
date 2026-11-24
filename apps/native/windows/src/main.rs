@@ -453,8 +453,9 @@ pub struct App {
     status: Option<(String, bool)>,
     /// The signed-out screens, over everything else while shown.
     pub signin: Option<signin::SignIn>,
-    /// Unsent composer text of channels not on screen, by channel id.
-    drafts: std::collections::HashMap<String, Vec<u16>>,
+    /// Unsent composer text by channel id and thread replies by
+    /// `thread_key`, kept on disk for the signed-in account.
+    drafts: caper_client::saved_drafts::SavedDrafts,
     signin_p: Panel,
     /// The open message menu and dialog, over the conversation.
     pub menu: Option<overlay::Menu>,
@@ -1069,12 +1070,18 @@ impl App {
                     // Unsent text stays with its channel, as in the egui client.
                     if let Some(old) = self.ids.open.clone() {
                         let text = std::mem::take(&mut self.composer.text);
-                        if text.is_empty() {
-                            self.drafts.remove(&old);
-                        } else {
-                            self.drafts.insert(old, text);
-                        }
+                        self.drafts.set(&old, &String::from_utf16_lossy(&text));
                     }
+                    // The account's saved drafts, from before a restart or update too.
+                    if let Some(account) = self.live.as_ref().and_then(|l| l.account_id.as_deref())
+                    {
+                        self.drafts.open_for(drafts_dir().as_deref(), account);
+                    }
+                    let text: Vec<u16> = ids
+                        .open
+                        .as_ref()
+                        .map(|id| self.drafts.get(id).encode_utf16().collect())
+                        .unwrap_or_default();
                     // A reply and Pins belong to the channel they were opened in.
                     if self.ids.open != ids.open {
                         self.reply = None;
@@ -1087,10 +1094,6 @@ impl App {
                     if !self.c.has_conversation() {
                         self.set_composer_focus(false);
                     }
-                    let new = self.ids.open.clone();
-                    let text = new
-                        .and_then(|id| self.drafts.remove(&id))
-                        .unwrap_or_default();
                     // Restoring the channel's draft isn't typing.
                     if let Some(live) = &mut self.live {
                         live.typing.adopt(&String::from_utf16_lossy(&text));
@@ -1591,6 +1594,11 @@ impl App {
 
     pub fn composer_changed(&mut self) {
         self.composer.caret_on = true;
+        // Kept on every change, so quitting or updating never loses it.
+        if let Some(open) = &self.ids.open {
+            self.drafts
+                .set(open, &String::from_utf16_lossy(&self.composer.text));
+        }
         self.preview_tick();
         if let Some(live) = &mut self.live {
             live.typed(&String::from_utf16_lossy(&self.composer.text));
@@ -4976,6 +4984,13 @@ impl App {
         self.bench.log_frame(started.elapsed());
         Ok(())
     }
+}
+
+/// Each account's unsent drafts (`caper_client::saved_drafts`), one file per
+/// account in `%APPDATA%\Caper\windows\drafts`. Tests keep them in memory.
+fn drafts_dir() -> Option<std::path::PathBuf> {
+    let appdata = std::env::var_os("APPDATA").filter(|_| !cfg!(test))?;
+    Some(std::path::PathBuf::from(appdata).join("Caper/windows/drafts"))
 }
 
 /// How long a caret blinks after input before it rests: Windows' caret

@@ -1459,12 +1459,19 @@ impl App {
         let state = (t.loading, t.has_more, t.error.is_some());
         let opened = self.thread.as_ref().is_none_or(|p| p.root != root);
         if opened {
+            // The thread's own unsent reply, from before a restart too.
+            let reply = self
+                .drafts
+                .get(&caper_client::saved_drafts::thread_key(&root))
+                .encode_utf16()
+                .collect();
             let mut pane = Pane::new(
                 &self.g,
                 root,
                 &self.c.place(),
                 self.panes.width(crate::panes::Pane::Thread),
             )?;
+            pane.composer.set_text(reply);
             pane.gif = self.gif_shown();
             pane.box_h = pane
                 .composer
@@ -1776,6 +1783,14 @@ impl App {
 
     /// After an edit or caret move in the reply box.
     pub fn thread_composer_changed(&mut self) {
+        // Kept on every change, so closing the thread, quitting or updating
+        // never loses it.
+        if let Some(t) = &self.thread {
+            self.drafts.set(
+                &caper_client::saved_drafts::thread_key(&t.root),
+                &String::from_utf16_lossy(&t.composer.text),
+            );
+        }
         if let Some(t) = &mut self.thread
             && t.send_waiting
                 .as_ref()

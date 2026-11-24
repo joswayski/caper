@@ -2410,7 +2410,8 @@ impl App {
         if let Some(live) = self.live.take() {
             self.live = Some(live.logout());
         }
-        self.drafts.clear();
+        // Another account on this computer must never see these drafts.
+        self.drafts.erase();
         self.composer.set_text(Vec::new());
         self.composer_changed();
         self.status = None;

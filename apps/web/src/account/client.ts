@@ -2,6 +2,7 @@ import { withPicture, type PersonPicture } from "./pictures.ts";
 import { withProfile, type Profiles } from "./profiles.ts";
 import { setApplicationBadge, unreadChanged } from "./app-badge";
 import { hasHiddenNameCharacters } from "../names.ts";
+import { forgetDrafts } from "../chat/drafts.ts";
 
 export interface Account extends PersonPicture {
   id: string;
@@ -195,6 +196,7 @@ export const CHAT_SESSION_KEY = "caper.chat.session";
 
 export async function logout() {
   await request<void>("/api/auth/logout", { method: "POST" });
+  if (currentAccount) forgetDrafts(currentAccount.id);
   rememberAccount(null);
   // Logout revokes the capability too; don't leave it or the identity behind.
   try {

@@ -40,6 +40,7 @@ const NARROW_WIDTH = 440;
 const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 
 export default function ThreadPanel({
+  accountId,
   state,
   client,
   channelName,
@@ -60,6 +61,8 @@ export default function ThreadPanel({
   onEditLast,
   onClose,
 }: {
+  /** Whose saved replies to restore and keep; none in the signed-out simulation. */
+  accountId?: string;
   state: ChatViewState;
   client?: ChatClient;
   channelName: string;
@@ -96,9 +99,9 @@ export default function ThreadPanel({
   onEditLast?: () => boolean;
   onClose: () => void;
 }) {
-  // Kept in the page-wide store, so switching conversations never drops a reply.
-  const [drafts, setDrafts] = useState<Record<string, ThreadDraft>>(readThreadDrafts);
-  useEffect(() => saveThreadDrafts(drafts), [drafts]);
+  // Kept in the account's saved drafts, so switching conversations or reloading never drops a reply.
+  const [drafts, setDrafts] = useState<Record<string, ThreadDraft>>(() => readThreadDrafts(accountId));
+  useEffect(() => saveThreadDrafts(accountId, drafts), [accountId, drafts]);
   const [validation, setValidation] = useState<string>();
   const composer = useRef<ComposerInput>(null);
   const keyboardDismiss = useTimelineKeyboardDismiss("chat-thread-reply");

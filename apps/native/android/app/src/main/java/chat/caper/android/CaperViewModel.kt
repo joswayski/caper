@@ -268,7 +268,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var accountGeneration = 0L
     private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
-    internal val drafts = ConversationDrafts()
+    // Saved off the main thread, in order.
+    internal val drafts = ConversationDrafts(java.util.concurrent.Executors.newSingleThreadExecutor())
     internal val profileDrafts = ProfileMessageDrafts(api)
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
@@ -426,6 +427,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = AppUiState(screen = SessionScreen.SignedOut)
                     return@launch
                 }
+                // The account's unsent drafts, from before a restart or update too.
+                drafts.open(java.io.File(getApplication<Application>().noBackupFilesDir, "drafts"), account.id)
                 val list = try { requireNotNull(spacesRequest).await().getOrThrow() } catch (error: CancellationException) { throw error } catch (error: Throwable) {
                     if (requestAccountGeneration == accountGeneration)
                         mutable.value = AppUiState(screen = SessionScreen.Unavailable(account, message(error)), account = account)

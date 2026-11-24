@@ -20,6 +20,7 @@ use caper_client::model::{
 };
 use caper_client::notifications::Scope;
 use caper_client::reactions::Reacted;
+use caper_client::saved_drafts::{SavedDrafts, thread_key};
 use caper_client::sign_in::{MAX_RESENDS, resend_countdown, resend_wait};
 use caper_client::worker::{
     AccountOperation, AccountResult, AdminOperation, Command, Event, Worker, current,
@@ -340,8 +341,9 @@ struct State {
     channels_collapsed: bool,
     /// What the error banner's button tries again.
     retry: Option<Retry>,
-    /// Unsent composer text by conversation, restored on return.
-    drafts: HashMap<String, String>,
+    /// Unsent composer text by conversation (and thread replies by
+    /// `thread_key`), restored on return and kept on disk for the account.
+    drafts: SavedDrafts,
     /// The opened conversation's draft, for the composer at the next render.
     restore_draft: Option<String>,
     /// The signed-in account still needs a username and display name.
@@ -728,6 +730,12 @@ pub fn link_handoff() -> std::path::PathBuf {
         .filter(|path| path.is_absolute())
         .unwrap_or_else(|| glib::home_dir().join(".local/share"))
         .join("caper/link-handoff")
+}
+
+/// Each account's unsent drafts (`caper_client::saved_drafts`), one file per
+/// account, in `$XDG_DATA_HOME/caper/drafts`.
+fn drafts_dir() -> std::path::PathBuf {
+    glib::user_data_dir().join("caper/drafts")
 }
 
 type ConversationKey = (Option<String>, Option<String>, Option<String>);
@@ -1254,6 +1262,7 @@ impl App {
                 if buffer.char_count() > 0 && !app.restoring.get() {
                     app.typed();
                 }
+                app.save_draft(thread, buffer);
                 app.update_link_preview(thread);
             });
         }
@@ -1564,6 +1573,7 @@ impl App {
         state.epoch += 1;
         state.token = Some(token);
         crate::rows::set_quick_reactions(account.quick_reactions());
+        state.drafts.open_for(Some(&drafts_dir()), &account.id);
         state.account = Some(account);
         state.set_spaces(spaces);
         state.page = Some(Page::Chat);
@@ -1649,6 +1659,8 @@ impl App {
                 });
             }
             self.worker.showing(None);
+            // Another account on this computer must never see these drafts.
+            state.drafts.erase();
             let keep = (state.generation, state.epoch + 1, state.email.clone());
             *state = State {
                 page: Some(Page::SignIn),
@@ -1714,7 +1726,7 @@ impl App {
         state.restore_draft = Some(
             channel
                 .as_ref()
-                .and_then(|channel| state.drafts.remove(channel))
+                .map(|channel| state.drafts.get(channel).to_owned())
                 .unwrap_or_default(),
         );
         self.prepare(state, space, channel);
@@ -1773,7 +1785,7 @@ impl App {
         state.channel = Some(id.clone());
         state.direct = Some(id.clone());
         self.browsing.set(false);
-        state.restore_draft = Some(state.drafts.remove(&id).unwrap_or_default());
+        state.restore_draft = Some(state.drafts.get(&id).to_owned());
         self.load_people(state);
         self.prepare(state, None, Some(id));
     }
@@ -1791,11 +1803,7 @@ impl App {
         {
             let buffer = self.ui.composer.view.buffer();
             let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-            if text.trim().is_empty() {
-                state.drafts.remove(&channel);
-            } else {
-                state.drafts.insert(channel, text.to_string());
-            }
+            state.drafts.set(&channel, &text);
         }
         self.set_typing(state, false);
         *self.link_preview.borrow_mut() = Default::default();
@@ -1812,11 +1820,8 @@ impl App {
         // conversation's draft, as a refused one would be.
         if let Some(pending) = state.pending.take().filter(|pending| pending.unconfirmed) {
             state.files.extend(pending.files);
-            if pending.thread.is_none() && !pending.text.is_empty() {
-                state
-                    .drafts
-                    .entry(pending.outgoing.channel.clone())
-                    .or_insert(pending.text);
+            if pending.thread.is_none() && state.drafts.get(&pending.outgoing.channel).is_empty() {
+                state.drafts.set(&pending.outgoing.channel, &pending.text);
             }
         }
         state.compose = None;
@@ -1928,7 +1933,7 @@ impl App {
                 self.leave_conversation(state);
                 state.channel = Some(direct.clone());
                 state.direct = Some(direct.clone());
-                state.restore_draft = Some(state.drafts.remove(&direct).unwrap_or_default());
+                state.restore_draft = Some(state.drafts.get(&direct).to_owned());
                 self.prepare(state, None, Some(direct));
             }
             None => {
@@ -3149,6 +3154,26 @@ impl App {
     // ---------------------------------------------------------------------
     // Sending, replies, edits, deletes, pins and reactions.
 
+    /// Keeps a composer's text as its conversation's (or thread's) draft on
+    /// every change, so quitting or updating never loses it. A message being
+    /// edited is not a draft.
+    fn save_draft(&self, thread: bool, buffer: &gtk::TextBuffer) {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            return;
+        };
+        let key = if thread {
+            state.thread.as_ref().map(|thread| thread_key(&thread.root))
+        } else if matches!(state.compose, Some(Compose::Edit { .. })) {
+            None
+        } else {
+            state.channel.clone()
+        };
+        if let Some(key) = key {
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+            state.drafts.set(&key, &text);
+        }
+    }
+
     fn send_message(self: &Rc<Self>, thread: bool) {
         let composer = if thread {
             &self.ui.thread_composer
@@ -3547,6 +3572,7 @@ impl App {
     fn open_thread_at(self: &Rc<Self>, root: String, focus: Option<String>) {
         self.thread_follow.set(focus.is_none());
         self.reset_jump(true);
+        let reply;
         {
             let mut state = self.state.borrow_mut();
             state.focused = focus.clone();
@@ -3556,6 +3582,7 @@ impl App {
             };
             state.request += 1;
             let message = state.message(&root).cloned();
+            reply = state.drafts.get(&thread_key(&root)).to_owned();
             state.thread = Some(Thread {
                 root: root.clone(),
                 message,
@@ -3573,6 +3600,13 @@ impl App {
                 root,
                 before: None,
             });
+        }
+        // The thread's own unsent reply, not another thread's.
+        let buffer = self.ui.thread_composer.view.buffer();
+        if buffer.text(&buffer.start_iter(), &buffer.end_iter(), true) != reply {
+            self.restoring.set(true);
+            buffer.set_text(&reply);
+            self.restoring.set(false);
         }
         // A narrow thread takes the conversation's place, drawer and all.
         if self.is_narrow() {
@@ -4990,7 +5024,7 @@ impl App {
                     .map(|(history, _)| history.channel.id.as_str());
                 state.restore_draft = Some(
                     target_channel
-                        .and_then(|channel| state.drafts.remove(channel))
+                        .map(|channel| state.drafts.get(channel).to_owned())
                         .unwrap_or_default(),
                 );
             }
@@ -5007,6 +5041,25 @@ impl App {
                 }
                 match prepared.conversation {
                     Some((history, session)) => {
+                        // Launch and a space opened without a channel learn the
+                        // landing channel only now: its saved draft comes back,
+                        // and text typed while it loaded becomes its draft.
+                        if !matches!(state.compose, Some(Compose::Edit { .. })) {
+                            let buffer = self.ui.composer.view.buffer();
+                            let typed = if state.restore_draft.is_some() {
+                                String::new()
+                            } else {
+                                buffer
+                                    .text(&buffer.start_iter(), &buffer.end_iter(), true)
+                                    .to_string()
+                            };
+                            if typed.trim().is_empty() {
+                                state.restore_draft =
+                                    Some(state.drafts.get(&history.channel.id).to_owned());
+                            } else {
+                                state.drafts.set(&history.channel.id, &typed);
+                            }
+                        }
                         state.channel = Some(history.channel.id.clone());
                         if state.direct.is_none() || state.channel_name.is_empty() {
                             state.channel_name = history.channel.name.clone();

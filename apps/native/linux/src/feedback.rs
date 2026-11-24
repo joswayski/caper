@@ -263,7 +263,7 @@ impl App {
                 state.channel = Some(channel.clone());
                 state.direct = Some(channel.clone());
                 state.channel_name.clear();
-                state.restore_draft = Some(state.drafts.remove(&channel).unwrap_or_default());
+                state.restore_draft = Some(state.drafts.get(&channel).to_owned());
                 state.visit_request = Some(VisitRequest { target, origin });
                 self.prepare(&mut state, None, Some(channel));
             }

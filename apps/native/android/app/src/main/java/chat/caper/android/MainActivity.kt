@@ -1719,7 +1719,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val canAttach = state.canParticipate && state.uploadsEnabled && state.chatAuthorId != null && !thread.loading && thread.error == null &&
         !state.messagesLoading && state.messagesError == null && state.sessionError == null
     val dropping = remember(target) { mutableStateOf(false) }
-    var draft by rememberSaveable(state.selectedChannel?.id, thread.rootId, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    val draftKey = ConversationDrafts.thread(thread.rootId)
+    var draft by rememberSaveable(state.selectedChannel?.id, thread.rootId, stateSaver = TextFieldValue.Saver) {
+        viewModel.drafts[draftKey].let { mutableStateOf(TextFieldValue(it, TextRange(it.length))) }
+    }
+    // Kept with the account's drafts on every change, so closing the thread, quitting or updating never loses it.
+    LaunchedEffect(draftKey) { snapshotFlow { draft.text }.collect { viewModel.drafts[draftKey] = it } }
     var broadcast by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf(false) }
     val pending = state.pendingMessage?.takeIf { it.threadRootId == thread.rootId }
     // DMs are named after the other person, without a channel `#`.

@@ -649,6 +649,7 @@ public final class AppModel {
             Task { await self.refreshUnreadSpaces() }
         }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
+        chatModel.draftDefaults = landingDefaults
         chatModel.viewerProfile = { [weak self] in self?.account }
         chatModel.reactionAdded = { [weak self] in self?.refreshQuickReactions() }
         chatModel.profileDirectory = { [weak self] in self?.profileUpdates ?? ProfileDirectory() }
@@ -3397,7 +3398,7 @@ public final class ChatModel {
     public var spaceName = "Caper"
     public var draft = "" {
         didSet {
-            if oldValue != draft { composerRevision += 1 }
+            if oldValue != draft { composerRevision += 1; saveDrafts() }
             // A sent or cleared draft starts over: the next link gets its card again.
             if draft.isEmpty { removedPreviewLink = nil }
         }
@@ -3583,6 +3584,13 @@ public final class ChatModel {
     private var threadDrafts: [String: String] = [:]
     /// Unsent text of other conversations by channel or DM ID, restored on return.
     private var drafts: [String: String] = [:]
+    /// Where every draft is also kept for the signed-in account, so a relaunch
+    /// or an update restores it (`SavedDrafts`).
+    @ObservationIgnored var draftDefaults: UserDefaults = .standard
+    /// Whose saved drafts `drafts` and `threadDrafts` hold, and the
+    /// conversation whose text `draft` holds.
+    @ObservationIgnored private var draftsAccountID: String?
+    @ObservationIgnored private var draftChannelID: String?
     /// A picker owns its original composer even if selection finishes after
     /// navigation. Access IDs invalidate old callbacks after sign-out/revocation.
     struct AttachmentTarget: Hashable {
@@ -3610,8 +3618,10 @@ public final class ChatModel {
         get { threadRootID.flatMap { threadDrafts[$0] } ?? "" }
         set {
             if let threadRootID {
-                if threadDrafts[threadRootID] != newValue { composerRevision += 1 }
+                let changed = threadDrafts[threadRootID] != newValue
+                if changed { composerRevision += 1 }
                 threadDrafts[threadRootID] = newValue
+                if changed { saveDrafts() }
                 // As the channel draft: a sent or cleared reply starts over.
                 if newValue.isEmpty { removedThreadPreviewLinks[threadRootID] = nil }
             }
@@ -4013,8 +4023,10 @@ public final class ChatModel {
         } else {
             clearLocal(preservingPending: preservingPending)
         }
+        adoptSavedDrafts()
         let restoredDraft = channelID.flatMap { drafts.removeValue(forKey: $0) } ?? ""
         if let channelID { restoreStagedFiles(channelID: channelID) }
+        draftChannelID = channelID
         draft = preservingPending ? preservedDraft : restoredDraft
         self.restoredDraft = draft.isEmpty ? nil : draft
         // Prepared history is already loaded and authorized by navigation.
@@ -4800,7 +4812,7 @@ public final class ChatModel {
         }
         if edit {
             if let target { stagedFiles[target] = pendingDrafts }
-            if let root { threadDrafts[root] = text; threadBroadcasts[root] = broadcast } else { draft = text }
+            if let root { threadDrafts[root] = text; threadBroadcasts[root] = broadcast; saveDrafts() } else { draft = text }
             replyTargets[root ?? "channel"] = reference
         } else {
             pendingDrafts.forEach(abandon)
@@ -4876,6 +4888,9 @@ public final class ChatModel {
         subscriptionID = nil
         clearLocal()
         if discardingDrafts {
+            // Logout: another account on this device must never see them.
+            if let draftsAccountID { SavedDrafts.remove(accountID: draftsAccountID, defaults: draftDefaults) }
+            draftsAccountID = nil; draftChannelID = nil
             drafts = [:]; threadDrafts = [:]; threadBroadcasts = [:]
             discardStagedFiles()
         }
@@ -5053,8 +5068,24 @@ public final class ChatModel {
 
     /// Keeps the open conversation's unsent text so returning to it restores it.
     private func stashDraft() {
-        guard let channelID else { return }
-        drafts[channelID] = draft.isEmpty ? nil : draft
+        guard let draftChannelID else { return }
+        drafts[draftChannelID] = draft.isEmpty ? nil : draft
+    }
+
+    /// The signed-in account's saved drafts, read once per account.
+    private func adoptSavedDrafts() {
+        guard let account = viewerAccountID(), account != draftsAccountID else { return }
+        let saved = SavedDrafts.load(accountID: account, defaults: draftDefaults)
+        draftsAccountID = account
+        drafts = saved.conversations; threadDrafts = saved.threads
+    }
+
+    /// Keeps every draft, the open conversation's included, on every change.
+    private func saveDrafts() {
+        guard let draftsAccountID else { return }
+        var conversations = drafts
+        if let draftChannelID { conversations[draftChannelID] = draft }
+        SavedDrafts.save(SavedDrafts(conversations: conversations, threads: threadDrafts), accountID: draftsAccountID, defaults: draftDefaults)
     }
 
     /// Returns a reopened conversation's staged files, renewing any that

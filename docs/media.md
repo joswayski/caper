@@ -473,11 +473,19 @@ account credentials are never logged. Messages and author snapshots stay in
 Postgres with no automatic retention purge.
 
 Browser tokens use local storage. Each channel and DM keeps its own unsent draft
-(text, staged files and thread replies) in memory while the app stays open, on
-every client: switching away and back restores it, sending clears it, signing out
-discards every draft, and restoring one sends no typing indicator. Drafts are
-never sent to the API and do not survive a reload. Signed-in startup obtains a
-fresh capability from the current account session.
+(text, staged files and thread replies), on every client: switching away and back
+restores it, sending clears it, and restoring one sends no typing indicator. The
+text of conversation drafts and thread replies is also kept on the device for the
+signed-in account, so a reload, quitting and reopening, or an update restores it:
+web in `localStorage` (`caper:draft:<account>:<conversation>`,
+`caper:thread-drafts:<account>`), Apple in `UserDefaults` (`caper.drafts.<account>`),
+Android in one file per account under `noBackupFilesDir/drafts`, and Rust desktop
+in one file per account (`%APPDATA%\Caper\windows\drafts`,
+`$XDG_DATA_HOME/caper/drafts`). Staged files and reply targets stay in memory only.
+Signing out deletes the account's saved drafts, so another account on the device
+never sees them. Drafts are never sent to the API, logged, or synced between
+devices. Signed-in startup obtains a fresh capability from the current account
+session.
 
 History opens at the latest 50 messages. Scrolling to the oldest loaded rows
 requests the next 50; the history button stays as a keyboard-accessible fallback

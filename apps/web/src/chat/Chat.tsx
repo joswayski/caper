@@ -2610,6 +2610,7 @@ export default function Chat({
         )}
       </section>
       <ThreadPanel
+        accountId={accountId}
         state={state}
         onEditLast={() => !!state.thread && editLast(state.thread.rootId)}
         client={clientRef.current}

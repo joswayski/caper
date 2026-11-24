@@ -456,6 +456,57 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testDraftsAndThreadRepliesSurviveARelaunchPerAccountUntilLogout() async throws {
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            guard let url = request.url, url.path.hasSuffix("/messages"), let channel = url.pathComponents.dropLast().last else {
+                throw URLError(.badURL)
+            }
+            return (200, chatHistory(channel, sequences: [], cursor: 0, hasMore: false))
+        }
+        let suite = "SavedDrafts.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func launch(_ account: String) -> ChatModel {
+            let chat = ChatModel(api: client())
+            chat.draftDefaults = defaults
+            chat.viewerAccountID = { account }
+            return chat
+        }
+        let first = launch("alice")
+        await first.open(channelID: "chan00000001", displayName: "Me")
+        first.draft = "kept"
+        await first.openThread("root00000001")
+        first.threadDraft = "a reply"
+        await first.open(channelID: "chan00000002", displayName: "Me")
+        first.draft = "open when quit"
+
+        let relaunched = launch("alice")
+        await relaunched.open(channelID: "chan00000002", displayName: "Me")
+        XCTAssertEqual(relaunched.draft, "open when quit", "the open conversation's draft is saved too")
+        await relaunched.open(channelID: "chan00000001", displayName: "Me")
+        XCTAssertEqual(relaunched.draft, "kept")
+        await relaunched.openThread("root00000001")
+        XCTAssertEqual(relaunched.threadDraft, "a reply")
+        relaunched.draft = ""
+
+        let other = launch("bob")
+        await other.open(channelID: "chan00000002", displayName: "Me")
+        XCTAssertEqual(other.draft, "", "another account never sees them")
+
+        let sent = launch("alice")
+        await sent.open(channelID: "chan00000001", displayName: "Me")
+        XCTAssertEqual(sent.draft, "", "a cleared draft stays cleared")
+        await sent.stop(discardingDrafts: true)
+        let afterLogout = launch("alice")
+        await afterLogout.open(channelID: "chan00000002", displayName: "Me")
+        XCTAssertEqual(afterLogout.draft, "", "logout removes the saved drafts")
+        XCTAssertNil(defaults.data(forKey: SavedDrafts.key(accountID: "alice")))
+    }
+
+    @MainActor
     func testRepeatThreadOpenKeepsPendingLoadAndReusesPaginationUntilHistoryReset() async throws {
         let channel = "chan00000001"
         let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
