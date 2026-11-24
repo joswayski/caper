@@ -8,7 +8,7 @@ import {
   setSpaceNotifications,
   updateNotificationSettings,
 } from "../spaces/client.ts";
-import { isMuted, muteLabel, muteUntil } from "../spaces/notifications.ts";
+import { isMuted, muteLabel, muteUntil, pauseLabel, pausePresets, pauseUntil } from "../spaces/notifications.ts";
 import { notificationLocation, type MessageNotification } from "../account/browser-notifications.ts";
 import { setApplicationBadge, setConversationTitle } from "../account/app-badge";
 import { feedbackPlace, feedbackPreview, feedbackThreads } from "../spaces/FeedbackInbox.tsx";
@@ -110,6 +110,7 @@ test("notification routes send only the changed fields and read unknown levels a
     level: "mentions",
     voiceStarted: true,
     mobile: "whenInactive",
+    pausedUntil: null,
     overrides: [{ conversationId: "dm0000000001", level: null, mutedUntil: null }],
   });
   await updateNotificationSettings({ level: "nothing" });
@@ -186,6 +187,71 @@ test("mute presets send whole UTC seconds, and labels use local time with the da
   assert.equal(label(null), undefined);
   assert.equal(label(new Date(2026, 9, 8, 9, 30).toISOString()), undefined, "an expired mute reads as unmuted");
   assert.equal(isMuted("not a time"), false);
+});
+
+test("Do Not Disturb presets end at local times, and labels say when it ends", () => {
+  const evening = new Date(2026, 10, 24, 18, 10, 20);
+  const iso = (date: Date) => date.toISOString().replace(".000Z", "Z");
+  const [half, , eight, morning, forever] = pausePresets;
+  assert.equal(pauseUntil(half, evening), iso(new Date(2026, 10, 24, 18, 40, 20)));
+  assert.equal(pauseUntil(eight, evening), iso(new Date(2026, 10, 25, 2, 10, 20)));
+  // Tomorrow morning is 8:00 the next day, but 8:00 today in the small hours.
+  assert.equal(pauseUntil(morning, evening), iso(new Date(2026, 10, 25, 8)));
+  assert.equal(pauseUntil(morning, new Date(2026, 10, 25, 4, 59)), iso(new Date(2026, 10, 25, 8)));
+  assert.equal(pauseUntil(morning, new Date(2026, 10, 25, 5, 0)), iso(new Date(2026, 10, 26, 8)));
+  assert.equal(pauseUntil(morning, new Date(2026, 10, 30, 23, 0)), iso(new Date(2026, 11, 1, 8)));
+  assert.equal(pauseUntil(forever, evening), "forever");
+
+  const label = (until: string | null) => pauseLabel(until, evening, "en-US")?.replace(/\s/g, " ");
+  assert.equal(label(iso(new Date(2026, 10, 24, 18, 40))), "Until 6:40 PM");
+  assert.equal(label(iso(new Date(2026, 10, 25, 8))), "Until tomorrow at 8:00 AM");
+  assert.equal(label(iso(new Date(2026, 10, 27, 8))), "Until Fri 8:00 AM");
+  assert.equal(label(iso(new Date(2026, 11, 3, 8))), "Until Dec 3, 8:00 AM");
+  assert.equal(label("forever"), "Until you turn it off");
+  assert.equal(label(null), undefined);
+  assert.equal(label(iso(new Date(2026, 10, 24, 18, 0))), undefined, "an elapsed pause reads as off");
+});
+
+test("Do Not Disturb saves, follows other devices, reverts on failure and ends by itself", async () => {
+  vi.useFakeTimers({ now: new Date("2026-11-24T23:00:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
+  try {
+    const store = await freshStore();
+    const put = deferred();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input: string | URL | Request, init?: RequestInit) =>
+      init?.method ? put.promise : Response.json(settings),
+    );
+    await store.refreshNotificationSettings();
+    assert.equal(store.notificationsPaused(), false);
+    const until = "2026-11-24T23:30:00Z";
+    const saving = store.setPausedUntil(until);
+    assert.equal(store.notificationsPaused(), true, "optimistic");
+    // Another device's push waits for this tab's own save to settle.
+    store.receiveAccountNotificationSettings({
+      level: "all",
+      mobile: "whenInactive",
+      voiceStarted: true,
+      pausedUntil: null,
+    });
+    assert.equal(store.useNotificationSettings().pausedUntil, until);
+    put.resolve(new Response(null, { status: 500 }));
+    await assert.rejects(saving);
+    assert.equal(store.notificationsPaused(), false, "a failed save reverts");
+
+    store.receiveAccountNotificationSettings({
+      level: "mentions",
+      mobile: "always",
+      voiceStarted: false,
+      pausedUntil: until,
+    });
+    const state = store.useNotificationSettings();
+    assert.equal(state.level, "mentions");
+    assert.equal(store.notificationsPaused(), true);
+    assert.equal(state.overrides.size, 2, "pushes carry no overrides and keep the loaded ones");
+    vi.advanceTimersByTime(30 * 60_000 + 500);
+    assert.equal(store.useNotificationSettings().pausedUntil, null, "an elapsed pause turns itself off");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a failed change reverts to the saved state and rethrows; a success keeps the server's copy", async () => {

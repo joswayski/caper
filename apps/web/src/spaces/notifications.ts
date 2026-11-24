@@ -49,6 +49,38 @@ export function muteLabel(mutedUntil: MutedUntil | undefined, now = new Date(), 
   return `Muted until ${until.toLocaleString(locale, { month: "short", day: "numeric", year, ...time })}`;
 }
 
+/** Do Not Disturb's choices, the same on every client. */
+export const pausePresets: ReadonlyArray<{ label: string; minutes?: number; morning?: true }> = [
+  { label: "30 minutes", minutes: 30 },
+  { label: "1 hour", minutes: 60 },
+  { label: "8 hours", minutes: 8 * 60 },
+  { label: "Until tomorrow morning", morning: true },
+  { label: "Until I turn it off" },
+];
+
+/** The `pausedUntil` a preset sends. Tomorrow morning is 8:00 local time the next day, or today before 5:00. */
+export function pauseUntil(preset: (typeof pausePresets)[number], now = new Date()): MutedUntil {
+  if (preset.minutes !== undefined) return muteUntil(preset.minutes, now.getTime());
+  if (!preset.morning) return "forever";
+  const morning = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (now.getHours() < 5 ? 0 : 1), 8);
+  return morning.toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+/** When Do Not Disturb ends, in local time: "Until 3:45 PM", "Until tomorrow at 8:00 AM", "Until Thu 8:00 AM",
+ * "Until Dec 3, 8:00 AM", or "Until you turn it off". Undefined when it is off. */
+export function pauseLabel(pausedUntil: MutedUntil | undefined, now = new Date(), locale?: string) {
+  if (!pausedUntil || !isMuted(pausedUntil, now.getTime())) return undefined;
+  if (pausedUntil === "forever") return "Until you turn it off";
+  const until = new Date(pausedUntil);
+  const time = until.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  const day = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const days = Math.round((day(until) - day(now)) / 86_400_000);
+  if (days <= 0) return `Until ${time}`;
+  if (days === 1) return `Until tomorrow at ${time}`;
+  if (days < 7) return `Until ${until.toLocaleDateString(locale, { weekday: "short" })} ${time}`;
+  return `Until ${until.toLocaleDateString(locale, { month: "short", day: "numeric" })}, ${time}`;
+}
+
 export type NotificationScope = { spaceId: string; channelId?: string } | { conversationId: string };
 
 export interface NotificationState {
@@ -57,6 +89,8 @@ export interface NotificationState {
   level: NotificationLevel;
   mobile: MobileNotifications;
   voiceStarted: boolean;
+  /** Do Not Disturb; read it through `isMuted`, since it may have ended. */
+  pausedUntil: MutedUntil;
   /** Keyed by `scopeKey`; scopes with nothing set are absent. */
   overrides: ReadonlyMap<string, NotificationOverride>;
 }
@@ -83,6 +117,7 @@ const INITIAL: NotificationState = {
   level: "all",
   mobile: "whenInactive",
   voiceStarted: true,
+  pausedUntil: null,
   overrides: new Map(),
 };
 let state = INITIAL;
@@ -123,16 +158,17 @@ function fromSettings(settings: NotificationSettings): NotificationState {
     loaded: true,
     level: settings.level,
     mobile: settings.mobile,
+    pausedUntil: settings.pausedUntil,
     overrides: new Map(settings.overrides.map((override) => [scopeKey(override), override])),
   };
 }
 
-// Re-render when the next timed mute ends, dropping it as the server would.
+// Re-render when the next timed mute or Do Not Disturb ends, dropping it as the server would.
 function scheduleExpiry() {
   clearTimeout(expiry);
   const now = Date.now();
   let next = Infinity;
-  for (const { mutedUntil } of state.overrides.values()) {
+  for (const { mutedUntil } of [...state.overrides.values(), { mutedUntil: state.pausedUntil }]) {
     const end = mutedUntil && mutedUntil !== "forever" ? Date.parse(mutedUntil) : NaN;
     if (end > now) next = Math.min(next, end);
   }
@@ -146,7 +182,21 @@ function dropExpiredMutes() {
     if (override.mutedUntil && !isMuted(override.mutedUntil, now))
       put(overrides, key, { ...override, mutedUntil: null });
   }
-  publish({ ...state, overrides });
+  publish({ ...state, overrides, pausedUntil: isMuted(state.pausedUntil, now) ? state.pausedUntil : null });
+}
+
+/** Whether Do Not Disturb holds alerts back right now. */
+export function notificationsPaused(now = Date.now()) {
+  return isMuted(state.pausedUntil, now);
+}
+
+/** Account settings saved on another device (`notifications.updated`, without overrides). A change of
+ * this tab's in flight wins; its own answer settles the fields. */
+export function receiveAccountNotificationSettings(settings: Omit<NotificationSettings, "overrides">) {
+  if (!state.loaded || pending) return;
+  revision++;
+  const { level, mobile, voiceStarted, pausedUntil } = settings;
+  publish({ ...state, level, mobile, voiceStarted, pausedUntil });
 }
 
 /** Loads after sign-in and whenever settings or a menu opens; ignored if a change was made meanwhile. */
@@ -191,6 +241,23 @@ export async function setVoiceStarted(voiceStarted: boolean) {
     if (mine === revision) publish({ ...state, voiceStarted: settings.voiceStarted });
   } catch (error) {
     if (state.voiceStarted === voiceStarted) publish({ ...state, voiceStarted: previous });
+    throw error;
+  } finally {
+    pending--;
+  }
+}
+
+/** Starts (`forever` or a time) or ends (null) Do Not Disturb. */
+export async function setPausedUntil(pausedUntil: MutedUntil) {
+  const previous = state.pausedUntil;
+  const mine = ++revision;
+  pending++;
+  publish({ ...state, pausedUntil });
+  try {
+    const settings = await updateNotificationSettings({ pausedUntil });
+    if (mine === revision) publish({ ...state, pausedUntil: settings.pausedUntil });
+  } catch (error) {
+    if (state.pausedUntil === pausedUntil) publish({ ...state, pausedUntil: previous });
     throw error;
   } finally {
     pending--;

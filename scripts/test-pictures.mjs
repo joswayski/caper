@@ -576,6 +576,7 @@ async function reopenProfile(page, narrow = false) {
   } else {
     await page.locator(".profile-dialog").waitFor({ state: "hidden" });
     await page.locator(".account-profile").click();
+    await page.getByRole("button", { name: "Edit profile", exact: true }).click();
   }
   await page.getByRole("button", { name: "Change profile picture" }).waitFor();
 }
@@ -600,7 +601,10 @@ async function checkProfileDraft(browser, narrow) {
     const problems = [];
     page.on("pageerror", (error) => problems.push(error.message));
     await page.goto(new URL(narrow ? "/profile" : "/spaces?space=space1234567&channel=channel12345", origin).href);
-    if (!narrow) await page.locator(".account-profile").click();
+    if (!narrow) {
+      await page.locator(".account-profile").click();
+      await page.getByRole("button", { name: "Edit profile", exact: true }).click();
+    }
     const profile = page.locator(narrow ? "main" : ".profile-dialog");
     const saved = await page.evaluate(() => window.pictureFixture.savedAccount());
     const discard = page.getByRole("dialog", { name: "Discard changes?", exact: true });
@@ -787,7 +791,10 @@ async function checkGallery(browser, narrow) {
     page.on("pageerror", (error) => problems.push(error.message));
     await page.goto(new URL(narrow ? "/profile" : "/spaces?space=space1234567&channel=channel12345", origin).href);
     if (narrow) assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true);
-    if (!narrow) await page.locator(".account-profile").click();
+    if (!narrow) {
+      await page.locator(".account-profile").click();
+      await page.getByRole("button", { name: "Edit profile", exact: true }).click();
+    }
     const profile = page.locator(narrow ? "main" : ".profile-dialog");
     const edit = profile.getByRole("button", { name: "Change profile picture" });
     const open = async () => {
@@ -988,6 +995,7 @@ async function checkExistingPictures(browser) {
 
   // ---- Profile picture: upload a still (cropped, WebP), then a GIF (unchanged), then remove ----
   await page.locator(".account-profile").click();
+  await page.getByRole("button", { name: "Edit profile", exact: true }).click();
   const dialog = page.locator(".profile-dialog");
   // Even without a custom picture, the menu offers the retained picture library.
   const editPicture = dialog.getByRole("button", { name: "Change profile picture" });

@@ -3,6 +3,7 @@ import { avatarUrl } from "./avatar";
 import { notificationImage } from "./notification-image";
 import { pictureUrl } from "./pictures";
 import { setAccountFeedLive } from "./shell-poll";
+import { notificationsPaused } from "../spaces/notifications";
 
 const CHOICE = "caper.browserNotifications";
 
@@ -225,9 +226,14 @@ export function watchBrowserNotifications(
       const age = Date.now() - Date.parse(event.createdAt);
       return Number.isFinite(age) && age >= -30_000 && age <= 120_000;
     };
-    if (!location || event.quiet === true || !fresh()) return;
+    // Do Not Disturb holds banners back; unread state above still updates.
+    if (!location || event.quiet === true || !fresh() || notificationsPaused()) return;
     const subject = invitation || request ? identity : (event.conversationId ?? event.channelId);
-    const allowed = () => active && browserNotificationPermission() === "granted" && browserNotificationsEnabled();
+    const allowed = () =>
+      active &&
+      browserNotificationPermission() === "granted" &&
+      browserNotificationsEnabled() &&
+      !notificationsPaused();
     const reading = () => {
       visibility();
       let visible = document.visibilityState === "visible" && document.hasFocus() && showing() === subject;

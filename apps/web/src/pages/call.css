@@ -231,12 +231,13 @@
   line-height: 20px;
 }
 /* Near the 220px sidebar minimum the controls left the name about 20px ("F…").
-   Show the avatar alone instead; the button keeps its "Edit profile for …" name. */
+   Show the avatar alone instead; the button keeps its "Account menu for …" name. */
 @container account (max-width: 209px) {
-  .account-name {
+  .account-label {
     display: none;
   }
 }
+
 .call-account .voice-icon-button {
   width: 28px;
   height: 32px;
@@ -2855,4 +2856,139 @@ button.voice-strip-open {
   .live-everyone:popover-open {
     animation: none;
   }
+}
+/* Your name, and "Do Not Disturb" beneath it while it is on. */
+.account-label {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+}
+.account-dnd {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-label:has(.account-dnd) .account-name {
+  line-height: 16px;
+}
+/* Signed in, your name opens the account menu: it fills the bar like the
+   plain profile button, not the square icon triggers beside it. */
+.call-settings.account-menu {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+}
+.call-settings-trigger.account-profile {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  justify-content: flex-start;
+  padding: 0 6px;
+  color: var(--text);
+}
+/* The moon takes the presence dot's place on your own avatar. */
+.dnd-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--presence-ring, var(--surface));
+  border-radius: 50%;
+  color: var(--text);
+  background: var(--surface-raised);
+}
+.dnd-badge svg {
+  width: 9px;
+  height: 9px;
+  fill: currentColor;
+}
+.call-settings-panel > .dnd-menu {
+  gap: 0;
+}
+/* Edit profile follows the Do Not Disturb choices in the account menu. */
+.call-settings-panel > .dnd-menu:not(:last-child) {
+  margin-bottom: 5px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+.dnd-menu > strong {
+  padding: 8px 8px 4px;
+}
+.dnd-menu > button {
+  min-height: 38px;
+  padding: 10px 8px;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .dnd-menu > button {
+    min-height: 44px;
+  }
+}
+.dnd-menu .dnd-error {
+  margin: 4px 8px;
+  color: var(--error-text);
+  font-size: 0.76rem;
+}
+.dnd-settings {
+  margin-bottom: 10px;
+}
+/* Settings: one scrolling column of sections, the first without its divider. */
+.settings-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+.settings-sections > .privacy-settings:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.settings-sections .appearance-heading {
+  display: none;
+}
+.settings-profile-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.settings-profile-avatar {
+  flex-basis: 44px;
+  width: 44px;
+  height: 44px;
+}
+.settings-profile-name {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+.settings-profile-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settings-version {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+.settings-version a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+}
+.settings-logout .privacy-notification-enable {
+  display: inline-grid;
+  place-items: center;
+  text-decoration: none;
 }

@@ -1,11 +1,19 @@
 import { appGateway } from "../gateway/client.ts";
 import { getRememberedAccount, rememberSavedAccount } from "./client.ts";
 import { liveUpdate, receiveProfile, withProfile, type SpaceUpdate } from "./profiles.ts";
+import { notificationSettings, type NotificationSettings } from "../spaces/client.ts";
+import { receiveAccountNotificationSettings } from "../spaces/notifications.ts";
 
 /** Routes one `profiles` event: your own profile updates the signed-in account
  * (as a save would); anyone else's joins the live profile store; a space update
- * goes to `onSpace`. Unknown or malformed events are ignored. */
+ * goes to `onSpace`; your notification settings (Do Not Disturb included) saved
+ * on another device update this tab's. Unknown or malformed events are ignored. */
 export function applyLiveUpdate(value: unknown, onSpace: (space: SpaceUpdate) => void) {
+  const event = value as { type?: unknown; settings?: unknown } | null;
+  if (event?.type === "notifications.updated" && event.settings && typeof event.settings === "object")
+    return receiveAccountNotificationSettings(
+      notificationSettings({ ...(event.settings as NotificationSettings), overrides: [] }),
+    );
   const update = liveUpdate(value);
   if (!update) return;
   if (update.type === "space.updated") return onSpace(update.space);

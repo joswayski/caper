@@ -11,6 +11,7 @@ import {
   browserNotificationsEnabled,
   setBrowserNotificationsEnabled,
 } from "./browser-notifications";
+import { DoNotDisturbSettings } from "./DoNotDisturb";
 import "./privacy.css";
 
 const choices: Array<{ value: NotificationLevel; label: string }> = [
@@ -19,7 +20,7 @@ const choices: Array<{ value: NotificationLevel; label: string }> = [
   { value: "nothing", label: "Nothing" },
 ];
 
-/** The account notification level. Saves as you choose; phone delivery settings live on phones. */
+/** Do Not Disturb and the account notification level. Saves as you choose; phone delivery settings live on phones. */
 export default function NotificationSettings() {
   const settings = useNotificationSettings();
   const [saving, setSaving] = useState(false);
@@ -66,6 +67,7 @@ export default function NotificationSettings() {
   return (
     <section className="privacy-settings notification-settings" aria-labelledby={`${name}-title`}>
       <h3 id={`${name}-title`}>Notifications</h3>
+      <DoNotDisturbSettings />
       {/* Only while loading: disabling during a save would drop focus from the chosen radio. */}
       <fieldset disabled={!settings.loaded} aria-busy={saving}>
         <legend>Notify me about</legend>

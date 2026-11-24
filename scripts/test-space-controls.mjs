@@ -304,10 +304,10 @@ function stableShell(selector) {
   assert.deepEqual(geometry(selector), before);
 }
 function testSettingRows(width, height) {
-  wait('document.querySelectorAll(".profile-dialog .privacy-settings input[type=radio]:checked").length === 2');
+  wait('document.querySelectorAll(".settings-dialog .privacy-settings input[type=radio]:checked").length === 2');
   const settingRows = evaluate(`(() => {
     const center = element => { const r = element.getBoundingClientRect(); return r.top + r.height / 2; };
-    return [...document.querySelectorAll('.profile-dialog .privacy-settings label')].map(row => ({
+    return [...document.querySelectorAll('.settings-dialog .privacy-settings label')].map(row => ({
       label: row.querySelector('strong').textContent,
       textOffset: center(row.querySelector('span')) - center(row),
       radioOffset: center(row.querySelector('input')) - center(row),
@@ -316,7 +316,7 @@ function testSettingRows(width, height) {
     }));
   })()`);
   assert.equal(
-    evaluate('document.querySelectorAll(".profile-dialog .privacy-settings input[type=radio]").length'),
+    evaluate('document.querySelectorAll(".settings-dialog .privacy-settings input[type=radio]").length'),
     6,
     "Notification and privacy groups must render all radio choices",
   );
@@ -418,6 +418,7 @@ function testModalKeyboard() {
     browser("press", "Escape");
     assert.equal(opens(), 0, "The next Escape closes settings");
     browser("click", ".account-profile");
+    browser("find", "role", "button", "click", "--name", "Edit profile", "--exact");
     wait('!!document.querySelector(".profile-dialog[open]")');
     browser("press", "Escape");
     assert.equal(evaluate('!!document.querySelector(".profile-dialog[open]")'), false);
@@ -463,8 +464,8 @@ function testModalGeometry() {
       screenshot(`navigation-inset-${width}-${height}`);
     }
     if (process.env.SETTINGS_ONLY) {
-      browser("click", ".account-profile");
-      wait('!!document.querySelector(".profile-dialog[open] form")');
+      browser("click", '[aria-label="User Settings"]');
+      wait('!!document.querySelector(".settings-dialog[open]")');
       testSettingRows(width, height);
       browser("press", "Escape");
       continue;
@@ -559,6 +560,7 @@ function testModalGeometry() {
     dismissBackdrop();
     assert.equal(opens(), 0, "Space settings backdrop must dismiss");
     browser("click", ".account-profile");
+    browser("find", "role", "button", "click", "--name", "Edit profile", "--exact");
     wait('!!document.querySelector(".profile-dialog[open] form")');
     browser("fill", "#display-name", "Updated fixture owner");
     // Normalize scroll before measuring: a short viewport legitimately scrolls
@@ -584,15 +586,18 @@ function testModalGeometry() {
     screenshot(`modal-profile-saving-${width}-${height}`);
     evaluate("spaceControlFixture.profileRelease()");
     wait('!!document.querySelector(".profile-dialog [role=alert]")');
-    testSettingRows(width, height);
     stableShell(".profile-dialog[open]");
     browser("press", "Escape");
     browser("find", "role", "button", "click", "--name", "Discard", "--exact");
     browser("click", '[aria-label="User Settings"]');
+    wait('!!document.querySelector(".settings-dialog[open]")');
+    testSettingRows(width, height);
     browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
     wait('!!document.querySelector(".audio-dialog[open]")');
     screenshot(`modal-audio-${width}-${height}`);
     stableShell(".audio-dialog[open]");
+    browser("press", "Escape");
+    // Settings stays open beneath the audio dialog.
     browser("press", "Escape");
     if (width < 760) {
       closeBrowse();

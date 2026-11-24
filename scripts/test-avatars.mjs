@@ -315,6 +315,7 @@ try {
   if (artifacts) browser("screenshot", join(artifacts, "avatars-members-settings.png"));
   browser("click", '[aria-label="Close Manage space"]');
   browser("click", ".account-profile");
+  browser("find", "role", "button", "click", "--name", "Edit profile", "--exact");
   browser("fill", "#display-name", "Renamed Alex");
   // The composer's send button (shown on touch screens) is also a submit button.
   browser("click", '.profile-dialog button[type="submit"]');

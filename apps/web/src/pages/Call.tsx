@@ -35,15 +35,14 @@ import {
 } from "lucide-react";
 import type { ProfileFormHandle } from "../account/ProfileForm";
 import { hostProfileEditor } from "../account/profile-editor";
-import NotificationSettings from "../account/NotificationSettings";
-import PrivacySettings from "../account/PrivacySettings";
+import { DoNotDisturbBadge, DoNotDisturbMenu, useDoNotDisturb } from "../account/DoNotDisturb";
 import WhatsNew from "../updates/WhatsNew";
 
-// The profile dialog's editors (pictures, crop editor, GIF shrinking, themes)
-// load when it first opens, not with every conversation.
+// The profile and Settings dialogs' editors (pictures, crop editor, GIF
+// shrinking, themes, privacy) load when they first open, not with every conversation.
 const ProfileForm = lazy(() => import("../account/ProfileForm"));
-const AppearanceSettings = lazy(() => import("../theme/AppearanceSettings"));
-import { getAccount, getRememberedAccount, logout, subscribeAccount, type Account } from "../account/client";
+const SettingsSections = lazy(() => import("../account/Settings"));
+import { getAccount, getRememberedAccount, subscribeAccount, type Account } from "../account/client";
 import { withPicture } from "../account/pictures";
 import { routeOutput } from "../audio/output";
 import Chat, { type FocusTarget } from "../chat/Chat";
@@ -190,6 +189,10 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
 function AudioMenu({
   label,
   settings,
+  icon,
+  tooltip,
+  className,
+  triggerClassName,
   open,
   onOpenChange,
   menuRef,
@@ -197,6 +200,12 @@ function AudioMenu({
 }: {
   label: string;
   settings?: boolean;
+  /** Replaces the trigger's chevron (or gear, for `settings`). */
+  icon?: ReactNode;
+  /** The trigger's tooltip, when it should say more than its label (or nothing). */
+  tooltip?: ReactNode;
+  className?: string;
+  triggerClassName?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   menuRef?: RefObject<HTMLDivElement | null>;
@@ -254,7 +263,7 @@ function AudioMenu({
   return (
     <div
       ref={menuRef}
-      className={`call-settings ${settings ? "" : "device-menu"}`}
+      className={`call-settings ${settings ? "" : "device-menu"} ${className ?? ""}`}
       onKeyDown={(event) => {
         // Let native device pickers handle Escape without also removing their panel.
         if (event.target instanceof HTMLSelectElement) return;
@@ -267,16 +276,16 @@ function AudioMenu({
       }}
     >
       {/* The same styled tooltip as Mute/Deafen beside it, not the slower native title. */}
-      <Tooltip content={open ? undefined : label}>
+      <Tooltip content={open ? undefined : icon ? tooltip : label}>
         <button
           type="button"
-          className="call-settings-trigger"
+          className={`call-settings-trigger ${triggerClassName ?? ""}`}
           aria-label={label}
           aria-expanded={open}
           aria-controls={open ? panelId : undefined}
           onClick={() => onOpenChange(!open)}
         >
-          {settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+          {icon ?? (settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />)}
         </button>
       </Tooltip>
       {open && (
@@ -562,7 +571,12 @@ export default function Call({
   const [identityReady, setIdentityReady] = useState(!!initialAccount);
   const [availability, setAvailability] = useState<Record<string, boolean>>({});
   const [audioPanel, setAudioPanel] = useState<"mic" | "connection" | "debug">();
-  const [audioMenu, setAudioMenu] = useState<"input" | "output" | "settings">();
+  const [audioMenu, setAudioMenu] = useState<"input" | "output" | "account">();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsDialog = useRef<HTMLDialogElement>(null);
+  const closeSettings = () => setSettingsOpen(false);
+  const settingsBackdrop = useBackdropDismiss(closeSettings);
+  const doNotDisturb = useDoNotDisturb();
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const audioMenuRef = useRef<HTMLDivElement>(null);
   const audioDialog = useRef<HTMLDialogElement>(null);
@@ -615,7 +629,7 @@ export default function Call({
     const update = () => {
       setNarrow(media.matches);
       setMembersVisible(media.matches || membersForThread.current.hidden ? false : wideMembersVisible.current);
-      if (media.matches) setAudioMenu((menu) => (menu === "settings" ? menu : undefined));
+      if (media.matches) setAudioMenu((menu) => (menu === "account" ? menu : undefined));
     };
     update();
     media.addEventListener("change", update);
@@ -678,7 +692,6 @@ export default function Call({
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
   const [actionError, setActionError] = useState<string>();
-  const [loggingOut, setLoggingOut] = useState(false);
   const [actionPending, setActionPending] = useState(false);
   const actionGeneration = useRef(0);
   const [speakingStore] = useState(() => new SpeakingStore());
@@ -1004,7 +1017,6 @@ export default function Call({
   // open. Re-read them when the visitor returns or opens User Settings, rather
   // than requiring a reload or a new login.
   const signedIn = !!account;
-  const settingsOpen = audioMenu === "settings";
   useEffect(() => {
     if (!signedIn) return;
     let current = true;
@@ -1424,6 +1436,10 @@ export default function Call({
     if (profileOpen) profileDialog.current?.showModal();
     else profileDialog.current?.close();
   }, [profileOpen]);
+  useEffect(() => {
+    if (settingsOpen) settingsDialog.current?.showModal();
+    else settingsDialog.current?.close();
+  }, [settingsOpen]);
 
   // Your own voice tile shows the picture you just saved, like your name.
   const voicePicture = <T extends Pick<Participant, "id" | "avatarId" | "avatarAsset" | "avatarUrl">>(
@@ -2155,27 +2171,87 @@ export default function Call({
               </div>
             )}
             <div className="call-account">
-              <button
-                className="account-profile"
-                type="button"
-                disabled={!identityReady}
-                aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"}
-                onClick={() => {
-                  if (account) setProfileOpen(true);
-                  else window.location.assign("/login");
-                }}
-              >
-                <span className="account-avatar">
-                  <Avatar person={account} name={identityName} />
-                  <PresenceDot
-                    status={accountPresence ? selfPresence : localPresence}
-                    live={accountPresence ? presenceLive : true}
-                  />
-                </span>
-                <strong className="account-name" title={identityName}>
-                  {identityName || "Loading…"}
-                </strong>
-              </button>
+              {account ? (
+                // Your name opens Do Not Disturb and Edit profile; Settings has the rest.
+                <AudioMenu
+                  label={`Account menu for ${identityName}`}
+                  tooltip={doNotDisturb.on ? `Do Not Disturb · ${doNotDisturb.until}` : undefined}
+                  settings
+                  className="account-menu"
+                  triggerClassName="account-profile"
+                  icon={
+                    <>
+                      <span className="account-avatar">
+                        <Avatar person={account} name={identityName} />
+                        {/* Your own avatar wears the moon while Do Not Disturb holds alerts back. */}
+                        {account && doNotDisturb.on ? (
+                          <DoNotDisturbBadge />
+                        ) : (
+                          <PresenceDot
+                            status={accountPresence ? selfPresence : localPresence}
+                            live={accountPresence ? presenceLive : true}
+                          />
+                        )}
+                      </span>
+                      <span className="account-label">
+                        <strong className="account-name" title={identityName}>
+                          {identityName || "Loading…"}
+                        </strong>
+                        {account && doNotDisturb.on && (
+                          <small className="account-dnd" title={doNotDisturb.until}>
+                            Do Not Disturb
+                          </small>
+                        )}
+                      </span>
+                    </>
+                  }
+                  open={audioMenu === "account"}
+                  onOpenChange={(open) => setAudioMenu(open ? "account" : undefined)}
+                  menuRef={audioMenu === "account" ? audioMenuRef : undefined}
+                >
+                  <DoNotDisturbMenu onDone={() => setAudioMenu(undefined)} />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAudioMenu(undefined);
+                      setProfileOpen(true);
+                    }}
+                  >
+                    Edit profile
+                  </button>
+                </AudioMenu>
+              ) : (
+                <button
+                  className="account-profile"
+                  type="button"
+                  disabled={!identityReady}
+                  aria-label="Sign in to edit your profile"
+                  onClick={() => window.location.assign("/login")}
+                >
+                  <span className="account-avatar">
+                    <Avatar person={account} name={identityName} />
+                    {/* Your own avatar wears the moon while Do Not Disturb holds alerts back. */}
+                    {account && doNotDisturb.on ? (
+                      <DoNotDisturbBadge />
+                    ) : (
+                      <PresenceDot
+                        status={accountPresence ? selfPresence : localPresence}
+                        live={accountPresence ? presenceLive : true}
+                      />
+                    )}
+                  </span>
+                  <span className="account-label">
+                    <strong className="account-name" title={identityName}>
+                      {identityName || "Loading…"}
+                    </strong>
+                    {account && doNotDisturb.on && (
+                      <small className="account-dnd" title={doNotDisturb.until}>
+                        Do Not Disturb
+                      </small>
+                    )}
+                  </span>
+                </button>
+              )}
               {!narrow && (
                 <>
                   <div className={`voice-action-group${state.muted ? " active" : ""}`}>
@@ -2275,77 +2351,23 @@ export default function Call({
                   </div>
                 </>
               )}
-              <AudioMenu
-                label="User Settings"
-                settings
-                open={audioMenu === "settings"}
-                onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)}
-                menuRef={audioMenu === "settings" ? audioMenuRef : undefined}
-              >
-                {!embedded && signedIn && (
+              <div className="call-settings">
+                <Tooltip content={settingsOpen ? undefined : "Settings"}>
                   <button
                     type="button"
+                    className="call-settings-trigger"
+                    aria-label="User Settings"
+                    aria-haspopup="dialog"
+                    aria-expanded={settingsOpen}
                     onClick={() => {
                       setAudioMenu(undefined);
-                      setWhatsNewOpen(true);
+                      setSettingsOpen(true);
                     }}
                   >
-                    What’s new
+                    <Settings aria-hidden="true" />
                   </button>
-                )}
-                <strong>Audio settings</strong>
-                <fieldset className="device-options">
-                  <label>
-                    <input
-                      type="checkbox"
-                      role="switch"
-                      checked={voiceSendOnStop}
-                      onChange={(event) => setVoiceSendOnStop(event.target.checked)}
-                    />
-                    <span>Send voice messages as soon as I stop recording</span>
-                  </label>
-                </fieldset>
-                <button
-                  disabled={!identityReady || controlsDisabled || state.phase === "leaving"}
-                  type="button"
-                  onClick={openMicTest}
-                >
-                  Audio test
-                </button>
-                {state.diagnostics && (
-                  <button type="button" onClick={() => setAudioPanel("connection")}>
-                    Connection details
-                  </button>
-                )}
-                {account?.debugEnabled && (
-                  <button type="button" onClick={() => setAudioPanel("debug")}>
-                    Audio diagnostics
-                  </button>
-                )}
-                {identityReady &&
-                  (account ? (
-                    <button
-                      type="button"
-                      disabled={loggingOut}
-                      onClick={() => {
-                        setLoggingOut(true);
-                        setActionError(undefined);
-                        logout().then(
-                          () => window.location.assign("/"),
-                          () => {
-                            // Stay signed in and say so, instead of a click that silently did nothing.
-                            setLoggingOut(false);
-                            setActionError("Couldn’t log out. Check your connection and try again.");
-                          },
-                        );
-                      }}
-                    >
-                      {loggingOut ? "Logging out…" : "Log out"}
-                    </button>
-                  ) : (
-                    <a href="/login">Sign in</a>
-                  ))}
-              </AudioMenu>
+                </Tooltip>
+              </div>
             </div>
           </div>
         </ChannelSidebar>
@@ -2520,16 +2542,95 @@ export default function Call({
                 }}
               />
             )}
-            {profileOpen && account?.username && <AppearanceSettings />}
-            {profileOpen && account?.username && <NotificationSettings />}
-            {profileOpen && account?.username && <PrivacySettings />}
+          </Suspense>
+        </div>
+      </dialog>
+      <dialog
+        ref={settingsDialog}
+        className="audio-dialog settings-dialog"
+        aria-labelledby="settings-dialog-title"
+        onKeyDown={dialogKeyDown}
+        {...settingsBackdrop}
+        onCancel={(event) => {
+          event.preventDefault();
+          closeSettings();
+        }}
+      >
+        <div className="audio-dialog-heading">
+          <h2 id="settings-dialog-title">Settings</h2>
+          <button type="button" className="voice-icon-button" aria-label="Close settings" onClick={closeSettings}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+        <div className="audio-dialog-body">
+          <Suspense fallback={null}>
+            {settingsOpen && (
+              <SettingsSections
+                account={account ?? undefined}
+                identityName={identityName}
+                identityReady={identityReady}
+                onEditProfile={() => setProfileOpen(true)}
+                onWhatsNew={!embedded && signedIn ? () => setWhatsNewOpen(true) : undefined}
+                voice={
+                  <>
+                    <fieldset>
+                      <label>
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={voiceSendOnStop}
+                          onChange={(event) => setVoiceSendOnStop(event.target.checked)}
+                        />
+                        <span>
+                          <strong>Send voice messages as soon as I stop recording</strong>
+                        </span>
+                      </label>
+                    </fieldset>
+                    <div className="settings-actions">
+                      <button
+                        type="button"
+                        className="privacy-notification-enable"
+                        disabled={!identityReady || controlsDisabled || state.phase === "leaving"}
+                        onClick={openMicTest}
+                      >
+                        Audio test
+                      </button>
+                      {state.diagnostics && (
+                        <button
+                          type="button"
+                          className="privacy-notification-enable"
+                          onClick={() => setAudioPanel("connection")}
+                        >
+                          Connection details
+                        </button>
+                      )}
+                      {account?.debugEnabled && (
+                        <button
+                          type="button"
+                          className="privacy-notification-enable"
+                          onClick={() => setAudioPanel("debug")}
+                        >
+                          Audio diagnostics
+                        </button>
+                      )}
+                    </div>
+                  </>
+                }
+              />
+            )}
           </Suspense>
         </div>
       </dialog>
       {!embedded && (
         <WhatsNew
           ready={signedIn && identityReady}
-          blocked={(state.phase !== "idle" && state.phase !== "failed") || !!audioPanel || !!audioMenu || profileOpen}
+          blocked={
+            (state.phase !== "idle" && state.phase !== "failed") ||
+            !!audioPanel ||
+            !!audioMenu ||
+            profileOpen ||
+            settingsOpen
+          }
           manualOpen={whatsNewOpen}
           onManualClose={() => setWhatsNewOpen(false)}
         />

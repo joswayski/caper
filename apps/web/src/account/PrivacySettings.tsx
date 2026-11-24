@@ -76,7 +76,7 @@ export default function PrivacySettings() {
 
   return (
     <section className="privacy-settings" aria-labelledby={`${name}-title`}>
-      <h3 id={`${name}-title`}>Privacy</h3>
+      <h3 id={`${name}-title`}>Privacy &amp; blocked accounts</h3>
       {/* Only while loading: disabling during a save would drop focus from the chosen radio. */}
       <fieldset disabled={!privacy} aria-busy={saving}>
         <legend>Who can start a DM with you</legend>

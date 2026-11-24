@@ -336,6 +336,8 @@ export interface NotificationSettings {
   level: NotificationLevel;
   mobile: MobileNotifications;
   voiceStarted: boolean;
+  /** Do Not Disturb: `forever`, a UTC time, or null when off. */
+  pausedUntil: MutedUntil;
   overrides: NotificationOverride[];
 }
 
@@ -359,11 +361,12 @@ function notificationOverride(value: NotificationOverride): NotificationOverride
   };
 }
 
-function notificationSettings(value: NotificationSettings): NotificationSettings {
+export function notificationSettings(value: NotificationSettings): NotificationSettings {
   return {
     level: notificationLevel(value.level),
     voiceStarted: value.voiceStarted !== false,
     mobile: value.mobile === "always" ? "always" : "whenInactive",
+    pausedUntil: typeof value.pausedUntil === "string" ? value.pausedUntil : null,
     overrides: (value.overrides ?? []).map(notificationOverride),
   };
 }
@@ -376,6 +379,7 @@ export async function updateNotificationSettings(change: {
   level?: NotificationLevel;
   mobile?: MobileNotifications;
   voiceStarted?: boolean;
+  pausedUntil?: MutedUntil;
 }) {
   return notificationSettings(
     await request<NotificationSettings>("/api/notifications/settings", { method: "PUT", body: JSON.stringify(change) }),

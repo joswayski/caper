@@ -3,9 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { getAccount, getRememberedAccount, logout, type Account } from "../account/client";
 import { getInitialAccount } from "../account/server";
 import ProfileForm, { type ProfileFormHandle } from "../account/ProfileForm";
-import NotificationSettings from "../account/NotificationSettings";
-import PrivacySettings from "../account/PrivacySettings";
-import AppearanceSettings from "../theme/AppearanceSettings";
 import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
 import { carryPending, signedInPath } from "../spaces/client";
@@ -84,9 +81,7 @@ function Profile() {
           onCancel={account.username ? () => void navigate({ to: "/spaces" }) : undefined}
           onSaved={() => navigate({ href: signedInPath({ username: "saved" }, window.location.search) })}
         />
-        {account.username && <AppearanceSettings />}
-        {account.username && <NotificationSettings />}
-        {account.username && <PrivacySettings />}
+        {/* Theme, notifications and privacy live in Settings, from the gear beside your name. */}
         <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 border-t border-border pt-3 text-[.85rem]">
           {logoutError && (
             <p className="m-0 text-[var(--error-text)]" role="alert">

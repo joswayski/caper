@@ -205,3 +205,53 @@
     background-color var(--motion-fast) var(--ease-out),
     border-color var(--motion-fast) var(--ease-out);
 }
+/* Do Not Disturb: its state, then the presets as a wrap of buttons. */
+.dnd-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 0.82rem;
+}
+.dnd-status svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+.dnd-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.dnd-presets button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dnd-presets button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+@media (hover: hover) {
+  .dnd-presets button:hover:not(:disabled) {
+    border-color: var(--text-muted);
+    background: var(--border);
+  }
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .dnd-presets button {
+    min-height: 44px;
+  }
+}
+.dnd-presets button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
