@@ -79,8 +79,11 @@ import Observation
         let display = model.whatsNew.presentation
         guard !closing else { return }
         if display == nil { if sheet != nil { close() }; return }
-        guard sheet == nil, view.window != nil, presentedViewController == nil,
-              parent?.presentedViewController == nil, let display else { return }
+        // While Settings is open, What's new opens over it (from its About section).
+        let settings = model.whatsNew.settingsOpen ? parent?.presentedViewController : nil
+        let host: UIViewController = settings ?? self
+        guard sheet == nil, view.window != nil, host.presentedViewController == nil,
+              settings != nil || parent?.presentedViewController == nil, let display else { return }
         let sheet = UIKitReleaseNotes(notes: model.whatsNew, display: display) { [weak self] in self?.close() }
         self.sheet = sheet
         UIKitHosting.sheet(sheet, background: CaperTheme.surface)
@@ -95,7 +98,7 @@ import Observation
             }
         }
         sheet.sheetPresentationController?.detents = [fit, .large()]
-        present(sheet, animated: !CaperAccessibility.reduceMotion)
+        host.present(sheet, animated: !CaperAccessibility.reduceMotion)
     }
     private func close() {
         guard !closing, let sheet else { return }

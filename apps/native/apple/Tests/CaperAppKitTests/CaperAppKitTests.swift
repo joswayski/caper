@@ -147,9 +147,12 @@ import XCTest
         let startup = settings.descendants(matching: .any)["launch-at-login"].firstMatch
         let voice = settings.descendants(matching: .any)["voice-messages-send-on-stop"].firstMatch
         XCTAssertTrue(startup.exists); XCTAssertFalse(startup.isEnabled, "Development fixtures must never change OS Login Items")
+        // Startup follows Voice & audio, mid-page.
+        for _ in 0..<12 where !startup.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -120) }
         startup.hover()
         capture("\(captureName) startup", window: settings)
-        for _ in 0..<6 where !voice.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -120) }
+        scroll.scroll(byDeltaX: 0, deltaY: 10000)
+        for _ in 0..<12 where !voice.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -120) }
         XCTAssertTrue(voice.exists); XCTAssertTrue(voice.isEnabled); XCTAssertTrue(voice.isHittable)
         voice.hover()
         capture("\(captureName) voice send-on-stop", window: settings)
@@ -205,11 +208,8 @@ import XCTest
         for width in [CGFloat(1280), CGFloat(900)] {
             resize(app, width: width)
             XCTAssertEqual(account.label, "Account settings")
+            // The gear opens Settings directly.
             account.hover(); app.buttons["account-profile"].hover(); account.click()
-            // The menu bar keeps its Settings… item in the tree once opened.
-            let item = app.menus["caper-menu"].menuItems["Settings…"]
-            XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
-            item.hover(); app.menus["caper-menu"].menuItems["What’s new"].hover(); item.click()
             let settings = inspectSettings(app, captureName: "account Settings main \(Int(width))")
             app.typeKey(",", modifierFlags: .command)
             XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
@@ -284,11 +284,12 @@ import XCTest
         let unavailable = "Release notes are unavailable in development builds."
         for width in [CGFloat(1280), CGFloat(900)] {
             resize(app, width: width)
-            let account = app.buttons["account-settings-menu"]
-            account.hover(); app.buttons["account-profile"].hover(); account.click()
-            let item = app.menus["caper-menu"].menuItems["What’s new"]
+            // What's new left the gear for Settings; the app menu opens it over the main window.
+            let caperMenu = app.menuBars.menuBarItems.matching(NSPredicate(format: "title BEGINSWITH %@ OR label BEGINSWITH %@", "Caper", "Caper")).firstMatch
+            caperMenu.click()
+            let item = app.menuBars.menuItems["What’s new"]
             XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
-            item.hover(); app.menus["caper-menu"].menuItems["Settings…"].hover(); item.click()
+            item.click()
             XCTAssertTrue(close.waitForExistence(timeout: 5))
             XCTAssertTrue(main.buttons["whats-new-done"].exists)
             XCTAssertTrue(app.staticTexts[unavailable].waitForExistence(timeout: 5))
@@ -3308,13 +3309,15 @@ import XCTest
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         app.typeText(" after closing")
         XCTAssertEqual(composer.value as? String, "Keep this draft after closing", "Closing restores the previous editor focus")
-        app.buttons["account-settings-menu"].click(); app.menuItems["Privacy and blocked accounts"].click()
+        // Privacy and Notifications are pages in Settings; Escape steps back, then closes it.
+        app.buttons["account-settings-menu"].click(); app.buttons["open-privacy"].click()
         XCTAssertTrue(app.staticTexts["Privacy"].waitForExistence(timeout: 5))
         capture("privacy", app: app)
         app.buttons["Close privacy settings"].click()
-        app.buttons["account-settings-menu"].click(); app.menuItems["Notifications"].click()
+        app.buttons["open-notifications"].click()
         XCTAssertTrue(app.staticTexts["Notifications"].waitForExistence(timeout: 5))
         capture("notifications", app: app)
+        app.typeKey(.escape, modifierFlags: [])
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, "Keep this draft after closing")
@@ -4268,7 +4271,7 @@ import XCTest
         app.buttons["Sign in"].click()
         XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 15))
         app.buttons["account-settings-menu"].click()
-        app.menuItems["Log out"].click()
+        app.buttons["log-out"].click()
         XCTAssertTrue(email.waitForExistence(timeout: 10))
     }
 

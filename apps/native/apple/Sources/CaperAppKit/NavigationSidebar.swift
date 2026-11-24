@@ -134,9 +134,18 @@ import CaperCore
     private lazy var outputOptions: NativeButton = NativeButton.icon("Audio output options", symbol: "chevron.down") { [weak self] in
         guard let self else { return }; self.voicePanels.audio(input: false, from: self.outputOptions)
     }
-    private lazy var settings = NativeButton.icon("Account settings", symbol: "gearshape") { [weak self] in self?.openAccountMenu() }
+    /// The gear opens Settings, where every account preference lives.
+    private lazy var settings = NativeButton.icon("Account settings", symbol: "gearshape") { [weak self] in self?.showSettings?() }
+    /// Do Not Disturb's quick menu; while it is on, a moon replaces the
+    /// presence dot and “Do Not Disturb” shows under your name.
+    private lazy var doNotDisturb: NativeButton = NativeButton.icon(DoNotDisturbLabels.title, symbol: "moon") { [weak self] in
+        self?.openDoNotDisturbMenu()
+    }
+    private let accountStatus = NativeStyle.label(DoNotDisturbLabels.title, size: 11)
+    private let moonBadge = NSImageView()
+    private var paused = false
     /// The shipping app's updater, as SwiftUI's account bar shows it: "Update
-    /// available" above the account row and "Check for updates" in its menu.
+    /// available" above the account row; "Check for updates" is in Settings.
     /// The development host leaves it nil.
     var updates: DesktopUpdateControls? {
         didSet {
@@ -153,7 +162,19 @@ import CaperCore
         [railScroll, sidebar].forEach { addSubview($0) }
         railScroll.documentView = rail; railScroll.drawsBackground = false
         [space, close, channels, sectionsDivider, directs, feedbackList, updateButton, accountPanel, panelDivider, activity, feedback,
-         accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
+         accountAvatar, accountName, accountStatus, account, doNotDisturb, mute, inputOptions, deafen, outputOptions, settings,
+         moonBadge].forEach { sidebar.addSubview($0) }
+        accountStatus.setAccessibilityElement(false)
+        accountStatus.usesSingleLineMode = true
+        accountStatus.isHidden = true
+        moonBadge.image = NSImage(systemSymbolName: "moon.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 7, weight: .bold))
+        moonBadge.imageScaling = .scaleNone
+        moonBadge.wantsLayer = true
+        moonBadge.layer?.cornerRadius = 6
+        moonBadge.setAccessibilityElement(false)
+        moonBadge.isHidden = true
+        doNotDisturb.setAccessibilityIdentifier("do-not-disturb")
         accountPanel.layer?.cornerRadius = 10; accountPanel.layer?.borderWidth = 1
         accountPanel.layer?.borderColor = NativeStyle.border.cgColor
         feedbackList.isHidden = true; feedback.isHidden = true
@@ -216,6 +237,7 @@ import CaperCore
         super.applyTheme()
         accountPanel.layer?.borderColor = NativeStyle.border.cgColor
         accountPresence.borderColor = NativeStyle.raised.cgColor
+        moonBadge.layer?.backgroundColor = NativeStyle.raised.cgColor
         render(); renderPresence(model.ownPresence)
     }
 
@@ -289,19 +311,25 @@ import CaperCore
         deafen.frame = NSRect(x: outputOptions.frame.minX - 28, y: row, width: 28, height: 32)
         inputOptions.frame = NSRect(x: deafen.frame.minX - 18, y: row, width: 16, height: 32)
         mute.frame = NSRect(x: inputOptions.frame.minX - 28, y: row, width: 28, height: 32)
-        account.frame = NSRect(x: accountPanel.frame.minX + 5, y: row, width: max(0, mute.frame.minX - 4 - accountPanel.frame.minX - 5), height: 32)
+        doNotDisturb.frame = NSRect(x: mute.frame.minX - 28, y: row, width: 28, height: 32)
+        account.frame = NSRect(x: accountPanel.frame.minX + 5, y: row, width: max(0, doNotDisturb.frame.minX - 4 - accountPanel.frame.minX - 5), height: 32)
         accountAvatar.frame = NSRect(x: account.frame.minX + 4, y: row + 1, width: 30, height: 30)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         accountPresence.frame = NSRect(x: accountAvatar.frame.maxX - 8, y: accountAvatar.frame.maxY - 8, width: 10, height: 10)
         CATransaction.commit()
+        moonBadge.frame = NSRect(x: accountAvatar.frame.maxX - 9, y: accountAvatar.frame.maxY - 9, width: 12, height: 12)
         let nameHeight = ceil(accountName.cell?.cellSize.height ?? 16)
+        let statusHeight = paused ? ceil(accountStatus.cell?.cellSize.height ?? 13) : 0
+        let textWidth = max(0, account.frame.maxX - accountAvatar.frame.maxX - 12)
         accountName.frame = NSRect(
             x: accountAvatar.frame.maxX + 8,
-            y: row + ((32 - nameHeight) / 2).rounded(),
-            width: max(0, account.frame.maxX - accountAvatar.frame.maxX - 12),
+            y: row + ((32 - nameHeight - statusHeight) / 2).rounded(),
+            width: textWidth,
             height: nameHeight
         )
+        accountStatus.frame = NSRect(x: accountName.frame.minX, y: accountName.frame.maxY, width: textWidth, height: statusHeight)
         accountName.isHidden = account.frame.width < 76
+        accountStatus.isHidden = !paused || accountName.isHidden
     }
 
     private func render() {
@@ -482,6 +510,23 @@ import CaperCore
         accountName.stringValue = model.account?.displayName ?? ""
         account.setAccessibilityLabel("Edit profile for \(model.account?.displayName ?? "your account")")
         if let current = model.account { accountAvatar.update(current) }
+        // Do Not Disturb: the moon over the avatar, the subtitle, and its end
+        // in the tooltip; re-read when a timed pause ends.
+        let pause = model.account != nil ? model.doNotDisturb : nil
+        let end = pause.map { DoNotDisturbLabels.endLabel($0) }
+        if paused != (pause != nil) { paused = pause != nil; needsLayout = true }
+        accountStatus.textColor = NativeStyle.muted
+        accountPresence.isHidden = paused
+        moonBadge.isHidden = !paused
+        moonBadge.contentTintColor = NativeStyle.muted
+        moonBadge.layer?.backgroundColor = NativeStyle.raised.cgColor
+        account.toolTip = end.map { "\(DoNotDisturbLabels.title) · \($0)" }
+        account.setAccessibilityHelp(end.map { "\(DoNotDisturbLabels.title), \($0)" })
+        doNotDisturb.isHidden = model.account == nil
+        doNotDisturb.image = NSImage(systemSymbolName: paused ? "moon.fill" : "moon", accessibilityDescription: nil)
+        doNotDisturb.contentTintColor = paused ? NativeStyle.text : NativeStyle.muted
+        doNotDisturb.toolTip = end.map { "\(DoNotDisturbLabels.title) · \($0)" } ?? DoNotDisturbLabels.title
+        doNotDisturb.setAccessibilityValue(end ?? DoNotDisturbLabels.off)
         mute.image = NSImage(systemSymbolName: model.voice.muted ? "mic.slash" : "mic", accessibilityDescription: nil)
         mute.setAccessibilityLabel(model.voice.muted ? "Unmute microphone" : "Mute microphone")
         mute.setAccessibilityValue(model.voice.muted ? "Muted" : "On")
@@ -662,20 +707,30 @@ import CaperCore
         } else { popup(items, at: self.space) }
     }
 
-    private func openAccountMenu() {
-        var items: [NSMenuItem] = [NavigationMenuItem("Audio test", enabled: model.voice.phase != .leaving) { [weak self] in self?.show?(.audio) }]
-        if model.voice.phase == .connected { items.append(NavigationMenuItem("Connection details") { [weak self] in self?.show?(.connection) }) }
-        if model.account?.debugEnabled == true { items.append(NavigationMenuItem("Audio diagnostics") { [weak self] in self?.show?(.diagnostics) }) }
-        items += [.separator(), NavigationMenuItem("Notifications") { [weak self] in self?.show?(.notifications) },
-            NavigationMenuItem("Privacy and blocked accounts") { [weak self] in self?.show?(.privacy) }, .separator(),
-            NavigationMenuItem("Settings…") { [weak self] in self?.showSettings?() }]
-        if let updates {
-            items.append(NavigationMenuItem(updates.isChecking ? "Checking…" : "Check for updates",
-                                            enabled: updates.check != nil && !updates.isChecking) { updates.check?() })
+    /// Off: "Pause notifications" and the presets. On: "Do Not Disturb ·
+    /// <end>", Turn off, and the presets to change its end.
+    private func openDoNotDisturbMenu() {
+        let model = self.model
+        model.refreshNotificationSettingsIfStale()
+        let ready = model.notificationSettings != nil && !model.accountNotificationsSaving.contains("pausedUntil")
+        let presets: [NSMenuItem] = DoNotDisturbPreset.allCases.map { preset in
+            let item = NavigationMenuItem(preset.title, enabled: ready) { Task { await model.setDoNotDisturb(preset.until(from: Date())) } }
+            item.setAccessibilityIdentifier("do-not-disturb-\(preset.key)")
+            return item
         }
-        items += [NavigationMenuItem("What’s new") { [weak self] in self?.showWhatsNew?() }, .separator(),
-            NavigationMenuItem("Log out") { [weak self] in guard let self else { return }; Task { await self.model.logout() } }]
-        popup(items, at: settings)
+        var items: [NSMenuItem]
+        if let pause = model.doNotDisturb {
+            let heading = NSMenuItem(title: DoNotDisturbLabels.menuTitle(pause), action: nil, keyEquivalent: "")
+            heading.caperRole = .note
+            let off = NavigationMenuItem(DoNotDisturbLabels.turnOff, enabled: ready) { Task { await model.setDoNotDisturb(nil) } }
+            off.setAccessibilityIdentifier("do-not-disturb-off")
+            items = [heading, off, .separator()] + presets
+        } else {
+            let heading = NSMenuItem(title: DoNotDisturbLabels.pause, action: nil, keyEquivalent: "")
+            heading.caperRole = .note
+            items = [heading] + presets
+        }
+        popup(items, at: doNotDisturb)
     }
 
     private func popup(_ items: [NSMenuItem], at view: NSView) {

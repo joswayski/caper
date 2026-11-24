@@ -1150,7 +1150,7 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(inbox.waitForExistence(timeout: 10))
     }
 
-    /// The account menu opens SwiftUI's release notes sheet.
+    /// Settings' About opens the release notes sheet.
     func testWhatsNew() {
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
@@ -1211,7 +1211,7 @@ final class CaperUIKitTests: XCTestCase {
         search.typeText("\n")
 
         app.buttons["account-settings"].tap()
-        XCTAssertTrue(app.buttons["voice-messages-send-on-stop"].firstMatch.waitForExistence(timeout: 5), "Audio settings are in the account menu")
+        XCTAssertTrue(app.switches["voice-messages-send-on-stop"].firstMatch.waitForExistence(timeout: 5), "Audio settings are in Settings")
         app.buttons["open-privacy"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Privacy"].firstMatch.waitForExistence(timeout: 10))
         screenshot("uikit-privacy")
@@ -1823,9 +1823,12 @@ final class CaperUIKitParityTests: XCTestCase {
                 XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 10), "\(prefix) \(item)")
                 sleep(1)
                 capture("\(prefix)-\(name)")
-                // The dialog's X ("Close", "Close notifications"…), not Browse's.
+                // UIKit's Settings page: Back, then close Settings. SwiftUI: the
+                // dialog's X ("Close", "Close notifications"…), not Browse's.
+                let back = app.navigationBars.buttons["Settings"].firstMatch
                 let close = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Close' AND label != 'Close navigation'")).firstMatch
-                if close.exists { close.tap() } else { app.swipeDown(velocity: .fast) }
+                if back.exists { back.tap(); app.buttons["Close settings"].firstMatch.tap() }
+                else if close.exists { close.tap() } else { app.swipeDown(velocity: .fast) }
                 sleep(1)
             }
 

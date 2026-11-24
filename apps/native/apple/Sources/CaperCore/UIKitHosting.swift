@@ -207,6 +207,21 @@ import UniformTypeIdentifiers
         return frame
     }
 
+    /// Settings, opened from the account gear: a full-screen page whose
+    /// sub-pages push onto its own navigation stack. Close returns to the app.
+    public static func settings(model: AppModel) -> UIViewController {
+        let box = WeakController()
+        let settings = UIKitSettings(model: model) {
+            model.whatsNew.settingsOpen = false
+            box.value?.dismiss(animated: !CaperAccessibility.reduceMotion) { CaperFocus.presentationDidClose() }
+        }
+        let navigation = UIKitSettingsNavigation(settings: settings)
+        box.value = navigation
+        // What's new opens over Settings, and never presents itself meanwhile.
+        model.whatsNew.settingsOpen = true
+        return navigation
+    }
+
     /// "Leave #name?", as the channel options menu confirms on SwiftUI.
     public static func leaveChannel(model: AppModel, channel: Channel) -> UIViewController {
         let detail = channel.private && !model.isOwner

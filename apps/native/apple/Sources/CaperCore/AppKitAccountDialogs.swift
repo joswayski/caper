@@ -245,12 +245,30 @@ import AppKit
         Task { await self.model.setVoiceStartedNotifications(enabled) }
     }
 
+    private lazy var pausePresets: [AppKitKitButton] = DoNotDisturbPreset.allCases.map { preset in
+        let button = AppKitKitButton(preset.title) { [weak self] in
+            guard let self else { return }
+            Task { await self.model.setDoNotDisturb(preset.until(from: Date())) }
+        }
+        button.setAccessibilityIdentifier("do-not-disturb-\(preset.key)")
+        return button
+    }
+    private lazy var pauseOff: AppKitKitButton = {
+        let button = AppKitKitButton(DoNotDisturbLabels.turnOff) { [weak self] in
+            guard let self else { return }
+            Task { await self.model.setDoNotDisturb(nil) }
+        }
+        button.setAccessibilityIdentifier("do-not-disturb-off")
+        return button
+    }()
+
     init(model: AppModel, close: @escaping () -> Void) {
         self.model = model
         super.init(title: NotificationLabels.notifications, detail: "What Caper notifies you about.",
                    closeLabel: "Close notification settings", identifier: "notification-settings", close: close)
         observation.start(reading: { [model] in
-            (model.notificationSettings, model.accountNotificationsSaving, model.notificationError, model.notificationsLoadError)
+            (model.notificationSettings, model.accountNotificationsSaving, model.notificationError, model.notificationsLoadError,
+             model.doNotDisturb)
         }) { [weak self] _ in self?.render() }
         Task { [model] in await model.loadNotificationSettings() }
     }
@@ -264,11 +282,23 @@ import AppKit
         }
         voiceStarted.isOn = settings?.voiceStarted ?? true
         voiceStarted.isEnabled = settings != nil && !saving.contains("voiceStarted")
+        // Do Not Disturb first: its status, the presets, and Turn off while on.
+        let pause = model.doNotDisturb, pausing = settings == nil || saving.contains("pausedUntil")
+        for button in pausePresets + [pauseOff] { button.isEnabled = !pausing }
+        func line(_ buttons: [NSView]) -> NSStackView {
+            let row = NSStackView(views: buttons); row.orientation = .horizontal; row.spacing = 8; return row
+        }
+        var pauseRows: [NSView] = [Self.heading(DoNotDisturbLabels.title),
+                                   Self.note(DoNotDisturbLabels.status(pause), identifier: "do-not-disturb-status"),
+                                   line(pausePresets.prefix(3).map { $0 as NSView }),
+                                   line(pausePresets.dropFirst(3).map { $0 as NSView } + (pause == nil ? [] : [pauseOff as NSView]))]
+        let pauseFailed = model.notificationError == DoNotDisturbLabels.saveFailed
+        if pauseFailed { pauseRows.append(Self.note(DoNotDisturbLabels.saveFailed, error: true, identifier: "do-not-disturb-error")) }
         // Push delivery is per phone; the Mac has no phone section.
-        var rows: [NSView] = [Self.group([Self.heading(NotificationLabels.notifyMeAbout)] + NotificationLevel.allCases.compactMap { levels[$0] },
+        var rows: [NSView] = [AppKitKit.stack(pauseRows, spacing: 8), AppKitKit.divider(), Self.group([Self.heading(NotificationLabels.notifyMeAbout)] + NotificationLevel.allCases.compactMap { levels[$0] },
                                          label: NotificationLabels.notifyMeAbout),
                               voiceStarted]
-        if let error = model.notificationError ?? model.notificationsLoadError {
+        if let error = (pauseFailed ? nil : model.notificationError) ?? model.notificationsLoadError {
             rows.append(Self.note(error, error: true, identifier: "notification-settings-error"))
         } else if settings == nil { rows.append(Self.note("Loading…")) }
         setRows(rows)

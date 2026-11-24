@@ -170,6 +170,8 @@ public final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNot
             return []
         }
         if case .feedback? = NotificationRoute(userInfo: notification.request.content.userInfo) { model.feedbackNotificationArrived() }
+        // Do Not Disturb: the server holds pushes; one already in flight stays quiet.
+        if model.doNotDisturb != nil { return [] }
         if let route = NotificationRoute(userInfo: notification.request.content.userInfo), model.isShowing(route) { return [] }
         return [.banner, .list, .sound]
     }

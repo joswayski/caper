@@ -14,6 +14,9 @@ public enum ProfileFeedEvent: Equatable, Sendable {
     case space(Space)
     /// A message was deleted: close the notification this app showed for it.
     case notificationRetracted(messageID: String)
+    /// Your account's notification settings changed (on any of your devices):
+    /// level, mobile, voiceStarted and Do Not Disturb, without overrides.
+    case notificationsUpdated(NotificationSettings)
 
     /// The event, or nil for other or malformed frames (newer servers may add types).
     public static func parse(_ event: [String: Any]) -> ProfileFeedEvent? {
@@ -27,6 +30,10 @@ public enum ProfileFeedEvent: Equatable, Sendable {
         case "notification.retracted":
             guard let id = event["messageId"] as? String, !id.isEmpty else { return nil }
             return .notificationRetracted(messageID: id)
+        case "notifications.updated":
+            guard let settings = event["settings"] as? [String: Any], settings["level"] is String,
+                  let value: NotificationSettings = decode(settings) else { return nil }
+            return .notificationsUpdated(value)
         default:
             return nil
         }

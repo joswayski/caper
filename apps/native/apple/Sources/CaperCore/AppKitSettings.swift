@@ -71,9 +71,10 @@ import ServiceManagement
             window.appearance = NSAppearance(named: CaperThemeStore.shared.active.isLight ? .aqua : .darkAqua)
             window.backgroundColor = CaperThemeStore.baseColor
             window.delegate = self
-            window.onCancel = { [weak self] in self?.dismiss() }
+            window.onCancel = { [weak self] in self?.cancel() }
             let loginItem = loginItem ?? CaperLoginItem(available: false, status: { .notRegistered }, register: {}, unregister: {})
             window.contentViewController = AppKitSettingsController(
+                model: model,
                 whatsNew: model.whatsNew,
                 loginItem: loginItem,
                 updater: updater,
@@ -110,6 +111,13 @@ import ServiceManagement
         }
     }
 
+    /// Escape leaves an open sub-page (Notifications, Privacy, Edit profile,
+    /// Audio test) for Settings, then closes Settings.
+    private func cancel() {
+        if (window?.contentViewController as? AppKitSettingsController)?.cancelPage() == true { return }
+        dismiss()
+    }
+
     public func openWhatsNew(from parent: NSWindow?) {
         guard canOpenWhatsNew else { return }
         let owner = model.whatsNew.settingsOpen ? window : parent
@@ -131,6 +139,7 @@ import ServiceManagement
     private func handleDismissed() {
         let restore = window?.isKeyWindow == true || window?.sheetParent != nil
         model.whatsNew.settingsOpen = false
+        (window?.contentViewController as? AppKitSettingsController)?.closePage()
         let context = previousContext
         let responder = previousResponder as? NSView
         let parent = previousWindow
@@ -336,8 +345,12 @@ import ServiceManagement
     }
 }
 
-/// Startup, appearance, voice messages, updates and release notes.
+/// Every client's Settings sections in order: Profile, Appearance,
+/// Notifications, Voice & audio, Startup, Privacy & blocked accounts, About
+/// and Log out. Edit profile, Notifications, Privacy and the audio dialogs
+/// open as pages in this window; their close (or Escape) returns here.
 @MainActor private final class AppKitSettingsController: NSViewController {
+    private let model: AppModel
     private let whatsNew: WhatsNewModel
     private let loginItem: CaperLoginItem
     private let updater: AppUpdater?
@@ -367,8 +380,46 @@ import ServiceManagement
     private lazy var check = AppKitKitButton("Check for updates") { [weak self] in self?.controls.check?() }
     private lazy var notes = AppKitKitButton("What’s new") { [weak self] in self?.whatsNew.open() }
 
-    init(whatsNew: WhatsNewModel, loginItem: CaperLoginItem, updater: AppUpdater?, onClose: @escaping () -> Void) {
-        self.whatsNew = whatsNew; self.loginItem = loginItem; self.updater = updater; self.onClose = onClose
+    private let avatar = AppKitAvatar()
+    private let profileName = AppKitKit.label("", size: 15, weight: .bold, wraps: false)
+    private let profileUsername = AppKitKit.label("", size: 12, color: AppKitKit.muted, wraps: false)
+    private let pauseStatus = AppKitKit.label("", size: 12, color: AppKitKit.muted)
+    private lazy var editProfile = AppKitKitButton("Edit profile") { [weak self] in self?.openProfile() }
+    private lazy var notificationSettings = AppKitKitButton(NotificationLabels.notifications) { [weak self] in
+        guard let self else { return }
+        self.showPage(AppKitNotificationsDialog(model: self.model, close: { [weak self] in self?.closePage() }))
+    }
+    private lazy var audioTest = AppKitKitButton("Audio test") { [weak self] in
+        guard let self else { return }
+        self.showPage(AppKitAudioTest(voice: self.model.voice, debugEnabled: self.model.account?.debugEnabled == true,
+                                      close: { [weak self] in self?.closePage() }))
+    }
+    private lazy var connection = AppKitKitButton("Connection details") { [weak self] in
+        guard let self else { return }
+        self.showPage(AppKitAudioDiagnostics(voice: self.model.voice, kind: .connection, close: { [weak self] in self?.closePage() }))
+    }
+    private lazy var diagnostics = AppKitKitButton("Audio diagnostics") { [weak self] in
+        guard let self, self.model.account?.debugEnabled == true else { return }
+        self.showPage(AppKitAudioDiagnostics(voice: self.model.voice, kind: .processing, close: { [weak self] in self?.closePage() }))
+    }
+    private lazy var privacy = AppKitKitButton("Privacy and blocked accounts") { [weak self] in
+        guard let self else { return }
+        self.showPage(AppKitPrivacyDialog(model: self.model, close: { [weak self] in self?.closePage() }))
+    }
+    private lazy var logOut = AppKitKitButton("Log out", kind: .destructive) { [weak self] in
+        guard let self else { return }
+        let model = self.model
+        self.onClose()
+        Task { await model.logout() }
+    }
+    /// Profile, Notifications, Privacy and Log out, shown while signed in.
+    private var accountViews: [NSView] = []
+    private var scroll: NSScrollView!
+    private var page: NSView?
+    private var profile: AppKitProfilePresentation?
+
+    init(model: AppModel, whatsNew: WhatsNewModel, loginItem: CaperLoginItem, updater: AppUpdater?, onClose: @escaping () -> Void) {
+        self.model = model; self.whatsNew = whatsNew; self.loginItem = loginItem; self.updater = updater; self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -400,14 +451,39 @@ import ServiceManagement
         themeCards.translatesAutoresizingMaskIntoConstraints = false
         let appearance = section("Appearance", [appearanceNote, themeCards])
 
-        let buttons = NSStackView(views: [check, notes]); buttons.orientation = .horizontal; buttons.spacing = 8
-        let updates = section("Updates", [version, buttons, status])
+        func row(_ views: [NSView]) -> NSStackView {
+            let row = NSStackView(views: views); row.orientation = .horizontal; row.spacing = 8; return row
+        }
+        avatar.translatesAutoresizingMaskIntoConstraints = false
+        avatar.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        avatar.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        let names = AppKitKit.stack([profileName, profileUsername], spacing: 2)
+        let identity = row([avatar, names]); identity.spacing = 12; identity.alignment = .centerY
+        identity.setAccessibilityElement(true); identity.setAccessibilityRole(.group); identity.setAccessibilityIdentifier("settings-profile")
+        editProfile.setAccessibilityIdentifier("settings-edit-profile")
+        notificationSettings.setAccessibilityIdentifier("open-notifications")
+        pauseStatus.setAccessibilityIdentifier("settings-do-not-disturb-status")
+        privacy.setAccessibilityIdentifier("open-privacy")
+        logOut.setAccessibilityIdentifier("log-out")
+        let profile = section("Profile", [identity, editProfile])
+        let notifications = section(NotificationLabels.notifications, [pauseStatus, notificationSettings])
+        let voice = section("Voice & audio", [sendOnStop, row([audioTest, connection, diagnostics])])
+        let privacySection = section("Privacy & blocked accounts", [privacy])
+        let buttons = row([check, notes])
+        let about = section("About", [version, buttons, status])
+        let dividers = (0..<7).map { _ in AppKitKit.divider() }
+        accountViews = [profile, dividers[0], notifications, dividers[2], privacySection, dividers[5], dividers[6], logOut]
         let content = AppKitKit.stack([
             header,
-            appearance, AppKitKit.divider(),
-            section("Startup", [launch, startupNotes, keepRunning]), AppKitKit.divider(),
-            section("Voice messages", [sendOnStop]), AppKitKit.divider(),
-            updates,
+            profile, dividers[0],
+            appearance, dividers[1],
+            notifications, dividers[2],
+            voice, dividers[3],
+            // Desktop-only: after Voice & audio, as on Windows and Linux.
+            section("Startup", [launch, startupNotes, keepRunning]), dividers[4],
+            privacySection, dividers[5],
+            about, dividers[6],
+            logOut,
         ], spacing: 18)
         for case let child as NSStackView in content.arrangedSubviews { AppKitKit.fillWidth(child, of: content) }
         for view in content.arrangedSubviews where !(view is NSStackView) && !(view is NSButton) && !(view is NSTextField) {
@@ -417,6 +493,7 @@ import ServiceManagement
             if let stack = row.superview as? NSStackView { AppKitKit.fillWidth(row, of: stack) }
         }
         let scroll = appKitKitScroll(content, insets: NSEdgeInsets(top: 22, left: 24, bottom: 24, right: 24))
+        self.scroll = scroll
         scroll.setAccessibilityIdentifier("desktop-settings")
         root.addSubview(scroll)
         NSLayoutConstraint.activate([
@@ -439,6 +516,47 @@ import ServiceManagement
         super.viewWillAppear()
         refreshLoginItem()
         render()
+        if model.account != nil { Task { [model] in await model.loadNotificationSettings() } }
+    }
+
+    // MARK: Pages
+
+    private func showPage(_ next: NSView) {
+        closePage()
+        page = next
+        next.translatesAutoresizingMaskIntoConstraints = false
+        scroll.isHidden = true
+        view.addSubview(next)
+        NSLayoutConstraint.activate([
+            next.leadingAnchor.constraint(equalTo: view.leadingAnchor), next.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            next.topAnchor.constraint(equalTo: view.topAnchor), next.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        if let focus = (next as? AppKitDialogContent)?.initialFocus { view.window?.makeFirstResponder(focus) }
+    }
+
+    private func openProfile() {
+        let profile = AppKitProfilePresentation(model: model, close: { [weak self] in self?.closePage() })
+        addChild(profile)
+        showPage(profile.view)
+        self.profile = profile
+    }
+
+    /// Back to Settings from a page; nothing when none is open.
+    func closePage() {
+        guard let page else { return }
+        self.page = nil
+        if let profile { profile.stop(); profile.removeFromParent(); self.profile = nil }
+        page.removeFromSuperview()
+        scroll.isHidden = false
+    }
+
+    /// Escape: true when a page was open. The profile editor asks before
+    /// discarding changes; a page with a request running stays open.
+    func cancelPage() -> Bool {
+        guard let page else { return false }
+        if let profile { profile.requestClose() }
+        else if (page as? AppKitDialogContent)?.dismissDisabled != true { closePage() }
+        return true
     }
 
     func refreshLoginItem() { loginItem.refresh() }
@@ -457,6 +575,9 @@ import ServiceManagement
         let c = controls
         return [loginItem.registered, loginItem.available, loginItem.status == .requiresApproval, loginItem.error,
                 voiceMessages.sendOnStop, closing.keepRunning, themeStore.active.id,
+                model.account?.id, model.account?.displayName, model.account?.username, model.account?.avatarId,
+                model.account?.avatarAsset, model.account?.debugEnabled, model.doNotDisturb,
+                model.voice.phase == .connected, model.voice.phase == .leaving,
                 c.isChecking, c.review != nil, c.check != nil, c.lastSuccessfulCheck, c.installedVersion, c.sourceRevision]
     }
 
@@ -481,6 +602,17 @@ import ServiceManagement
         startupNotes.isHidden = startupNotes.arrangedSubviews.isEmpty
         sendOnStop.isOn = voiceMessages.sendOnStop
         keepRunning.isOn = closing.keepRunning
+        let account = model.account
+        for view in accountViews where view.isHidden != (account == nil) { view.isHidden = account == nil }
+        if let account {
+            avatar.update(account)
+            profileName.stringValue = account.displayName ?? account.username ?? ""
+            profileUsername.stringValue = account.username.map { "@\($0)" } ?? ""
+        }
+        pauseStatus.stringValue = "\(DoNotDisturbLabels.title): \(DoNotDisturbLabels.status(model.doNotDisturb))"
+        audioTest.isEnabled = model.voice.phase != .leaving
+        connection.isHidden = model.voice.phase != .connected
+        diagnostics.isHidden = account?.debugEnabled != true
 
         let c = controls
         status.stringValue = c.isChecking ? "Checking for updates…" : c.review != nil ? "An update is available."

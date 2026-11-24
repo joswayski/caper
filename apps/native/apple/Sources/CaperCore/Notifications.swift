@@ -211,13 +211,35 @@ public struct NotificationOverrideChange: Encodable, Equatable, Sendable {
 }
 
 /// A `PUT /api/notifications/settings` body; nil fields are left out.
+/// `pausedUntil` is Do Not Disturb: `.some(nil)` sends `null` (turn it off).
 public struct NotificationAccountChange: Encodable, Equatable, Sendable {
     public var level: NotificationLevel?
     public var mobile: MobilePushPolicy?
     public var voiceStarted: Bool? = nil
+    public var pausedUntil: MuteUntil?? = .none
 
     public init(level: NotificationLevel? = nil, mobile: MobilePushPolicy? = nil) {
         self.level = level; self.mobile = mobile
+    }
+
+    /// Do Not Disturb until a time or `forever`; nil turns it off.
+    public static func pause(_ until: MuteUntil?) -> NotificationAccountChange {
+        var change = NotificationAccountChange()
+        change.pausedUntil = .some(until)
+        return change
+    }
+
+    private enum CodingKeys: String, CodingKey { case level, mobile, voiceStarted, pausedUntil }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(level?.rawValue, forKey: .level)
+        try container.encodeIfPresent(mobile?.rawValue, forKey: .mobile)
+        try container.encodeIfPresent(voiceStarted, forKey: .voiceStarted)
+        if let pausedUntil {
+            if let value = pausedUntil { try container.encode(value.serverValue, forKey: .pausedUntil) }
+            else { try container.encodeNil(forKey: .pausedUntil) }
+        }
     }
 }
 
@@ -226,13 +248,17 @@ public struct NotificationSettings: Decodable, Equatable, Sendable {
     public var level: NotificationLevel
     public var mobile: MobilePushPolicy
     public var voiceStarted: Bool = true
+    /// Do Not Disturb: nil (off), `forever`, or when it ends. A time that has
+    /// passed is off; read it through `activePause(at:)`.
+    public var pausedUntil: MuteUntil?
     public var overrides: [NotificationOverride]
 
-    public init(level: NotificationLevel = .all, mobile: MobilePushPolicy = .whenInactive, overrides: [NotificationOverride] = []) {
-        self.level = level; self.mobile = mobile; self.overrides = overrides
+    public init(level: NotificationLevel = .all, mobile: MobilePushPolicy = .whenInactive, overrides: [NotificationOverride] = [],
+                pausedUntil: MuteUntil? = nil) {
+        self.level = level; self.mobile = mobile; self.overrides = overrides; self.pausedUntil = pausedUntil
     }
 
-    private enum CodingKeys: String, CodingKey { case level, mobile, overrides, voiceStarted }
+    private enum CodingKeys: String, CodingKey { case level, mobile, overrides, voiceStarted, pausedUntil }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -241,6 +267,8 @@ public struct NotificationSettings: Decodable, Equatable, Sendable {
         let decodedMobile: MobilePushPolicy? = try? values.decodeIfPresent(MobilePushPolicy.self, forKey: .mobile)
         mobile = decodedMobile ?? .whenInactive
         voiceStarted = try values.decodeIfPresent(Bool.self, forKey: .voiceStarted) ?? true
+        let rawPause: String? = try? values.decodeIfPresent(String.self, forKey: .pausedUntil)
+        pausedUntil = rawPause.flatMap { MuteUntil(serverValue: $0) }
         let entries: [LossyOverride] = try values.decodeIfPresent([LossyOverride].self, forKey: .overrides) ?? []
         overrides = entries.compactMap(\.value)
     }
@@ -252,6 +280,12 @@ public struct NotificationSettings: Decodable, Equatable, Sendable {
     }
 
     // MARK: Reading
+
+    /// Do Not Disturb while it lasts: `forever` or a time after `now`, else nil.
+    public func activePause(at now: Date) -> MuteUntil? {
+        guard let pausedUntil, pausedUntil.isActive(at: now) else { return nil }
+        return pausedUntil
+    }
 
     public func override(for scope: NotificationScope) -> NotificationOverride? {
         overrides.first { $0.scope == scope }
@@ -330,7 +364,107 @@ public struct NotificationSettings: Decodable, Equatable, Sendable {
         if let level = change.level { copy.level = level }
         if let mobile = change.mobile { copy.mobile = mobile }
         if let voice = change.voiceStarted { copy.voiceStarted = voice }
+        if let pause = change.pausedUntil { copy.pausedUntil = pause }
         return copy
+    }
+
+    /// The account fields of a `notifications.updated` event over this copy;
+    /// overrides stay. `skipping` names fields with a change still in flight.
+    public func applyingAccount(_ settings: NotificationSettings, skipping saving: Set<String> = []) -> NotificationSettings {
+        var copy = self
+        if !saving.contains("level") { copy.level = settings.level }
+        if !saving.contains("mobile") { copy.mobile = settings.mobile }
+        if !saving.contains("voiceStarted") { copy.voiceStarted = settings.voiceStarted }
+        if !saving.contains("pausedUntil") { copy.pausedUntil = settings.pausedUntil }
+        return copy
+    }
+}
+
+/// Do Not Disturb's choices, in order, on every client.
+public enum DoNotDisturbPreset: CaseIterable, Identifiable, Sendable {
+    case thirtyMinutes, oneHour, eightHours, tomorrowMorning, forever
+
+    public var id: Self { self }
+
+    public var title: String {
+        switch self {
+        case .thirtyMinutes: return "30 minutes"
+        case .oneHour: return "1 hour"
+        case .eightHours: return "8 hours"
+        case .tomorrowMorning: return "Until tomorrow morning"
+        case .forever: return "Until I turn it off"
+        }
+    }
+
+    /// For accessibility identifiers.
+    public var key: String {
+        switch self {
+        case .thirtyMinutes: return "30m"
+        case .oneHour: return "1h"
+        case .eightHours: return "8h"
+        case .tomorrowMorning: return "tomorrow"
+        case .forever: return "forever"
+        }
+    }
+
+    /// When the pause ends. Tomorrow morning is 8:00 local time on the next
+    /// day, or today between midnight and 4:59.
+    public func until(from now: Date, calendar: Calendar = .current) -> MuteUntil {
+        switch self {
+        case .thirtyMinutes: return .date(now.addingTimeInterval(1_800))
+        case .oneHour: return .date(now.addingTimeInterval(3_600))
+        case .eightHours: return .date(now.addingTimeInterval(28_800))
+        case .forever: return .forever
+        case .tomorrowMorning:
+            let today = calendar.startOfDay(for: now)
+            let day = calendar.component(.hour, from: now) < 5 ? today : calendar.date(byAdding: .day, value: 1, to: today) ?? today
+            guard let morning = calendar.date(bySettingHour: 8, minute: 0, second: 0, of: day) else {
+                return .date(now.addingTimeInterval(28_800))
+            }
+            return .date(morning)
+        }
+    }
+}
+
+/// Do Not Disturb copy shared by iOS and macOS.
+public enum DoNotDisturbLabels {
+    public static let title = "Do Not Disturb"
+    public static let pause = "Pause notifications"
+    public static let turnOff = "Turn off"
+    public static let off = "Off"
+    public static let saveFailed = "That change wasn’t saved. Try again."
+
+    /// "Until 3:45 PM" today, "Until tomorrow at 8:00 AM", "Until Thu 8:00 AM"
+    /// later, or "Until you turn it off", in the locale's time format.
+    public static func endLabel(_ until: MuteUntil, now: Date = Date(), calendar: Calendar = .current,
+                                locale: Locale = .current) -> String {
+        guard case let .date(date) = until else { return "Until you turn it off" }
+        let time = DateFormatter()
+        time.locale = locale
+        time.timeZone = calendar.timeZone
+        time.dateStyle = .none
+        time.timeStyle = .short
+        let clock = time.string(from: date)
+        if calendar.isDate(date, inSameDayAs: now) { return "Until \(clock)" }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) {
+            return "Until tomorrow at \(clock)"
+        }
+        let day = DateFormatter()
+        day.locale = locale
+        day.timeZone = calendar.timeZone
+        day.setLocalizedDateFormatFromTemplate("EEE")
+        return "Until \(day.string(from: date)) \(clock)"
+    }
+
+    /// Settings' status line: "Off" or "On · Until 3:45 PM".
+    public static func status(_ pause: MuteUntil?, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String {
+        guard let pause else { return off }
+        return "On · \(endLabel(pause, now: now, calendar: calendar, locale: locale))"
+    }
+
+    /// The quick menu's heading while on: "Do Not Disturb · Until 3:45 PM".
+    public static func menuTitle(_ pause: MuteUntil, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String {
+        "\(title) · \(endLabel(pause, now: now, calendar: calendar, locale: locale))"
     }
 }
 

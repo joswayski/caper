@@ -81,75 +81,65 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private let presenceDot = UIView()
     private let voiceError = UIStackView()
     private let voiceErrorText = UIKitStyle.label(size: 11, color: UIKitStyle.error)
+    private let accountStatus = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
+    /// Do Not Disturb's mark, in place of the presence dot while it is on.
+    private let moonBadge = UIImageView(image: UIImage(systemName: "moon.fill",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .bold)))
+    /// The gear opens Settings.
     private lazy var accountMenu: UIButton = {
         let button = UIButton(type: .system)
         button.setImage(UIKitStyle.icon("settings")?.resized(to: 20), for: .normal)
         button.tintColor = UIKitStyle.text
         button.accessibilityLabel = "Account settings"
         button.accessibilityIdentifier = "account-settings"
+        button.addAction(UIAction { [weak self] _ in self?.openSettings() }, for: .primaryActionTriggered)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
+    /// Do Not Disturb's quick menu: the presets, and Turn off while on.
+    private lazy var doNotDisturb: UIButton = {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: "moon", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17)), for: .normal)
+        button.tintColor = UIKitStyle.muted
+        button.accessibilityLabel = DoNotDisturbLabels.title
+        button.accessibilityIdentifier = "do-not-disturb"
         button.showsMenuAsPrimaryAction = true
         button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
-            completion(self?.accountMenuItems() ?? [])
+            completion(self?.doNotDisturbItems() ?? [])
         }])
         button.translatesAutoresizingMaskIntoConstraints = false
         return button
     }()
     private let observer = ModelObserver()
 
-    /// SwiftUI's iPhone account menu: audio, notifications, privacy, log out.
-    private func accountMenuItems() -> [UIMenuElement] {
-        guard live else { return [] }
+    private func openSettings() {
+        guard live, model.account != nil, presentedViewController == nil else { return }
+        present(UIKitHosting.settings(model: model), animated: !UIKitStyle.reduceMotion)
+    }
+
+    /// Off: "Pause notifications" and the presets. On: "Do Not Disturb ·
+    /// <end>", Turn off, and the presets to change its end.
+    private func doNotDisturbItems() -> [UIMenuElement] {
+        guard live, model.account != nil else { return [] }
         let model = self.model
-        // SwiftUI's iPhone "Audio settings" section.
-        let sendOnStop = UIAction(title: VoiceMessage.sendOnStopTitle, state: UIKitAudioSettings.sendVoiceOnStop ? .on : .off) { _ in
-            UIKitAudioSettings.sendVoiceOnStop.toggle()
-        }
-        sendOnStop.accessibilityIdentifier = "voice-messages-send-on-stop"
-        // Web's and macOS's two presets, Obsidian (dark) and Paper (light).
-        let theme = CaperThemeStore.shared.active.id
-        let appearance = [("obsidian", "Obsidian", "Dark"), ("paper", "Paper", "Light")].map { id, title, subtitle in
-            let action = UIAction(title: title, subtitle: subtitle, state: theme == id ? .on : .off) { _ in
-                guard CaperThemeStore.shared.active.id != id else { return }
-                CaperThemeStore.shared.selectPreset(id)
+        model.refreshNotificationSettingsIfStale()
+        let ready = model.notificationSettings != nil && !model.accountNotificationsSaving.contains("pausedUntil")
+        let presets: [UIMenuElement] = DoNotDisturbPreset.allCases.map { preset in
+            let action = UIAction(title: preset.title, attributes: ready ? [] : .disabled) { _ in
+                Task { await model.setDoNotDisturb(preset.until(from: Date())) }
             }
-            action.accessibilityIdentifier = "appearance-\(id)"
+            action.accessibilityIdentifier = "do-not-disturb-\(preset.key)"
             return action
         }
-        var items: [UIMenuElement] = [UIMenu(title: "Appearance", options: .displayInline, children: appearance),
-                                      UIMenu(title: "Audio settings", options: .displayInline, children: [sendOnStop]),
-                                      UIAction(title: "Audio test", attributes: model.voice.phase == .leaving ? .disabled : []) { [weak self] _ in self?.dialog(.audio) }]
-        if model.voice.phase == .connected {
-            items.append(UIAction(title: "Connection details") { [weak self] _ in self?.dialog(.connection) })
+        guard let pause = model.doNotDisturb else {
+            return [UIMenu(title: DoNotDisturbLabels.pause, options: .displayInline, children: presets)]
         }
-        if model.account?.debugEnabled == true {
-            items.append(UIAction(title: "Audio diagnostics") { [weak self] _ in self?.dialog(.diagnostics) })
+        let off = UIAction(title: DoNotDisturbLabels.turnOff, attributes: ready ? [] : .disabled) { _ in
+            Task { await model.setDoNotDisturb(nil) }
         }
-        let whatsNew = UIAction(title: "What’s new") { _ in UIKitWhatsNew.open(model: model) }
-        whatsNew.accessibilityIdentifier = "open-whats-new"
-        items.append(whatsNew)
-        // The installed version, as Settings shows it on the other clients. A menu
-        // closes on choice, so "Copied" is announced rather than shown in place.
-        let installed = InstalledVersion.current
-        if let copy = installed.copyText {
-            let version = UIAction(title: installed.label, subtitle: InstalledVersion.hint) { _ in
-                UIPasteboard.general.string = copy
-                UIAccessibility.post(notification: .announcement, argument: "Copied \(copy)")
-            }
-            version.accessibilityLabel = installed.accessibilityLabel
-            version.accessibilityIdentifier = "copy-version"
-            items.append(version)
-        } else {
-            items.append(UIAction(title: installed.label, attributes: .disabled) { _ in })
-        }
-        let notifications = UIAction(title: "Notifications") { [weak self] _ in self?.dialog(.notifications) }
-        notifications.accessibilityIdentifier = "open-notifications"
-        let privacy = UIAction(title: "Privacy and blocked accounts") { [weak self] _ in self?.dialog(.privacy) }
-        privacy.accessibilityIdentifier = "open-privacy"
-        items += [notifications, privacy]
-        items.append(UIMenu(options: .displayInline, children: [
-            UIAction(title: "Log out", image: UIKitStyle.icon("log-out"), attributes: .destructive) { _ in Task { await model.logout() } },
-        ]))
-        return items
+        off.accessibilityIdentifier = "do-not-disturb-off"
+        return [UIMenu(title: DoNotDisturbLabels.menuTitle(pause), options: .displayInline, children: [off]),
+                UIMenu(options: .displayInline, children: presets)]
     }
 
     init(model: AppModel) {
@@ -488,7 +478,19 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         presenceDot.layer.borderWidth = 2
         presenceDot.layer.borderColor = UIKitStyle.raised.cgColor
         presenceDot.translatesAutoresizingMaskIntoConstraints = false
-        let identity = UIStackView(arrangedSubviews: [accountAvatar, accountName])
+        accountStatus.text = DoNotDisturbLabels.title
+        accountStatus.isHidden = true
+        let names = UIStackView(arrangedSubviews: [accountName, accountStatus])
+        names.axis = .vertical
+        names.spacing = 1
+        moonBadge.tintColor = UIKitStyle.muted
+        moonBadge.backgroundColor = UIKitStyle.raised
+        moonBadge.contentMode = .center
+        moonBadge.layer.cornerRadius = 6.5
+        moonBadge.isHidden = true
+        moonBadge.isUserInteractionEnabled = false
+        moonBadge.translatesAutoresizingMaskIntoConstraints = false
+        let identity = UIStackView(arrangedSubviews: [accountAvatar, names])
         identity.spacing = 7
         identity.alignment = .center
         identity.isUserInteractionEnabled = false
@@ -498,10 +500,12 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         profile.addSubview(identity)
         presenceDot.isUserInteractionEnabled = false
         profile.addSubview(presenceDot)
+        profile.addSubview(moonBadge)
         profile.accessibilityIdentifier = "account-profile"
         profile.addAction(UIAction { [weak self] _ in self?.dialog(.profile) }, for: .primaryActionTriggered)
         self.profile = profile
         row.addSubview(profile)
+        row.addSubview(doNotDisturb)
         row.addSubview(accountMenu)
         accountMenu.tintColor = UIKitStyle.muted
         accountRows.axis = .vertical
@@ -523,10 +527,18 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             presenceDot.heightAnchor.constraint(equalToConstant: 11),
             presenceDot.trailingAnchor.constraint(equalTo: accountAvatar.trailingAnchor, constant: 0.5),
             presenceDot.bottomAnchor.constraint(equalTo: accountAvatar.bottomAnchor, constant: 0.5),
+            moonBadge.widthAnchor.constraint(equalToConstant: 13),
+            moonBadge.heightAnchor.constraint(equalToConstant: 13),
+            moonBadge.trailingAnchor.constraint(equalTo: accountAvatar.trailingAnchor, constant: 1.5),
+            moonBadge.bottomAnchor.constraint(equalTo: accountAvatar.bottomAnchor, constant: 1.5),
             profile.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 4),
             profile.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
             profile.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4),
-            profile.trailingAnchor.constraint(equalTo: accountMenu.leadingAnchor, constant: -5),
+            profile.trailingAnchor.constraint(equalTo: doNotDisturb.leadingAnchor, constant: -5),
+            doNotDisturb.trailingAnchor.constraint(equalTo: accountMenu.leadingAnchor),
+            doNotDisturb.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            doNotDisturb.widthAnchor.constraint(equalToConstant: 44),
+            doNotDisturb.heightAnchor.constraint(equalToConstant: 44),
             identity.leadingAnchor.constraint(equalTo: profile.leadingAnchor),
             identity.centerYAnchor.constraint(equalTo: profile.centerYAnchor),
             identity.trailingAnchor.constraint(lessThanOrEqualTo: profile.trailingAnchor),
@@ -619,7 +631,19 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         case .idle?: UIColor(red: 0.72, green: 0.60, blue: 0.35, alpha: 1)
         default: UIKitStyle.border
         }
-        profile.accessibilityValue = presence.map { $0.rawValue.prefix(1).uppercased() + $0.rawValue.dropFirst() } ?? "Status unavailable"
+        let status = presence.map { $0.rawValue.prefix(1).uppercased() + $0.rawValue.dropFirst() } ?? "Status unavailable"
+        // Do Not Disturb: a moon over the avatar and the subtitle, with its end spoken.
+        let pause = live && account != nil ? model.doNotDisturb : nil
+        let end = pause.map { DoNotDisturbLabels.endLabel($0) }
+        profile.accessibilityValue = end.map { "\(status), \(DoNotDisturbLabels.title), \($0)" } ?? status
+        presenceDot.isHidden = pause != nil
+        moonBadge.isHidden = pause == nil
+        accountStatus.isHidden = pause == nil
+        doNotDisturb.isHidden = !(live && account != nil)
+        doNotDisturb.setImage(UIImage(systemName: pause == nil ? "moon" : "moon.fill",
+                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: 17)), for: .normal)
+        doNotDisturb.tintColor = pause == nil ? UIKitStyle.muted : UIKitStyle.text
+        doNotDisturb.accessibilityValue = end ?? DoNotDisturbLabels.off
         // The account panel's rows, shown whenever signed in; Feedback for the team only.
         let signedIn = live && account != nil
         let activityUnread = UIKitActivity.unread(model)

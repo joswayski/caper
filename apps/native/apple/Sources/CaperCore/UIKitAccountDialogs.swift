@@ -99,6 +99,10 @@ import UIKit
     private let voice = UISwitch(), push = UISwitch()
     private let phone = UIStackView()
     private let status = UIKitMessageDialog.label("")
+    private let pauseStatus = UIKitMessageDialog.label("")
+    private let pauseError = UIKitMessageDialog.label("", error: true)
+    private var presets: [UIButton] = []
+    private var pauseOff: UIButton!
     init(model: AppModel, close: @escaping () -> Void) {
         self.model = model; super.init(title: NotificationLabels.notifications, closeLabel: "Close notification settings", close: close)
     }
@@ -106,6 +110,18 @@ import UIKit
     override func viewDidLoad() {
         super.viewDidLoad(); view.accessibilityIdentifier = "notification-settings"
         body.addArrangedSubview(Self.label("What Caper notifies you about."))
+        // Do Not Disturb: its status, the presets, and Turn off while on.
+        body.addArrangedSubview(Self.label(DoNotDisturbLabels.title, size: 13, bold: true))
+        pauseStatus.accessibilityIdentifier = "do-not-disturb-status"; body.addArrangedSubview(pauseStatus)
+        let pause = UIStackView(); pause.axis = .vertical; pause.spacing = 8
+        for preset in DoNotDisturbPreset.allCases {
+            let button = Self.button(preset.title) { [model] in Task { await model.setDoNotDisturb(preset.until(from: Date())) } }
+            button.accessibilityIdentifier = "do-not-disturb-\(preset.key)"; presets.append(button); pause.addArrangedSubview(button)
+        }
+        pauseOff = Self.button(DoNotDisturbLabels.turnOff) { [model] in Task { await model.setDoNotDisturb(nil) } }
+        pauseOff.accessibilityIdentifier = "do-not-disturb-off"; pause.addArrangedSubview(pauseOff)
+        pauseError.accessibilityIdentifier = "do-not-disturb-error"
+        [pause, pauseError].forEach(body.addArrangedSubview)
         body.addArrangedSubview(Self.label(NotificationLabels.notifyMeAbout, size: 13, bold: true))
         for level in NotificationLevel.allCases {
             let choice = UIKitSettingsChoice(title: level.accountTitle) { [model] in Task { await model.setAccountNotificationLevel(level) } }
@@ -127,7 +143,14 @@ import UIKit
         for policy in MobilePushPolicy.allCases { policies[policy]?.isSelected = settings?.mobile == policy; policies[policy]?.isEnabled = settings != nil && !saving.contains("mobile") }
         voice.isOn = settings?.voiceStarted ?? true; voice.isEnabled = settings != nil && !saving.contains("voiceStarted")
         phone.isHidden = !model.pushAvailable; push.isOn = model.pushEnabled
-        let error = model.notificationError ?? model.notificationsLoadError
+        let pause = model.doNotDisturb, pausing = settings == nil || saving.contains("pausedUntil")
+        pauseStatus.text = DoNotDisturbLabels.status(pause)
+        presets.forEach { $0.isEnabled = !pausing }
+        pauseOff.isHidden = pause == nil; pauseOff.isEnabled = !pausing
+        // A failed Do Not Disturb change shows under its group.
+        let pauseFailed = model.notificationError == DoNotDisturbLabels.saveFailed
+        pauseError.text = pauseFailed ? model.notificationError : nil; pauseError.isHidden = !pauseFailed
+        let error = (pauseFailed ? nil : model.notificationError) ?? model.notificationsLoadError
         status.text = error ?? (settings == nil ? "Loading…" : nil); status.isHidden = status.text == nil
         status.textColor = UIColor(error == nil ? CaperTheme.muted : CaperTheme.error)
         status.accessibilityIdentifier = error == nil ? nil : "notification-settings-error"

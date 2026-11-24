@@ -1049,6 +1049,7 @@ public final class AppModel {
         case .person(let person): applyProfileUpdate(person)
         case .space(let space): applySpaceUpdate(space)
         case .notificationRetracted(let messageID): retractNotification?(messageID)
+        case .notificationsUpdated(let settings): applyNotificationsUpdate(settings)
         }
     }
 
@@ -3120,6 +3121,32 @@ extension AppModel {
         Task { [weak self] in await self?.loadNotificationSettings() }
     }
 
+    /// Do Not Disturb while it lasts (`forever` or a future time), else nil.
+    /// Redraws by itself when a timed pause ends.
+    public var doNotDisturb: MuteUntil? {
+        _ = muteExpiryTick
+        return notificationSettings?.activePause(at: Date())
+    }
+
+    /// Pauses notifications until a time or `forever`; nil turns Do Not
+    /// Disturb off. Optimistic; a failure reverts and shows why.
+    public func setDoNotDisturb(_ until: MuteUntil?) async {
+        guard notificationSettings != nil else { return }
+        await saveAccountNotifications(.pause(until), field: "pausedUntil", failure: DoNotDisturbLabels.saveFailed)
+    }
+
+    /// `notifications.updated` from the `profiles` feed: a change saved on
+    /// any of your devices. A field with a change still in flight keeps it.
+    func applyNotificationsUpdate(_ settings: NotificationSettings) {
+        guard account != nil else { return }
+        guard let current = notificationSettings else {
+            Task { [weak self] in await self?.loadNotificationSettings() }
+            return
+        }
+        notificationSettings = current.applyingAccount(settings, skipping: accountNotificationsSaving)
+        scheduleMuteExpiry()
+    }
+
     /// Muted itself or, for a channel, through its space.
     public func notificationsMuted(_ scope: NotificationScope) -> Bool {
         _ = muteExpiryTick
@@ -3226,7 +3253,8 @@ extension AppModel {
         }
     }
 
-    private func saveAccountNotifications(_ change: NotificationAccountChange, field: String) async {
+    private func saveAccountNotifications(_ change: NotificationAccountChange, field: String,
+                                          failure: String = NotificationLabels.saveFailed) async {
         guard account != nil, let current = notificationSettings, !accountNotificationsSaving.contains(field) else { return }
         let attempt = generation
         accountNotificationsSaving.insert(field)
@@ -3240,6 +3268,9 @@ extension AppModel {
         var restore = NotificationAccountChange(level: change.level == nil ? nil : current.level,
                                                 mobile: change.mobile == nil ? nil : current.mobile)
         restore.voiceStarted = change.voiceStarted == nil ? nil : current.voiceStarted
+        restore.pausedUntil = change.pausedUntil == nil ? .none : .some(current.pausedUntil)
+        scheduleMuteExpiry()
+        defer { scheduleMuteExpiry() }
         do {
             let saved = try await api.updateNotificationSettings(change)
             guard generation == attempt else { return }
@@ -3249,13 +3280,14 @@ extension AppModel {
             var confirmed = NotificationAccountChange(level: change.level == nil ? nil : saved.level,
                                                       mobile: change.mobile == nil ? nil : saved.mobile)
             confirmed.voiceStarted = change.voiceStarted == nil ? nil : saved.voiceStarted
+            confirmed.pausedUntil = change.pausedUntil == nil ? .none : .some(saved.pausedUntil)
             notificationSettings = notificationSettings?.applying(confirmed)
         } catch {
             guard generation == attempt else { return }
             notificationChangesInFlight -= 1
             guard accountNotificationRevisions[field] == revision else { return }
             notificationSettings = notificationSettings?.applying(restore)
-            notificationError = NotificationLabels.saveFailed
+            notificationError = failure
         }
     }
 
@@ -3288,11 +3320,15 @@ extension AppModel {
         scheduleMuteExpiry()
     }
 
-    /// Redraws muted rows when the next timed mute ends.
+    /// Redraws muted rows, and Do Not Disturb, when the next timed mute or pause ends.
     private func scheduleMuteExpiry() {
         muteExpiryTask?.cancel()
         muteExpiryTask = nil
-        guard let next = notificationSettings?.nextMuteExpiry(after: Date()) else { return }
+        let now = Date()
+        var pauseEnd: Date?
+        if case let .date(date)? = notificationSettings?.activePause(at: now) { pauseEnd = date }
+        let mutes = notificationSettings?.nextMuteExpiry(after: now)
+        guard let next = [mutes, pauseEnd].compactMap({ $0 }).min() else { return }
         let delay: TimeInterval = max(0, next.timeIntervalSinceNow) + 1
         let attempt = generation
         muteExpiryTask = Task { [weak self] in

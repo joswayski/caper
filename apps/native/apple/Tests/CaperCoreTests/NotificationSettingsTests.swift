@@ -482,3 +482,149 @@ final class NotificationModelTests: XCTestCase {
         XCTAssertEqual(writes, 5, "failure permits a retry")
     }
 }
+
+// MARK: Do Not Disturb
+
+extension NotificationSettingsTests {
+    private func pacific() throws -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        return calendar
+    }
+
+    private func local(_ calendar: Calendar, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int = 0) throws -> Date {
+        try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: month, day: day, hour: hour, minute: minute)))
+    }
+
+    func testDoNotDisturbPresetsEndWhereEveryClientEndsThem() throws {
+        let calendar = try pacific()
+        let afternoon = try local(calendar, 11, 24, 15, 10)
+        XCTAssertEqual(DoNotDisturbPreset.allCases.map(\.title),
+                       ["30 minutes", "1 hour", "8 hours", "Until tomorrow morning", "Until I turn it off"])
+        XCTAssertEqual(DoNotDisturbPreset.allCases.map { $0.until(from: afternoon, calendar: calendar) }, [
+            .date(afternoon.addingTimeInterval(1_800)), .date(afternoon.addingTimeInterval(3_600)),
+            .date(afternoon.addingTimeInterval(28_800)), .date(try local(calendar, 11, 25, 8)), .forever,
+        ])
+        // Between midnight and 4:59 "tomorrow morning" is this morning.
+        let morning = DoNotDisturbPreset.tomorrowMorning
+        XCTAssertEqual(morning.until(from: try local(calendar, 11, 25, 0), calendar: calendar), .date(try local(calendar, 11, 25, 8)))
+        XCTAssertEqual(morning.until(from: try local(calendar, 11, 25, 4, 59), calendar: calendar), .date(try local(calendar, 11, 25, 8)))
+        XCTAssertEqual(morning.until(from: try local(calendar, 11, 25, 5), calendar: calendar), .date(try local(calendar, 11, 26, 8)))
+        // Late on the last day of a month, it is the next month's first morning.
+        XCTAssertEqual(morning.until(from: try local(calendar, 11, 30, 23, 50), calendar: calendar), .date(try local(calendar, 12, 1, 8)))
+    }
+
+    func testDoNotDisturbEndLabelsUseLocalDaysAndTimes() throws {
+        let calendar = try pacific()
+        let locale = Locale(identifier: "en_US")
+        let now = try local(calendar, 11, 24, 10) // Tuesday
+        func plain(_ text: String) -> String {
+            text.replacingOccurrences(of: "\u{202F}", with: " ").replacingOccurrences(of: "\u{00A0}", with: " ")
+        }
+        func label(_ until: MuteUntil) -> String { plain(DoNotDisturbLabels.endLabel(until, now: now, calendar: calendar, locale: locale)) }
+        XCTAssertEqual(label(.date(try local(calendar, 11, 24, 15, 45))), "Until 3:45 PM")
+        XCTAssertEqual(label(.date(try local(calendar, 11, 24, 23, 59))), "Until 11:59 PM", "still today")
+        XCTAssertEqual(label(.date(try local(calendar, 11, 25, 0))), "Until tomorrow at 12:00 AM", "midnight is tomorrow")
+        XCTAssertEqual(label(.date(try local(calendar, 11, 25, 8))), "Until tomorrow at 8:00 AM")
+        XCTAssertEqual(label(.date(try local(calendar, 11, 26, 8))), "Until Thu 8:00 AM")
+        XCTAssertEqual(label(.forever), "Until you turn it off")
+        XCTAssertEqual(DoNotDisturbLabels.status(nil, now: now, calendar: calendar, locale: locale), "Off")
+        XCTAssertEqual(plain(DoNotDisturbLabels.status(.date(try local(calendar, 11, 24, 15, 45)), now: now, calendar: calendar, locale: locale)),
+                       "On · Until 3:45 PM")
+        XCTAssertEqual(DoNotDisturbLabels.menuTitle(.forever, now: now, calendar: calendar, locale: locale),
+                       "Do Not Disturb · Until you turn it off")
+    }
+
+    func testPausedUntilParsesAndExpiredPausesAreOff() throws {
+        let now = Date(timeIntervalSince1970: 1_791_432_000) // 2026-10-08T04:00:00Z
+        XCTAssertNil(try decode("{}").pausedUntil)
+        XCTAssertNil(try decode(#"{"pausedUntil":null}"#).pausedUntil)
+        XCTAssertNil(try decode(#"{"pausedUntil":"soon"}"#).pausedUntil, "an unreadable value is off")
+        XCTAssertNil(try decode(#"{"pausedUntil":5}"#).pausedUntil)
+        let forever = try decode(#"{"pausedUntil":"forever"}"#)
+        XCTAssertEqual(forever.pausedUntil, .forever)
+        XCTAssertEqual(forever.activePause(at: now), .forever)
+        let timed = try decode(#"{"level":"mentions","pausedUntil":"2026-10-08T05:00:00Z"}"#)
+        XCTAssertEqual(timed.level, .mentions)
+        XCTAssertEqual(timed.activePause(at: now), .date(Date(timeIntervalSince1970: 1_791_435_600)))
+        XCTAssertNil(timed.activePause(at: Date(timeIntervalSince1970: 1_791_435_600)), "a pause ends at its time")
+        XCTAssertNil(try decode(#"{"pausedUntil":"2026-10-08T03:00:00Z"}"#).activePause(at: now), "an expired pause is off")
+        XCTAssertNil(NotificationSettings().activePause(at: now))
+    }
+
+    func testDoNotDisturbChangesSendPausedUntilOnly() throws {
+        XCTAssertEqual(try object(NotificationAccountChange.pause(nil)), ["pausedUntil": NSNull()], "null turns it off")
+        XCTAssertEqual(try object(NotificationAccountChange.pause(.forever)), ["pausedUntil": "forever"])
+        XCTAssertEqual(try object(NotificationAccountChange.pause(.date(Date(timeIntervalSince1970: 1_791_435_600.75)))),
+                       ["pausedUntil": "2026-10-08T05:00:00Z"], "whole-second UTC")
+        XCTAssertEqual(try object(NotificationAccountChange(level: .all)), ["level": "all"], "other changes leave it out")
+        var voice = NotificationAccountChange()
+        voice.voiceStarted = false
+        XCTAssertEqual(try object(voice), ["voiceStarted": false])
+        let paused = NotificationSettings().applying(.pause(.forever))
+        XCTAssertEqual(paused.pausedUntil, .forever)
+        XCTAssertNil(paused.applying(.pause(nil)).pausedUntil)
+        XCTAssertEqual(paused.applying(NotificationAccountChange(level: .nothing)).pausedUntil, .forever)
+    }
+
+    func testNotificationsUpdatedEventParsesAccountFields() throws {
+        let event = ProfileFeedEvent.parse(["type": "notifications.updated", "settings": [
+            "level": "mentions", "mobile": "always", "voiceStarted": false, "pausedUntil": "forever"] as [String: Any]])
+        guard case let .notificationsUpdated(settings)? = event else { return XCTFail("expected notification settings") }
+        XCTAssertEqual(settings.level, .mentions)
+        XCTAssertEqual(settings.mobile, .always)
+        XCTAssertFalse(settings.voiceStarted)
+        XCTAssertEqual(settings.pausedUntil, .forever)
+        let off = ProfileFeedEvent.parse(["type": "notifications.updated", "settings": [
+            "level": "all", "mobile": "whenInactive", "voiceStarted": true, "pausedUntil": NSNull()] as [String: Any]])
+        guard case let .notificationsUpdated(cleared)? = off else { return XCTFail("expected notification settings") }
+        XCTAssertNil(cleared.pausedUntil)
+        XCTAssertNil(ProfileFeedEvent.parse(["type": "notifications.updated"]))
+        XCTAssertNil(ProfileFeedEvent.parse(["type": "notifications.updated", "settings": "all"]))
+        XCTAssertNil(ProfileFeedEvent.parse(["type": "notifications.updated", "settings": [String: Any]()]), "no guessed defaults")
+
+        let mine = try decode(sampleSettings).applyingAccount(settings)
+        XCTAssertEqual(mine.overrides.count, 3, "overrides are not part of the event and stay")
+        XCTAssertEqual(mine.pausedUntil, .forever)
+        let saving = try decode(sampleSettings).applyingAccount(settings, skipping: ["level"])
+        XCTAssertEqual(saving.level, .all, "a field with a change in flight keeps it")
+        XCTAssertEqual(saving.mobile, .always)
+    }
+}
+
+extension NotificationModelTests {
+    func testDoNotDisturbIsOptimisticRevertsAndFollowsOtherDevices() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        var failing = false
+        var bodies: [NSDictionary] = []
+        NotificationsMockURLProtocol.handler = { request in
+            if request.httpMethod == "GET" { return (200, Data(sampleSettings.utf8)) }
+            if failing { return (503, Data(#"{"error":"unavailable"}"#.utf8)) }
+            if let body = try requestJSON(request) { bodies.append(body) }
+            return (200, Data(#"{"level":"all","mobile":"whenInactive","voiceStarted":true,"pausedUntil":"forever","overrides":[]}"#.utf8))
+        }
+        await model.setDoNotDisturb(.forever)
+        XCTAssertNil(model.notificationSettings, "nothing is guessed before the first load")
+        await model.loadNotificationSettings()
+        XCTAssertNil(model.doNotDisturb)
+        await model.setDoNotDisturb(.forever)
+        XCTAssertEqual(bodies, [["pausedUntil": "forever"]])
+        XCTAssertEqual(model.doNotDisturb, .forever)
+        XCTAssertEqual(model.notificationSettings?.overrides.count, 3, "only Do Not Disturb is taken from the response")
+
+        failing = true
+        await model.setDoNotDisturb(nil)
+        XCTAssertEqual(model.doNotDisturb, .forever, "a failed turn-off reverts")
+        XCTAssertEqual(model.notificationError, DoNotDisturbLabels.saveFailed)
+
+        model.receiveProfileFeed(["type": "notifications.updated", "settings": [
+            "level": "mentions", "mobile": "always", "voiceStarted": false, "pausedUntil": NSNull()] as [String: Any]])
+        XCTAssertNil(model.doNotDisturb, "turned off on another device")
+        XCTAssertEqual(model.notificationSettings?.level, .mentions)
+        XCTAssertEqual(model.notificationSettings?.overrides.count, 3)
+        model.receiveProfileFeed(["type": "notifications.updated", "settings": [
+            "level": "mentions", "mobile": "always", "voiceStarted": false, "pausedUntil": "2000-01-01T00:00:00Z"] as [String: Any]])
+        XCTAssertNil(model.doNotDisturb, "an expired pause is off")
+    }
+}

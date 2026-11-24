@@ -125,6 +125,8 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         model.scheduleUnreadRefresh()
         // A new report for the feedback team's inbox.
         if event["kind"] as? String == NotificationRoute.feedbackKind { model.feedbackNotificationArrived() }
+        // Do Not Disturb: unread state and the inbox update, but no banner.
+        guard model.doNotDisturb == nil else { return }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)
@@ -151,7 +153,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         let senderTemporary = temporary
         Task { [weak self] in
             let media = await NotificationAttachment.load(event)
-            guard let self, self.accountID == account, self.epoch == generation, !self.isRetracted(event),
+            guard let self, self.accountID == account, self.epoch == generation, !self.isRetracted(event), model.doNotDisturb == nil,
                   !(model.foreground && !model.navigationOpen && model.isShowing(route)) else {
                 if let media { try? FileManager.default.removeItem(at: media.url) }
                 if let senderTemporary { try? FileManager.default.removeItem(at: senderTemporary) }
@@ -172,6 +174,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         guard let model, model.account?.id == accountID,
               notification.request.identifier.hasPrefix("\(accountID ?? ""):\(epoch):") else { return [] }
         model.scheduleUnreadRefresh()
+        if model.doNotDisturb != nil { return [] }
         if let route = NotificationRoute(userInfo: notification.request.content.userInfo), model.foreground && !model.navigationOpen && model.isShowing(route) { return [] }
         return [.banner, .list, .sound]
     }

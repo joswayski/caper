@@ -30,6 +30,9 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
     var dismissDisabled: Bool { false }
     /// False for a dialog whose own footer button already closes it.
     var showsCloseButton: Bool { true }
+    /// A Settings sub-page: the navigation bar's Back leaves it, so it has no
+    /// Close button and the bar repeats no title. Set before it loads.
+    var embedded = false
 
     private let closeLabel: String
     private var header: UIStackView?
@@ -64,7 +67,8 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         titleLabel = title
         let close = Self.button("Close") { [weak self] in if let self, !self.dismissDisabled { self.close() } }
         close.accessibilityLabel = closeLabel; closeButton = close
-        close.isHidden = !showsCloseButton
+        close.isHidden = !showsCloseButton || embedded
+        if embedded { navigationItem.title = "" }
         let header = Self.header(title, close); self.header = header
         let scroll = UIScrollView(); scroll.keyboardDismissMode = .interactive; self.scroll = scroll
         body.axis = .vertical; body.spacing = 14
