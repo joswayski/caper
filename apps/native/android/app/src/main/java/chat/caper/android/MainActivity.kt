@@ -1822,7 +1822,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 SuggestingComposer(draft, { draft = it }, source, thread.rootId, sendReply,
                     focusRequest = state.composerFocusRequest?.takeIf { it.channelId == state.selectedChannel?.id && it.rootId == thread.rootId },
                     focusEnabled = !thread.loading, consumeFocus = viewModel::consumeComposerFocus,
-                    editLast = { files.isEmpty() && viewModel.editLast(thread.rootId) }) { field, change, actions ->
+                    editLast = { files.isEmpty() && viewModel.editLast(thread.rootId) }) { field, change ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             ComposerShell(Modifier.weight(1f)) {
@@ -1845,7 +1845,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                             if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
                                         }
                                     },
-                                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors(),
+                                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences), enabled = !thread.loading, colors = composerFieldColors(),
                                     below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } })
                             }
                             ComposerSendButton(
@@ -2147,7 +2147,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }, source, channel.id, ::submit,
                     focusRequest = state.composerFocusRequest?.takeIf { it.channelId == channel.id && it.rootId == null && state.thread == null },
                     consumeFocus = viewModel::consumeComposerFocus,
-                    editLast = { state.drafts.isEmpty() && viewModel.editLast(null) }) { field, change, actions ->
+                    editLast = { state.drafts.isEmpty() && viewModel.editLast(null) }) { field, change ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             ComposerShell(Modifier.weight(1f)) {
@@ -2180,7 +2180,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                     }
                                 },
                                 enabled = !state.messagesLoading && state.messagesError == null,
-                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions,
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                                 colors = composerFieldColors(),
                                 below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } },
                             )
@@ -2207,7 +2207,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 /**
  * A composer's `:` emoji / `@` mention popup above [content]'s field; the tokens never overlap, so both share it.
  * While it is open Up/Down move, Enter or Tab inserts and Escape dismisses; otherwise a hardware Enter without
- * Shift sends (Shift+Enter keeps the newline), like the keyboard's Send action.
+ * Shift sends (Shift+Enter keeps the newline). The on-screen keyboard's Enter types a newline; its send button sends.
  */
 @Composable internal fun SuggestingComposer(
     draft: TextFieldValue, onDraft: (TextFieldValue) -> Unit, mentions: MentionSource, scope: Any?, send: () -> Unit,
@@ -2215,7 +2215,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     focusEnabled: Boolean = true, consumeFocus: (String) -> Unit = {},
     /** A bare hardware Up in an empty field: opens your newest message to edit, if any (true consumes it). */
     editLast: () -> Boolean = { false },
-    content: @Composable (field: Modifier, change: (TextFieldValue) -> Unit, actions: KeyboardActions) -> Unit,
+    content: @Composable (field: Modifier, change: (TextFieldValue) -> Unit) -> Unit,
 ) {
     val context = LocalContext.current
     val view = androidx.compose.ui.platform.LocalView.current
@@ -2294,9 +2294,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         Modifier.focusRequester(requester).onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { event ->
             val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
             if (event.type != KeyEventType.KeyDown) false
-            // A hardware Enter outside IME composition sends; the text field never sees it.
+            // A hardware Enter outside IME composition sends; the text field never sees it. An on-screen
+            // keyboard that reports Enter as a key event types a newline instead, as its Gboard counterpart does.
             else if (count == 0) when {
-                enter -> (!event.isShiftPressed && draft.composition == null).also { if (it) send() }
+                enter -> (!event.isShiftPressed && draft.composition == null &&
+                    event.nativeKeyEvent.flags and android.view.KeyEvent.FLAG_SOFT_KEYBOARD == 0).also { if (it) send() }
                 // As in Discord and Slack; with suggestions open, Up moves through them instead.
                 event.key == Key.DirectionUp -> !event.isShiftPressed && !event.isAltPressed && !event.isCtrlPressed && !event.isMetaPressed &&
                     draft.composition == null && draft.text.isEmpty() && editLast()
@@ -2317,7 +2319,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
             accept(limited)
         },
-        KeyboardActions(onSend = { if (count > 0) choose(selected.coerceAtMost(count - 1)) else send() }),
     )
 }
 
