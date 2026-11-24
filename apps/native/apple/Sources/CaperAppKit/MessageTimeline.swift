@@ -71,8 +71,27 @@ enum PendingAction { case retry, edit, dismiss }
         }
     }
     private var footerHeight: CGFloat { footer == nil ? 8 : 8 + 28 + 68 }
-    /// The end of the scrollable content: the last row, and the footer under it.
-    private var contentEnd: CGFloat { geometry.contentHeight + footerHeight }
+    /// What the status row and composer floating over the history's end cover.
+    /// The end reserves it, so the newest message keeps its distance from the
+    /// input. A reader at (or within 80 points of) the newest message keeps it
+    /// in view as the composer grows; one up in the history stays where they are.
+    var bottomReserve: CGFloat = 0 {
+        didSet {
+            guard abs(bottomReserve - oldValue) > 0.5 else { return }
+            // Against the old reserve: where the reader was before the composer moved.
+            let distance = geometry.contentHeight + footerHeight + oldValue - contentView.bounds.maxY
+            if live, distance <= 80 { followEnd = true }
+            scrollerInsets.bottom = bottomReserve
+            // Page Up and Down page by the part the composer leaves visible.
+            verticalPageScroll = pageOverlap + bottomReserve
+            realize(anchor: geometry.anchor(at: contentView.bounds.minY))
+        }
+    }
+    /// AppKit's own overlap between pages, before the reserve.
+    private var pageOverlap: CGFloat = 0
+    /// The end of the scrollable content: the last row, the footer under it,
+    /// and the part the composer covers.
+    private var contentEnd: CGFloat { geometry.contentHeight + footerHeight + bottomReserve }
     var jumpChanged: (() -> Void)?
     private var jumpAnimation: Timer?
     var loadOlder: (() -> Void)?
@@ -100,6 +119,7 @@ enum PendingAction { case retry, edit, dismiss }
         backgroundColor = NativeStyle.conversation
         hasVerticalScroller = true
         autohidesScrollers = true
+        pageOverlap = verticalPageScroll
         contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
             name: NSView.boundsDidChangeNotification, object: contentView)
@@ -296,7 +316,8 @@ enum PendingAction { case retry, edit, dismiss }
             canInteract: canInteract, reactionErrors: reactionErrors, pinErrors: pinErrors, pendingPins: pendingPins)
         guard let index = entries.firstIndex(where: { if case .message(let m) = $0 { return m.id == id }; return false }) else { return false }
         realize(anchor: geometry.anchor(at: geometry.origin(of: index)))
-        let offset = max(0, geometry.origin(of: index) - max(0, (contentSize.height - geometry.height(at: index)) / 2))
+        // Centred in the part the composer leaves visible.
+        let offset = max(0, geometry.origin(of: index) - max(0, (contentSize.height - bottomReserve - geometry.height(at: index)) / 2))
         realize(anchor: geometry.anchor(at: offset))
         return true
     }
@@ -349,7 +370,7 @@ enum PendingAction { case retry, edit, dismiss }
     /// detached window shows it wherever the reader is, without a count.
     private func refreshJump() {
         let shows = !live || (jumpAnimation == nil && !followEnd && JumpToLatest.shows(
-            below: max(0, geometry.ids.count - 1 - geometry.index(at: contentView.bounds.maxY)), live: true))
+            below: max(0, geometry.ids.count - 1 - geometry.index(at: contentView.bounds.maxY - bottomReserve)), live: true))
         let next = (shows: shows, count: shows && live ? jump.count : 0)
         guard next != jump else { return }
         jump = next
@@ -493,7 +514,7 @@ enum PendingAction { case retry, edit, dismiss }
         let visible = Set(needed.compactMap { index -> String? in
             guard index < entries.count, case .message(let message) = entries[index] else { return nil }
             let bottom = geometry.origin(of: index) + geometry.height(at: index)
-            return bottom > contentView.bounds.minY && bottom <= contentView.bounds.maxY + 1 ? message.id : nil
+            return bottom > contentView.bounds.minY && bottom <= contentView.bounds.maxY - bottomReserve + 1 ? message.id : nil
         })
         visibleMessagesChanged?(visible)
         refreshJump()

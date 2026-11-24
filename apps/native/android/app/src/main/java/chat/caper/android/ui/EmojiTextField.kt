@@ -66,6 +66,8 @@ import kotlin.math.roundToInt
     leadingIcon: (@Composable () -> Unit)? = null, trailingIcon: (@Composable () -> Unit)? = null,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default, keyboardActions: KeyboardActions = KeyboardActions.Default,
     colors: TextFieldColors = OutlinedTextFieldDefaults.colors(),
+    /** The frame's corners; floating conversation composers use the 20dp composer radius. */
+    shape: androidx.compose.ui.graphics.Shape = MaterialTheme.shapes.small,
     keyboardAttachment: ((android.net.Uri) -> Job?)? = null,
     /** Drawn under the text row inside the same frame (the draft's link preview), growing it. */
     below: (@Composable () -> Unit)? = null,
@@ -183,7 +185,7 @@ import kotlin.math.roundToInt
         decorationBox = { inner ->
             // One frame (border, focus colour, fill) around the text row and anything [below] it.
             val container = @Composable {
-                OutlinedTextFieldDefaults.Container(enabled, false, interaction, colors = colors, shape = MaterialTheme.shapes.small)
+                OutlinedTextFieldDefaults.Container(enabled, false, interaction, colors = colors, shape = shape)
             }
             // Box and Column measure children from zero width, so pass the field's width on explicitly;
             // otherwise the frame shrinks to the placeholder until the text is long.

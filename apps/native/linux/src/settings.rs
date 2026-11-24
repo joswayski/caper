@@ -17,6 +17,23 @@ use caper_client::worker::AccountOperation;
 use gtk::{glib, prelude::*};
 use std::rc::Rc;
 
+/// A theme's colours and rules. Its provider outranks style.css, so a light
+/// theme's `.composer` border and focus ring would come back on the floating
+/// composers: they keep web's soft light shadow, focused or not.
+pub(super) fn theme_css(doc: &caper_client::themes::ThemeDocument) -> String {
+    let mut css = doc.to_gtk_css();
+    if doc.is_light() {
+        css.push_str(
+            ".composer.floating,\n\
+             .composer.floating:focus-within {\n\
+               border-color: transparent;\n\
+               box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);\n\
+             }\n",
+        );
+    }
+    css
+}
+
 const LEVELS: [NotificationLevel; 3] = [
     NotificationLevel::All,
     NotificationLevel::Mentions,
@@ -609,7 +626,7 @@ impl App {
         if let Some(settings) = gtk::Settings::default() {
             settings.set_gtk_application_prefer_dark_theme(!doc.is_light());
         }
-        self.theme_style.load_from_data(&doc.to_gtk_css());
+        self.theme_style.load_from_data(&theme_css(&doc));
     }
 
     pub(super) fn load_notifications(&self, state: &mut State) {

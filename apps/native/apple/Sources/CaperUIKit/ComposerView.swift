@@ -31,8 +31,6 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// The conversation the shown draft belongs to: another one never continues the typing style.
     private var conversation: String?
     private let placeholder = UIKitStyle.label(size: 14, color: UIKitStyle.muted)
-    private let fieldShell = UIView()
-    private let shellDepth = CAGradientLayer()
     private let field = UIView()
     private let fieldSheen = CAGradientLayer()
     private let fieldTopRim = CAGradientLayer()
@@ -100,22 +98,12 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         super.init(frame: .zero)
         _ = SoftwareKeyboard.observer
         translatesAutoresizingMaskIntoConstraints = false
-        fieldShell.translatesAutoresizingMaskIntoConstraints = false
-        fieldShell.isUserInteractionEnabled = false
-        fieldShell.backgroundColor = CaperTheme.themed(UIColor.black.withAlphaComponent(0.42), UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.055))
-        fieldShell.layer.cornerRadius = 23
-        fieldShell.layer.cornerCurve = .continuous
-        fieldShell.layer.borderWidth = 1
-        fieldShell.layer.borderColor = CaperTheme.themed(UIColor.white.withAlphaComponent(0.055), UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.10)).cgColor
-        fieldShell.clipsToBounds = true
-        addSubview(fieldShell)
-
+        // No border or ring, as on web: the box sits on the conversation's
+        // backdrop (`ComposerBackdropView`) with only its fill and radius.
         field.translatesAutoresizingMaskIntoConstraints = false
         field.backgroundColor = UIKitStyle.composer
         field.layer.cornerRadius = 20
         field.layer.cornerCurve = .continuous
-        field.layer.borderWidth = 1
-        field.layer.borderColor = CaperTheme.themed(UIColor.white.withAlphaComponent(0.075), UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.11)).cgColor
         field.clipsToBounds = true
         addSubview(field)
 
@@ -220,10 +208,6 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             suggestions.topAnchor.constraint(equalTo: accessories.bottomAnchor),
             suggestions.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             suggestions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            fieldShell.topAnchor.constraint(equalTo: field.topAnchor, constant: -3),
-            fieldShell.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: -3),
-            fieldShell.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: 3),
-            fieldShell.bottomAnchor.constraint(equalTo: field.bottomAnchor, constant: 3),
             field.topAnchor.constraint(equalTo: suggestions.bottomAnchor, constant: 3),
             field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             send.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
@@ -662,7 +646,6 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         super.layoutSubviews()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        shellDepth.frame = fieldShell.bounds
         let b = field.bounds
         fieldSheen.frame = b
         fieldTopRim.frame = b
@@ -720,32 +703,67 @@ final class HostedView: UIView {
 
 }
 
-/// The composer's lip, as SwiftUI's ComposerLip: an 8pt shade over the bottom
-/// of a timeline, black at 14% along the bottom edge fading out upward. It
-/// takes no layout space and no touches.
-final class ComposerLipView: UIView {
-    override class var layerClass: AnyClass { CAGradientLayer.self }
+/// The composer's backdrop (web's `.chat-composer::before`, `ComposerBackdrop`).
+/// The timeline runs on under the typing row and composer, and this covers its
+/// end: solid conversation color from `ComposerBackdrop.fade` points below its
+/// top edge down, easing out over the band above as frosted glass, a native
+/// blur under the same eased mask. Reduce Transparency drops the blur and keeps
+/// the fade. Its owner sets its frame. The band passes touches through to the
+/// messages under it; the solid part keeps them off rows hidden under the composer.
+final class ComposerBackdropView: UIView {
+    /// A band as tall as the fade, its colors at web's mask stops.
+    private final class Band: UIView {
+        override class var layerClass: AnyClass { CAGradientLayer.self }
+
+        init(colors: [CGColor]) {
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+            let gradient = layer as! CAGradientLayer
+            gradient.colors = colors
+            gradient.locations = ComposerBackdrop.stops.map { NSNumber(value: Double($0.offset / ComposerBackdrop.fade)) }
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    }
+
+    private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    private let blurMask = Band(colors: ComposerBackdrop.stops.map { UIColor.black.withAlphaComponent($0.opacity).cgColor })
+    /// The conversation color over the blur, from web's 60% to solid, under the
+    /// same mask. Switching themes rebuilds the window's views (`CaperTheme.themed`).
+    private let tint = Band(colors: ComposerBackdrop.stops.map {
+        UIKitStyle.conversation.withAlphaComponent($0.opacity * ComposerBackdrop.tint(at: $0.offset)).cgColor
+    })
+    private let solid = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        let gradient = layer as! CAGradientLayer
-        gradient.colors = [UIColor.black.withAlphaComponent(0).cgColor, UIColor.black.withAlphaComponent(0.14).cgColor]
-        isUserInteractionEnabled = false
         isAccessibilityElement = false
-        translatesAutoresizingMaskIntoConstraints = false
+        accessibilityElementsHidden = true
+        blur.isUserInteractionEnabled = false
+        blur.mask = blurMask
+        solid.isUserInteractionEnabled = false
+        solid.backgroundColor = UIKitStyle.conversation
+        [blur, tint, solid].forEach(addSubview)
+        reduceTransparencyChanged()
+        NotificationCenter.default.addObserver(self, selector: #selector(reduceTransparencyChanged),
+                                               name: UIAccessibility.reduceTransparencyStatusDidChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Lays a lip over the bottom of `timeline`, inside `container`.
-    static func attach(to timeline: UIView, in container: UIView) {
-        let lip = ComposerLipView()
-        container.addSubview(lip)
-        NSLayoutConstraint.activate([
-            lip.leadingAnchor.constraint(equalTo: timeline.leadingAnchor),
-            lip.trailingAnchor.constraint(equalTo: timeline.trailingAnchor),
-            lip.bottomAnchor.constraint(equalTo: timeline.bottomAnchor),
-            lip.heightAnchor.constraint(equalToConstant: 8),
-        ])
+    @objc private func reduceTransparencyChanged() { blur.isHidden = UIAccessibility.isReduceTransparencyEnabled }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let fade = min(ComposerBackdrop.fade, bounds.height)
+        let band = CGRect(x: 0, y: 0, width: bounds.width, height: fade)
+        blur.frame = band
+        blurMask.frame = blur.bounds
+        tint.frame = band
+        solid.frame = CGRect(x: 0, y: fade, width: bounds.width, height: bounds.height - fade)
+    }
+
+    /// Only the solid part takes touches.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        point.y >= ComposerBackdrop.fade && super.point(inside: point, with: event)
     }
 }
 

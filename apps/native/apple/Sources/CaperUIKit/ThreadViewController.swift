@@ -41,6 +41,10 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private var closing = false
     private var lastVisible: String?
     private var broadcastRow: UIView?
+    /// Notices, the broadcast toggle and the composer, floating over the
+    /// replies' end on the backdrop.
+    private var composerStack: UIStackView!
+    private let backdrop = ComposerBackdropView()
     private lazy var fileDrop = UIKitFileDrop(model: model, inThread: true)
     /// The preview note, a failed action, Retry session and the pending note.
     private lazy var notices = UIKitConversationNotices(model: model, inThread: true)
@@ -110,6 +114,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         collection.alwaysBounceVertical = true
         collection.showsVerticalScrollIndicator = false
         collection.keyboardDismissMode = .interactive
+        // It runs on under the composer, into the home indicator's area: its
+        // bottom inset is what covers it (`viewDidLayoutSubviews`), not the safe area.
+        collection.contentInsetAdjustmentBehavior = .never
         collection.delegate = self
         collection.accessibilityIdentifier = "thread-timeline"
         collection.register(MessageCell.self, forCellWithReuseIdentifier: MessageCell.reuse)
@@ -187,9 +194,11 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         bottom.setCustomSpacing(-8, after: broadcastRow)
         bottom.translatesAutoresizingMaskIntoConstraints = false
         addChild(notices)
+        view.insertSubview(backdrop, aboveSubview: collection)
         view.addSubview(bottom)
         notices.didMove(toParent: self)
         self.broadcastRow = broadcastRow
+        composerStack = bottom
         composer.textView.accessibilityIdentifier = "thread-composer"
         composer.model = model
         composer.changed = { [weak self] text in self?.chat.threadDraft = text }
@@ -212,7 +221,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             guard let drawer = UIKitHosting.attachDrawer(chat: self.chat, inThread: true, presenter: { [weak self] in self },
                                                          dockInset: self.view.window?.safeAreaInsets.bottom ?? 0, dockHeight: composer.drawerHeight,
                                                          // Grown, it lifts the message box up to the top of the timeline.
-                                                         dockRoom: { [weak self] in self?.collection.frame.height ?? 0 },
+                                                         dockRoom: { [weak self] in self.map { $0.composerStack.frame.minY - $0.collection.frame.minY } ?? 0 },
                                                          dockMoved: { [weak composer] in composer?.drawerDidMove($0) },
                                                          dockOverflow: { [weak composer] in composer?.drawerOverflow ?? 0 },
                                                          close: { [weak composer] in composer?.hideDrawer(keyboard: false) }) else { return }
@@ -239,6 +248,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         addChild(host)
         view.insertSubview(host.view, at: 0)
         host.didMove(toParent: self)
+        let visible = UILayoutGuide()
+        view.addLayoutGuide(visible)
 
         NSLayoutConstraint.activate([
             host.view.widthAnchor.constraint(equalToConstant: 1), host.view.heightAnchor.constraint(equalToConstant: 1),
@@ -260,15 +271,21 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             collection.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             collection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             status.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            status.centerYAnchor.constraint(equalTo: collection.centerYAnchor),
+            // Centred in the part of the timeline the composer leaves visible.
+            visible.topAnchor.constraint(equalTo: collection.topAnchor),
+            visible.bottomAnchor.constraint(equalTo: bottom.topAnchor),
+            visible.leadingAnchor.constraint(equalTo: collection.leadingAnchor),
+            visible.trailingAnchor.constraint(equalTo: collection.trailingAnchor),
+            status.centerYAnchor.constraint(equalTo: visible.centerYAnchor),
             status.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
-            bottom.topAnchor.constraint(equalTo: collection.bottomAnchor, constant: 4),
+            // The replies run on under the composer, which floats over their end.
+            collection.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             bottom.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             // Below required: the docked attach drawer's edge (`drawerEdge`) wins over
-            // it, and the timeline (never negative) over both; the drawer then gives room back.
+            // it, and the timeline's top over both; the drawer then gives room back.
             bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 2),
-            collection.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
+            bottom.topAnchor.constraint(greaterThanOrEqualTo: collection.topAnchor),
             // As short as its contents allow: the timeline takes the slack.
             bottom.heightAnchor.constraint(equalToConstant: 0).withPriority(.defaultLow),
             broadcast.topAnchor.constraint(equalTo: broadcastRow.topAnchor),
@@ -277,9 +294,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             broadcast.trailingAnchor.constraint(equalTo: broadcastRow.trailingAnchor, constant: -18),
             broadcast.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
-        ComposerLipView.attach(to: collection, in: view)
         // Just above the reply box (and its broadcast toggle and notices).
-        jump.attach(over: collection, in: view)
+        jump.attach(over: collection, in: view, above: bottom.topAnchor)
         // As SwiftUI's ThreadBackSwipe: a swipe right from anywhere follows
         // the finger back to the channel.
         let swipeBack = DirectionalSwipe(direction: 1)
@@ -522,6 +538,31 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     }
 
     // MARK: Scrolling
+
+    /// The notices, broadcast toggle and composer float over the replies' end
+    /// on the backdrop. The replies reserve what they cover (and the keyboard
+    /// under them) at their end, so the newest keeps its distance from the
+    /// input; a reader at the newest reply keeps it in view as the composer
+    /// grows, while one up in the thread stays where they are.
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let top = composerStack.frame.minY
+        backdrop.frame = CGRect(x: collection.frame.minX, y: top - ComposerBackdrop.fade, width: collection.frame.width,
+                                height: max(0, view.bounds.maxY - top + ComposerBackdrop.fade))
+        let covered = max(0, collection.frame.maxY - top + 4)
+        guard abs(collection.contentInset.bottom - covered) > 0.5 else { return }
+        // Against the old reserve: where the reader was before the composer moved.
+        let atEnd = tailOffset - collection.contentOffset.y <= 80
+        collection.contentInset.bottom = covered
+        if atEnd, !chat.threadHasNewer { followingTail = true }
+        if followingTail, tailScrollAnimator == nil, !collection.isTracking, !collection.isDecelerating {
+            collection.contentOffset.y = tailOffset
+        } else if !collection.isTracking, collection.contentOffset.y > tailOffset {
+            // A shrinking composer leaves no room past the newest reply.
+            collection.contentOffset.y = tailOffset
+        }
+        refreshJump()
+    }
 
     private var tailOffset: CGFloat {
         max(-collection.adjustedContentInset.top,

@@ -873,7 +873,7 @@ pub fn start(
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_application_prefer_dark_theme(!active_theme.is_light());
     }
-    theme_style.load_from_data(&active_theme.to_gtk_css());
+    theme_style.load_from_data(&settings::theme_css(&active_theme));
     let repaint = wakes.clone();
     let voice = caper_client::voice::Voice::new(
         api.base().clone(),
@@ -1385,6 +1385,21 @@ impl App {
                 .button
                 .connect_clicked(move |_| app.jump_to_latest(thread));
         }
+        // Each list keeps the composer floating over its end clear
+        // (`ui::float_composer`). Read at the newest message, it stays in
+        // view as the composer grows; older history keeps its place.
+        let app = self.clone();
+        ui.list.view.connect_margin_bottom_notify(move |_| {
+            if app.follow.get() {
+                app.pin_tail();
+            }
+        });
+        let app = self.clone();
+        ui.thread_list.view.connect_margin_bottom_notify(move |_| {
+            if app.thread_follow.get() {
+                app.pin_thread_tail();
+            }
+        });
 
         let adjustment = ui.list.scroller.vadjustment();
         let app = self.clone();
@@ -6377,6 +6392,24 @@ impl App {
         });
     }
 
+    /// The thread's `pin_tail`: to its newest reply, again on each frame
+    /// until it stays at the end.
+    fn pin_thread_tail(self: &Rc<Self>) {
+        let (app, frames) = (self.clone(), Cell::new(0));
+        self.ui.thread_list.view.add_tick_callback(move |view, _| {
+            let frames = frames.replace(frames.get() + 1) + 1;
+            let count = app.ui.thread_list.store.n_items();
+            let adjustment = app.ui.thread_list.scroller.vadjustment();
+            let settled = frames > 2
+                && adjustment.value() >= adjustment.upper() - adjustment.page_size() - 1.0;
+            if count == 0 || settled || frames > 60 {
+                return glib::ControlFlow::Break;
+            }
+            let _ = view.activate_action("list.scroll-to-item", Some(&(count - 1).to_variant()));
+            glib::ControlFlow::Continue
+        });
+    }
+
     /// Applies the row diffs to the lists' models: only new or changed rows
     /// get new items, so only they are bound again.
     fn render_rows(self: &Rc<Self>) {
@@ -6624,11 +6657,7 @@ impl App {
             None => {
                 let count = self.ui.thread_list.store.n_items();
                 if thread_changed && count > 0 && self.thread_follow.get() {
-                    let _ = self
-                        .ui
-                        .thread_list
-                        .view
-                        .activate_action("list.scroll-to-item", Some(&(count - 1).to_variant()));
+                    self.pin_thread_tail();
                 }
             }
         }

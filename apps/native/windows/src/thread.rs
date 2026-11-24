@@ -461,24 +461,21 @@ impl Pane {
             },
             1.0,
         );
-        // The history, clipped under the heading.
+        // The history, clipped under the heading, runs on to the pane's
+        // bottom under the composer.
         unsafe {
-            dc.PushAxisAlignedClip(
-                &rect(0.0, HEADER_H, w, HEADER_H + vh),
-                D2D1_ANTIALIAS_MODE_ALIASED,
-            );
+            dc.PushAxisAlignedClip(&rect(0.0, HEADER_H, w, h), D2D1_ANTIALIAS_MODE_ALIASED);
         }
-        let result = self.draw_history(g, dc, vh, media);
+        let result = self.draw_history(g, dc, h - HEADER_H, media);
         if let Some((i, key)) = &self.bar
             && let Some((x, y, _, _)) = self.bar_rect(*i, key.tools.len())
         {
             actions::draw_bar(g, dc, key, x, y);
         }
         unsafe { dc.PopAxisAlignedClip() };
-        // The composer's lip over the history's bottom, inside the leading separator.
-        if vh > LIP_H {
-            crate::draw_lip(dc, 1.0, HEADER_H + vh - LIP_H, w - 1.0);
-        }
+        // The composer's backdrop over the history's end, inside the leading
+        // separator: fading in above the composer, solid behind it.
+        crate::draw_backdrop(dc, 1.0, HEADER_H + vh, w - 1.0, h - HEADER_H - vh);
         result?;
         let reply_rect = self.reply_rect(h);
         if let (Some(r), Some((x, y, w, _))) = (&mut self.reply, reply_rect) {
@@ -861,7 +858,7 @@ impl App {
     }
 
     fn thread_row_at(&self, x: f32, y: f32) -> Option<usize> {
-        if !self.in_thread(x, y) || y < HEADER_H || y >= HEADER_H + self.thread_vh() {
+        if !self.in_thread(x, y) || y < HEADER_H || y >= HEADER_H + self.thread_hit_h() {
             return None;
         }
         let t = self.thread.as_ref()?;
@@ -873,7 +870,7 @@ impl App {
 
     fn thread_msg_hit(&self, x: f32, y: f32) -> Option<(usize, u32)> {
         let t = self.thread.as_ref()?;
-        let y = y.clamp(HEADER_H, HEADER_H + self.thread_vh());
+        let y = y.clamp(HEADER_H, HEADER_H + self.thread_hit_h());
         let i = (0..t.c.messages.len())
             .filter_map(|i| self.thread_part_rect(Part::Row(i)).map(|r| (i, r)))
             .min_by(|(_, a), (_, b)| {
@@ -947,11 +944,21 @@ impl App {
         self.need = true;
     }
 
-    /// The history's height in the pane.
+    /// The history's height in the pane that its composer (with the reply
+    /// and "Also send to" rows) leaves visible. The history runs on under
+    /// the composer to the pane's bottom; its end stops `FADE_H` above the
+    /// composer's top edge, where its backdrop starts fading in.
     pub fn thread_vh(&self) -> f32 {
         let box_h = self.thread.as_ref().map_or(BOX_MIN, |t| t.box_h);
         let reply_h = self.thread.as_ref().map_or(0.0, Pane::reply_h);
-        (self.h - 16.0 - box_h - 8.0 - CHECK_H - reply_h - 12.0 - HEADER_H).max(0.0)
+        (self.h - 16.0 - box_h - 8.0 - CHECK_H - reply_h - FADE_H - HEADER_H).max(0.0)
+    }
+
+    /// The height under the heading where the pointer reaches the
+    /// history: through the backdrop's fade, down to the composer's top
+    /// edge.
+    pub fn thread_hit_h(&self) -> f32 {
+        self.thread_vh() + FADE_H
     }
 
     /// Wheel and middle-click scrolling share the same bounds/live-end state.
@@ -988,9 +995,10 @@ impl App {
     pub fn thread_part_rect(&self, part: Part) -> Option<Rect> {
         let t = self.thread.as_ref()?;
         let x0 = self.thread_x();
-        let vh = self.thread_vh();
+        // On screen down to the composer's top edge, through its fade.
+        let hit_h = self.thread_hit_h();
         let off = HEADER_H - t.scroll;
-        let clip = |r: Rect| (r.1 + r.3 > HEADER_H && r.1 < HEADER_H + vh).then_some(r);
+        let clip = |r: Rect| (r.1 + r.3 > HEADER_H && r.1 < HEADER_H + hit_h).then_some(r);
         match part {
             Part::Close => {
                 let (x, y, w, h) = close_local(t.width, self.is_narrow());
@@ -1193,7 +1201,7 @@ impl App {
         }
         let parts = self.thread_parts();
         if y >= HEADER_H
-            && y < HEADER_H + self.thread_vh()
+            && y < HEADER_H + self.thread_hit_h()
             && let Some(p) = parts.iter().copied().find(|p| {
                 matches!(p, Part::Tool(..))
                     && self.thread_part_rect(*p).is_some_and(|r| contains(r, x, y))
@@ -1212,7 +1220,7 @@ impl App {
                 Part::Tool(..) => false,
                 Part::Row(_) | Part::Chip(..) | Part::Add(_) | Part::Older => {
                     y >= HEADER_H
-                        && y < HEADER_H + self.thread_vh()
+                        && y < HEADER_H + self.thread_hit_h()
                         && self.thread_part_rect(*p).is_some_and(|r| contains(r, x, y))
                 }
                 // A spoiler takes only its own lines, not its bounds.
@@ -1220,7 +1228,7 @@ impl App {
                 Part::Forward(i, part) => {
                     part != list::ForwardPart::Body
                         && y >= HEADER_H
-                        && y < HEADER_H + self.thread_vh()
+                        && y < HEADER_H + self.thread_hit_h()
                         && self
                             .forward_parts(true, i)
                             .into_iter()
@@ -1234,7 +1242,7 @@ impl App {
     /// and its index in the row's spoilers.
     fn thread_spoiler_at(&self, x: f32, y: f32) -> Option<(usize, usize)> {
         let t = self.thread.as_ref()?;
-        if !self.in_thread(x, y) || y < HEADER_H || y >= HEADER_H + self.thread_vh() {
+        if !self.in_thread(x, y) || y < HEADER_H || y >= HEADER_H + self.thread_hit_h() {
             return None;
         }
         let ay = y - HEADER_H + t.scroll;
