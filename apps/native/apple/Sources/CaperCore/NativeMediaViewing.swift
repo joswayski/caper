@@ -49,6 +49,9 @@ import UIKit
         return MediaViewerPolicy.latest(request.items, in: chat.messages + chat.pinnedMessages)
     }
     var available: Bool { item.map(MediaViewerPolicy.isViewable) ?? false }
+    /// Loading: a video spins over its poster until it can play; an image
+    /// only until something shows, since its preview stands in meanwhile.
+    var spinning: Bool { available && loading && !failed && (item?.kind == .video || image == nil) }
     func start() {
         active = true
         if motionObserver == nil {

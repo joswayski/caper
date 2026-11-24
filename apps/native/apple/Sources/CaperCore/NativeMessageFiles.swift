@@ -203,9 +203,19 @@ private enum NativeSentFiles {
         if file.status == .processing { return chat?.attachmentProgress[file.id].map { "Processing… \($0)%" } ?? "Processing…" }
         if file.url == nil { return "File unavailable" }
         if failed { return file.kind == .image ? "Image unavailable" : "Video unavailable" }
-        if file.kind == .image { return "" }
-        if file.kind == .video { return file.animated && !CaperAccessibility.reduceMotion ? "" : "▶" }
+        if file.kind == .image || file.kind == .video { return "" }
         return "\(file.name)\n\(AttachmentPolicy.formatBytes(file.size))"
+    }
+    /// A ready video that doesn't loop in place shows a play badge (and its
+    /// length) over its poster, as on Android.
+    @MainActor static func playBadge(_ file: ChatAttachment, revealed: Bool, failed: Bool, chat: ChatModel?) -> Bool {
+        file.kind == .video && !(file.animated && !CaperAccessibility.reduceMotion)
+            && label(file, revealed: revealed, failed: failed, chat: chat).isEmpty
+    }
+    static func duration(_ ms: Int?) -> String? {
+        guard let ms, ms > 0 else { return nil }
+        let s = ms / 1000
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
     }
 }
 
@@ -270,6 +280,8 @@ import AppKit
     private let media = NativeFileMedia()
     private let chat: ChatModel?
     private let text = AppKitKit.label("", size: 12)
+    private let badge = NSImageView()
+    private let length = AppKitKit.label("", size: 11, weight: .bold, color: .white, wraps: false)
     private let open = AppKitMediaHitTarget()
     private let hide: AppKitKitButton
     private var file: ChatAttachment?
@@ -283,7 +295,15 @@ import AppKit
         open.handler = activate
         layer?.backgroundColor = AppKitKit.surface.cgColor; layer?.borderWidth = 1; layer?.borderColor = AppKitKit.border.cgColor
         layer?.addSublayer(media.image); layer?.addSublayer(media.video); text.alignment = .center
-        addSubview(text); addSubview(open); addSubview(self.hide)
+        // Fixed black and white: they sit over a picture, not over themed chrome.
+        badge.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .bold))
+        badge.contentTintColor = .white; badge.imageScaling = .scaleNone; badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor; badge.layer?.cornerRadius = 22
+        length.alignment = .center; length.drawsBackground = false; length.wantsLayer = true
+        length.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor; length.layer?.cornerRadius = 5
+        badge.setAccessibilityElement(false); length.setAccessibilityElement(false)
+        addSubview(text); addSubview(badge); addSubview(length); addSubview(open); addSubview(self.hide)
         open.translatesAutoresizingMaskIntoConstraints = true; self.hide.translatesAutoresizingMaskIntoConstraints = true
         media.changed = { [weak self] in self?.render() }; setAccessibilityElement(false)
     }
@@ -318,6 +338,8 @@ import AppKit
         guard let file else { return }
         text.stringValue = NativeSentFiles.label(file, revealed: revealed, failed: media.failed, chat: chat)
         text.isHidden = voice != nil; open.isHidden = voice != nil
+        badge.isHidden = !NativeSentFiles.playBadge(file, revealed: revealed, failed: media.failed, chat: chat)
+        length.stringValue = NativeSentFiles.duration(file.durationMs) ?? ""; length.isHidden = badge.isHidden || length.stringValue.isEmpty
         layer?.backgroundColor = voice == nil ? AppKitKit.surface.cgColor : nil; layer?.borderWidth = voice == nil ? 1 : 0
         hide.isHidden = !file.spoiler || !revealed
         open.isEnabled = file.spoiler && !revealed || (!file.unavailable && file.status == .ready && file.url != nil)
@@ -332,6 +354,9 @@ import AppKit
         voice?.frame = bounds
         open.frame = bounds; text.preferredMaxLayoutWidth = max(1, bounds.width - 20)
         text.frame = NSRect(x: 10, y: (bounds.height - text.fittingSize.height) / 2, width: max(1, bounds.width - 20), height: text.fittingSize.height)
+        badge.frame = NSRect(x: bounds.midX - 22, y: bounds.midY - 22, width: 44, height: 44)
+        let lengthWidth = length.fittingSize.width + 10
+        length.frame = NSRect(x: bounds.width - lengthWidth - 6, y: bounds.height - 24, width: lengthWidth, height: 18)
         hide.frame = NSRect(x: max(0, bounds.width - 110), y: 4, width: min(106, bounds.width), height: 30)
     }
 }
@@ -393,6 +418,8 @@ import UIKit
     private let media = NativeFileMedia()
     private let chat: ChatModel?
     private let text = UIKitMessageDialog.label("")
+    private let badge = UIImageView(image: UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .bold)))
+    private let length = UIKitMessageDialog.label("", size: 11, bold: true)
     private let open = UIButton(type: .custom), hide: UIButton
     private var file: ChatAttachment?
     private var revealed = false
@@ -402,7 +429,13 @@ import UIKit
         super.init(frame: .zero); layer.cornerRadius = 8; clipsToBounds = true
         backgroundColor = UIColor(CaperTheme.surface); layer.borderWidth = 1; layer.borderColor = UIColor(CaperTheme.border).cgColor
         layer.addSublayer(media.image); layer.addSublayer(media.video); text.textAlignment = .center
-        addSubview(text); addSubview(open); addSubview(self.hide)
+        // Fixed black and white: they sit over a picture, not over themed chrome.
+        badge.tintColor = .white; badge.contentMode = .center; badge.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        badge.layer.cornerRadius = 24; badge.clipsToBounds = true
+        length.textColor = .white; length.textAlignment = .center; length.numberOfLines = 1
+        length.backgroundColor = UIColor.black.withAlphaComponent(0.6); length.layer.cornerRadius = 5; length.clipsToBounds = true
+        for view in [badge, length] as [UIView] { view.isUserInteractionEnabled = false; view.isAccessibilityElement = false }
+        addSubview(text); addSubview(badge); addSubview(length); addSubview(open); addSubview(self.hide)
         open.addAction(UIAction { _ in activate() }, for: .touchUpInside); media.changed = { [weak self] in self?.render() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -430,6 +463,8 @@ import UIKit
         guard let file else { return }
         text.text = NativeSentFiles.label(file, revealed: revealed, failed: media.failed, chat: chat); text.isAccessibilityElement = false
         text.isHidden = voice != nil; open.isHidden = voice != nil
+        badge.isHidden = !NativeSentFiles.playBadge(file, revealed: revealed, failed: media.failed, chat: chat)
+        length.text = NativeSentFiles.duration(file.durationMs); length.isHidden = badge.isHidden || length.text == nil
         backgroundColor = voice == nil ? UIColor(CaperTheme.surface) : .clear; layer.borderWidth = voice == nil ? 1 : 0
         hide.isHidden = !file.spoiler || !revealed
         open.isEnabled = file.spoiler && !revealed || (!file.unavailable && file.status == .ready && file.url != nil)
@@ -443,6 +478,9 @@ import UIKit
         voice?.frame = bounds
         open.frame = bounds; let size = text.sizeThatFits(CGSize(width: max(1, bounds.width - 20), height: .greatestFiniteMagnitude))
         text.frame = CGRect(x: 10, y: (bounds.height - size.height) / 2, width: max(1, bounds.width - 20), height: size.height)
+        badge.frame = CGRect(x: bounds.midX - 24, y: bounds.midY - 24, width: 48, height: 48)
+        let lengthSize = length.sizeThatFits(CGSize(width: bounds.width, height: 20))
+        length.frame = CGRect(x: bounds.width - lengthSize.width - 16, y: bounds.height - 26, width: lengthSize.width + 10, height: 20)
         hide.frame = CGRect(x: max(0, bounds.width - 130), y: 4, width: min(126, bounds.width), height: 44)
     }
 }

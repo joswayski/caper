@@ -13,6 +13,7 @@ import Observation
     private let fileSize = AppKitKit.label("", size: 12, color: AppKitKit.muted)
     private let notice = AppKitKit.label("", size: 13)
     private let status = AppKitKit.label("", size: 13)
+    private let spinner = NSProgressIndicator()
     private var previous: AppKitKitButton!
     private var next: AppKitKitButton!
     private var hide: AppKitKitButton!
@@ -46,7 +47,12 @@ import Observation
         play = AppKitKitButton("Play animation") { [state] in state.toggleAnimation() }
         play.setAccessibilityIdentifier("media-viewer-animation-toggle")
         let footer = NSStackView(views: [status, play, hide]); footer.spacing = 12
-        for child in [header, previous!, next!, notice, footer] {
+        // A dark disc keeps the spinner visible over a light poster.
+        spinner.style = .spinning; spinner.controlSize = .regular; spinner.isDisplayedWhenStopped = false
+        spinner.appearance = NSAppearance(named: .darkAqua); spinner.wantsLayer = true
+        spinner.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor; spinner.layer?.cornerRadius = 28
+        spinner.setAccessibilityLabel("Loading")
+        for child in [header, previous!, next!, spinner, notice, footer] {
             child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child)
         }
         NSLayoutConstraint.activate([
@@ -55,6 +61,8 @@ import Observation
             previous.centerYAnchor.constraint(equalTo: view.centerYAnchor), previous.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             next.centerYAnchor.constraint(equalTo: view.centerYAnchor), next.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             notice.centerXAnchor.constraint(equalTo: view.centerXAnchor), notice.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor), spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            spinner.widthAnchor.constraint(equalToConstant: 56), spinner.heightAnchor.constraint(equalToConstant: 56),
             footer.centerXAnchor.constraint(equalTo: view.centerXAnchor), footer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
         ])
         canvas.step = { [weak self] in self?.move($0) }
@@ -87,6 +95,7 @@ import Observation
         titleLabel.stringValue = item?.name ?? ""
         view.setAccessibilityLabel(item?.kind == .video ? "Video viewer" : "Image viewer")
         counter.stringValue = MediaViewerPolicy.counter(position: state.position, count: state.items.count) ?? ""
+        counter.isHidden = counter.stringValue.isEmpty
         counter.setAccessibilityLabel("\(state.position + 1) of \(state.items.count)")
         fileSize.stringValue = item.flatMap(MediaViewerPolicy.size) ?? ""
         previous.isHidden = state.items.count < 2; next.isHidden = previous.isHidden
@@ -95,8 +104,9 @@ import Observation
         hide.isHidden = item?.spoiler != true
         play.isHidden = !state.animated || state.failed; play.title = state.playing ? "Pause animation" : "Play animation"
         status.stringValue = state.status ?? ""; status.isHidden = state.status == nil
-        notice.stringValue = !state.available ? "This file is no longer available." : state.failed ? "Couldn’t load this file. Try opening it in your browser." : state.loading ? "Loading…" : ""
+        notice.stringValue = !state.available ? "This file is no longer available." : state.failed ? "Couldn’t load this file. Try opening it in your browser." : ""
         notice.isHidden = notice.stringValue.isEmpty
+        if state.spinning { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
         canvas.refresh()
     }
     private func shareFile() {
@@ -147,11 +157,14 @@ import Observation
     }
     func refresh() {
         picture.image = state.image.map { NSImage(cgImage: $0, size: .zero) }
-        picture.isHidden = !state.available || state.player != nil
+        // A video keeps its poster (the picture) on screen until the player
+        // is ready, instead of the player's black frame.
+        let videoShown = state.player != nil && !state.loading
+        picture.isHidden = !state.available || videoShown
         picture.setAccessibilityElement(!picture.isHidden && state.image != nil)
         picture.setAccessibilityIdentifier("media-viewer-image"); picture.setAccessibilityLabel(state.item?.name)
         if video.player !== state.player { video.player = state.player }
-        video.isHidden = state.player == nil; video.controlsStyle = state.animated ? .none : .floating
+        video.isHidden = !videoShown; video.controlsStyle = state.animated ? .none : .floating
         needsLayout = true
     }
     override func layout() {
@@ -226,6 +239,7 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
     private let fileSize = UIKitMessageDialog.label("", size: 12)
     private let notice = UIKitMessageDialog.label("")
     private let status = UIKitMessageDialog.label("")
+    private let spinner = UIActivityIndicatorView(style: .large)
     private var previous: UIButton!
     private var nextButton: UIButton!
     private var hide: UIButton!
@@ -253,9 +267,15 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
         more = control("More media actions", icon: "ellipsis", id: "actions") {}; more.showsMenuAsPrimaryAction = true
         titleLabel.numberOfLines = 1; titleLabel.lineBreakMode = .byTruncatingMiddle
         counter.accessibilityIdentifier = "media-viewer-counter"; fileSize.accessibilityIdentifier = "media-viewer-size"
+        for label in [counter, fileSize] { label.numberOfLines = 1; label.textColor = UIColor.white.withAlphaComponent(0.6) }
         let details = UIStackView(arrangedSubviews: [counter, fileSize]); details.spacing = 8
-        let names = UIStackView(arrangedSubviews: [titleLabel, details]); names.axis = .vertical; names.spacing = 2
-        let header = UIStackView(arrangedSubviews: [names, more, close]); header.spacing = 8
+        // Name and size read as one left-aligned block, centred on the buttons.
+        let names = UIStackView(arrangedSubviews: [titleLabel, details]); names.axis = .vertical; names.alignment = .leading; names.spacing = 2
+        let header = UIStackView(arrangedSubviews: [names, more, close]); header.alignment = .center; header.spacing = 8
+        names.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // A dark disc keeps the spinner visible over a light poster.
+        spinner.color = .white; spinner.hidesWhenStopped = true; spinner.accessibilityLabel = "Loading"
+        spinner.backgroundColor = UIColor.black.withAlphaComponent(0.55); spinner.layer.cornerRadius = 32
         previous = control("Previous file", icon: "chevron.left", id: "previous") { [weak self] in self?.move(-1) }
         nextButton = control("Next file", icon: "chevron.right", id: "next") { [weak self] in self?.move(1) }
         play = UIKitMessageDialog.button("Play animation") { [state] in state.toggleAnimation() }
@@ -263,11 +283,14 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
         hide = UIKitMessageDialog.button("Hide spoiler") { [state] in state.hideSpoiler() }; hide.accessibilityIdentifier = "media-viewer-hide-spoiler"
         let actions = UIStackView(arrangedSubviews: [play, hide]); actions.spacing = 8
         let footer = UIStackView(arrangedSubviews: [status, actions]); footer.axis = .vertical; footer.alignment = .center; footer.spacing = 4
-        for child in [header, previous!, nextButton!, notice, footer] {
+        for child in [header, previous!, nextButton!, spinner, notice, footer] {
             child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child)
         }
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
+            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor), spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            spinner.widthAnchor.constraint(equalToConstant: 64), spinner.heightAnchor.constraint(equalToConstant: 64),
+            header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
             header.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             previous.centerYAnchor.constraint(equalTo: view.centerYAnchor), previous.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
             nextButton.centerYAnchor.constraint(equalTo: view.centerYAnchor), nextButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
@@ -284,8 +307,11 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
         scroll.addGestureRecognizer(tap)
     }
     private func control(_ title: String, icon: String, id: String, action: @escaping () -> Void) -> UIButton {
-        let button = UIButton(type: .system); button.tintColor = .white
-        button.setImage(UIImage(systemName: icon), for: .normal)
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+        configuration.baseForegroundColor = .white; configuration.cornerStyle = .capsule
+        configuration.background.backgroundColor = UIColor.white.withAlphaComponent(0.14)
+        let button = UIButton(configuration: configuration)
         button.accessibilityLabel = title; button.accessibilityIdentifier = "media-viewer-\(id)"
         button.addAction(UIAction { _ in action() }, for: .touchUpInside)
         button.widthAnchor.constraint(equalToConstant: 44).isActive = true; button.heightAnchor.constraint(equalToConstant: 44).isActive = true
@@ -302,21 +328,26 @@ struct NativeMediaViewerBridge: UIViewControllerRepresentable {
         let item = state.item
         if displayedID != item?.id { displayedID = item?.id; scroll.setZoomScale(1, animated: false) }
         titleLabel.text = item?.name; view.accessibilityLabel = item?.kind == .video ? "Video viewer" : "Image viewer"
-        counter.text = MediaViewerPolicy.counter(position: state.position, count: state.items.count)
+        counter.text = MediaViewerPolicy.counter(position: state.position, count: state.items.count); counter.isHidden = counter.text == nil
         counter.accessibilityLabel = "\(state.position + 1) of \(state.items.count)"; fileSize.text = item.flatMap(MediaViewerPolicy.size)
+        fileSize.isHidden = fileSize.text == nil
         previous.isHidden = state.items.count < 2; nextButton.isHidden = previous.isHidden
         previous.isEnabled = state.position > 0; nextButton.isEnabled = state.position < state.items.count - 1
         more.isHidden = !state.available; more.isEnabled = !state.busy
         hide.isHidden = item?.spoiler != true; play.isHidden = !state.animated || state.failed
         var configuration = play.configuration; configuration?.title = state.playing ? "Pause animation" : "Play animation"; play.configuration = configuration
         status.text = state.status; status.isHidden = state.status == nil
-        notice.text = !state.available ? "This file is no longer available." : state.failed ? "Couldn’t load this file. Try opening it in your browser." : state.loading ? "Loading…" : nil
+        notice.text = !state.available ? "This file is no longer available." : state.failed ? "Couldn’t load this file. Try opening it in your browser." : nil
         notice.isHidden = notice.text == nil
-        image.image = state.image.map { UIImage(cgImage: $0) }; scroll.isHidden = !state.available || state.player != nil
+        if state.spinning { spinner.startAnimating() } else { spinner.stopAnimating() }
+        // A video keeps its poster (the image) on screen until the player is
+        // ready, instead of the player's black frame.
+        let videoShown = state.player != nil && !state.loading
+        image.image = state.image.map { UIImage(cgImage: $0) }; scroll.isHidden = !state.available || videoShown
         image.isAccessibilityElement = !scroll.isHidden && state.image != nil
         image.accessibilityTraits = .image; image.accessibilityIdentifier = "media-viewer-image"; image.accessibilityLabel = item?.name
         if video.player !== state.player { video.player = state.player }
-        video.view.isHidden = state.player == nil; video.showsPlaybackControls = !state.animated
+        video.view.isHidden = !videoShown; video.showsPlaybackControls = !state.animated
         var actions: [UIAction] = []
         if item?.kind == .image { actions.append(UIAction(title: "Copy image", image: UIImage(systemName: "doc.on.doc")) { [state] _ in state.copyImage() }) }
         actions.append(UIAction(title: "Save or share", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in self?.shareFile() })
