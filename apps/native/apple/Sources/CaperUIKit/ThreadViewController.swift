@@ -15,8 +15,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let composer = ComposerView()
-    /// Keeps the message box above a grown attach drawer (`ComposerView.drawerMoved`).
-    private var drawerCeiling: NSLayoutConstraint?
+    /// While the attach drawer is docked, the message box sits on its edge
+    /// (`ComposerView.drawerMoved`): the keyboard guide doesn't follow it as it resizes.
+    private lazy var drawerEdge = composer.bottomAnchor.constraint(equalTo: view.bottomAnchor).withPriority(.required - 1)
     private lazy var composerPreview = UIKitNativeComposerPreview(chat: model.chat, inThread: true)
     private lazy var composerAccessories = UIKitNativeComposerAccessories(chat: model.chat, inThread: true) { [weak self] in
         if self?.presentedViewController == nil { self?.present($0, animated: false) }
@@ -219,9 +220,10 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         }
         composer.drawerMoved = { [weak self] top in
             // A grown attach drawer lifts the message box with it.
-            guard let self, let ceiling = self.drawerCeiling else { return }
-            let limit = top.flatMap { top in self.view.window.map { self.view.convert(CGPoint(x: 0, y: top), from: $0.screen.coordinateSpace).y - 8 } }
-            ceiling.constant = limit.map { min(0, $0 - self.view.bounds.height) } ?? 0
+            guard let self else { return }
+            let edge = top.flatMap { top in self.view.window.map { self.view.convert(CGPoint(x: 0, y: top), from: $0.screen.coordinateSpace).y - 8 } }
+            if let edge { self.drawerEdge.constant = edge - self.view.bounds.height }
+            self.drawerEdge.isActive = edge != nil
             self.view.layoutIfNeeded()
         }
         composer.emojiTapped = { [weak self] in
@@ -263,10 +265,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             bottom.topAnchor.constraint(equalTo: collection.bottomAnchor, constant: 4),
             bottom.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            // Below required: a grown attach drawer lowers the ceiling, and the
-            // timeline (never negative) wins over both; the composer then shrinks the drawer.
+            // Below required: the docked attach drawer's edge (`drawerEdge`) wins over
+            // it, and the timeline (never negative) over both; the drawer then gives room back.
             bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8).withPriority(.required - 2),
-            { let ceiling = bottom.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor).withPriority(.required - 1); self.drawerCeiling = ceiling; return ceiling }(),
             collection.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
             // As short as its contents allow: the timeline takes the slack.
             bottom.heightAnchor.constraint(equalToConstant: 0).withPriority(.defaultLow),
