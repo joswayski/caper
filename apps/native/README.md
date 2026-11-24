@@ -71,6 +71,25 @@ against the parity fixture (`scripts/native-parity-fixture.mjs`).
 - Native channel voice in default builds. There are no incoming direct calls,
   so no CallKit/Telecom/push ringing.
 
+## Keyboard navigation
+
+Every client, including iPad and Android with a hardware keyboard, has the same
+keys (Cmd on Apple, Ctrl elsewhere):
+
+- **Ctrl/Cmd+K** quick switcher: the open space's channels, DMs, spaces and
+  people, unread first; type to filter, Up/Down and Enter to open. Web also
+  lists other spaces' channels.
+- **Alt+Up/Down** previous or next conversation in sidebar order (channels,
+  then DMs), wrapping; with **Shift**, only unread ones.
+- **Esc** marks the open conversation read up to its latest message, once
+  suggestions, threads, menus and dialogs have had the key.
+- **Ctrl/Cmd+Shift+M / D** mute or deafen, only while connected to a call.
+- **Ctrl/Cmd+/** lists the shortcuts.
+
+Matching, ranking and stepping follow `shared/shortcuts/switcher-cases.json`,
+which each client's tests run. macOS lists the keys under **Go** and **Help**;
+iPadOS shows them when ⌘ is held and in the menu bar.
+
 ## Launch at login (desktop only)
 
 **Account gear → Settings… → Startup → Launch at login** (off by default) opens
