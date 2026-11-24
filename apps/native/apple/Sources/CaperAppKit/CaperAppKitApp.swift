@@ -135,17 +135,16 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             menu.addItem(withTitle: "Open Caper", action: #selector(showMainWindow(_:)), keyEquivalent: "").target = self
             menu.addItem(.separator())
         }
-        let mute = menu.addItem(withTitle: "Mute", action: #selector(toggleMute(_:)), keyEquivalent: "")
-        mute.target = self; mute.state = voice.muted ? .on : .off
-        let deafen = menu.addItem(withTitle: "Deafen", action: #selector(toggleDeafen(_:)), keyEquivalent: "")
-        deafen.target = self; deafen.state = voice.deafened ? .on : .off
+        // validateMenuItem keeps these titles current, as in the menu bar.
+        menu.addItem(withTitle: voice.muted ? "Unmute Microphone" : "Mute Microphone",
+                     action: #selector(toggleMute(_:)), keyEquivalent: "").target = self
+        menu.addItem(withTitle: voice.deafened ? "Undeafen Audio" : "Deafen Audio",
+                     action: #selector(toggleDeafen(_:)), keyEquivalent: "").target = self
         menu.addItem(withTitle: voice.phase == .joining ? "Cancel joining" : "Leave call",
                      action: #selector(leaveCall(_:)), keyEquivalent: "").target = self
         return menu
     }
 
-    @objc private func toggleMute(_ sender: Any?) { if let model { VoicePresentation.toggleMute(model.voice) } }
-    @objc private func toggleDeafen(_ sender: Any?) { if let model { VoicePresentation.toggleDeafen(model.voice) } }
     @objc private func leaveCall(_ sender: Any?) { if let model { VoicePresentation.leave(model) } }
 
     func applicationDidBecomeActive(_ notification: Notification) {
