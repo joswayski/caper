@@ -678,7 +678,13 @@ impl App {
         };
         let window = self.ui.window.clone();
         glib::idle_add_local_once(move || {
-            let _ = window.activate_action(&format!("admin.{action}"), Some(&"".to_variant()));
+            // The "admin" group is inserted on the window as a widget, so
+            // WidgetExt resolves the prefixed name.
+            let _ = WidgetExt::activate_action(
+                &window,
+                &format!("admin.{action}"),
+                Some(&"".to_variant()),
+            );
         });
     }
 
