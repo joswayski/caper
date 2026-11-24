@@ -38,6 +38,7 @@ import SwiftUI
         composer.update(editable: !state.busy)
         let length = state.draft.unicodeScalars.count
         count.stringValue = "\(length.formatted()) / 4,000"; count.isHidden = length < 3000
+        count.textColor = ComposerCounter.nsColor(length)
         error.stringValue = state.error ?? ""; error.isHidden = state.error == nil
         reload.isHidden = state.error == nil; reload.isEnabled = !state.busy
         cancel.isEnabled = !state.busy; save.isEnabled = state.canSave

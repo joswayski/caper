@@ -84,14 +84,12 @@ try {
   const atLimit = "x".repeat(3_999) + "🙂";
   browser("fill", "#chat-edit-text", atLimit);
   assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), false);
-  const neutralCountColor = evaluate('getComputedStyle(document.querySelector(".chat-edit-dialog small")).color');
   browser("fill", "#chat-edit-text", atLimit + "!");
   assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), true);
   assert.equal(evaluate('document.querySelector(".chat-edit-dialog small").textContent'), "4,001 / 4,000");
-  assert.notEqual(
+  assert.equal(
     evaluate('getComputedStyle(document.querySelector(".chat-edit-dialog small")).color'),
-    neutralCountColor,
-    "The over-limit error color must not be overridden by the neutral counter style",
+    "rgb(255, 130, 124)",
   );
   browser("set", "viewport", "390", "844", "2");
   screenshot("message-edit-limit-narrow");
@@ -288,7 +286,7 @@ try {
     assert.equal(evaluate('document.querySelector("#chat-edit-count").textContent'), "4,000 / 4,000");
     assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), false);
     assert.equal(evaluate('document.querySelector("#chat-edit-text").getAttribute("aria-invalid")'), null);
-    assert.equal(evaluate('getComputedStyle(document.querySelector("#chat-edit-count")).color'), "rgb(185, 188, 190)");
+    assert.equal(evaluate('getComputedStyle(document.querySelector("#chat-edit-count")).color'), "rgb(255, 130, 124)");
     browser(
       "fill",
       "#chat-edit-text",
@@ -301,7 +299,7 @@ try {
       evaluate('document.querySelector("#chat-edit-text").getAttribute("aria-describedby")'),
       "chat-edit-count",
     );
-    assert.equal(evaluate('getComputedStyle(document.querySelector("#chat-edit-count")).color'), "rgb(255, 155, 130)");
+    assert.equal(evaluate('getComputedStyle(document.querySelector("#chat-edit-count")).color'), "rgb(255, 130, 124)");
     browser("press", "Control+Enter");
     assert.equal((await history()).messages.find((message) => message.id === root.id).content.text, savedText);
     screenshot(`message-edit-limit-${label}`);

@@ -903,6 +903,30 @@ impl Dialog {
         (n >= 3000).then(|| format!("{},{:03} / 4,000", n / 1000, n % 1000))
     }
 
+    /// The counter's colour: `muted` at 3,000, warming gradually through gold
+    /// and orange to red near the limit, as web's counter.ts.
+    pub fn counter_color(n: usize, muted: u32) -> u32 {
+        let ramp = [
+            (3000.0, muted),
+            (3400.0, 0xE2C36B),
+            (3700.0, 0xEDA361),
+            (3950.0, 0xFF827C),
+        ];
+        let n = n as f32;
+        for pair in ramp.windows(2) {
+            let ((from, a), (to, b)) = (pair[0], pair[1]);
+            if n < to {
+                let t = ((n - from) / (to - from)).max(0.0);
+                let mix = |shift: u32| {
+                    let (a, b) = (((a >> shift) & 0xFF) as f32, ((b >> shift) & 0xFF) as f32);
+                    ((a + (b - a) * t).round() as u32) << shift
+                };
+                return mix(16) | mix(8) | mix(0);
+            }
+        }
+        ramp[ramp.len() - 1].1
+    }
+
     pub fn enabled(&self, part: Part) -> bool {
         if self.forwarding.is_some() {
             return self.forward_enabled(part);
@@ -1366,12 +1390,17 @@ impl Dialog {
                         }
                         if let Some(counter) = self.counter().filter(|_| self.kind == Kind::Edit) {
                             let counter = layout(g, &counter, &g.formats.quote_meta, 1e6)?;
+                            let n = self.draft().chars().count();
+                            let brush = g.solid(Self::counter_color(
+                                n,
+                                crate::theme::palette().text_muted,
+                            ))?;
                             crate::text::draw(
                                 dc,
                                 &counter,
                                 x + pw - width(&counter),
                                 y + ph + 4.0,
-                                &g.brushes.muted,
+                                &brush,
                             );
                         }
                     }

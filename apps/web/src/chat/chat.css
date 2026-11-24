@@ -4812,15 +4812,6 @@ a.chat-draft-preview {
   font-size: 0.64rem;
   font-variant-numeric: tabular-nums;
 }
-.chat-counter[data-tone="yellow"] {
-  color: var(--pin-gold);
-}
-.chat-counter[data-tone="orange"] {
-  color: #eda361;
-}
-.chat-counter[data-tone="red"] {
-  color: #ff827c;
-}
 
 @media (max-width: 760px) {
   .chat-panel {
@@ -5668,7 +5659,7 @@ a.chat-draft-preview {
   font-weight: 700;
 }
 .chat-edit-notice {
-  margin: 12px 0 20px;
+  margin: 4px 0 20px;
   color: var(--text-muted);
   font-size: 0.8rem;
   line-height: 1.5;

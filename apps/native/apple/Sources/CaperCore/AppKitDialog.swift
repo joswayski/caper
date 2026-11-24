@@ -108,7 +108,7 @@ extension AppKitDialogContent { var initialFocus: NSView? { nil } }
         close.setAccessibilityLabel(closeLabel)
         var rows: [NSView] = [titleLabel]
         if let detailLabel { rows.append(detailLabel) }
-        let text = AppKitKit.stack(rows, spacing: 6)
+        let text = AppKitKit.stack(rows, spacing: 2)  // The subtitle sits right under its title.
         for row in rows { AppKitKit.fillWidth(row, of: text) }
         let line = AppKitKit.divider()
         addSubview(text); addSubview(close); addSubview(line)

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { dialogKeyDown } from "../components/dialogKeyboard";
-import { COUNTER_START } from "./counter.ts";
+import { COUNTER_START, counterColor } from "./counter.ts";
 import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage } from "./types.ts";
 import MentionTextarea, { type ComposerInput } from "./MentionTextarea.tsx";
@@ -107,7 +107,7 @@ export default function MessageEditor({
           }}
         />
         {showCount && (
-          <small id="chat-edit-count" className={count > 4_000 ? "chat-action-error" : ""}>
+          <small id="chat-edit-count" style={{ color: counterColor(count) }}>
             {count.toLocaleString()} / 4,000
           </small>
         )}

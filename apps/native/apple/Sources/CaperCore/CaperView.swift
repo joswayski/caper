@@ -5138,12 +5138,39 @@ private struct TypingDots: View {
 /// The draft's length under the composer from 3,000 of 4,000 characters,
 /// warming as it nears the limit.
 enum ComposerCounter {
-    static func tone(_ count: Int) -> Color {
-        if count >= 3900 { return Color(red: 1, green: 130/255, blue: 124/255) }
-        if count >= 3750 { return Color(red: 237/255, green: 163/255, blue: 97/255) }
-        if count >= 3500 { return Color(red: 228/255, green: 199/255, blue: 106/255) }
-        return CaperTheme.muted
+    /// The theme's muted gray at 3,000, warming gradually through gold and
+    /// orange to red near the limit, as web's counter.ts.
+    private static let warm: [(at: Double, rgb: SIMD3<Double>)] = [
+        (3400, [226, 195, 107]), (3700, [237, 163, 97]), (3950, [255, 130, 124]),
+    ]
+    /// sRGB components (0–1) for `count`, from the muted gray's components.
+    static func rgb(_ count: Int, muted: SIMD3<Double>) -> SIMD3<Double> {
+        var from: (at: Double, rgb: SIMD3<Double>) = (3000, muted * 255)
+        for to in warm {
+            if Double(count) < to.at {
+                let t = max(0, (Double(count) - from.at) / (to.at - from.at))
+                return (from.rgb + (to.rgb - from.rgb) * t) / 255
+            }
+            from = to
+        }
+        return from.rgb / 255
     }
+    #if os(macOS)
+    static func nsColor(_ count: Int) -> NSColor {
+        let muted = CaperThemeStore.mutedColor.usingColorSpace(.sRGB) ?? .gray
+        let c = rgb(count, muted: [Double(muted.redComponent), Double(muted.greenComponent), Double(muted.blueComponent)])
+        return NSColor(srgbRed: c.x, green: c.y, blue: c.z, alpha: 1)
+    }
+    static func tone(_ count: Int) -> Color { Color(nsColor: nsColor(count)) }
+    #else
+    static func uiColor(_ count: Int) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(CaperTheme.muted).resolvedColor(with: .current).getRed(&r, green: &g, blue: &b, alpha: &a)
+        let c = rgb(count, muted: [Double(r), Double(g), Double(b)])
+        return UIColor(red: c.x, green: c.y, blue: c.z, alpha: 1)
+    }
+    static func tone(_ count: Int) -> Color { Color(uiColor: uiColor(count)) }
+    #endif
 }
 
 struct PrimaryIconButton: ButtonStyle {

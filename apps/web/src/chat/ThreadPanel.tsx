@@ -15,7 +15,7 @@ import DropOverlay from "./DropOverlay.tsx";
 import JumpToLatest from "./JumpToLatest.tsx";
 import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
-import { COUNTER_START, counterTone } from "./counter.ts";
+import { COUNTER_START, counterColor } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
 import { useArrivalTap, type Arrivals } from "./arrivals.ts";
@@ -933,7 +933,7 @@ export default function ThreadPanel({
                 <Send size={18} />
               </button>
               {count >= COUNTER_START && (
-                <small className="chat-counter" data-tone={counterTone(count)}>
+                <small className="chat-counter" style={{ color: counterColor(count) }}>
                   {count.toLocaleString()} / 4,000
                 </small>
               )}

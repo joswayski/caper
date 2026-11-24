@@ -427,7 +427,7 @@ private final class WeakController {
 
 /// The counter's colour for a draft of `count` Unicode scalars.
 public enum UIKitComposerCounter {
-    public static func color(_ count: Int) -> UIColor { UIColor(ComposerCounter.tone(count)) }
+    public static func color(_ count: Int) -> UIColor { ComposerCounter.uiColor(count) }
 }
 
 /// One timeline entry: a message, or a run of blocked authors' messages that

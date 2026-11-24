@@ -889,7 +889,7 @@ private final class AppKitPointerPassthroughView: NSView {
 }
 
 public enum AppKitComposerCounter {
-    public static func color(_ count: Int) -> NSColor { NSColor(ComposerCounter.tone(count)) }
+    public static func color(_ count: Int) -> NSColor { ComposerCounter.nsColor(count) }
 }
 
 /// The shipping pickers mounted only while open. AppKit owns the anchor,

@@ -96,6 +96,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
@@ -4321,11 +4322,13 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
 }
 
 /** Web's `.chat-counter` tones at 3,500, 3,750 and 3,900 characters. */
-internal fun counterTone(count: Int): Color = when {
-    count >= 3900 -> Color(0xFFFF827C)
-    count >= 3750 -> Color(0xFFEDA361)
-    count >= 3500 -> PinGold
-    else -> TextMuted
+/** Muted gray at 3,000, warming gradually through gold and orange to red near the limit, as web's counter.ts. */
+internal fun counterTone(count: Int): Color {
+    val ramp = listOf(3000 to TextMuted, 3400 to PinGold, 3700 to Color(0xFFEDA361), 3950 to Color(0xFFFF827C))
+    for ((from, to) in ramp.zipWithNext()) {
+        if (count < to.first) return lerp(from.second, to.second, ((count - from.first).toFloat() / (to.first - from.first)).coerceAtLeast(0f))
+    }
+    return ramp.last().second
 }
 
 /**

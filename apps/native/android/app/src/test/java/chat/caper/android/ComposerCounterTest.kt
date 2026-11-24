@@ -1,6 +1,7 @@
 package chat.caper.android
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.AttachmentDraftTarget
 import chat.caper.android.model.Channel
@@ -13,11 +14,13 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ComposerCounterTest {
-    @Test fun `counter tones match the web thresholds`() {
-        assertEquals(TextMuted, counterTone(3499))
-        assertEquals(PinGold, counterTone(3500))
-        assertEquals(Color(0xFFEDA361), counterTone(3750))
-        assertEquals(Color(0xFFFF827C), counterTone(3900))
+    @Test fun `counter warms gradually through the web's stops`() {
+        assertEquals(TextMuted, counterTone(3000))
+        assertEquals(lerp(TextMuted, PinGold, 0.5f), counterTone(3200))
+        assertEquals(PinGold, counterTone(3400))
+        assertEquals(Color(0xFFEDA361), counterTone(3700))
+        assertEquals(Color(0xFFFF827C), counterTone(3950))
+        assertEquals(Color(0xFFFF827C), counterTone(4001))
     }
 
     @Test fun `attach control explains checking, unavailable and full like every client`() {

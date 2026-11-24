@@ -75,12 +75,14 @@ internal fun lastEditableMessage(messages: List<ChatMessage>, authorId: String?,
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         Surface(Modifier.swipeCancelsPresses(), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
             Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Edit message", style = MaterialTheme.typography.titleLarge)
-                Text("Previous versions remain visible to people who can read this message.", color = TextMuted, fontSize = 12.sp)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Edit message", style = MaterialTheme.typography.titleLarge)
+                    Text("Previous versions remain visible to people who can read this message.", color = TextMuted, fontSize = 12.sp)
+                }
                 EmojiTextField(draft, { draft = it }, Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 300.dp).focusRequester(field), placeholder = { Text("Message") }, readOnly = saving,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
                 val count = draft.text.codePointCount(0, draft.text.length)
-                if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", color = if (count > 4_000) ErrorText else TextMuted, fontSize = 12.sp, style = TabularNumbers)
+                if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", color = counterTone(count), fontSize = 12.sp, style = TabularNumbers)
                 error?.let { Text(it, color = ErrorText); TextButton(enabled = !saving, onClick = {
                     saving = true; error = null
                     scope.launch {

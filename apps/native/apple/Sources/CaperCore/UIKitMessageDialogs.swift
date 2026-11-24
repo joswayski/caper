@@ -211,6 +211,7 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
         composer.update(editable: !state.busy)
         let length = state.draft.unicodeScalars.count
         count.text = "\(length.formatted()) / 4,000"; count.isHidden = length < 3000
+        count.textColor = ComposerCounter.uiColor(length)
         error.text = state.error; error.isHidden = state.error == nil
         reload.isHidden = state.error == nil; reload.isEnabled = !state.busy
         cancel.isEnabled = !state.busy; save.isEnabled = state.canSave

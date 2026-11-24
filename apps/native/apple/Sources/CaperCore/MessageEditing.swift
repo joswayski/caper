@@ -18,8 +18,10 @@ struct MessageEditorView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Edit message").font(CaperTheme.font(20, weight: .bold))
-                Text("Previous versions remain visible to people who can read this message.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Edit message").font(CaperTheme.font(20, weight: .bold))
+                    Text("Previous versions remain visible to people who can read this message.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                }
                 NativeMessageComposer(text: $draft, placeholder: "Edit message", controller: autocomplete,
                                       mentions: .empty, submit: {}, submitOnReturn: false, editable: !busy,
                                       accessibilityID: "message-edit-text")
@@ -29,7 +31,8 @@ struct MessageEditorView: View {
                     .accessibilityLabel("Message").accessibilityIdentifier("message-edit-text")
                 ComposerSuggestionsView(controller: autocomplete)
                 if draft.unicodeScalars.count >= 3000 {
-                    Text("\(draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Text("\(draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(12))
+                        .foregroundStyle(ComposerCounter.tone(draft.unicodeScalars.count))
                 }
                 if let error {
                     Text(error).foregroundStyle(CaperTheme.error)

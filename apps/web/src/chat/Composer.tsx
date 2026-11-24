@@ -12,7 +12,7 @@ import { Send } from "lucide-react";
 import AttachmentPicker from "./AttachmentPicker.tsx";
 import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
-import { COUNTER_START, counterTone } from "./counter.ts";
+import { COUNTER_START, counterColor } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
 import { DraftEmbed } from "./Embeds.tsx";
 import { fetchPreview, previewLink, type ChatEmbed } from "./embeds.ts";
@@ -440,7 +440,7 @@ export default function Composer({
           suggestions. Enter to send. Shift+Enter for a new line. Up in an empty message edits your last one.
         </span>
         {characterCount >= COUNTER_START && (
-          <small className="chat-counter" data-tone={counterTone(characterCount)}>
+          <small className="chat-counter" style={{ color: counterColor(characterCount) }}>
             {characterCount.toLocaleString()} / 4,000
           </small>
         )}
