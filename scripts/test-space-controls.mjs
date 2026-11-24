@@ -922,9 +922,9 @@ try {
     screenshot("members-narrow-hidden");
     assert.ok(
       evaluate(
-        'Math.abs(document.querySelector(".chat-messages").getBoundingClientRect().bottom - document.querySelector(".chat-typing").getBoundingClientRect().top) < 2',
+        'Math.abs(document.querySelector(".chat-messages").getBoundingClientRect().bottom - document.querySelector(".chat-panel > .chat-composer").getBoundingClientRect().bottom) < 2',
       ),
-      "Mobile messages must fill the available grid row without a fixed-height blank gap",
+      "Mobile messages must run on under the composer without a fixed-height blank gap",
     );
     openBrowse();
     assert.ok(

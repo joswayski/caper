@@ -155,10 +155,11 @@ async function checkReactionFollow(root, layout) {
   evaluate("new Promise(r => setTimeout(r, 300))");
   const visible = `(() => {
     const bounds = document.querySelector('.chat-thread-messages').getBoundingClientRect();
+    const covered = document.querySelector('.chat-thread-composer').getBoundingClientRect().top;
     const chips = [...document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction')];
     return chips.length > 0 && chips.every(chip => {
       const rect = chip.getBoundingClientRect();
-      return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+      return rect.top >= bounds.top && rect.bottom <= Math.min(bounds.bottom, covered);
     });
   })()`;
   for (const [index, emoji] of [

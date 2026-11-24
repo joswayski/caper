@@ -13,6 +13,7 @@ import {
 } from "./Composer.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import JumpToLatest from "./JumpToLatest.tsx";
+import { useComposerOverlap } from "./useComposerOverlap.ts";
 import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
 import { COUNTER_START, counterColor } from "./counter.ts";
@@ -120,6 +121,8 @@ export default function ThreadPanel({
   }, []);
   const olderAnchor = useRef<{ height: number; top: number }>(undefined);
   const follow = useRef(true);
+  const [composerFrame, setComposerFrame] = useState<HTMLDivElement | null>(null);
+  useComposerOverlap(composerFrame, scroller, follow);
   const returnFocus = useRef<HTMLElement>(null);
   const panel = useRef<HTMLElement>(null);
   const [mobile, setMobile] = useState(false);
@@ -751,7 +754,7 @@ export default function ThreadPanel({
           }}
         />
       )}
-      <div className="chat-composer chat-thread-composer">
+      <div className="chat-composer chat-thread-composer" ref={setComposerFrame}>
         {readOnly ? (
           <p className="chat-thread-readonly">
             {direct ? "You can’t reply in this conversation." : "Join the channel to reply."}

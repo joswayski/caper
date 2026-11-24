@@ -107,6 +107,7 @@ import { blockedAuthor, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import { takeChannelUnread, type Space, type UnreadSpace } from "../spaces/client.ts";
 import { klipyConfig, shareKlipy, type ChatGif } from "./klipy.ts";
+import { useComposerOverlap } from "./useComposerOverlap.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -803,6 +804,8 @@ export default function Chat({
   );
   const allowFollow = useRef(false);
   allowFollow.current = !state.hasNewer && !scrollTarget && !jumping;
+  const [composerFrame, setComposerFrame] = useState<HTMLDivElement | null>(null);
+  useComposerOverlap(composerFrame, scroller, allowFollow);
   const latestMessage = state.messages.at(-1);
   const [announcement, setAnnouncement] = useState("");
   useEffect(() => {
@@ -2587,9 +2590,11 @@ export default function Chat({
           )}
         </p>
         {readOnly ? (
-          <div className="chat-composer channel-preview">{composerNotice}</div>
+          <div className="chat-composer channel-preview" ref={setComposerFrame}>
+            {composerNotice}
+          </div>
         ) : (
-          <div className="chat-composer">
+          <div className="chat-composer" ref={setComposerFrame}>
             {composerBanner}
             {replyTargets.channel && (
               <ReplyDraft

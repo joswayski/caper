@@ -271,14 +271,16 @@ const metrics = () =>
   );
 // Virtualized extents can leave a few pixels of empty row padding below the
 // viewport. Check the fixture's actual newest text, not an estimated end gap.
+// The timeline runs on under the typing row and composer, which cover its end.
 const latestVisibleExpression = `(() => {
   const scroller = document.querySelector('.chat-scroller');
   const row = [...document.querySelectorAll('.chat-message')].find(row => row.dataset.messageKey === chatHistoryFixture.latestKey);
   const body = row?.querySelector('p');
   if (!scroller || !body) return false;
   const bounds = scroller.getBoundingClientRect();
+  const covered = document.querySelector('.chat-panel > .chat-typing').getBoundingClientRect().top;
   const rect = body.getBoundingClientRect();
-  return body.checkVisibility({ visibilityProperty: true, opacityProperty: true }) && rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+  return body.checkVisibility({ visibilityProperty: true, opacityProperty: true }) && rect.top >= bounds.top && rect.bottom <= Math.min(bounds.bottom, covered);
 })()`;
 const latestVisible = () => evaluate(latestVisibleExpression);
 const anchor = () =>
@@ -304,14 +306,14 @@ function quietTimeline(layout) {
   })()`);
   const composerSpacing = () => {
     const spacing = evaluate(`(() => {
-      const timeline = document.querySelector('.chat-scroller').getBoundingClientRect();
+      const latest = document.querySelector('[data-message-key="' + chatHistoryFixture.latestKey + '"]').getBoundingClientRect();
       const input = document.querySelector('#chat-message').getBoundingClientRect();
       const composer = document.querySelector('.chat-panel > .chat-composer').getBoundingClientRect();
       const form = document.querySelector('.chat-panel > .chat-composer form').getBoundingClientRect();
-      return { above: input.top - timeline.bottom, below: composer.bottom - form.bottom,
+      return { above: input.top - latest.bottom, below: composer.bottom - form.bottom,
         left: input.left - composer.left, right: composer.right - input.right };
     })()`);
-    assert.ok(spacing.above >= 12, `${layout}: keep breathing room above the input: ${JSON.stringify(spacing)}`);
+    assert.ok(spacing.above >= 12, `${layout}: keep the newest message clear of the input: ${JSON.stringify(spacing)}`);
     // The shared --workspace-bottom-inset (14px) below the form.
     assert.ok(spacing.below >= 14, `${layout}: keep the form inset from the panel bottom: ${JSON.stringify(spacing)}`);
     assert.ok(spacing.left >= 14 && spacing.right >= 14, `${layout}: keep both side insets`);
@@ -336,9 +338,9 @@ function quietTimeline(layout) {
       const typing = document.querySelector('.chat-typing').getBoundingClientRect();
       const timeline = document.querySelector('.chat-scroller').getBoundingClientRect();
       const composer = document.querySelector('.chat-panel > .chat-composer').getBoundingClientRect();
-      return typing.top >= timeline.bottom && typing.bottom <= composer.top;
+      return typing.bottom <= composer.top && timeline.bottom >= composer.bottom;
     })()`),
-    `${layout}: typing status belongs between the timeline and composer without overlap`,
+    `${layout}: typing status sits above the composer, both over the timeline's end`,
   );
   assert.ok(latestVisible(), `${layout}: showing typing must retain the latest message`);
   screenshot(`chat-typing-${layout}`);
@@ -637,8 +639,8 @@ try {
       browser("focus", ".chat-scroller");
       browser("press", "End");
       settle();
-      // The typing slot and composer have fixed insets outside the timeline;
-      // only the list's fixed tail spacer may sit below the newest message.
+      // The typing slot and composer cover the timeline's end; only the list's
+      // tail spacer, which reserves room for them, may sit below the newest message.
       const gap = evaluate(`(() => {
         const last = [...document.querySelectorAll('.chat-scroller .chat-message')].at(-1);
         const tail = document.querySelector('.chat-scroller .chat-list-tail')?.getBoundingClientRect().height ?? 0;

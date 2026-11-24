@@ -683,7 +683,8 @@
 .sim-message-list {
   display: flex;
   flex-direction: column;
-  padding: 12px 0;
+  /* As in the app, clear of the typing row and composer over the list's end. */
+  padding: 12px 0 calc(16px + var(--composer-overlap));
 }
 .sim-message {
   flex-shrink: 0;

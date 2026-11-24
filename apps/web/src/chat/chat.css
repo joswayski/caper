@@ -18,10 +18,27 @@
   position: relative;
   overflow: hidden;
   background: var(--surface-conversation);
+  /* How far the typing row and composer cover the end of the conversation. */
+  --composer-overlap: calc(16px + var(--composer-height, 58px));
 }
 /* A voice strip under the header (phones) takes its own row above the messages. */
 .chat-panel:has(> .voice-strip) {
   grid-template-rows: auto auto minmax(140px, 1fr) auto auto;
+}
+/* The conversation runs on under the typing row and composer (the last two
+   rows), so nothing separates the newest message from the input. The list
+   reserves the composer's measured --composer-height at its end. */
+.chat-panel > :is(.chat-messages, .sim-timeline) {
+  grid-row: -4 / -1;
+  grid-column: 1;
+}
+.chat-panel > .chat-typing {
+  grid-row: -3 / -2;
+  grid-column: 1;
+}
+.chat-panel > .chat-composer {
+  grid-row: -2 / -1;
+  grid-column: 1;
 }
 /* Files dragged over the conversation. The overlay never takes pointer events,
    so the drag keeps reporting the elements underneath. */
@@ -280,6 +297,7 @@
    arrivals. display:none would invalidate its viewport and scroll position. */
 .chat-timeline {
   position: absolute;
+  z-index: 0;
   inset: 0;
 }
 .chat-timeline[inert] {
@@ -289,7 +307,7 @@
 .chat-action-status {
   position: absolute;
   z-index: 3;
-  bottom: 12px;
+  bottom: calc(12px + var(--composer-overlap));
   left: 50%;
   max-width: calc(100% - 32px);
   margin: 0;
@@ -312,7 +330,7 @@
   position: absolute;
   z-index: 3;
   right: 0;
-  bottom: 12px;
+  bottom: calc(12px + var(--composer-overlap));
   left: 0;
   width: fit-content;
   max-width: calc(100% - 24px);
@@ -438,11 +456,11 @@
 /* The thread's list is its panel's second grid row; the toast sits over that row.
    An absolutely positioned grid child needs both end lines: "auto" means the panel's edge. */
 .chat-thread-panel > .chat-jump-latest {
-  grid-area: 2 / 1 / 3 / 2;
+  grid-area: 2 / 1 / 4 / 2;
 }
 /* Brief confirmations rise above the toast rather than under it. */
 .chat-timeline:has(> .chat-jump-latest) > .chat-action-status {
-  bottom: 68px;
+  bottom: calc(68px + var(--composer-overlap));
 }
 .chat-action-status:empty {
   display: none;
@@ -457,11 +475,11 @@
   min-height: 100%;
   display: flex;
   flex-direction: column;
-  padding-bottom: 8px;
+  padding-bottom: calc(16px + var(--composer-overlap));
   background: var(--surface-conversation);
 }
 .chat-list-tail {
-  height: 8px;
+  height: calc(16px + var(--composer-overlap));
 }
 /* A short history sits at the bottom with its header directly above the first
    message, the same as the native clients, rather than leaving the header
@@ -473,6 +491,11 @@
 }
 .chat-scroller {
   overflow-anchor: none;
+}
+/* Paging and focus scrolling count only the part the composer leaves visible. */
+.chat-scroller,
+.chat-thread-messages {
+  scroll-padding-bottom: var(--composer-overlap);
 }
 /* Drawing offsets must not grow scrollHeight and feed back into live follow. */
 .chat-motion-clip {
@@ -514,7 +537,7 @@
 /* Load newer, at the end of a jump's window: clear of the toast floating over it. */
 .chat-history-newer {
   height: auto;
-  padding: 8px 14px 68px;
+  padding: 8px 14px calc(68px + var(--composer-overlap));
 }
 .chat-history button {
   padding: 6px 10px;
@@ -589,7 +612,7 @@
 /* An empty conversation: today's character, centred where the first messages will land. */
 .chat-state.chat-empty {
   height: 100%;
-  padding: 24px;
+  padding: 24px 24px calc(24px + var(--composer-overlap));
   background: radial-gradient(320px 220px at 50% 44%, rgb(111 153 72 / 9%), transparent 72%);
 }
 .chat-empty-caper {
@@ -2348,24 +2371,43 @@ button.chat-mention-card-avatar {
 }
 .chat-composer {
   position: relative;
-  /* Keep the input inset from both the scrolling timeline and the panel edge. */
+  z-index: 1;
   padding: 2px 18px var(--workspace-bottom-inset);
-  background: var(--surface-conversation);
+  /* No border or ring: the input sits on the frosted backdrop below. */
+  --composer-border: transparent;
+  --composer-focus-border: transparent;
+  --composer-shadow: 0 0 transparent;
+  --composer-shell-bg: transparent;
+  --composer-shell-border: transparent;
 }
 .chat-thread-composer {
   padding-top: 12px;
 }
-/* A soft shadow above the composer's top edge marks where the timeline ends. */
-.chat-typing::before,
-.chat-thread-composer::before {
+/* Messages scroll on under the composer. Solid behind the composer, its
+   backdrop eases out upward as frosted glass over the conversation's last
+   32px instead of a hard edge where the timeline ends. The lists keep their
+   newest message clear of it. */
+.chat-composer::before {
   content: "";
   position: absolute;
-  right: 0;
-  bottom: 100%;
-  left: 0;
-  height: 8px;
-  background: linear-gradient(to top, rgb(0 0 0 / 14%), transparent);
+  z-index: -1;
+  inset: -32px 0 0;
+  background: linear-gradient(
+    color-mix(in srgb, var(--surface-conversation) 60%, transparent),
+    var(--surface-conversation) 32px
+  );
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  -webkit-mask-image: var(--composer-fade);
+  mask-image: var(--composer-fade);
   pointer-events: none;
+  --composer-fade: linear-gradient(
+    transparent,
+    rgb(0 0 0 / 30%) 9px,
+    rgb(0 0 0 / 62%) 17px,
+    rgb(0 0 0 / 86%) 24px,
+    #000 32px
+  );
 }
 .chat-emoji-suggestions {
   position: absolute;
@@ -2465,7 +2507,7 @@ button.chat-mention-card-avatar {
 }
 .chat-typing {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   flex-shrink: 0;
   height: 16px;
@@ -5117,6 +5159,15 @@ a.chat-draft-preview {
   min-height: 0;
   border-left: 1px solid var(--border-subtle);
   background: var(--surface-conversation);
+  --composer-overlap: var(--composer-height, 0px);
+}
+/* As in the channel, replies scroll on under the composer. */
+.chat-thread-messages {
+  grid-area: 2 / 1 / 4 / 2;
+  isolation: isolate;
+}
+.chat-thread-composer {
+  grid-area: 3 / 1 / 4 / 2;
 }
 .chat-thread-resize {
   position: absolute;
@@ -5189,7 +5240,7 @@ a.chat-draft-preview {
 .chat-thread-messages {
   overflow-y: auto;
   min-height: 0;
-  padding-block: 8px 16px;
+  padding-block: 8px calc(32px + var(--composer-overlap));
 }
 .chat-thread-parent {
   padding-bottom: 8px;
