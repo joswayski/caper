@@ -308,7 +308,8 @@ try {
     browser("fill", "#chat-edit-text", savedText);
     assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), false);
     assert.equal(evaluate('document.querySelector("#chat-edit-text").getAttribute("aria-invalid")'), null);
-    assert.equal(evaluate('getComputedStyle(document.querySelector("#chat-edit-count")).color'), "rgb(185, 188, 190)");
+    // Far from the limit, the count steps away.
+    assert.equal(evaluate('document.querySelector("#chat-edit-count")'), null);
     screenshot(`message-edit-valid-${label}`);
   }
   browser("set", "viewport", "1440", "900", "2");

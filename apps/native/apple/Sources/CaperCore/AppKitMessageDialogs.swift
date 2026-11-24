@@ -24,6 +24,7 @@ import SwiftUI
             placeholder: "Message", identifier: "message-edit-text", height: 150)
         reload = AppKitKitButton("Discard draft and load latest") { state.reload() }
         cancel = AppKitKitButton("Cancel") { if !state.busy { close() } }; cancel.keyEquivalent = "\u{1b}"
+        cancel.minimumHeight = 42  // As tall as Save changes beside it.
         save = AppKitKitButton("Save changes", kind: .primary) { state.save() }
         save.keyEquivalent = "\r"; save.keyEquivalentModifierMask = .command
         let space = NSView(); space.setContentHuggingPriority(.init(1), for: .horizontal)
@@ -35,7 +36,8 @@ import SwiftUI
     private func render() {
         if state.chat.isDeleted(state.baseline.id) { observation.stop(); state.stop(); close(); return }
         composer.update(editable: !state.busy)
-        count.stringValue = "\(state.draft.unicodeScalars.count.formatted()) / 4,000"
+        let length = state.draft.unicodeScalars.count
+        count.stringValue = "\(length.formatted()) / 4,000"; count.isHidden = length < 3000
         error.stringValue = state.error ?? ""; error.isHidden = state.error == nil
         reload.isHidden = state.error == nil; reload.isEnabled = !state.busy
         cancel.isEnabled = !state.busy; save.isEnabled = state.canSave

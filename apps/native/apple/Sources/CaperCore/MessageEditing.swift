@@ -28,7 +28,9 @@ struct MessageEditorView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border)).disabled(busy)
                     .accessibilityLabel("Message").accessibilityIdentifier("message-edit-text")
                 ComposerSuggestionsView(controller: autocomplete)
-                Text("\(draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                if draft.unicodeScalars.count >= 3000 {
+                    Text("\(draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                }
                 if let error {
                     Text(error).foregroundStyle(CaperTheme.error)
                     Button("Discard draft and load latest") { perform {

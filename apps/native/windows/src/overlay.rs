@@ -897,14 +897,10 @@ impl Dialog {
         }
     }
 
-    pub fn counter(&self) -> String {
+    /// The edit's length, shown only as it nears the 4,000 limit, like the composers.
+    pub fn counter(&self) -> Option<String> {
         let n = self.draft().chars().count();
-        let n = if n >= 1000 {
-            format!("{},{:03}", n / 1000, n % 1000)
-        } else {
-            n.to_string()
-        };
-        format!("{n} / 4,000")
+        (n >= 3000).then(|| format!("{},{:03} / 4,000", n / 1000, n % 1000))
     }
 
     pub fn enabled(&self, part: Part) -> bool {
@@ -1210,7 +1206,10 @@ impl Dialog {
                 .relayout_with(g, &g.formats.composer, 15.0, inner - 2.0 * FIELD_PAD_X)?;
             let fh = FIELD_LINES * LINE + 2.0 * FIELD_PAD_Y;
             parts.push((Part::Field, (0.0, y, inner, fh)));
-            y += fh + 4.0 + 16.0;
+            y += fh;
+            if self.counter().is_some() {
+                y += 4.0 + 16.0;
+            }
         }
         if self.kind == Kind::StartDirect {
             // One line, egui's 42-DIP username field, then who it finds.
@@ -1365,8 +1364,8 @@ impl Dialog {
                         if self.kind == Kind::CreateChannel {
                             self.draw_channel_icon(dc, (x, y, pw, ph));
                         }
-                        if self.kind == Kind::Edit {
-                            let counter = layout(g, &self.counter(), &g.formats.quote_meta, 1e6)?;
+                        if let Some(counter) = self.counter().filter(|_| self.kind == Kind::Edit) {
+                            let counter = layout(g, &counter, &g.formats.quote_meta, 1e6)?;
                             crate::text::draw(
                                 dc,
                                 &counter,

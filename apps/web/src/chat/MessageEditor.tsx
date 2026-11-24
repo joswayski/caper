@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { dialogKeyDown } from "../components/dialogKeyboard";
+import { COUNTER_START } from "./counter.ts";
 import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage } from "./types.ts";
 import MentionTextarea, { type ComposerInput } from "./MentionTextarea.tsx";
@@ -22,6 +23,8 @@ export default function MessageEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const count = Array.from(draft).length;
+  // Like the composers: the count appears only as the draft nears the limit.
+  const showCount = count >= COUNTER_START;
   useEffect(() => {
     const restore = focusReturn(message.clientMessageId);
     dialog.current?.showModal();
@@ -88,7 +91,7 @@ export default function MessageEditor({
           value={draft}
           disabled={saving}
           rows={5}
-          aria-describedby="chat-edit-count"
+          aria-describedby={showCount ? "chat-edit-count" : undefined}
           aria-invalid={count > 4_000 || undefined}
           onValueChange={setDraft}
           onKeyDown={(event) => {
@@ -103,9 +106,11 @@ export default function MessageEditor({
             }
           }}
         />
-        <small id="chat-edit-count" className={count > 4_000 ? "chat-action-error" : ""}>
-          {count.toLocaleString()} / 4,000
-        </small>
+        {showCount && (
+          <small id="chat-edit-count" className={count > 4_000 ? "chat-action-error" : ""}>
+            {count.toLocaleString()} / 4,000
+          </small>
+        )}
         {error && (
           <div role="alert" className="chat-action-error">
             <p>{error}</p>

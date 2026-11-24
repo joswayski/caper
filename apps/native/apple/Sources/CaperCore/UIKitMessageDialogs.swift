@@ -209,7 +209,8 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
     override func render() {
         if state.chat.editingContext != context || state.chat.isDeleted(state.baseline.id) { stop(); close(); return }
         composer.update(editable: !state.busy)
-        count.text = "\(state.draft.unicodeScalars.count.formatted()) / 4,000"
+        let length = state.draft.unicodeScalars.count
+        count.text = "\(length.formatted()) / 4,000"; count.isHidden = length < 3000
         error.text = state.error; error.isHidden = state.error == nil
         reload.isHidden = state.error == nil; reload.isEnabled = !state.busy
         cancel.isEnabled = !state.busy; save.isEnabled = state.canSave
