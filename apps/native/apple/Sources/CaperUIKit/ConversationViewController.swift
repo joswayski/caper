@@ -498,6 +498,19 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
     }
 
+    /// Escape marks the open conversation read, as on web. Suggestions, the
+    /// thread and the member list's search take it first.
+    override var keyCommands: [UIKeyCommand]? {
+        let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(markRead))
+        escape.wantsPriorityOverSystemBehavior = true
+        return [escape]
+    }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        guard action == #selector(markRead) else { return super.canPerformAction(action, withSender: sender) }
+        return thread == nil && presentedViewController == nil && !model.navigationOpen && (!members.isOpen || members.side)
+    }
+    @objc private func markRead() { model.markOpenConversationRead() }
+
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if thread == nil, !members.isOpen || members.side, let text = ComposerView.typed(presses), composer.typeToCompose(text) { return }
         super.pressesBegan(presses, with: event)

@@ -1894,6 +1894,40 @@ public final class AppModel {
         }
     }
 
+    /// Escape in a conversation (every client): marks it read through its
+    /// newest message, even while reading further back. Whether there was
+    /// anything to mark.
+    @discardableResult public func markOpenConversationRead() -> Bool {
+        guard account != nil, visit == nil else { return false }
+        let attempt = generation
+        if let id = selectedDirectMessageID {
+            guard let index = directMessages.firstIndex(where: { $0.id == id }), directMessages[index].unread else { return false }
+            let seq = directMessages[index].lastSeq
+            directMessages[index] = directMessages[index].with(readSeq: seq)
+            unreadRevision += 1
+            Task {
+                try? await api.markDirectMessageRead(id: id, seq: seq)
+                if generation == attempt { scheduleUnreadRefresh() }
+            }
+            return true
+        }
+        guard let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
+              let entry = unreadSpaces.first(where: { $0.id == spaceID })?.channels.first(where: { $0.id == id }) else { return false }
+        let seq = entry.lastSeq
+        if (try? Sequence.compare(seq, channelReads[id] ?? "0")) == .orderedDescending { channelReads[id] = seq }
+        unreadRevision += 1
+        unreadSpaces = unreadSpaces.compactMap { space in
+            var next = space
+            if space.id == spaceID { next.channels.removeAll { $0.id == id } }
+            return next.channels.isEmpty ? nil : next
+        }
+        Task {
+            try? await api.markChannelRead(spaceID: spaceID, channelID: id, seq: seq)
+            if generation == attempt { scheduleUnreadRefresh() }
+        }
+        return true
+    }
+
     public func configurePush(available: Bool, enabled: Bool) {
         pushAvailable = available; pushEnabled = available && enabled
     }

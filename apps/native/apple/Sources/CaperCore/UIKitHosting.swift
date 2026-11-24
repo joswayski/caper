@@ -72,6 +72,31 @@ import UniformTypeIdentifiers
         return host
     }
 
+    /// ⌘K's quick switcher. Opening a result closes it.
+    public static func quickSwitcher(model: AppModel) -> UIViewController {
+        let box = WeakController()
+        let host = UIKitQuickSwitcher(model: model) { box.value?.dismiss(animated: false) }
+        box.value = host
+        sheet(host, background: CaperTheme.raised)
+        host.sheetPresentationController?.detents = [.large()]
+        return host
+    }
+
+    /// ⌘/'s keyboard shortcuts sheet.
+    public static func shortcutHelp() -> UIViewController {
+        let box = WeakController()
+        let host = UIKitShortcutHelp { box.value?.dismiss(animated: false) }
+        box.value = host
+        sheet(host, background: CaperTheme.raised)
+        return host
+    }
+
+    /// Whether `controller` is the quick switcher or the shortcuts sheet, so
+    /// their keys close them again.
+    public static func isKeyboardSheet(_ controller: UIViewController?, switcher: Bool) -> Bool {
+        switcher ? controller is UIKitQuickSwitcher : controller is UIKitShortcutHelp
+    }
+
     /// A message's edit history, as SwiftUI's "(edited)" opens.
     public static func messageHistory(chat: ChatModel, message: ChatMessage) -> UIViewController {
         let box = WeakController()

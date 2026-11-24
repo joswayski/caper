@@ -1361,9 +1361,22 @@ import CaperCore
             return true
         }
         if event.keyCode == 53, model.chat.threadRootID != nil { closeThread(); return true }
+        // Otherwise Escape marks the conversation read, as on every client.
+        if event.keyCode == 53, event.modifierFlags.intersection([.shift, .option, .control, .command]).isEmpty,
+           model.markOpenConversationRead() { return true }
         if event.keyCode == 36, !event.modifierFlags.contains(.shift) { submit(); return true }
         return false
     }
+    // MARK: Go menu (CaperAppKitApp): quick switcher, conversation stepping, call keys
+
+    func toggleQuickSwitcher() { dialogs.toggleQuickSwitcher(in: presentationParent) }
+    func toggleShortcutHelp() { dialogs.toggleShortcutHelp(in: presentationParent) }
+    var canStepConversations: Bool { !dialogs.isShowingDialog }
+    func stepConversation(forward: Bool, unreadOnly: Bool) {
+        guard canStepConversations else { return }
+        Task { [model] in await model.stepConversation(forward: forward, unreadOnly: unreadOnly) }
+    }
+
     /// A bare Up in a composer with no text and no files edits your newest
     /// message here, as in Discord and Slack (web `editLastKey`). Open
     /// suggestions took the arrows first.

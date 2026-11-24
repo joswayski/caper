@@ -86,6 +86,23 @@ import SwiftUI
         }
     }
 
+    /// ⌘K and ⌘/: each opens over the workspace, or closes itself when it is
+    /// already open. Another dialog keeps the keys.
+    public func toggleQuickSwitcher(in parent: NSViewController) { toggle(.switcher, in: parent) }
+    public func toggleShortcutHelp(in parent: NSViewController) { toggle(.shortcuts, in: parent) }
+    /// Whether a workspace dialog is open (⌥↑/↓ then leave the conversation alone).
+    public var isShowingDialog: Bool { host != nil }
+    private func toggle(_ item: AppKitWorkspaceDialogItem, in parent: NSViewController) {
+        if let open = state?.item {
+            switch (open, item) {
+            case (.switcher, .switcher), (.shortcuts, .shortcuts): close(); return
+            case (.switcher, _), (.shortcuts, _): close()
+            default: return
+            }
+        }
+        show(AppKitWorkspaceDialogState(item: item), in: parent)
+    }
+
     public func leaveChannel(_ channel: Channel, in parent: NSViewController) {
         show(AppKitWorkspaceDialogState(item: .leaveChannel(channel)), in: parent)
     }
@@ -207,6 +224,10 @@ import SwiftUI
         switch item {
         case .activity:
             return AppKitActivityInbox(model: model, close: close)
+        case .switcher:
+            return AppKitQuickSwitcher(model: model, close: close)
+        case .shortcuts:
+            return AppKitShortcutHelp(close: close)
         case .edit(let message):
             return AppKitMessageEditor(chat: model.chat, message: message, close: close)
         case .forward(let message):
@@ -357,7 +378,7 @@ import SwiftUI
 
 private enum AppKitWorkspaceDialogItem {
     case workspace(WorkspaceSheet), leaveChannel(Channel)
-    case activity
+    case activity, switcher, shortcuts
     case edit(ChatMessage), history(ChatMessage), delete(ChatMessage)
     case reactions(ChatMessage, String)
     case forward(ChatMessage), forwardConversation(ChatMessage)
@@ -367,6 +388,8 @@ private enum AppKitWorkspaceDialogItem {
         case .workspace(let item): item.id
         case .leaveChannel(let channel): "leave-channel-\(channel.id)"
         case .activity: "activity-inbox"
+        case .switcher: "quick-switcher"
+        case .shortcuts: "keyboard-shortcuts"
         case .edit(let message): "edit-\(message.id)"
         case .history(let message): "history-\(message.id)"
         case .delete(let message): "delete-\(message.id)"

@@ -70,6 +70,8 @@ import AppKit
     let observation = AppKitObservation()
     let header: AppKitDialogHeader
     var dismissDisabled: Bool { false }
+    /// Subclasses name the control that starts focused (the protocol's default is the frame).
+    var initialFocus: NSView? { nil }
     private var fitsContent: NSLayoutConstraint!
     private var scrollBottom: NSLayoutConstraint!
     private var scroll: NSScrollView!

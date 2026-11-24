@@ -165,8 +165,31 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
     @objc private func showSettings(_ sender: Any?) { settings?.show(from: window) }
     @objc private func showWhatsNew(_ sender: Any?) { settings?.openWhatsNew(from: window) }
     @objc private func checkForUpdates(_ sender: Any?) { updater?.check(manual: true) }
+    /// The signed-in workspace, while one is showing.
+    private var workspace: WorkspaceController? {
+        window?.contentViewController?.children.lazy.compactMap { $0 as? WorkspaceController }.first
+    }
+    @objc private func quickSwitcher(_ sender: Any?) { workspace?.toggleQuickSwitcher() }
+    @objc private func shortcutHelp(_ sender: Any?) { workspace?.toggleShortcutHelp() }
+    @objc private func previousConversation(_ sender: Any?) { workspace?.stepConversation(forward: false, unreadOnly: false) }
+    @objc private func nextConversation(_ sender: Any?) { workspace?.stepConversation(forward: true, unreadOnly: false) }
+    @objc private func previousUnread(_ sender: Any?) { workspace?.stepConversation(forward: false, unreadOnly: true) }
+    @objc private func nextUnread(_ sender: Any?) { workspace?.stepConversation(forward: true, unreadOnly: true) }
+    @objc private func toggleMute(_ sender: Any?) { if let voice = model?.voice { VoicePresentation.toggleMute(voice) } }
+    @objc private func toggleDeafen(_ sender: Any?) { if let voice = model?.voice { VoicePresentation.toggleDeafen(voice) } }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(showWhatsNew(_:)) { return settings?.canOpenWhatsNew == true }
+        let action = menuItem.action
+        if action == #selector(quickSwitcher(_:)) || action == #selector(shortcutHelp(_:)) { return workspace != nil }
+        if [#selector(previousConversation(_:)), #selector(nextConversation(_:)), #selector(previousUnread(_:)), #selector(nextUnread(_:))].contains(action) {
+            return workspace?.canStepConversations == true
+        }
+        if action == #selector(toggleMute(_:)) || action == #selector(toggleDeafen(_:)) {
+            guard let voice = model?.voice, model?.inVoiceCall == true else { return false }
+            if action == #selector(toggleMute(_:)) { menuItem.title = voice.muted ? "Unmute Microphone" : "Mute Microphone" }
+            else { menuItem.title = voice.deafened ? "Undeafen Audio" : "Deafen Audio" }
+            return true
+        }
         if menuItem.action == #selector(checkForUpdates(_:)) { return updater?.isAvailable == true && updater?.checking == false }
         return true
     }
@@ -204,6 +227,28 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             entry.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
         }
         edit.submenu = editMenu; menu.addItem(edit)
+        // Keyboard navigation, as on every client: ⌘K, ⌥↑/↓ (with ⇧ the
+        // unread ones) and, in a call, ⌘⇧M and ⌘⇧D.
+        let go = NSMenuItem()
+        let goMenu = NSMenu(title: "Go")
+        let up = String(UnicodeScalar(NSUpArrowFunctionKey)!), down = String(UnicodeScalar(NSDownArrowFunctionKey)!)
+        for (title, action, key, modifiers): (String, Selector, String, NSEvent.ModifierFlags) in [
+            ("Quick Switcher…", #selector(quickSwitcher(_:)), "k", [.command]),
+            ("Previous Conversation", #selector(previousConversation(_:)), up, [.option]),
+            ("Next Conversation", #selector(nextConversation(_:)), down, [.option]),
+            ("Previous Unread Conversation", #selector(previousUnread(_:)), up, [.option, .shift]),
+            ("Next Unread Conversation", #selector(nextUnread(_:)), down, [.option, .shift]),
+        ] {
+            let item = goMenu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers; item.target = self
+        }
+        goMenu.addItem(.separator())
+        for (title, action, key) in [("Mute Microphone", #selector(toggleMute(_:)), "m"),
+                                     ("Deafen Audio", #selector(toggleDeafen(_:)), "d")] {
+            let item = goMenu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = [.command, .shift]; item.target = self
+        }
+        go.submenu = goMenu; menu.addItem(go)
         let windowItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
@@ -211,6 +256,11 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         // Brings the main window back after it was closed.
         windowMenu.addItem(withTitle: "Caper", action: #selector(showMainWindow(_:)), keyEquivalent: "0").target = self
         windowItem.submenu = windowMenu; menu.addItem(windowItem)
+        let help = NSMenuItem()
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(withTitle: "Keyboard Shortcuts", action: #selector(shortcutHelp(_:)), keyEquivalent: "/").target = self
+        help.submenu = helpMenu; menu.addItem(help)
+        NSApp.helpMenu = helpMenu
         NSApp.mainMenu = menu
     }
 }

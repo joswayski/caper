@@ -351,4 +351,62 @@ final class WorkspaceViewController: UIViewController {
         slide(browsing: true)
         return true
     }
+
+    // MARK: Keyboard navigation
+
+    /// A hardware keyboard's navigation keys, titled so holding ⌘ and the
+    /// iPad menu bar list them. ⌥↑/↓ take priority over the composer's
+    /// paragraph moves, as on web; mute and deafen exist only in a call.
+    override var keyCommands: [UIKeyCommand]? {
+        func command(_ title: String, _ input: String, _ modifiers: UIKeyModifierFlags, _ action: Selector) -> UIKeyCommand {
+            let command = UIKeyCommand(title: title, action: action, input: input, modifierFlags: modifiers)
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
+        var commands = [
+            command("Quick Switcher", "k", .command, #selector(quickSwitcher)),
+            command("Previous Conversation", UIKeyCommand.inputUpArrow, .alternate, #selector(previousConversation)),
+            command("Next Conversation", UIKeyCommand.inputDownArrow, .alternate, #selector(nextConversation)),
+            command("Previous Unread Conversation", UIKeyCommand.inputUpArrow, [.alternate, .shift], #selector(previousUnread)),
+            command("Next Unread Conversation", UIKeyCommand.inputDownArrow, [.alternate, .shift], #selector(nextUnread)),
+            command("Keyboard Shortcuts", "/", .command, #selector(shortcutHelp)),
+        ]
+        if model.inVoiceCall {
+            commands.append(command(model.voice.muted ? "Unmute Microphone" : "Mute Microphone", "m", [.command, .shift], #selector(toggleMute)))
+            commands.append(command(model.voice.deafened ? "Undeafen Audio" : "Deafen Audio", "d", [.command, .shift], #selector(toggleDeafen)))
+        }
+        return commands
+    }
+
+    /// The topmost presented controller, or nil when nothing covers the workspace.
+    private var covering: UIViewController? {
+        var top = view.window?.rootViewController?.presentedViewController
+        while let next = top?.presentedViewController { top = next }
+        return top
+    }
+
+    /// ⌘K and ⌘/ open their sheet over the workspace, and close it again.
+    private func toggleSheet(switcher: Bool) {
+        let top = covering
+        if UIKitHosting.isKeyboardSheet(top, switcher: switcher) { top?.dismiss(animated: false); return }
+        if UIKitHosting.isKeyboardSheet(top, switcher: !switcher) {
+            top?.dismiss(animated: false) { [weak self] in self?.toggleSheet(switcher: switcher) }
+            return
+        }
+        guard top == nil, let root = view.window?.rootViewController else { return }
+        root.present(switcher ? UIKitHosting.quickSwitcher(model: model) : UIKitHosting.shortcutHelp(), animated: !UIKitStyle.reduceMotion)
+    }
+
+    @objc private func quickSwitcher() { toggleSheet(switcher: true) }
+    @objc private func shortcutHelp() { toggleSheet(switcher: false) }
+    private func step(forward: Bool, unreadOnly: Bool) {
+        guard covering == nil else { return }
+        Task { await model.stepConversation(forward: forward, unreadOnly: unreadOnly) }
+    }
+    @objc private func previousConversation() { step(forward: false, unreadOnly: false) }
+    @objc private func nextConversation() { step(forward: true, unreadOnly: false) }
+    @objc private func previousUnread() { step(forward: false, unreadOnly: true) }
+    @objc private func nextUnread() { step(forward: true, unreadOnly: true) }
+    @objc private func toggleMute() { if model.inVoiceCall { VoicePresentation.toggleMute(model.voice) } }
+    @objc private func toggleDeafen() { if model.inVoiceCall { VoicePresentation.toggleDeafen(model.voice) } }
 }
