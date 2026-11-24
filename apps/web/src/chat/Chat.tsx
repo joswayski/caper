@@ -42,7 +42,8 @@ import { MessageEmbeds } from "./Embeds.tsx";
 import { embedsOf } from "./embeds.ts";
 import { gifOf } from "./klipy.ts";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
-import { Arrivals } from "./arrivals.ts";
+import { Arrivals, useArrivalTap } from "./arrivals.ts";
+import { haptics } from "../haptics.ts";
 import { useTimelineMotion } from "./useTimelineMotion.ts";
 import { dateDivider, dayFormatter } from "./dates.ts";
 import { channelNewMessagesId, groupsWithPrevious } from "./grouping.ts";
@@ -595,6 +596,7 @@ export default function Chat({
   const react = async (messageId: string, emoji: string, active: boolean) => {
     const client = clientRef.current;
     if (readOnly || !state.author || !client) return;
+    haptics.tap();
     setReactionSaves((current) => ({ ...current, [messageId]: undefined }));
     try {
       await client.setReaction(messageId, emoji, active);
@@ -1479,6 +1481,11 @@ export default function Chat({
     messages.map((message) => message.clientMessageId),
     state.phase === "ready" && !state.hasNewer && !state.loadingNewer,
   );
+  useArrivalTap(
+    arrivals.current,
+    channelMessages,
+    useCallback((authorId: string) => authorId === viewerId || blockedIds.has(authorId), [viewerId, blockedIds]),
+  );
   const scrollIndex =
     scrollTarget && scrollTarget !== "latest"
       ? messages.findIndex((message) => "id" in message && message.id === scrollTarget)
@@ -1561,6 +1568,7 @@ export default function Chat({
     // One send per composer waits for its files, as in the native apps: a
     // second Enter meanwhile would send the message twice.
     if (uploadWaits.current.has(target)) return;
+    haptics.tap();
     const files = drafts.filter((draft) => draft.threadRootId === threadRootId);
     const sources = !state.pendingSend ? files.map((draft) => uploads.current.get(draft.key)!) : [];
     setAttachError(undefined, threadRootId);
@@ -1700,6 +1708,7 @@ export default function Chat({
   const sendGif = async (gif: ChatGif, query: string, threadRootId?: string, broadcast = false) => {
     const client = clientRef.current;
     if (!client || state.pendingSend) throw new Error("Wait for the last message to send.");
+    haptics.tap();
     const sent = await client.send("", {
       gif,
       threadRootId,
@@ -1932,6 +1941,7 @@ export default function Chat({
         pointerId: event.pointerId,
         timer: setTimeout(() => {
           suppressClick.current = true;
+          haptics.hold();
           onHold(anchor);
         }, 500),
       };

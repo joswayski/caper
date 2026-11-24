@@ -18,7 +18,7 @@ import { MAX_ATTACHMENTS } from "./uploads.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
-import type { Arrivals } from "./arrivals.ts";
+import { useArrivalTap, type Arrivals } from "./arrivals.ts";
 import { DraftEmbed } from "./Embeds.tsx";
 import type { ChatEmbed } from "./embeds.ts";
 import EmojiButton from "./EmojiButton.tsx";
@@ -442,6 +442,12 @@ export default function ThreadPanel({
       ? [...replies.map((message) => message.clientMessageId), pending.clientMessageId]
       : replies.map((message) => message.clientMessageId),
     !!state.thread && !state.thread.loading && !state.thread.hasNewer,
+  );
+  const viewerId = state.author?.id;
+  useArrivalTap(
+    arrivals,
+    replies,
+    useCallback((authorId: string) => authorId === viewerId || blockedIds.has(authorId), [viewerId, blockedIds]),
   );
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);

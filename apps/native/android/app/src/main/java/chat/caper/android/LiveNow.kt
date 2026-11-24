@@ -29,6 +29,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
@@ -715,8 +716,9 @@ private class VoiceListRequest(val openId: String?)
  */
 @Composable internal fun CallToggle(pressed: Boolean, icon: Int, label: String, monitoring: Boolean, monitoringLabel: String, onToggle: () -> Unit) {
     val shape = MaterialTheme.shapes.small
+    val view = LocalView.current
     IconButton(
-        onToggle,
+        { Haptics.toggle(view, on = !pressed); onToggle() },
         Modifier.keepsTaps().size(44.dp)
             .background(if (pressed) ErrorText.copy(alpha = 0.16f) else Color.Transparent, shape)
             .border(1.dp, if (pressed) ErrorText.copy(alpha = 0.45f) else LiveCallBorder, shape)

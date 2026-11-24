@@ -28,6 +28,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { haptics } from "../haptics.ts";
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import type { ChatMessage } from "./types.ts";
 import { messageLinkUrl } from "./message-links.ts";
@@ -160,6 +161,7 @@ export default function MessageActions({
   const copy = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      haptics.tap();
       onCopied(`${label} copied.`);
       onClose();
     } catch {

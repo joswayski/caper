@@ -1,3 +1,6 @@
+import { useEffect, useRef } from "react";
+import { haptics } from "../haptics.ts";
+
 /** How long a row counts as arriving: long enough for its entrance, short enough
  * that a row the list remounts later (scrolled away and back) never replays it. */
 export const ARRIVAL_MS = 1000;
@@ -40,4 +43,28 @@ export class Arrivals {
     const time = this.arrived.get(id);
     return time !== undefined && this.now() - time <= ARRIVAL_MS;
   }
+}
+
+/**
+ * A faint tap on phones, once per message, when someone else's message arrives
+ * at the live end of a list (see `Arrivals`). `skip` leaves out your own
+ * messages and blocked people's.
+ */
+export function useArrivalTap(
+  arrivals: Arrivals | null,
+  messages: readonly { clientMessageId: string; author: { id: string } }[],
+  skip: (authorId: string) => boolean,
+) {
+  const tapped = useRef(new Set<string>());
+  useEffect(() => {
+    let tap = false;
+    for (const message of messages.slice(-10)) {
+      const id = message.clientMessageId;
+      if (tapped.current.has(id) || !arrivals?.has(id) || skip(message.author.id)) continue;
+      if (tapped.current.size > 200) tapped.current.clear();
+      tapped.current.add(id);
+      tap = true;
+    }
+    if (tap) haptics.arrival();
+  }, [arrivals, messages, skip]);
 }

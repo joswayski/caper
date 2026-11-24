@@ -2157,7 +2157,10 @@ struct SidebarIconButton: ButtonStyle {
         active ? description : voiceAvailabilityHelp(model.voiceAvailable(in: channel)) ?? description
     }
     /// Joins (verified at click time) without changing the chat being read.
-    public func join() { Task { await model.joinVoice(channel: channel) } }
+    public func join() {
+        CaperHaptics.tap()
+        Task { await model.joinVoice(channel: channel) }
+    }
 }
 
 /// Whether you are in a call, from joining until it has left.
@@ -2219,12 +2222,15 @@ public struct CallPerson: Identifiable {
     public static var disconnect: Color { LiveNowPalette.disconnect }
 
     public static func toggleMute(_ voice: VoiceClient) {
+        CaperHaptics.tap()
         Task { await voice.setMuted(!voice.muted) }
     }
     public static func toggleDeafen(_ voice: VoiceClient) {
+        CaperHaptics.tap()
         Task { await voice.setDeafened(!voice.deafened) }
     }
     public static func leave(_ model: AppModel) {
+        CaperHaptics.tap()
         model.leaveVoice()
     }
 }

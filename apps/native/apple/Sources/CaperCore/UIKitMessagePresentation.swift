@@ -191,16 +191,16 @@ import Observation
                         return UIMenu(title: link, children: [UIAction(title: "Open link") { [model] _ in
                                 if !model.openMessageLink(url) { UIApplication.shared.open(url) }
                             },
-                            UIAction(title: "Copy link address") { _ in UIPasteboard.general.string = link }])
+                            UIAction(title: "Copy link address") { _ in UIPasteboard.general.string = link; CaperHaptics.tap() }])
                     }); body.addArrangedSubview(control)
                 }
-                button("Copy text") { [weak self] in UIPasteboard.general.string = message.content.text; self?.finish(nil) }
+                button("Copy text") { [weak self] in UIPasteboard.general.string = message.content.text; CaperHaptics.tap(); self?.finish(nil) }
             }
         } else if !inThread, message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0 {
             button("View thread") { [weak self] in self?.afterClosing { chat.replyInThread(to: message) } }
         }
         button("Copy link") { [weak self] in
-            UIPasteboard.general.string = MessageLinkTarget.url(channelID: message.channelId, messageID: message.id); self?.finish(nil)
+            UIPasteboard.general.string = MessageLinkTarget.url(channelID: message.channelId, messageID: message.id); CaperHaptics.tap(); self?.finish(nil)
         }
         guard !message.isDeleted else { return }
         if model.canMarkUnread(message) {
@@ -234,6 +234,7 @@ import Observation
         let chat = model.chat, message = current
         guard chat.canInteract, !message.isDeleted, let author = chat.currentAuthor else { return }
         let own = message.reactions?.first { $0.emoji == emoji }?.authorIds.contains(author.id) == true
+        CaperHaptics.tap()
         finish { Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !toggle || !own) } }
     }
 }

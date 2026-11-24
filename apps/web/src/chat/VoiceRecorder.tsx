@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AudioLines, Check, ChevronUp, CircleAlert, LockKeyhole, Mic, RotateCcw, Square, Trash2 } from "lucide-react";
+import { haptics } from "../haptics.ts";
 import { callAudio } from "../media/call-audio.ts";
 import type { ComposerInput } from "./MentionTextarea.tsx";
 import {
@@ -49,13 +50,6 @@ const LOUD_RGB = [241, 237, 228];
 
 const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const haptic = () => {
-  try {
-    navigator.vibrate?.(15);
-  } catch {
-    /* Haptics are optional. */
-  }
-};
 
 type Phase = "idle" | "starting" | "recording";
 /** What stopping does: insert the words into the draft, or keep the voice message. */
@@ -362,7 +356,7 @@ export function useVoiceRecorder({
             const current = hold.current;
             if (current?.id !== id || current.released || voiceBlocked) return;
             current.held = true;
-            haptic();
+            haptics.hold();
             setMode("hold");
             setIntent("voice");
           }, HOLD_TAP_MS),
@@ -379,7 +373,7 @@ export function useVoiceRecorder({
           current.released = true;
           current.locked = true;
           clearTimeout(current.timer);
-          haptic();
+          haptics.hold();
           setLift(0);
           setMode("free");
         }

@@ -348,9 +348,10 @@ private fun Modifier.waveform(levels: FloatArray?, progress: () -> Float, unplay
 /** The eggshell circular play/pause button shared by the player and staged recordings. */
 @Composable private fun PlayPauseButton(playing: Boolean, enabled: Boolean, size: Dp, toggle: () -> Unit) {
     val label = if (playing) "Pause voice message" else "Play voice message"
+    val view = LocalView.current
     Box(
         Modifier.size(size).clip(CircleShape).background(if (enabled) Action else SurfaceRaised)
-            .then(if (enabled) Modifier.clickable(role = Role.Button, onClickLabel = label, onClick = toggle) else Modifier)
+            .then(if (enabled) Modifier.clickable(role = Role.Button, onClickLabel = label) { Haptics.tap(view); toggle() } else Modifier)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {

@@ -885,9 +885,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         // Rows that are new at the live end while the reader watches it arrive with motion.
         let appended: Set<String> = !switched && live && self.live && atTail
             ? Set(items.compactMap(\.rowID).filter { rows[$0] == nil }) : []
-        // Others' messages arriving at the live end while the reader is up in it.
-        if !switched, live, self.live, !atTail, !model.chat.hasNewer {
-            jumpCount += JumpToLatest.arrivals(messages, previousIDs: shownMessageIDs, viewerID: viewerID)
+        // Others' messages arriving at the live end: a faint tap, and counted while the reader is up in it.
+        if !switched, live, self.live, !model.chat.hasNewer {
+            let arrived = JumpToLatest.arrivals(messages, previousIDs: shownMessageIDs, viewerID: viewerID)
+            if arrived > 0 { CaperHaptics.arrival() }
+            if !atTail { jumpCount += arrived }
         } else if switched { jumpCount = 0 }
         shownMessageIDs = Set(messages.map(\.id))
         let prepended = !switched && oldFirstRow != nil && items.first(where: \.isRow) != oldFirstRow
@@ -1216,6 +1218,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let chat = model.chat
         guard isLive, chat.canPressSend(inThread: false) else { return }
         followingTail = true
+        CaperHaptics.tap()
         Task { await chat.send() }
     }
 

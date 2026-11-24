@@ -742,6 +742,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private func toggle(_ emoji: String) {
         guard let state, let chat = host?.chat, !state.messageID.isEmpty, state.canInteract else { return }
         let own = state.reactions.first { $0.emoji == emoji }?.own ?? false
+        CaperHaptics.tap()
         Task { await chat.setReaction(messageID: state.messageID, emoji: emoji, active: !own) }
     }
 

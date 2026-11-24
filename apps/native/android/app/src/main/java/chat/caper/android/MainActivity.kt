@@ -581,6 +581,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     viewModel: CaperViewModel,
 ) {
     var channelsExpanded by rememberSaveable { mutableStateOf(true) }
+    val view = LocalView.current
     // Browse channels (every channel, with search) or only joined ones; the empty state can open it too.
     var browsing by remember(state.selectedSpace?.space?.id) { mutableStateOf(false) }
     val conversationState = rememberSaveableStateHolder()
@@ -654,6 +655,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         if (pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
             BuildConfig.ENABLE_NATIVE_VOICE && spaceId != null && spaceName != null && state.voiceAvailable(channel) == true &&
             allowed && channel.id !in state.deniedVoiceChannels) {
+            Haptics.toggle(view, on = true)
             voicePermissionError = null
             pendingVoiceJoin = VoiceJoinIntent(channel.id, spaceId, channel.name, spaceName,
                 state.account?.displayName ?: "Guest", state.account?.id, viewModel.accountEpoch, demo,
@@ -666,6 +668,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     }
     // Your call card's Leave, or Cancel while joining.
     val leaveVoiceNow: () -> Unit = {
+        Haptics.toggle(view, on = false)
         VoiceCallService.stop(context)
     }
     // Stable callbacks that run the latest logic, so channel rows skip while other state changes.
@@ -1574,6 +1577,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 
 @Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, narrow: Boolean = false, closeNavigation: (() -> Unit)? = null) {
     val context = LocalContext.current
+    val view = LocalView.current
     // Match the one-line Material composer and its bottom inset, retaining touch targets.
     Surface(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
       Column {
@@ -1624,9 +1628,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (!narrow && BuildConfig.ENABLE_NATIVE_VOICE) {
                 // Web: mute and deafen wait while the Audio test holds the microphone.
                 val monitoring = Modifier.semantics { if (voice.monitoring) stateDescription = "Stop mic test to change mute" }
-                IconButton({ VoiceCallService.toggleMute(context) }, Modifier.size(40.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
+                IconButton({ Haptics.toggle(view, on = !voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(40.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
                 AudioOptionsMenu(input = true, voice = voice)
-                IconButton({ VoiceCallService.toggleDeafen(context) }, Modifier.size(40.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
+                IconButton({ Haptics.toggle(view, on = !voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(40.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
                 AudioOptionsMenu(input = false, voice = voice)
             }
             IconButton({ show(Overlay.Audio) }, Modifier.size(40.dp).then(LocalSettingsFocus.current?.let { Modifier.focusRequester(it) } ?: Modifier)) {
@@ -1785,6 +1789,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val thread = state.thread ?: return
     val channel = state.selectedChannel ?: return
     val still = reducedMotion()
+    val view = LocalView.current
     val swipeScope = rememberCoroutineScope()
     var swipeOffset by remember(channel.id, thread.rootId) { mutableFloatStateOf(0f) }
     var swipeWidth by remember { mutableIntStateOf(0) }
@@ -1825,6 +1830,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         // on its way follows it; a rejected one waits for Edit or Dismiss.
         if (draft.text.isBlank() && files.isEmpty()) { if (pending?.error != null) viewModel.retryPending(); return }
         if (state.pendingMessage?.rejected == true) return
+        Haptics.tap(view)
         // "Also send to channel" applies to one reply, so it resets with the draft.
         val sent = draft.text
         val sentBroadcast = broadcast
@@ -1934,7 +1940,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                             EmojiInsertButton(!thread.loading, load = viewModel::klipyPage, mediaAvailable = state.klipy != null,
                                                 sendMedia = { gif, kind, query ->
                                                     !thread.loading && state.chatAuthorId != null && state.pendingMessage == null &&
-                                                        viewModel.sendGif(gif, kind, query, thread.rootId, broadcast).also { if (it) broadcast = false }
+                                                        viewModel.sendGif(gif, kind, query, thread.rootId, broadcast).also { if (it) { broadcast = false; Haptics.tap(view) } }
                                                 }) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } }
                                             if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
                                         }
@@ -1980,6 +1986,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     browseChannels: () -> Unit, modifier: Modifier = Modifier, openNavigation: () -> Unit,
 ) {
     val channel = state.selectedChannel
+    val view = LocalView.current
     if (channel == null) {
         // Feedback team: the inbox takes the conversation's place.
         // Like a conversation, the inbox swipes back to Browse on phones.
@@ -2216,6 +2223,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 fun sendDraft() {
                     // A message sent while another is on its way follows it; behind a rejected one it waits.
                     if (hasContent && state.pendingMessage?.rejected != true) {
+                        Haptics.tap(view)
                         val sent = draft.text
                         viewModel.setTyping(false)
                         val clear = { updateDraft(TextFieldValue("")) }
@@ -2267,7 +2275,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                         EmojiInsertButton(!state.messagesLoading && state.messagesError == null,
                                             load = viewModel::klipyPage, mediaAvailable = state.klipy != null,
                                             sendMedia = { gif, kind, query ->
-                                                !state.messagesLoading && state.messagesError == null && state.pendingMessage == null && state.chatAuthorId != null && viewModel.sendGif(gif, kind, query)
+                                                !state.messagesLoading && state.messagesError == null && state.pendingMessage == null && state.chatAuthorId != null && viewModel.sendGif(gif, kind, query).also { if (it) Haptics.tap(view) }
                                             }) { emoji ->
                                             insertEmojiAtSelection(draft, emoji)?.let { updateDraft(it); viewModel.setTyping(true) }
                                         }
@@ -2571,6 +2579,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), follow: TimelineFollow = remember { TimelineFollow() }, pendingStatus: @Composable () -> Unit = {}) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
+    val view = LocalView.current
     val displacement = remember(listState, state.selectedChannel?.id, if (inThread) state.thread?.rootId else null) { TimelineDisplacement() }
     // Drag interactions exclude automatic following, paging and viewport changes.
     LaunchedEffect(listState, focus, keyboard, displacement) {
@@ -2742,7 +2751,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     LaunchedEffect(jump, messages) {
         val before = jump.known
         jump.known = messages.mapTo(HashSet()) { it.id }
-        if (before != null && jump.shown) jump.unseen += liveArrivals(before, messages, selfId, blocked)
+        if (before == null) return@LaunchedEffect
+        // Others' messages at the live end: a faint tick, and counted on the toast while the reader is up in the list.
+        val arrived = liveArrivals(before, messages, selfId, blocked)
+        if (arrived > 0 && atLiveEnd) Haptics.arrival(view)
+        if (jump.shown) jump.unseen += arrived
     }
     val jumpScope = rememberCoroutineScope()
     val stillJump = reducedMotion()
@@ -2997,6 +3010,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         val canReact = state.canParticipate && (state.chatAuthorId ?: state.account?.id) != null
         if (canReact) EmojiPicker(onDismiss = { pickerTarget = null }) { emoji ->
             pickerTarget = null
+            Haptics.tap(view)
             viewModel.setReaction(target.id, emoji, true)
         } else LaunchedEffect(Unit) { pickerTarget = null }
     }
@@ -3282,6 +3296,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
 ) {
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.canParticipate && own != null
+    val view = LocalView.current
     val interaction = remember(message.id) { MutableInteractionSource() }
     val pressing by interaction.collectIsPressedAsState()
     val hovered by interaction.collectIsHoveredAsState()
@@ -3340,7 +3355,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
                 val selected = own != null && own in reaction.authorIds
                 ReactionChip(
                     reaction, selected, canReact,
-                    toggle = { setReaction(message.id, reaction.emoji, !selected) },
+                    toggle = { Haptics.tap(view); setReaction(message.id, reaction.emoji, !selected) },
                     showReactors = { openReactors(message, reaction.emoji) },
                 )
             }
@@ -3392,6 +3407,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     onMarkUnread: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val clipboard = context.getSystemService(ClipboardManager::class.java)
     val uriHandler = LocalUriHandler.current
     // Include both a forwarding note and its visible original, but never deleted text.
@@ -3408,6 +3424,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     // Web confirms "Text copied." and similar; Android 13+ shows its own clipboard confirmation.
     fun copy(label: String, value: String, confirmation: String) {
         val copied = runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(label, value)) }.isSuccess
+        if (copied) Haptics.tap(view)
         if (!copied) android.widget.Toast.makeText(context, "Couldn’t copy. Try again.", android.widget.Toast.LENGTH_SHORT).show()
         else if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) android.widget.Toast.makeText(context, confirmation, android.widget.Toast.LENGTH_SHORT).show()
         onDismiss()
@@ -3421,7 +3438,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
                     (state.account?.quickReactionList() ?: DEFAULT_QUICK_REACTIONS).forEach { emoji ->
                         val selected = message.reactions.firstOrNull { it.emoji == emoji }?.authorIds?.contains(own) == true
                         IconButton(
-                            onClick = { setReaction(message.id, emoji, !selected); onDismiss() },
+                            onClick = { Haptics.tap(view); setReaction(message.id, emoji, !selected); onDismiss() },
                             enabled = canReact,
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp).background(if (selected) TerracottaWash else Color.Transparent, MaterialTheme.shapes.small).semantics {
                                 this.selected = selected
@@ -3493,6 +3510,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
 }
 
 @Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, close: () -> Unit) {
+    val view = LocalView.current
     var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var deleteTarget by remember { mutableStateOf<ChatMessage?>(null) }
@@ -3560,7 +3578,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onHistory = { actionTarget = null; historyTarget = current },
             onViewReactions = { current.reactions.firstOrNull()?.let { reactorsTarget = current.id to it.emoji }; actionTarget = null })
     }
-    pickerTarget?.let { target -> EmojiPicker({ pickerTarget = null }) { emoji -> pickerTarget = null; viewModel.setReaction(target.id, emoji, true) } }
+    pickerTarget?.let { target -> EmojiPicker({ pickerTarget = null }) { emoji -> pickerTarget = null; Haptics.tap(view); viewModel.setReaction(target.id, emoji, true) } }
     forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
     reactorsTarget?.let { (id, emoji) ->
         state.pinnedMessages.find { it.id == id }?.let { current ->

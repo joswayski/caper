@@ -399,8 +399,11 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         runs = built.runs
         shownRoot = rootID
         if switched { followingTail = true; jumpCount = 0; arriving.removeAll() }
-        else if !followingTail, !chat.threadHasNewer {
-            jumpCount += JumpToLatest.arrivals(replies, previousIDs: shownReplyIDs, viewerID: viewer)
+        else if !chat.threadHasNewer {
+            // Others' replies: a faint tap, and counted while the reader is up in the thread.
+            let arrived = JumpToLatest.arrivals(replies, previousIDs: shownReplyIDs, viewerID: viewer)
+            if arrived > 0 { CaperHaptics.arrival() }
+            if !followingTail { jumpCount += arrived }
         }
         arriving.formUnion(appended)
         shownReplyIDs = Set(replies.map(\.id))
@@ -482,6 +485,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private func send() {
         guard chat.canPressSend(inThread: true) else { return }
         followingTail = true
+        CaperHaptics.tap()
         let chat = chat
         Task { await chat.send(inThread: true) }
     }

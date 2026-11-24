@@ -763,6 +763,7 @@ final class VoiceMessagePlayer {
     }
 
     func toggle(_ attachment: ChatAttachment, chat: ChatModel?) {
+        CaperHaptics.tap()
         if attachmentID == attachment.id {
             if playing {
                 player?.pause()

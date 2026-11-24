@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { Pause, Play } from "lucide-react";
+import { haptics } from "../haptics.ts";
 import type { ChatAttachment } from "./types.ts";
 import {
   barFill,
@@ -86,6 +87,7 @@ export function VoicePlayer({
   const toggle = () => {
     const element = audio.current;
     if (!element) return;
+    haptics.tap();
     if (!element.paused) {
       element.pause();
       return;

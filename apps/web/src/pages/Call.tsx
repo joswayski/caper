@@ -74,6 +74,7 @@ import { Speaking, SpeakingStore } from "./speaking";
 import ChannelSidebar from "./ChannelSidebar";
 import RoomResize from "./RoomResize";
 import { useBrowseSwipe } from "../spaces/browseTransition";
+import { haptics } from "../haptics.ts";
 import { useMembersDrawer } from "../spaces/membersDrawer";
 import { STRIP_FACES, callCardFaces, liveNames } from "../media/live-now";
 import "./call.css";
@@ -1216,6 +1217,7 @@ export default function Call({
     }
   };
   const leave = () => {
+    haptics.tap();
     setVoiceError(undefined);
     const leavingChannelId = voiceChannel?.id ?? channel?.id;
     const leavingRoot = voiceChannel?.id ? `/api/channels/${encodeURIComponent(voiceChannel.id)}/media` : mediaRoot;
@@ -1270,6 +1272,7 @@ export default function Call({
         : "Mute";
   const toggleMute = () => {
     if (state.monitoring) return;
+    haptics.tap();
     const muted = !state.muted;
     setActionError(undefined);
     void clientRef
@@ -1278,6 +1281,7 @@ export default function Call({
   };
   const toggleDeafen = () => {
     if (state.monitoring) return;
+    haptics.tap();
     const deafened = !state.deafened;
     setActionError(undefined);
     void clientRef
@@ -1310,6 +1314,7 @@ export default function Call({
             : channel;
     const root = channelId === channel?.id ? mediaRoot : rootFor(channelId);
     if (joinBlocked || (!idle && clientRoot.current === root)) return;
+    haptics.tap();
     setActionError(undefined);
     setVoiceError(undefined);
     if (clientRoot.current !== root || !idle) {

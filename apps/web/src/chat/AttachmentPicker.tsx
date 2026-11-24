@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, FileText, FileUp, Images, Plus, X, type LucideIcon } from "lucide-react";
+import { haptics } from "../haptics.ts";
 import {
   autoUpdate,
   flip,
@@ -111,9 +112,9 @@ export default function AttachmentPicker({
   };
   const choose = (choice: AttachChoice) => {
     if (capacity.full) {
-      // Restart the nudge on every attempt, and buzz phones that support it.
+      // Restart the nudge on every attempt, and buzz phones.
       setNudges((value) => value + 1);
-      navigator.vibrate?.(30);
+      haptics.refuse();
       return;
     }
     pickerAdd.current = onAdd;

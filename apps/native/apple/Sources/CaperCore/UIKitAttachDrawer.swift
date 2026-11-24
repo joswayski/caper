@@ -73,7 +73,7 @@ import Observation
         let name = picking ? "picture chooser" : "attachment drawer"
         // The handle: a short capsule across the top; tapping it expands the drawer.
         resize = UIButton(type: .custom); resize.accessibilityIdentifier = "attach-drawer-resize"; resize.accessibilityLabel = "Expand \(name)"
-        resize.addAction(UIAction { [weak self] _ in guard let self, !self.docked else { return }; self.expanded.toggle(); self.resizePanel(animated: true) }, for: .touchUpInside)
+        resize.addAction(UIAction { [weak self] _ in guard let self, !self.docked else { return }; self.expanded.toggle(); CaperHaptics.tap(); self.resizePanel(animated: true) }, for: .touchUpInside)
         // Docked, the handle only drags the drawer down; the composer's X closes it.
         resize.isAccessibilityElement = !docked
         let grabber = UIView(); grabber.backgroundColor = UIColor(CaperTheme.muted).withAlphaComponent(0.6); grabber.layer.cornerRadius = 2.5
@@ -231,7 +231,8 @@ import Observation
             let travel = drag + gesture.velocity(in: view).y * 0.15
             if !expanded && travel > 80 { close(); return }
             if docked { drag = 0; return }
-            if abs(travel) > 40 { expanded = travel < 0 }
+            // Snapping between half and full height taps once.
+            if abs(travel) > 40, expanded != (travel < 0) { expanded = travel < 0; CaperHaptics.tap() }
             drag = 0; resizePanel(animated: true)
         } else if !docked { resizePanel(animated: false) }
     }
