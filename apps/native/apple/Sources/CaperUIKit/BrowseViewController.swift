@@ -649,6 +649,12 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         for space in spaces {
             if live {
                 let tile = NativeSpaceTile(model: model, space: space)
+                // Press and hold: the space name's menu, out from the tile.
+                if space.demo != true, model.account != nil {
+                    tile.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+                        completion(self?.spaceMenuItems(for: space) ?? [])
+                    }])
+                }
                 NSLayoutConstraint.activate([tile.widthAnchor.constraint(equalToConstant: 44), tile.heightAnchor.constraint(equalToConstant: 44)])
                 rail.addArrangedSubview(tile)
                 continue
@@ -847,32 +853,46 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     }
 
     /// The space name's menu: notifications, then Invite and Space settings, or Leave.
-    private func spaceMenuItems() -> [UIMenuElement] {
-        guard live else { return [] }
-        let browse = UIAction(title: browsingChannels ? "Exit Browse channels" : "Browse channels") { [weak self] _ in
+    /// Pressing and holding a rail tile shows the same menu for that space;
+    /// its Browse and dialog items open the space first.
+    private func spaceMenuItems(for target: Space? = nil) -> [UIMenuElement] {
+        guard live, let space = target ?? model.detail?.space else { return [] }
+        let run: (@escaping () -> Void) -> Void = { [weak self] action in
             guard let self else { return }
-            self.browsingChannels.toggle()
-            self.channelSearch = ""
-            self.render()
-            // The search field sits under the joined channels: bring it into the pane.
-            if self.browsingChannels, let path = self.dataSource.indexPath(for: .search) {
-                self.channels.scrollToItem(at: path, at: .top, animated: !UIKitStyle.reduceMotion)
+            guard self.model.detail?.space.id != space.id else { return action() }
+            Task {
+                await self.model.select(space: space)
+                guard self.live, self.model.detail?.space.id == space.id else { return }
+                self.render()
+                action()
+            }
+        }
+        let browse = UIAction(title: browsingChannels && target == nil ? "Exit Browse channels" : "Browse channels") { [weak self] _ in
+            run {
+                guard let self else { return }
+                self.browsingChannels = target == nil ? !self.browsingChannels : true
+                self.channelSearch = ""
+                self.render()
+                // The search field sits under the joined channels: bring it into the pane.
+                if self.browsingChannels, let path = self.dataSource.indexPath(for: .search) {
+                    self.channels.scrollToItem(at: path, at: .top, animated: !UIKitStyle.reduceMotion)
+                }
             }
         }
         browse.accessibilityIdentifier = "browse-channels"
         var items: [UIMenuElement] = [browse]
-        guard let space = model.detail?.space, space.demo != true, model.account != nil else { return items }
+        guard space.demo != true, let account = model.account else { return items }
         model.refreshNotificationSettingsIfStale()
         items.append(UIMenu(options: .displayInline, children: NotificationMenus.space(model, spaceID: space.id)))
-        if model.isOwner {
+        if space.ownerId == account.id {
             items.append(UIMenu(options: .displayInline, children: [
                 UIAction(title: "Invite people…") { [weak self] _ in
-                    self?.dialog(.invitePeople(spaceID: space.id, channelID: nil))
+                    run { self?.dialog(.invitePeople(spaceID: space.id, channelID: nil)) }
                 },
-                UIAction(title: "Space settings") { [weak self] _ in self?.dialog(.manageSpace) },
+                UIAction(title: "Space settings") { [weak self] _ in run { self?.dialog(.manageSpace) } },
             ]))
         } else {
-            items.append(UIAction(title: "Leave space…", attributes: .destructive) { [weak self] _ in self?.dialog(.leaveSpace) })
+            items.append(UIAction(title: "Leave space…", attributes: .destructive) { [weak self] _ in run { self?.dialog(.leaveSpace) } })
         }
         return items
     }

@@ -458,6 +458,34 @@ impl App {
             });
             group.add_action(&action);
         }
+        // A rail tile's menu item: "action|space". Another space opens
+        // first; `run_rail_action` finishes once it is shown.
+        let rail = gio::SimpleAction::new("rail", Some(glib::VariantTy::STRING));
+        let app = Rc::downgrade(self);
+        rail.connect_activate(move |_, parameter| {
+            let (Some(app), Some(value)) = (
+                app.upgrade(),
+                parameter.and_then(|value| value.get::<String>()),
+            ) else {
+                return;
+            };
+            let Some((action, space)) = value.split_once('|') else {
+                return;
+            };
+            let current = app
+                .state
+                .borrow()
+                .detail
+                .as_ref()
+                .map(|detail| detail.space.id.clone());
+            *app.rail_action.borrow_mut() = Some((space.to_owned(), action.to_owned()));
+            if current.as_deref() == Some(space) {
+                app.run_rail_action();
+            } else {
+                app.select_space(space.to_owned());
+            }
+        });
+        group.add_action(&rail);
         self.ui.window.insert_action_group("admin", Some(&group));
 
         let weak = Rc::downgrade(self);
@@ -560,6 +588,98 @@ impl App {
             menu
         };
         popup(&gtk::PopoverMenu::from_model(Some(&menu)), anchor);
+    }
+
+    /// Press and hold (or right-click) a rail tile: the space name's menu for
+    /// that space, out from the rail beside the tile.
+    pub(super) fn rail_space_menu(self: &Rc<Self>, space: &Space, anchor: &gtk::Widget) {
+        let menu = {
+            let state = self.state.borrow();
+            let Some(account) = state.account.as_ref().filter(|_| !space.demo) else {
+                return;
+            };
+            let item = |text: &str, action: &str| {
+                let item = gio::MenuItem::new(Some(text), None);
+                item.set_action_and_target_value(
+                    Some("admin.rail"),
+                    Some(&format!("{action}|{}", space.id).to_variant()),
+                );
+                item
+            };
+            let owner = account.id == space.owner_id;
+            let menu = gio::Menu::new();
+            let top = gio::Menu::new();
+            top.append_item(&item("Browse channels", "browse"));
+            if owner {
+                top.append_item(&item("Invite people…", "invite"));
+            }
+            menu.append_section(None, &top);
+            Self::notification_sections(&state, &Scope::Space(space.id.clone()), &menu);
+            let last = gio::Menu::new();
+            last.append_item(&if owner {
+                item("Space settings", "manage-space")
+            } else {
+                item("Leave space…", "leave-space")
+            });
+            menu.append_section(None, &last);
+            menu
+        };
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popup(&popover, anchor);
+        popover.set_position(gtk::PositionType::Right);
+    }
+
+    /// A rail tile's right-click, and its press and hold on touch screens.
+    pub(super) fn rail_menu_on(self: &Rc<Self>, button: &gtk::Button, space: &Space) {
+        let secondary = gtk::GestureClick::new();
+        secondary.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let hold = gtk::GestureLongPress::new();
+        hold.set_touch_only(true);
+        let anchor = button.clone().upcast::<gtk::Widget>();
+        let (weak, space_copy, anchor_copy) = (Rc::downgrade(self), space.clone(), anchor.clone());
+        secondary.connect_pressed(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(app) = weak.upgrade() {
+                app.rail_space_menu(&space_copy, &anchor_copy);
+            }
+        });
+        let (weak, space) = (Rc::downgrade(self), space.clone());
+        // Claiming the hold cancels the button's click, so the space stays put.
+        hold.connect_pressed(move |gesture, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(app) = weak.upgrade() {
+                app.rail_space_menu(&space, &anchor);
+            }
+        });
+        button.add_controller(secondary);
+        button.add_controller(hold);
+    }
+
+    /// Runs a rail menu's action once its space is the open one.
+    pub(super) fn run_rail_action(self: &Rc<Self>) {
+        let ready = {
+            // Render can run inside another borrow; the next render retries.
+            let Ok(state) = self.state.try_borrow() else {
+                return;
+            };
+            let pending = self.rail_action.borrow();
+            match (pending.as_ref(), state.detail.as_ref()) {
+                (Some((space, _)), Some(detail)) => {
+                    *space == detail.space.id && state.pending_space.is_none()
+                }
+                _ => false,
+            }
+        };
+        if !ready {
+            return;
+        }
+        let Some((_, action)) = self.rail_action.borrow_mut().take() else {
+            return;
+        };
+        let window = self.ui.window.clone();
+        glib::idle_add_local_once(move || {
+            let _ = window.activate_action(&format!("admin.{action}"), Some(&"".to_variant()));
+        });
     }
 
     // ---------------------------------------------------------------------

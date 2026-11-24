@@ -15,6 +15,12 @@
     translate: 0 4px;
   }
 }
+@keyframes caper-slide-out {
+  from {
+    opacity: 0;
+    translate: -6px 0;
+  }
+}
 @keyframes caper-drop-in {
   from {
     opacity: 0;
@@ -120,6 +126,10 @@
 .chat-emoji-suggestions,
 .chat-reply-draft {
   animation: caper-rise-in var(--motion-fast) var(--ease-out);
+}
+/* A rail tile's menu slides out from the rail. */
+.rail-space-menu[open] > .space-actions {
+  animation-name: caper-slide-out;
 }
 /* Menus flipped above their trigger come down from it instead. */
 .channel-menu[data-placement="above"][open] > .space-actions {

@@ -323,6 +323,11 @@ import CaperCore
                 guard let self, let space = self.model.spaces.first(where: { $0.id == id }) else { return }
                 Task { await self.model.select(space: space) }
             }
+            // Right-click: the space name's menu, out from the tile.
+            button.contextMenu = item.demo == true || model.account == nil ? nil : { [weak self, weak button, id = item.id] in
+                guard let self, let button, let space = self.model.spaces.first(where: { $0.id == id }) else { return }
+                self.openSpaceMenu(for: space, from: button)
+            }
             let name = item.demo == true ? "Caper" : item.name
             let muted = item.demo != true && model.notificationsMuted(.space(item.id))
             let unread = model.unreadSpaces.first { $0.id == item.id }
@@ -622,20 +627,39 @@ import CaperCore
         announcedFeedbackError = model.feedbackError
     }
 
-    private func openSpaceMenu() {
+    /// The space name's menu. A rail tile's right-click shows the same menu
+    /// for its space, out from the rail; its Browse and dialog items open the
+    /// space first.
+    private func openSpaceMenu(for target: Space? = nil, from tile: NSView? = nil) {
+        guard let space = target ?? model.detail?.space else { return }
         model.refreshNotificationSettingsIfStale()
-        var items: [NSMenuItem] = [NavigationMenuItem(browsing ? "Exit Browse channels" : "Browse channels") { [weak self] in
-            guard let self else { return }; self.browsing.toggle(); self.search.stringValue = ""; self.render()
-            if self.browsing { self.window?.makeFirstResponder(self.search) }
-        }]
-        if let space = model.detail?.space, space.demo != true {
-            items += [.separator()] + NavigationMenus.space(model, id: space.id) + [.separator()]
-            if model.isOwner {
-                items.append(NavigationMenuItem("Invite people…") { [weak self] in self?.show?(.invitePeople(spaceID: space.id, channelID: nil)) })
-                items.append(NavigationMenuItem("Space settings") { [weak self] in self?.show?(.manageSpace) })
-            } else { items.append(NavigationMenuItem("Leave space…", role: .destructive) { [weak self] in self?.show?(.leaveSpace) }) }
+        let run: (@escaping () -> Void) -> Void = { [weak self] action in
+            guard let self else { return }
+            guard self.model.detail?.space.id != space.id else { return action() }
+            Task {
+                await self.model.select(space: space)
+                guard self.model.detail?.space.id == space.id else { return }
+                self.render()
+                action()
+            }
         }
-        popup(items, at: space)
+        var items: [NSMenuItem] = [NavigationMenuItem(browsing && target == nil ? "Exit Browse channels" : "Browse channels") { [weak self] in
+            run {
+                guard let self else { return }; self.browsing = target == nil ? !self.browsing : true; self.search.stringValue = ""; self.render()
+                if self.browsing { self.window?.makeFirstResponder(self.search) }
+            }
+        }]
+        if space.demo != true, let account = model.account {
+            items += [.separator()] + NavigationMenus.space(model, id: space.id) + [.separator()]
+            if space.ownerId == account.id {
+                items.append(NavigationMenuItem("Invite people…") { [weak self] in run { self?.show?(.invitePeople(spaceID: space.id, channelID: nil)) } })
+                items.append(NavigationMenuItem("Space settings") { [weak self] in run { self?.show?(.manageSpace) } })
+            } else { items.append(NavigationMenuItem("Leave space…", role: .destructive) { [weak self] in run { self?.show?(.leaveSpace) } }) }
+        }
+        if let tile {
+            let top = tile.isFlipped ? tile.bounds.minY : tile.bounds.maxY
+            CaperMenu.show(NavigationMenus.menu(items), at: NSPoint(x: tile.bounds.maxX + 4, y: top), in: tile)
+        } else { popup(items, at: self.space) }
     }
 
     private func openAccountMenu() {

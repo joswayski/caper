@@ -167,6 +167,8 @@ impl MenuItem {
 pub struct DmMenu {
     pub scope: Scope,
     pub hover: Option<usize>,
+    /// The rail tile it opened from, beside which it sits.
+    pub rail: Option<usize>,
 }
 
 const MENU_W: f32 = 232.0;
@@ -1093,6 +1095,22 @@ impl App {
             return (false, Vec::new());
         };
         let (enabled, mut items) = live.notify_menu(&m.scope);
+        // A rail tile's: the same items for any listed space.
+        if let (Some(_), Scope::Space(id)) = (m.rail, &m.scope) {
+            let Some(owner) = live.owns_listed_space(id) else {
+                return (false, Vec::new());
+            };
+            items.insert(0, MenuItem::Browse);
+            if owner {
+                items.insert(1, MenuItem::Invite);
+            }
+            items.push(if owner {
+                MenuItem::SpaceSettings
+            } else {
+                MenuItem::Leave(true)
+            });
+            return (enabled, items);
+        }
         // The space's opens with Browse channels and ends with leaving it,
         // as egui's (an owner can't leave a space).
         if let Scope::Space(_) = &m.scope {
@@ -1125,8 +1143,15 @@ impl App {
     pub fn dm_menu_rect(&self) -> Rect {
         let h = self.dm_menu_items().1.len() as f32 * MENU_ITEM_H + 12.0;
         let y = self.dm_menu_anchor().unwrap_or(0.0);
+        let rail = self.dm_menu.as_ref().and_then(|m| m.rail);
         (
-            RAIL_W + self.sidebar_w() - 8.0,
+            match rail {
+                Some(i) => {
+                    let (x, _, w, _) = Self::space_rect(i);
+                    x + w + 8.0
+                }
+                None => RAIL_W + self.sidebar_w() - 8.0,
+            },
             y.min(self.h - 8.0 - h).max(8.0),
             MENU_W,
             h,
@@ -1163,12 +1188,74 @@ impl App {
                 if let Some(live) = &mut self.live {
                     live.load_notifications();
                 }
-                Some(DmMenu { scope, hover: None })
+                Some(DmMenu {
+                    scope,
+                    hover: None,
+                    rail: None,
+                })
             }
             _ => None,
         };
         self.dm_menu_changed();
         self.events |= crate::EV_FOCUS;
+    }
+
+    /// Opens or closes rail tile `i`'s menu: the space name's, beside it.
+    pub fn toggle_rail_menu(&mut self, i: usize) {
+        let open = self.dm_menu.as_ref().is_some_and(|m| m.rail == Some(i));
+        let id = self.ids.spaces.get(i).cloned();
+        let listed = id.as_ref().is_some_and(|id| {
+            self.c.is_live()
+                && self
+                    .live
+                    .as_ref()
+                    .is_some_and(|live| live.owns_listed_space(id).is_some())
+        });
+        self.dm_menu = match id {
+            Some(id) if listed && !open => {
+                if let Some(live) = &mut self.live {
+                    live.load_notifications();
+                }
+                Some(DmMenu {
+                    scope: Scope::Space(id),
+                    hover: None,
+                    rail: Some(i),
+                })
+            }
+            _ => None,
+        };
+        self.dm_menu_changed();
+        self.events |= crate::EV_FOCUS;
+    }
+
+    /// Runs a rail menu's Browse, Invite, Space settings or Leave once its
+    /// space is the open one.
+    pub fn run_rail_action(&mut self) {
+        let ready = self.rail_action.as_ref().is_some_and(|(id, _)| {
+            self.ids.spaces.get(self.c.space) == Some(id)
+                && self.live.as_ref().and_then(|live| live.detail_space_id()) == Some(id.as_str())
+        });
+        if !ready {
+            return;
+        }
+        let Some((id, item)) = self.rail_action.take() else {
+            return;
+        };
+        match item {
+            MenuItem::Browse => self.open_browse(),
+            MenuItem::Invite => self.open_invite_people(None),
+            MenuItem::SpaceSettings => self.open_manage_space(),
+            MenuItem::Leave(_) => {
+                if let Some(leave) = self
+                    .live
+                    .as_ref()
+                    .and_then(|l| l.leave_target(&Scope::Space(id)))
+                {
+                    self.open_dialog(crate::overlay::Dialog::leave(leave));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The open space's notification scope, in a live account.
@@ -1218,7 +1305,11 @@ impl App {
     /// or the sidebar header; None once that is no longer shown.
     fn dm_menu_anchor(&self) -> Option<f32> {
         let here = |space: &String| self.ids.spaces.get(self.c.space) == Some(space);
-        match &self.dm_menu.as_ref()?.scope {
+        let menu = self.dm_menu.as_ref()?;
+        if let Some(i) = menu.rail {
+            return (i < self.ids.spaces.len()).then(|| Self::space_rect(i).1);
+        }
+        match &menu.scope {
             Scope::Direct(_) => self.dm_menu_row().map(|k| self.direct_rect(k).1),
             Scope::Channel { space, channel } if here(space) => self
                 .ids
@@ -1233,6 +1324,9 @@ impl App {
 
     /// Whether (x, y) is on the button that opened the open menu.
     fn on_menu_button(&self, x: f32, y: f32) -> bool {
+        if let Some(i) = self.dm_menu.as_ref().and_then(|m| m.rail) {
+            return contains(Self::space_rect(i), x, y);
+        }
         match self.dm_menu.as_ref().map(|m| &m.scope) {
             Some(Scope::Direct(_)) => {
                 matches!(self.direct_at(x, y), Some(Spot::Options(k)) if Some(k) == self.dm_menu_row())
@@ -1271,6 +1365,21 @@ impl App {
         let Some(scope) = self.dm_menu.as_ref().map(|m| m.scope.clone()) else {
             return;
         };
+        // A rail tile's Browse, Invite, Space settings and Leave open its
+        // space first, then run (`run_rail_action`).
+        let rail = self.dm_menu.as_ref().and_then(|m| m.rail);
+        if let (Some(i), Scope::Space(id)) = (rail, &scope)
+            && matches!(
+                item,
+                MenuItem::Browse | MenuItem::Invite | MenuItem::SpaceSettings | MenuItem::Leave(_)
+            )
+        {
+            self.rail_action = Some((id.clone(), item.clone()));
+            self.dm_menu = None;
+            self.dm_menu_changed();
+            self.select_space(i);
+            return self.run_rail_action();
+        }
         if *item == MenuItem::Browse {
             self.dm_menu = None;
             self.dm_menu_changed();

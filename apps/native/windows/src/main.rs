@@ -390,6 +390,8 @@ pub struct App {
     pub account_menu: Option<settings::AccountMenu>,
     /// A conversation's open options menu, and its surface.
     pub dm_menu: Option<directs::DmMenu>,
+    /// A rail menu's item waiting for its space ("id") to open.
+    pub rail_action: Option<(String, directs::MenuItem)>,
     dm_menu_p: Panel,
     gear_hover: bool,
     /// The header's member-list toggle: the list is hidden, and the
@@ -821,6 +823,7 @@ impl App {
                 settings: None,
                 account_menu: None,
                 dm_menu: None,
+                rail_action: None,
                 dm_menu_p,
                 gear_hover: false,
                 members_hidden: false,
@@ -1318,6 +1321,7 @@ impl App {
         self.poll_forward();
         self.refresh_pins();
         self.poll_profile_composer();
+        self.run_rail_action();
         Ok(())
     }
 
@@ -2958,6 +2962,7 @@ impl App {
                     } else if let Some(spot) = self.hover_direct {
                         self.direct_click(spot);
                     } else if let Some(i) = self.hover_space {
+                        self.rail_action = None;
                         self.select_space(i);
                     } else if let Some(i) = self.hover_member {
                         self.open_member_profile(i, x, y);
@@ -2986,6 +2991,10 @@ impl App {
                     && let Some(thread::Part::Row(i)) = self.thread_hit(x, y)
                 {
                     self.open_thread_context_menu(i, x, y);
+                } else if let Some(i) = self.hover_space {
+                    // Right-click, or press and hold on a touch screen: the
+                    // space name's menu, out from the tile.
+                    self.toggle_rail_menu(i);
                 }
             }
             WM_LBUTTONDBLCLK if self.in_history(x, y) => {

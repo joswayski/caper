@@ -3560,3 +3560,19 @@ html[data-resizing-sections] * {
   color: var(--text-muted);
   font-size: 0.72rem;
 }
+/* A rail tile's space menu opens beside the tile, out from the rail. */
+.space-menu.rail-space-menu {
+  position: fixed;
+  z-index: 40;
+  width: 240px;
+  max-width: calc(100vw - 16px);
+}
+.rail-space-menu > .space-actions {
+  position: static;
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+}
+.space-rail-item > button {
+  -webkit-touch-callout: none;
+  user-select: none;
+}

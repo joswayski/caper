@@ -41,6 +41,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.DragInteraction
@@ -720,7 +721,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             // Browse, account bar included, stays still beneath the conversation, which slides off to reveal it.
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().then(if (navigationOpen) Modifier else Modifier.clearAndSetSemantics {})) {
                                 Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null || state.feedbackShown)) {
-                                    SpaceRail(state, voice, viewModel, show, Modifier.width(60.dp))
+                                    SpaceRail(state, voice, viewModel, show, browseChannels, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
                                         Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
                                         channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError,
@@ -760,7 +761,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         }
                     }
                 } else Row {
-                    SpaceRail(state, voice, viewModel, show, Modifier.width(60.dp))
+                    SpaceRail(state, voice, viewModel, show, browseChannels, Modifier.width(60.dp))
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null },
                         joinVoice, leaveVoice)
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -794,8 +795,24 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.offset(x = (-1).dp, y = 1.dp).size(20.dp)) }
 }
 
-@Composable private fun SpaceRail(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
+@Composable private fun SpaceRail(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, browseChannels: () -> Unit, modifier: Modifier = Modifier) {
     val now = rememberMuteClock(state.notificationSettings)
+    // Press and hold a tile: the space name's menu, beside the tile. Browse and
+    // the dialogs open its space first, then run once it is selected.
+    var menuSpaceId by remember { mutableStateOf<String?>(null) }
+    var menuPage by remember { mutableStateOf(NotificationMenuPage.Main) }
+    val closeMenu = { menuSpaceId = null; menuPage = NotificationMenuPage.Main }
+    var afterOpen by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
+    val browse by rememberUpdatedState(browseChannels)
+    val currentSpaceId = state.selectedSpace?.space?.id
+    LaunchedEffect(currentSpaceId, afterOpen) {
+        val (id, action) = afterOpen ?: return@LaunchedEffect
+        if (id == currentSpaceId) { afterOpen = null; action() }
+    }
+    fun openThen(spaceId: String, action: () -> Unit) {
+        closeMenu()
+        if (spaceId == currentSpaceId) action() else { afterOpen = spaceId to action; viewModel.selectSpace(spaceId) }
+    }
     Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.spaces.forEach { space ->
             val selected = state.selectedSpace?.space?.id == space.id
@@ -852,10 +869,38 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 }
                             }
                             .background(if (lifted) SurfaceRaised else Surface, shape)
-                            .alpha(if (muted) MUTED_ALPHA else 1f).clip(shape).hoverable(interaction).clickable(interactionSource = interaction, indication = null, role = Role.Button) { viewModel.selectSpace(space.id) }
+                            .alpha(if (muted) MUTED_ALPHA else 1f).clip(shape).hoverable(interaction).combinedClickable(interactionSource = interaction, indication = null, role = Role.Button,
+                                onLongClickLabel = if (space.demo || state.account == null) null else "Space actions",
+                                onLongClick = if (space.demo || state.account == null) null else {
+                                    { menuSpaceId = space.id; viewModel.refreshNotificationSettings() }
+                                }) { afterOpen = null; viewModel.selectSpace(space.id) }
                             .semantics { contentDescription = space.name; if (selected) this.selected = true; stateDescription = listOfNotNull(if (unread) "Unread messages" else null, mentionLabel, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
                         color = if (lifted) SurfaceRaised else Surface, shape = MaterialTheme.shapes.medium,
                     ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, if (lifted) Text else TextMuted) }
+                    // Out from the tile's side, tops aligned, rather than below it.
+                    DropdownMenu(menuSpaceId == space.id, closeMenu, offset = DpOffset(56.dp, (-48).dp), containerColor = SurfaceRaised,
+                        shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                        val owner = state.account?.id == space.ownerId
+                        ScopeMenuContent(
+                            menuPage, { menuPage = it }, "space", state.notificationSettings?.override(spaceKey(space.id)), state.notificationSettings?.inheritedLevel(),
+                            { viewModel.setSpaceNotifications(space.id, it) }, closeMenu,
+                            saving = spaceKey(space.id) in state.notificationSaving,
+                            before = {
+                                DropdownMenuItem(
+                                    text = { Text("Browse channels") },
+                                    onClick = { openThen(space.id) { browse() } },
+                                    leadingIcon = { Icon(painterResource(R.drawable.lucide_hash), null, Modifier.size(16.dp)) },
+                                )
+                            },
+                            after = {
+                                if (owner) DropdownMenuItem({ Text("Invite people…") }, { openThen(space.id) { show(Overlay.InvitePeople()) } })
+                                if (owner) DropdownMenuItem({ Text("Space settings") }, { openThen(space.id) { show(Overlay.ManageSpace) } },
+                                    leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
+                                else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { openThen(space.id) { show(Overlay.LeaveSpace) } },
+                                    leadingIcon = { Icon(painterResource(R.drawable.lucide_log_out), null, Modifier.size(16.dp), tint = ErrorText) })
+                            },
+                        )
+                    }
                     if (muted) Box(Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                     if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
                         Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)

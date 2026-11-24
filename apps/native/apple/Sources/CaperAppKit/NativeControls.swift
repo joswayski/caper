@@ -106,6 +106,8 @@ final class NativeButton: NSButton {
     private var themeObserver: NSObjectProtocol?
     var focusChanged: ((Bool) -> Void)?
     var hoverChanged: ((Bool) -> Void)?
+    /// Shows its own menu on a right-click, built when it opens, instead of `menu`.
+    var contextMenu: (() -> Void)?
     /// Set false only for buttons with a custom subview hover treatment (like space rail tiles).
     var showsDefaultHover = true {
         didSet { needsLayout = true }
@@ -255,6 +257,7 @@ final class NativeButton: NSButton {
     /// A right-click shows the button's `menu` as a Caper menu, not NSMenu's,
     /// and stops there rather than reaching the row or message behind it.
     override func rightMouseDown(with event: NSEvent) {
+        if let contextMenu { contextMenu(); return }
         guard let menu else { super.rightMouseDown(with: event); return }
         CaperMenu.show(menu, at: convert(event.locationInWindow, from: nil), in: self)
     }

@@ -2029,6 +2029,11 @@ impl Live {
         })
     }
 
+    /// The shown space's id, once its detail has loaded.
+    pub fn detail_space_id(&self) -> Option<&str> {
+        self.detail.as_ref().map(|d| d.space.id.as_str())
+    }
+
     /// The open channel's or DM's id.
     pub fn channel_id(&self) -> Option<&str> {
         self.channel.as_deref()
@@ -4195,6 +4200,16 @@ impl Live {
     }
 
     /// Whether you own the open space (its owner manages it).
+    /// Whether you own listed space `id`; None for the demo or an unlisted one.
+    pub fn owns_listed_space(&self, id: &str) -> Option<bool> {
+        let space = self
+            .spaces
+            .iter()
+            .flat_map(|s| &s.spaces)
+            .find(|s| s.id == id && !s.demo)?;
+        Some(self.account_id.as_deref() == Some(space.owner_id.as_str()))
+    }
+
     pub fn owns_space(&self) -> bool {
         self.detail.as_ref().is_some_and(|d| {
             !d.space.demo && self.account_id.as_deref() == Some(d.space.owner_id.as_str())

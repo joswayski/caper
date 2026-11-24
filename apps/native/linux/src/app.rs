@@ -677,6 +677,8 @@ pub struct App {
     /// The rail's last rendered structure and buttons; selection updates in place.
     rail_key: RefCell<Option<RailKey>>,
     rail_buttons: RefCell<Vec<(String, gtk::Button)>>,
+    /// A rail menu's action ("space", "action") waiting for its space to open.
+    rail_action: RefCell<Option<(String, String)>>,
     /// The open file dialog: GTK drops a native dialog nothing holds.
     chooser: RefCell<Option<gtk::FileChooserNative>>,
     channel_ids: RefCell<Vec<String>>,
@@ -912,6 +914,7 @@ pub fn start(
         rendered_files: Cell::new(u64::MAX),
         rail_key: RefCell::default(),
         rail_buttons: RefCell::default(),
+        rail_action: RefCell::default(),
         chooser: RefCell::default(),
         channel_ids: RefCell::default(),
         link_preview: RefCell::default(),
@@ -5940,6 +5943,7 @@ impl App {
                 return;
             }
         }
+        self.run_rail_action();
         self.render_rows();
         self.render_voice();
         self.render_layout();
@@ -6753,8 +6757,11 @@ impl App {
                 }
                 let app = self.clone();
                 let id = space.id.clone();
-                button.connect_clicked(move |_| app.select_space(id.clone()));
-                self.scope_menu_on(&button, Scope::Space(space.id.clone()));
+                button.connect_clicked(move |_| {
+                    app.rail_action.borrow_mut().take();
+                    app.select_space(id.clone());
+                });
+                self.rail_menu_on(&button, space);
                 ui.rail.append(&overlay);
                 buttons.push((space.id.clone(), button));
             }

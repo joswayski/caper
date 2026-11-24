@@ -875,6 +875,8 @@ struct DialogHeight: Layout {
 private struct WorkspaceView: View {
     @Bindable var model: AppModel
     @State private var sheet: WorkspaceSheet?
+    /// A rail tile's Browse channels, for ChannelSidebar once its space opens.
+    @State private var browseRequest: BrowseRequest?
     @AppStorage("caper.channelSidebarWidth") private var sidebarWidth = 280.0
     @State private var sidebarDragStart: Double?
     /// The width while a drag resizes the sidebar; saved once when the drag ends.
@@ -941,12 +943,13 @@ private struct WorkspaceView: View {
                 layout {
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
-                            SpaceRail(model: model, narrow: narrow, showLogin: { sheet = .login }, create: { sheet = .createSpace }, openInvitation: { sheet = .invitation($0) })
+                            SpaceRail(model: model, narrow: narrow, sheet: $sheet, browseRequest: $browseRequest, showLogin: { sheet = .login }, create: { sheet = .createSpace }, openInvitation: { sheet = .invitation($0) })
                                 .frame(width: 60)
                                 .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), navigate: { slide(open: false) }))
                             ChannelSidebar(
                                 model: model,
                                 sheet: $sheet,
+                                browseRequest: $browseRequest,
                                 narrow: narrow,
                                 close: { slide(open: false) }
                             )
@@ -1256,9 +1259,17 @@ private struct LoginPresentation: ViewModifier {
 #endif
 
 #if os(iOS)
+/// Each request is new, so a repeat for the same space still opens Browse.
+private struct BrowseRequest: Equatable {
+    let spaceID: String
+    let id = UUID()
+}
+
 private struct SpaceRail: View {
     @Bindable var model: AppModel
     let narrow: Bool
+    @Binding var sheet: WorkspaceSheet?
+    @Binding var browseRequest: BrowseRequest?
     let showLogin: () -> Void
     let create: () -> Void
     let openInvitation: (Space) -> Void
@@ -1273,6 +1284,8 @@ private struct SpaceRail: View {
             VStack(spacing: 10) {
                 ForEach(model.spaces) { space in
                     SpaceRailButton(model: model, space: space, narrow: narrow)
+                        // Press and hold: the space name's menu, beside the tile.
+                        .contextMenu { if space.demo != true, model.account != nil { menu(for: space) } }
                 }
                 if !model.invitations.isEmpty {
                     Text("INVITES").font(CaperTheme.font(8, weight: .bold)).foregroundStyle(CaperTheme.muted)
@@ -1298,6 +1311,28 @@ private struct SpaceRail: View {
         }
         .background(CaperTheme.blackout)
         .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
+    }
+
+    /// The space name's menu for `space`; Browse and the dialogs open it first.
+    @ViewBuilder private func menu(for space: Space) -> some View {
+        Button("Browse channels") { open(space) { browseRequest = BrowseRequest(spaceID: space.id) } }
+        Divider()
+        SpaceNotificationItems(model: model, spaceID: space.id)
+        Divider()
+        if space.ownerId == model.account?.id {
+            Button("Invite people…") { open(space) { sheet = .invitePeople(spaceID: space.id, channelID: nil) } }
+            Button("Space settings") { open(space) { sheet = .manageSpace } }
+        } else {
+            Button("Leave space…", role: .destructive) { open(space) { sheet = .leaveSpace } }
+        }
+    }
+
+    private func open(_ space: Space, then action: @escaping () -> Void) {
+        guard model.detail?.space.id != space.id else { return action() }
+        Task {
+            await model.select(space: space)
+            if model.detail?.space.id == space.id { action() }
+        }
     }
 }
 #endif
@@ -1416,6 +1451,7 @@ struct SpaceRailButton: View {
 private struct ChannelSidebar: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
+    @Binding var browseRequest: BrowseRequest?
     let narrow: Bool
     let close: () -> Void
     @State private var channelsExpanded = true
@@ -1728,7 +1764,14 @@ private struct ChannelSidebar: View {
         }
         .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), excludedStart: browsing ? searchFrame : .null, excludedResize: dividerFrame, navigate: close))
         // Browse belongs to the space it was opened in.
-        .onChange(of: model.selectedSpaceID) { _, _ in browsing = false; channelSearch = "" }
+        // A rail tile's Browse channels survives the switch to its space.
+        .onChange(of: model.selectedSpaceID) { _, id in
+            if browseRequest?.spaceID != id { browsing = false }
+            channelSearch = ""
+        }
+        .onChange(of: browseRequest) { _, request in
+            if let request, request.spaceID == model.detail?.space.id { browsing = true; channelSearch = "" }
+        }
         .background(CaperTheme.sidebar)
         .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }

@@ -245,6 +245,9 @@ function trackMenu(menu: HTMLDetailsElement) {
   menuObservers.set(menu, observer);
 }
 
+/** What a space menu's items open, in the header and beside a rail tile. */
+type SpaceAction = "browse" | "invite" | "settings" | "leave";
+
 const INACCESSIBLE_DIRECT = "You don’t have access to this conversation.";
 
 /** A conversation the feedback team visits without joining, at a report. */
@@ -1825,6 +1828,7 @@ const SpaceRailItem = memo(function SpaceRailItem({
   voiceActive,
   onChoose,
   onPrefetch,
+  onMenu,
 }: {
   space: Space;
   active: boolean;
@@ -1836,7 +1840,16 @@ const SpaceRailItem = memo(function SpaceRailItem({
   voiceActive: boolean;
   onChoose: (spaceId: string) => void;
   onPrefetch: (spaceId: string) => void;
+  onMenu?: (space: Space, tile: DOMRect) => void;
 }) {
+  // Touch: press and hold opens the menu (iOS Safari fires no contextmenu),
+  // and the release that follows must not also open the space.
+  const hold = useRef<{ timer?: number; opened: boolean }>({ opened: false });
+  const openMenu = (button: HTMLElement) => {
+    window.clearTimeout(hold.current.timer);
+    hold.current.opened = true;
+    onMenu?.(space, button.getBoundingClientRect());
+  };
   const label = [
     space.name,
     unread && "unread messages",
@@ -1860,9 +1873,34 @@ const SpaceRailItem = memo(function SpaceRailItem({
         aria-label={label}
         aria-current={active ? "page" : undefined}
         aria-busy={busy}
+        aria-haspopup={onMenu ? "menu" : undefined}
         onMouseEnter={() => onPrefetch(space.id)}
         onFocus={() => onPrefetch(space.id)}
-        onClick={() => onChoose(space.id)}
+        onClick={() => {
+          if (hold.current.opened) hold.current.opened = false;
+          else onChoose(space.id);
+        }}
+        onContextMenu={(event) => {
+          if (!onMenu) return;
+          event.preventDefault();
+          if (!hold.current.opened) openMenu(event.currentTarget);
+        }}
+        onPointerDown={(event) => {
+          hold.current.opened = false;
+          if (!onMenu || event.pointerType === "mouse") return;
+          const button = event.currentTarget;
+          hold.current.timer = window.setTimeout(() => openMenu(button), 500);
+        }}
+        onPointerUp={() => window.clearTimeout(hold.current.timer)}
+        onPointerLeave={() => window.clearTimeout(hold.current.timer)}
+        onPointerCancel={() => window.clearTimeout(hold.current.timer)}
+        onKeyDown={(event) => {
+          // The keyboard's menu key or Shift+F10, as for native context menus.
+          if (onMenu && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+            event.preventDefault();
+            openMenu(event.currentTarget);
+          }
+        }}
       >
         <SpaceIcon space={space} />
         {mentionCount > 0 && (
@@ -1895,6 +1933,7 @@ const SpaceRail = memo(function SpaceRail({
   onPrefetch,
   onOpenInvitation,
   onCreateSpace,
+  onSpaceMenu,
 }: {
   spaces: Space[];
   invitations: Space[];
@@ -1911,6 +1950,7 @@ const SpaceRail = memo(function SpaceRail({
   onPrefetch: (spaceId: string) => void;
   onOpenInvitation: (space: Space) => void;
   onCreateSpace: () => void;
+  onSpaceMenu?: (space: Space, tile: DOMRect) => void;
 }) {
   return (
     <nav className="space-rail" aria-label="Spaces">
@@ -1934,6 +1974,7 @@ const SpaceRail = memo(function SpaceRail({
             voiceActive={voiceActive}
             onChoose={onChoose}
             onPrefetch={onPrefetch}
+            onMenu={space.demo ? undefined : onSpaceMenu}
           />
         );
       })}
@@ -2511,6 +2552,20 @@ export default function Spaces({
   const [notice, setNotice] = useState<string>();
   const invitation = invitations.find((item) => item.id === selected.spaceId);
   const [manageChannel, setManageChannel] = useState<Channel>();
+  // A rail tile's menu, beside the tile, and an action from it that waits
+  // for its space to open.
+  const [railMenu, setRailMenu] = useState<{ space: Space; top: number; left: number }>();
+  const [railAction, setRailAction] = useState<{ spaceId: string; action: SpaceAction }>();
+  const runSpaceAction = useRef<(action: SpaceAction) => void>(() => undefined);
+  const openSpaceMenu = useCallback(
+    (space: Space, tile: DOMRect) => setRailMenu({ space, top: tile.top, left: tile.right + 8 }),
+    [],
+  );
+  useEffect(() => {
+    if (!railAction || pending || view?.detail.space.id !== railAction.spaceId) return;
+    setRailAction(undefined);
+    runSpaceAction.current(railAction.action);
+  }, [railAction, pending, view]);
   const [navigationOpen, showNavigation] = useState(false);
   // Where Browse is headed: it changes inside a slide's view transition, after the request.
   const navigationTarget = useRef(false);
@@ -2605,7 +2660,9 @@ export default function Spaces({
       [
         spaceMenu.current,
         channelMenu.current,
-        ...document.querySelectorAll<HTMLDetailsElement>(".channel-menu[open], .chat-title-menu[open]"),
+        ...document.querySelectorAll<HTMLDetailsElement>(
+          ".channel-menu[open], .chat-title-menu[open], .rail-space-menu[open]",
+        ),
       ].filter((menu): menu is HTMLDetailsElement => !!menu?.open);
     const dismiss = (event: PointerEvent) => {
       // Every menu, including DM rows outside the channel list and the phone
@@ -2657,6 +2714,7 @@ export default function Spaces({
       return;
     }
     activeSpace.current = spaceId;
+    setRailAction(undefined);
     setMembershipError(undefined);
     setBrowseOpen(false);
     setChannelInvitation(undefined);
@@ -3922,6 +3980,96 @@ export default function Spaces({
     </>
   );
 
+  runSpaceAction.current = (action) => {
+    if (action === "browse") setBrowseOpen(true);
+    else if (action === "invite") {
+      setInviteChannelId(undefined);
+      setDialog("invite-people");
+    } else setDialog(action === "settings" ? "manage-space" : "leave-space");
+  };
+  /** The space menu's items: Browse, Invite (owners), notifications, then Space settings or Leave. */
+  const spaceActions = (space: Space, run: (action: SpaceAction) => void) => {
+    const isOwner = !!account && space.ownerId === account.id;
+    const override = overrideFor(notifications, { spaceId: space.id });
+    return (
+      <div className="space-actions">
+        <button type="button" onClick={() => run("browse")}>
+          <Search aria-hidden="true" />
+          Browse channels
+        </button>
+        {isOwner && (
+          <button type="button" onClick={() => run("invite")}>
+            <Plus aria-hidden="true" />
+            Invite people…
+          </button>
+        )}
+        <LevelNotificationItems
+          noun="space"
+          loaded={notifications.loaded}
+          voiceStarted={override?.voiceStarted ?? null}
+          inheritedVoiceStarted={notifications.voiceStarted}
+          level={override?.level ?? null}
+          inherited={inheritedLevel(notifications, { spaceId: space.id })}
+          mutedUntil={override?.mutedUntil ?? null}
+          onChange={(change) =>
+            saveNotifications(`space:${space.id}`, () => changeSpaceNotifications(space.id, change))
+          }
+        />
+        {isOwner ? (
+          <button type="button" onClick={() => run("settings")}>
+            <Settings aria-hidden="true" />
+            Space settings
+          </button>
+        ) : (
+          <button type="button" className="leave-space" onClick={() => run("leave")}>
+            <LogOut aria-hidden="true" />
+            Leave space…
+          </button>
+        )}
+      </div>
+    );
+  };
+  // Press and hold (or right-click) a rail tile: the same menu, out from the rail.
+  const onSpaceMenu = account ? openSpaceMenu : undefined;
+  const railSpaceMenu = railMenu && (
+    <details
+      key={railMenu.space.id}
+      open
+      className="space-menu rail-space-menu"
+      style={{ top: railMenu.top, left: railMenu.left }}
+      ref={(menu) => {
+        if (!menu) return;
+        // Keep it on screen, including when Notifications or Mute expand.
+        const place = () => {
+          menu.style.top = `${Math.max(8, Math.min(railMenu.top, window.innerHeight - menu.offsetHeight - 8))}px`;
+        };
+        place();
+        const observer = new ResizeObserver(place);
+        observer.observe(menu);
+        return () => observer.disconnect();
+      }}
+      onToggle={(event) => {
+        if (!event.currentTarget.open) setRailMenu(undefined);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setRailMenu(undefined);
+        }
+      }}
+    >
+      <summary hidden aria-label={`${railMenu.space.name} actions`} />
+      {spaceActions(railMenu.space, (action) => {
+        setRailMenu(undefined);
+        if (detail.space.id === railMenu.space.id) runSpaceAction.current(action);
+        else {
+          choose(railMenu.space.id);
+          setRailAction({ spaceId: railMenu.space.id, action });
+        }
+      })}
+    </details>
+  );
+
   const rail = (connectedSpaceId: string | undefined) => (
     <SpaceRail
       spaces={spaces}
@@ -3939,6 +4087,7 @@ export default function Spaces({
       onPrefetch={onPrefetchSpace}
       onOpenInvitation={onOpenInvitation}
       onCreateSpace={onCreateSpace}
+      onSpaceMenu={onSpaceMenu}
     />
   );
   // Outside the rail: phones hide the rail, and its tile styles must not apply.
@@ -3983,70 +4132,10 @@ export default function Spaces({
                 )}
                 <ChevronDown aria-hidden="true" />
               </summary>
-              <div className="space-actions">
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeMenu(spaceMenu.current!);
-                    setBrowseOpen(true);
-                  }}
-                >
-                  <Search aria-hidden="true" />
-                  Browse channels
-                </button>
-                {owner && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      closeMenu(spaceMenu.current!);
-                      setInviteChannelId(undefined);
-                      setDialog("invite-people");
-                    }}
-                  >
-                    <Plus aria-hidden="true" />
-                    Invite people…
-                  </button>
-                )}
-                <LevelNotificationItems
-                  noun="space"
-                  loaded={notifications.loaded}
-                  voiceStarted={spaceNotifications?.voiceStarted ?? null}
-                  inheritedVoiceStarted={notifications.voiceStarted}
-                  level={spaceNotifications?.level ?? null}
-                  inherited={inheritedLevel(notifications, { spaceId: detail.space.id })}
-                  mutedUntil={spaceNotifications?.mutedUntil ?? null}
-                  onChange={(change) => {
-                    const spaceId = detail.space.id;
-                    saveNotifications(`space:${spaceId}`, () => changeSpaceNotifications(spaceId, change));
-                  }}
-                />
-                {owner ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        closeMenu(spaceMenu.current!);
-                        setDialog("manage-space");
-                      }}
-                    >
-                      <Settings aria-hidden="true" />
-                      Space settings
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    className="leave-space"
-                    onClick={() => {
-                      closeMenu(spaceMenu.current!);
-                      setDialog("leave-space");
-                    }}
-                  >
-                    <LogOut aria-hidden="true" />
-                    Leave space…
-                  </button>
-                )}
-              </div>
+              {spaceActions(detail.space, (action) => {
+                closeMenu(spaceMenu.current!);
+                runSpaceAction.current(action);
+              })}
             </details>
           )}
           {navigationOpen && (
@@ -4619,6 +4708,7 @@ export default function Spaces({
       {switcherOpen && <QuickSwitcher items={switcherItems} onClose={() => setSwitcherOpen(false)} />}
       {shortcutHelp && <ShortcutHelp onClose={() => setShortcutHelp(false)} />}
       {accessNotice}
+      {railSpaceMenu}
       {railInvitation && (
         <InvitationDialog
           key={railInvitation.id}
