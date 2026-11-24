@@ -7802,8 +7802,15 @@ struct FeedbackInboxList: View {
                 if !model.feedbackLoaded && model.feedbackLoading {
                     Text("Loading…").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
                 } else if model.feedbackLoaded {
-                    Text(archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty)
-                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
+                    // Like an empty conversation: the day's Caper over a heading and a muted line.
+                    VStack(spacing: 4) {
+                        Image("caper-branding-\(CaperDailyIcon.conversationIndex(for: "feedback"))", bundle: caperResourceBundle)
+                            .resizable().scaledToFit().frame(width: 56, height: 56).padding(.bottom, 6).accessibilityHidden(true)
+                        Text(archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty)
+                            .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text)
+                        Text(archived ? FeedbackInbox.archivedEmptyNote : FeedbackInbox.emptyNote)
+                            .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
+                    }.frame(maxWidth: .infinity).padding(.vertical, 12).accessibilityIdentifier("feedback-empty")
                 }
             }
             // Relative times stay current while the inbox is open.

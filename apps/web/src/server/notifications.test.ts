@@ -50,7 +50,8 @@ test("app badges use absolute counts, clear after an in-flight write, and tolera
 // Outside a component the store's hook reads its snapshot directly, and its
 // subscribe function is kept so a test can listen the way React would.
 let subscribe: (listener: () => void) => () => void = () => () => undefined;
-vi.mock("react", () => ({
+vi.mock("react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react")>()),
   useSyncExternalStore: (listen: typeof subscribe, snapshot: () => unknown) => {
     subscribe = listen;
     return snapshot();

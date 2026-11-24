@@ -128,9 +128,9 @@ impl Builder<'_> {
                         if !loaded {
                             "Loading feedback…"
                         } else if *archived {
-                            "Nothing archived."
+                            "Nothing archived. Feedback you archive moves here, out of the inbox."
                         } else {
-                            "No feedback yet. Messages that mention @feedback anywhere appear here."
+                            "No feedback yet. When someone asks the Caper team for help, their conversation shows up here."
                         },
                         Style::Detail,
                     )?;
@@ -262,7 +262,7 @@ impl App {
                 SPart::FeedbackRefresh => l.load_feedback(false),
                 SPart::FeedbackMore => l.load_feedback(true),
                 SPart::FeedbackArchived => {
-                    l.feedback.show_archived(!l.feedback.archived);
+                    l.feedback.show_archived(!l.feedback.wanted());
                     l.load_feedback(false);
                     if let Some(s) = &mut self.settings {
                         s.scroll = 0.0;

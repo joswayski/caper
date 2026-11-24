@@ -3114,15 +3114,17 @@ extension AppModel {
         Task { [weak self] in await self?.refreshFeedback() }
     }
 
-    private func loadFeedback(before: String?) async {
+    private func loadFeedback(before: String?, archived switching: Bool? = nil) async {
+        let archived = switching ?? showingArchivedFeedback
         let attempt = generation
         feedbackRequest += 1
         let request = feedbackRequest
         feedbackLoading = true
         defer { if generation == attempt, feedbackRequest == request { feedbackLoading = false } }
         do {
-            let page = try await api.feedbackReports(before: before, archived: showingArchivedFeedback)
+            let page = try await api.feedbackReports(before: before, archived: archived)
             guard generation == attempt, feedbackRequest == request, account != nil else { return }
+            showingArchivedFeedback = archived
             feedbackReports = before == nil ? page.reports : FeedbackInbox.merging(feedbackReports, page.reports)
             feedbackCursor = page.cursor
             feedbackLoaded = true; feedbackError = nil
@@ -3135,17 +3137,17 @@ extension AppModel {
                 showingFeedback = false; showingArchivedFeedback = false
                 return
             }
+            if let switching { showingArchivedFeedback = switching; feedbackReports = []; feedbackCursor = nil; feedbackLoaded = false }
             feedbackError = FeedbackInbox.loadFailed
         }
     }
 
     /// "Show archived" / "Back to feedback": switches the list and reloads it.
+    /// The current list stays until the other one arrives, then both swap at
+    /// once, so the page never flashes "Loading…" or the wrong title between them.
     public func showArchivedFeedback(_ archived: Bool) async {
-        guard archived != showingArchivedFeedback else { return }
-        showingArchivedFeedback = archived
-        feedbackRequest += 1
-        feedbackReports = []; feedbackCursor = nil; feedbackLoaded = false; feedbackError = nil; feedbackLoading = false
-        await refreshFeedback()
+        guard archived != showingArchivedFeedback, account != nil, isFeedbackTeam else { return }
+        await loadFeedback(before: nil, archived: archived)
     }
 
     /// Archives (or restores) a report's whole thread for the team. It leaves

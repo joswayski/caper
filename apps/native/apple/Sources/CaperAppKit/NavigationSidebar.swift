@@ -171,6 +171,8 @@ import CaperCore
         accountName.alignment = .left
         directAdd.setAccessibilityIdentifier("new-direct-message")
         feedbackNote.textColor = NativeStyle.muted; feedbackNote.setAccessibilityIdentifier("feedback-empty")
+        // The empty inbox's heading and its note wrap rather than cut off.
+        feedbackNote.maximumNumberOfLines = 0; feedbackNote.lineBreakMode = .byWordWrapping; feedbackNote.cell?.wraps = true
         for (button, symbol, id) in [(feedbackMore, "chevron.down", "feedback-load-older"), (feedbackArchived, "archivebox", "feedback-show-archived")] {
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             button.imagePosition = .imageLeft; button.alignment = .left
@@ -592,9 +594,10 @@ import CaperCore
             next[report.id] = row; feedbackList.append(row, height: 44)
         }
         if model.feedbackReports.isEmpty, model.feedbackError == nil {
-            feedbackNote.stringValue = model.feedbackLoaded ? (archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty)
+            feedbackNote.stringValue = model.feedbackLoaded
+                ? (archived ? "\(FeedbackInbox.archivedEmpty)\n\(FeedbackInbox.archivedEmptyNote)" : "\(FeedbackInbox.empty)\n\(FeedbackInbox.emptyNote)")
                 : model.feedbackLoading ? "Loading…" : ""
-            if !feedbackNote.stringValue.isEmpty { feedbackList.append(feedbackNote, height: 24) }
+            if !feedbackNote.stringValue.isEmpty { feedbackList.append(feedbackNote, height: model.feedbackLoaded ? 64 : 24) }
         }
         if model.feedbackCursor != nil {
             feedbackMore.title = model.feedbackLoading ? "Loading…" : "Show more"

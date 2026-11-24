@@ -3488,7 +3488,7 @@ impl Live {
                 request,
                 token,
                 before,
-                archived: self.feedback.archived,
+                archived: self.feedback.wanted(),
             });
         }
     }

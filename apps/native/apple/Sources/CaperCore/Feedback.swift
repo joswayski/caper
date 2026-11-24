@@ -182,6 +182,10 @@ public enum FeedbackInbox {
     public static let teamDirectNote = "Messages here go to the Caper team."
     public static let archivedTitle = "Archived feedback"
     public static let archivedEmpty = "Nothing archived."
+    /// Under the empty inbox's heading.
+    public static let emptyNote = "When someone asks the Caper team for help, their conversation shows up here."
+    /// Under the empty archive's heading.
+    public static let archivedEmptyNote = "Feedback you archive moves here, out of the inbox."
     public static let showArchived = "Show archived"
     public static let backToFeedback = "Back to feedback"
     public static let restore = "Restore to the inbox"

@@ -3295,11 +3295,31 @@ html[data-resizing-sections] * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Like an empty channel's: the day's Caper over a heading and a muted line. */
 .feedback-empty {
-  margin: 4px 0 0;
-  padding-left: 44px;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 14px 12px 10px;
+  text-align: center;
+}
+.feedback-empty img {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 6px;
+  user-select: none;
+}
+.feedback-empty p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+.feedback-empty small {
+  max-width: 28ch;
   color: var(--text-muted);
   font-size: 0.74rem;
+  line-height: 1.4;
 }
 /* A report row with its archive action, which appears on hover like a DM's menu. */
 .feedback-line {

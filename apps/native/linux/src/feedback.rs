@@ -77,6 +77,18 @@ impl State {
 }
 
 impl App {
+    /// The empty inbox's Caper, like an empty conversation's.
+    fn feedback_caper(&self) -> gtk::Image {
+        let image = gtk::Image::builder()
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .build();
+        image.set_pixel_size(88);
+        image.set_margin_bottom(6);
+        let index = caper_client::daily_icon::conversation_index("feedback");
+        image.set_paintable(self.images.branding(index).as_ref());
+        image
+    }
+
     pub(super) fn connect_feedback(self: &Rc<Self>) {
         let ui = &self.ui;
         let app = self.clone();
@@ -165,7 +177,7 @@ impl App {
                 request,
                 token,
                 before,
-                archived: state.feedback.archived,
+                archived: state.feedback.wanted(),
             });
         }
     }
@@ -448,11 +460,17 @@ impl App {
             } else if !shown.loaded {
                 empty.append(&label("Loading…", &["muted"]));
             } else if shown.archived {
-                empty.append(&label("Nothing archived.", &["muted"]));
+                empty.append(&self.feedback_caper());
+                empty.append(&label("Nothing archived.", &["empty-title"]));
+                empty.append(&label(
+                    "Feedback you archive moves here, out of the inbox.",
+                    &["muted"],
+                ));
             } else {
+                empty.append(&self.feedback_caper());
                 empty.append(&label("No feedback yet.", &["empty-title"]));
                 empty.append(&label(
-                    "Messages that mention @feedback anywhere appear here.",
+                    "When someone asks the Caper team for help, their conversation shows up here.",
                     &["muted"],
                 ));
             }

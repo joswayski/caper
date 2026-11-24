@@ -799,7 +799,12 @@ data class FeedbackInboxUi(
     val error: String? = null,
     /** Shows archived threads (`?archived=true`) instead of the inbox. */
     val archived: Boolean = false,
-)
+    /** The other list (Show archived / Back to feedback) is loading; this one stays on show until it arrives. */
+    val switching: Boolean = false,
+) {
+    /** The list being shown or loaded: archived threads or the inbox. */
+    val wanted: Boolean get() = archived != switching
+}
 
 /**
  * The open conversation is a feedback visit: a team member reading a reported channel or DM

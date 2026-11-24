@@ -14,6 +14,7 @@ import Observation
     private var generation = 0
     private var clock: Timer?
     private var rows: [String: BrowseInboxButton] = [:]
+    private let emptyState = FeedbackEmptyState()
 
     public init(model: AppModel, kind: Kind) {
         self.model = model; self.kind = kind
@@ -64,10 +65,14 @@ import Observation
     }
     private func render() {
         let isFeedback = kind == .feedback, archived = model.showingArchivedFeedback
-        let back = UIKitMessageDialog.button("← Direct messages") { [weak self] in
+        let back = UIKitMessageDialog.button("Direct messages") { [weak self] in
             guard let self else { return }
             if isFeedback { model.showingFeedback = false } else { model.showingMessageRequests = false }
         }
+        // An icon with room to breathe, rather than an arrow character pressed against the words.
+        back.configuration?.image = UIKitVoiceControls.icon("arrow-left", size: 16)
+        back.configuration?.imagePadding = 10
+        back.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 14, bottom: 0, trailing: 14)
         back.contentHorizontalAlignment = .leading
         back.accessibilityIdentifier = isFeedback ? "feedback-back" : "message-requests-back"
         var content: [UIView] = [back, UIKitMessageDialog.label(isFeedback
@@ -82,9 +87,13 @@ import Observation
                 let retry = UIKitMessageDialog.button("Retry") { [weak self] in self?.refreshFeedback() }
                 retry.accessibilityIdentifier = "feedback-retry"; retry.isEnabled = !model.feedbackLoading; content.append(retry)
             }
-            if model.feedbackReports.isEmpty {
-                if model.feedbackLoaded { content.append(UIKitMessageDialog.label(archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty)) }
-                else if model.feedbackLoading { content.append(UIKitMessageDialog.label("Loading…")) }
+            if model.feedbackReports.isEmpty, model.feedbackError == nil {
+                // The empty state, like an empty channel's: the day's Caper over a short note. Before the first
+                // page arrives the space stays blank rather than flashing "Loading…".
+                if model.feedbackLoaded {
+                    emptyState.show(archived: archived)
+                    content.append(emptyState)
+                }
             }
             for report in model.feedbackReports {
                 let row = rows[report.id] ?? BrowseInboxButton()
@@ -130,6 +139,34 @@ import Observation
         for (index, view) in content.enumerated() where !body.arrangedSubviews.indices.contains(index) || body.arrangedSubviews[index] !== view {
             body.removeArrangedSubview(view); body.insertArrangedSubview(view, at: index)
         }
+    }
+}
+
+/// The feedback inbox with nothing in it: the day's Caper, a heading and a
+/// muted line, centered, as an empty channel or DM shows.
+@MainActor private final class FeedbackEmptyState: UIStackView {
+    private let caper = UIImageView()
+    private let heading = UIKitMessageDialog.label("", size: 14, bold: true)
+    private let note = UIKitMessageDialog.label("", size: 12)
+    init() {
+        super.init(frame: .zero)
+        axis = .vertical; alignment = .center; spacing = 6
+        isLayoutMarginsRelativeArrangement = true
+        directionalLayoutMargins = NSDirectionalEdgeInsets(top: 40, leading: 12, bottom: 24, trailing: 12)
+        caper.contentMode = .scaleAspectFit; caper.isAccessibilityElement = false
+        caper.image = CaperDailyIcon.brandingImage(for: CaperDailyIcon.current())
+        caper.widthAnchor.constraint(equalToConstant: 88).isActive = true
+        caper.heightAnchor.constraint(equalToConstant: 88).isActive = true
+        heading.textAlignment = .center; note.textAlignment = .center; note.numberOfLines = 0
+        note.textColor = UIColor(CaperTheme.muted)
+        [caper, heading, note].forEach(addArrangedSubview)
+        setCustomSpacing(12, after: caper)
+        accessibilityIdentifier = "feedback-empty"
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func show(archived: Bool) {
+        heading.text = archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty
+        note.text = archived ? FeedbackInbox.archivedEmptyNote : FeedbackInbox.emptyNote
     }
 }
 

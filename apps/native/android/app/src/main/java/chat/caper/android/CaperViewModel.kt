@@ -1173,7 +1173,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         ++generation
         closeChannel(clearPending = true)
         // The sidebar row always opens the inbox, not the archive.
-        val inbox = mutable.value.feedback.let { if (it.archived) FeedbackInboxUi() else it }
+        val inbox = mutable.value.feedback.let { if (it.wanted) FeedbackInboxUi() else it }
         mutable.value = mutable.value.copy(feedbackShown = true, feedback = inbox, error = null, openError = null, busy = false)
         refreshFeedback()
     }
@@ -1185,8 +1185,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The inbox, or archived threads ([archived]), from their first page. */
     fun showArchivedFeedback(archived: Boolean) {
-        if (mutable.value.feedback.archived == archived) return
-        mutable.value = mutable.value.copy(feedback = FeedbackInboxUi(archived = archived))
+        val inbox = mutable.value.feedback
+        if (inbox.wanted == archived) return
+        // The current list stays until the other arrives, so the page never flashes "Loading feedback…" between them.
+        mutable.value = mutable.value.copy(feedback = inbox.copy(switching = archived != inbox.archived))
         refreshFeedback()
     }
 
@@ -1216,8 +1218,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (current.account?.feedbackTeam != true) return
         val inbox = current.feedback
         val cursor = inbox.cursor
-        val archived = inbox.archived
-        if (!first && (cursor == null || inbox.loading || inbox.loadingMore)) return
+        val archived = inbox.wanted
+        if (!first && (cursor == null || inbox.loading || inbox.loadingMore || inbox.switching)) return
         // A first page supersedes anything in flight; a next page waits for it.
         val request = ++feedbackRequest
         val account = accountGeneration
@@ -1225,11 +1227,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val page = api.feedback(token, if (first) null else cursor, archived)
-                if (account != accountGeneration || request != feedbackRequest || mutable.value.feedback.archived != archived) return@launch
+                if (account != accountGeneration || request != feedbackRequest || mutable.value.feedback.wanted != archived) return@launch
                 val shown = mutable.value.feedback
+                // Switching lists replaces this one whole, title and all, at once.
                 mutable.value = mutable.value.copy(feedback = shown.copy(
-                    reports = mergeFeedbackPage(shown.reports, page, first), cursor = validFeedbackCursor(page.cursor),
-                    loaded = true, loading = false, loadingMore = false, error = notice,
+                    reports = mergeFeedbackPage(if (shown.switching) emptyList() else shown.reports, page, first), cursor = validFeedbackCursor(page.cursor),
+                    loaded = true, loading = false, loadingMore = false, error = notice, archived = archived, switching = false,
                 ))
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
@@ -1239,7 +1242,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = mutable.value.copy(
                         account = mutable.value.account?.copy(feedbackTeam = false), feedback = FeedbackInboxUi(), feedbackShown = false,
                     )
-                } else mutable.value = mutable.value.copy(feedback = mutable.value.feedback.copy(loading = false, loadingMore = false, error = notice ?: message(error)))
+                } else mutable.value = mutable.value.copy(feedback = mutable.value.feedback.copy(loading = false, loadingMore = false, switching = false, error = notice ?: message(error)))
             }
         }
     }

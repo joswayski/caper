@@ -2443,7 +2443,8 @@ export default function Spaces({
   const [focusMessage, setFocusMessage] = useState<FocusTarget>();
   // The feedback team's inbox and the conversation being visited from it.
   const feedbackTeam = !!account?.feedbackTeam;
-  const [feedback, setFeedback] = useState<{ reports: FeedbackReport[]; cursor: string | null }>();
+  // `archived`: which list these reports are. Show archived keeps the current list until the other arrives.
+  const [feedback, setFeedback] = useState<{ reports: FeedbackReport[]; cursor: string | null; archived: boolean }>();
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string>();
   const [visitView, setVisitView] = useState<{
@@ -2500,11 +2501,13 @@ export default function Spaces({
         if (revision !== feedbackRevision.current) return;
         setFeedbackError(undefined);
         // A refresh replaces the newest page and keeps loaded older ones; "Show more" appends an older one.
-        setFeedback((current) =>
-          before && current
-            ? { reports: [...current.reports, ...page.reports], cursor: page.cursor }
-            : refreshedFeedback(current, page),
-        );
+        setFeedback((current) => {
+          // The other list (Show archived) replaces this one whole, at once.
+          const same = current?.archived === feedbackArchived ? current : undefined;
+          return before && same
+            ? { reports: [...same.reports, ...page.reports], cursor: page.cursor, archived: feedbackArchived }
+            : { ...refreshedFeedback(same, page), archived: feedbackArchived };
+        });
       } catch (reason) {
         if (revision === feedbackRevision.current) setFeedbackError(errorMessage(reason));
       } finally {
@@ -3354,14 +3357,12 @@ export default function Spaces({
       loading={feedbackLoading}
       error={feedbackError}
       current={visitView && `${visitView.target.channelId}:${visitView.target.threadRootId}`}
-      archived={feedbackArchived}
-      onShowArchived={(archived) => {
-        setFeedback(undefined);
-        setFeedbackArchived(archived);
-      }}
+      archived={feedback?.archived ?? feedbackArchived}
+      switching={!!feedback && feedback.archived !== feedbackArchived}
+      onShowArchived={setFeedbackArchived}
       onArchive={archiveFeedbackThread}
       onOpen={openVisit}
-      onMore={() => void refreshFeedback(feedback?.cursor ?? undefined)}
+      onMore={() => feedback?.archived === feedbackArchived && void refreshFeedback(feedback.cursor ?? undefined)}
       onRetry={() => void refreshFeedback()}
     />
   );

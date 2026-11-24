@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -62,7 +63,8 @@ import chat.caper.android.ui.*
                 !inbox.loaded && inbox.error != null -> InboxNotice(inbox.error, "Try again", viewModel::refreshFeedback)
                 !inbox.loaded -> InboxNotice("Loading feedback…")
                 // A failed archive or restore keeps its error on show, even once the list is empty.
-                inbox.reports.isEmpty() -> InboxNotice(inbox.error ?: if (inbox.archived) "Nothing archived." else "No feedback yet. Reports appear here when someone writes @feedback.")
+                inbox.reports.isEmpty() && inbox.error != null -> InboxNotice(inbox.error)
+                inbox.reports.isEmpty() -> FeedbackEmpty(inbox.archived)
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
                     inbox.error?.let { error -> item("error") {
                         Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), color = ErrorText, fontSize = 12.sp)
@@ -83,10 +85,22 @@ import chat.caper.android.ui.*
         }
         // A quiet switch between the inbox and threads the team archived.
         HorizontalDivider(color = Border)
-        TextButton({ viewModel.showArchivedFeedback(!inbox.archived) }, Modifier.align(Alignment.CenterHorizontally).padding(vertical = 2.dp),
+        TextButton({ viewModel.showArchivedFeedback(!inbox.archived) }, enabled = !inbox.switching, modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 2.dp),
             shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = TextMuted)) {
             Text(if (inbox.archived) "Back to feedback" else "Show archived", fontSize = 12.sp)
         }
+    }
+}
+
+/** The empty inbox or archive, like an empty conversation's: the day's Caper over a heading and a muted line. */
+@Composable private fun FeedbackEmpty(archived: Boolean) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterVertically)) {
+        Image(painterResource(caperBrandingResources[LocalBrandAvatar.current.coerceIn(0, caperBrandingResources.lastIndex)]), null,
+            Modifier.padding(bottom = 6.dp).size(88.dp))
+        Text(if (archived) "Nothing archived." else "No feedback yet.", color = Text, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(if (archived) "Feedback you archive moves here, out of the inbox." else "When someone asks the Caper team for help, their conversation shows up here.",
+            color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center)
     }
 }
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Archive, ArchiveRestore, ChevronDown, Inbox, LifeBuoy } from "lucide-react";
 import Avatar from "../components/Avatar";
+import DailyCaper from "../components/DailyCaper";
 import Tooltip from "../components/Tooltip";
 import type { FeedbackReport } from "./client.ts";
 
@@ -40,6 +41,7 @@ export default function FeedbackInbox({
   error,
   current,
   archived,
+  switching = false,
   onShowArchived,
   onArchive,
   onOpen,
@@ -57,6 +59,8 @@ export default function FeedbackInbox({
   current?: string;
   /** Listing archived threads instead of the inbox. */
   archived: boolean;
+  /** The other list (Show archived / Back to feedback) is loading; the current one stays until it arrives. */
+  switching?: boolean;
   onShowArchived: (archived: boolean) => void;
   onArchive: (report: FeedbackReport, archived: boolean) => void;
   onOpen: (report: FeedbackReport) => void;
@@ -140,7 +144,15 @@ export default function FeedbackInbox({
             })}
           </ul>
           {!loading && !error && !threads.length && (
-            <p className="feedback-empty">{archived ? "Nothing archived." : "No feedback yet."}</p>
+            <div className="feedback-empty">
+              <DailyCaper />
+              <p>{archived ? "Nothing archived." : "No feedback yet."}</p>
+              <small>
+                {archived
+                  ? "Feedback you archive moves here, out of the inbox."
+                  : "When someone asks the Caper team for help, their conversation shows up here."}
+              </small>
+            </div>
           )}
           {(threads.length > shown || more) && (
             <button
@@ -159,6 +171,7 @@ export default function FeedbackInbox({
           <button
             type="button"
             className="channel-select direct-action feedback-toggle"
+            disabled={switching}
             onClick={() => {
               setShown(SHOWN);
               onShowArchived(!archived);

@@ -218,6 +218,9 @@ pub struct Inbox {
     pub error: Option<String>,
     /// The archived threads instead of the inbox.
     pub archived: bool,
+    /// The other list (Show archived / Back to feedback) is loading: this
+    /// one stays on show, title and all, until it arrives.
+    pub switching: bool,
     /// A failed archive or restore, kept across the reload that follows.
     pub action_error: Option<String>,
     request: u64,
@@ -229,7 +232,7 @@ impl Inbox {
     /// its `before`, or `None` when there is nothing to start.
     pub fn start(&mut self, more: bool) -> Option<(u64, Option<String>)> {
         let before = if more {
-            if self.loading || self.loading_more {
+            if self.loading || self.loading_more || self.switching {
                 return None;
             }
             Some(self.cursor.clone()?)
@@ -243,14 +246,16 @@ impl Inbox {
         Some((self.request, before))
     }
 
-    /// Switches between the inbox and archived threads; the caller loads.
+    /// The list being shown or loaded: archived threads or the inbox.
+    pub fn wanted(&self) -> bool {
+        self.archived != self.switching
+    }
+
+    /// Switches between the inbox and archived threads; the caller loads
+    /// (`wanted`). The current list stays until the other one arrives, so
+    /// the page never flashes "Loading…" between them.
     pub fn show_archived(&mut self, archived: bool) {
-        if self.archived != archived {
-            self.archived = archived;
-            self.reports.clear();
-            self.cursor = None;
-            self.loaded = false;
-        }
+        self.switching = archived != self.archived;
         self.action_error = None;
     }
 
@@ -277,8 +282,15 @@ impl Inbox {
         let more = self.loading_more;
         self.loading = false;
         self.loading_more = false;
+        // The other list replaces this one whole, at once; a failure keeps
+        // what is on show and gives up switching.
+        let switched = std::mem::take(&mut self.switching);
         match result {
             Ok(page) if page.valid() => {
+                if switched {
+                    self.archived = !self.archived;
+                    self.reports.clear();
+                }
                 if more {
                     for report in page.reports {
                         if !self.reports.iter().any(|known| known.id == report.id) {
@@ -539,8 +551,26 @@ mod tests {
         assert!(!archived.remove_thread("chan00000001", "msg000000001"));
         archived.action_error = Some("offline".into());
         archived.show_archived(true);
-        assert!(archived.archived && archived.reports.is_empty() && !archived.loaded);
+        // The inbox stays on show until the archive arrives, then swaps whole.
+        assert!(!archived.archived && archived.wanted() && archived.reports.len() == 1);
         assert_eq!(archived.action_error, None);
+        let (switch, _) = archived.start(false).unwrap();
+        assert_eq!(archived.start(true), None, "no older inbox page mid-switch");
+        let mut empty = page();
+        empty.reports.clear();
+        empty.cursor = None;
+        archived.finish(switch, Ok(empty));
+        assert!(
+            archived.archived
+                && !archived.switching
+                && archived.reports.is_empty()
+                && archived.loaded
+        );
+        // A failed switch keeps the list it had.
+        archived.show_archived(false);
+        let (failed, _) = archived.start(false).unwrap();
+        archived.finish(failed, Err("offline".into()));
+        assert!(archived.archived && !archived.switching);
         let mut fresh = page();
         fresh.reports.truncate(1);
         fresh.cursor = None;
