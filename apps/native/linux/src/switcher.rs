@@ -7,13 +7,13 @@
 use super::{App, State};
 use crate::images::{Avatar, AvatarView, Icon};
 use crate::ui::label;
-use caper_client::model::DirectStatus;
+use caper_client::model::{DirectStatus, SpaceDetail};
 use caper_client::switcher;
 use caper_client::worker::Command;
 use gtk::{gdk, glib, prelude::*};
 use std::rc::Rc;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum Target {
     Channel(String, String),
     Direct(String),
@@ -35,7 +35,14 @@ struct Item {
 
 pub(super) struct Switcher {
     window: gtk::Window,
+    /// Other spaces' details, loaded when the switcher opens (as on web).
+    others: Vec<SpaceDetail>,
+    refill: Refill,
 }
+
+/// Rebuilds the switcher's rows from the app state and other spaces' details,
+/// keeping the query.
+type Refill = Rc<dyn Fn(&State, &[SpaceDetail])>;
 
 /// The shortcuts sheet's rows, in GTK's key names.
 const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
@@ -121,11 +128,26 @@ fn sidebar(state: &State) -> Vec<(Target, bool)> {
     items
 }
 
-fn items(state: &State) -> Vec<Item> {
+/// Every destination: the open space's joined channels, then other spaces'
+/// (`others`, loaded when the switcher opens), DMs, spaces and people.
+fn items(state: &State, others: &[SpaceDetail]) -> Vec<Item> {
     let me = state.account.as_ref().map(|account| account.id.as_str());
     let mut items = Vec::new();
-    if let Some(detail) = &state.detail {
-        for channel in detail.channels.iter().filter(|channel| channel.joined) {
+    let open = state
+        .detail
+        .as_ref()
+        .filter(|detail| !detail.space.id.is_empty());
+    let mut seen = std::collections::HashSet::new();
+    for detail in open.into_iter().chain(
+        others
+            .iter()
+            .filter(|other| open.is_none_or(|open| open.space.id != other.space.id)),
+    ) {
+        for channel in detail
+            .channels
+            .iter()
+            .filter(|channel| channel.joined && seen.insert(channel.id.clone()))
+        {
             items.push(Item {
                 name: channel.name.clone(),
                 alternates: Vec::new(),
@@ -405,7 +427,8 @@ impl App {
         if self.switcher.borrow().is_some() {
             return self.close_switcher();
         }
-        let all = items(&self.state.borrow());
+        let all = Rc::new(std::cell::RefCell::new(items(&self.state.borrow(), &[])));
+        self.load_switcher_spaces();
         let window = gtk::Window::builder()
             .transient_for(&self.ui.window)
             .modal(true)
@@ -440,17 +463,23 @@ impl App {
 
         let shown: Rc<std::cell::RefCell<Vec<Item>>> = Rc::default();
         let fill = {
-            let (list, empty, shown, images) = (
+            let (list, empty, shown, images, all) = (
                 list.clone(),
                 empty.clone(),
                 shown.clone(),
                 self.images.clone(),
+                all.clone(),
             );
             move |query: &str| {
+                // A refill keeps the highlighted destination when it still matches.
+                let kept = list
+                    .selected_row()
+                    .and_then(|row| usize::try_from(row.index()).ok())
+                    .and_then(|index| shown.borrow().get(index).map(|item| item.target.clone()));
                 while let Some(row) = list.first_child() {
                     list.remove(&row);
                 }
-                let results = ranked(&all, query);
+                let results = ranked(&all.borrow(), query);
                 empty.set_visible(results.is_empty());
                 empty.set_label(if query.trim().is_empty() {
                     "Nothing to switch to yet"
@@ -493,14 +522,26 @@ impl App {
                     row.set_child(Some(&line));
                     list.append(&row);
                 }
-                if let Some(first) = list.row_at_index(0) {
-                    list.select_row(Some(&first));
+                let selected = kept
+                    .and_then(|target| results.iter().position(|item| item.target == target))
+                    .unwrap_or(0);
+                if let Some(row) = list.row_at_index(selected as i32) {
+                    list.select_row(Some(&row));
                 }
                 *shown.borrow_mut() = results;
             }
         };
+        let fill = Rc::new(fill);
         fill("");
-        search.connect_search_changed(move |search| fill(&search.text()));
+        let typed = fill.clone();
+        search.connect_search_changed(move |search| typed(&search.text()));
+        let refill: Refill = {
+            let (search, all) = (search.clone(), all.clone());
+            Rc::new(move |state: &State, others: &[SpaceDetail]| {
+                *all.borrow_mut() = items(state, others);
+                fill(&search.text());
+            })
+        };
 
         let choose = {
             let (weak, shown) = (Rc::downgrade(self), shown.clone());
@@ -567,7 +608,50 @@ impl App {
         });
         window.present();
         search.grab_focus();
-        *self.switcher.borrow_mut() = Some(Switcher { window });
+        *self.switcher.borrow_mut() = Some(Switcher {
+            window,
+            others: Vec::new(),
+            refill,
+        });
+    }
+
+    /// Other spaces' channels for the open switcher, read again each time it
+    /// opens (as on web).
+    fn load_switcher_spaces(&self) {
+        let state = self.state.borrow();
+        let Some(token) = state.token.clone() else {
+            return;
+        };
+        let open = state.detail.as_ref().map(|detail| detail.space.id.as_str());
+        let spaces: Vec<String> = state
+            .spaces
+            .iter()
+            .filter(|space| !space.demo && Some(space.id.as_str()) != open)
+            .map(|space| space.id.clone())
+            .collect();
+        if !spaces.is_empty() {
+            self.worker.send(Command::LoadSwitcherSpaces {
+                epoch: state.epoch,
+                token,
+                spaces,
+            });
+        }
+    }
+
+    /// One of the other spaces loaded while the switcher is open.
+    pub(super) fn switcher_space(&self, detail: SpaceDetail) {
+        let (refill, others) = {
+            let mut open = self.switcher.borrow_mut();
+            let Some(switcher) = open.as_mut() else {
+                return;
+            };
+            switcher
+                .others
+                .retain(|other| other.space.id != detail.space.id);
+            switcher.others.push(detail);
+            (switcher.refill.clone(), switcher.others.clone())
+        };
+        refill(&self.state.borrow(), &others);
     }
 
     fn open_shortcut_help(self: &Rc<Self>) {

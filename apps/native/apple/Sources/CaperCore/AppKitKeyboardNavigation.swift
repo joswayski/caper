@@ -5,7 +5,7 @@ import AppKit
 /// move the highlight while the field keeps focus; Return opens it.
 @MainActor final class AppKitQuickSwitcher: AppKitSettingsDialog, NSTextFieldDelegate {
     private let model: AppModel
-    private let items: [SwitcherItem]
+    private var items: [SwitcherItem] = []
     private let close: () -> Void
     private let search = AppKitKitField(height: 36)
     private let list = AppKitKit.stack([], spacing: 2)
@@ -16,20 +16,26 @@ import AppKit
 
     init(model: AppModel, close: @escaping () -> Void) {
         self.model = model; self.close = close
-        items = model.switcherItems()
         super.init(title: "Quick switcher", detail: "Channels, direct messages, spaces and people. Unread first; Return opens.",
                    closeLabel: "Close quick switcher", identifier: "quick-switcher", close: close)
         search.placeholderString = "Find a channel, DM, space or person"
         search.setAccessibilityLabel("Find a conversation"); search.delegate = self
         setRows([search, list, empty])
         preferHeight(520)
-        fill()
+        // Other spaces' channels join the list as they load (as on web).
+        observation.start(reading: { [weak self] in self?.model.switcherSpaces.count ?? 0 }) { [weak self] _ in
+            guard let self else { return }
+            self.items = self.model.switcherItems(); self.fill()
+        }
+        Task { [model] in await model.loadSwitcherSpaces() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var initialFocus: NSView? { search }
 
     private func fill() {
+        // A refill keeps the highlighted destination when it still matches.
+        let kept = shown.indices.contains(selected) ? shown[selected].id : nil
         shown = model.rankedSwitcherItems(items, query: search.stringValue)
         list.arrangedSubviews.forEach { $0.removeFromSuperview() }
         rows = shown.enumerated().map { index, item in
@@ -44,7 +50,7 @@ import AppKit
         }
         empty.stringValue = search.stringValue.trimmingCharacters(in: .whitespaces).isEmpty ? "Nothing to switch to yet." : "No matches."
         empty.isHidden = !shown.isEmpty
-        select(0)
+        select(kept.flatMap { id in shown.firstIndex { $0.id == id } } ?? 0)
     }
 
     private func select(_ index: Int) {
@@ -60,7 +66,7 @@ import AppKit
         Task { [model] in await model.open(item) }
     }
 
-    func controlTextDidChange(_ notification: Notification) { fill() }
+    func controlTextDidChange(_ notification: Notification) { selected = 0; shown = []; fill() }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         // An input method composing in the field keeps its keys.

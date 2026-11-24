@@ -146,6 +146,8 @@ pub enum Update {
     /// The notification inbox's rows, filters or unread count changed, or
     /// it closed to open one of its notifications.
     Inbox,
+    /// Another space's channels loaded for the open quick switcher.
+    Switcher,
     /// Dictation `key`'s words, or the HTTP status of its failure.
     Dictated {
         key: u64,
@@ -499,6 +501,9 @@ pub struct Live {
     /// notifications and inbox results carry (`generation` moves on with
     /// every navigation).
     account_epoch: u64,
+    /// Other spaces' details for the open quick switcher, read again each
+    /// time it opens (as on web).
+    switcher_spaces: Vec<core::SpaceDetail>,
     /// The notification inbox, as every client keeps it.
     pub activity: caper_client::activity::Inbox,
     /// Where an opened notification points: its navigation, the message
@@ -706,6 +711,7 @@ impl Live {
         whats_new.restore(preferences.get(whats_new.key()));
         Live {
             worker,
+            switcher_spaces: Vec::new(),
             input_reported: std::time::Instant::now(),
             media,
             media_ready,
@@ -3956,8 +3962,19 @@ impl Live {
         use crate::browse::{Row, Target};
         let me = self.account_id.as_deref();
         let mut rows = Vec::new();
-        if let Some(detail) = &self.detail {
-            for c in detail.channels.iter().filter(|c| c.joined) {
+        let open = self.detail.as_ref().filter(|d| !d.space.id.is_empty());
+        let mut seen = std::collections::HashSet::new();
+        // The open space's channels, then other spaces' (as on web).
+        for detail in open.into_iter().chain(
+            self.switcher_spaces
+                .iter()
+                .filter(|other| open.is_none_or(|open| open.space.id != other.space.id)),
+        ) {
+            for c in detail
+                .channels
+                .iter()
+                .filter(|c| c.joined && seen.insert(c.id.clone()))
+            {
                 rows.push(Row {
                     id: c.id.clone(),
                     name: c.name.clone(),
@@ -4029,6 +4046,29 @@ impl Live {
             rows,
             switcher: true,
             help: false,
+        }
+    }
+
+    /// Loads other spaces' channels for the quick switcher that just opened.
+    pub fn load_switcher_spaces(&mut self) {
+        self.switcher_spaces.clear();
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let open = self.detail.as_ref().map(|d| d.space.id.as_str());
+        let spaces: Vec<String> = self
+            .spaces
+            .iter()
+            .flat_map(|s| &s.spaces)
+            .filter(|s| !s.demo && Some(s.id.as_str()) != open)
+            .map(|s| s.id.clone())
+            .collect();
+        if !spaces.is_empty() {
+            self.worker.send(Command::LoadSwitcherSpaces {
+                epoch: self.account_epoch,
+                token,
+                spaces,
+            });
         }
     }
 
@@ -6453,6 +6493,12 @@ impl Live {
             }
             Event::NotificationError { epoch, error } if epoch == self.account_epoch => {
                 out.push(Update::Warning(error));
+            }
+            Event::SwitcherSpace { epoch, detail } if epoch == self.account_epoch => {
+                self.switcher_spaces
+                    .retain(|other| other.space.id != detail.space.id);
+                self.switcher_spaces.push(*detail);
+                out.push(Update::Switcher);
             }
             Event::ActivityLoaded {
                 epoch,

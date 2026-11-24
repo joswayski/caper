@@ -509,6 +509,12 @@ public final class AppModel {
         set { peopleSnapshot = newValue }
     }
     private var peopleSnapshot: [Person]?
+    /// Other spaces' details for the open quick switcher, read again each time
+    /// it opens (as on web); see `loadSwitcherSpaces()`.
+    public internal(set) var switcherSpaces: [SpaceDetail] = []
+    /// The account `switcherSpaces` was loaded for, so a late reply after
+    /// sign-out or switching accounts is dropped.
+    var switcherGeneration: Int { generation }
     /// The main "Direct messages" list: accepted and outgoing conversations.
     public var visibleDirectMessages: [DirectMessageConversation] { MessageRequests.visible(directMessages) }
     /// Incoming message requests. They never count as unread or chime.

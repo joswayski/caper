@@ -123,14 +123,17 @@ public struct SwitcherItem: Identifiable, Sendable {
     }
 
     /// Every quick switcher destination: the open space's joined channels,
-    /// DMs (requests count as unread), spaces, then people without a DM.
+    /// then other spaces' (`switcherSpaces`), DMs (requests count as unread),
+    /// spaces, then people without a DM.
     public func switcherItems() -> [SwitcherItem] {
         var items: [SwitcherItem] = []
-        if let detail, !detail.space.id.isEmpty {
-            for channel in detail.channels where channel.joined {
-                items.append(SwitcherItem(id: "channel:\(channel.id)", name: channel.name, alternates: [], detail: detail.space.name,
-                    unread: channelIsUnread(spaceID: detail.space.id, channelID: channel.id),
-                    target: .channel(spaceID: detail.space.id, channelID: channel.id)))
+        let open = detail.flatMap { $0.space.id.isEmpty ? nil : $0 }
+        var seen = Set<String>()
+        for space in (open.map { [$0] } ?? []) + switcherSpaces.filter({ $0.space.id != open?.space.id }) {
+            for channel in space.channels where channel.joined && seen.insert(channel.id).inserted {
+                items.append(SwitcherItem(id: "channel:\(channel.id)", name: channel.name, alternates: [], detail: space.space.name,
+                    unread: channelIsUnread(spaceID: space.space.id, channelID: channel.id),
+                    target: .channel(spaceID: space.space.id, channelID: channel.id)))
             }
         }
         for direct in directMessages {
@@ -149,6 +152,23 @@ public struct SwitcherItem: Identifiable, Sendable {
                 detail: "@\(person.username)", unread: false, target: .person(username: person.username)))
         }
         return items
+    }
+
+    /// Other spaces' channels for the switcher that just opened, as on web:
+    /// one request per space, each listed as it arrives; failures are skipped.
+    public func loadSwitcherSpaces() async {
+        switcherSpaces = []
+        let attempt = switcherGeneration
+        let open = detail?.space.id
+        let ids = spaces.filter { $0.demo != true && $0.id != open }.map(\.id)
+        await withTaskGroup(of: SpaceDetail?.self) { group in
+            for id in ids { group.addTask { [api] in try? await api.space(id) } }
+            for await loaded in group {
+                guard let loaded, switcherGeneration == attempt else { continue }
+                switcherSpaces.removeAll { $0.space.id == loaded.space.id }
+                switcherSpaces.append(loaded)
+            }
+        }
     }
 
     public func rankedSwitcherItems(_ items: [SwitcherItem], query: String) -> [SwitcherItem] {

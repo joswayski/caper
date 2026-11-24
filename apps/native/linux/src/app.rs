@@ -4331,6 +4331,7 @@ impl App {
                     | Event::Picture { .. }
                     | Event::OpenNotification { .. }
                     | Event::ActivityRead { .. }
+                    | Event::SwitcherSpace { .. }
                     | Event::Dictated { .. }) => deferred.push(event),
                     event => self.handle(&mut state, event),
                 }
@@ -4372,6 +4373,9 @@ impl App {
                 } if epoch == self.state.borrow().epoch => self.picture_changed(target, result),
                 Event::OpenNotification { epoch, alert } if epoch == self.state.borrow().epoch => {
                     self.open_alert(alert)
+                }
+                Event::SwitcherSpace { epoch, detail } if epoch == self.state.borrow().epoch => {
+                    self.switcher_space(*detail)
                 }
                 Event::ActivityRead {
                     epoch,

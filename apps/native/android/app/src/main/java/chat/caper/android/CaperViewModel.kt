@@ -1816,6 +1816,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Its key opens a sheet, or closes it again; the other sheet gives way. */
     internal fun toggleKeyboardSheet(sheet: KeyboardSheet) { keyboardSheet.value = if (keyboardSheet.value == sheet) null else sheet }
 
+    /** Other spaces' details for the open quick switcher, read again each time it opens (as on web). */
+    internal val switcherSpaces = MutableStateFlow<List<SpaceDetail>>(emptyList())
+
+    /** Loads other spaces' channels for the switcher that just opened: one request per space, listed as each arrives. */
+    internal fun loadSwitcherSpaces() {
+        switcherSpaces.value = emptyList()
+        val token = accountToken ?: return
+        val account = accountGeneration
+        val open = mutable.value.selectedSpace?.space?.id
+        mutable.value.spaces.filter { !it.demo && it.id != open }.forEach { space ->
+            viewModelScope.launch {
+                val detail = runCatching { api.space(token, space.id) }.getOrNull() ?: return@launch
+                if (account == accountGeneration) switcherSpaces.value = switcherSpaces.value.filter { it.space.id != detail.space.id } + detail
+            }
+        }
+    }
+
     /** Listed in the sidebar with an unread dot: not muted, not blocked. */
     private fun listedUnread(direct: DirectConversation, state: AppUiState, now: Instant) =
         directUnread(direct) && direct.peer.id !in state.blockedIds && state.notificationSettings?.directMuted(direct.id, now) != true
@@ -1826,9 +1843,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val now = Instant.now()
         val unreadChannels = state.unreadSpaces.flatMapTo(HashSet()) { space -> space.channels.map { it.id } }
         val items = mutableListOf<SwitcherItem>()
-        state.selectedSpace?.takeIf { it.space.id.isNotEmpty() }?.let { detail ->
-            detail.channels.filter { it.joined }.forEach { channel ->
-                items += SwitcherItem("channel:${channel.id}", channel.name, emptyList(), detail.space.name, channel.id in unreadChannels, SwitcherItem.Target.OpenChannel(channel))
+        val open = state.selectedSpace?.takeIf { it.space.id.isNotEmpty() }
+        val seen = HashSet<String>()
+        (listOfNotNull(open) + switcherSpaces.value.filter { it.space.id != open?.space?.id }).forEach { detail ->
+            detail.channels.filter { it.joined && seen.add(it.id) }.forEach { channel ->
+                items += SwitcherItem("channel:${channel.id}", channel.name, emptyList(), detail.space.name, channel.id in unreadChannels,
+                    SwitcherItem.Target.OpenChannel(detail.space.id, channel))
             }
         }
         state.directConversations.forEach { direct ->
@@ -1853,7 +1873,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     internal fun openSwitcherItem(item: SwitcherItem) {
         val state = mutable.value
         when (val target = item.target) {
-            is SwitcherItem.Target.OpenChannel -> state.selectedSpace?.channels?.firstOrNull { it.id == target.channel.id }?.let { selectChannel(it) }
+            is SwitcherItem.Target.OpenChannel ->
+                if (target.spaceId == state.selectedSpace?.space?.id) state.selectedSpace?.channels?.firstOrNull { it.id == target.channel.id }?.let { selectChannel(it) }
+                else selectSpace(target.spaceId, preferredChannelId = target.channel.id)
             is SwitcherItem.Target.Direct -> state.directConversations.firstOrNull { it.id == target.id }?.let(::selectDirect)
             is SwitcherItem.Target.OpenSpace -> selectSpace(target.id)
             is SwitcherItem.Target.Person -> startDirect(target.username)

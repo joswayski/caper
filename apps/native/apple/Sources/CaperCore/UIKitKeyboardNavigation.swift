@@ -66,6 +66,8 @@ import UIKit
         body.addArrangedSubview(empty)
         observe()
         Task { [model] in await model.refreshPeople() }
+        // Other spaces' channels join the list as they load (as on web).
+        Task { [model] in await model.loadSwitcherSpaces() }
     }
 
     override func viewDidAppear(_ animated: Bool) {

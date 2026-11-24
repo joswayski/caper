@@ -18,6 +18,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    /// The quick switcher opened: other spaces' channels, as on web. One
+    /// `SwitcherSpace` per space that loads; failures are skipped.
+    LoadSwitcherSpaces {
+        epoch: u64,
+        token: String,
+        spaces: Vec<String>,
+    },
     LoadActivity {
         epoch: u64,
         request: u64,
@@ -684,6 +691,10 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    SwitcherSpace {
+        epoch: u64,
+        detail: Box<SpaceDetail>,
+    },
     ActivityLoaded {
         epoch: u64,
         request: u64,
@@ -1897,6 +1908,26 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
                 send: operation,
                 result,
             }
+        }
+        Command::LoadSwitcherSpaces {
+            epoch,
+            token,
+            spaces,
+        } => {
+            for detail in spaces
+                .iter()
+                .filter_map(|space| api.space(&token, space).ok())
+            {
+                send(
+                    events,
+                    host,
+                    Event::SwitcherSpace {
+                        epoch,
+                        detail: Box::new(detail),
+                    },
+                );
+            }
+            return;
         }
         Command::AvatarHistory {
             epoch,

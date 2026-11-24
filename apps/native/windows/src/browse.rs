@@ -456,10 +456,43 @@ impl App {
         if self.dialog.as_ref().is_some_and(|d| d.switcher()) {
             return self.dismiss_dialog();
         }
-        let Some(switcher) = self.live.as_ref().map(|l| l.switcher()) else {
+        let Some(live) = self.live.as_mut() else {
             return;
         };
+        live.load_switcher_spaces();
+        let switcher = live.switcher();
         self.open_dialog(Dialog::browse(switcher));
+    }
+
+    /// Other spaces' channels arrived: the open switcher lists them too,
+    /// keeping its query and highlighted row.
+    pub fn switcher_changed(&mut self) {
+        let Some(rows) = self.live.as_ref().map(|l| l.switcher().rows) else {
+            return;
+        };
+        let Some(dialog) = self
+            .dialog
+            .as_mut()
+            .filter(|d| d.switcher() && !d.shortcut_help())
+        else {
+            return;
+        };
+        let kept = dialog.browse_target(dialog.switcher_selected());
+        if let Some(browse) = dialog.browse.as_mut() {
+            browse.rows = rows;
+        }
+        if let Some(kept) = kept {
+            let query = dialog.draft();
+            if let Some(index) = dialog
+                .browse
+                .as_ref()
+                .and_then(|b| b.shown(&query).iter().position(|r| **r == kept))
+            {
+                dialog.selected = index;
+            }
+        }
+        self.dirty.overlay = true;
+        self.need = true;
     }
 
     /// Ctrl+/: every keyboard shortcut; again closes it.

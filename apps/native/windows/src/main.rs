@@ -1279,6 +1279,7 @@ impl App {
                     }
                 }
                 live::Update::Inbox => self.inbox_changed(),
+                live::Update::Switcher => self.switcher_changed(),
                 live::Update::Typing => {
                     self.dirty.typing = true;
                     self.need = true;

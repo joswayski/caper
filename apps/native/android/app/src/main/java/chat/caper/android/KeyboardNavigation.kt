@@ -24,6 +24,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -136,7 +137,7 @@ internal data class SwitcherItem(
     val target: Target,
 ) {
     sealed interface Target {
-        data class OpenChannel(val channel: Channel) : Target
+        data class OpenChannel(val spaceId: String, val channel: Channel) : Target
         data class Direct(val id: String) : Target
         data class OpenSpace(val id: String) : Target
         /** Someone you share a space with but have no DM with: opening starts one. */
@@ -178,18 +179,23 @@ internal fun escapeMarksRead(event: KeyEvent, viewModel: CaperViewModel): Boolea
 @Composable internal fun QuickSwitcherDialog(state: AppUiState, viewModel: CaperViewModel, close: () -> Unit, opened: () -> Unit) {
     var query by remember { mutableStateOf("") }
     var selected by remember { mutableIntStateOf(0) }
-    val all = remember(state.selectedSpace, state.directConversations, state.spaces, state.people, state.unreadSpaces, state.blocks, state.notificationSettings) {
+    val others by viewModel.switcherSpaces.collectAsStateWithLifecycle()
+    val all = remember(state.selectedSpace, state.directConversations, state.spaces, state.people, state.unreadSpaces, state.blocks, state.notificationSettings, others) {
         viewModel.switcherItems()
     }
     val results = remember(all, query) { viewModel.rankSwitcherItems(all, query) }
     val list = rememberLazyListState()
-    LaunchedEffect(Unit) { viewModel.refreshPeople() }
+    LaunchedEffect(Unit) { viewModel.refreshPeople(); viewModel.loadSwitcherSpaces() }
+    // Other spaces' channels arriving keep the highlighted destination.
+    var highlighted by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(results) { highlighted?.let { id -> results.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { selected = it } } }
+    LaunchedEffect(selected, results) { highlighted = results.getOrNull(selected)?.id }
     LaunchedEffect(selected, results.size) { if (selected in results.indices) list.animateScrollToItem(selected) }
     fun open(item: SwitcherItem) { close(); viewModel.openSwitcherItem(item); opened() }
     CaperDialog("Jump to", close) {
         val field = remember { FocusRequester() }
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
-        OutlinedTextField(query, { query = it; selected = 0 }, placeholder = { Text("Channels, DMs, spaces and people") }, singleLine = true,
+        OutlinedTextField(query, { query = it; selected = 0; highlighted = null }, placeholder = { Text("Channels, DMs, spaces and people") }, singleLine = true,
             modifier = Modifier.fillMaxWidth().focusRequester(field).onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when {

@@ -88,9 +88,9 @@ against the parity fixture (`scripts/native-parity-fixture.mjs`).
 Every client, including iPad and Android with a hardware keyboard, has the same
 keys (Cmd on Apple, Ctrl elsewhere):
 
-- **Ctrl/Cmd+K** quick switcher: the open space's channels, DMs, spaces and
-  people, unread first; type to filter, Up/Down and Enter to open. Web also
-  lists other spaces' channels.
+- **Ctrl/Cmd+K** quick switcher: channels in every space (other spaces load
+  when it opens), DMs, spaces and people, unread first; type to filter,
+  Up/Down and Enter to open.
 - **Alt+Up/Down** previous or next conversation in sidebar order (channels,
   then DMs), wrapping; with **Shift**, only unread ones.
 - **Esc** marks the open conversation read up to its latest message, once
