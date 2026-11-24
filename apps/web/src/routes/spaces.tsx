@@ -24,6 +24,8 @@ export const Route = createFileRoute("/spaces")({
       // Landing pulls in the chat client (uploads, voice, image encoders). Import it
       // here, beside the requests, so the entry chunk every page loads stays small.
       const navigation = import("../spaces/navigation");
+      // The conversation the link or last visit names needs neither read; start it now too.
+      void navigation.then((module) => module.speculateSpaceLanding(new URLSearchParams(location.searchStr)));
       // Read DMs beside the landing conversation so the sidebar arrives whole,
       // but never hold the conversation for them: Spaces fetches a late list itself.
       let initialDirects: DirectConversation[] | undefined;

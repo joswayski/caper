@@ -33,20 +33,60 @@ export function rememberSpaceLanding(accountId: string, view: PreparedSpace) {
   }
 }
 
+function savedLanding(key: string): SpaceLanding | undefined {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? "null");
+    if (typeof value?.spaceId === "string")
+      return { spaceId: value.spaceId, channelId: typeof value.channelId === "string" ? value.channelId : undefined };
+  } catch {
+    /* Missing, corrupt or unavailable storage uses the first joined channel. */
+  }
+  return undefined;
+}
+
+/** The landing's reads, started before the account and space list return. */
+let speculated:
+  | {
+      spaceId: string;
+      channelId?: string;
+      expires: number;
+      detail: Promise<SpaceDetail>;
+      history?: Promise<GeneralChatHistory>;
+    }
+  | undefined;
+
+/**
+ * Starts the space and channel a link (or this browser's one remembered
+ * account's last visit) names beside the account read, a round trip sooner.
+ * The landing uses them only once it confirms the same space and channel.
+ */
+export function speculateSpaceLanding(query: URLSearchParams) {
+  speculated = undefined;
+  if (query.has("dm") || query.has("feedback")) return;
+  let saved: SpaceLanding | undefined;
+  try {
+    const keys = Object.keys(localStorage).filter((key) => key.startsWith("caper:space-landing:"));
+    if (keys.length === 1) saved = savedLanding(keys[0]);
+  } catch {
+    /* Storage is optional. */
+  }
+  const spaceId = query.get("space") ?? saved?.spaceId;
+  if (!spaceId) return;
+  const channelId = query.get("channel") ?? (query.has("space") ? undefined : saved?.channelId);
+  const detail = getSpace(spaceId);
+  const history = channelId ? loadChatHistory(channelId) : undefined;
+  void detail.catch(() => undefined);
+  void history?.catch(() => undefined);
+  speculated = { spaceId, channelId, expires: Date.now() + 10_000, detail, history };
+}
+
 /** Prepare the first conversation in the route loader, not after the shell mounts. */
 export async function prepareSpaceLanding(
   accountId: string,
   spaces: Array<{ id: string }>,
   query: URLSearchParams,
 ): Promise<{ initialSelection: SpaceLanding; initialView?: PreparedSpace; initialSpaceError?: string }> {
-  let saved: SpaceLanding | undefined;
-  try {
-    const value = JSON.parse(localStorage.getItem(`caper:space-landing:${accountId}`) ?? "null");
-    if (typeof value?.spaceId === "string")
-      saved = { spaceId: value.spaceId, channelId: typeof value.channelId === "string" ? value.channelId : undefined };
-  } catch {
-    /* Missing, corrupt or unavailable storage uses the first joined channel. */
-  }
+  const saved = savedLanding(`caper:space-landing:${accountId}`);
   const requested = query.get("space") ?? undefined;
   const spaceId = spaces.find((space) => space.id === (requested ?? saved?.spaceId))?.id ?? spaces[0]?.id;
   const initialSelection = { spaceId, channelId: query.get("channel") ?? undefined };
@@ -207,12 +247,17 @@ export function createSpaceNavigation() {
       // confirms that channel; otherwise it is dropped.
       const known = peek(spaceId, channelId);
       const guess = channelId ?? known?.channelId ?? preferredChannelId;
+      const head = speculated?.spaceId === spaceId && speculated.expires > Date.now() ? speculated : undefined;
+      if (head) speculated = undefined;
       const early =
         guess && known?.history?.channel.id !== guess
-          ? { channelId: guess, history: loadChatHistory(guess) }
+          ? {
+              channelId: guess,
+              history: head?.history && head.channelId === guess ? head.history : loadChatHistory(guess),
+            }
           : undefined;
       void early?.history.catch(() => undefined);
-      const detail = await getSpace(spaceId);
+      const detail = await (head?.detail ?? getSpace(spaceId));
       const previous = peek(spaceId, channelId);
       const requestedChannel = channelId ?? previous?.channelId;
       if (requestedChannel !== undefined && !detail.channels.some((channel) => channel.id === requestedChannel)) {

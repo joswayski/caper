@@ -5,6 +5,7 @@ import {
   createSpaceNavigation,
   prepareSpaceLanding,
   rememberSpaceLanding,
+  speculateSpaceLanding,
 } from "../spaces/navigation.ts";
 import {
   SpacesApiError,
@@ -187,6 +188,53 @@ test("web landing restores the account's last joined conversation, with explicit
       (await prepareSpaceLanding("owner", spaces, new URLSearchParams())).initialView?.detail.space.id,
       "earlier12345",
     );
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("web landing reads started beside the account read are used once, and only for the same space", async () => {
+  const storage = new Map([
+    ["caper:space-landing:owner", JSON.stringify({ spaceId: "space1234567", channelId: "other1234567" })],
+  ]);
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    // Object.keys(localStorage) lists stored keys in browsers.
+    ...Object.fromEntries(storage),
+  });
+  const paths: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+    const path = String(input);
+    paths.push(path);
+    return Response.json(
+      path.startsWith("/api/spaces/")
+        ? { ...spaceDetail, space: { ...spaceDetail.space, id: path.split("/").at(-1)! } }
+        : history(path.includes("other") ? "other1234567" : "first1234567"),
+    );
+  });
+  try {
+    speculateSpaceLanding(new URLSearchParams());
+    assert.deepEqual(paths.sort(), ["/api/chat/channels/other1234567/messages", "/api/spaces/space1234567"]);
+    paths.length = 0;
+    const landing = await prepareSpaceLanding("owner", [spaceDetail.space], new URLSearchParams());
+    assert.equal(landing.initialView?.history?.channel.id, "other1234567");
+    // Only the landing's unread snapshot is new; the reads in flight are reused.
+    assert.deepEqual(paths, ["/api/spaces/unread"]);
+
+    // Used once: the next landing reads again.
+    await prepareSpaceLanding("owner", [spaceDetail.space], new URLSearchParams());
+    assert.deepEqual(paths.filter((path) => path !== "/api/spaces/unread").sort(), [
+      "/api/chat/channels/other1234567/messages",
+      "/api/spaces/space1234567",
+    ]);
+
+    // A linked space the account cannot open never stands in for the landing it gets.
+    paths.length = 0;
+    speculateSpaceLanding(new URLSearchParams("channel=first1234567&space=elsewhere123"));
+    const other = await prepareSpaceLanding("owner", [{ id: "earlier12345" }], new URLSearchParams());
+    assert.equal(other.initialSelection.spaceId, "earlier12345");
+    assert.ok(paths.includes("/api/spaces/earlier12345"));
   } finally {
     vi.unstubAllGlobals();
   }
