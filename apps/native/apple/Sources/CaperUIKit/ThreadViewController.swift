@@ -550,7 +550,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         let top = composerStack.frame.minY
         backdrop.frame = CGRect(x: collection.frame.minX, y: top - ComposerBackdrop.fade, width: collection.frame.width,
                                 height: max(0, view.bounds.maxY - top + ComposerBackdrop.fade))
-        let covered = max(0, collection.frame.maxY - top + 4)
+        // Past the backdrop's fade too, as web: the newest reply stays clear of it.
+        let covered = max(0, collection.frame.maxY - top + ComposerBackdrop.fade)
         guard abs(collection.contentInset.bottom - covered) > 0.5 else { return }
         // Against the old reserve: where the reader was before the composer moved.
         let atEnd = tailOffset - collection.contentOffset.y <= 80
