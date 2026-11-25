@@ -224,7 +224,10 @@ import AppKit
         bullet.layer?.backgroundColor = AppKitKit.muted.cgColor; bullet.layer?.cornerRadius = 2.5
         bullet.translatesAutoresizingMaskIntoConstraints = false
         let title = AppKitKit.label(item.title, size: 15, weight: .bold); title.isSelectable = true
-        let body = AppKitKit.label(item.body, size: 14, color: AppKitKit.muted); body.isSelectable = true
+        // Selectable, keeping its line spacing when clicked: without editing
+        // attributes the field editor redraws it with the default spacing.
+        let body = AppKitKit.label(item.body, size: 14, color: AppKitKit.muted)
+        body.isSelectable = true; body.allowsEditingTextAttributes = true
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 3
         body.attributedStringValue = NSAttributedString(string: item.body, attributes: [
             .font: AppKitKit.font(14), .foregroundColor: AppKitKit.muted, .paragraphStyle: paragraph])
