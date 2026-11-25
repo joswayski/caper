@@ -690,6 +690,21 @@
   flex-shrink: 0;
   animation: sim-enter 0.35s ease-out both;
 }
+/* As in the app, messages recede as they slide under the composer (motion.css). */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .sim-message {
+      transform-origin: 50% 100%;
+      animation:
+        sim-enter 0.35s ease-out both,
+        caper-recede linear backwards;
+      animation-timeline: auto, view(block auto var(--composer-overlap));
+      animation-range:
+        normal,
+        entry 0% entry 40px;
+    }
+  }
+}
 /* There are no message action buttons to reserve space for in the illustration. */
 .sim-message header,
 .sim-message .chat-pin-marker,

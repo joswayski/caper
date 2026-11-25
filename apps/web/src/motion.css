@@ -158,6 +158,27 @@
   animation: caper-panel-in var(--motion-base) var(--ease-out);
 }
 
+/* A message recedes a little, smaller and dimmer, as it slides under the
+   typing row and composer, tracking the scroll: over the last 40px its top
+   edge travels before it meets them. The lists keep at least that much room
+   above them at their end, so at the live end nothing is receded. */
+@keyframes caper-recede {
+  from {
+    opacity: 0.7;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    :is(.chat-scroller, .chat-thread-messages) .chat-message:not(.chat-message-arrive, .chat-message-jump-target) {
+      transform-origin: 50% 100%;
+      animation: caper-recede linear backwards;
+      animation-timeline: view(block auto var(--composer-overlap));
+      animation-range: entry 0% entry 40px;
+    }
+  }
+}
+
 /* A message sent or received while watching the live end settles into place
    (chat/arrivals.ts decides which rows count). */
 .chat-message-arrive {

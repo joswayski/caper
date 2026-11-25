@@ -2523,6 +2523,25 @@ button.chat-mention-card-avatar {
   font-size: 0.7rem;
   line-height: 16px;
 }
+/* While someone types, the row sits on solid conversation colour, easing in
+   over the 12px above it, so messages scrolled up under it pass behind the
+   label instead of through it. It stops short of the newest message, which
+   the lists keep 16px above the row. */
+.chat-typing::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -12px 0 0;
+  background: var(--surface-conversation);
+  -webkit-mask-image: linear-gradient(transparent, #000 12px);
+  mask-image: linear-gradient(transparent, #000 12px);
+  pointer-events: none;
+  opacity: 0;
+}
+.chat-typing:is([data-visible="true"], :has(> [data-visible="true"]))::before {
+  opacity: 1;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
 .chat-typing-content {
   display: inline-flex;
   align-items: center;
@@ -2622,6 +2641,7 @@ button.chat-mention-card-avatar {
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.chat-composer, .chat-profile-composer) .chat-rich-input,
+  .chat-typing::before,
   .chat-reaction,
   .chat-reply-expand {
     transition: none;
