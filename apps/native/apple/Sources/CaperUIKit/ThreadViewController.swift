@@ -547,11 +547,15 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     /// grows, while one up in the thread stays where they are.
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // The composer's inset moves where replies rest, even without a scroll.
+        defer { collection.recedeRows() }
         let top = composerStack.frame.minY
         let solid = top + ComposerBackdrop.sink
         backdrop.frame = CGRect(x: collection.frame.minX, y: solid - ComposerBackdrop.fade, width: collection.frame.width,
                                 height: max(0, view.bounds.maxY - solid + ComposerBackdrop.fade))
-        // Past the backdrop's fade too, as web: the newest reply stays clear of it.
+        // Past the backdrop's fade too, as web: the newest reply stays clear of
+        // it. `MessageRecede` measures from that rest, `fade` points above the
+        // composer stack (the reply's bottom sits the section's 8 points higher).
         let covered = max(0, collection.frame.maxY - top + ComposerBackdrop.fade)
         guard abs(collection.contentInset.bottom - covered) > 0.5 else { return }
         // Against the old reserve: where the reader was before the composer moved.
@@ -609,12 +613,16 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        // A reply scrolled into view starts from its receded look, not at rest.
+        if let cell = cell as? MessageCell { cell.recede(collectionView.recedeProgress(rowTop: cell.frame.minY)) }
         guard case let .row(id) = dataSource.itemIdentifier(for: indexPath), arriving.remove(id) != nil else { return }
         (cell as? MessageCell)?.arrive()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         defer { refreshJump() }
+        // Replies recede under the composer as they pass, tracking every scroll.
+        collection.recedeRows()
         guard scrollView.isTracking || scrollView.isDecelerating else { return }
         let bottom = scrollView.contentSize.height + scrollView.adjustedContentInset.bottom - scrollView.bounds.height
         followingTail = scrollView.contentOffset.y >= bottom - 48

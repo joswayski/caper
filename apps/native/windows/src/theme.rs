@@ -252,6 +252,9 @@ pub const FADE_H: f32 = 32.0;
 /// field's midline, so the history (and a hovered row) shows on beside the
 /// field's upper half and the field floats over it rather than on a slab.
 pub const COMPOSER_SINK: f32 = 22.0;
+/// How tall the band above the typing row is where, while someone types,
+/// the conversation colour eases in under it (web's `.chat-typing::before`).
+pub const TYPING_FADE: f32 = 12.0;
 pub const SECTION_TOP: f32 = 66.0;
 pub const CHANNEL_TOP: f32 = 96.0;
 /// A channel row's pitch: 6 DIPs around its 20 DIP line inside the

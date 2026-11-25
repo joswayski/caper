@@ -188,11 +188,24 @@ fn float_composer(
     if let Some(typing) = typing {
         typing.set_valign(gtk::Align::End);
         fade.append(typing);
+        // While it names someone, the row sits on solid colour
+        // (`.composer-fade.typing-shown`); gone at once when it empties.
+        let band = fade.downgrade();
+        typing.connect_label_notify(move |typing| {
+            if let Some(band) = band.upgrade() {
+                if typing.label().is_empty() {
+                    band.remove_css_class("typing-shown");
+                } else {
+                    band.add_css_class("typing-shown");
+                }
+            }
+        });
     }
     // Rows draw past the list's end, under the composer, but not over the
     // header: the scroller, which spans the stage, clips them.
     list.view.set_overflow(gtk::Overflow::Visible);
     list.scroller.set_overflow(gtk::Overflow::Hidden);
+    recede(&list.view);
     stage.add_overlay(&fade);
     stage.add_overlay(dock);
     stage.add_overlay(&list.jump.toast);
@@ -270,6 +283,72 @@ fn float_composer(
             docked,
         ))
     });
+}
+
+/// Rows recede as they slide under the typing row and composer, as web's
+/// `caper-recede`: over the last 40px before a row's top edge reaches 24px
+/// below where the newest row rests at the live end (the list's allocated
+/// end, which `float_composer` keeps clear of them), it dims to 70%, so at
+/// the live end nothing recedes. Opacity only: the list view allocates its
+/// rows itself and GTK 4.8 gives a widget no transform of its own, so they
+/// don't also shrink and lower as on web and the other desktops. It is set
+/// on the view's `row` widgets, so it multiplies with a message's arrival
+/// and pending opacity instead of replacing them. Read after each layout of
+/// the window, which every scroll, new row and resize brings, so it tracks
+/// the rows' places in the same frame. Off with GTK's animations.
+fn recede(view: &gtk::ListView) {
+    let hooked = Rc::new(std::cell::RefCell::new(
+        None::<(gdk::FrameClock, glib::SignalHandlerId)>,
+    ));
+    let hook = hooked.clone();
+    view.connect_realize(move |view| {
+        let Some(clock) = view.frame_clock() else {
+            return;
+        };
+        // Connected after the window's own layout handler, so it runs
+        // once the rows have their new places, before they are painted.
+        let view = view.downgrade();
+        let id = clock.connect_layout(move |_| {
+            if let Some(view) = view.upgrade() {
+                place_recede(&view);
+            }
+        });
+        *hook.borrow_mut() = Some((clock, id));
+    });
+    view.connect_unrealize(move |_| {
+        if let Some((clock, id)) = hooked.take() {
+            clock.disconnect(id);
+        }
+    });
+    // Animations turned on or off: a layout applies it.
+    if let Some(settings) = gtk::Settings::default() {
+        let view = view.downgrade();
+        settings.connect_gtk_enable_animations_notify(move |_| {
+            if let Some(view) = view.upgrade() {
+                view.queue_allocate();
+            }
+        });
+    }
+}
+
+/// Sets each of `view`'s rows' recede opacity from its top edge (`recede`).
+fn place_recede(view: &gtk::ListView) {
+    if !view.is_mapped() {
+        return;
+    }
+    let motion = crate::images::motion();
+    let line = f64::from(view.height()) + 24.0;
+    let mut child = view.first_child();
+    while let Some(row) = child {
+        let t = row
+            .compute_bounds(view)
+            .filter(|_| motion)
+            .map_or(1.0, |bounds| {
+                ((line - f64::from(bounds.y())) / 40.0).clamp(0.0, 1.0)
+            });
+        row.set_opacity(if t >= 1.0 { 1.0 } else { 0.7 + 0.3 * t });
+        child = row.next_sibling();
+    }
 }
 
 /// A message field: a `GtkTextView` with a placeholder. As desktop and web on

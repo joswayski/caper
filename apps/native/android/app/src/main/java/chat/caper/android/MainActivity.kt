@@ -2245,9 +2245,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
                     else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
                     // Keep the composer inset from the panel edge: the typing line's 16dp
-                    // above the field matches the 16dp below it (and the account bar's bottom inset).
-                    else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 16.dp)) { OwnRecomposeScope {
-                        TypingLine(state.typingAuthors)
+                    // above the field matches the 16dp below it (and the account bar's bottom inset). Drawn before a voice error
+                    // above it, so the typing row's backdrop, easing in over the 12dp above the row, passes under the banner.
+                    else if (joined) Column(Modifier.zIndex(-1f).padding(start = 18.dp, end = 18.dp, bottom = 16.dp)) { OwnRecomposeScope {
+                        TypingLine(state.typingAuthors, bleed = 18.dp)
                         if (direct?.outgoing == true) OutgoingRequestNotice(direct)
                         state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
                         state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
@@ -2840,6 +2841,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
     val jumpScope = rememberCoroutineScope()
     val stillJump = reducedMotion()
+    // Rows recede under the composer only with animations on (see [recede]).
+    val recedes = !reducedMotion()
     val jumpToLatest = {
         jump.hide()
         jump.jumping = true
@@ -2900,7 +2903,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             val revealed = if (row is TimelineRow.Blocked) row.run.revealed else collapsesFor(message, blocked, selfId)
             // The initial date stays outside the group; later dates stay within it.
             if (divider && row is TimelineRow.Blocked) DateDivider(message.createdAt)
-            Column(Modifier.fillMaxWidth().displacement(displacement, listState, row.key).drawBehind {
+            Column(Modifier.fillMaxWidth().displacement(displacement, listState, row.key).recede(listState, row.key, recedes).drawBehind {
                 if (revealed) {
                     drawRect(chat.caper.android.ui.Surface)
                     drawRect(Border, size = Size(2.dp.toPx(), size.height))
@@ -2986,7 +2989,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         outgoing.forEachIndexed { index, pending -> item("pending:${pending.clientMessageId}", contentType = "pending") {
             val before = outgoing.getOrNull(index - 1)
-            Column(Modifier.displacement(displacement, listState, "pending:${pending.clientMessageId}")) {
+            Column(Modifier.displacement(displacement, listState, "pending:${pending.clientMessageId}").recede(listState, "pending:${pending.clientMessageId}", recedes)) {
                 if ((before?.createdAt ?: messages.lastOrNull()?.createdAt)?.let { sameLocalDay(it, pending.createdAt) } != true) {
                     DateDivider(pending.createdAt)
                 }
@@ -3904,8 +3907,9 @@ private val ReplyDraftFill = Color(0xFF20282A)
  * The backdrop of a composer floating over the end of its conversation (web's .chat-composer::before): solid
  * conversation colour from [sink] below its top edge, about the field's midline, easing out over the 32dp above
  * that, so the conversation (and a pressed row) shows on beside the field's upper half and the field floats over
- * it rather than on a slab. A gradient alone, as on every client: no blur, which smears what scrolls behind into a glow. Its
- * own bounds take touches, so a tap beside the field doesn't reach a message hidden underneath; the fade above draws only.
+ * it rather than on a slab. A gradient alone, as on every client: no blur, which smears what scrolls behind into a glow.
+ * While someone types, [TypingLine] lays solid colour over the part of the fade behind its row. Its own bounds take
+ * touches, so a tap beside the field doesn't reach a message hidden underneath; the fade above draws only.
  */
 private fun Modifier.composerBackdrop(sink: Dp) = pointerInput(Unit) {}.drawBehind {
     if (size.height == 0f) return@drawBehind
@@ -4422,13 +4426,36 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
     runCatching { uriHandler.openUri(href) }
 }
 
-@Composable private fun TypingLine(authors: List<ChatAuthor>) {
+/**
+ * Who is typing, on a 16dp row above the field that keeps its height when nobody is. While someone types, the row
+ * sits on solid conversation colour that eases in over the 12dp above it (web's `.chat-typing::before`), [bleed]
+ * past each side to the composer's full width, so messages scrolled up under it pass behind the label instead of
+ * through it. It fades in briefly and goes at once, and stops short of the newest message, which the list keeps 16dp
+ * above the composer. Drawn behind the label and only over the row and the fade above it, never the field below.
+ */
+@Composable private fun TypingLine(authors: List<ChatAuthor>, bleed: Dp) {
     val label = when { authors.size > 2 -> "Several people are typing…"; authors.size == 2 -> "${authors[0].name} and ${authors[1].name} are typing…"; authors.size == 1 -> "${authors[0].name} is typing…"; else -> "" }
     var shown by remember { mutableStateOf("") }
     LaunchedEffect(label) { if (label.isNotEmpty()) shown = label else { kotlinx.coroutines.delay(180); shown = "" } }
     val alpha by androidx.compose.animation.core.animateFloatAsState(if (label.isNotEmpty()) 1f else 0f, androidx.compose.animation.core.tween(180), label = "typing")
+    val typing = label.isNotEmpty()
+    val still = reducedMotion()
+    val ground = remember { Animatable(0f) }
+    LaunchedEffect(typing, still) {
+        if (typing && !still) ground.animateTo(1f, tween(MOTION_FAST, easing = EaseOut)) else ground.snapTo(if (typing) 1f else 0f)
+    }
     // Web's role="status": screen readers hear who starts typing.
-    Row(Modifier.fillMaxWidth().height(16.dp).graphicsLayer { this.alpha = alpha }.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+    // The backdrop draws outside the label's alpha layer, so that layer neither fades nor clips it.
+    Row(Modifier.fillMaxWidth().height(16.dp).drawBehind {
+        val strength = ground.value
+        if (strength == 0f) return@drawBehind
+        val side = bleed.toPx()
+        val fade = 12.dp.toPx()
+        val width = size.width + 2 * side
+        drawRect(Brush.verticalGradient(listOf(SurfaceConversation.copy(alpha = 0f), SurfaceConversation), startY = -fade, endY = 0f),
+            topLeft = Offset(-side, -fade), size = Size(width, fade), alpha = strength)
+        drawRect(SurfaceConversation, topLeft = Offset(-side, 0f), size = Size(width, size.height), alpha = strength)
+    }.graphicsLayer { this.alpha = alpha }.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         if (shown.isNotEmpty()) {
             TypingDots()

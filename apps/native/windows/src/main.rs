@@ -357,6 +357,10 @@ pub struct App {
     drawn_scale: f32,
     /// Pixel rows [a, b) of the virtual surface that hold current content.
     drawn: Option<(i64, i64)>,
+    /// The recede line (`recede_line`) the drawn rows show: scrolling moves
+    /// only the composition offset, so rows it carries across the line are
+    /// redrawn.
+    recede_drawn: f64,
     scroll_top: f64,
     at_end: bool,
     hover_row: Option<usize>,
@@ -505,6 +509,11 @@ pub struct App {
     /// The composer's backdrop over the end of the history, under the
     /// typing row and the composer: solid, fading out above them.
     backdrop_p: Panel,
+    /// Solid colour under the typing row while someone types (web's
+    /// `.chat-typing::before`), so the history passes behind its label;
+    /// whether it was last placed shown, `None` after a layout.
+    typing_back_p: Panel,
+    typing_back_shown: Option<bool>,
     /// "You're viewing older messages" (`jump`): its state, panel, what
     /// the panel last drew, whether the pointer is on its Jump to latest
     /// button or the button has the keyboard, and its glide (from where,
@@ -682,6 +691,7 @@ impl App {
             let note_p = Panel::new(&g)?;
             let typing_p = Panel::new(&g)?;
             let backdrop_p = Panel::new(&g)?;
+            let typing_back_p = Panel::new(&g)?.entering(&g, motion::Kind::Fade);
             let jump_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
             let thread_jump_p = Panel::new(&g)?.entering(&g, motion::Kind::Menu);
             let thread_p = Panel::new(&g)?.entering(&g, motion::Kind::Thread);
@@ -713,6 +723,7 @@ impl App {
             history_clip.AddVisual(&content, false, None)?;
             history_clip.AddVisual(&toolbar.visual, true, &content)?;
             history_clip.AddVisual(&backdrop_p.visual, true, &content)?;
+            history_clip.AddVisual(&typing_back_p.visual, true, &backdrop_p.visual)?;
             root.AddVisual(&background, false, None)?;
             navigation_layer.AddVisual(&rail.visual, false, None)?;
             navigation_layer.AddVisual(&sidebar.visual, true, &rail.visual)?;
@@ -810,6 +821,7 @@ impl App {
                 draw_w: 1,
                 drawn_scale: scale,
                 drawn: None,
+                recede_drawn: f64::INFINITY,
                 scroll_top: 0.0,
                 at_end: true,
                 hover_row: None,
@@ -904,6 +916,8 @@ impl App {
                 note_p,
                 typing_p,
                 backdrop_p,
+                typing_back_p,
+                typing_back_shown: None,
                 jump: Default::default(),
                 jump_p,
                 jump_drawn: None,
@@ -1435,6 +1449,19 @@ impl App {
     /// below `vh`: its backdrop's height.
     pub fn cover_h(&self) -> f32 {
         (self.h - self.history_y() - self.vh()).max(0.0)
+    }
+
+    /// Where rows finish receding under the typing row and composer
+    /// (`motion::recede_t`), in history coordinates: 24 DIPs below where
+    /// the newest message rests at the live end, the history's end (`vh`)
+    /// above any foot. Infinite, receding nothing, while Windows'
+    /// animations are off.
+    fn recede_line(&self) -> f64 {
+        if files::motion() {
+            self.scroll_top + (self.vh() - self.foot_h()) as f64 + 24.0
+        } else {
+            f64::INFINITY
+        }
     }
 
     pub fn visible_rows(&self) -> Range<usize> {
@@ -3991,6 +4018,10 @@ impl App {
             Ok(())
         })?;
         self.backdrop_p.offset(0.0, (vh * s).round())?;
+        // Placed and drawn with the typing row (`draw_dirty_panels`).
+        self.typing_back_p
+            .ensure(&self.g, px(lw), px(TYPING_FADE + th))?;
+        self.typing_back_shown = None;
         let body = Rows::body_width(lw);
         if (body - self.rows.width).abs() > 0.01 {
             // Text rewraps: keep the top visible row in place unless at the live end.
@@ -4046,23 +4077,31 @@ impl App {
             right: self.draw_w as i32,
             bottom: y1 as i32,
         };
-        let range = self.rows.range(
+        let mut range = self.rows.range(
             (y0 as f64 - ORIGIN) / s as f64,
             (y1 as f64 - ORIGIN) / s as f64,
         );
+        // A receded row reaches 4 DIPs into the strip below it.
+        let line = self.recede_line();
+        if range.start > self.rows.lo
+            && motion::recede_t(line, self.rows.top[range.start - 1]) < 1.0
+        {
+            range.start -= 1;
+        }
         // Rows trimmed since they were last drawn get their layouts back.
         for i in range.clone() {
             self.rows.ensure(&self.g, &self.c, i)?;
         }
         let lw = self.list_w();
         let (hover, sel) = (self.bar_row(), self.sel);
-        let tops: Vec<(usize, f32, f32, Option<(u32, u32)>)> = range
+        let tops: Vec<(usize, f32, f32, Option<(u32, u32)>, f32)> = range
             .map(|i| {
                 (
                     i,
                     ((self.row_px(self.rows.top[i]) - y0 as f64) / s as f64) as f32,
                     self.rows.height(i),
                     Self::sel_for(sel, i, self.row_len(i)),
+                    motion::recede_t(line, self.rows.top[i]),
                 )
             })
             .collect();
@@ -4111,44 +4150,48 @@ impl App {
             if let Some((y, foot, lit)) = &foot {
                 list::draw_head_row(g, dc, foot, lw, *y, *lit)?;
             }
-            for (i, y, h, rs) in tops {
-                // Date dividers and inter-group gaps stay outside the highlight.
-                let top = rows
-                    .row(i)
-                    .map_or(0.0, |r| list::highlight_top(r, c.messages[i].grouped));
-                if focused == Some(i) {
-                    g.brushes.focused.SetOpacity(strength);
-                    dc.FillRectangle(&rect(0.0, y + top, lw, y + h), &g.brushes.focused);
-                    g.brushes.focused.SetOpacity(1.0);
-                }
-                if hover == Some(i) {
-                    dc.FillRectangle(&rect(0.0, y + top, lw, y + h), &g.brushes.hover);
-                }
-                // Web's 3px accent bar at the highlight's left edge.
-                if focused == Some(i) {
-                    g.brushes.terracotta.SetOpacity(strength);
-                    dc.FillRectangle(&rect(0.0, y + top, 3.0, y + h), &g.brushes.terracotta);
-                    g.brushes.terracotta.SetOpacity(1.0);
-                }
-                list::draw_row(g, dc, c, rows, i, y, rs, media.as_mut())?;
-                if hover == Some(i) || focused == Some(i) {
-                    list::draw_grouped_time(g, dc, c, rows, i, y)?;
-                }
-                // The keyboard-focused control's terracotta ring.
-                if let Some((_, action)) = kb.filter(|(k, _)| *k == i)
-                    && let Some((_, r)) = rows
-                        .controls(i, c.messages[i].grouped)
-                        .into_iter()
-                        .find(|(a, _)| *a == action)
-                {
-                    let r = rect(
-                        r.left - 2.0,
-                        y + r.top - 2.0,
-                        r.right + 2.0,
-                        y + r.bottom + 2.0,
-                    );
-                    stroke_round(dc, r, 10.0, &g.brushes.terracotta);
-                }
+            for (i, y, h, rs, t) in tops {
+                // A row near the composer recedes with its highlights.
+                motion::recede(dc, rect(0.0, y, lw, y + h), t, || {
+                    // Date dividers and inter-group gaps stay outside the highlight.
+                    let top = rows
+                        .row(i)
+                        .map_or(0.0, |r| list::highlight_top(r, c.messages[i].grouped));
+                    if focused == Some(i) {
+                        g.brushes.focused.SetOpacity(strength);
+                        dc.FillRectangle(&rect(0.0, y + top, lw, y + h), &g.brushes.focused);
+                        g.brushes.focused.SetOpacity(1.0);
+                    }
+                    if hover == Some(i) {
+                        dc.FillRectangle(&rect(0.0, y + top, lw, y + h), &g.brushes.hover);
+                    }
+                    // Web's 3px accent bar at the highlight's left edge.
+                    if focused == Some(i) {
+                        g.brushes.terracotta.SetOpacity(strength);
+                        dc.FillRectangle(&rect(0.0, y + top, 3.0, y + h), &g.brushes.terracotta);
+                        g.brushes.terracotta.SetOpacity(1.0);
+                    }
+                    list::draw_row(g, dc, c, rows, i, y, rs, media.as_mut())?;
+                    if hover == Some(i) || focused == Some(i) {
+                        list::draw_grouped_time(g, dc, c, rows, i, y)?;
+                    }
+                    // The keyboard-focused control's terracotta ring.
+                    if let Some((_, action)) = kb.filter(|(k, _)| *k == i)
+                        && let Some((_, r)) = rows
+                            .controls(i, c.messages[i].grouped)
+                            .into_iter()
+                            .find(|(a, _)| *a == action)
+                    {
+                        let r = rect(
+                            r.left - 2.0,
+                            y + r.top - 2.0,
+                            r.right + 2.0,
+                            y + r.bottom + 2.0,
+                        );
+                        stroke_round(dc, r, 10.0, &g.brushes.terracotta);
+                    }
+                    Ok(())
+                })?;
             }
             Ok(())
         });
@@ -4328,6 +4371,26 @@ impl App {
                 self.draw_strip(y0, y1)?;
             }
         }
+        // Rows whose recede (`motion::recede_t`) changed as the line moved
+        // with the scroll, the composer's height or the motion setting,
+        // and the 4 DIPs a receded row reaches below itself.
+        let line = self.recede_line();
+        if line != self.recede_drawn
+            && let Some((d0, d1)) = self.drawn
+        {
+            let range = self.rows.range(
+                line.min(self.recede_drawn) - motion::RECEDE,
+                line.max(self.recede_drawn),
+            );
+            if !range.is_empty() {
+                let (first, last) = (range.start, range.end - 1);
+                let y0 = (self.row_px(self.rows.top[first]).floor() as i64).max(d0);
+                let bottom = self.rows.top[last] + self.rows.height(last) as f64 + 4.0;
+                let y1 = (self.row_px(bottom).ceil() as i64).min(d1);
+                self.draw_strip(y0, y1)?;
+            }
+        }
+        self.recede_drawn = line;
         match self.bar_row() {
             Some(i) => self.toolbar.offset(
                 ((self.list_w() - actions::bar_width(self.tools(i).len()) - 16.0) * self.scale)
@@ -4990,6 +5053,23 @@ impl App {
             let lift = self.typing_animates().then(typing_phase);
             self.typing_p
                 .draw(s, |dc| draw_typing(g, dc, &names, tw, lift))?;
+            // Shown, fading in, only while someone types; gone at once after.
+            let shown = !names.is_empty() && c.has_conversation();
+            if self.typing_back_shown != Some(shown) {
+                if shown {
+                    let (_, ty, _, th) = self.typing_rect();
+                    let y = ty - TYPING_FADE - self.history_y();
+                    self.typing_back_p.offset(0.0, (y * s).round())?;
+                    let lw = self.list_w();
+                    self.typing_back_p.draw(s, |dc| {
+                        draw_typing_back(dc, lw, th);
+                        Ok(())
+                    })?;
+                } else {
+                    self.typing_back_p.offset(-10_000.0, 0.0)?;
+                }
+                self.typing_back_shown = Some(shown);
+            }
         }
         if d.composer {
             let (_, _, bw, bh) = self.box_rect();
@@ -5404,6 +5484,45 @@ pub(crate) fn open_link(href: &str) {
             None,
             SW_SHOWNORMAL,
         );
+    }
+}
+
+/// The typing row's backdrop, `w` wide (the history's width): clear easing
+/// to the conversation colour over `TYPING_FADE`, then solid for the row's
+/// `h`, as web's `.chat-typing::before`, so messages scrolled up under the
+/// row pass behind its label. It lies below the composer and its reply.
+fn draw_typing_back(dc: &ID2D1DeviceContext, w: f32, h: f32) {
+    use windows::Win32::Graphics::Direct2D::Common::D2D1_GRADIENT_STOP;
+    let c = theme::surface_conversation();
+    let stops = [(0.0, 0.0), (1.0, 1.0)].map(|(position, alpha)| D2D1_GRADIENT_STOP {
+        position,
+        color: gfx::color(c, alpha),
+    });
+    unsafe {
+        dc.Clear(Some(&gfx::color(0x000000, 0.0)));
+        let Ok(collection) = ID2D1RenderTarget::CreateGradientStopCollection(
+            dc,
+            &stops,
+            D2D1_GAMMA_2_2,
+            D2D1_EXTEND_MODE_CLAMP,
+        ) else {
+            return;
+        };
+        // Clamped below the band: solid behind the label.
+        let Ok(brush) = dc.CreateLinearGradientBrush(
+            &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: windows_numerics::Vector2 { X: 0.0, Y: 0.0 },
+                endPoint: windows_numerics::Vector2 {
+                    X: 0.0,
+                    Y: TYPING_FADE,
+                },
+            },
+            None,
+            &collection,
+        ) else {
+            return;
+        };
+        dc.FillRectangle(&rect(0.0, 0.0, w, TYPING_FADE + h), &brush);
     }
 }
 

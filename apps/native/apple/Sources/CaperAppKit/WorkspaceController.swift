@@ -105,6 +105,8 @@ import CaperCore
     private var shownEmptyCaperIndex: Int?
     /// Under the status row and composer, which float over the timeline's end.
     private let backdrop = AppKitComposerBackdrop()
+    /// Under the status row while someone types, so messages pass behind its label.
+    private let typingBackdrop = AppKitTypingBackdrop()
     private let header = NativeStyle.label("", size: 16, bold: true)
     private let status = NativeStyle.label("", size: 12)
     private var announcedTyping = ""
@@ -210,7 +212,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, emptyState, backdrop, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions, formatToolbar].forEach { stage.addSubview($0) }
+        [timeline, emptyState, backdrop, typingBackdrop, jumpToLatest, header, browse, pinsButton, membersToggle, closeVisit, back, broadcast, status, retry, editRejected, attachmentScroll, composerField, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions, formatToolbar].forEach { stage.addSubview($0) }
         emptyState.isHidden = true
         emptyState.setAccessibilityElement(false)
         emptyCaper.imageScaling = .scaleProportionallyUpOrDown
@@ -786,6 +788,10 @@ import CaperCore
         let solidTop = max(top, (directBar.isHidden ? stackTop : statusY + statusHeight) + ComposerBackdrop.sink)
         backdrop.frame = NSRect(x: 0, y: solidTop - ComposerBackdrop.fade, width: center, height: max(0, height - solidTop + ComposerBackdrop.fade))
         status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: statusHeight)
+        // The status row's own band, the timeline's width, ending at the row's
+        // bottom: 2 points short of the field (or whatever stacks on it).
+        typingBackdrop.frame = NSRect(x: 0, y: statusY - ComposerBackdrop.typingFade, width: center,
+                                      height: statusHeight + ComposerBackdrop.typingFade)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
         counter.frame = NSRect(x: 20, y: base - 24, width: center - 40, height: 16)
         // A checkbox toggles only on its box and title, so its frame (and the
@@ -1035,6 +1041,7 @@ import CaperCore
             ])
         }
         announcedTyping = typingShown
+        typingBackdrop.show(!typingShown.isEmpty)
     }
 
     private func showAttachMenu() {
@@ -1428,6 +1435,7 @@ import CaperCore
     private func applyComposerChrome() {
         composerField.applyTheme()
         backdrop.applyTheme()
+        typingBackdrop.applyTheme()
         formatToolbar.applyTheme()
         composer.drawsBackground = false
         composer.backgroundColor = .clear
@@ -1560,6 +1568,74 @@ private final class AppKitComposerBackdrop: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         return local.y >= ComposerBackdrop.fade && bounds.contains(local) ? self : nil
+    }
+}
+
+/// While someone types, the status row sits on solid conversation color that
+/// eases in linearly over the `ComposerBackdrop.typingFade` points above it
+/// (web's `.chat-typing::before`), so messages scrolled up under it pass
+/// behind its label instead of through it. Its owner sets its frame: the
+/// timeline's width, from that band down to the row's bottom, behind the
+/// label and short of the composer's field. It fades in briefly as typing
+/// starts and goes at once when it stops; Reduce Motion shows it in place.
+/// Clicks and scrolling pass through.
+private final class AppKitTypingBackdrop: NSView {
+    override var isFlipped: Bool { true }
+
+    private final class Band: NSView {
+        let gradient = CAGradientLayer()
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            // Unflipped: (0.5, 1) is the band's top and (0.5, 0) its bottom.
+            gradient.startPoint = CGPoint(x: 0.5, y: 1)
+            gradient.endPoint = CGPoint(x: 0.5, y: 0)
+            layer = gradient
+            wantsLayer = true
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    }
+
+    private let band = Band()
+    private let solid = NSView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        solid.wantsLayer = true
+        [band, solid].forEach { addSubview($0) }
+        setAccessibilityElement(false)
+        isHidden = true
+        applyTheme()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func applyTheme() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let conversation = NativeStyle.conversation
+        band.gradient.colors = [conversation.withAlphaComponent(0).cgColor, conversation.cgColor]
+        solid.layer?.backgroundColor = conversation.cgColor
+        CATransaction.commit()
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        let fade = min(ComposerBackdrop.typingFade, bounds.height)
+        band.frame = NSRect(x: 0, y: 0, width: bounds.width, height: fade)
+        solid.frame = NSRect(x: 0, y: fade, width: bounds.width, height: bounds.height - fade)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func show(_ shows: Bool) {
+        guard shows == isHidden else { return }
+        layer?.removeAnimation(forKey: "typingFade")
+        isHidden = !shows
+        guard shows, window != nil, !CaperAccessibility.reduceMotion else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.14
+        fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+        layer?.add(fade, forKey: "typingFade")
     }
 }
 

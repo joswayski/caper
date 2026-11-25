@@ -21,6 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onPlaced
@@ -71,6 +72,32 @@ internal class TimelineDisplacement {
 
 internal fun Modifier.displacement(motion: TimelineDisplacement, list: LazyListState, key: Any): Modifier =
     graphicsLayer { translationY = motion.offset(list, key) }
+
+/**
+ * A message recedes a little, dimmer, 2% smaller and 4dp lower, as it slides under the typing row and composer
+ * floating over [list]'s end (web's `caper-recede` in motion.css), tracking the scroll: over the 40dp its top edge
+ * travels before it reaches 24dp below where the newest row rests at the live end (the viewport's end less the list's
+ * bottom content padding). The list keeps its newest row resting there and every row is at least 16dp tall, so at the
+ * live end nothing recedes. Read from [list]'s layout while drawing, so scrolling redraws the row without recomposing
+ * it; its own layer leaves the row's arrival and other layers as they are. Put it on the node that ends at the bottom
+ * of item [key], and pass [enabled] false with Remove animations (web keeps rows still under reduced motion).
+ */
+internal fun Modifier.recede(list: LazyListState, key: Any, enabled: Boolean): Modifier =
+    if (!enabled) this else graphicsLayer {
+        val info = list.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.key == key } ?: return@graphicsLayer
+        // Item offsets and the viewport's end share one space (reverseLayout is off): the list's top padding is before 0.
+        val rest = info.viewportEndOffset - info.afterContentPadding
+        val top = item.offset + item.size - size.height
+        val t = ((rest + 24.dp.toPx() - top) / 40.dp.toPx()).coerceIn(0f, 1f)
+        if (t < 1f) {
+            alpha = 0.7f + 0.3f * t
+            scaleX = 0.98f + 0.02f * t
+            scaleY = scaleX
+            translationY = 4.dp.toPx() * (1f - t)
+            transformOrigin = TransformOrigin(0.5f, 1f)
+        }
+    }
 
 // Short bottom-aligned lists can move as a whole; overflowing lists move inside their viewport.
 internal fun Modifier.displacementViewport(motion: TimelineDisplacement): Modifier =

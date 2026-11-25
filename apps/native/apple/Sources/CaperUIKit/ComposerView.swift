@@ -753,6 +753,58 @@ final class ComposerBackdropView: UIView {
     }
 }
 
+/// While someone types, the typing row sits on solid conversation color that
+/// eases in linearly over the `ComposerBackdrop.typingFade` points above it
+/// (web's `.chat-typing::before`), so messages scrolled up under it pass
+/// behind its label instead of through it. Its owner sets its frame: the
+/// timeline's width, from that band above the row down to the composer's top,
+/// behind the label. It fades in briefly as typing starts and goes at once
+/// when it stops; Reduce Motion shows it in place. Touches pass through.
+final class TypingBackdropView: UIView {
+    private final class Band: UIView {
+        override class var layerClass: AnyClass { CAGradientLayer.self }
+    }
+
+    /// Switching themes rebuilds the window's views (`CaperTheme.themed`).
+    private let band = Band()
+    private let solid = UIView()
+    private var fade: UIViewPropertyAnimator?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        accessibilityElementsHidden = true
+        (band.layer as! CAGradientLayer).colors = [UIKitStyle.conversation.withAlphaComponent(0).cgColor, UIKitStyle.conversation.cgColor]
+        solid.backgroundColor = UIKitStyle.conversation
+        [band, solid].forEach(addSubview)
+        isHidden = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let fade = min(ComposerBackdrop.typingFade, bounds.height)
+        band.frame = CGRect(x: 0, y: 0, width: bounds.width, height: fade)
+        solid.frame = CGRect(x: 0, y: fade, width: bounds.width, height: bounds.height - fade)
+    }
+
+    func show(_ shows: Bool) {
+        guard shows == isHidden else { return }
+        fade?.stopAnimation(true)
+        fade = nil
+        isHidden = !shows
+        alpha = 1
+        guard shows, window != nil, !UIKitStyle.reduceMotion else { return }
+        alpha = 0
+        let animator = UIViewPropertyAnimator(duration: UIKitStyle.motionFast, timingParameters: UIKitStyle.easeOut)
+        animator.addAnimations { [weak self] in self?.alpha = 1 }
+        animator.addCompletion { [weak self] _ in self?.fade = nil }
+        fade = animator
+        animator.startAnimation()
+    }
+}
+
 /// "Maya is typing…" above the composer, after three bouncing dots like web's
 /// keyframes: up and back over the first 60% of a 1.2 s cycle, each dot 0.15 s
 /// behind the last. Core Animation runs it off the main thread; Reduce Motion

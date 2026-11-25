@@ -7,7 +7,9 @@ import Observation
 /// top edge, about its input's midline, and fades to clear over the `fade`
 /// points above that: the conversation color alone, no blur material. The
 /// conversation, and a hovered row, shows on beside the input's upper half,
-/// so the input floats over it rather than on a slab.
+/// so the input floats over it rather than on a slab. Rows passing under the
+/// typing row and composer recede (`MessageRecede`), and while someone types
+/// the typing row sits on its own solid band (`typingFade`).
 public enum ComposerBackdrop {
     /// The eased band above the solid part.
     public static let fade: CGFloat = 32
@@ -15,6 +17,11 @@ public enum ComposerBackdrop {
     public static let sink: CGFloat = 22
     /// Web's stops: points down from the band's top, and the conversation color's opacity.
     public static let stops: [(offset: CGFloat, opacity: CGFloat)] = [(0, 0), (9, 0.3), (17, 0.62), (24, 0.86), (32, 1)]
+    /// While someone types, the typing row sits on solid conversation color
+    /// that eases in linearly over this many points above it (web's
+    /// `.chat-typing::before`), so messages scrolled up under it pass behind
+    /// its label instead of through it.
+    public static let typingFade: CGFloat = 12
 }
 
 /// The draft's heading name and excerpt; nil when there is no reply target.

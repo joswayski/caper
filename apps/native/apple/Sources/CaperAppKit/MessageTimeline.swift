@@ -125,6 +125,8 @@ enum PendingAction { case retry, edit, dismiss }
             name: NSView.boundsDidChangeNotification, object: contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(handleThemeChange),
             name: CaperThemeStore.didChangeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(recede),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         setAccessibilityIdentifier("message-timeline")
         setAccessibilityLabel("Messages")
         document.setAccessibilityElement(false)
@@ -518,6 +520,23 @@ enum PendingAction { case retry, edit, dismiss }
         })
         visibleMessagesChanged?(visible)
         refreshJump()
+        recede()
+    }
+
+    /// Rows sliding under the status row and composer recede (`MessageRecede`,
+    /// web's `caper-recede`) from where they sit now, on every scroll and
+    /// layout pass. The newest message rests `footerHeight` above the
+    /// viewport's bottom less `bottomReserve`, so at the live end none
+    /// recedes. Reduce Motion, or turning it on, keeps every row at rest.
+    @objc private func recede() {
+        let still = CaperAccessibility.reduceMotion
+        let restBottom = contentView.bounds.maxY - bottomReserve
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for row in rows.values {
+            row.recede(still ? 1 : MessageRecede.progress(rowTop: row.frame.minY, restBottom: restBottom))
+        }
+        CATransaction.commit()
     }
 
     private func cell(at index: Int) -> MessageCell {
@@ -958,6 +977,18 @@ enum PendingAction { case retry, edit, dismiss }
         glide.duration = 0.18
         glide.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
         layer.add(glide, forKey: "caperArrivalRise")
+    }
+
+    /// How far the row has receded under the status row and composer
+    /// (`MessageRecede`); 1 is its own look. Its layer's model transform, so
+    /// the arrival and glide animations still play over it. The timeline sets
+    /// it again after every pass that places rows.
+    func recede(_ progress: CGFloat) {
+        let alpha = MessageRecede.alpha(progress)
+        if alphaValue != alpha { alphaValue = alpha }
+        guard let layer else { return }
+        let transform = MessageRecede.transform(progress, size: bounds.size, anchorPoint: layer.anchorPoint)
+        if layer.affineTransform() != transform { layer.setAffineTransform(transform) }
     }
 
     func cancelArrivalMotion() {

@@ -7,7 +7,7 @@ use windows::Win32::{
     UI::WindowsAndMessaging::*,
 };
 use windows::core::*;
-use windows_numerics::Matrix3x2;
+use windows_numerics::{Matrix3x2, Vector2};
 
 pub const FAST: f64 = 0.14;
 pub const BASE: f64 = 0.2;
@@ -247,6 +247,61 @@ pub fn row(
         );
         let result = draw(10.0 * (1.0 - progress));
         dc.PopLayer();
+        result
+    }
+}
+
+/// How far above a history's recede line (`recede_t`) a row's top edge
+/// starts receding.
+pub const RECEDE: f64 = 40.0;
+
+/// How present a row with its top edge at `top` is as it slides under the
+/// typing row and composer, from 1 (as drawn) down to 0 at `line`: web's
+/// `caper-recede` over the last 40 px. `line` is 24 DIPs below where the
+/// newest message rests at the live end, so a row there (at least 16 tall)
+/// never recedes; an infinite `line` (animations off) recedes nothing.
+pub fn recede_t(line: f64, top: f64) -> f32 {
+    ((line - top) / RECEDE).clamp(0.0, 1.0) as f32
+}
+
+/// Draws a row within `bounds` receded by `t` (`recede_t`): dimmed to
+/// 0.7 + 0.3t, shrunk to 0.98 + 0.02t about its bottom centre and lowered
+/// 4(1 − t), tracking the scroll rather than a clock. At 1 it draws exactly
+/// as before; it nests around `row`'s arrival, never replacing it.
+pub fn recede(
+    dc: &ID2D1DeviceContext,
+    bounds: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F,
+    t: f32,
+    draw: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if t >= 1.0 {
+        return draw();
+    }
+    let scale = 0.98 + 0.02 * t;
+    let centre = Vector2 {
+        X: (bounds.left + bounds.right) / 2.0,
+        Y: bounds.bottom,
+    };
+    unsafe {
+        let mut before = Matrix3x2::default();
+        dc.GetTransform(&mut before);
+        dc.SetTransform(
+            &(Matrix3x2::scale_around(scale, scale, centre)
+                * Matrix3x2::translation(0.0, 4.0 * (1.0 - t))
+                * before),
+        );
+        dc.PushLayer(
+            &D2D1_LAYER_PARAMETERS1 {
+                contentBounds: bounds,
+                opacity: 0.7 + 0.3 * t,
+                maskTransform: Matrix3x2::identity(),
+                ..Default::default()
+            },
+            None,
+        );
+        let result = draw();
+        dc.PopLayer();
+        dc.SetTransform(&before);
         result
     }
 }

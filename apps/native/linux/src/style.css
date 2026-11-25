@@ -910,6 +910,19 @@ popover.emoji-picker image.mine {
   );
 }
 
+/* While someone types (`ui::float_composer`), the typing row along the
+   band's foot sits on solid conversation colour, easing in over the 12px
+   above it, so messages scrolled up under it pass behind the label instead
+   of through it, as web's `.chat-typing::before`. It stops short of the
+   newest message, which the list keeps 16px above the row. */
+.composer-fade.typing-shown {
+  background-image: linear-gradient(
+    to top,
+    @caper_surface_conversation 16px,
+    alpha(@caper_surface_conversation, 0) 28px
+  );
+}
+
 .join-bar {
   margin: 4px 20px 16px;
   padding: 12px 12px 12px 16px;

@@ -67,6 +67,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let composer = ComposerView()
     /// Under the typing row and composer, which float over the timeline's end.
     private let backdrop = ComposerBackdropView()
+    /// Under the typing row while someone types, so messages pass behind its label.
+    private let typingBackdrop = TypingBackdropView()
     /// While the attach drawer is docked, the message box sits on its edge
     /// (`ComposerView.drawerMoved`): the keyboard guide doesn't follow it as it resizes.
     private lazy var drawerEdge = composer.bottomAnchor.constraint(equalTo: view.bottomAnchor).withPriority(.required - 1)
@@ -208,6 +210,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             guard let self else { return }
             let names = self.isLive ? self.model.chat.typingNames : []
             self.typing.show(names.isEmpty ? "" : Self.typingLabel(names))
+            self.typingBackdrop.show(!names.isEmpty)
         }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in
             // Message text is sized from the reader's text size; re-render every row.
@@ -647,6 +650,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             typing.topAnchor.constraint(equalTo: notices.view.bottomAnchor),
         ])
         view.insertSubview(backdrop, aboveSubview: collection)
+        // Over the composer's backdrop, behind the typing row's label.
+        view.insertSubview(typingBackdrop, aboveSubview: backdrop)
     }
 
     private func buildComposer() {
@@ -1090,6 +1095,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         heading.accessibilityFrameInContainerSpace = titleMenu.frame
         layoutComposerOverlap()
         pinTailIfFollowing()
+        // The composer's inset moves where rows rest, even without a scroll.
+        collection.recedeRows()
         layoutStatusColumn()
     }
 
@@ -1104,6 +1111,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let solid = (notices.view.frame.height > 0 ? top : composer.frame.minY) + ComposerBackdrop.sink
         backdrop.frame = CGRect(x: collection.frame.minX, y: solid - ComposerBackdrop.fade, width: collection.frame.width,
                                 height: max(0, view.bounds.maxY - solid + ComposerBackdrop.fade))
+        // The typing row's own band, the timeline's width, ending where the composer starts.
+        typingBackdrop.frame = CGRect(x: collection.frame.minX, y: typing.frame.minY - ComposerBackdrop.typingFade,
+                                      width: collection.frame.width, height: typing.frame.height + ComposerBackdrop.typingFade)
+        // The newest message rests on `top` (its bottom 8 points above, the
+        // section's inset), which `MessageRecede` measures from.
         let covered = max(0, collection.frame.maxY - top)
         guard abs(collection.contentInset.bottom - covered) > 0.5 else { return }
         // Against the old reserve: where the reader was before the composer moved.
@@ -1174,6 +1186,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         let bottom = scrollView.contentSize.height + scrollView.adjustedContentInset.bottom - scrollView.bounds.height
         defer { refreshJump() }
+        // Rows recede under the composer as they pass, tracking every scroll.
+        collection.recedeRows()
         // Only the reader's own scrolling changes following or pages history.
         guard scrollView.isTracking || scrollView.isDecelerating else { return }
         // After a jump the window ends before the live end: page newer history instead of following it.
@@ -1192,6 +1206,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        // A row scrolled into view starts from its receded look, not at rest.
+        if let cell = cell as? MessageCell { cell.recede(collectionView.recedeProgress(rowTop: cell.frame.minY)) }
         guard case let .row(id) = dataSource.itemIdentifier(for: indexPath), arriving.remove(id) != nil else { return }
         (cell as? MessageCell)?.arrive()
     }

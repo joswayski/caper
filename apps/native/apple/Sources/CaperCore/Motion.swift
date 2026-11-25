@@ -45,6 +45,33 @@ public enum JumpHighlight {
     }
 }
 
+/// A message row recedes a little, dimmer and smaller, as it slides under the
+/// typing row and composer (web's `caper-recede` in motion.css), tracking the
+/// scroll position rather than a clock. `restBottom` is where the newest
+/// message's bottom edge rests with the list at its live end: the viewport's
+/// bottom less the list's bottom inset. A row recedes over the last 40 points
+/// its top edge travels before it passes 24 points below that. Every row is at
+/// least 16 points tall, so at the live end nothing recedes. Reduce Motion
+/// keeps every row at rest.
+public enum MessageRecede {
+    /// 0 fully receded, 1 at rest.
+    public static func progress(rowTop: CGFloat, restBottom: CGFloat) -> CGFloat {
+        min(1, max(0, (restBottom + 24 - rowTop) / 40))
+    }
+    /// Exactly 1 at rest, so a row returns to its own look.
+    public static func alpha(_ progress: CGFloat) -> CGFloat { progress >= 1 ? 1 : 0.7 + 0.3 * progress }
+    /// Down to 98% about the row's bottom centre, and up to 4 points lower.
+    /// A transform applies about its layer's `anchorPoint` (UIKit's centre,
+    /// AppKit's corner), given here in a y-down space. Exactly identity at rest.
+    public static func transform(_ progress: CGFloat, size: CGSize, anchorPoint: CGPoint) -> CGAffineTransform {
+        guard progress < 1 else { return .identity }
+        let scale = 0.98 + 0.02 * progress
+        return CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+                                 tx: (1 - scale) * (0.5 - anchorPoint.x) * size.width,
+                                 ty: (1 - scale) * (1 - anchorPoint.y) * size.height + 4 * (1 - progress))
+    }
+}
+
 /// The shared motion tokens (shared/design.css --motion-*, --ease-out).
 enum CaperMotion {
     static let fast: Double = 0.14

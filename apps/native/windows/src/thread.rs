@@ -466,7 +466,15 @@ impl Pane {
         unsafe {
             dc.PushAxisAlignedClip(&rect(0.0, HEADER_H, w, h), D2D1_ANTIALIAS_MODE_ALIASED);
         }
-        let result = self.draw_history(g, dc, h - HEADER_H, media);
+        // Rows recede under the composer (`motion::recede_t`) down to 24
+        // DIPs below where the newest one rests at the live end: the
+        // content's end, less its 8 DIP foot, at the history's end (`vh`).
+        let line = if crate::files::motion() {
+            (HEADER_H + vh + 16.0) as f64
+        } else {
+            f64::INFINITY
+        };
+        let result = self.draw_history(g, dc, h - HEADER_H, line, media);
         if let Some((i, key)) = &self.bar
             && let Some((x, y, _, _)) = self.bar_rect(*i, key.tools.len())
         {
@@ -562,12 +570,14 @@ impl Pane {
         Ok(())
     }
 
-    /// The history's rows, reply count, head and empty note (the caller clips).
+    /// The history's rows, reply count, head and empty note (the caller clips);
+    /// rows recede toward `line` (pane coordinates, `motion::recede_t`).
     fn draw_history(
         &mut self,
         g: &Gfx,
         dc: &ID2D1DeviceContext,
         vh: f32,
+        line: f64,
         mut media: Option<&mut crate::files::Ctx>,
     ) -> Result<()> {
         let w = self.width;
@@ -589,31 +599,36 @@ impl Pane {
                     .rows
                     .row(i)
                     .map_or(0.0, |r| list::highlight_top(r, self.c.messages[i].grouped));
-                if active_row == Some(i) {
-                    unsafe {
-                        dc.FillRectangle(
-                            &rect(0.0, y + off + top, w, y + off + h),
-                            &g.brushes.hover,
-                        );
-                    }
-                }
                 let sel = self
                     .rows
                     .row(i)
                     .and_then(|r| App::sel_for(self.selection(), i, r.plain16.len() as u32));
-                list::draw_row(
-                    g,
-                    dc,
-                    &self.c,
-                    &mut self.rows,
-                    i,
-                    y + off,
-                    sel,
-                    media.as_deref_mut(),
-                )?;
-                if active_row == Some(i) {
-                    list::draw_grouped_time(g, dc, &self.c, &self.rows, i, y + off)?;
-                }
+                let t = crate::motion::recede_t(line, (y + off) as f64);
+                let bounds = rect(0.0, y + off, w, y + off + h);
+                crate::motion::recede(dc, bounds, t, || {
+                    if active_row == Some(i) {
+                        unsafe {
+                            dc.FillRectangle(
+                                &rect(0.0, y + off + top, w, y + off + h),
+                                &g.brushes.hover,
+                            );
+                        }
+                    }
+                    list::draw_row(
+                        g,
+                        dc,
+                        &self.c,
+                        &mut self.rows,
+                        i,
+                        y + off,
+                        sel,
+                        media.as_deref_mut(),
+                    )?;
+                    if active_row == Some(i) {
+                        list::draw_grouped_time(g, dc, &self.c, &self.rows, i, y + off)?;
+                    }
+                    Ok(())
+                })?;
             }
         }
         if let (Some(y), Some(n)) = (s.count, self.count) {

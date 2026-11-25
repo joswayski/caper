@@ -978,6 +978,8 @@ final class MessageCell: UICollectionViewCell {
         ])
         isAccessibilityElement = false
         contentView.isAccessibilityElement = false
+        NotificationCenter.default.addObserver(self, selector: #selector(motionChanged),
+            name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -988,6 +990,31 @@ final class MessageCell: UICollectionViewCell {
 
     func arrive() { row.arrive() }
 
+    /// How far the row has receded under the typing row and composer
+    /// (`MessageRecede`); 1 is its own look. The alpha goes on the content
+    /// view, so the row's own (a pending send's 0.6, an arrival's fade) stays
+    /// its own; the transform on the row, which Auto Layout places by centre
+    /// and bounds, as `MessageRowView.arrive()` moves it. The cell itself
+    /// keeps the layout's alpha and transform.
+    func recede(_ progress: CGFloat) {
+        let alpha = MessageRecede.alpha(progress)
+        if contentView.alpha != alpha { contentView.alpha = alpha }
+        let transform = MessageRecede.transform(progress, size: row.bounds.size, anchorPoint: row.layer.anchorPoint)
+        if row.transform != transform { row.transform = transform }
+    }
+
+    /// A row the layout moves or resizes recedes from its new place.
+    override func apply(_ layoutAttributes: UICollectionViewLayoutAttributes) {
+        super.apply(layoutAttributes)
+        if let list = superview as? UICollectionView { recede(list.recedeProgress(rowTop: layoutAttributes.frame.minY)) }
+    }
+
+    /// Turning Reduce Motion on returns the row to rest; off, it recedes again.
+    @objc private func motionChanged() {
+        guard let list = superview as? UICollectionView else { return }
+        recede(list.recedeProgress(rowTop: frame.minY))
+    }
+
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
         row.prepareFitting(width: attributes.size.width)
         layOutAtFittingWidth(attributes)
@@ -997,6 +1024,25 @@ final class MessageCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         row.prepareForReuse()
+        contentView.alpha = 1
+    }
+}
+
+extension UICollectionView {
+    /// How far a message row whose top edge is at `rowTop` has receded
+    /// (`MessageRecede`, web's `caper-recede`). The newest message rests above
+    /// the viewport's bottom less the bottom inset the composer reserves
+    /// (`layoutComposerOverlap`, the thread's `viewDidLayoutSubviews`), so at
+    /// the live end none recedes. Reduce Motion keeps every row at rest.
+    func recedeProgress(rowTop: CGFloat, still: Bool = UIKitStyle.reduceMotion) -> CGFloat {
+        still ? 1 : MessageRecede.progress(rowTop: rowTop, restBottom: bounds.maxY - adjustedContentInset.bottom)
+    }
+
+    /// Recedes the visible message rows from where they sit now: after every
+    /// scroll and layout pass, as the composer's inset changes.
+    func recedeRows() {
+        let still = UIKitStyle.reduceMotion
+        for case let cell as MessageCell in visibleCells { cell.recede(recedeProgress(rowTop: cell.frame.minY, still: still)) }
     }
 }
 
