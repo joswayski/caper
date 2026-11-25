@@ -425,10 +425,6 @@ fn busy(u: &Upload) -> bool {
     u.attachment.is_none() && u.error.is_none()
 }
 
-fn dc_brush(dc: &ID2D1DeviceContext, c: u32) -> Result<ID2D1SolidColorBrush> {
-    alpha(dc, c, 1.0)
-}
-
 fn centered_icon(dc: &ID2D1DeviceContext, icon: Icon, cx: f32, cy: f32, size: f32, color: u32) {
     let h = size / 2.0;
     icons::draw(dc, icon, rect(cx - h, cy - h, cx + h, cy + h), color, 1.0);
