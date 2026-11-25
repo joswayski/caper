@@ -2373,7 +2373,7 @@ button.chat-mention-card-avatar {
   position: relative;
   z-index: 1;
   padding: 2px 18px var(--workspace-bottom-inset);
-  /* No border or ring: the input sits on the frosted backdrop below. */
+  /* No border or ring: the input sits on the fading backdrop below. */
   --composer-border: transparent;
   --composer-focus-border: transparent;
   --composer-shadow: 0 0 transparent;
@@ -2387,22 +2387,18 @@ button.chat-mention-card-avatar {
   padding-top: 12px;
   --composer-sink: 33px;
 }
-/* Messages scroll on under the composer. Its backdrop eases in as frosted
-   glass over 32px and turns solid only at the input's midline, so the
-   conversation (and a hovered row) shows on beside the input's upper half
-   and the input floats over it rather than sitting on a slab. The lists keep
-   their newest message clear of it. */
+/* Messages scroll on under the composer. Its backdrop fades from clear to the
+   conversation colour over 32px and turns solid only at the input's midline,
+   so the conversation (and a hovered row) shows on beside the input's upper
+   half and the input floats over it rather than sitting on a slab. No blur:
+   it smears what scrolls behind into a glow. The lists keep their newest
+   message clear of it. */
 .chat-composer::before {
   content: "";
   position: absolute;
   z-index: -1;
   inset: calc(var(--composer-sink) - 32px) 0 0;
-  background: linear-gradient(
-    color-mix(in srgb, var(--surface-conversation) 60%, transparent),
-    var(--surface-conversation) 32px
-  );
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  background: var(--surface-conversation);
   -webkit-mask-image: var(--composer-fade);
   mask-image: var(--composer-fade);
   pointer-events: none;

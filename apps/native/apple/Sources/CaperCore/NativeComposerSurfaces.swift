@@ -4,20 +4,17 @@ import Observation
 /// The composer's backdrop over the end of its conversation (web's
 /// `.chat-composer::before`). The timeline runs on under the typing row and
 /// composer; the backdrop turns solid only `sink` points below the composer's
-/// top edge, about its input's midline, and eases out over the `fade` points
-/// above that, where a native blur frosts what scrolls behind (dropped with
-/// Reduce Transparency). The conversation, and a hovered row, shows on beside
-/// the input's upper half, so the input floats over it rather than on a slab.
+/// top edge, about its input's midline, and fades to clear over the `fade`
+/// points above that: the conversation color alone, no blur material. The
+/// conversation, and a hovered row, shows on beside the input's upper half,
+/// so the input floats over it rather than on a slab.
 public enum ComposerBackdrop {
     /// The eased band above the solid part.
     public static let fade: CGFloat = 32
     /// How far below the composer's top edge the backdrop turns solid.
     public static let sink: CGFloat = 22
-    /// Web's mask stops: points down from the band's top, and opacity.
+    /// Web's stops: points down from the band's top, and the conversation color's opacity.
     public static let stops: [(offset: CGFloat, opacity: CGFloat)] = [(0, 0), (9, 0.3), (17, 0.62), (24, 0.86), (32, 1)]
-    /// The conversation color's own opacity at `offset` into the band: web's
-    /// tint runs from 60% at the band's top to solid at its bottom, under the mask.
-    public static func tint(at offset: CGFloat) -> CGFloat { 0.6 + 0.4 * min(1, max(0, offset) / fade) }
 }
 
 @MainActor private func replyDraftText(_ chat: ChatModel, inThread: Bool) -> (String, String)? {

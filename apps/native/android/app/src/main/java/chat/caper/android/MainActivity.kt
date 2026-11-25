@@ -3903,7 +3903,7 @@ private val ReplyDraftFill = Color(0xFF20282A)
  * The backdrop of a composer floating over the end of its conversation (web's .chat-composer::before): solid
  * conversation colour from [sink] below its top edge, about the field's midline, easing out over the 32dp above
  * that, so the conversation (and a pressed row) shows on beside the field's upper half and the field floats over
- * it rather than on a slab. A gradient alone, without web's blur: RenderEffect blur is costly and needs API 31. Its
+ * it rather than on a slab. A gradient alone, as on every client: no blur, which smears what scrolls behind into a glow. Its
  * own bounds take touches, so a tap beside the field doesn't reach a message hidden underneath; the fade above draws only.
  */
 private fun Modifier.composerBackdrop(sink: Dp) = pointerInput(Unit) {}.drawBehind {

@@ -878,8 +878,8 @@ popover.emoji-picker image.mine {
 
 /* The typing row and composer float over the end of the history, which
    runs on under them (`ui::float_composer`). The conversation colour eases
-   in over 32px (web's mask stops; no blur, which GTK has no cheap way to
-   draw) from 10px above the composer and turns solid 22px into it, about the
+   in over 32px (web's mask stops, as every client: no blur, which smears what
+   scrolls behind into a glow) from 10px above the composer and turns solid 22px into it, about the
    field's midline, so the history (and a hovered row) shows on beside the
    field's upper half. The band spans the fade above and the backdrop's top. */
 .composer-backdrop {

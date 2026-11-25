@@ -1515,15 +1515,14 @@ private final class AppKitComposerField: NSView {
 /// The composer's backdrop (web's `.chat-composer::before`, `ComposerBackdrop`).
 /// The timeline runs on under the status row and composer, and this covers
 /// its end: solid conversation color from `ComposerBackdrop.fade` points below
-/// its top edge (the composer's input midline) down, easing out over the band above as frosted glass, a
-/// within-window blur under the same eased mask. Reduce Transparency drops the
-/// blur and keeps the fade. The band passes clicks and scrolling through to
-/// the messages under it; the solid part keeps them off rows hidden under the composer.
+/// its top edge (the composer's input midline) down, fading to clear over the
+/// band above. No blur material: it tints the band lighter than the
+/// conversation. The band passes clicks and scrolling through to the messages
+/// under it; the solid part keeps them off rows hidden under the composer.
 private final class AppKitComposerBackdrop: NSView {
     override var isFlipped: Bool { true }
 
-    /// The conversation color over the blur, from web's 60% to solid at its
-    /// bottom, under the mask's stops.
+    /// The conversation color at web's mask stops.
     private final class Tint: NSView {
         let gradient = CAGradientLayer()
         override init(frame: NSRect) {
@@ -1538,56 +1537,32 @@ private final class AppKitComposerBackdrop: NSView {
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     }
 
-    private let blur = NSVisualEffectView()
     private let tint = Tint()
     private let solid = NSView()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        blur.material = .headerView
-        blur.blendingMode = .withinWindow
-        blur.state = .active
-        // Transparent at the band's top, opaque at its bottom, at web's mask stops.
-        let mask = NSImage(size: NSSize(width: 1, height: ComposerBackdrop.fade), flipped: false) { rect in
-            guard let context = NSGraphicsContext.current?.cgContext,
-                  let gradient = CGGradient(colorsSpace: nil,
-                                            colors: ComposerBackdrop.stops.map { NSColor.black.withAlphaComponent($0.opacity).cgColor } as CFArray,
-                                            locations: ComposerBackdrop.stops.map { $0.offset / ComposerBackdrop.fade }) else { return false }
-            context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: rect.maxY), end: CGPoint(x: 0, y: rect.minY), options: [])
-            return true
-        }
-        mask.resizingMode = .stretch
-        blur.maskImage = mask
         solid.wantsLayer = true
-        [blur, tint, solid].forEach { addSubview($0) }
+        [tint, solid].forEach { addSubview($0) }
         setAccessibilityElement(false)
         applyTheme()
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(displayOptionsChanged),
-            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    @objc private func displayOptionsChanged() { applyTheme() }
 
     func applyTheme() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let conversation = NativeStyle.conversation
-        tint.gradient.colors = ComposerBackdrop.stops.map {
-            conversation.withAlphaComponent($0.opacity * ComposerBackdrop.tint(at: $0.offset)).cgColor
-        }
+        tint.gradient.colors = ComposerBackdrop.stops.map { conversation.withAlphaComponent($0.opacity).cgColor }
         solid.layer?.backgroundColor = conversation.cgColor
         CATransaction.commit()
-        blur.isHidden = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         super.resizeSubviews(withOldSize: oldSize)
         let fade = min(ComposerBackdrop.fade, bounds.height)
-        let band = NSRect(x: 0, y: 0, width: bounds.width, height: fade)
-        blur.frame = band
-        tint.frame = band
+        tint.frame = NSRect(x: 0, y: 0, width: bounds.width, height: fade)
         solid.frame = NSRect(x: 0, y: fade, width: bounds.width, height: bounds.height - fade)
     }
 

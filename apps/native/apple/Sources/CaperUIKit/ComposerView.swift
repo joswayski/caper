@@ -706,9 +706,9 @@ final class HostedView: UIView {
 /// The composer's backdrop (web's `.chat-composer::before`, `ComposerBackdrop`).
 /// The timeline runs on under the typing row and composer, and this covers its
 /// end: solid conversation color from `ComposerBackdrop.fade` points below its
-/// top edge (the composer's input midline) down, easing out over the band above as frosted glass, a native
-/// blur under the same eased mask. Reduce Transparency drops the blur and keeps
-/// the fade. Its owner sets its frame. The band passes touches through to the
+/// top edge (the composer's input midline) down, fading to clear over the band
+/// above. No blur material: it tints the band lighter than the conversation.
+/// Its owner sets its frame. The band passes touches through to the
 /// messages under it; the solid part keeps them off rows hidden under the composer.
 final class ComposerBackdropView: UIView {
     /// A band as tall as the fade, its colors at web's mask stops.
@@ -725,39 +725,25 @@ final class ComposerBackdropView: UIView {
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     }
 
-    private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
-    private let blurMask = Band(colors: ComposerBackdrop.stops.map { UIColor.black.withAlphaComponent($0.opacity).cgColor })
-    /// The conversation color over the blur, from web's 60% to solid, under the
-    /// same mask. Switching themes rebuilds the window's views (`CaperTheme.themed`).
-    private let tint = Band(colors: ComposerBackdrop.stops.map {
-        UIKitStyle.conversation.withAlphaComponent($0.opacity * ComposerBackdrop.tint(at: $0.offset)).cgColor
-    })
+    /// The conversation color at web's mask stops. Switching themes rebuilds
+    /// the window's views (`CaperTheme.themed`).
+    private let tint = Band(colors: ComposerBackdrop.stops.map { UIKitStyle.conversation.withAlphaComponent($0.opacity).cgColor })
     private let solid = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         isAccessibilityElement = false
         accessibilityElementsHidden = true
-        blur.isUserInteractionEnabled = false
-        blur.mask = blurMask
         solid.isUserInteractionEnabled = false
         solid.backgroundColor = UIKitStyle.conversation
-        [blur, tint, solid].forEach(addSubview)
-        reduceTransparencyChanged()
-        NotificationCenter.default.addObserver(self, selector: #selector(reduceTransparencyChanged),
-                                               name: UIAccessibility.reduceTransparencyStatusDidChangeNotification, object: nil)
+        [tint, solid].forEach(addSubview)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    @objc private func reduceTransparencyChanged() { blur.isHidden = UIAccessibility.isReduceTransparencyEnabled }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let fade = min(ComposerBackdrop.fade, bounds.height)
-        let band = CGRect(x: 0, y: 0, width: bounds.width, height: fade)
-        blur.frame = band
-        blurMask.frame = blur.bounds
-        tint.frame = band
+        tint.frame = CGRect(x: 0, y: 0, width: bounds.width, height: fade)
         solid.frame = CGRect(x: 0, y: fade, width: bounds.width, height: bounds.height - fade)
     }
 

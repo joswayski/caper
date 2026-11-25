@@ -1,7 +1,7 @@
 import { useLayoutEffect, type RefObject } from "react";
 
 /**
- * The composer floats over the end of its conversation on a frosted backdrop
+ * The composer floats over the end of its conversation on a fading backdrop
  * (see .chat-composer in chat.css). Publish its height to the panel as
  * --composer-height, which the list reserves at its end, and keep the newest
  * message in view when the composer grows over it, as a shrinking list did.

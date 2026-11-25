@@ -5159,7 +5159,6 @@ fn caret_timeout() -> Option<std::time::Duration> {
 /// `h` tall from `y`, which is `FADE_H` above the composer's top edge: clear
 /// down to `COMPOSER_SINK` into it, then the conversation colour easing in
 /// over `FADE_H` (web's mask stops), solid below, about the field's midline.
-/// Web also blurs what scrolls behind the fade; here it fades alone.
 pub fn draw_backdrop(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32, h: f32) {
     use windows::Win32::Graphics::Direct2D::Common::D2D1_GRADIENT_STOP;
     let c = theme::surface_conversation();
