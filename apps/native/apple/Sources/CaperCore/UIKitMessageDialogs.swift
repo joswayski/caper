@@ -94,7 +94,9 @@ private struct UIKitMessageDialogBridge: UIViewControllerRepresentable {
     /// that size a dialog to its content rather than giving it a full sheet.
     func fittingHeight(width: CGFloat) -> CGFloat {
         loadViewIfNeeded()
-        let inner = CGSize(width: max(1, width - 32), height: UIView.layoutFittingCompressedSize.height)
+        // Rows lay out inside the safe area, so a side inset wraps them onto more lines.
+        let insets = view.safeAreaInsets
+        let inner = CGSize(width: max(1, width - insets.left - insets.right - 32), height: UIView.layoutFittingCompressedSize.height)
         func fit(_ view: UIView?) -> CGFloat {
             view?.systemLayoutSizeFitting(inner, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height ?? 0
         }

@@ -121,6 +121,11 @@ import Observation
     /// Done, a swipe down or a tap outside closes it.
     override var showsCloseButton: Bool { false }
     override func viewDidLoad() { super.viewDidLoad(); view.accessibilityIdentifier = "whats-new"; observe() }
+    /// The fit detent measures inside the safe area, which the sheet learns once it is on screen.
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        if view.window != nil, let sheet = sheetPresentationController { sheet.animateChanges { sheet.invalidateDetents() } }
+    }
     override func render() {
         if display.releases == nil, let next = notes.presentation, next.id == display.id { display = next }
         body.arrangedSubviews.forEach { body.removeArrangedSubview($0); $0.removeFromSuperview() }
