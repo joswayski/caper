@@ -101,15 +101,19 @@ export interface RowActions {
   retrySend(): void;
 }
 
-/** Message text with links, code blocks, and @mentions that open the person's profile card. */
+/**
+ * Message text with links, code blocks, and @mentions that open the person's
+ * profile card. Without `actions` (a forwarded original), mentions are quiet,
+ * non-interactive highlights.
+ */
 export function MessageText({
   message,
   mentionNames,
   actions,
 }: {
   message: ChatMessage;
-  mentionNames: ReadonlyMap<string, string>;
-  actions: Pick<RowActions, "openMention">;
+  mentionNames?: ReadonlyMap<string, string>;
+  actions?: Pick<RowActions, "openMention">;
 }) {
   return parseMessageBlocks(message.content.text).map((messageBlock) => {
     if (messageBlock.kind === "code") return <CodeBlockView key={messageBlock.start} block={messageBlock} />;
@@ -130,11 +134,11 @@ export function MessageText({
       );
       if (!segment.mention) return content;
       const user = segment.user;
-      if (!user)
+      if (!user || !actions)
         return (
           <span
             key={start}
-            className="chat-mention"
+            className={actions ? "chat-mention" : "chat-mention chat-mention-quiet"}
             title={
               feedbackAliases.some((alias) => segment.text.slice(1).toLowerCase() === alias)
                 ? "Asks the Caper team to look at this conversation"
@@ -150,7 +154,7 @@ export function MessageText({
           key={start}
           className="chat-mention chat-mention-person"
           aria-haspopup="dialog"
-          aria-label={`Open profile for ${mentionNames.get(user.id) ?? `@${user.username}`}`}
+          aria-label={`Open profile for ${mentionNames?.get(user.id) ?? `@${user.username}`}`}
           onClick={(event) => {
             event.stopPropagation();
             actions.openMention(user, event.currentTarget);

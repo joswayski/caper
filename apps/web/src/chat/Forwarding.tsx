@@ -10,7 +10,7 @@ import {
 } from "@floating-ui/react";
 import { Forward, X } from "lucide-react";
 import Avatar from "../components/Avatar";
-import LinkedText from "./LinkedText.tsx";
+import { MessageText } from "./MessageRow.tsx";
 import MentionTextarea from "./MentionTextarea.tsx";
 import { apiError, ChatHistoryError } from "./client.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
@@ -132,7 +132,7 @@ export function OriginalMessage({ message, onView }: { message: ChatMessage; onV
       </header>
       {message.content.text && (
         <p>
-          <LinkedText text={message.content.text} />
+          <MessageText message={message} />
         </p>
       )}
       <MessageGif content={message.content} />

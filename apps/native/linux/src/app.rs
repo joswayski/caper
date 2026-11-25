@@ -15,8 +15,8 @@ use caper_client::api::Api;
 use caper_client::gateway::GatewayEvent;
 use caper_client::mentions;
 use caper_client::model::{
-    Account, Apply, ChatSession, DirectConversation, DirectStatus, Message, Space, SpaceDetail,
-    Spaces, Timeline,
+    Account, Apply, ChatSession, DirectConversation, DirectStatus, Message, MessageReply, Space,
+    SpaceDetail, Spaces, Timeline,
 };
 use caper_client::notifications::Scope;
 use caper_client::reactions::Reacted;
@@ -184,11 +184,29 @@ struct Pending {
     share: Option<caper_client::klipy::Share>,
 }
 
+/// A "Replying to" bar's excerpt as markup: the quoted text (its label stops
+/// after two lines), its resolved mentions drawn quietly.
+fn reply_excerpt(quote: &MessageReply) -> String {
+    let text = quote.full_text.as_deref().unwrap_or(&quote.text);
+    if text.trim().is_empty() {
+        let label = if quote.has_attachments {
+            caper_client::model::attachments_label(&quote.attachments)
+        } else {
+            "Message"
+        };
+        return glib::markup_escape_text(label).to_string();
+    }
+    // GTK limits lines per paragraph, so the text runs on as one.
+    let text = text.replace(['\n', '\r'], " ");
+    crate::markup::quiet_mentions(&text, text.len(), &quote.mentions)
+}
+
 /// What the main composer is doing besides a new message.
 enum Compose {
     Reply {
         id: String,
-        author: String,
+        /// The quoted message as its reply will reference it.
+        quote: Box<MessageReply>,
     },
     Edit {
         original: Box<Message>,
@@ -206,8 +224,8 @@ struct Thread {
     has_more: bool,
     /// A reply to bring into view: older pages load until it is there.
     focus: Option<String>,
-    /// The message the reply box quotes, and its author.
-    reply: Option<(String, String)>,
+    /// The message the reply box quotes.
+    reply: Option<Box<MessageReply>>,
 }
 
 struct Typer {
@@ -3536,7 +3554,7 @@ impl App {
                     .thread
                     .as_mut()
                     .and_then(|thread| thread.reply.take())
-                    .map(|(id, _)| id)
+                    .map(|quote| quote.id)
             } else {
                 match &state.compose {
                     Some(Compose::Reply { id, .. }) => Some(id.clone()),
@@ -3911,13 +3929,13 @@ impl App {
             Action::Reply(id) if thread => {
                 {
                     let mut state = self.state.borrow_mut();
-                    let author = state
+                    let quote = state
                         .message(&id)
-                        .map(|message| message.author.name.clone());
-                    let (Some(author), Some(open)) = (author, state.thread.as_mut()) else {
+                        .map(|message| Box::new(MessageReply::from_message(message)));
+                    let (Some(quote), Some(open)) = (quote, state.thread.as_mut()) else {
                         return;
                     };
-                    open.reply = Some((id, author));
+                    open.reply = Some(quote);
                 }
                 self.ui.thread_composer.view.grab_focus();
                 self.render();
@@ -3925,9 +3943,9 @@ impl App {
             Action::Reply(id) => {
                 {
                     let mut state = self.state.borrow_mut();
-                    let Some(author) = state
+                    let Some(quote) = state
                         .message(&id)
-                        .map(|message| message.author.name.clone())
+                        .map(|message| Box::new(MessageReply::from_message(message)))
                     else {
                         return;
                     };
@@ -3935,7 +3953,7 @@ impl App {
                     if matches!(state.compose, Some(Compose::Edit { .. })) {
                         state.restore_draft = Some(String::new());
                     }
-                    state.compose = Some(Compose::Reply { id, author });
+                    state.compose = Some(Compose::Reply { id, quote });
                 }
                 self.ui.composer.view.grab_focus();
                 self.render();
@@ -6302,16 +6320,19 @@ impl App {
         };
         ui.composer.placeholder.set_label(&prompt);
         match &state.compose {
-            Some(Compose::Reply { author, .. }) => {
+            Some(Compose::Reply { quote, .. }) => {
                 ui.compose_label.set_markup(&format!(
                     "Replying to <b>{}</b>",
-                    glib::markup_escape_text(author)
+                    glib::markup_escape_text(&quote.author.name)
                 ));
+                ui.compose_excerpt.set_markup(&reply_excerpt(quote));
+                ui.compose_excerpt.set_visible(true);
                 ui.compose_bar.set_visible(true);
             }
             Some(Compose::Edit { .. }) => {
                 ui.compose_label
                     .set_label("Editing message · Enter to save, Escape to cancel");
+                ui.compose_excerpt.set_visible(false);
                 ui.compose_bar.set_visible(true);
             }
             None => ui.compose_bar.set_visible(false),
@@ -6337,11 +6358,13 @@ impl App {
             .as_ref()
             .and_then(|thread| thread.reply.as_ref())
         {
-            Some((_, author)) => {
+            Some(quote) => {
                 ui.thread_reply_label.set_markup(&format!(
                     "Replying to <b>{}</b>",
-                    glib::markup_escape_text(author)
+                    glib::markup_escape_text(&quote.author.name)
                 ));
+                ui.thread_reply_excerpt.set_markup(&reply_excerpt(quote));
+                ui.thread_reply_excerpt.set_visible(true);
                 ui.thread_reply_bar.set_visible(true);
             }
             None => ui.thread_reply_bar.set_visible(false),

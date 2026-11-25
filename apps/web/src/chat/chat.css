@@ -1968,6 +1968,11 @@ button.chat-reply-source {
   color: var(--text);
   font-weight: 600;
 }
+/* Quoted (replies, forwards): a quieter pill that keeps the excerpt's weight. */
+.chat-mention-quiet {
+  background: rgb(var(--accent-rgb) / 16%);
+  font-weight: inherit;
+}
 .chat-mention-person {
   display: inline;
   margin: 0;

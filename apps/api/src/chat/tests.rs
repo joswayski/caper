@@ -711,8 +711,14 @@ async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries
     sqlx::query("UPDATE public.messages SET payload=jsonb_set(payload,'{content,attachments}',$2) WHERE external_id=$1")
         .bind(long_source["id"].as_str().unwrap()).bind(&files).execute(&pool).await.unwrap();
     let signer = assets::CdnSigner::new("https://cdn.test".into(), vec![1; 32]);
+    // Quoted mentions come from the source too, so they highlight in the quote.
+    let mentions = json!([{"type":"user","id":"alice-id","username":"alice"}]);
+    sqlx::query("UPDATE public.messages SET payload=jsonb_set(payload,'{content,mentions}',$2) WHERE external_id=$1")
+        .bind(long_source["id"].as_str().unwrap()).bind(&mentions).execute(&pool).await.unwrap();
     let mut delivered = [quoted.clone()];
     deliver(&pool, Some(&signer), &mut delivered).await.unwrap();
+    assert_eq!(delivered[0]["replyTo"]["mentions"], mentions);
+    assert!(delivered[0]["content"].get("mentions").is_none());
     assert_eq!(delivered[0]["replyTo"]["attachments"][0]["spoiler"], true);
     assert!(
         delivered[0]["replyTo"]["attachments"][0]["previewUrl"]
@@ -735,6 +741,7 @@ async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries
         .unwrap();
     assets::reply_attachments(&pool, &mut replay).await.unwrap();
     assert!(replay[0]["message"]["replyTo"].get("attachments").is_none());
+    assert!(replay[0]["message"]["replyTo"].get("mentions").is_none());
 }
 
 #[tokio::test]

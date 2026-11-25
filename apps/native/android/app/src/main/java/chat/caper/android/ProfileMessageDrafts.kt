@@ -270,7 +270,8 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
                 val original = api.history(token, channel, around = activity.messageId).messages.firstOrNull { it.id == activity.messageId }
                 current()
                 check(original != null && original.deletedAt == null) { "The original message is no longer available." }
-                MessageReply(original.id, original.author, original.content.text, original.content.attachments.isNotEmpty(), original.threadRootId)
+                MessageReply(original.id, original.author, original.content.text, original.content.attachments.isNotEmpty(), original.threadRootId,
+                    mentions = original.content.mentions)
             } else null
             operation = tracker.begin(channel, author, if (media != null) "" else draft.text, if (media != null) emptyList() else get(person).files.map { requireNotNull(it.attachment).id },
                 threadRootId = activity?.threadRootId, replyTo = quote,

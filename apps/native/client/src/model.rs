@@ -1730,6 +1730,14 @@ pub struct MessageReply {
     /// The quoted message was deleted; `text` is then empty.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
+    /// The quoted message's `content.mentions`, so the quote highlights the
+    /// same tokens. Deleted quotes and older servers omit it.
+    #[serde(
+        default,
+        deserialize_with = "mention_entries",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub mentions: Vec<Mention>,
 }
 
 impl MessageReply {
@@ -1761,6 +1769,11 @@ impl MessageReply {
             },
             thread_root_id: message.thread_root_id.clone(),
             deleted: message.deleted_at.is_some(),
+            mentions: if message.is_deleted() {
+                Vec::new()
+            } else {
+                message.content.mentions.clone()
+            },
         }
     }
 }
@@ -2023,6 +2036,7 @@ impl Message {
             reply.full_text = None;
             reply.has_attachments = false;
             reply.attachments.clear();
+            reply.mentions.clear();
         }
         if self.id == incoming.id
             && self.channel_id == incoming.channel_id
@@ -5138,6 +5152,18 @@ mod tests {
         .unwrap();
         assert!(!reply.deleted, "replyTo.deleted defaults to false");
         assert!(reply.attachments.is_empty());
+        assert!(reply.mentions.is_empty(), "replyTo.mentions is optional");
+        let mentioning: MessageReply = serde_json::from_value(serde_json::json!({
+            "id":"quoted", "author":{"id":"author","name":"A","isGuest":false},
+            "text":"@alice and @nobody", "hasAttachments":false,
+            "mentions":[{"type":"user","id":"u1","username":"alice"}]
+        }))
+        .unwrap();
+        let pills: Vec<_> = crate::mentions::highlights(&mentioning.text, &mentioning.mentions)
+            .into_iter()
+            .map(|(range, _)| &mentioning.text[range])
+            .collect();
+        assert_eq!(pills, ["@alice"], "@nobody was not resolved");
         assert!(
             serde_json::to_value(&reply)
                 .unwrap()

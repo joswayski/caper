@@ -79,11 +79,14 @@ private struct FormattingButtonStyle: ButtonStyle {
 struct FormattedMessageText: View {
     let source: String
     let mentions: [MessageMention]
+    /// A forwarded original: quieter mention pills that open no profile card.
+    let quoted: Bool
     @State private var revealed = false
 
-    init(source: String, mentions: [MessageMention] = []) {
+    init(source: String, mentions: [MessageMention] = [], quoted: Bool = false) {
         self.source = source
         self.mentions = mentions
+        self.quoted = quoted
     }
 
     var body: some View {
@@ -93,12 +96,12 @@ struct FormattedMessageText: View {
         let blocks = MessageFormatting.stackedBlocks(parsed)
         Group {
             if blocks.count == 1, let block = blocks.first, !block.quote {
-                MessageFormatting.renderedText(parsed, segments: segments, in: block.range, revealed: !hidden)
+                MessageFormatting.renderedText(parsed, segments: segments, in: block.range, revealed: !hidden, quoted: quoted)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                         let text = block.range.isEmpty ? Text(" ")
-                            : MessageFormatting.renderedText(parsed, segments: segments, in: block.range, revealed: !hidden)
+                            : MessageFormatting.renderedText(parsed, segments: segments, in: block.range, revealed: !hidden, quoted: quoted)
                         if block.quote {
                             text.padding(.leading, 15).frame(maxWidth: .infinity, alignment: .leading)
                                 .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 3) }
@@ -170,7 +173,7 @@ extension MessageFormatting {
     /// The displayed range `block` of parsed runs as one `Text`. A hidden
     /// spoiler keeps its glyphs' width, invisible on the #34383B fill, and
     /// has no link or person pill to activate.
-    static func renderedText(_ parsed: [FormattedMessageRun], segments: [MentionSegment], in block: Range<Int>, revealed: Bool) -> Text {
+    static func renderedText(_ parsed: [FormattedMessageRun], segments: [MentionSegment], in block: Range<Int>, revealed: Bool, quoted: Bool = false) -> Text {
         var result = Text("")
         var runStart = 0
         for run in parsed {
@@ -203,9 +206,9 @@ extension MessageFormatting {
                 } else if segment.highlighted {
                     var span = AttributedString(text)
                     span.foregroundColor = CaperTheme.text
-                    span.backgroundColor = CaperTheme.terracotta.opacity(0.24)
-                    if let user = segment.user { span.link = MentionCard.url(for: user) }
-                    part = Text(span).fontWeight(.medium)
+                    span.backgroundColor = CaperTheme.terracotta.opacity(quoted ? ReplyMentions.quietAlpha : 0.24)
+                    if !quoted, let user = segment.user { span.link = MentionCard.url(for: user) }
+                    part = quoted ? Text(span) : Text(span).fontWeight(.medium)
                 } else if let linked = MessageLinks.renderedText(text) {
                     part = linked
                 } else if run.spoiler {

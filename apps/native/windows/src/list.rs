@@ -30,6 +30,8 @@ pub struct Row {
     pub plain: String,
     pub plain16: Vec<u16>,
     pub mentions: Vec<(u32, u32)>,
+    /// A forwarded original's mentions: a quiet wash that opens nothing.
+    pub quiet_mentions: Vec<(u32, u32)>,
     /// Links: UTF-16 start, length and address. Those inside a hidden
     /// spoiler are left out, as are its mentions, until it is revealed.
     pub links: Vec<(u32, u32, String)>,
@@ -141,6 +143,8 @@ pub struct Quote {
     pub view: IDWriteTextLayout,
     pub view_w: f32,
     pub text: IDWriteTextLayout,
+    /// Its resolved mentions (UTF-16), highlighted quietly.
+    pub mentions: Vec<(u32, u32)>,
     pub height: f32,
 }
 
@@ -224,7 +228,29 @@ impl ForwardCard {
             "Original conversation unavailable.",
             width,
         )
-        .map(|card| Some(Box::new(card)))
+        .and_then(|mut card| {
+            // The original's mentions read quietly, in its text's own weight,
+            // and open nothing.
+            if let Some((c, row)) = &mut card.original {
+                let (_, spans, _) = c.plain(0);
+                unsafe {
+                    for &(s, l) in &row.mentions {
+                        row.text.SetFontWeight(
+                            DWRITE_FONT_WEIGHT_NORMAL,
+                            text_range(s as usize, l as usize),
+                        )?;
+                    }
+                    for &(s, l, k) in &spans {
+                        if k == SpanKind::Bold {
+                            row.text
+                                .SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, text_range(s, l))?;
+                        }
+                    }
+                }
+                row.quiet_mentions = std::mem::take(&mut row.mentions);
+            }
+            Ok(Some(Box::new(card)))
+        })
     }
 
     /// A message link's card: the original with its previews and Jump to
@@ -940,6 +966,11 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
                 view_w: gfx::metrics(&view).widthIncludingTrailingWhitespace,
                 view,
                 text,
+                mentions: if r.deleted {
+                    Vec::new()
+                } else {
+                    gfx::mention_ranges(body, &r.mentions)
+                },
                 height: 0.0,
             })
         }
@@ -993,6 +1024,7 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         plain,
         plain16,
         mentions,
+        quiet_mentions: Vec::new(),
         links,
         spoilers,
         quotes,
@@ -1720,6 +1752,7 @@ fn draw_content(
             }
             crate::text::draw(dc, &q.name, a.right + 6.0, hy + 2.0, &g.brushes.muted);
             crate::text::draw(dc, &q.view, p.right - QUOTE_PAD_X - q.view_w, hy + 3.0, ink);
+            gfx::fill_quiet_mentions(g, dc, &q.text, &q.mentions, x, hy + QUOTE_HEADING + 2.0);
             crate::text::draw(dc, &q.text, x, hy + QUOTE_HEADING + 2.0, ink);
         }
         if let Some(l) = &row.pin {
@@ -1830,6 +1863,9 @@ fn draw_content(
         }
         for &(s, l) in &row.mentions {
             fill(s, l, &g.brushes.mention, 2.0, 4.0);
+        }
+        for &(s, l) in &row.quiet_mentions {
+            fill(s, l, &g.brushes.mention_quiet, 2.0, 4.0);
         }
         for &(s, l, _) in &row.links {
             fill(s, l, &g.brushes.link_bg, 2.0, 4.0);

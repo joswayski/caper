@@ -142,7 +142,9 @@ public enum NativePresentation {
     /// syntax-highlighted fenced code blocks, person pills and links. Spoilers
     /// carry `spoilerAttribute` (hosts hide them with `concealSpoilers`);
     /// quoted lines carry `.quoteBar`, and code blocks carry `.codeBlockFill`.
-    public static func messageText(_ text: String, size: CGFloat = 14, mentions: [MessageMention] = []) -> NSAttributedString {
+    /// `quoted` (a forwarded original) draws mentions as quieter pills that
+    /// open no profile card.
+    public static func messageText(_ text: String, size: CGFloat = 14, mentions: [MessageMention] = [], quoted: Bool = false) -> NSAttributedString {
         let result = NSMutableAttributedString(string: "")
         let blocks = MessageFormatting.codeBlocks(text)
         var spoilerGroup = -1, inSpoiler = false
@@ -203,7 +205,7 @@ public enum NativePresentation {
                         defer { segmentStart = segmentEnd }
                         guard start < end else { continue }
                         let slice = (run.text as NSString).substring(with: NSRange(location: start - runStart, length: end - start))
-                        let weight = run.bold ? "Bold" : segment.highlighted ? "Medium" : "Regular"
+                        let weight = run.bold ? "Bold" : segment.highlighted && !quoted ? "Medium" : "Regular"
                         #if os(macOS)
                         let font: NSFont
                         if run.code {
@@ -213,7 +215,7 @@ public enum NativePresentation {
                             font = run.italic ? NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask) : base
                         }
                         let color = CaperThemeStore.textColor
-                        let highlight = CaperThemeStore.accentColor.withAlphaComponent(0.24)
+                        let highlight = CaperThemeStore.accentColor.withAlphaComponent(quoted ? ReplyMentions.quietAlpha : 0.24)
                         #else
                         let font: UIFont
                         if run.code {
@@ -224,7 +226,7 @@ public enum NativePresentation {
                             font = UIFont(descriptor: descriptor, size: size)
                         }
                         let color = UIColor(CaperTheme.text)
-                        let highlight = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
+                        let highlight = UIColor(CaperTheme.terracotta).withAlphaComponent(quoted ? ReplyMentions.quietAlpha : 0.24)
                         #endif
                         var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
                         if run.italic && run.code { attributes[.obliqueness] = 0.2 }
@@ -237,7 +239,7 @@ public enum NativePresentation {
                             result.append(NSAttributedString(string: slice, attributes: attributes))
                         } else if segment.highlighted {
                             attributes[.backgroundColor] = highlight
-                            attributes[mentionAttribute] = segment.user?.id ?? ""
+                            if !quoted { attributes[mentionAttribute] = segment.user?.id ?? "" }
                             result.append(NSAttributedString(string: slice, attributes: attributes))
                         } else {
                             for link in MessageLinks.segments(in: slice) {

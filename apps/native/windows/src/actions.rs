@@ -477,25 +477,41 @@ impl Picker {
 // The reply above the composer.
 
 pub const REPLY_GAP: f32 = 6.0;
+/// The panel's Cancel: a square target, flush with its trailing padding.
+const REPLY_CANCEL: f32 = 28.0;
+const REPLY_PAD: f32 = 8.0;
 
 /// The "Replying to" panel's layouts at its current width.
 pub struct ReplyBar {
     pub target: core::MessageReply,
     name: IDWriteTextLayout,
     text: Option<IDWriteTextLayout>,
+    /// The excerpt's resolved mentions (UTF-16), highlighted quietly.
+    mentions: Vec<(u32, u32)>,
     pub height: f32,
     pub cancel_hover: bool,
 }
 
 impl ReplyBar {
     pub fn new(g: &Gfx, target: core::MessageReply, width: f32) -> Result<Self> {
-        let inner = (width - 18.0 - 44.0 - 8.0).max(40.0);
+        let inner = (width - 18.0 - REPLY_CANCEL - REPLY_PAD).max(40.0);
         let name = g.layout(
             &gfx::wide(&format!("Replying to {}", target.author.name)),
             &g.formats.quote_name,
             inner,
         )?;
+        // One line, ending in an ellipsis before Cancel.
+        unsafe {
+            name.SetTrimming(
+                &DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    ..Default::default()
+                },
+                &g.dwrite.CreateEllipsisTrimmingSign(&g.formats.quote_name)?,
+            )?;
+        }
         let shown = target.full_text.as_deref().unwrap_or(&target.text);
+        let mentions = gfx::mention_ranges(shown, &target.mentions);
         let shown = if shown.is_empty() {
             if target.has_attachments {
                 core::attachments_label(&target.attachments).to_owned()
@@ -526,7 +542,8 @@ impl ReplyBar {
             target,
             name,
             text: Some(text),
-            height: column.max(44.0) + 16.0,
+            mentions,
+            height: column.max(REPLY_CANCEL) + 2.0 * REPLY_PAD,
             cancel_hover: false,
         })
     }
@@ -546,21 +563,18 @@ impl ReplyBar {
         crate::text::draw(dc, &self.name, x + 10.0, y + 8.0, &g.brushes.muted);
         if let Some(t) = &self.text {
             let y = y + 8.0 + gfx::metrics(&self.name).height + 3.0;
+            gfx::fill_quiet_mentions(g, dc, t, &self.mentions, x + 10.0, y);
             crate::text::draw(dc, t, x + 10.0, y, &g.brushes.muted);
         }
-        let (cx, cy) = (x + w - 8.0 - 44.0, y + 8.0);
+        let (cx, cy, s, _) = Self::cancel_rect((x, y, w, h));
         if self.cancel_hover {
-            fill_round(
-                dc,
-                rect(cx, cy, cx + 44.0, cy + 44.0),
-                6.0,
-                &g.brushes.hover,
-            );
+            fill_round(dc, rect(cx, cy, cx + s, cy + s), 6.0, &g.brushes.hover);
         }
+        let icon = (s - 16.0) / 2.0;
         icons::draw(
             dc,
             Icon::Close,
-            rect(cx + 14.0, cy + 14.0, cx + 30.0, cy + 30.0),
+            rect(cx + icon, cy + icon, cx + s - icon, cy + s - icon),
             if self.cancel_hover {
                 crate::theme::text()
             } else {
@@ -569,6 +583,17 @@ impl ReplyBar {
             1.0,
         );
         Ok(())
+    }
+
+    /// Cancel's square inside the panel at `bar`: centred on its height,
+    /// flush with its trailing padding.
+    pub fn cancel_rect((x, y, w, h): Rect) -> Rect {
+        (
+            x + w - REPLY_PAD - REPLY_CANCEL,
+            y + (h - REPLY_CANCEL) / 2.0,
+            REPLY_CANCEL,
+            REPLY_CANCEL,
+        )
     }
 }
 
@@ -1157,8 +1182,7 @@ impl App {
     }
 
     pub fn reply_cancel_rect(&self) -> Option<Rect> {
-        let (x, y, w, _) = self.reply_rect()?;
-        Some((x + w - 8.0 - 44.0, y + 8.0, 44.0, 44.0))
+        Some(ReplyBar::cancel_rect(self.reply_rect()?))
     }
 
     /// Clicks on the reply panel: its Cancel. True when it took the click.

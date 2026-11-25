@@ -58,7 +58,7 @@ import java.util.UUID
         if (message.deletedAt != null) Text(DELETED_MESSAGE, color = TextMuted, fontSize = 14.sp, fontStyle = FontStyle.Italic)
         else {
             // A file-only original has empty text: show just its files, in their processing state.
-            if (message.content.text.isNotEmpty()) LinkedText(message.content.text, fontSize = 14.sp)
+            if (message.content.text.isNotEmpty()) LinkedText(message.content.text, fontSize = 14.sp, mentions = message.content.mentions)
             message.content.gif?.let { MessageGif(it) }
             MessageAttachments(
                 message.content.attachments.map { it.withFreshUrls(state?.freshAttachmentUrls?.get(it.id)) }, false, onAttachmentFailed,
@@ -75,13 +75,17 @@ import java.util.UUID
     }
 }
 
-/** The original's formatted text with its `http(s)://` and `www.` links (`data/Links.kt`); like web, no mention pills here. */
-@Composable internal fun LinkedText(text: String, fontSize: TextUnit = 14.sp) {
-    val links = remember(text) { messageLinkRanges(text) }
+/**
+ * The original's formatted text with its `http(s)://` and `www.` links (`data/Links.kt`) and, like web, its resolved
+ * [mentions] as quiet, non-interactive pills.
+ */
+@Composable internal fun LinkedText(text: String, fontSize: TextUnit = 14.sp, mentions: List<MessageMention> = emptyList()) {
+    val spans = remember(text, mentions) { highlightedMentions(text, mentions) }
+    val links = remember(text, spans) { messageLinkRanges(text, spans.map { it.start until it.end }) }
     val uriHandler = LocalUriHandler.current
     var revealed by remember(text) { mutableStateOf(emptySet<Int>()) }
-    val annotated = remember(text, links, uriHandler, revealed) {
-        messageText(text, emptyList(), links = links, openLink = { openExternalLink(uriHandler, it) }, revealed = revealed, reveal = { revealed = revealed + it })
+    val annotated = remember(text, spans, links, uriHandler, revealed) {
+        messageText(text, spans, links = links, openLink = { openExternalLink(uriHandler, it) }, revealed = revealed, reveal = { revealed = revealed + it }, quiet = true)
     }
     MessageLinkText(annotated, fontSize = fontSize)
 }

@@ -62,6 +62,8 @@ pub struct Quote {
     /// original is deleted, or for a blocked author.
     pub text: Option<String>,
     pub deleted: bool,
+    /// The quoted message's resolved mentions, highlighted quietly.
+    pub mentions: Vec<caper_client::model::Mention>,
 }
 
 /// One message row, compared whole: an unchanged row keeps its item and
@@ -1042,6 +1044,7 @@ fn message_row(message: &Message, blocked: bool, markup: &mut Markup, viewer: &V
                     avatar: None,
                     text: None,
                     deleted: reply.deleted,
+                    mentions: Vec::new(),
                 };
             }
             let text = reply.full_text.as_deref().unwrap_or(&reply.text);
@@ -1057,6 +1060,7 @@ fn message_row(message: &Message, blocked: bool, markup: &mut Markup, viewer: &V
                 avatar: Some(author_avatar(&reply.author)),
                 text: (!reply.deleted).then_some(text),
                 deleted: reply.deleted,
+                mentions: reply.mentions.clone(),
             }
         }),
         reactions: if deleted {
@@ -1160,13 +1164,15 @@ fn message_row(message: &Message, blocked: bool, markup: &mut Markup, viewer: &V
             .filter(|_| !deleted)
             .map(|forward| {
                 forward.message.as_ref().map(|original| {
-                    Original::new(
+                    let mut shown = Original::new(
                         original,
                         viewer.images,
                         viewer.revealed,
                         format!("{}:forward:{}", viewer.surface, message.id),
                         true,
-                    )
+                    );
+                    shown.markup.quiet();
+                    shown
                 })
             }),
         links: linked(message)
@@ -2148,7 +2154,11 @@ fn fill_quote(widgets: &Widgets, images: &Rc<Images>, row: &Row) {
         None => None,
     };
     widgets.quote_text.set_visible(text.is_some());
-    widgets.quote_text.set_label(text.unwrap_or_default());
+    let mentions = &quote.mentions;
+    let text = text.unwrap_or_default();
+    widgets
+        .quote_text
+        .set_markup(&crate::markup::quiet_mentions(text, text.len(), mentions));
     if quote.deleted {
         widgets.quote_text.add_css_class("deleted");
     } else {
@@ -2171,7 +2181,9 @@ fn fill_quote(widgets: &Widgets, images: &Rc<Images>, row: &Row) {
     // the cut is measured here once the card has a width; until then it
     // shows the first three paragraphs.
     let start: String = full.split('\n').take(3).collect::<Vec<_>>().join("\n");
-    widgets.quote_text.set_label(&start);
+    let start = crate::markup::quiet_mentions(&full, start.len(), mentions);
+    widgets.quote_text.set_markup(&start);
+    let mentions = mentions.clone();
     // Weak: a row discarded before this runs would otherwise keep its label
     // and button alive through their own callback.
     let more = widgets.quote_more.downgrade();
@@ -2197,10 +2209,11 @@ fn fill_quote(widgets: &Widgets, images: &Rc<Images>, row: &Row) {
         match cut {
             Some(end) => {
                 let kept = full.get(..end).unwrap_or(&full).trim_end();
-                label.set_label(&format!("{kept}…"));
+                let kept = crate::markup::quiet_mentions(&full, kept.len(), &mentions);
+                label.set_markup(&format!("{kept}…"));
                 more.set_visible(true);
             }
-            None => label.set_label(&full),
+            None => label.set_markup(&crate::markup::quiet_mentions(&full, full.len(), &mentions)),
         }
         glib::ControlFlow::Break
     });

@@ -1246,7 +1246,8 @@ pub(crate) async fn send_message_with_gif(
     };
     // A reply is a regular message, not a thread membership or a forward.
     // Resolve its reference inside the already-authorized, locked channel.
-    // Keep only a bounded snapshot, never nested quotes, media URLs or mentions.
+    // Keep only a bounded snapshot, never nested quotes, media URLs or mentions;
+    // delivery adds the source's current files and mentions.
     let reference = if let Some(reply_to) = reply_to {
         let target: Option<(Value, Option<i16>, Option<String>)> = sqlx::query_as(
             "SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL

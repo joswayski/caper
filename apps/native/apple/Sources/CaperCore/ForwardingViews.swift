@@ -17,10 +17,10 @@ struct SharedOriginalView: View {
                 Text(MessageDeletion.placeholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
             } else if !message.content.text.isEmpty {
                 if MessageLinks.segments(in: message.content.text).contains(where: { $0.href != nil }) {
-                    FormattedMessageText(source: message.content.text).font(CaperTheme.font(14)).tint(CaperTheme.link)
+                    FormattedMessageText(source: message.content.text, mentions: message.content.mentions, quoted: true).font(CaperTheme.font(14)).tint(CaperTheme.link)
                         .modifier(MessageLinkPills())
                 } else {
-                    FormattedMessageText(source: message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
+                    FormattedMessageText(source: message.content.text, mentions: message.content.mentions, quoted: true).font(CaperTheme.font(14)).textSelection(.enabled)
                 }
             }
             if !message.isDeleted, let attachments = message.content.attachments, !attachments.isEmpty {

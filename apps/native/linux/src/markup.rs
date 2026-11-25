@@ -19,6 +19,11 @@ use std::rc::Rc;
 const MENTION: &str = "background=\"#4e7835\" bgalpha=\"22%\" foreground=\"#f4f4f6\" \
      weight=\"500\" underline=\"none\"";
 
+/// Mentions in a reply quote, the "Replying to" excerpt and a forwarded
+/// card: the pill's accent wash at two-thirds strength, in the surrounding
+/// text's colour and weight, opening nothing.
+const QUIET_MENTION: &str = "background=\"#4e7835\" bgalpha=\"15%\" underline=\"none\"";
+
 /// Clean understated link underline, matching web's `.chat-link`.
 const URL_PILL: &str = "underline=\"single\"";
 
@@ -51,6 +56,8 @@ struct Piece {
     link: Option<String>,
     /// A mention pill, with the account id its link opens for a person.
     pill: Option<Option<String>>,
+    /// The pill is drawn quietly and opens nothing (`Body::quiet`).
+    quiet: bool,
     /// The contiguous spoiler it belongs to, which reveals as one.
     spoiler: Option<usize>,
 }
@@ -129,6 +136,7 @@ impl Body {
                                 style,
                                 link: None,
                                 pill: None,
+                                quiet: false,
                                 spoiler: None,
                             });
                             return;
@@ -158,6 +166,7 @@ impl Body {
                                     .iter()
                                     .position(|pill| pill.contains(&start))
                                     .map(|index| people[index].map(str::to_owned)),
+                                quiet: false,
                                 spoiler: None,
                             });
                         }
@@ -215,6 +224,18 @@ impl Body {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Draws every mention quietly and without a link, as a forwarded
+    /// card shows its original.
+    pub fn quiet(&mut self) {
+        for block in &mut self.0 {
+            if let Block::Text { pieces, .. } = block {
+                for piece in pieces.iter_mut().filter(|piece| piece.pill.is_some()) {
+                    piece.quiet = true;
+                }
+            }
+        }
     }
 
     /// Each block: whether it is a quote, and its Pango markup with the
@@ -348,7 +369,10 @@ fn markup(pieces: &[Piece], revealed: &BTreeSet<usize>) -> String {
                         close.push("</span>");
                     }
                 }
-                if let Some(person) = &piece.pill {
+                if piece.quiet && piece.pill.is_some() {
+                    out.push_str(&format!("<span {QUIET_MENTION}>"));
+                    close.push("</span>");
+                } else if let Some(person) = &piece.pill {
                     if let Some(id) = person {
                         out.push_str(&format!(
                             "<a href=\"{PERSON}{}\">",
@@ -380,6 +404,28 @@ fn markup(pieces: &[Piece], revealed: &BTreeSet<usize>) -> String {
     if open.is_some() {
         out.push_str("</span></a>");
     }
+    out
+}
+
+/// Plain `text` up to byte `end` as Pango markup, its resolved mentions
+/// (those wholly before `end`) drawn quietly: a reply quote and the
+/// "Replying to" excerpt.
+pub fn quiet_mentions(text: &str, end: usize, mentions: &[Mention]) -> String {
+    let end = end.min(text.len());
+    let mut out = String::new();
+    let mut at = 0;
+    for (range, _) in caper_client::mentions::highlights(text, mentions) {
+        if range.end > end {
+            break;
+        }
+        out.push_str(&glib::markup_escape_text(&text[at..range.start]));
+        out.push_str(&format!(
+            "<span {QUIET_MENTION}>{}</span>",
+            glib::markup_escape_text(&text[range.clone()])
+        ));
+        at = range.end;
+    }
+    out.push_str(&glib::markup_escape_text(&text[at..end]));
     out
 }
 

@@ -147,6 +147,25 @@ fn clickable(widget: &gtk::Widget) -> bool {
         || single_click(widget.parent())
 }
 
+/// A "Replying to" bar's text column: its heading on one line, and the
+/// quoted excerpt under it in up to two lines, each ending in an ellipsis.
+fn compose_text() -> (gtk::Box, gtk::Label, gtk::Label) {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    column.set_hexpand(true);
+    column.set_valign(gtk::Align::Center);
+    let heading = label("", &["muted"]);
+    heading.set_ellipsize(pango::EllipsizeMode::End);
+    let excerpt = label("", &["muted", "compose-excerpt"]);
+    excerpt.set_wrap(true);
+    excerpt.set_wrap_mode(pango::WrapMode::WordChar);
+    excerpt.set_lines(2);
+    excerpt.set_ellipsize(pango::EllipsizeMode::End);
+    excerpt.set_visible(false);
+    column.append(&heading);
+    column.append(&excerpt);
+    (column, heading, excerpt)
+}
+
 /// Floats a composer over the end of its message list, as web: the list
 /// (in `stage`'s child) runs on under `dock`, which sits at the stage's
 /// foot. `backdrop`, the dock's solid part (the composer and the bars in
@@ -818,6 +837,8 @@ pub struct Ui {
     pub empty_action: gtk::Button,
     pub compose_bar: gtk::Box,
     pub compose_label: gtk::Label,
+    /// A reply's quoted text, under its "Replying to" heading.
+    pub compose_excerpt: gtk::Label,
     pub compose_cancel: gtk::Button,
     /// After an edit failed (another device changed the message): its
     /// latest text replaces the draft, as desktop's editor.
@@ -856,6 +877,7 @@ pub struct Ui {
     /// one of its messages, so it never borrows the channel composer's.
     pub thread_reply_bar: gtk::Box,
     pub thread_reply_label: gtk::Label,
+    pub thread_reply_excerpt: gtk::Label,
     pub thread_reply_cancel: gtk::Button,
 }
 
@@ -1429,16 +1451,16 @@ impl Ui {
         backdrop.append(&composer_error);
         let compose_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         compose_bar.add_css_class("compose-bar");
-        let compose_label = label("", &["muted"]);
-        compose_label.set_hexpand(true);
-        compose_label.set_ellipsize(pango::EllipsizeMode::End);
+        let (compose_column, compose_label, compose_excerpt) = compose_text();
         let compose_cancel: gtk::Button = crate::app::named("GtkButton", "Cancel");
         compose_cancel.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 14)));
         compose_cancel.add_css_class("flat");
+        compose_cancel.add_css_class("compose-cancel");
+        compose_cancel.set_valign(gtk::Align::Center);
         let compose_reload = gtk::Button::with_label("Discard draft and load latest");
         compose_reload.add_css_class("flat");
         compose_reload.set_visible(false);
-        compose_bar.append(&compose_label);
+        compose_bar.append(&compose_column);
         compose_bar.append(&compose_reload);
         compose_bar.append(&compose_cancel);
         backdrop.append(&compose_bar);
@@ -1578,13 +1600,13 @@ impl Ui {
         thread_backdrop.append(&thread_error);
         let thread_reply_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         thread_reply_bar.add_css_class("compose-bar");
-        let thread_reply_label = label("", &["muted"]);
-        thread_reply_label.set_hexpand(true);
-        thread_reply_label.set_ellipsize(pango::EllipsizeMode::End);
+        let (thread_reply_column, thread_reply_label, thread_reply_excerpt) = compose_text();
         let thread_reply_cancel: gtk::Button = crate::app::named("GtkButton", "Cancel reply");
         thread_reply_cancel.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 14)));
         thread_reply_cancel.add_css_class("flat");
-        thread_reply_bar.append(&thread_reply_label);
+        thread_reply_cancel.add_css_class("compose-cancel");
+        thread_reply_cancel.set_valign(gtk::Align::Center);
+        thread_reply_bar.append(&thread_reply_column);
         thread_reply_bar.append(&thread_reply_cancel);
         thread_reply_bar.set_visible(false);
         thread_backdrop.append(&thread_reply_bar);
@@ -1746,6 +1768,7 @@ impl Ui {
             empty_action,
             compose_bar,
             compose_label,
+            compose_excerpt,
             compose_cancel,
             compose_reload,
             composer,
@@ -1771,6 +1794,7 @@ impl Ui {
             thread_error,
             thread_reply_bar,
             thread_reply_label,
+            thread_reply_excerpt,
             thread_reply_cancel,
         }
     }

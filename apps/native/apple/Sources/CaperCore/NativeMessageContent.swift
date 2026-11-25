@@ -78,7 +78,8 @@ import AppKit
         let author = message.author
         avatar.update(name: author.name, avatarId: author.avatarId, picture: author.avatarPicture); name.stringValue = author.name
         badges.stringValue = [author.isAdmin ? "ADMIN" : "", message.editedAt != nil && !message.isDeleted ? "edited" : ""].filter { !$0.isEmpty }.joined(separator: " · ")
-        text.update(NativePresentation.messageText(message.isDeleted ? MessageDeletion.placeholder : message.content.text))
+        text.update(NativePresentation.messageText(message.isDeleted ? MessageDeletion.placeholder : message.content.text,
+                                                   mentions: message.isDeleted ? [] : message.content.mentions, quoted: true))
         text.isHidden = !message.isDeleted && message.content.text.isEmpty
         files.update(message.isDeleted ? [] : message.content.attachments ?? []); files.isHidden = message.isDeleted || (message.content.attachments ?? []).isEmpty
         if !message.isDeleted, let value = message.content.gif {
@@ -171,7 +172,8 @@ import UIKit
         let author = message.author
         avatar.show(name: author.name, avatarID: author.avatarId, picture: author.avatarPicture); name.text = author.name
         badges.text = [author.isAdmin ? "ADMIN" : "", message.editedAt != nil && !message.isDeleted ? "edited" : ""].filter { !$0.isEmpty }.joined(separator: " · ")
-        text.update(NativePresentation.messageText(message.isDeleted ? MessageDeletion.placeholder : message.content.text))
+        text.update(NativePresentation.messageText(message.isDeleted ? MessageDeletion.placeholder : message.content.text,
+                                                   mentions: message.isDeleted ? [] : message.content.mentions, quoted: true))
         text.isHidden = !message.isDeleted && message.content.text.isEmpty
         files.update(message.isDeleted ? [] : message.content.attachments ?? []); files.isHidden = message.isDeleted || (message.content.attachments ?? []).isEmpty
         if !message.isDeleted, let value = message.content.gif {

@@ -81,6 +81,49 @@ import SwiftUI
     }
 }
 
+/// Quoted excerpts (reply quotes, the composer's reply draft, forwarded
+/// originals): the source's resolved mentions as quieter pills than a message
+/// body's, in the excerpt's own weight, opening no profile card.
+enum ReplyMentions {
+    static let quietAlpha: CGFloat = 0.16
+    #if os(macOS)
+    @MainActor static func excerpt(_ text: String, mentions: [MessageMention], font: NSFont, color: NSColor) -> NSAttributedString {
+        attributed(text, mentions: mentions, font: font, color: color, mention: CaperThemeStore.textColor,
+                   fill: CaperThemeStore.accentColor.withAlphaComponent(quietAlpha))
+    }
+    #else
+    @MainActor static func excerpt(_ text: String, mentions: [MessageMention], font: UIFont, color: UIColor) -> NSAttributedString {
+        attributed(text, mentions: mentions, font: font, color: color, mention: UIColor(CaperTheme.text),
+                   fill: UIColor(CaperTheme.terracotta).withAlphaComponent(quietAlpha))
+    }
+    #endif
+    private static func attributed(_ text: String, mentions: [MessageMention], font: Any, color: Any, mention: Any, fill: Any) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for segment in MentionAutocomplete.segments(in: text, mentions: mentions) {
+            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: segment.highlighted ? mention : color]
+            if segment.highlighted { attributes[.backgroundColor] = fill }
+            result.append(NSAttributedString(string: segment.text, attributes: attributes))
+        }
+        return result
+    }
+}
+
+extension ReplyMentions {
+    /// SwiftUI's quoted excerpt: plain text with quiet mention pills.
+    static func text(_ text: String, mentions: [MessageMention]) -> Text {
+        var result = AttributedString()
+        for segment in MentionAutocomplete.segments(in: text, mentions: mentions) {
+            var span = AttributedString(segment.text)
+            if segment.highlighted {
+                span.foregroundColor = CaperTheme.text
+                span.backgroundColor = CaperTheme.terracotta.opacity(quietAlpha)
+            }
+            result += span
+        }
+        return Text(result)
+    }
+}
+
 @MainActor private func replyExcerpt(_ reference: MessageReply) -> String {
     if reference.deleted == true { return MessageDeletion.quote }
     let text = reference.fullText ?? reference.text
@@ -152,14 +195,17 @@ import AppKit
         panel.backgroundColor = (lit ? AppKitKit.raised.blended(withFraction: 0.07, of: AppKitKit.text) ?? AppKitKit.raised : AppKitKit.surface).cgColor
         panel.borderColor = (lit ? AppKitKit.text.withAlphaComponent(0.18) : AppKitKit.border.withAlphaComponent(0.7)).cgColor
         CATransaction.commit()
-        excerpt.textColor = lit ? AppKitKit.text : AppKitKit.muted
+        excerpt.attributedStringValue = ReplyMentions.excerpt(excerpt.stringValue, mentions: reference.mentions,
+                                                              font: AppKitKit.font(12), color: lit ? AppKitKit.text : AppKitKit.muted)
         hint.textColor = lit ? AppKitKit.text : AppKitKit.muted
         wire.setLit(lit)
     }
     private func render() {
         let wasHidden = blocked; blocked = chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID
         name.stringValue = blocked ? "Blocked message" : reference.author.name + (reference.hasAttachments && reference.deleted != true ? (reference.hasVoice ? "  ◉" : "  📎") : "")
-        excerpt.stringValue = blocked ? "" : replyExcerpt(reference); excerpt.maximumNumberOfLines = expanded ? 0 : 3
+        excerpt.attributedStringValue = ReplyMentions.excerpt(blocked ? "" : replyExcerpt(reference), mentions: reference.mentions,
+                                                              font: AppKitKit.font(12), color: lit ? AppKitKit.text : AppKitKit.muted)
+        excerpt.maximumNumberOfLines = expanded ? 0 : 3
         avatar.isHidden = blocked; hint.isHidden = reference.deleted == true; open.isEnabled = reference.deleted != true
         open.setAccessibilityLabel(blocked ? "View original blocked message" : "View original message from \(reference.author.name)")
         open.setAccessibilityHelp(blocked ? nil : excerpt.stringValue)
@@ -268,7 +314,9 @@ import UIKit
     private func render() {
         let wasHidden = blocked; blocked = chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID
         name.text = blocked ? "Blocked message" : reference.author.name + (reference.hasAttachments && reference.deleted != true ? (reference.hasVoice ? "  ◉" : "  📎") : "")
-        excerpt.text = blocked ? "" : replyExcerpt(reference); excerpt.numberOfLines = expanded ? 0 : 3
+        excerpt.attributedText = ReplyMentions.excerpt(blocked ? "" : replyExcerpt(reference), mentions: reference.mentions,
+                                                       font: excerpt.font, color: UIColor(CaperTheme.text))
+        excerpt.numberOfLines = expanded ? 0 : 3
         avatar.show(name: reference.author.name, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture); avatar.isHidden = blocked
         hint.isHidden = reference.deleted == true; open.isEnabled = reference.deleted != true
         open.accessibilityLabel = blocked ? "View original blocked message" : "View original message from \(reference.author.name)"; open.accessibilityHint = blocked ? nil : excerpt.text

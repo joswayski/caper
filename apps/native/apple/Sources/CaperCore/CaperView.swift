@@ -7399,7 +7399,7 @@ struct NativeReplyContext: View {
                     if reference.deleted != true { Text("View original").font(CaperTheme.font(11)).fixedSize() }
                 }.frame(minHeight: 20)
                 if !hidden {
-                    Text(excerpt).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
+                    ReplyMentions.text(excerpt, mentions: reference.mentions).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !expanded { collapsedHeight = $0 } }
                         .background {
@@ -7608,18 +7608,19 @@ struct NativeReplyDraft: View {
     let root: String
     private var hidden: Bool { chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID }
     var body: some View {
-        HStack(alignment: .top, spacing: 7) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Replying to \(hidden ? "blocked message" : reference.author.name)")
-                    .fontWeight(.bold).lineLimit(1)
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                (Text("Replying to ") + Text(hidden ? "blocked message" : reference.author.name).fontWeight(.bold).foregroundColor(CaperTheme.text))
+                    .lineLimit(1).truncationMode(.tail)
                 if !hidden {
                     let text = reference.fullText ?? reference.text
-                    Text(text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice, attachments: reference.attachments ?? []) : text)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    ReplyMentions.text(text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice, attachments: reference.attachments ?? []) : text,
+                                       mentions: reference.mentions)
+                        .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
             CardIconButton(icon: "x", label: "Cancel reply") { chat.replyTargets[root] = nil }
-        }.padding(.leading, 10).padding(.vertical, 8)
+        }.padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 8)
             // A bordered card (web's .chat-reply-draft), so the draft reads as part
             // of the composer rather than the timeline; the accent follows its rounded edge.
             // Only the card is clipped, so the Cancel button's focus ring isn't;

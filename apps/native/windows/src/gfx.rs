@@ -50,6 +50,9 @@ pub struct Brushes {
     /// View original's highlighted message, as in egui.
     pub focused: ID2D1SolidColorBrush,
     pub mention: ID2D1SolidColorBrush,
+    /// A quote's, "Replying to" excerpt's or forwarded card's mentions:
+    /// two-thirds of `mention`'s wash.
+    pub mention_quiet: ID2D1SolidColorBrush,
     pub caper: ID2D1SolidColorBrush,
     pub link: ID2D1SolidColorBrush,
     pub link_bg: ID2D1SolidColorBrush,
@@ -237,6 +240,7 @@ impl Gfx {
                 selected: brush(p.terracotta, 0.3)?,
                 focused: brush(p.terracotta, 35.0 / 255.0)?,
                 mention: brush(p.terracotta, 0.24)?,
+                mention_quiet: brush(p.terracotta, 0.16)?,
                 caper: brush(p.caper, 1.0)?,
                 link: brush(p.link, 1.0)?,
                 link_bg: brush(p.link, 0.1)?,
@@ -469,6 +473,7 @@ impl Gfx {
             set(&self.brushes.selected, p.terracotta, 0.3);
             set(&self.brushes.focused, p.terracotta, 35.0 / 255.0);
             set(&self.brushes.mention, p.terracotta, 0.24);
+            set(&self.brushes.mention_quiet, p.terracotta, 0.16);
             set(&self.brushes.caper, p.caper, 1.0);
             set(&self.brushes.link, p.link, 1.0);
             set(&self.brushes.link_bg, p.link, 0.1);
@@ -803,6 +808,50 @@ pub fn range_extent(layout: &IDWriteTextLayout, start: u32, len: u32) -> Option<
         .iter()
         .map(|m| (m.top, m.top + m.height))
         .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
+}
+
+/// The UTF-16 ranges of `text`'s resolved mentions, highlighted quietly
+/// in reply quotes and the "Replying to" excerpt.
+pub fn mention_ranges(text: &str, mentions: &[caper_client::model::Mention]) -> Vec<(u32, u32)> {
+    let utf16 = |end: usize| text[..end].encode_utf16().count() as u32;
+    caper_client::mentions::highlights(text, mentions)
+        .into_iter()
+        .map(|(range, _)| {
+            let start = utf16(range.start);
+            (start, utf16(range.end) - start)
+        })
+        .collect()
+}
+
+/// Quiet mention washes behind `layout` drawn at (`x`, `y`), on the lines
+/// it shows (a trimmed layout's hidden lines get none).
+pub fn fill_quiet_mentions(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    layout: &IDWriteTextLayout,
+    ranges: &[(u32, u32)],
+    x: f32,
+    y: f32,
+) {
+    let shown = unsafe { layout.GetMaxHeight() };
+    for &(s, l) in ranges {
+        for h in range_rects(layout, s, l) {
+            if h.top + h.height > shown + 0.5 {
+                continue;
+            }
+            fill_round(
+                dc,
+                rect(
+                    x + h.left - 2.0,
+                    y + h.top,
+                    x + h.left + h.width + 2.0,
+                    y + h.top + h.height,
+                ),
+                4.0,
+                &g.brushes.mention_quiet,
+            );
+        }
+    }
 }
 
 /// UTF-16 position under a point relative to the layout origin.

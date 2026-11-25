@@ -701,8 +701,10 @@ public struct MessageReply: Codable, Equatable, Sendable {
     public var attachments: [ChatAttachment]? = nil
     /// The quoted message was deleted; its text is no longer sent.
     public var deleted: Bool? = nil
+    /// The source's resolved mentions, highlighted in the quote; they never notify.
+    public var mentions: [MessageMention] = []
     private enum CodingKeys: String, CodingKey {
-        case id, author, text, fullText, hasAttachments, threadRootId, attachments, deleted
+        case id, author, text, fullText, hasAttachments, threadRootId, attachments, deleted, mentions
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -714,6 +716,8 @@ public struct MessageReply: Codable, Equatable, Sendable {
         hasAttachments = deleted == true ? false : try values.decode(Bool.self, forKey: .hasAttachments)
         threadRootId = try values.decodeIfPresent(String.self, forKey: .threadRootId)
         attachments = deleted == true ? nil : values.decodeLossyAttachments(forKey: .attachments)
+        let entries = deleted == true ? nil : try? values.decodeIfPresent([LenientMessageMention].self, forKey: .mentions)
+        mentions = entries?.compactMap { $0.value } ?? []
     }
     public init(message: ChatMessage) {
         id = message.id; author = message.author; threadRootId = message.threadRootId
@@ -725,6 +729,7 @@ public struct MessageReply: Codable, Equatable, Sendable {
         hasAttachments = !message.isDeleted && !(message.content.attachments ?? []).isEmpty
         attachments = message.isDeleted ? nil : message.content.attachments
         deleted = message.isDeleted ? true : nil
+        mentions = message.isDeleted ? [] : message.content.mentions
     }
 
     /// The quoted message carries a voice note: excerpts read "Voice message".

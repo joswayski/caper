@@ -3776,6 +3776,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
 @Composable private fun ReplyContext(reference: MessageReply, state: MessageRowState, motionKey: String, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
     val text = if (reference.deleted) DELETED_REPLY else (reference.fullText ?: reference.text).ifEmpty { VoiceMessages.excerptLabel(reference.attachments, reference.hasAttachments) }
+    val quoted = remember(text, reference.mentions, reference.deleted) { quotedText(text, if (reference.deleted) emptyList() else reference.mentions) }
     var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
     var clipped by remember(reference.id, hidden, text) { mutableStateOf(false) }
     val context = LocalContext.current
@@ -3865,7 +3866,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
                         Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (onOpen != null && !reference.deleted) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
                     }
-                    if (!hidden) Text(text, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, fontStyle = if (reference.deleted) FontStyle.Italic else null,
+                    if (!hidden) Text(quoted, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, fontStyle = if (reference.deleted) FontStyle.Italic else null,
                         maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                         onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
                     if (!hidden && !reference.deleted && reference.attachments.isNotEmpty()) ReplyAttachmentPreviews(reference.attachments)
@@ -3923,14 +3924,20 @@ private fun Modifier.composerBackdrop(sink: Dp) = pointerInput(Unit) {}.drawBehi
     val shape = RoundedCornerShape(8.dp)
     Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }.clip(shape).background(ReplyDraftFill).border(1.dp, Border, shape).drawBehind {
         drawRect(Terracotta, size = Size(2.dp.toPx(), size.height))
-    }.padding(start = 10.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.Top) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    }.padding(start = 10.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        // The text column carries the vertical padding, so the 40dp cancel target centres on it without stretching the bar.
+        Column(Modifier.weight(1f).padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text("Replying to ${if (hidden) "blocked message" else reference.author.name}", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!hidden) Text((reference.fullText ?: reference.text).ifEmpty { VoiceMessages.excerptLabel(reference.attachments, reference.hasAttachments) },
-                color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (!hidden) {
+                val excerpt = reference.fullText ?: reference.text
+                val shown = remember(excerpt, reference.mentions) {
+                    if (excerpt.isEmpty()) quotedText(VoiceMessages.excerptLabel(reference.attachments, reference.hasAttachments), emptyList()) else quotedText(excerpt, reference.mentions)
+                }
+                Text(shown, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
         }
-        IconButton(onCancel, Modifier.size(48.dp)) {
-            Icon(painterResource(R.drawable.lucide_x), "Cancel reply", Modifier.size(16.dp), tint = TextMuted)
+        IconButton(onCancel, Modifier.size(40.dp)) {
+            Icon(painterResource(R.drawable.lucide_x), "Cancel reply", Modifier.size(18.dp), tint = TextMuted)
         }
     }
 }
@@ -4319,11 +4326,12 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
  * Spoilers stay hidden, with their links and mentions inert, until tapped ([reveal] with the spoiler's index);
  * [revealed] lists the ones this view shows.
  * [openHistory] appends a grouped row's "(edited)" marker right after the text.
+ * [quiet] marks quoted text (a forwarded original): every mention gets the [QuietMentionPill], with no link.
  */
 internal fun messageText(
     text: String, mentions: List<MentionSpan>, entries: List<MessageMention>? = null, links: List<LinkRange> = emptyList(),
     open: (MessageMention) -> Unit = {}, openLink: (String) -> Unit = {}, openHistory: (() -> Unit)? = null,
-    revealed: Set<Int> = emptySet(), reveal: (Int) -> Unit = {},
+    revealed: Set<Int> = emptySet(), quiet: Boolean = false, reveal: (Int) -> Unit = {},
 ) = buildAnnotatedString {
     val formatted = chat.caper.android.data.formattedMessage(text)
     val quotes = formatted.ranges(chat.caper.android.data.FormatStyle.QUOTE)
@@ -4345,8 +4353,9 @@ internal fun messageText(
     mentions.forEach { span ->
         if (inHiddenSpoiler(text, revealed, span.start, span.end)) return@forEach
         // With [entries], a person's pill is a link (focusable, Enter-activatable; 32% while hovered, focused or pressed).
-        val user = entries?.let { mentionedUser(span, it) }
-        if (user == null) addStyle(MentionPill, displayed(span.start), displayed(span.end))
+        val user = entries?.takeIf { !quiet }?.let { mentionedUser(span, it) }
+        if (quiet) addStyle(QuietMentionPill, displayed(span.start), displayed(span.end))
+        else if (user == null) addStyle(MentionPill, displayed(span.start), displayed(span.end))
         else addLink(LinkAnnotation.Clickable("mention:${span.name}", MentionPillLink) { open(user) }, displayed(span.start), displayed(span.end))
     }
     // Only http(s) URLs reach here, and they open outside the app.
@@ -4387,6 +4396,14 @@ private val HiddenSpoiler = TextLinkStyles(SpanStyle(color = Color.Transparent),
 private val MentionPill = SpanStyle(color = Text, fontWeight = FontWeight.Medium, background = Terracotta.copy(alpha = 0.24f))
 private val MentionPillActive = SpanStyle(background = Terracotta.copy(alpha = 0.32f))
 private val MentionPillLink = TextLinkStyles(MentionPill, focusedStyle = MentionPillActive, hoveredStyle = MentionPillActive, pressedStyle = MentionPillActive)
+/** Quoted text (reply quotes, the reply draft, forwarded originals): two-thirds of the body pill's tint, the excerpt's own weight. */
+private val QuietMentionPill = SpanStyle(color = Text, background = Terracotta.copy(alpha = 0.16f))
+
+/** A plain quoted excerpt with the quoted message's resolved [mentions] quietly highlighted (source offsets, no formatting). */
+internal fun quotedText(text: String, mentions: List<MessageMention>) = buildAnnotatedString {
+    append(text)
+    highlightedMentions(text, mentions).forEach { addStyle(QuietMentionPill, it.start, it.end) }
+}
 internal const val ChainLinkInline = "chain-link"
 @Composable internal fun messageInlineContent() = mapOf(ChainLinkInline to InlineTextContent(
     Placeholder(16.sp, 12.sp, PlaceholderVerticalAlign.TextCenter),

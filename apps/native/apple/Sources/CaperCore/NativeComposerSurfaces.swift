@@ -17,12 +17,15 @@ public enum ComposerBackdrop {
     public static let stops: [(offset: CGFloat, opacity: CGFloat)] = [(0, 0), (9, 0.3), (17, 0.62), (24, 0.86), (32, 1)]
 }
 
-@MainActor private func replyDraftText(_ chat: ChatModel, inThread: Bool) -> (String, String)? {
+/// The draft's heading name and excerpt; nil when there is no reply target.
+/// A blocked author's message shows no name or excerpt.
+@MainActor private func replyDraftText(_ chat: ChatModel, inThread: Bool) -> (name: String, excerpt: String, mentions: [MessageMention])? {
     guard let root = inThread ? chat.threadRootID : "channel", let reply = chat.replyTargets[root] else { return nil }
     let hidden = chat.blockedAuthorIDs.contains(reply.author.id) && reply.author.id != chat.viewerID
     let text = reply.fullText ?? reply.text
-    return ("Replying to \(hidden ? "blocked message" : reply.author.name)", hidden ? "" : text.isEmpty
-        ? VoiceMessage.excerptFallback(hasAttachments: reply.hasAttachments, hasVoice: reply.hasVoice, attachments: reply.attachments ?? []) : text)
+    return (hidden ? "blocked message" : reply.author.name, hidden ? "" : text.isEmpty
+        ? VoiceMessage.excerptFallback(hasAttachments: reply.hasAttachments, hasVoice: reply.hasVoice, attachments: reply.attachments ?? []) : text,
+        reply.mentions)
 }
 
 #if os(macOS)
@@ -38,9 +41,11 @@ import AppKit
     private let observation = AppKitObservation()
     private let notice = AppKitKit.label("", size: 11, color: AppKitKit.error)
     private let waiting = AppKitKit.label("Uploading… Your message sends when every file is ready.", size: 11, color: AppKitKit.muted)
-    private let replyTitle = AppKitKit.label("", size: 12, weight: .bold, wraps: false)
+    private let replyTitle = AppKitKit.label("", size: 12, wraps: false)
     private let replyText = AppKitKit.label("", size: 12, color: AppKitKit.muted)
     private let reply = NSStackView()
+    private let replyAccent = CALayer()
+    private var cancel: AppKitKitButton!
     private let files: AppKitStagedFiles
     private let voice: AppKitVoiceControls
     init(chat: ChatModel, inThread: Bool, onlyReply: Bool = false, preview: @escaping (AttachmentDraft) -> Void) {
@@ -48,17 +53,27 @@ import AppKit
         files = AppKitStagedFiles { NativeStagedFile.chat(chat, inThread: inThread, preview: preview) }
         voice = AppKitVoiceControls(session: NativeVoiceSession { .chat(chat, inThread: inThread) }, kind: .notice)
         super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 8
-        replyText.maximumNumberOfLines = 2
-        let words = AppKitKit.stack([replyTitle, replyText], spacing: 3)
-        let cancel = AppKitKitButton("", kind: .plain) {
+        // Up to two lines of the quoted message, ending in an ellipsis rather
+        // than being cut off by the bar's edge.
+        replyText.maximumNumberOfLines = 2; replyText.lineBreakMode = .byWordWrapping
+        replyText.cell?.truncatesLastVisibleLine = true
+        let words = AppKitKit.stack([replyTitle, replyText], spacing: 2)
+        cancel = AppKitKitButton("", kind: .plain) {
             if let root = inThread ? chat.threadRootID : "channel" { chat.replyTargets[root] = nil }
         }
-        cancel.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
-        cancel.imagePosition = .imageOnly; cancel.setAccessibilityLabel("Cancel reply")
-        reply.orientation = .horizontal; reply.alignment = .top; reply.spacing = 7; reply.distribution = .fill
-        reply.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 4)
+        cancel.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        cancel.imagePosition = .imageOnly; cancel.contentTintColor = AppKitKit.muted; cancel.setAccessibilityLabel("Cancel reply")
+        NSLayoutConstraint.activate([cancel.widthAnchor.constraint(equalToConstant: 28), cancel.heightAnchor.constraint(equalToConstant: 28)])
+        // The × is centred against the text and sits as far from the bar's
+        // trailing edge as the text does from its leading edge.
+        reply.orientation = .horizontal; reply.alignment = .centerY; reply.spacing = 8; reply.distribution = .fill
+        reply.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 6)
         reply.wantsLayer = true; reply.layer?.backgroundColor = NSColor(CaperTheme.replyDraft).cgColor
         reply.layer?.borderColor = AppKitKit.border.cgColor; reply.layer?.borderWidth = 1; reply.layer?.cornerRadius = 8
+        reply.layer?.masksToBounds = true
+        // Web's border-left accent, following the card's rounded edge.
+        replyAccent.backgroundColor = CaperThemeStore.accentColor.cgColor; reply.layer?.addSublayer(replyAccent)
         reply.addArrangedSubview(words); reply.addArrangedSubview(cancel)
         // The text takes the bar's slack so × sits at the trailing edge.
         words.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -77,10 +92,28 @@ import AppKit
         if window != nil { observation.start(reading: { [weak self] in self?.render() }, apply: { _ in }) }
         else { observation.stop() }
     }
+    /// A wrapping label measures at its preferred width, so it gets the bar's
+    /// text width before the surface asks for the fitting height.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        let width = max(1, newSize.width - reply.edgeInsets.left - reply.edgeInsets.right - reply.spacing - 28)
+        if onlyReply, replyText.preferredMaxLayoutWidth != width { replyText.preferredMaxLayoutWidth = width; invalidateIntrinsicContentSize() }
+    }
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        replyAccent.frame = CGRect(x: 0, y: 0, width: 2, height: reply.bounds.height)
+        CATransaction.commit()
+    }
     private func render() {
         if onlyReply {
             let text = replyDraftText(chat, inThread: inThread)
-            replyTitle.stringValue = text?.0 ?? ""; replyText.stringValue = text?.1 ?? ""
+            let heading = NSMutableAttributedString(string: "Replying to ", attributes: [.font: AppKitKit.font(12), .foregroundColor: AppKitKit.muted])
+            heading.append(NSAttributedString(string: text?.name ?? "", attributes: [.font: AppKitKit.font(12, weight: .bold), .foregroundColor: AppKitKit.text]))
+            replyTitle.attributedStringValue = heading
+            replyText.attributedStringValue = ReplyMentions.excerpt(text?.excerpt ?? "", mentions: text?.mentions ?? [], font: AppKitKit.font(12), color: AppKitKit.muted)
+            replyText.lineBreakMode = .byWordWrapping; replyText.cell?.truncatesLastVisibleLine = true
+            replyAccent.backgroundColor = CaperThemeStore.accentColor.cgColor; cancel.contentTintColor = AppKitKit.muted
             replyText.isHidden = replyText.stringValue.isEmpty; reply.isHidden = text == nil
         } else {
             notice.stringValue = (inThread ? chat.threadAttachmentNotice : chat.attachmentNotice) ?? ""
@@ -191,7 +224,7 @@ import UIKit
         let cancel = UIKitMessageDialog.button("×") { if let root = inThread ? chat.threadRootID : "channel" { chat.replyTargets[root] = nil } }
         cancel.accessibilityLabel = "Cancel reply"
         cancel.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        reply.axis = .horizontal; reply.alignment = .top; reply.spacing = 7
+        reply.axis = .horizontal; reply.alignment = .center; reply.spacing = 7
         reply.layoutMargins = UIEdgeInsets(top: 8, left: 10, bottom: 8, right: 0); reply.isLayoutMarginsRelativeArrangement = true
         reply.backgroundColor = UIColor(CaperTheme.replyDraft); reply.layer.cornerRadius = 8
         reply.layer.borderColor = UIColor(CaperTheme.border).cgColor; reply.layer.borderWidth = 1
@@ -205,7 +238,12 @@ import UIKit
     private func observe(_ token: Int) { guard active, token == generation else { return }; withObservationTracking { render() } onChange: { [weak self] in Task { @MainActor in self?.observe(token) } } }
     private func render() {
         let text = replyDraftText(chat, inThread: inThread)
-        replyTitle.text = text?.0; replyText.text = text?.1; replyText.isHidden = text?.1.isEmpty != false; reply.isHidden = text == nil
+        let heading = NSMutableAttributedString(string: "Replying to ", attributes: [.font: replyText.font!, .foregroundColor: UIColor(CaperTheme.muted)])
+        heading.append(NSAttributedString(string: text?.name ?? "", attributes: [.font: replyTitle.font!, .foregroundColor: UIColor(CaperTheme.text)]))
+        replyTitle.attributedText = heading
+        replyText.attributedText = ReplyMentions.excerpt(text?.excerpt ?? "", mentions: text?.mentions ?? [], font: replyText.font, color: UIColor(CaperTheme.muted))
+        replyText.lineBreakMode = .byTruncatingTail
+        replyText.isHidden = text?.excerpt.isEmpty != false; reply.isHidden = text == nil
         notice.text = inThread ? chat.threadAttachmentNotice : chat.attachmentNotice; notice.isHidden = notice.text == nil
         waiting.isHidden = !chat.uploadWaiting(inThread: inThread); files.isHidden = chat.attachmentFiles(inThread: inThread).isEmpty
         voice.render(); files.render(); invalidateIntrinsicContentSize()

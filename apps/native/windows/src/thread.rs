@@ -1057,7 +1057,7 @@ impl App {
             Part::Reply | Part::CancelReply => {
                 let (x, y, w, h) = t.reply_rect(self.h)?;
                 Some(if part == Part::CancelReply {
-                    (x0 + x + w - 52.0, y + 8.0, 44.0, 44.0)
+                    ReplyBar::cancel_rect((x0 + x, y, w, h))
                 } else {
                     (x0 + x, y, w, h)
                 })

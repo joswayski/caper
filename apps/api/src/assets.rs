@@ -2060,9 +2060,11 @@ pub(crate) async fn edit_sources(
         .collect())
 }
 
-/// Reply media is projected at delivery, never frozen in the stored quote.
-/// Old replies gain previews too; edits, processing and deletion use the
-/// source's current files. References were authorized when the reply was sent.
+/// Reply media and mentions are projected at delivery, never frozen in the
+/// stored quote. Old replies gain previews and mention highlights too; edits,
+/// processing and deletion use the source's current files. References were
+/// authorized when the reply was sent. Quoted mentions only highlight; they
+/// sit outside `content`, so they never notify or count as unread mentions.
 pub(crate) async fn reply_attachments<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     payloads: &mut [Value],
@@ -2092,19 +2094,20 @@ pub(crate) async fn reply_attachments<'e>(
         } else {
             payload
         };
-        let files = sources
+        let source = sources
             .iter()
             .find(|(id, channel, _)| {
                 message["replyTo"]["id"].as_str() == Some(id)
                     && message["channelId"].as_str() == Some(channel)
                     && message["replyTo"]["deleted"] != true
             })
-            .and_then(|(_, _, content)| content.get("attachments"))
-            .cloned();
+            .map(|(_, _, content)| content);
         if let Some(reference) = message.get_mut("replyTo").and_then(Value::as_object_mut) {
-            reference.remove("attachments");
-            if let Some(files) = files {
-                reference.insert("attachments".into(), files);
+            for key in ["attachments", "mentions"] {
+                reference.remove(key);
+                if let Some(value) = source.and_then(|content| content.get(key)) {
+                    reference.insert(key.into(), value.clone());
+                }
             }
         }
     }

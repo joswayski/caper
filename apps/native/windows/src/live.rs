@@ -7071,6 +7071,7 @@ pub fn message(
                 }
             },
             deleted: r.deleted,
+            mentions: r.mentions.clone(),
         }),
         thread_replies: m
             .thread

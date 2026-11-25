@@ -139,6 +139,8 @@ export interface ChatReplyReference {
   threadRootId?: string;
   /** The quoted message was deleted; `text` is empty. */
   deleted?: boolean;
+  /** The source's resolved mentions, highlighted in the quote; they never notify. */
+  mentions?: ChatMention[];
 }
 
 export interface ChatMessage {

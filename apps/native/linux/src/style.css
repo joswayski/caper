@@ -876,6 +876,14 @@ popover.emoji-picker image.mine {
   background: #20282a;
 }
 
+/* Its cancel: a 28px square target around the 14px icon, centred on the
+   text column and flush with the bar's trailing padding. */
+.compose-bar > button.compose-cancel {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
 /* The typing row and composer float over the end of the history, which
    runs on under them (`ui::float_composer`). The conversation colour eases
    in over 32px (web's mask stops, as every client: no blur, which smears what

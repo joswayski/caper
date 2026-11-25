@@ -67,6 +67,8 @@ pub struct Reply {
     /// Its text (or an attachments label); empty when it was deleted.
     pub text: String,
     pub deleted: bool,
+    /// The quoted message's resolved mentions, highlighted quietly.
+    pub mentions: Vec<caper_client::model::Mention>,
 }
 
 #[derive(PartialEq)]

@@ -12,6 +12,7 @@ import {
   type ChatReplyReference,
 } from "./types.ts";
 import { attachmentLabel, attachmentsExcerpt, isVoiceAttachment } from "./voice.ts";
+import { mentionSegments } from "./mentions.ts";
 
 export function replyReference(message: ChatMessage): ChatReplyReference {
   const gif = gifOf(message.content);
@@ -27,7 +28,21 @@ export function replyReference(message: ChatMessage): ChatReplyReference {
     hasAttachments: !!attachmentsOf(message).length,
     attachments: attachmentsOf(message),
     ...(message.threadRootId ? { threadRootId: message.threadRootId } : {}),
+    ...(message.content.mentions ? { mentions: message.content.mentions } : {}),
   };
+}
+
+/** A quoted excerpt with the source's resolved mentions quietly highlighted. */
+function QuotedText({ text, mentions }: { text: string; mentions: ChatReplyReference["mentions"] }) {
+  return mentionSegments(text, mentions).map((segment, index) =>
+    segment.mention ? (
+      <span key={index} className="chat-mention chat-mention-quiet">
+        {segment.text}
+      </span>
+    ) : (
+      segment.text
+    ),
+  );
 }
 
 function ReplyThumbnail({ file }: { file: ChatAttachment }) {
@@ -261,7 +276,11 @@ export function ReplyContext({
               id={excerptId}
               className={`chat-reply-excerpt${reference.deleted ? " chat-reply-excerpt-deleted" : ""}`}
             >
-              {reference.deleted ? "Original message was deleted." : text}
+              {reference.deleted ? (
+                "Original message was deleted."
+              ) : (
+                <QuotedText text={text} mentions={reference.mentions} />
+              )}
             </span>
           )}
           {!!files.length && (
@@ -307,8 +326,13 @@ export function ReplyDraft({
         </span>
         {!hidden && (
           <span className="chat-reply-draft-excerpt">
-            {(reference.fullText ?? reference.text) ||
-              (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message")}
+            {(reference.fullText ?? reference.text) ? (
+              <QuotedText text={reference.fullText ?? reference.text} mentions={reference.mentions} />
+            ) : reference.hasAttachments ? (
+              attachmentsExcerpt(reference.attachments)
+            ) : (
+              "Message"
+            )}
           </span>
         )}
       </div>

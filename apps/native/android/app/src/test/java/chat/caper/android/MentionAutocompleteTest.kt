@@ -11,6 +11,7 @@ import chat.caper.android.model.DirectConversation
 import chat.caper.android.model.DirectPeer
 import chat.caper.android.model.Member
 import chat.caper.android.model.MessageMention
+import chat.caper.android.model.MessageReply
 import chat.caper.android.model.PeopleList
 import chat.caper.android.model.Person
 import chat.caper.android.model.Space
@@ -448,5 +449,15 @@ class MentionAutocompleteTest {
             MessageMention("user", null, "bob"),
         ), decoded)
         assertEquals(listOf("alice", "everyone"), highlightedMentions("hey @alice @everyone", decoded).map { it.name })
+    }
+
+    @Test fun `reply references decode optional mentions for the quoted excerpt`() {
+        val json = Json { ignoreUnknownKeys = true }
+        val author = """"author":{"id":"a","name":"Ann","isGuest":false}"""
+        assertTrue(json.decodeFromString<MessageReply>("""{"id":"m",$author,"text":"hi @alice","hasAttachments":false}""").mentions.isEmpty())
+        val reply = json.decodeFromString<MessageReply>("""{"id":"m",$author,"text":"hi @alice and @nobody","hasAttachments":false,
+            "mentions":[{"type":"user","id":"abcdefghijkl","username":"alice"},"bad"]}""")
+        assertEquals(listOf(MessageMention("user", "abcdefghijkl", "alice")), reply.mentions)
+        assertEquals(listOf(MentionSpan(3, 9, "alice")), highlightedMentions(reply.text, reply.mentions))
     }
 }
