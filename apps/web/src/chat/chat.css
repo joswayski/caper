@@ -2379,19 +2379,24 @@ button.chat-mention-card-avatar {
   --composer-shadow: 0 0 transparent;
   --composer-shell-bg: transparent;
   --composer-shell-border: transparent;
+  /* Where the backdrop turns solid, below the composer's top edge: the
+     single-line input's midline. */
+  --composer-sink: 23px;
 }
 .chat-thread-composer {
   padding-top: 12px;
+  --composer-sink: 33px;
 }
-/* Messages scroll on under the composer. Solid behind the composer, its
-   backdrop eases out upward as frosted glass over the conversation's last
-   32px instead of a hard edge where the timeline ends. The lists keep their
-   newest message clear of it. */
+/* Messages scroll on under the composer. Its backdrop eases in as frosted
+   glass over 32px and turns solid only at the input's midline, so the
+   conversation (and a hovered row) shows on beside the input's upper half
+   and the input floats over it rather than sitting on a slab. The lists keep
+   their newest message clear of it. */
 .chat-composer::before {
   content: "";
   position: absolute;
   z-index: -1;
-  inset: -32px 0 0;
+  inset: calc(var(--composer-sink) - 32px) 0 0;
   background: linear-gradient(
     color-mix(in srgb, var(--surface-conversation) 60%, transparent),
     var(--surface-conversation) 32px

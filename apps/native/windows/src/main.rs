@@ -5156,8 +5156,9 @@ fn caret_timeout() -> Option<std::time::Duration> {
 }
 
 /// The composer's backdrop over the end of a message history, `w` wide and
-/// `h` tall from `y`: the conversation colour easing in over its first
-/// `FADE_H` (web's mask stops), solid below, where the composer floats.
+/// `h` tall from `y`, which is `FADE_H` above the composer's top edge: clear
+/// down to `COMPOSER_SINK` into it, then the conversation colour easing in
+/// over `FADE_H` (web's mask stops), solid below, about the field's midline.
 /// Web also blurs what scrolls behind the fade; here it fades alone.
 pub fn draw_backdrop(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32, h: f32) {
     use windows::Win32::Graphics::Direct2D::Common::D2D1_GRADIENT_STOP;
@@ -5182,13 +5183,16 @@ pub fn draw_backdrop(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32, h: f32) {
         ) else {
             return;
         };
-        // Clamped past its end point: solid from the composer's top edge down.
+        // Clamped at both ends: clear above the band, solid below it.
         let Ok(brush) = dc.CreateLinearGradientBrush(
             &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-                startPoint: windows_numerics::Vector2 { X: 0.0, Y: y },
+                startPoint: windows_numerics::Vector2 {
+                    X: 0.0,
+                    Y: y + COMPOSER_SINK,
+                },
                 endPoint: windows_numerics::Vector2 {
                     X: 0.0,
-                    Y: y + FADE_H,
+                    Y: y + COMPOSER_SINK + FADE_H,
                 },
             },
             None,

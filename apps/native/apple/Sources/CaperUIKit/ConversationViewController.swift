@@ -1100,8 +1100,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     /// composer grows, while one up in the history stays where they are.
     private func layoutComposerOverlap() {
         let top = notices.view.frame.minY
-        // Solid from the composer's top edge, or from the notices when they show.
-        let solid = notices.view.frame.height > 0 ? top : composer.frame.minY
+        // Solid from the input's midline, or from the notices' when they show.
+        let solid = (notices.view.frame.height > 0 ? top : composer.frame.minY) + ComposerBackdrop.sink
         backdrop.frame = CGRect(x: collection.frame.minX, y: solid - ComposerBackdrop.fade, width: collection.frame.width,
                                 height: max(0, view.bounds.maxY - solid + ComposerBackdrop.fade))
         let covered = max(0, collection.frame.maxY - top)

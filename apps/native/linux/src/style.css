@@ -877,22 +877,28 @@ popover.emoji-picker image.mine {
 }
 
 /* The typing row and composer float over the end of the history, which
-   runs on under them (`ui::float_composer`). Solid conversation colour
-   behind the composer, easing out over the 32px above it (web's mask stops;
-   no blur, which GTK has no cheap way to draw). */
+   runs on under them (`ui::float_composer`). The conversation colour eases
+   in over 32px (web's mask stops; no blur, which GTK has no cheap way to
+   draw) from 10px above the composer and turns solid 22px into it, about the
+   field's midline, so the history (and a hovered row) shows on beside the
+   field's upper half. The band spans the fade above and the backdrop's top. */
 .composer-backdrop {
-  background: @caper_surface_conversation;
+  background-image: linear-gradient(
+    to bottom,
+    alpha(@caper_surface_conversation, 0.34),
+    alpha(@caper_surface_conversation, 0.62) 7px,
+    alpha(@caper_surface_conversation, 0.86) 14px,
+    @caper_surface_conversation 22px
+  );
 }
 
 .composer-fade {
   min-height: 32px;
   background-image: linear-gradient(
     to bottom,
-    alpha(@caper_surface_conversation, 0),
-    alpha(@caper_surface_conversation, 0.3) 9px,
-    alpha(@caper_surface_conversation, 0.62) 17px,
-    alpha(@caper_surface_conversation, 0.86) 24px,
-    @caper_surface_conversation 32px
+    alpha(@caper_surface_conversation, 0) 22px,
+    alpha(@caper_surface_conversation, 0.3) 31px,
+    alpha(@caper_surface_conversation, 0.34) 32px
   );
 }
 

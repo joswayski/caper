@@ -706,7 +706,7 @@ final class HostedView: UIView {
 /// The composer's backdrop (web's `.chat-composer::before`, `ComposerBackdrop`).
 /// The timeline runs on under the typing row and composer, and this covers its
 /// end: solid conversation color from `ComposerBackdrop.fade` points below its
-/// top edge down, easing out over the band above as frosted glass, a native
+/// top edge (the composer's input midline) down, easing out over the band above as frosted glass, a native
 /// blur under the same eased mask. Reduce Transparency drops the blur and keeps
 /// the fade. Its owner sets its frame. The band passes touches through to the
 /// messages under it; the solid part keeps them off rows hidden under the composer.

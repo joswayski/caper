@@ -548,8 +548,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let top = composerStack.frame.minY
-        backdrop.frame = CGRect(x: collection.frame.minX, y: top - ComposerBackdrop.fade, width: collection.frame.width,
-                                height: max(0, view.bounds.maxY - top + ComposerBackdrop.fade))
+        let solid = top + ComposerBackdrop.sink
+        backdrop.frame = CGRect(x: collection.frame.minX, y: solid - ComposerBackdrop.fade, width: collection.frame.width,
+                                height: max(0, view.bounds.maxY - solid + ComposerBackdrop.fade))
         // Past the backdrop's fade too, as web: the newest reply stays clear of it.
         let covered = max(0, collection.frame.maxY - top + ComposerBackdrop.fade)
         guard abs(collection.contentInset.bottom - covered) > 0.5 else { return }

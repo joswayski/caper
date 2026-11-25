@@ -782,8 +782,8 @@ import CaperCore
         timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, height - top))
         timeline.bottomReserve = max(0, height - max(top, statusY))
         layoutEmptyState()
-        // Solid from the composer's top edge (or the direct-message bar's), easing out above it.
-        let solidTop = max(top, directBar.isHidden ? stackTop : statusY + statusHeight)
+        // Solid from the input's midline (or the direct-message bar's), easing out above it.
+        let solidTop = max(top, (directBar.isHidden ? stackTop : statusY + statusHeight) + ComposerBackdrop.sink)
         backdrop.frame = NSRect(x: 0, y: solidTop - ComposerBackdrop.fade, width: center, height: max(0, height - solidTop + ComposerBackdrop.fade))
         status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: statusHeight)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
@@ -1515,7 +1515,7 @@ private final class AppKitComposerField: NSView {
 /// The composer's backdrop (web's `.chat-composer::before`, `ComposerBackdrop`).
 /// The timeline runs on under the status row and composer, and this covers
 /// its end: solid conversation color from `ComposerBackdrop.fade` points below
-/// its top edge down, easing out over the band above as frosted glass, a
+/// its top edge (the composer's input midline) down, easing out over the band above as frosted glass, a
 /// within-window blur under the same eased mask. Reduce Transparency drops the
 /// blur and keeps the fade. The band passes clicks and scrolling through to
 /// the messages under it; the solid part keeps them off rows hidden under the composer.

@@ -474,7 +474,8 @@ impl Pane {
         }
         unsafe { dc.PopAxisAlignedClip() };
         // The composer's backdrop over the history's end, inside the leading
-        // separator: fading in above the composer, solid behind it.
+        // separator: fading in around the composer's top edge, solid from its
+        // field's midline.
         crate::draw_backdrop(dc, 1.0, HEADER_H + vh, w - 1.0, h - HEADER_H - vh);
         result?;
         let reply_rect = self.reply_rect(h);

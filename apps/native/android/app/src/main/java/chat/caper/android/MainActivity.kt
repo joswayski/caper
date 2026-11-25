@@ -1922,7 +1922,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 // Under the replies, these float with the composer, so the list ends above them too.
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().composerBackdrop()
+                // Solid from the field's midline: under the 12dp top padding and half the field.
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().composerBackdrop(sink = 34.dp)
                     .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }) {
                     if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
                     // A failed load shows its error and Retry instead (web).
@@ -2235,7 +2236,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
                     }
                 }
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().composerBackdrop()
+                // Solid from the field's midline: under the 16dp typing line and half the field.
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().composerBackdrop(sink = 38.dp)
                     .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }) {
                     // Phones show the conversation alone, so voice errors from the dock (behind Browse) come with it, above the composer.
                     (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error -> VoiceErrorBanner(error, dismissVoiceError) }
@@ -3899,17 +3901,19 @@ private val ReplyDraftFill = Color(0xFF20282A)
 
 /**
  * The backdrop of a composer floating over the end of its conversation (web's .chat-composer::before): solid
- * conversation colour behind it, easing out over the 32dp above its top edge. A gradient alone, without web's blur:
- * RenderEffect blur is costly and needs API 31. Its own bounds take touches, so a tap beside the field doesn't reach
- * a message hidden underneath; the fade above draws only.
+ * conversation colour from [sink] below its top edge, about the field's midline, easing out over the 32dp above
+ * that, so the conversation (and a pressed row) shows on beside the field's upper half and the field floats over
+ * it rather than on a slab. A gradient alone, without web's blur: RenderEffect blur is costly and needs API 31. Its
+ * own bounds take touches, so a tap beside the field doesn't reach a message hidden underneath; the fade above draws only.
  */
-private fun Modifier.composerBackdrop() = pointerInput(Unit) {}.drawBehind {
+private fun Modifier.composerBackdrop(sink: Dp) = pointerInput(Unit) {}.drawBehind {
     if (size.height == 0f) return@drawBehind
     val fade = 32.dp.toPx()
-    drawRect(SurfaceConversation)
+    val solid = minOf(sink.toPx(), size.height)
+    drawRect(SurfaceConversation, topLeft = Offset(0f, solid), size = Size(size.width, size.height - solid))
     drawRect(Brush.verticalGradient(*arrayOf(0f to SurfaceConversation.copy(alpha = 0f), 9f / 32 to SurfaceConversation.copy(alpha = 0.30f),
         17f / 32 to SurfaceConversation.copy(alpha = 0.62f), 24f / 32 to SurfaceConversation.copy(alpha = 0.86f), 1f to SurfaceConversation),
-        startY = -fade, endY = 0f), topLeft = Offset(0f, -fade), size = Size(size.width, fade))
+        startY = solid - fade, endY = solid), topLeft = Offset(0f, solid - fade), size = Size(size.width, fade))
 }
 
 @Composable private fun ReplyDraft(reference: MessageReply, state: AppUiState, onCancel: () -> Unit) {
