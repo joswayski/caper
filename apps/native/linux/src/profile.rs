@@ -197,11 +197,7 @@ impl App {
                 .connect_changed(move |buffer| empty.set_visible(buffer.char_count() == 0));
             // The channel composer's GIF button: a chosen GIF goes alone.
             let gif: gtk::Button = crate::app::named("GtkButton", "Send a GIF");
-            let badge = gtk::Label::new(Some("GIF"));
-            badge.add_css_class("gif-badge");
-            badge.set_halign(gtk::Align::Center);
-            badge.set_valign(gtk::Align::Center);
-            gif.set_child(Some(&badge));
+            gif.set_child(Some(&self.images.icon_image(Icon::Gif, "#b9bcbe", 18)));
             gif.set_tooltip_text(Some("Send a GIF"));
             gif.set_valign(gtk::Align::End);
             gif.add_css_class("flat");

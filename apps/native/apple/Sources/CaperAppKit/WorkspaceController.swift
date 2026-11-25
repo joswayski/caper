@@ -1452,21 +1452,11 @@ import CaperCore
         }
     }
 
-    private static func gifBadgeImage() -> NSImage {
-        let size = NSSize(width: 24, height: 17)
-        let label = NSAttributedString(string: "GIF", attributes: [
-            .font: NativeStyle.font(9.5, bold: true),
-            .foregroundColor: NSColor.black,
-        ])
-        let textSize = label.size()
-        let image = NSImage(size: size, flipped: false) { rect in
-            let stroke = NSBezierPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), xRadius: 4, yRadius: 4)
-            stroke.lineWidth = 1.5
-            NSColor.black.setStroke()
-            stroke.stroke()
-            label.draw(at: NSPoint(x: (rect.width - textSize.width) / 2, y: (rect.height - textSize.height) / 2))
-            return true
-        }
+    /// The shared filled GIF badge, as wide as the `face.smiling` symbol
+    /// beside it (14 pt): its 20-unit badge in a 17-point, 24-unit box.
+    private static func gifBadgeImage() -> NSImage? {
+        guard let image = NSImage(named: "caper-gif")?.copy() as? NSImage else { return nil }
+        image.size = NSSize(width: 17, height: 17)
         image.isTemplate = true
         return image
     }

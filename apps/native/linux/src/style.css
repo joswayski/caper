@@ -2521,14 +2521,6 @@ button.quote-more {
 }
 
 /* "Send a GIF" and its picker. */
-.gif-badge {
-  padding: 0 3px;
-  border: 1.4px solid currentColor;
-  border-radius: 3px;
-  font-size: 8.5px;
-  font-weight: 700;
-}
-
 button.gif-tab {
   min-height: 36px;
   border-radius: 8px 8px 0 0;

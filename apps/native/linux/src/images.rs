@@ -55,6 +55,7 @@ icons! {
     Users => "users",
     SmilePlus => "smile-plus",
     Smile => "smile",
+    Gif => "gif",
     Reply => "reply",
     Thread => "thread",
     More => "ellipsis",

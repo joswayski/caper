@@ -164,9 +164,15 @@ import AppKit
             button.widthAnchor.constraint(equalToConstant: 32).isActive = true
             button.heightAnchor.constraint(equalToConstant: 32).isActive = true
         }
-        gif = AppKitKitButton("GIF", kind: .plain) { state.showingGIF = true; state.synchronizePresentation() }; gif.setAccessibilityIdentifier("mention-card-gif")
-        gif.minimumHeight = 32; gif.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        gif.widthAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
+        gif = AppKitKitButton("", kind: .plain) { state.showingGIF = true; state.synchronizePresentation() }; gif.setAccessibilityIdentifier("mention-card-gif")
+        // The shared filled GIF badge, as wide as the emoji symbol beside it.
+        if let badge = (NSImage(named: "caper-gif") ?? caperResourceBundle.image(forResource: "caper-gif"))?.copy() as? NSImage {
+            badge.size = NSSize(width: 17, height: 17); badge.isTemplate = true
+            gif.image = badge; gif.imagePosition = .imageOnly
+        }
+        gif.setAccessibilityLabel("GIF"); gif.toolTip = "GIF"; gif.minimumHeight = 32
+        gif.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        gif.heightAnchor.constraint(equalToConstant: 32).isActive = true
         send = AppKitKitButton("Send", kind: .primary) { state.send() }; send.setAccessibilityIdentifier("mention-card-send")
         let row = NSStackView(views: [attach, emoji, gif, NSView(), voice, send]); row.spacing = 6
         for child in [incoming, files, editor!, recordingBar, row, voiceNotice, voiceRetry, status] { addArrangedSubview(child); AppKitKit.fillWidth(child, of: self) }
@@ -310,7 +316,7 @@ import UIKit
         attach = Self.tool(symbol: "plus", label: "Attach files") { [state] in state.pickFiles() }; attach.accessibilityIdentifier = "mention-card-files"
         attach.addAction(UIAction { _ in AttachGalleryCache.warm() }, for: .touchDown)
         emoji = Self.tool(symbol: "face.smiling", label: "Insert emoji") { [state] in state.openEmoji() }; emoji.accessibilityIdentifier = "mention-card-emoji"
-        gif = Self.tool(title: "GIF", label: "GIF") { [state] in state.showingGIF = true; state.synchronizePresentation() }; gif.accessibilityIdentifier = "mention-card-gif"
+        gif = Self.tool(image: UIKitVoiceControls.icon("gif", size: 22), label: "GIF") { [state] in state.showingGIF = true; state.synchronizePresentation() }; gif.accessibilityIdentifier = "mention-card-gif"
         send = UIKitMessageDialog.button("Send", primary: true) { [state] in state.send() }; send.accessibilityIdentifier = "mention-card-send"
         // One toolbar under the field, as the conversation composer: tools
         // on the left, the microphone and Send on the right.
@@ -325,13 +331,9 @@ import UIKit
     override func viewDidLoad() { super.viewDidLoad(); startTask = Task { [state] in await state.start() }; observe() }
     /// A borderless toolbar control: a tap dims its glyph briefly and it
     /// never takes a filled or hover-like wash.
-    private static func tool(symbol: String? = nil, title: String? = nil, label: String, action: @escaping () -> Void) -> UIButton {
+    private static func tool(symbol: String? = nil, image: UIImage? = nil, label: String, action: @escaping () -> Void) -> UIButton {
         var config = UIButton.Configuration.plain()
-        if let symbol { config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)) }
-        if let title {
-            let font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Bold", size: 13) ?? .boldSystemFont(ofSize: 13))
-            config.attributedTitle = AttributedString(title, attributes: AttributeContainer([.font: font]))
-        }
+        config.image = symbol.flatMap { UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)) } ?? image
         config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
         let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
         button.accessibilityLabel = label

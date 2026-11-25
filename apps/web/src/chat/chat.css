@@ -7056,19 +7056,6 @@ a.chat-draft-preview {
 
 /* KLIPY GIFs and stickers. The GIF tool sits before the emoji tool, so
    composers with it reserve one more tool's width. */
-.chat-gif-tool span {
-  display: grid;
-  place-items: center;
-  min-width: 24px;
-  height: 17px;
-  padding: 0 3px;
-  border: 1.5px solid currentcolor;
-  border-radius: 4px;
-  font-size: 0.6rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  line-height: 1;
-}
 :is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) .chat-rich-input {
   padding-right: 88px;
 }

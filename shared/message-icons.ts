@@ -20,3 +20,18 @@ export const Thread = createLucideIcon("Thread", [
     },
   ],
 ]);
+
+// The composer's GIF button: a filled badge with the letters cut out, on
+// Lucide's 24-unit grid so it shares the emoji and microphone icons' box.
+export const Gif = createLucideIcon("Gif", [
+  [
+    "path",
+    {
+      d: "M6 3h12a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4ZM4.5 8v8h6v-4.5h-3v1.75h1V14h-2v-4h4V8ZM12 8v8h2V8ZM15.5 8v8h2v-2.75H19v-2h-1.5V10h2V8Z",
+      fill: "currentColor",
+      fillRule: "evenodd",
+      stroke: "none",
+      key: "gif",
+    },
+  ],
+]);

@@ -413,7 +413,7 @@ export function useVoiceRecorder({
         if (phase === "idle") void start("free");
       }}
     >
-      <Mic size={16} aria-hidden="true" />
+      <Mic size={18} aria-hidden="true" />
       {active && mode === "hold" && (
         <span className="chat-voice-lock" aria-hidden="true">
           <span style={{ translate: `0 ${(Math.max(-LOCK_PX, lift) / LOCK_PX) * 8}px` }}>

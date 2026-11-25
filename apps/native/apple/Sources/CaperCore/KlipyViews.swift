@@ -386,9 +386,7 @@ struct ComposerGifButton: View {
 
     var body: some View {
         Button { showing = true } label: {
-            Text("GIF").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                .padding(.horizontal, 3).frame(height: 16)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.muted, lineWidth: 1.5))
+            CaperIcon(name: "gif", size: 18).foregroundStyle(CaperTheme.muted)
                 .frame(width: 36, height: 42).contentShape(Rectangle())
         }
         .buttonStyle(.plain)

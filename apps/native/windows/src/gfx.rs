@@ -149,8 +149,7 @@ pub struct Formats {
     pub embed_author: IDWriteTextFormat,
     pub embed_title: IDWriteTextFormat,
     pub embed_text: IDWriteTextFormat,
-    /// The composer's GIF badge (egui's 8.5) and the GIF picker's tabs (13).
-    pub gif_badge: IDWriteTextFormat,
+    /// The GIF picker's tabs (13).
     pub gif_tab: IDWriteTextFormat,
     /// A DM row's name (egui's 13, bold while unread), its "you" or
     /// status note (12) and its small avatar's initials.
@@ -357,7 +356,6 @@ impl Gfx {
                 embed_author: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 embed_title: fmt(14.4, DWRITE_FONT_WEIGHT_BOLD)?,
                 embed_text: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
-                gif_badge: fmt(8.5, DWRITE_FONT_WEIGHT_NORMAL)?,
                 gif_tab: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 direct_name: fmt(13.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
                 direct_unread: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,

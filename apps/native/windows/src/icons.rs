@@ -42,6 +42,7 @@ icons! {
     ExternalLink => "external-link.svg",
     EyeOff => "eye-off.svg",
     FileText => "file-text.svg",
+    Gif => "gif.svg",
     Hash => "hash.svg",
     Headphones => "headphones.svg",
     History => "history.svg",
@@ -103,10 +104,16 @@ fn document(
     if let Some(d) = DOCS.with(|d| d.borrow().get(&key).cloned()) {
         return Ok(d);
     }
-    let source = icon.source().replace(
-        "stroke=\"#ffffff\"",
-        &format!("stroke=\"#{color:06x}\" stroke-opacity=\"{alpha}\""),
-    );
+    let source = icon
+        .source()
+        .replace(
+            "stroke=\"#ffffff\"",
+            &format!("stroke=\"#{color:06x}\" stroke-opacity=\"{alpha}\""),
+        )
+        .replace(
+            "fill=\"#ffffff\"",
+            &format!("fill=\"#{color:06x}\" fill-opacity=\"{alpha}\""),
+        );
     let doc = unsafe {
         let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(source.as_bytes()))
             .ok_or_else(|| Error::from(E_OUTOFMEMORY))?;

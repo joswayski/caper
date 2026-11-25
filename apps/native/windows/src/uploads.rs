@@ -211,38 +211,16 @@ pub fn mic_rect(top: f32, bw: f32) -> D2D_RECT_F {
     rect(bw - 36.0, cy - 14.0, bw - 8.0, cy + 14.0)
 }
 
-/// egui's GIF button: "GIF" in a small rounded badge.
-pub fn gif_button(g: &Gfx, dc: &ID2D1DeviceContext, r: D2D_RECT_F, color: u32) -> Result<()> {
-    let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
-    let badge = rect(cx - 10.0, cy - 7.0, cx + 10.0, cy + 7.0);
-    let brush = dc_brush(dc, color)?;
-    unsafe {
-        dc.DrawRoundedRectangle(
-            &D2D1_ROUNDED_RECT {
-                rect: rect(
-                    badge.left + 0.7,
-                    badge.top + 0.7,
-                    badge.right - 0.7,
-                    badge.bottom - 0.7,
-                ),
-                radiusX: 3.0,
-                radiusY: 3.0,
-            },
-            &brush,
-            1.4,
-            None,
-        );
-    }
-    let l = line(g, "GIF", &g.formats.gif_badge, 1e6)?;
-    let m = gfx::metrics(&l);
-    crate::text::draw(
+/// The GIF button's filled badge, centred in `r` at the emoji icon's `size`.
+pub fn gif_button(dc: &ID2D1DeviceContext, r: D2D_RECT_F, size: f32, color: u32) {
+    centered_icon(
         dc,
-        &l,
-        cx - m.widthIncludingTrailingWhitespace / 2.0,
-        cy - m.height / 2.0,
-        &brush,
+        Icon::Gif,
+        (r.left + r.right) / 2.0,
+        (r.top + r.bottom) / 2.0,
+        size,
+        color,
     );
-    Ok(())
 }
 
 fn remove_rect(t: D2D_RECT_F) -> D2D_RECT_F {
@@ -742,15 +720,15 @@ pub fn draw(
             fill_round(dc, r, 6.0, &g.brushes.hover);
         }
         gif_button(
-            g,
             dc,
             r,
+            16.0,
             if open || gif_hover {
                 crate::theme::text()
             } else {
                 crate::theme::text_muted()
             },
-        )?;
+        );
     }
     for (k, (d, t)) in drafts.iter().zip(tiles).enumerate() {
         match d.upload.voice() {

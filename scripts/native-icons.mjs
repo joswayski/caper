@@ -5,9 +5,9 @@ import { dirname, resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as lucide from "lucide-react";
-import { Reply, Thread } from "../shared/message-icons.ts";
+import { Gif, Reply, Thread } from "../shared/message-icons.ts";
 
-const icons = { ...lucide, Reply, Thread };
+const icons = { ...lucide, Gif, Reply, Thread };
 const names = {
   archive: "Archive",
   "archive-restore": "ArchiveRestore",
@@ -41,6 +41,7 @@ const names = {
   "file-up": "FileUp",
   "file-warning": "FileWarning",
   forward: "Forward",
+  gif: "Gif",
   hash: "Hash",
   "headphone-off": "HeadphoneOff",
   headphones: "Headphones",
@@ -89,7 +90,8 @@ const info = { author: "xcode", version: 1 };
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const files = [[`${apple}/Contents.json`, json({ info })]];
 for (const [file, name] of Object.entries(names)) {
-  const svg = `${renderToStaticMarkup(createElement(icons[name], { color: "#ffffff", size: 24 }))}\n`;
+  // Filled glyphs (GIF) paint with the stroke's white too, which clients recolour.
+  const svg = `${renderToStaticMarkup(createElement(icons[name], { color: "#ffffff", size: 24 })).replaceAll('fill="currentColor"', 'fill="#ffffff"')}\n`;
   const image = `${apple}/caper-${file}.imageset`;
   files.push(
     [`${output}/${file}.svg`, svg],

@@ -15,6 +15,7 @@ import {
   useRole,
 } from "@floating-ui/react";
 import { Search, X } from "lucide-react";
+import { Gif } from "../../../../shared/message-icons.ts";
 import GifImage from "./GifImage.tsx";
 import {
   gifLabel,
@@ -135,7 +136,7 @@ export default function GifButton({
           },
         })}
       >
-        <span aria-hidden="true">GIF</span>
+        <Gif size={18} aria-hidden="true" />
       </button>
       {open && (
         <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>("dialog, .live-scene") ?? undefined}>

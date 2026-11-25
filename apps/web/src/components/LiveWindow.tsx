@@ -906,7 +906,7 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                       <Smile size={18} aria-hidden="true" />
                     </button>
                     <button type="button" className="chat-composer-tool chat-voice-mic" tabIndex={-1}>
-                      <Mic size={16} aria-hidden="true" />
+                      <Mic size={18} aria-hidden="true" />
                     </button>
                   </div>
                 </form>

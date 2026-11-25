@@ -2535,7 +2535,7 @@ impl App {
                     } else {
                         crate::theme::text_muted()
                     };
-                    crate::uploads::gif_button(g, dc, r, color)?;
+                    crate::uploads::gif_button(dc, r, 16.0, color);
                 }
                 let (x, y, w, h) = emoji_local(t.width);
                 let y = y + t.composer.inset.1;

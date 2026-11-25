@@ -428,7 +428,8 @@ impl App {
                 } else {
                     crate::theme::text_muted()
                 };
-                return crate::uploads::gif_button(g, dc, rect(x, y, x + w, y + h), color);
+                crate::uploads::gif_button(dc, rect(x, y, x + w, y + h), 18.0, color);
+                return Ok(());
             }
             PPart::Attach => Icon::Plus,
             PPart::Emoji => Icon::Smile,
