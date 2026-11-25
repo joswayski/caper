@@ -133,7 +133,7 @@ object CaperThemeStore {
         blackout = Color(0xFFECEEF2),
         surface = Color(0xFFFFFFFF),
         surfaceRaised = Color(0xFFF4F5F8),
-        surfaceComposer = Color(0xFFF3F4F8),
+        surfaceComposer = Color(0xFFE9EBF0),
         border = Color(0xFFDCDFE6),
         text = Color(0xFF111217),
         textMuted = Color(0xFF656876),

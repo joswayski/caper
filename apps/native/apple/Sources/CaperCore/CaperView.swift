@@ -53,7 +53,7 @@ public enum CaperTheme {
         public static let sidebar = CaperTheme.themed(0x0D0E11, 0xF1F2F6)
         public static let sidebarRaised = CaperTheme.themed(0x17191F, 0xE5E7ED)
         public static let conversation = CaperTheme.themed(0x121317, 0xFFFFFF)
-        public static let composer = CaperTheme.themed(0x1B1D24, 0xF3F4F8)
+        public static let composer = CaperTheme.themed(0x1B1D24, 0xE9EBF0)
         public static let replyDraft = CaperTheme.themed(0x171920, 0xF3F4F8)
         public static let border = CaperTheme.themed(0x24262F, 0xDCDFE6)
         public static let borderSubtle = CaperTheme.themed(UIColor.white.withAlphaComponent(0.08), UIColor(red: 15 / 255, green: 23 / 255, blue: 42 / 255, alpha: 0.08))

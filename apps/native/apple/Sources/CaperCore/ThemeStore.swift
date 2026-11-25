@@ -120,7 +120,7 @@ public struct CaperThemeDocument: Codable, Equatable, Sendable {
         appearance: "light",
         surfaces: .init(
             frame: "#eceef2", base: "#ffffff", sidebar: "#f1f2f6", sidebarRaised: "#e5e7ed",
-            conversation: "#ffffff", raised: "#f4f5f8", composer: "#f3f4f8", replyDraft: "#f3f4f8",
+            conversation: "#ffffff", raised: "#f4f5f8", composer: "#e9ebf0", replyDraft: "#f3f4f8",
             hover: "rgb(15 23 42 / 5%)", hoverAlpha: 0.05
         ),
         borders: .init(default: "#dcdfe6", translucent: "rgb(15 23 42 / 8%)", subtle: "rgb(15 23 42 / 5%)", rim: "rgb(255 255 255 / 90%)"),
