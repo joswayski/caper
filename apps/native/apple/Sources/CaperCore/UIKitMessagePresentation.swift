@@ -134,83 +134,98 @@ import Observation
     override func render() {
         let chat = model.chat, message = current
         body.arrangedSubviews.forEach { body.removeArrangedSubview($0); $0.removeFromSuperview() }
-        func button(_ title: String, id: String? = nil, enabled: Bool = true, action: @escaping () -> Void) {
-            let control = Self.button(title, action: action); control.contentHorizontalAlignment = .leading
-            control.accessibilityIdentifier = id; control.isEnabled = enabled; body.addArrangedSubview(control)
+        body.spacing = 12
+        // Actions sit in rounded cards, grouped as Discord's and Slack's: what you
+        // do with the message, what you copy, then the destructive ones.
+        var rows: [UIView] = []
+        func button(_ title: String, icon: String, id: String? = nil, enabled: Bool = true, danger: Bool = false, action: @escaping () -> Void) {
+            rows.append(Self.actionRow(title, icon: icon, id: id, enabled: enabled, danger: danger, action: action))
         }
+        func endGroup() { addGroup(rows); rows = [] }
         if !message.isDeleted {
-            let quick = UIStackView(); quick.spacing = 4; quick.distribution = .fillEqually
+            let quick = UIStackView(); quick.spacing = 8; quick.distribution = .fillEqually
+            let author = chat.currentAuthor?.id
             for emoji in MessageQuickReactions.emoji {
-                let control = Self.button(emoji) { [weak self] in self?.react(emoji, toggle: true) }
+                let mine = author.map { id in message.reactions?.first { $0.emoji == emoji }?.authorIds.contains(id) == true } ?? false
+                let control = Self.reactionTile(selected: mine) { [weak self] in self?.react(emoji, toggle: true) }
                 if let artwork = NativePresentation.emojiImage(emoji) {
-                    control.configuration?.title = nil
-                    control.configuration?.image = UIImage(cgImage: artwork, scale: CGFloat(artwork.width) / 22, orientation: .up).withRenderingMode(.alwaysOriginal)
-                }
+                    control.configuration?.image = UIImage(cgImage: artwork, scale: CGFloat(artwork.width) / 26, orientation: .up).withRenderingMode(.alwaysOriginal)
+                } else { control.configuration?.title = emoji }
                 control.accessibilityLabel = "React with \(emoji)"; control.accessibilityIdentifier = "quick-reaction-\(emoji)"
+                if mine { control.accessibilityTraits.insert(.selected) }
                 control.isEnabled = chat.canInteract; quick.addArrangedSubview(control)
             }
-            body.addArrangedSubview(quick)
-            button("Add reaction", id: "message-action-add-reaction", enabled: chat.canInteract) { [weak self] in
+            let add = Self.reactionTile(selected: false) { [weak self] in
                 guard let self else { return }
                 let picker = UIKitHosting.reactionPicker { [weak self] in self?.react($0, toggle: false) }
                 self.present(picker, animated: !CaperAccessibility.reduceMotion)
             }
-            button("Reply", enabled: chat.canInteract && chat.pendingMessage == nil) { [weak self] in
+            add.configuration?.image = UIKitVoiceControls.icon("smile-plus", size: 22)
+            add.accessibilityLabel = "Add reaction"; add.accessibilityIdentifier = "message-action-add-reaction"
+            add.isEnabled = chat.canInteract; quick.addArrangedSubview(add)
+            body.addArrangedSubview(quick)
+
+            button("Reply", icon: "reply", enabled: chat.canInteract && chat.pendingMessage == nil) { [weak self] in
                 guard let self, self.model.chat.canInteract else { return }
                 self.afterClosing { chat.reply(to: self.current, inThread: self.inThread) }
             }
+            if !inThread { button("Reply in thread", icon: "thread") { [weak self] in self?.afterClosing { chat.replyInThread(to: message) } } }
+            if chat.canForward { button("Forward message", icon: "forward") { [weak self] in self?.afterClosing { chat.forwardTarget = message } } }
             if chat.canEdit(message) {
-                button("Edit message") { [weak self] in
+                button("Edit message", icon: "pencil") { [weak self] in
                     guard let self, chat.canEdit(self.current) else { return }
                     let editor = UIKitMessageEditor(chat: chat, message: self.current) { [weak self] in self?.finish(nil) }
                     UIKitHosting.sheet(editor, background: CaperTheme.raised); self.present(editor, animated: !CaperAccessibility.reduceMotion)
                 }
             }
             if message.forward == nil, (message.revision ?? 1) > 1 {
-                button("Message history") { [weak self] in
+                button("Message history", icon: "history") { [weak self] in
                     guard let self else { return }
                     let history = UIKitNativeMessageHistory(chat: chat, message: self.current) { [weak self] in self?.presentedViewController?.dismiss(animated: false) }
                     UIKitHosting.sheet(history, background: CaperTheme.raised); self.present(history, animated: !CaperAccessibility.reduceMotion)
                 }
             }
             if let reaction = message.reactions?.first {
-                button("View reactions", id: "message-action-view-reactions") { [weak self, reactors] in self?.finish { reactors(reaction.emoji) } }
+                button("View reactions", icon: "users", id: "message-action-view-reactions") { [weak self, reactors] in self?.finish { reactors(reaction.emoji) } }
             }
-            button(message.pin == nil ? "Pin message" : "Unpin message", enabled: chat.canInteract && !chat.pendingPins.contains(message.id)) { [weak self] in
+            button(message.pin == nil ? "Pin message" : "Unpin message", icon: message.pin == nil ? "pin" : "pin-off",
+                   enabled: chat.canInteract && !chat.pendingPins.contains(message.id)) { [weak self] in
                 guard let self, chat.canInteract else { return }; let current = self.current
                 self.finish { Task { await chat.setPin(messageID: current.id, active: current.pin == nil) } }
             }
-            if !inThread { button("Reply in thread") { [weak self] in self?.afterClosing { chat.replyInThread(to: message) } } }
-            if chat.canForward { button("Forward message") { [weak self] in self?.afterClosing { chat.forwardTarget = message } } }
-            if !message.content.text.isEmpty {
-                let links = MessageLinks.segments(in: message.content.text).compactMap(\.href)
-                if !links.isEmpty {
-                    let control = Self.button("Links") {}; control.showsMenuAsPrimaryAction = true
-                    control.menu = UIMenu(children: links.compactMap { link in
-                        guard let url = LinkEmbeds.openableURL(link) else { return nil }
-                        return UIMenu(title: link, children: [UIAction(title: "Open link") { [model] _ in
-                                if !model.openMessageLink(url) { UIApplication.shared.open(url) }
-                            },
-                            UIAction(title: "Copy link address") { _ in UIPasteboard.general.string = link; CaperHaptics.tap() }])
-                    }); body.addArrangedSubview(control)
-                }
-                button("Copy text") { [weak self] in UIPasteboard.general.string = message.content.text; CaperHaptics.tap(); self?.finish(nil) }
-            }
         } else if !inThread, message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0 {
-            button("View thread") { [weak self] in self?.afterClosing { chat.replyInThread(to: message) } }
+            button("View thread", icon: "thread") { [weak self] in self?.afterClosing { chat.replyInThread(to: message) } }
         }
-        button("Copy link") { [weak self] in
+        endGroup()
+
+        if !message.isDeleted, !message.content.text.isEmpty {
+            let links = MessageLinks.segments(in: message.content.text).compactMap(\.href)
+            if !links.isEmpty {
+                let control = Self.actionRow("Links", icon: "external-link") {}; control.showsMenuAsPrimaryAction = true
+                control.menu = UIMenu(children: links.compactMap { link in
+                    guard let url = LinkEmbeds.openableURL(link) else { return nil }
+                    return UIMenu(title: link, children: [UIAction(title: "Open link") { [model] _ in
+                            if !model.openMessageLink(url) { UIApplication.shared.open(url) }
+                        },
+                        UIAction(title: "Copy link address") { _ in UIPasteboard.general.string = link; CaperHaptics.tap() }])
+                }); rows.append(control)
+            }
+            button("Copy text", icon: "copy") { [weak self] in UIPasteboard.general.string = message.content.text; CaperHaptics.tap(); self?.finish(nil) }
+        }
+        button("Copy link", icon: "link") { [weak self] in
             UIPasteboard.general.string = MessageLinkTarget.url(channelID: message.channelId, messageID: message.id); CaperHaptics.tap(); self?.finish(nil)
         }
-        guard !message.isDeleted else { return }
-        if model.canMarkUnread(message) {
-            button("Mark unread") { [weak self, model] in
+        if !message.isDeleted, model.canMarkUnread(message) {
+            button("Mark unread", icon: "eye-off") { [weak self, model] in
                 guard let self else { return }; let current = self.current
                 self.finish { model.markUnread(current) }
             }
         }
+        endGroup()
+
+        guard !message.isDeleted else { return }
         if chat.canDelete(message) {
-            button("Delete message", id: "message-action-delete") { [weak self] in
+            button("Delete message", icon: "trash-2", id: "message-action-delete", danger: true) { [weak self] in
                 guard let self, chat.canDelete(self.current) else { return }
                 let alert = UIAlertController(title: MessageDeletion.confirmTitle, message: MessageDeletion.confirmMessage, preferredStyle: .alert)
                 let cancel = UIAlertAction(title: "Cancel", style: .cancel)
@@ -225,11 +240,84 @@ import Observation
         }
         let viewer = chat.currentAuthor?.id ?? model.account?.id
         if BlockedMessages.canBlock(message.author, viewerID: viewer, blocked: chat.blockedAuthorIDs) {
-            button("Block \(message.author.name)", id: "message-action-block") { [weak self, block] in self?.finish(block) }
+            button("Block \(message.author.name)", icon: "ban", id: "message-action-block", danger: true) { [weak self, block] in self?.finish(block) }
         } else if BlockedMessages.canUnblock(message.author, viewerID: viewer, blocked: chat.blockedAuthorIDs) {
-            button("Unblock \(message.author.name)", id: "message-action-unblock") { [weak self] in chat.unblock(message.author); self?.finish(nil) }
+            button("Unblock \(message.author.name)", icon: "ban", id: "message-action-unblock") { [weak self] in chat.unblock(message.author); self?.finish(nil) }
         }
+        endGroup()
     }
+
+    /// One rounded card of rows, with hairlines inset to the titles.
+    private func addGroup(_ rows: [UIView]) {
+        guard !rows.isEmpty else { return }
+        let card = UIStackView(); card.axis = .vertical
+        card.backgroundColor = UIColor(CaperTheme.surface)
+        card.layer.cornerRadius = 16; card.layer.cornerCurve = .continuous; card.clipsToBounds = true
+        for (index, row) in rows.enumerated() {
+            if index > 0 {
+                let divider = UIView(), line = UIView()
+                line.backgroundColor = UIColor(CaperTheme.border); line.translatesAutoresizingMaskIntoConstraints = false
+                divider.addSubview(line)
+                NSLayoutConstraint.activate([
+                    divider.heightAnchor.constraint(equalToConstant: 0.5),
+                    line.leadingAnchor.constraint(equalTo: divider.leadingAnchor, constant: 48),
+                    line.trailingAnchor.constraint(equalTo: divider.trailingAnchor),
+                    line.topAnchor.constraint(equalTo: divider.topAnchor), line.bottomAnchor.constraint(equalTo: divider.bottomAnchor),
+                ])
+                card.addArrangedSubview(divider)
+            }
+            card.addArrangedSubview(row)
+        }
+        body.addArrangedSubview(card)
+    }
+
+    /// A list row: icon and title at the leading edge, pressed edge to edge.
+    private static func actionRow(_ title: String, icon: String, id: String? = nil, enabled: Bool = true, danger: Bool = false,
+                                  action: @escaping () -> Void) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        config.title = title; config.image = UIKitVoiceControls.icon(icon, size: 18)
+        config.imagePlacement = .leading; config.imagePadding = 14
+        config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
+        config.background.cornerRadius = 0
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attributes = incoming
+            attributes.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Medium", size: 15) ?? .systemFont(ofSize: 15, weight: .medium))
+            return attributes
+        }
+        let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
+        button.contentHorizontalAlignment = .leading
+        button.configurationUpdateHandler = { button in
+            var config = button.configuration
+            config?.baseForegroundColor = UIColor(!button.isEnabled ? CaperTheme.muted : danger ? CaperTheme.error : CaperTheme.text)
+            config?.background.backgroundColor = button.isHighlighted ? CaperTheme.hoverWash : .clear
+            button.configuration = config
+        }
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        button.accessibilityIdentifier = id; button.isEnabled = enabled
+        button.setNeedsUpdateConfiguration()
+        return button
+    }
+
+    /// A quick-reaction tile; your own reaction is outlined in Caper green.
+    private static func reactionTile(selected: Bool, action: @escaping () -> Void) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        config.cornerStyle = .fixed; config.background.cornerRadius = 14; config.contentInsets = .zero
+        let button = UIButton(configuration: config, primaryAction: UIAction { _ in action() })
+        button.configurationUpdateHandler = { button in
+            var config = button.configuration
+            config?.baseForegroundColor = UIColor(CaperTheme.muted)
+            config?.background.backgroundColor = selected ? UIColor(CaperTheme.terracottaBright).withAlphaComponent(0.16)
+                : button.isHighlighted ? CaperTheme.hoverWash : UIColor(CaperTheme.surface)
+            config?.background.strokeColor = selected ? UIColor(CaperTheme.terracottaBright) : .clear
+            config?.background.strokeWidth = selected ? 1 : 0
+            button.configuration = config
+            button.alpha = button.isEnabled ? 1 : 0.45
+        }
+        button.heightAnchor.constraint(equalToConstant: 52).isActive = true
+        button.setNeedsUpdateConfiguration()
+        return button
+    }
+
     private func react(_ emoji: String, toggle: Bool) {
         let chat = model.chat, message = current
         guard chat.canInteract, !message.isDeleted, let author = chat.currentAuthor else { return }
