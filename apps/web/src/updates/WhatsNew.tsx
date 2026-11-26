@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import {
   loadReleaseHighlights,
+  releaseLabel,
   sourceRevisionValid,
   unreadReleaseHighlights,
   type ReleaseHighlights,
@@ -164,6 +165,8 @@ export default function WhatsNew({
       ? feed.releases.filter((release) => release.highlights.length).reverse()
       : unreadReleaseHighlights(feed, acknowledged.current)
     : [];
+  // Like the apps: the header names this build by version once the feed says it.
+  const current = feed?.releases.at(-1);
   return open ? (
     <dialog
       ref={dialog}
@@ -183,7 +186,7 @@ export default function WhatsNew({
         pressedBackdrop.current = false;
       }}
     >
-      {/* Like the native update review: the face, the title, then the build right under it. */}
+      {/* Like the apps: the face, the title, then this build's version right under it. */}
       <header className="audio-dialog-heading whats-new-heading">
         <div className="whats-new-title">
           <img className="whats-new-face" src="/caper-face.svg" alt="" width={36} height={36} />
@@ -196,7 +199,7 @@ export default function WhatsNew({
               rel="noreferrer"
               title="View this version on GitHub"
             >
-              Web build {revision.slice(0, 7)}
+              {current ? releaseLabel(current) : `Web build ${revision.slice(0, 7)}`}
               <ExternalLink size={12} aria-hidden="true" />
             </a>
           )}
@@ -242,7 +245,7 @@ export default function WhatsNew({
                 rel="noreferrer"
                 title="View this version on GitHub"
               >
-                {release.revision.slice(0, 7)}
+                {releaseLabel(release)}
                 <ExternalLink size={12} aria-hidden="true" />
               </a>
             )}

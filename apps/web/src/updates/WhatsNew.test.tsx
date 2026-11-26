@@ -28,6 +28,7 @@ test("history lists every retained highlight newest first in one list, naming on
       {
         sequence: 2,
         revision: "b".repeat(40),
+        version: "2026.10.21.2",
         publishedAt: "2026-10-21T12:00:00Z",
         highlights: [
           { title: "First change", body: "One change in the newer release." },
@@ -49,10 +50,12 @@ test("history lists every retained highlight newest first in one list, naming on
       "Second change",
       "Earlier update",
     ]);
-    // The header names the running build; the list names only the older one.
+    // The header names the running build by version, like the apps; the list
+    // names only the older one, by commit from before web had versions.
     const links = [...container.querySelectorAll("a")];
     expect(links).toHaveLength(2);
     expect(links[0].closest("header")).not.toBeNull();
+    expect(links[0].textContent).toBe("Version 2026.10.21.2");
     expect(links[1].textContent).toBe("aaaaaaa");
     expect(links[1].nextElementSibling?.textContent).toContain("Earlier update");
     const buttons = [...container.querySelectorAll("footer button")].map((button) => button.textContent);

@@ -6,6 +6,8 @@ export interface Highlight {
 export interface Release {
   sequence: number;
   revision: string;
+  /** Its version, as the apps show theirs (2026.11.26.3); older releases have none. */
+  version?: string;
   publishedAt: string;
   highlights: Highlight[];
 }
@@ -56,6 +58,7 @@ export async function loadReleaseHighlights(revision: string): Promise<ReleaseHi
         release.sequence <= previous ||
         release.sequence > value.sequence ||
         !sourceRevisionValid(release.revision) ||
+        (release.version !== undefined && !textValid(release.version, 64)) ||
         typeof release.publishedAt !== "string" ||
         !Number.isFinite(Date.parse(release.publishedAt)) ||
         !Array.isArray(release.highlights) ||
@@ -81,3 +84,7 @@ export function unreadReleaseHighlights(feed: ReleaseHighlights, acknowledged?: 
     ? []
     : feed.releases.filter((release) => release.sequence > acknowledged && release.highlights.length > 0).reverse();
 }
+
+/** How a release is named: its version, or its short commit before web had versions. */
+export const releaseLabel = (release: Release): string =>
+  release.version ? `Version ${release.version}` : release.revision.slice(0, 7);

@@ -695,6 +695,30 @@ class HighlightsTests(unittest.TestCase):
             with self.assertRaises(notes.GenerationError):
                 self.generate(later, "native", native_version=version)
 
+    def test_web_releases_are_versioned_by_their_new_york_day(self):
+        def history(*releases):
+            return {"releases": [{"publishedAt": published, **extra} for published, extra in releases]}
+
+        # 03:30 UTC on the 27th is still the 26th in New York.
+        self.assertEqual(
+            notes.web_version(history(("2026-11-26T20:00:00Z", {"version": "2026.11.26.4"})), "2026-11-27T03:30:00Z"),
+            "2026.11.26.5",
+        )
+        self.assertEqual(
+            notes.web_version(history(("2026-11-25T20:00:00Z", {"version": "2026.11.25.9"})), "2026-11-26T15:00:00Z"),
+            "2026.11.26.1",
+        )
+        # Unversioned history counts the day's releases: 04:30 UTC is the 25th, 05:30 the 26th.
+        legacy = history(("2026-11-26T04:30:00Z", {}), ("2026-11-26T05:30:00Z", {}))
+        self.assertEqual(notes.web_version(legacy, "2026-11-26T20:00:00Z"), "2026.11.26.2")
+        self.assertEqual(notes.web_version(None, "2026-11-26T20:00:00Z"), "2026.11.26.1")
+        self.seed()
+        newest = self.commit("Improve channel controls", {"apps/web/src/mobile.ts": "narrow();\n"})
+        self.response = {"highlights": [highlight([newest])]}
+        releases = self.generate(newest)["web"]["releases"]
+        self.assertNotIn("version", releases[0])
+        self.assertRegex(releases[1]["version"], r"^\d{4}\.\d{2}\.\d{2}\.1$")
+
     def test_exact_rerun_and_rollback_reuse_bytes_without_model_or_lowering_latest(self):
         self.seed()
         newest = self.commit("Improve channel controls")

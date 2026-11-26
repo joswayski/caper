@@ -21,6 +21,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+from zoneinfo import ZoneInfo
 
 try:
     from .native_changelog import INTERNAL_TITLE, PLATFORMS, is_product_path, path_platforms
@@ -42,7 +43,9 @@ PROVIDER_TIMEOUT_SECONDS = 300
 PROVIDER_RETRY_STATUSES = frozenset((408, 429, 500, 502, 503, 504, 529))
 PROVIDER_RETRY_DELAYS = (10, 30)
 SHA = re.compile(r"[0-9a-f]{40}")
-# Native release versions: CalVer (2026.11.19.3), or 0.1.<run> before it.
+# Release versions: CalVer (2026.11.19.3), or 0.1.<run> before it (native).
+# Web releases are numbered the same way, by their New York publication day.
+RELEASE_TIME_ZONE = ZoneInfo("America/New_York")
 NATIVE_VERSION = re.compile(r"\d+(?:\.\d+){2,3}")
 SECRET_PATH = re.compile(
     r"(?:^|/)(?:\.env[^/]*|secrets?|credentials?|private[-_]keys?)(?:[./_-]|$)"
@@ -750,6 +753,25 @@ def read_feed(github, platform, revision):
     }
 
 
+def web_version(previous, date):
+    """A web release's version, as native's reads: its New York day, then that day's count.
+
+    The previous release's version continues the count; history from before web
+    versions counts that day's retained releases instead.
+    """
+
+    def day(published):
+        moment = datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return moment.astimezone(RELEASE_TIME_ZONE).date()
+
+    prefix = f"{day(date):%Y.%m.%d}."
+    releases = previous["releases"] if previous else []
+    last = releases[-1].get("version", "") if releases else ""
+    if last.startswith(prefix) and last[len(prefix) :].isdigit():
+        return f"{prefix}{int(last[len(prefix) :]) + 1}"
+    return f"{prefix}{1 + sum(day(release['publishedAt']) == day(date) for release in releases)}"
+
+
 def new_snapshot(platform, revision, previous, highlights, date, version=None):
     sequence = previous["sequence"] + 1 if previous else 1
     release = {"sequence": sequence, "revision": revision, "publishedAt": date, "highlights": highlights}
@@ -825,7 +847,7 @@ def generate(
                     if platform in item["platforms"]
                 ],
                 date,
-                native_version,
+                web_version(feed["latest"], date) if audience == "web" else native_version,
             )
         )
         snapshot = validate_snapshot(raw, platform, revision)
