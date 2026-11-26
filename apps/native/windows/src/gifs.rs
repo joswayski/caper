@@ -90,6 +90,19 @@ pub struct Picker {
     receiver: Receiver<Loaded>,
 }
 
+/// How long warmed trending GIFs stand in for a fresh request.
+const WARM_FOR: Duration = Duration::from_secs(120);
+/// The warmed tiles: the picker's first rows.
+const WARM_TILES: usize = 12;
+
+/// Trending GIFs fetched when the pointer reaches a GIF button, as web
+/// preloads them, so the picker opens on tiles instead of a loading grid.
+#[derive(Default)]
+pub struct Warm {
+    page: Option<(Instant, Page)>,
+    loading: Option<Receiver<std::result::Result<Page, String>>>,
+}
+
 /// One image to try: its URL and whether to decode animation frames.
 type Source<'a> = (&'a str, bool);
 
@@ -144,6 +157,17 @@ impl Picker {
             sender,
             receiver,
         }
+    }
+
+    /// Opens on warmed trending GIFs (its first tab, no search).
+    fn prefill(&mut self, page: Page) {
+        self.request = 1;
+        self.shown = (Kind::Gif, String::new());
+        self.apply(Loaded {
+            request: 1,
+            page: 1,
+            result: Ok(page),
+        });
     }
 
     fn query(&self) -> String {
@@ -696,6 +720,7 @@ impl App {
         self.set_thread_focus(false);
         let mut picker = Picker::new(anchor, (self.w, self.h));
         picker.root = root;
+        self.prefill_gifs(&mut picker);
         self.gifs = Some(picker);
         self.dirty.thread_box = true;
         self.gifs_poll();
@@ -729,11 +754,92 @@ impl App {
         self.set_profile_focus(false);
         let mut picker = Picker::new((x + w / 2.0, y + h / 2.0), (self.w, self.h));
         picker.profile = Some(id);
+        self.prefill_gifs(&mut picker);
         self.gifs = Some(picker);
         self.gifs_poll();
         self.gifs_changed(true);
         self.profile_changed();
         self.events |= EV_SCREEN | EV_FOCUS;
+    }
+
+    /// The pointer reached a GIF button: fetch trending GIFs now, unless
+    /// fresh ones are here or on their way.
+    pub fn warm_gifs(&mut self) {
+        let fresh = self
+            .gif_warm
+            .page
+            .as_ref()
+            .is_some_and(|(at, _)| at.elapsed() < WARM_FOR);
+        if fresh || self.gif_warm.loading.is_some() || self.gifs.is_some() {
+            return;
+        }
+        let Some(config) = self.live.as_ref().and_then(|l| l.klipy.clone()) else {
+            return;
+        };
+        let (sender, receiver) = channel();
+        self.gif_warm.loading = Some(receiver);
+        let raw = self.hwnd.0 as isize;
+        std::thread::spawn(move || {
+            let _ = sender.send(klipy::fetch(&config, Kind::Gif, "", 1));
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(raw as _)),
+                    crate::live::WM_LIVE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        });
+    }
+
+    /// Keeps the warmed page once it arrives and starts loading its first
+    /// tiles into the media cache, as the picker will ask for them.
+    fn warm_gifs_poll(&mut self) {
+        let Some(result) = self
+            .gif_warm
+            .loading
+            .as_ref()
+            .and_then(|r| r.try_recv().ok())
+        else {
+            return;
+        };
+        self.gif_warm.loading = None;
+        let Ok(page) = result else { return };
+        if let Some(live) = &mut self.live {
+            let (mut tex, playing, now) = (
+                D2d(self.g.dc.clone()),
+                crate::files::motion(),
+                Instant::now(),
+            );
+            let tiles = page.items.iter().filter_map(|item| match item {
+                Item::Media { tile, .. } => Some(tile),
+                Item::Ad { .. } => None,
+            });
+            for tile in tiles.take(WARM_TILES) {
+                if let Some(&(url, animated)) = tile_sources(tile, playing).first() {
+                    let key = klipy::media_key(url);
+                    if animated {
+                        live.media.gif(&mut tex, &key, Some(url), playing, now);
+                    } else {
+                        live.media.image(&key, Some(url));
+                    }
+                }
+            }
+            if live.media.busy() {
+                unsafe {
+                    SetTimer(Some(self.hwnd), crate::TIMER_LIVE, 100, None);
+                }
+            }
+        }
+        self.gif_warm.page = Some((Instant::now(), page));
+    }
+
+    fn prefill_gifs(&mut self, picker: &mut Picker) {
+        if let Some((at, page)) = &self.gif_warm.page
+            && at.elapsed() < WARM_FOR
+        {
+            picker.prefill(page.clone());
+        }
     }
 
     /// Closes the picker; `focus` returns focus to the composer that
@@ -794,6 +900,7 @@ impl App {
     /// Applies loaded pages and starts a paused search; closes the picker
     /// once GIFs can't be sent here.
     pub fn gifs_poll(&mut self) {
+        self.warm_gifs_poll();
         if self.gifs.is_none() {
             return;
         }

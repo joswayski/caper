@@ -259,6 +259,7 @@ impl App {
     /// A conversation opened afresh: no toast, no count.
     pub fn reset_jump(&mut self) {
         self.stop_glide();
+        self.wheel.stop();
         self.set_jump(Jump::default());
         self.jump_kb = false;
     }
@@ -313,6 +314,7 @@ impl App {
             return;
         }
         self.set_jump(Jump::default());
+        self.wheel.stop();
         let vh = self.vh() as f64;
         let distance = self.history_max() - self.scroll_top;
         if !jump::glides(distance, vh, !crate::files::motion()) {
@@ -366,6 +368,7 @@ impl App {
 
     fn land(&mut self) {
         self.stop_autoscroll();
+        self.wheel.stop();
         self.at_end = true;
         self.need = true;
     }
@@ -462,6 +465,7 @@ impl App {
         let vh = self.thread_vh();
         let Some(t) = &mut self.thread else { return };
         t.jump = Jump::default();
+        t.wheel.stop();
         let max = (t.content_h() - vh).max(0.0);
         if jump::glides((max - t.scroll) as f64, vh as f64, !crate::files::motion()) {
             t.jump_glide = Some((t.scroll, Instant::now()));

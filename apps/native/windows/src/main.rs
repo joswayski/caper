@@ -75,6 +75,7 @@ mod versions;
 mod video;
 mod viewer;
 mod web_player;
+mod wheel;
 mod window_state;
 
 use bench::{Action, Bench};
@@ -490,6 +491,7 @@ pub struct App {
     picker_p: Panel,
     /// The composer's GIF picker.
     pub gifs: Option<gifs::Picker>,
+    gif_warm: gifs::Warm,
     gifs_p: Panel,
     /// Dictation or a voice note in the composer's place, and its hovered
     /// button.
@@ -524,6 +526,8 @@ pub struct App {
     jump_hover: bool,
     pub jump_kb: bool,
     jump_glide: Option<(f64, Instant)>,
+    /// The history's eased wheel scrolling.
+    wheel: wheel::Wheel,
     thread_jump_p: Panel,
     thread_jump_drawn: Option<jump::Drawn>,
     tool_hover: Option<usize>,
@@ -905,6 +909,7 @@ impl App {
                 picker: None,
                 picker_p,
                 gifs: None,
+                gif_warm: Default::default(),
                 gifs_p,
                 rec: None,
                 rec_hover: None,
@@ -924,6 +929,7 @@ impl App {
                 jump_hover: false,
                 jump_kb: false,
                 jump_glide: None,
+                wheel: Default::default(),
                 thread_jump_p,
                 thread_jump_drawn: None,
                 tool_hover: None,
@@ -2441,6 +2447,9 @@ impl App {
         self.track_voice_hover();
         let box_hover = self.pointer.and_then(|(x, y)| self.box_part_at(x, y));
         if box_hover != self.box_hover {
+            if box_hover == Some(uploads::Part::Gif) {
+                self.warm_gifs();
+            }
             self.box_hover = box_hover;
             self.dirty.composer = true;
             self.need = true;
@@ -2845,6 +2854,11 @@ impl App {
                 }
                 settings::TIMER_INBOX => self.inbox_tick(),
                 settings::TIMER_VERSION_COPIED => self.version_copied_tick(),
+                wheel::TIMER_WHEEL => self.wheel_tick(),
+                settings::TIMER_SWITCH => {
+                    self.dirty.settings = true;
+                    self.need = true;
+                }
                 TIMER_TYPING => self.typing_tick(),
                 settings::audio::TIMER_AUDIO => self.audio_tick(),
                 playback::TIMER_PLAYBACK => self.playback_tick(),
@@ -3102,9 +3116,15 @@ impl App {
                 }
             }
             WM_MOUSEWHEEL => {
-                let delta = ((wp.0 >> 16) & 0xffff) as i16 as f64;
+                let delta = ((wp.0 >> 16) & 0xffff) as i16;
                 if self.pointer.is_some_and(|(x, y)| self.in_history(x, y)) {
-                    self.scroll_by(-delta / 120.0 * WHEEL_STEP);
+                    let now = self
+                        .wheel
+                        .wheel(delta, WHEEL_STEP, files::motion(), Instant::now());
+                    if now != 0.0 {
+                        self.scroll_by(now);
+                    }
+                    self.arm_wheel();
                 }
             }
             WM_SETCURSOR => {
@@ -3650,6 +3670,7 @@ impl App {
                 VK_NEXT => self.scroll_by(page),
                 VK_END => {
                     self.stop_autoscroll();
+                    self.wheel.stop();
                     if self.live.as_ref().is_some_and(live::Live::has_newer) {
                         self.load_latest();
                     }

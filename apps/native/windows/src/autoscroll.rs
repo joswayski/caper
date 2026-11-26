@@ -5,7 +5,7 @@ use crate::{App, EV_FOCUS, EV_SCREEN, theme::HEADER_H};
 use std::time::Instant;
 use windows::Win32::{
     Foundation::{LRESULT, WPARAM},
-    Graphics::Direct2D::D2D1_ELLIPSE,
+    Graphics::Direct2D::{Common::D2D1_COLOR_F, D2D1_ELLIPSE},
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 use windows::core::Result;
@@ -24,6 +24,8 @@ pub struct Run {
     last: Instant,
     /// The conversation snaps each scroll to pixels; retain subpixel travel.
     carry: f32,
+    /// The anchor marker is drawn for this run, in its theme.
+    drawn: bool,
 }
 
 impl Run {
@@ -37,6 +39,7 @@ impl Run {
             dragged: false,
             last: Instant::now(),
             carry: 0.0,
+            drawn: false,
         }
     }
 
@@ -212,18 +215,24 @@ impl App {
     }
 
     pub fn draw_autoscroll(&mut self) -> Result<()> {
-        let Some(run) = &self.autoscroll else {
+        let Some(run) = &mut self.autoscroll else {
             return self.autoscroll_p.offset(-100_000.0, 0.0);
         };
         let (x, y) = run.anchor;
+        let fresh = !std::mem::replace(&mut run.drawn, true);
         let s = self.scale;
+        // Each run redraws it, so a theme change since the last one shows.
         if self
             .autoscroll_p
             .ensure(&self.g, (28.0 * s).ceil() as u32, (28.0 * s).ceil() as u32)?
+            || fresh
         {
             let g = &self.g;
             self.autoscroll_p.draw(s, |dc| {
                 let point = |x, y| Vector2 { X: x, Y: y };
+                // A surface starts undefined: without this, the circle sat
+                // on an opaque square.
+                unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
                 let ring = D2D1_ELLIPSE {
                     point: point(14.0, 14.0),
                     radiusX: 13.0,

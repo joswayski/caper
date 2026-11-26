@@ -760,6 +760,7 @@ pub struct App {
     report: RefCell<Option<audio::ReportDialog>>,
     history_window: RefCell<Option<history::HistoryWindow>>,
     gif_picker: RefCell<Option<gifs::Picker>>,
+    gif_warm: RefCell<gifs::Warm>,
     /// `caper://` invites handed off by later launches, and the one waiting
     /// for sign-in and a finished profile.
     invite_links: RefCell<Option<std::sync::mpsc::Receiver<String>>>,
@@ -972,6 +973,7 @@ pub fn start(
         whats_new_window: RefCell::default(),
         update_window: RefCell::default(),
         gif_picker: RefCell::default(),
+        gif_warm: RefCell::default(),
         invite_links: RefCell::new({
             let wakes = sender.clone();
             caper_client::app_link::listen_at(&link_handoff(), move || {

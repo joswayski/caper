@@ -149,6 +149,29 @@ final class KlipyPickerModel {
         self.kind = kind
     }
 
+    /// Trending GIFs fetched when the pointer reaches a GIF button, as web
+    /// preloads them, so the picker opens on tiles instead of a loading grid.
+    private static var warmed: (configuration: KlipyConfiguration, at: Date, page: KlipyPage)?
+    private static var warming = false
+    private static let warmFor: TimeInterval = 120
+
+    private static func warmPage(for configuration: KlipyConfiguration) -> KlipyPage? {
+        guard let warmed, warmed.configuration == configuration,
+              Date().timeIntervalSince(warmed.at) < warmFor else { return nil }
+        return warmed.page
+    }
+
+    static func warm(_ configuration: KlipyConfiguration) {
+        guard !warming, warmPage(for: configuration) == nil else { return }
+        warming = true
+        Task {
+            defer { warming = false }
+            if let page = try? await KlipyClient(configuration: configuration).page(kind: .gif, query: "", page: 1) {
+                warmed = (configuration, Date(), page)
+            }
+        }
+    }
+
     func start() {
         guard task == nil, !loaded else { return }
         reload(debounce: false)
@@ -198,7 +221,14 @@ final class KlipyPickerModel {
         #endif
         guard generation == self.generation else { return }
         do {
-            let result = try await client.page(kind: kind, query: query, page: page, ads: ads)
+            let warm = page == 1 && query.isEmpty && kind == .gif && ads == nil
+                ? Self.warmPage(for: client.configuration) : nil
+            let result: KlipyPage
+            if let warm {
+                result = warm
+            } else {
+                result = try await client.page(kind: kind, query: query, page: page, ads: ads)
+            }
             guard generation == self.generation else { return }
             if page == 1 {
                 items = result.items; resultsQuery = query; loaded = true; resultsID += 1

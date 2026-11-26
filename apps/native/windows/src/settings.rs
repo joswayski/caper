@@ -23,6 +23,10 @@ use audio::Mic;
 use caper_client::activity::Filter;
 use caper_client::model::{DELETE_ACCOUNT_URL, DM_PRIVACY, NotificationLevel};
 use caper_client::notifications::{Change, PAUSE_PRESETS, Scope, account_level_label};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::time::Instant;
 use windows::Win32::Foundation::{LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -49,6 +53,8 @@ const ROW_SIDE: f32 = 104.0;
 pub const TIMER_INBOX: usize = 11;
 /// Settings' version reads "Copied" until this fires.
 pub const TIMER_VERSION_COPIED: usize = 47;
+/// Redraws Settings while a switch's knob slides.
+pub const TIMER_SWITCH: usize = 52;
 /// The gap around a section's separator.
 const SECTION_GAP: f32 = 18.0;
 pub const LEVELS: [NotificationLevel; 3] = [
@@ -84,7 +90,7 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum SPart {
     Close,
     /// A line of text, by its place in the body.
@@ -429,8 +435,8 @@ pub struct Settings {
     content_h: f32,
     pub hover: Option<SPart>,
     pub pressed: Option<SPart>,
-    /// A click gave `focus`: the version, body text like web's links,
-    /// rings only for keyboard focus.
+    /// `focus` came from a click or from opening, not the keyboard: as
+    /// web's `:focus-visible`, the ring waits until Tab moves it.
     pub pointer_focus: bool,
     pub focus: Option<SPart>,
     /// Client DIPs: the card and its scrolling body.
@@ -443,6 +449,7 @@ pub struct Settings {
     pub notice: String,
     /// The version reads "Copied" until `TIMER_VERSION_COPIED`.
     pub version_copied: bool,
+    pub slides: Slides<SPart>,
 }
 
 impl Settings {
@@ -457,7 +464,7 @@ impl Settings {
             content_h: 0.0,
             hover: None,
             pressed: None,
-            pointer_focus: false,
+            pointer_focus: true,
             focus: Some(SPart::Close),
             card: (0.0, 0.0, 0.0, 0.0),
             body: (0.0, 0.0, 0.0, 0.0),
@@ -465,6 +472,7 @@ impl Settings {
             startup_error,
             notice: String::new(),
             version_copied: false,
+            slides: Slides::default(),
         }
     }
 
@@ -1132,7 +1140,8 @@ impl Settings {
             let title = g.layout(&gfx::wide(heading), &g.formats.dialog_title, 1e6)?;
             text::draw(dc, &title, cx + PAD, cy + 22.0, &g.brushes.text);
             if let Some((x, y, w, h)) = self.part_rect(SPart::Close) {
-                let on = self.hover == Some(SPart::Close) || self.focus == Some(SPart::Close);
+                let on = self.hover == Some(SPart::Close)
+                    || (self.focus == Some(SPart::Close) && !self.pointer_focus);
                 if on {
                     fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
                 }
@@ -1190,21 +1199,30 @@ impl Settings {
         } else {
             &g.brushes.muted
         };
-        if self.focus == Some(item.part) && !(item.part == SPart::CopyVersion && self.pointer_focus)
-        {
-            // Text-only parts start at their first glyph, so the ring's
-            // corners would cut into it without extra room at the sides.
-            let pad = if matches!(item.part, SPart::CopyVersion | SPart::Delete) {
-                6.0
-            } else {
-                2.0
+        if self.focus == Some(item.part) && !self.pointer_focus {
+            // Web's `:focus-visible` outline: 2 wide and 2 out, its corners
+            // concentric with the control's. Text-only parts start at their
+            // first glyph, so the ring gets extra room at the sides.
+            const OUT: f32 = 3.0;
+            let (side, radius) = match item.part {
+                SPart::CopyVersion | SPart::Delete => (6.0, 6.0),
+                SPart::ThemeObsidian | SPart::ThemePaper => (OUT, 13.0 + OUT),
+                SPart::MicTest => (OUT, (h / 2.0).min(16.0) + OUT),
+                p if p.is_button() => (OUT, 9.0 + OUT),
+                _ => (OUT, RADIUS),
             };
-            stroke_round(
-                dc,
-                rect(x - pad, y - 2.0, x + w + pad, y + h + 2.0),
-                RADIUS,
-                &g.brushes.terracotta,
-            );
+            unsafe {
+                dc.DrawRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: rect(x - side, y - OUT, x + w + side, y + h + OUT),
+                        radiusX: radius,
+                        radiusY: radius,
+                    },
+                    &g.brushes.terracotta,
+                    2.0,
+                    None,
+                );
+            }
         }
         match item.part {
             SPart::Text(_) => {
@@ -1257,7 +1275,7 @@ impl Settings {
                     x + w - 40.0,
                     y + (h - 22.0) / 2.0,
                     enabled,
-                    on,
+                    self.slides.at(item.part, on),
                     hover,
                 )?;
             }
@@ -1271,7 +1289,7 @@ impl Settings {
                     x + w - 40.0,
                     y + (h - 22.0) / 2.0,
                     enabled,
-                    on,
+                    self.slides.at(item.part, on),
                     hover,
                 )?;
             }
@@ -1633,23 +1651,97 @@ fn draw_theme_card(
     Ok(())
 }
 
-/// A switch at (x, y): terracotta while on, its knob at the end.
+/// Each switch's knob position, so a change slides it across over
+/// `motion::FAST` on the shared ease, as web's `transform var(--motion-fast)
+/// var(--ease-out)`. A switch drawn for the first time, or any while Windows
+/// animations are off, rests at its end.
+pub struct Slides<K>(RefCell<HashMap<K, Slide>>);
+
+#[derive(Clone, Copy)]
+struct Slide {
+    on: bool,
+    from: f32,
+    since: Instant,
+    drawn: f32,
+}
+
+impl<K> Default for Slides<K> {
+    fn default() -> Self {
+        Self(RefCell::default())
+    }
+}
+
+fn end(on: bool) -> f32 {
+    if on { 1.0 } else { 0.0 }
+}
+
+impl<K: Copy + Eq + Hash> Slides<K> {
+    /// Where `key`'s knob is now, from 0 (off) to 1 (on), as it shows `on`.
+    pub fn at(&self, key: K, on: bool) -> f32 {
+        self.at_time(key, on, Instant::now(), crate::files::motion())
+    }
+
+    fn at_time(&self, key: K, on: bool, now: Instant, motion: bool) -> f32 {
+        let mut slides = self.0.borrow_mut();
+        let s = slides.entry(key).or_insert(Slide {
+            on,
+            from: end(on),
+            since: now,
+            drawn: end(on),
+        });
+        if s.on != on {
+            // A change mid-slide turns back from where the knob is.
+            let from = if motion { s.drawn } else { end(on) };
+            *s = Slide {
+                on,
+                from,
+                since: now,
+                drawn: from,
+            };
+        }
+        let k = now.saturating_duration_since(s.since).as_secs_f64() / crate::motion::FAST;
+        s.drawn = if k >= 1.0 {
+            end(on)
+        } else {
+            s.from + (end(on) - s.from) * crate::motion::ease(k) as f32
+        };
+        s.drawn
+    }
+
+    /// Whether a knob last drawn short of its end needs another frame.
+    pub fn moving(&self) -> bool {
+        self.0.borrow().values().any(|s| s.drawn != end(s.on))
+    }
+}
+
+/// `a` mixed toward `b` by `t`, per channel.
+fn mix(a: u32, b: u32, t: f32) -> u32 {
+    let channel = |shift: u32| {
+        let (a, b) = (((a >> shift) & 0xFF) as f32, ((b >> shift) & 0xFF) as f32);
+        ((a + (b - a) * t).round() as u32) << shift
+    };
+    channel(16) | channel(8) | channel(0)
+}
+
+/// A switch at (x, y): its knob `on` (0 to 1) of the way to the end, the
+/// track turning terracotta with it.
 pub(crate) fn switch(
     g: &Gfx,
     dc: &ID2D1DeviceContext,
     x: f32,
     y: f32,
     enabled: bool,
-    on: bool,
+    on: f32,
     hover: bool,
 ) -> Result<()> {
     let track = rect(x, y, x + 40.0, y + 22.0);
-    let fill = match (enabled, on) {
-        (false, _) => crate::theme::surface_raised(),
-        (true, true) => crate::theme::terracotta(),
-        (true, false) => crate::theme::border(),
+    let fill = if enabled {
+        mix(crate::theme::border(), crate::theme::terracotta(), on)
+    } else {
+        crate::theme::surface_raised()
     };
-    fill_round(dc, track, 11.0, &g.solid(fill)?);
+    // Mid-slide colours skip `Gfx::solid`'s lasting cache.
+    fill_round(dc, track, 11.0, &crate::files::alpha(dc, fill, 1.0)?);
     if hover {
         stroke_round(
             dc,
@@ -1660,14 +1752,16 @@ pub(crate) fn switch(
     }
     let e = D2D1_ELLIPSE {
         point: windows_numerics::Vector2 {
-            X: if on { x + 29.0 } else { x + 11.0 },
+            X: x + 11.0 + 18.0 * on,
             Y: y + 11.0,
         },
         radiusX: 8.0,
         radiusY: 8.0,
     };
+    // As web's and Linux's: the text colour, so Paper's knob stays dark
+    // against its light track.
     let knob = if enabled {
-        0xFFFFFF
+        crate::theme::text()
     } else {
         crate::theme::text_muted()
     };
@@ -2734,6 +2828,13 @@ impl App {
             self.settings_p.ensure(g, px(self.w), px(self.h))?;
             self.settings_p.offset(0.0, 0.0)?;
             self.settings_p.draw(s, |dc| st.draw(g, dc))?;
+            unsafe {
+                if st.slides.moving() {
+                    SetTimer(Some(self.hwnd), TIMER_SWITCH, 16, None);
+                } else {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_SWITCH);
+                }
+            }
             if st.page == Page::WhatsNew
                 && let Some(live) = &mut self.live
                 && !live.highlights.loading
@@ -2790,5 +2891,36 @@ impl App {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn switches_rest_when_first_drawn_slide_on_change_and_turn_back_midway() {
+        let slides = Slides::default();
+        let t0 = Instant::now();
+        let at = |ms: u64, on: bool, motion: bool| {
+            slides.at_time(1, on, t0 + Duration::from_millis(ms), motion)
+        };
+        assert_eq!(at(0, true, true), 1.0, "opening never animates");
+        assert!(!slides.moving());
+        assert_eq!(
+            at(10, false, true),
+            1.0,
+            "a change starts where the knob is"
+        );
+        let mid = at(40, false, true);
+        assert!(mid > 0.0 && mid < 1.0 && slides.moving(), "{mid}");
+        // Turned back on halfway: it returns from `mid`, not from 0.
+        assert_eq!(at(40, true, true), mid);
+        assert!(at(60, true, true) > mid);
+        assert_eq!(at(40 + 140, true, true), 1.0);
+        assert!(!slides.moving());
+        assert_eq!(at(200, false, false), 0.0, "animations off: no slide");
+        assert!(!slides.moving());
     }
 }

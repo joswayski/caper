@@ -248,6 +248,9 @@ import CaperCore
         emoji.setAccessibilityIdentifier("composer-emoji")
         gif.setAccessibilityIdentifier("composer-gif")
         gif.setAccessibilityLabel("Send a GIF"); gif.toolTip = "GIFs and stickers"
+        gif.hoverChanged = { [weak self] hovered in
+            if hovered, let klipy = self?.model.klipy { KlipyPickerModel.warm(klipy) }
+        }
         gif.title = ""
         gif.image = Self.gifBadgeImage()
         gif.imagePosition = .imageOnly

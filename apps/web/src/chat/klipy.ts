@@ -237,6 +237,50 @@ export async function klipyPage(
   return parseKlipy(await response.json(), kind);
 }
 
+const WARM_FOR = 120_000;
+let warm: { account: string; at: number; page: Promise<KlipyPage> } | undefined;
+
+/** Pointing at a GIF button fetches trending GIFs and their first tiles, so
+ * the picker opens on them rather than a loading grid. Repeats are free while
+ * the page is fresh. */
+export function warmKlipy(key: KlipyConfig) {
+  const account = `${key.appKey}\n${key.customerId}`;
+  if (warm?.account === account && Date.now() - warm.at < WARM_FOR) return;
+  const page = klipyPage(key, "gif", "", 1, undefined, new AbortController().signal);
+  warm = { account, at: Date.now(), page };
+  page.then(
+    (result) => {
+      for (const item of result.items.slice(0, 12)) {
+        if (item.type !== "item") continue;
+        const image = new Image();
+        image.referrerPolicy = "origin";
+        image.src = item.tile.url;
+      }
+    },
+    () => {
+      if (warm?.page === page) warm = undefined;
+    },
+  );
+}
+
+/** The warmed page, when it answers this request. */
+export function warmedKlipy(
+  key: KlipyConfig,
+  kind: KlipyKind,
+  query: string,
+  page: number,
+  ads: boolean,
+): Promise<KlipyPage> | undefined {
+  if (kind !== "gif" || query || page !== 1 || ads) return undefined;
+  const fresh = warm?.account === `${key.appKey}\n${key.customerId}` && Date.now() - warm.at < WARM_FOR;
+  return fresh ? warm?.page : undefined;
+}
+
+/** For tests: forget the warmed page between cases. */
+export function resetWarmKlipyForTests() {
+  warm = undefined;
+}
+
 /** Best effort: tells KLIPY what was shared, for ranking and recents. */
 export function shareKlipy(key: KlipyConfig, gif: ChatGif, query: string) {
   void fetch(`${BASE}/${encodeURIComponent(key.appKey)}/${path(gif.kind)}/share/${encodeURIComponent(gif.slug)}`, {

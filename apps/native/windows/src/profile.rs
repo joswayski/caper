@@ -910,6 +910,9 @@ impl App {
                 let hover = hit.filter(|p| *p != PPart::Field);
                 if card.hover != hover {
                     card.hover = hover;
+                    if hover == Some(PPart::Gif) {
+                        self.warm_gifs();
+                    }
                     self.profile_changed();
                 }
                 on_card.then_some(Some(LRESULT(0)))

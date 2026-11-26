@@ -194,7 +194,7 @@ impl Dialog {
                     x + w - 40.0,
                     cy - 11.0,
                     self.enabled(Part::Toggle),
-                    self.private,
+                    self.slides.at((), self.private),
                     self.hover == Some(Part::Toggle),
                 )?;
             }

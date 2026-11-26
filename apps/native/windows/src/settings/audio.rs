@@ -510,10 +510,12 @@ impl Settings {
                 radiusX: 8.0,
                 radiusY: 8.0,
             };
+            // Web's thumb is `--action`: chalk on Obsidian, ink on Paper,
+            // where a white knob vanished into the card.
             dc.FillEllipse(
                 &knob,
                 &g.solid(if enabled {
-                    0xFFFFFF
+                    crate::theme::action()
                 } else {
                     crate::theme::text_muted()
                 })?,

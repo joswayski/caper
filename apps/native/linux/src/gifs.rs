@@ -21,6 +21,25 @@ use std::time::{Duration, Instant};
 const RECHECK: Duration = Duration::from_secs(60);
 /// The grid's column width, three to a row as desktop.
 const TILE: i32 = 108;
+/// How long warmed trending GIFs stand in for a fresh request.
+const WARM_FOR: Duration = Duration::from_secs(120);
+
+/// Trending GIFs fetched when the pointer reaches a GIF button, as web
+/// preloads them, so the picker opens on tiles instead of "Loading…".
+#[derive(Default)]
+pub(super) struct Warm {
+    page: Option<(Instant, Page)>,
+    loading: bool,
+}
+
+impl Warm {
+    fn fresh(&self) -> Option<&Page> {
+        self.page
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < WARM_FOR)
+            .map(|(_, page)| page)
+    }
+}
 
 /// The open picker: which composer it sends into, its tab, search and
 /// results.
@@ -84,7 +103,48 @@ impl App {
             composer.gif.connect_clicked(move |button| {
                 app.toggle_gif_picker(thread, button.upcast_ref());
             });
+            self.warm_gifs_on_hover(&composer.gif);
         }
+    }
+
+    /// Fetches trending GIFs as the pointer reaches `button`.
+    pub(super) fn warm_gifs_on_hover(self: &Rc<Self>, button: &gtk::Button) {
+        let motion = gtk::EventControllerMotion::new();
+        let weak = Rc::downgrade(self);
+        motion.connect_enter(move |_, _, _| {
+            if let Some(app) = weak.upgrade() {
+                app.warm_gifs();
+            }
+        });
+        button.add_controller(motion);
+    }
+
+    fn warm_gifs(self: &Rc<Self>) {
+        {
+            let warm = self.gif_warm.borrow();
+            if warm.loading || warm.fresh().is_some() || self.gif_picker.borrow().is_some() {
+                return;
+            }
+        }
+        let Some(config) = self.state.borrow().klipy.clone() else {
+            return;
+        };
+        self.gif_warm.borrow_mut().loading = true;
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = sender.send_blocking(klipy::fetch(&config, Kind::Gif, "", 1));
+        });
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let (Ok(result), Some(app)) = (receiver.recv().await, weak.upgrade()) else {
+                return;
+            };
+            let mut warm = app.gif_warm.borrow_mut();
+            warm.loading = false;
+            if let Ok(page) = result {
+                warm.page = Some((Instant::now(), page));
+            }
+        });
     }
 
     /// The GIF buttons show while GIFs can be sent; a picker whose
@@ -391,6 +451,13 @@ impl App {
             return;
         };
         self.render_gif_picker();
+        // Opening on the trending GIFs a hover already fetched.
+        let warmed = (page == 1 && kind == Kind::Gif && query.is_empty())
+            .then(|| self.gif_warm.borrow().fresh().cloned())
+            .flatten();
+        if let Some(warmed) = warmed {
+            return self.gifs_loaded(request, 1, Ok(warmed));
+        }
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let _ = sender.send_blocking(klipy::fetch(&config, kind, &query, page));

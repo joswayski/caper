@@ -205,6 +205,7 @@ impl App {
             gif.set_visible(false);
             let app = self.clone();
             gif.connect_clicked(move |button| app.toggle_profile_gifs(button.upcast_ref()));
+            self.warm_gifs_on_hover(&gif);
             line.append(&gif);
             let send: gtk::Button = crate::app::named("GtkButton", "Send message");
             send.set_child(Some(&self.images.icon_image(Icon::Send, "#b9bcbe", 18)));

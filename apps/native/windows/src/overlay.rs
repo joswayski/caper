@@ -555,6 +555,8 @@ pub struct Dialog {
     /// each hover has come (0 to 1, before easing), toward which end, and
     /// when it last stepped.
     pub release_glow: [std::cell::Cell<(f32, bool, std::time::Instant)>; 2],
+    /// Create a channel's Private channel switch.
+    pub slides: crate::settings::Slides<()>,
     /// Client DIP origin of the field's text, before it scrolls.
     pub field_origin: (f32, f32),
     /// The history's versions, while `kind` is History.
@@ -660,6 +662,7 @@ impl Dialog {
             release_glow: std::array::from_fn(|_| {
                 std::cell::Cell::new((0.0, false, std::time::Instant::now()))
             }),
+            slides: Default::default(),
             field_origin: (0.0, 0.0),
             history: None,
             scroll: 0.0,
@@ -2962,9 +2965,10 @@ impl App {
                     .map(|l| crate::files::Ctx::new(&mut l.media, &mut tex));
                 self.dialog_card_p
                     .draw(s, |dc| d.draw(g, dc, w, h, media.as_mut()))?;
-                // Each frame of the version link's hover fade.
+                // Each frame of the version link's hover fade and a
+                // switch's slide.
                 unsafe {
-                    if d.release_moving() {
+                    if d.release_moving() || d.slides.moving() {
                         SetTimer(Some(self.hwnd), crate::updates::TIMER_RELEASE, 16, None);
                     } else {
                         let _ = KillTimer(Some(self.hwnd), crate::updates::TIMER_RELEASE);

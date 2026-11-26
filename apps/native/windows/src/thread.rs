@@ -141,6 +141,8 @@ pub struct Pane {
     /// glide (from where, since when).
     pub jump: caper_client::jump::Jump,
     pub jump_glide: Option<(f32, std::time::Instant)>,
+    /// Eased wheel scrolling, as the channel's history.
+    pub wheel: crate::wheel::Wheel,
     width: f32,
     pub composer: Composer,
     has_files: bool,
@@ -207,6 +209,7 @@ impl Pane {
             at_end: true,
             jump: Default::default(),
             jump_glide: None,
+            wheel: Default::default(),
             width,
             composer: Composer::formatted(),
             has_files: false,
@@ -2095,6 +2098,9 @@ impl App {
             t.hover = hover;
             self.dirty.thread = true;
             self.dirty.thread_box |= gif;
+            if hover == Some(Part::Gif) {
+                self.warm_gifs();
+            }
             self.need = true;
         }
     }
@@ -2270,8 +2276,17 @@ impl App {
                 done
             }
             WM_MOUSEWHEEL if self.pointer.is_some_and(|(x, y)| self.in_thread(x, y)) => {
-                let delta = ((wp.0 >> 16) & 0xffff) as i16 as f32;
-                self.scroll_thread_by(-delta / 120.0 * WHEEL_STEP as f32);
+                let delta = ((wp.0 >> 16) & 0xffff) as i16;
+                let now = self.thread.as_mut()?.wheel.wheel(
+                    delta,
+                    WHEEL_STEP,
+                    crate::files::motion(),
+                    std::time::Instant::now(),
+                );
+                if now != 0.0 {
+                    self.scroll_thread_by(now as f32);
+                }
+                self.arm_wheel();
                 done
             }
             WM_SETCURSOR

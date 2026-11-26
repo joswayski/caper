@@ -22,6 +22,8 @@ import {
   klipyConfig,
   klipyPage,
   rememberedKlipyConfig,
+  warmedKlipy,
+  warmKlipy,
   type ChatGif,
   type KlipyConfig,
   type KlipyItem,
@@ -130,6 +132,8 @@ export default function GifButton({
         disabled={disabled}
         onMouseDown={(event) => event.preventDefault()}
         {...getReferenceProps({
+          onPointerEnter: () => warmKlipy(config),
+          onFocus: () => warmKlipy(config),
           onClick: () => {
             setDrawer(touchLayout());
             setOpen(!open);
@@ -198,8 +202,14 @@ export function GifPicker({
         : { key, items: [], page: 0, hasNext: false, loading: true },
     );
     const width = grid.current?.clientWidth ?? 320;
-    klipyPage(config, kind, search, page, ads ? { width } : undefined, signal).then(
+    (
+      warmedKlipy(config, kind, search, page, ads) ??
+      klipyPage(config, kind, search, page, ads ? { width } : undefined, signal)
+    ).then(
       (next) =>
+        // A warmed page ignores the signal, so a tab or search that moved on
+        // must not take its answer.
+        !signal.aborted &&
         setResults((current) => ({
           key,
           items: page === 1 || current?.key !== key ? next.items : [...current.items, ...next.items],
