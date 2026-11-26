@@ -150,26 +150,24 @@ import Observation
                     body.addArrangedSubview(link(ReleaseChanges.label, url: url, hint: "Open this version’s changes on GitHub"))
                 }
             }
-            let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
-            for date in days.keys.sorted(by: >) {
-                let day = Self.selectable(releaseDayLabel(date), size: 12, bold: true, muted: true)
-                body.addArrangedSubview(day); body.setCustomSpacing(4, after: day)
-                for release in days[date] ?? [] {
-                    // Web's spacing: the link 6 above its highlights, each title
-                    // 4 above its text, 12 between highlights, 20 around the rule.
+            // Like captures: one list under the installed version; only older releases name theirs.
+            for release in releases {
+                // Web's spacing: the link 6 above its highlights, each title
+                // 4 above its text, 12 between highlights, 20 around the rule.
+                if release.revision != notes.revision {
                     let source = link(release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)),
                                       url: URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)"))
                     body.addArrangedSubview(source); body.setCustomSpacing(6, after: source)
-                    for highlight in release.highlights {
-                        let title = Self.selectable(highlight.title, size: 16, bold: true); title.accessibilityTraits.insert(.header)
-                        let text = Self.selectable(highlight.body, size: 14, muted: true)
-                        body.addArrangedSubview(title); body.setCustomSpacing(4, after: title)
-                        body.addArrangedSubview(text); body.setCustomSpacing(12, after: text)
-                    }
-                    if let last = body.arrangedSubviews.last { body.setCustomSpacing(20, after: last) }
-                    let rule = UIView(); rule.backgroundColor = UIColor(CaperTheme.border); rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
-                    body.addArrangedSubview(rule); body.setCustomSpacing(20, after: rule)
                 }
+                for highlight in release.highlights {
+                    let title = Self.selectable(highlight.title, size: 16, bold: true); title.accessibilityTraits.insert(.header)
+                    let text = Self.selectable(highlight.body, size: 14, muted: true)
+                    body.addArrangedSubview(title); body.setCustomSpacing(4, after: title)
+                    body.addArrangedSubview(text); body.setCustomSpacing(12, after: text)
+                }
+                if let last = body.arrangedSubviews.last { body.setCustomSpacing(20, after: last) }
+                let rule = UIView(); rule.backgroundColor = UIColor(CaperTheme.border); rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
+                body.addArrangedSubview(rule); body.setCustomSpacing(20, after: rule)
             }
         } else if notes.loading { body.addArrangedSubview(Self.label("Loading release highlights…")) }
         else if let error = notes.error {

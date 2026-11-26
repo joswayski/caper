@@ -987,9 +987,12 @@ impl Builder<'_> {
                 self.button(SPart::Changes, caper_client::updates::CHANGES_LABEL)?;
             }
         } else {
+            // Like captures: one list under the installed version; only older
+            // releases name theirs.
             for (k, release) in history.releases.iter().enumerate() {
-                self.text(&release.date, Style::Section)?;
-                self.button(SPart::ReleaseRevision(k), &release.label)?;
+                if let Some(label) = &release.label {
+                    self.button(SPart::ReleaseRevision(k), label)?;
+                }
                 for (title, body) in &release.highlights {
                     self.y += 10.0;
                     self.text(title, Style::Label)?;

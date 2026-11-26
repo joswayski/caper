@@ -92,29 +92,22 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
             "https://github.com/joswayski/caper/commits/${BuildConfig.SOURCE_REVISION}",
             onClickLabel = "Open this version’s changes on GitHub",
         )
-    } else releases.groupBy { it.publishedAt.take(10) }.forEach { (date, dayReleases) ->
-        dayReleases.forEachIndexed { index, release ->
-            Column {
-                // Each day's first version sits right under its date, as on web.
-                if (index == 0) {
-                    SelectionContainer { Text(releaseDayLabel(date), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextMuted) }
-                    Spacer(Modifier.height(6.dp))
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ReleaseCommitLink(release.version?.let { "Version $it" } ?: release.revision.take(7), release.revision)
-                    release.highlights.forEach { highlight ->
-                        // Release notes can be selected and copied, like text on web.
-                        SelectionContainer {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                                Text(highlight.body, fontSize = 14.sp, color = TextMuted)
-                            }
-                        }
+    } else releases.forEach { release ->
+        // Like captures: one list under the installed version; only older releases name theirs.
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (release.revision != BuildConfig.SOURCE_REVISION)
+                ReleaseCommitLink(release.version?.let { "Version $it" } ?: release.revision.take(7), release.revision)
+            release.highlights.forEach { highlight ->
+                // Release notes can be selected and copied, like text on web.
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text(highlight.body, fontSize = 14.sp, color = TextMuted)
                     }
                 }
             }
-            HorizontalDivider(color = Border)
         }
+        HorizontalDivider(color = Border)
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Button(close) { Text(if (automatic) "Got it" else "Done") }
@@ -146,8 +139,3 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
         Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.size(12.dp), tint = color)
     }
 }
-
-/** "October 18, 2026" for a release's UTC publication day ("2026-10-18"). */
-internal fun releaseDayLabel(day: String): String = runCatching {
-    java.time.LocalDate.parse(day).format(java.time.format.DateTimeFormatter.ofPattern("MMMM d, yyyy", java.util.Locale.US))
-}.getOrDefault(day)

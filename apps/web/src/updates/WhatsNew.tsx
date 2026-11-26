@@ -2,7 +2,6 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import {
   loadReleaseHighlights,
-  releaseHighlightDays,
   sourceRevisionValid,
   unreadReleaseHighlights,
   type ReleaseHighlights,
@@ -232,24 +231,27 @@ export default function WhatsNew({
             )}
           </>
         )}
-        {releaseHighlightDays(releases).map(({ date, releases: dayReleases }) => (
-          <section className="whats-new-release" key={date}>
-            <time dateTime={date}>
-              {new Date(date).toLocaleDateString(undefined, {
-                timeZone: "UTC",
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })}
-            </time>
-            {dayReleases.flatMap((release) =>
-              release.highlights.map((highlight, index) => (
-                <article key={`${release.sequence}-${index}`}>
-                  <h3>{highlight.title}</h3>
-                  <p>{highlight.body}</p>
-                </article>
-              )),
+        {/* Like captures: one list under the header's build link; only older releases name their build. */}
+        {releases.map((release) => (
+          <section className="whats-new-release" key={release.sequence}>
+            {release.revision !== feed?.revision && (
+              <a
+                className="whats-new-build"
+                href={`https://github.com/joswayski/caper/commit/${release.revision}`}
+                target="_blank"
+                rel="noreferrer"
+                title="View this version on GitHub"
+              >
+                {release.revision.slice(0, 7)}
+                <ExternalLink size={12} aria-hidden="true" />
+              </a>
             )}
+            {release.highlights.map((highlight, index) => (
+              <article key={index}>
+                <h3>{highlight.title}</h3>
+                <p>{highlight.body}</p>
+              </article>
+            ))}
           </section>
         ))}
       </div>

@@ -414,40 +414,25 @@ impl App {
             }
             return;
         }
-        let mut previous_day = None;
-        let mut first_of_day = false;
-        for release in releases {
-            let day = chrono::DateTime::parse_from_rfc3339(&release.published_at)
-                .ok()
-                .map(|published| published.date_naive());
-            if day != previous_day {
-                let date = label(
-                    &day.map(|day| day.format("%B %-d, %Y").to_string())
-                        .unwrap_or_default(),
-                    &["settings-section"],
+        // Like captures: one list under the installed version; only older
+        // releases name theirs.
+        for (k, release) in releases.iter().enumerate() {
+            let mut top = if k == 0 { 0 } else { 16 };
+            if release.revision != REVISION {
+                let version = release_link(
+                    &self.images,
+                    &release_label(release),
+                    &updates::commit_url(&release.revision).unwrap_or_default(),
                 );
-                date.set_xalign(0.0);
-                date.set_selectable(true);
-                if previous_day.is_some() {
-                    date.set_margin_top(20);
-                }
-                open.body.append(&date);
-                previous_day = day;
-                first_of_day = true;
+                version.set_margin_top(top);
+                open.body.append(&version);
+                top = 10;
             }
-            let version = release_link(
-                &self.images,
-                &release_label(&release),
-                &updates::commit_url(&release.revision).unwrap_or_default(),
-            );
-            // A day's first version sits right under its date, as on web.
-            version.set_margin_top(if first_of_day { 4 } else { 12 });
-            first_of_day = false;
-            open.body.append(&version);
             for item in &release.highlights {
                 let item = highlight(&item.title, &item.body);
-                item.set_margin_top(10);
+                item.set_margin_top(top);
                 open.body.append(&item);
+                top = 10;
             }
             let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
             rule.set_margin_top(16);

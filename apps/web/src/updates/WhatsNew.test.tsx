@@ -11,7 +11,7 @@ vi.mock("./whats-new", async (importOriginal) => ({
   loadReleaseHighlights: vi.fn(),
 }));
 
-test("history lists every retained highlight newest first under its day, without a build per release", async () => {
+test("history lists every retained highlight newest first in one list, naming only older builds", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.mocked(loadReleaseHighlights).mockResolvedValue({
     schema: 1,
@@ -43,16 +43,18 @@ test("history lists every retained highlight newest first under its day, without
     await act(async () => {
       root.render(<WhatsNew ready blocked={false} manualOpen onManualClose={() => {}} />);
     });
-    expect(container.querySelectorAll("time")).toHaveLength(1);
+    expect(container.querySelectorAll("time")).toHaveLength(0);
     expect([...container.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual([
       "First change",
       "Second change",
       "Earlier update",
     ]);
-    // Only the header names a build: the one running now.
+    // The header names the running build; the list names only the older one.
     const links = [...container.querySelectorAll("a")];
-    expect(links).toHaveLength(1);
+    expect(links).toHaveLength(2);
     expect(links[0].closest("header")).not.toBeNull();
+    expect(links[1].textContent).toBe("aaaaaaa");
+    expect(links[1].nextElementSibling?.textContent).toContain("Earlier update");
     const buttons = [...container.querySelectorAll("footer button")].map((button) => button.textContent);
     expect(buttons).toEqual(["Done"]);
   } finally {

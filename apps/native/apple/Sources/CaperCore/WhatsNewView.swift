@@ -177,17 +177,6 @@ private struct ReleaseLinkFeedback: ViewModifier {
     }
 }
 
-/// "October 18, 2026" for a release's UTC publication day ("2026-10-18").
-func releaseDayLabel(_ day: String) -> String {
-    let parser = DateFormatter()
-    parser.locale = Locale(identifier: "en_US_POSIX")
-    parser.timeZone = TimeZone(identifier: "UTC")
-    parser.dateFormat = "yyyy-MM-dd"
-    guard let date = parser.date(from: day) else { return day }
-    parser.dateFormat = "MMMM d, yyyy"
-    return parser.string(from: date)
-}
-
 #if os(iOS)
 @MainActor struct WhatsNewSheet: View {
     @Bindable var notes: WhatsNewModel
@@ -231,26 +220,23 @@ func releaseDayLabel(_ day: String) -> String {
                         if releases.isEmpty {
                             Text("No release highlights for this version yet.").foregroundStyle(CaperTheme.muted)
                         }
-                        let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
-                        ForEach(days.keys.sorted(by: >), id: \.self) { date in
-                            Text(releaseDayLabel(date)).font(CaperTheme.font(12, weight: .bold))
-                                .foregroundStyle(CaperTheme.muted)
-                            ForEach(days[date] ?? [], id: \.sequence) { release in
-                                VStack(alignment: .leading, spacing: 12) {
-                                    if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
-                                        ReleaseLink(
-                                            label: release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)),
-                                            url: url, size: 12)
-                                    }
-                                    ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
-                                            Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                        }
+                        // Like captures: one list under the installed version; only older releases name theirs.
+                        ForEach(releases, id: \.sequence) { release in
+                            VStack(alignment: .leading, spacing: 12) {
+                                if release.revision != notes.revision,
+                                   let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
+                                    ReleaseLink(
+                                        label: release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)),
+                                        url: url, size: 12)
+                                }
+                                ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
+                                        Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                                     }
                                 }
-                                Divider().overlay(CaperTheme.border)
                             }
+                            Divider().overlay(CaperTheme.border)
                         }
                     } else if notes.loading {
                         ProgressView().accessibilityLabel("Loading release highlights")

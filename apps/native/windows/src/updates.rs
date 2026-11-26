@@ -76,8 +76,9 @@ pub struct History {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
     pub revision: String,
-    pub date: String,
-    pub label: String,
+    /// "Version 2026.11.19.3", for releases older than the installed one;
+    /// the installed release is already named at the top.
+    pub label: Option<String>,
     pub highlights: Vec<(String, String)>,
 }
 
@@ -97,13 +98,11 @@ impl History {
                     .filter(|r| !r.highlights.is_empty())
                     .map(|r| Release {
                         revision: r.revision.clone(),
-                        date: chrono::DateTime::parse_from_rfc3339(&r.published_at)
-                            .map(|d| d.format("%B %-d, %Y").to_string())
-                            .unwrap_or_default(),
-                        label: r
-                            .version
-                            .as_ref()
-                            .map_or_else(|| r.revision[..7].into(), |v| format!("Version {v}")),
+                        label: (r.revision != caper_client::whats_new::REVISION).then(|| {
+                            r.version
+                                .as_ref()
+                                .map_or_else(|| r.revision[..7].into(), |v| format!("Version {v}"))
+                        }),
                         highlights: r
                             .highlights
                             .iter()
@@ -724,12 +723,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Release 4", "Release 1"]
         );
-        assert!(
-            history
-                .releases
-                .iter()
-                .all(|r| r.date == "November 9, 2026")
-        );
+        assert!(history.releases.iter().all(|r| r.label.is_some()));
     }
 
     fn release() -> Available {

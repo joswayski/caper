@@ -839,29 +839,24 @@ import ServiceManagement
                     add(AppKitKitLink(ReleaseChanges.label, url: url, help: "Open this version’s changes on GitHub"), fill: false)
                 }
             }
-            let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
-            for day in days.keys.sorted(by: >) {
-                let date = selectable(AppKitKit.label(releaseDayLabel(day), size: 12, weight: .bold, color: AppKitKit.muted))
-                add(date)
-                // Each version sits right under its date, as on web.
-                body.setCustomSpacing(6, after: date)
-                for release in days[day] ?? [] {
-                    var rows: [NSView] = []
-                    if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
-                        rows.append(AppKitKitLink(release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)), url: url, size: 12))
-                    }
-                    for highlight in release.highlights {
-                        let title = selectable(AppKitKit.label(highlight.title, size: 16, weight: .bold))
-                        let text = selectable(AppKitKit.label(highlight.body, size: 14, color: AppKitKit.muted))
-                        let item = AppKitKit.stack([title, text], spacing: 4)
-                        AppKitKit.fillWidth(title, of: item); AppKitKit.fillWidth(text, of: item)
-                        rows.append(item)
-                    }
-                    let release = AppKitKit.stack(rows, spacing: 12)
-                    for row in rows where row is NSStackView { AppKitKit.fillWidth(row, of: release) }
-                    add(release)
-                    add(AppKitKit.divider())
+            // Like captures: one list under the installed version; only older releases name theirs.
+            for release in releases {
+                var rows: [NSView] = []
+                if release.revision != notes.revision,
+                   let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
+                    rows.append(AppKitKitLink(release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)), url: url, size: 12))
                 }
+                for highlight in release.highlights {
+                    let title = selectable(AppKitKit.label(highlight.title, size: 16, weight: .bold))
+                    let text = selectable(AppKitKit.label(highlight.body, size: 14, color: AppKitKit.muted))
+                    let item = AppKitKit.stack([title, text], spacing: 4)
+                    AppKitKit.fillWidth(title, of: item); AppKitKit.fillWidth(text, of: item)
+                    rows.append(item)
+                }
+                let release = AppKitKit.stack(rows, spacing: 12)
+                for row in rows where row is NSStackView { AppKitKit.fillWidth(row, of: release) }
+                add(release)
+                add(AppKitKit.divider())
             }
         } else if notes.loading {
             let spinner = NSProgressIndicator()
