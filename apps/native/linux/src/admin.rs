@@ -2235,12 +2235,12 @@ impl App {
                 .clipboard()
                 .set_text(&invites::invite_url(app.api.base(), &code));
             copy.set_tooltip_text(Some("Copied"));
-            copy.update_property(&[gtk::accessible::Property::Label("Copied")]);
+            crate::app::rename(copy.upcast_ref(), "Copied");
             let copy = copy.downgrade();
             glib::timeout_add_local_once(Duration::from_secs(2), move || {
                 if let Some(copy) = copy.upgrade() {
                     copy.set_tooltip_text(None);
-                    copy.update_property(&[gtk::accessible::Property::Label("Copy")]);
+                    crate::app::rename(copy.upcast_ref(), "Copy");
                 }
             });
         });

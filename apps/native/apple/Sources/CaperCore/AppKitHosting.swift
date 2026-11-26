@@ -951,6 +951,11 @@ public enum AppKitComposerCounter {
         }
     }
 
+    /// The pointer reached the GIF button: fetch trending GIFs ahead of the picker.
+    public func warmGifs() {
+        if let configuration = model.chat.klipy { KlipyPickerModel.warm(configuration) }
+    }
+
     public func gifs(from anchor: NSView, composer: ComposerTextView) {
         let chat = model.chat, inThread = self.inThread
         guard composer.isEditable, !composer.hasMarkedText(), chat.canSendGif(inThread: inThread), let configuration = chat.klipy else { return }
