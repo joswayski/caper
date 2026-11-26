@@ -2325,6 +2325,50 @@ html[data-resizing-sections] * {
 .invite-link-settings {
   margin-top: 16px;
 }
+/* Vanity link: the fixed host reads as part of the field. */
+.vanity-link-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.vanity-link-field {
+  display: flex;
+  flex: 1 1 260px;
+  align-items: center;
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-composer);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.vanity-link-field:focus-within {
+  border-color: var(--terracotta);
+  outline: 2px solid rgb(var(--accent-rgb) / 0.22);
+}
+.vanity-link-field span {
+  flex-shrink: 0;
+}
+.vanity-link-field input {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+.vanity-link-form button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 42px;
+}
 .invite-link-settings summary {
   width: fit-content;
   cursor: pointer;

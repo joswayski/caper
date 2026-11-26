@@ -93,14 +93,16 @@ test("invite codes come from full, scheme-less or bare pasted links", () => {
     assert.equal(inviteCode(input), "AbCdE12345", input);
   for (const input of [
     "",
-    "AbCdE1234",
-    "AbCdE123456",
+    "ab",
+    "atlas-",
     "https://caper.chat/invite/AbCdE1234!",
     "https://caper.chat/spaces?space=AbCdE12345",
     "https://caper.chat/invite/AbCdE12345/extra",
     "javascript:alert(1)//invite/AbCdE12345x",
   ])
     assert.equal(inviteCode(input), undefined, input);
+  for (const input of ["atlasos", "https://caper.chat/invite/atlasos", "caper.chat/invite/atlas-os/"])
+    assert.match(inviteCode(input) ?? "", /^atlas-?os$/, input);
 });
 
 test("sign-in returns to a pending invite only for valid codes", () => {
@@ -109,7 +111,8 @@ test("sign-in returns to a pending invite only for valid codes", () => {
   assert.equal(signedInPath({ username: "jose" }, "?invite=AbCdE12345"), "/invite/AbCdE12345");
   assert.equal(signedInPath({ username: null }, "?invite=AbCdE12345"), "/profile?invite=AbCdE12345");
   assert.equal(signedInPath({ username: "jose" }, ""), "/spaces");
-  assert.equal(signedInPath({ username: null }, "?invite=bad"), "/profile");
+  assert.equal(signedInPath({ username: null }, "?invite=b%40d"), "/profile");
+  assert.equal(signedInPath({ username: "jose" }, "?invite=atlas-os"), "/invite/atlas-os");
 });
 
 test("a signed-out conversation link returns to its conversation after sign-in", () => {

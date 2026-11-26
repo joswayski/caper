@@ -70,7 +70,7 @@ CaperMobileInts caper_mobile_channel_name(const uint8_t *utf8, size_t len);
 CaperMobileInts caper_mobile_name_error(const uint8_t *utf8, size_t len, bool channel);
 // The space name web sends (name.trim()): utf16 start, utf16 end, utf8 start, utf8 end.
 CaperMobileInts caper_mobile_space_name(const uint8_t *utf8, size_t len);
-// Web's inviteCode: the ten-character code's ASCII characters, or none. Only
+// Web's inviteCode: the invite code's ASCII characters, or none. Only
 // the code: clients join through their configured API origin.
 CaperMobileInts caper_mobile_invite_code(const uint8_t *utf8, size_t len);
 // A message link's "<channel>/<message>" ASCII characters, or none. Only

@@ -4493,6 +4493,31 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(inviteLinks = listOf(link) + mutable.value.inviteLinks.filter { it.code != link.code })
         done(link)
     }
+    /** The open space's vanity link name (null without one), for its owner. */
+    fun loadVanityLink(done: (String?) -> Unit, failed: (String) -> Unit) {
+        val detail = mutable.value.selectedSpace ?: return
+        val context = AdminMutationContext(accountGeneration, detail.space.id)
+        viewModelScope.launch {
+            val result = try { api.vanityLink(requireAccountToken(), detail.space.id).code }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error))
+                return@launch
+            }
+            if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) done(result)
+        }
+    }
+    /** Claims [code] as the vanity link, or turns it off when null; [done] gets the name now in effect. */
+    fun changeVanityLink(code: String?, done: (String?) -> Unit, failed: (String) -> Unit) = if (mutable.value.busy) null else launchAction { request ->
+        val detail = mutable.value.selectedSpace ?: return@launchAction
+        val context = AdminMutationContext(request, detail.space.id)
+        val result = formRequest(request, failed) {
+            val token = requireAccountToken()
+            if (code == null) { api.removeVanityLink(token, detail.space.id); VanityLink(null) }
+            else api.setVanityLink(token, detail.space.id, code)
+        } ?: return@launchAction
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) done(result.code)
+    }
     /** A link that is already gone (404: revoked elsewhere, expired or used up) leaves the list too. */
     fun revokeInviteLink(link: InviteLink, failed: (String) -> Unit) = if (mutable.value.busy) null else launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)

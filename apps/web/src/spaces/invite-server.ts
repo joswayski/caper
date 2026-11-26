@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest, setResponseHeader } from "@tanstack/react-start/server";
 import type { Account } from "../account/client";
 import { getInitialAccount } from "../account/server";
-import type { InvitePreview } from "./client";
+import { type InvitePreview, inviteCode } from "./client";
 
 export type InvitePageState =
   | { status: "invalid" }
@@ -14,7 +14,7 @@ export const getInitialInvite = createServerFn({ method: "GET" })
   .handler(async ({ data: code }): Promise<InvitePageState> => {
     // The preview includes membership and the action depends on the session.
     setResponseHeader("Cache-Control", "private, no-store");
-    if (!/^[A-Za-z0-9]{10}$/.test(code)) return { status: "invalid" };
+    if (inviteCode(code) !== code) return { status: "invalid" };
     const request = getRequest();
     // Never forward a session cookie to an origin supplied by a production Host header.
     const origin = process.env.CAPER_API_ORIGIN || (import.meta.env.DEV ? new URL(request.url).origin : undefined);

@@ -2739,6 +2739,21 @@ public final class AppModel {
         guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
     }
 
+    /// The open space's vanity link: `change` nil loads it, `.some(nil)` turns
+    /// it off, and `.some(name)` claims `name`. Returns the name in effect.
+    public func vanityLink(change: String?? = nil) async throws -> String? {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let code: String?
+        switch change {
+        case .none: code = try await api.vanityLink(spaceID: id)
+        case .some(.none): try await api.removeVanityLink(spaceID: id); code = nil
+        case .some(.some(let name)): code = try await api.setVanityLink(spaceID: id, code: name)
+        }
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return code
+    }
+
     public func declineInvitation(_ invitation: Space) async throws {
         membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         let attempt = generation

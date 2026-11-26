@@ -78,7 +78,7 @@ import SpacesLoading from "./SpacesLoading";
 import FeedbackInbox from "./FeedbackInbox";
 import NotificationsInbox, { type PreloadedInbox } from "./NotificationsInbox";
 import { listInbox, type InboxItem } from "./client";
-import { InviteLinkManager, JoinInviteLinkForm } from "./InviteLinks";
+import { InviteLinkManager, JoinInviteLinkForm, VanityLinkSettings } from "./InviteLinks";
 import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
 import { DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
 import {
@@ -1096,6 +1096,7 @@ function ManageSpaceDialog({
         prepareDefault={inviteOnly}
         channelId={inviteChannelId}
       />
+      {!inviteOnly && <VanityLinkSettings spaceId={detail.space.id} />}
       <MemberManager
         inviteOnly={inviteOnly}
         members={members}

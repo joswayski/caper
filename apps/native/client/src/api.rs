@@ -1140,6 +1140,46 @@ impl Api {
         .map(|_| ())
     }
 
+    /// The space's vanity link name, `None` without one (owners only).
+    pub fn vanity_link(&self, token: &str, space: &str) -> Result<Option<String>, ApiError> {
+        self.request::<VanityLink>(
+            Method::GET,
+            &format!("api/spaces/{space}/vanity-link"),
+            Some(token),
+            None,
+            None,
+        )
+        .map(|value| value.code)
+    }
+
+    /// Claims `code` as the vanity link, replacing the current one.
+    pub fn set_vanity_link(
+        &self,
+        token: &str,
+        space: &str,
+        code: &str,
+    ) -> Result<String, ApiError> {
+        self.request::<VanityLink>(
+            Method::PUT,
+            &format!("api/spaces/{space}/vanity-link"),
+            Some(token),
+            None,
+            Some(json!({ "code": code })),
+        )
+        .map(|value| value.code.unwrap_or_default())
+    }
+
+    pub fn remove_vanity_link(&self, token: &str, space: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/vanity-link"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
     pub fn remove_member(
         &self,
         token: &str,
@@ -1876,6 +1916,15 @@ const SERVER_ERRORS: &[(&str, &str)] = &[
         "invite links cannot target private channels",
         "Invite links can only open public channels.",
     ),
+    ("invalid vanity link", crate::invites::VANITY_NAME_ERROR),
+    (
+        "vanity link is taken",
+        "That link is taken. Try another name.",
+    ),
+    (
+        "vanity link limit reached",
+        "This space has used 5 vanity links. Switch back to one of them.",
+    ),
     (
         "channel limit reached",
         "This space has reached its channel limit.",
@@ -1957,6 +2006,11 @@ fn friendly_error(message: &str) -> String {
     } else {
         format!("{text}.")
     }
+}
+
+#[derive(serde::Deserialize)]
+struct VanityLink {
+    code: Option<String>,
 }
 
 /// Invite codes go into a path only after the shared format check.

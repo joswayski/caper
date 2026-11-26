@@ -360,6 +360,12 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/spaces/{space}/invite-links/{code}/regenerate",
             post(invite_links::regenerate_link),
         )
+        .route(
+            "/api/spaces/{space}/vanity-link",
+            get(invite_links::vanity_link)
+                .put(invite_links::set_vanity_link)
+                .delete(invite_links::remove_vanity_link),
+        )
         .route("/api/invites/{code}/join", post(accept_invite_link))
         .route("/api/spaces/{space}/invitations", get(list_invitations))
         .route(

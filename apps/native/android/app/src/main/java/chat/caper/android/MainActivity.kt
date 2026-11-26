@@ -4897,6 +4897,8 @@ internal fun counterTone(count: Int): Color {
         HorizontalDivider(color = Border)
         InviteLinkSettingsDisclosure(state, detail, viewModel)
         HorizontalDivider(color = Border)
+        VanityLinkSection(state, detail, viewModel)
+        HorizontalDivider(color = Border)
         InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
             { removing = it }, viewModel::cancelSpaceInvitation, channel = false,
             suggestions = spaceInviteCandidates(state.people, detail.members, state.pendingSpaceInvitations))

@@ -71,7 +71,7 @@ internal object CaperMobile {
     /** `[start, end]` of the space name web sends (`name.trim()`). */
     @JvmStatic external fun spaceName(text: String): IntArray
 
-    /** Web's inviteCode: the 10-character code, one ASCII character per value, or empty. */
+    /** Web's inviteCode: the code (generated or vanity), one ASCII character per value, or empty. */
     @JvmStatic external fun inviteCode(text: String): IntArray
     /** A message link's `<channel>/<message>`, one ASCII character per value, or empty. */
     @JvmStatic external fun messageLink(text: String): IntArray

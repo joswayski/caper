@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 /// Handed over by a launch without a link: show the running window. Never an
-/// invite code, which is longer.
+/// invite code: the API refuses it as a vanity name.
 pub const OPEN: &str = "open";
 
 /// The invite code, or a message link as `m/<channel>/<message>`, in launch
@@ -244,7 +244,7 @@ mod tests {
             &["caper"][..],
             &["caper", "--fixture", "AbCdE12345"],
             &["caper", "--api-url", "http://127.0.0.1:3001"],
-            &["caper", "caper://invite/short"],
+            &["caper", "caper://invite/ab"],
             &["AbCdE12345://invite/AbCdE12345"],
         ] {
             assert_eq!(launch_code(&args(arguments)), None, "{arguments:?}");
@@ -270,7 +270,7 @@ mod tests {
         // A launch without a link brings the window back; other words don't.
         assert!(hand_off_at(&path, OPEN));
         assert_eq!(codes.recv_timeout(Duration::from_secs(5)).unwrap(), OPEN);
-        assert!(!hand_off_at(&path, "close"));
+        assert!(!hand_off_at(&path, "no!"));
         // Without the token from the file, nothing is accepted.
         let contents = std::fs::read_to_string(&path).unwrap();
         let (port, _) = contents.trim().split_once(' ').unwrap();

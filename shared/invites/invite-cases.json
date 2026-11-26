@@ -1,5 +1,5 @@
 {
-  "description": "Web's inviteCode (apps/web/src/spaces/client.ts), generated from web; apps/web/src/server/invite-links.test.ts checks them. Every client runs them through shared/invites/code.rs. A parse yields only the ten-character code, never the link's host or scheme: clients join through their configured API origin.",
+  "description": "Web's inviteCode (apps/web/src/spaces/client.ts), generated from web; apps/web/src/server/invite-links.test.ts checks them. Every client runs them through shared/invites/code.rs. A parse yields only the code (generated or vanity), never the link's host or scheme: clients join through their configured API origin.",
   "cases": [
     {
       "input": "AbC123xYz9",
@@ -15,15 +15,15 @@
     },
     {
       "input": "AbC123xYz",
-      "code": null
+      "code": "AbC123xYz"
     },
     {
       "input": "AbC123xYz90",
-      "code": null
+      "code": "AbC123xYz90"
     },
     {
       "input": "AbC-23xYz9",
-      "code": null
+      "code": "AbC-23xYz9"
     },
     {
       "input": "abc123xyz9",
@@ -79,7 +79,7 @@
     },
     {
       "input": "evil.example/invite/abc",
-      "code": null
+      "code": "abc"
     },
     {
       "input": "https://evil.example/invite/AbC123xYz9?next=https://caper.chat",
@@ -151,7 +151,7 @@
     },
     {
       "input": "caper://invite/abc",
-      "code": null
+      "code": "abc"
     },
     {
       "input": "https://caper.chat/invite/AbC123xYz9/extra",
@@ -275,6 +275,74 @@
     },
     {
       "input": "   ",
+      "code": null
+    },
+    {
+      "input": "atlasos",
+      "code": "atlasos"
+    },
+    {
+      "input": "https://caper.chat/invite/atlasos",
+      "code": "atlasos"
+    },
+    {
+      "input": "caper.chat/invite/my-crew",
+      "code": "my-crew"
+    },
+    {
+      "input": "caper://invite/AtlasOS/",
+      "code": "AtlasOS"
+    },
+    {
+      "input": "https://caper.chat/invite/atlas-os?x=1",
+      "code": "atlas-os"
+    },
+    {
+      "input": "abc",
+      "code": "abc"
+    },
+    {
+      "input": "ab",
+      "code": null
+    },
+    {
+      "input": "-atlas",
+      "code": null
+    },
+    {
+      "input": "atlas-",
+      "code": null
+    },
+    {
+      "input": "a--b",
+      "code": "a--b"
+    },
+    {
+      "input": "abcdefghijklmnopqrstuvwxyz012345",
+      "code": "abcdefghijklmnopqrstuvwxyz012345"
+    },
+    {
+      "input": "abcdefghijklmnopqrstuvwxyz0123456",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/abcdefghijklmnopqrstuvwxyz0123456",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/atlas-",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/atlas_os",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/atlas.os",
+      "code": null
+    },
+    {
+      "input": "atlas os",
       "code": null
     }
   ]

@@ -31,7 +31,9 @@ import UIKit
                 body.addArrangedSubview(UIKitSpaceIcon(model: state.model, present: { [weak self] in self?.present($0, animated: false) }))
             }
             let links = UIKitInviteLinks(state: NativeInviteLinks(model: state.model, showsDefault: state.inviteOnly, channelID: channelID), present: { [weak self] in self?.present($0, animated: false) })
-            body.addArrangedSubview(links); membership.axis = .vertical; membership.spacing = 12
+            body.addArrangedSubview(links)
+            if !state.inviteOnly { body.addArrangedSubview(UIKitVanityLink(state: NativeVanityLink(model: state.model), present: { [weak self] in self?.present($0, animated: false) })) }
+            membership.axis = .vertical; membership.spacing = 12
             [membership, Self.label("Invite by username", size: 14, bold: true), people, invite!, results].forEach(body.addArrangedSubview)
             if !state.inviteOnly {
                 body.addArrangedSubview(Self.label("Delete this space and all its channels for every member."))

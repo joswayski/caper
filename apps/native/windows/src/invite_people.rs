@@ -105,8 +105,8 @@ pub struct InvitePeople {
     /// choices open), the number field with the keyboard, and why the
     /// last link couldn't be made.
     pub settings_open: bool,
-    pub numbers: [Composer; 3],
-    pub seen: [Vec<u16>; 3],
+    pub numbers: [Composer; 4],
+    pub seen: [Vec<u16>; 4],
     pub unit: invites::ExpiryUnit,
     pub landing: Option<String>,
     pub landing_open: bool,
@@ -124,6 +124,14 @@ pub struct InvitePeople {
     pub removing: Option<String>,
     /// Deleting the space or channel awaits confirmation.
     pub deleting: bool,
+    /// Manage space's vanity link (`numbers[VANITY]` holds the draft): the
+    /// live name, whether it loaded, a change in flight, and why it failed.
+    pub vanity: Option<String>,
+    pub vanity_loaded: bool,
+    pub vanity_pending: bool,
+    pub vanity_error: Option<String>,
+    /// Changing or turning off the live name awaits confirmation (true: off).
+    pub vanity_confirm: Option<bool>,
 }
 
 impl InvitePeople {
@@ -160,8 +168,9 @@ impl InvitePeople {
                 crate::custom_links::number(amount),
                 crate::custom_links::number("100"),
                 Composer::default(),
+                Composer::default(),
             ],
-            seen: [gfx::wide(amount), gfx::wide("100"), Vec::new()],
+            seen: [gfx::wide(amount), gfx::wide("100"), Vec::new(), Vec::new()],
             unit,
             landing,
             landing_open: false,
@@ -173,6 +182,11 @@ impl InvitePeople {
             saving: false,
             removing: None,
             deleting: false,
+            vanity: None,
+            vanity_loaded: false,
+            vanity_pending: false,
+            vanity_error: None,
+            vanity_confirm: None,
         }
     }
 
@@ -203,6 +217,11 @@ pub enum Answer {
         space: String,
         request: u64,
         result: std::result::Result<InviteLink, String>,
+    },
+    /// The vanity link's name after a load or change.
+    Vanity {
+        space: String,
+        result: std::result::Result<Option<String>, String>,
     },
     Invitations(Vec<Member>),
     Invited(Member),
@@ -243,9 +262,12 @@ impl Dialog {
     }
 
     pub(crate) fn confirming(&self) -> bool {
-        self.inviting
-            .as_ref()
-            .is_some_and(|ip| ip.confirm.is_some() || ip.removing.is_some() || ip.deleting)
+        self.inviting.as_ref().is_some_and(|ip| {
+            ip.confirm.is_some()
+                || ip.removing.is_some()
+                || ip.deleting
+                || ip.vanity_confirm.is_some()
+        })
     }
 
     pub(crate) fn invite_people_title(&self) -> String {
@@ -253,6 +275,15 @@ impl Dialog {
             return title;
         }
         match self.inviting.as_deref() {
+            Some(InvitePeople {
+                vanity_confirm: Some(off),
+                ..
+            }) => if *off {
+                "Turn off vanity link?"
+            } else {
+                "Change vanity link?"
+            }
+            .into(),
             Some(InvitePeople {
                 confirm: Some((_, true)),
                 ..
@@ -301,6 +332,9 @@ impl Dialog {
                 "Remove"
             };
         }
+        if let Some(off) = self.inviting.as_ref().and_then(|ip| ip.vanity_confirm) {
+            return if off { "Turn off" } else { "Change link" };
+        }
         match self.inviting.as_ref().and_then(|ip| ip.confirm.as_ref()) {
             Some((_, true)) => "Regenerate link",
             Some(_) => "Deactivate link",
@@ -319,6 +353,7 @@ impl Dialog {
             Part::Retry => !ip.pending,
             Part::Landing => !ip.pending && !ip.public.is_empty(),
             Part::Number(crate::custom_links::NAME) => !self.busy,
+            Part::Number(crate::custom_links::VANITY) => ip.vanity_loaded && !ip.vanity_pending,
             Part::LinkCopy(_) => true,
             Part::Custom
             | Part::Number(_)
@@ -570,6 +605,19 @@ impl Dialog {
                     Err(e) => ip.form_error = Some(e),
                 }
             }
+            Answer::Vanity { space, result } if space == ip.space => {
+                ip.vanity_pending = false;
+                ip.vanity_loaded = true;
+                match result {
+                    Ok(code) => {
+                        ip.numbers[crate::custom_links::VANITY as usize] =
+                            crate::custom_links::number(code.as_deref().unwrap_or_default());
+                        ip.vanity = code;
+                        ip.vanity_error = None;
+                    }
+                    Err(e) => ip.vanity_error = Some(e),
+                }
+            }
             Answer::Invitations(members) => ip.invitations = members,
             Answer::Invited(member) => {
                 ip.invitations.retain(|m| m.id != member.id);
@@ -647,6 +695,31 @@ impl Dialog {
             )?)) + 24.0;
             let cancel = layout(g, "Cancel", &g.formats.button, 1e6)?;
             let cw = width(&cancel) + 24.0;
+            parts.push((Part::Cancel, (inner - pw - 8.0 - cw, y, cw, BUTTON_H)));
+            parts.push((Part::Primary, (inner - pw, y, pw, BUTTON_H)));
+            let card_h = y + BUTTON_H + 2.0 * CARD_PAD;
+            return self.place(parts, card_w, card_h, w, h, (0.0, card_h));
+        }
+        if ip.vanity_confirm.is_some() {
+            // What changing or turning off the vanity link means, then
+            // why it failed, Cancel and Change link or Turn off.
+            let title = layout(g, &self.title(), &g.formats.dialog_title, inner)?;
+            parts.push((Part::Title, (0.0, 0.0, inner, height(&title))));
+            let mut y = height(&title) + 12.0;
+            let k = crate::space_settings::VANITY_CONFIRM;
+            y += line(
+                &mut parts,
+                Part::VanityText(k),
+                &self.vanity_text(k),
+                &g.formats.dialog_note,
+                y,
+            )? + 8.0;
+            if let Some(e) = &ip.vanity_error {
+                y += line(&mut parts, Part::Error, e, &g.formats.error, y)? + 8.0;
+            }
+            y += 12.0;
+            let pw = width(&layout(g, self.primary_label(), &g.formats.button, 1e6)?) + 24.0;
+            let cw = width(&layout(g, "Cancel", &g.formats.button, 1e6)?) + 24.0;
             parts.push((Part::Cancel, (inner - pw - 8.0 - cw, y, cw, BUTTON_H)));
             parts.push((Part::Primary, (inner - pw, y, pw, BUTTON_H)));
             let card_h = y + BUTTON_H + 2.0 * CARD_PAD;
@@ -786,6 +859,9 @@ impl Dialog {
         if !channel {
             y = self.relayout_custom(g, inner, y, &mut parts, &mut menu)?;
             y += 22.0;
+        }
+        if matches!(ip.manage, Some(Manage::Space)) {
+            y = self.relayout_vanity(g, inner, y, &mut parts)? + 22.0;
         }
         if self.members_shown() {
             if !ip.invitations.is_empty() {
@@ -1166,7 +1242,9 @@ impl Dialog {
             | Part::DeleteOpen
             | Part::Unsaved
             | Part::Reset
-            | Part::SaveChanges => self.draw_manage_part(g, dc, part, (x, y, w, h))?,
+            | Part::SaveChanges
+            | Part::Vanity(_)
+            | Part::VanityText(_) => self.draw_manage_part(g, dc, part, (x, y, w, h))?,
             Part::Suggest(k) => {
                 if k == 0 {
                     let n = self.suggestions.len() as f32;
@@ -1269,6 +1347,14 @@ impl App {
             if let Some(operation) = d.manage_activate(part) {
                 live.admin(operation);
             }
+        } else if let Part::Vanity(k) = part {
+            if let Some(operation) = d.vanity_activate(k, hwnd) {
+                live.account(operation);
+            }
+        } else if part == Part::Primary && d.vanity_confirming() {
+            if let Some(operation) = d.vanity_confirmed() {
+                live.account(operation);
+            }
         } else if part == Part::Retry {
             d.prepare_link(live);
         } else if part == Part::Primary && !d.confirming() {
@@ -1308,6 +1394,7 @@ impl App {
                 }
                 Part::Cancel => {
                     ip.confirm = None;
+                    ip.vanity_confirm = None;
                     if ip.removing.take().is_some() || std::mem::take(&mut ip.deleting) {
                         d.error = None;
                     } else {

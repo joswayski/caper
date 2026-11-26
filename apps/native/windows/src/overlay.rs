@@ -417,6 +417,11 @@ pub enum Part {
     /// member `k`, and the save bar's text, Reset and Save changes; and
     /// Browse's Manage on shown channel `k`.
     SaveName,
+    /// Manage space's vanity link: its Save or Change, Copy and Turn off
+    /// (`space_settings::VANITY_*`), and its heading, guidance, the link's
+    /// host before the name, and why it failed.
+    Vanity(u8),
+    VanityText(u8),
     Member(usize),
     Unsaved,
     Reset,
@@ -479,6 +484,8 @@ impl Part {
             Self::LinkCopy(k) => 80_000 + k,
             Self::LinkRevoke(k) => 90_000 + k,
             Self::SaveName => 30_206,
+            Self::Vanity(k) => 30_600 + k as usize,
+            Self::VanityText(k) => 30_700 + k as usize,
             Self::Unsaved => 30_207,
             Self::Reset => 30_208,
             Self::SaveChanges => 30_209,
@@ -972,6 +979,8 @@ impl Dialog {
             Part::ReactorTab(_) | Part::ReactorPerson(_) | Part::Forward(_) => true,
             Part::CancelInvite(_) => !self.busy,
             Part::SaveName => self.can_save_name(),
+            Part::Vanity(k) => self.vanity_enabled(k),
+            Part::VanityText(_) => true,
             Part::Reset | Part::SaveChanges | Part::RemoveMember(_) | Part::DeleteOpen => {
                 !self.busy
             }
@@ -1054,6 +1063,7 @@ impl Dialog {
                         | Part::LinkCopy(_)
                         | Part::LinkRevoke(_)
                         | Part::SaveName
+                        | Part::Vanity(_)
                         | Part::Reset
                         | Part::SaveChanges
                         | Part::ManageRow(_)
@@ -2339,6 +2349,8 @@ impl App {
             | Part::LinkCopy(_)
             | Part::LinkRevoke(_)
             | Part::SaveName
+            | Part::Vanity(_)
+            | Part::VanityText(_)
             | Part::Member(_)
             | Part::Unsaved
             | Part::Reset
@@ -2789,6 +2801,9 @@ impl App {
                                 Some(Part::SaveChanges)
                             }
                             Some(crate::custom_links::NAME) => Some(Part::SaveName),
+                            Some(crate::custom_links::VANITY) => {
+                                Some(Part::Vanity(crate::space_settings::VANITY_SAVE))
+                            }
                             Some(_) => Some(Part::CreateLink),
                             None => d.field.focused.then_some(Part::Primary),
                         };

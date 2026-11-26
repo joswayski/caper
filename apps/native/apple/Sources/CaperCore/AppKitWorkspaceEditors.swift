@@ -30,7 +30,9 @@ import AppKit
             if !inviteOnly, model.detail?.space.demo != true {
                 let icon = AppKitSpaceIcon(model: model); self.icon = icon; rows += [AppKitKit.divider(), icon]
             }
-            rows += [AppKitInviteLinks(state: NativeInviteLinks(model: model, showsDefault: inviteOnly, channelID: channelID)), AppKitKit.divider(), membership,
+            rows += [AppKitInviteLinks(state: NativeInviteLinks(model: model, showsDefault: inviteOnly, channelID: channelID)), AppKitKit.divider()]
+            if !inviteOnly { rows += [AppKitVanityLink(state: NativeVanityLink(model: model)), AppKitKit.divider()] }
+            rows += [membership,
                 Self.heading("Invite by username"), people, invite, results]
             if !inviteOnly {
                 rows += [AppKitKit.divider(), Self.heading("Delete space"), Self.note("Delete this space and all its channels for every member."),

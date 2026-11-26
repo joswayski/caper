@@ -9,17 +9,32 @@ import kotlin.math.roundToLong
 /** Web's copy for a link that does not exist, was revoked, expired or is used up. */
 const val INVALID_INVITE_LINK = "This invite link is invalid or has expired."
 
-private val bareInviteCode = Regex("^[A-Za-z0-9]{10}$")
+/** A generated code (ten letters and digits) or a space's vanity name: 3 to 32 letters, digits and inner hyphens. */
+private val bareInviteCode = Regex("^[A-Za-z0-9][A-Za-z0-9-]{1,30}[A-Za-z0-9]$")
 internal fun isInviteCode(value: String): Boolean = bareInviteCode.matches(value)
 
 /**
  * Web's inviteCode, through shared Rust (shared/invites/code.rs): the code in what someone pasted
  * or opened, from a link on any host, the same without a scheme, `caper://invite/<code>`, or a bare
- * 10-character code. Null when it is none of those. Only the code is used: joins go to the
+ * code or vanity name. Null when it is none of those. Only the code is used: joins go to the
  * configured API origin, never the link's host.
  */
 fun inviteCode(input: String): String? =
     CaperMobile.inviteCode(input).takeIf { it.isNotEmpty() }?.let { code -> String(CharArray(code.size) { code[it].toChar() }) }
+
+const val INVALID_VANITY_NAME = "Use 3–32 lowercase letters, numbers or hyphens, starting and ending with a letter or number."
+private val vanityName = Regex("^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$")
+
+/** Web's vanityNameError: why the API would refuse [name] as a vanity link, or null. */
+fun vanityNameError(name: String): String? = when {
+    !vanityName.matches(name) -> INVALID_VANITY_NAME
+    // Ten letters and digits read as a generated code.
+    name.length == 10 && '-' !in name -> "A 10-character name needs a hyphen, like atlas-chat."
+    else -> null
+}
+
+/** Web's vanity field filter: lowercase letters, digits and hyphens, at most 32. */
+fun vanityInput(text: String): String = text.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '-' }.take(32)
 
 /** `<origin>/invite/<code>`, for the configured API origin. */
 fun inviteLinkUrl(origin: String, code: String): String = "${origin.trimEnd('/')}/invite/$code"

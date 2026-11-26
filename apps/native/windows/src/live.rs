@@ -1325,6 +1325,13 @@ impl Live {
                 }));
                 return;
             }
+            AccountResult::VanityLink { space, result, .. } => {
+                out.push(invite_answer(crate::invite_people::Answer::Vanity {
+                    space,
+                    result,
+                }));
+                return;
+            }
             AccountResult::InviteLinkCreated {
                 space,
                 request,

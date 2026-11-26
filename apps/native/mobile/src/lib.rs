@@ -389,7 +389,7 @@ pub fn space_name_span(text: &str, utf8: bool) -> Vec<i32> {
     slice_span(text, names::space_name(text), utf8)
 }
 
-/// Web's `inviteCode`: the ten-character code in a pasted or opened invite,
+/// Web's `inviteCode`: the code (generated or vanity) in a pasted or opened invite,
 /// one ASCII character per value, or nothing. Never the link's host.
 pub fn invite_code(text: &str) -> Vec<i32> {
     invites::invite_code(text).map_or_else(Vec::new, ascii)

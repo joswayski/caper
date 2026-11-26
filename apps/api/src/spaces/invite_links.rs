@@ -1,7 +1,9 @@
 //! Shareable invite links, modeled on Discord invites. Owners create a code
 //! with an optional expiry, use cap and landing channel; anyone holding a live
 //! code can preview the space and join it. Codes are random and unguessable,
-//! so the public preview reveals only what the owner chose to share.
+//! so the public preview reveals only what the owner chose to share. A space
+//! may also choose one vanity link (`/invite/<name>`) that never expires; a
+//! name it has used stays reserved for it, so it never moves to another space.
 use super::*;
 use axum::{extract::Query, http::HeaderMap};
 use chrono::{DateTime, Utc};
@@ -129,6 +131,58 @@ pub(super) fn valid_code(code: &str) -> bool {
     code.len() == CODE_LENGTH && code.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
+/// Vanity names: 3 to 32 lowercase letters, digits and hyphens that start and
+/// end with a letter or digit. Ten letters and digits read as a generated
+/// code, so a ten-character name needs a hyphen.
+pub(super) fn valid_vanity(code: &str) -> bool {
+    (3..=32).contains(&code.len())
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !code.starts_with('-')
+        && !code.ends_with('-')
+        && !valid_code(code)
+}
+
+/// The stored code a link names: a generated code exactly, or a vanity name
+/// in any letter case.
+pub(super) fn link_code(code: &str) -> Option<String> {
+    if valid_code(code) {
+        return Some(code.to_owned());
+    }
+    let code = code.to_ascii_lowercase();
+    valid_vanity(&code).then_some(code)
+}
+
+/// Names that would read as Caper itself speaking, plus `open`, the desktop
+/// apps' word for a launch without a link (`apps/native/client/src/app_link.rs`).
+const RESERVED_VANITY: &[&str] = &[
+    "admin",
+    "administrator",
+    "api",
+    "app",
+    "caper",
+    "caper-chat",
+    "caperchat",
+    "help",
+    "invite",
+    "invites",
+    "login",
+    "moderator",
+    "moderators",
+    "official",
+    "open",
+    "security",
+    "settings",
+    "staff",
+    "support",
+    "team",
+    "trust-and-safety",
+];
+/// Each name a space ever used stays reserved for it, so this caps how many
+/// names one space can hold. Switching back to an earlier name is free.
+const VANITY_NAMES_PER_SPACE: i64 = 5;
+
 fn validate(input: &LinkInput) -> Result<(), ApiError> {
     if input.max_age.is_some_and(|age| !MAX_AGE.contains(&age)) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid maxAge"));
@@ -148,7 +202,7 @@ pub(super) async fn list_links(
     let id: i64 = sqlx::query_scalar("SELECT id FROM public.spaces WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo")
         .bind(&space).bind(principal.user.id).fetch_optional(pool).await.map_err(database_error)?.ok_or_else(not_found)?;
     let links: Vec<InviteLink> = sqlx::query_as::<_, LinkRow>(&format!(
-        "{LINK_SELECT} WHERE l.space_id=$1 AND {LIVE} ORDER BY l.created_at DESC,l.id DESC"
+        "{LINK_SELECT} WHERE l.space_id=$1 AND NOT l.vanity AND {LIVE} ORDER BY l.created_at DESC,l.id DESC"
     ))
     .bind(id)
     .fetch_all(pool)
@@ -225,7 +279,7 @@ pub(super) async fn regenerate_link(
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
     let previous: Option<(Option<i64>,)> = sqlx::query_as(
         "UPDATE public.space_invite_links SET revoked_at=now()
-         WHERE space_id=$1 AND code=$2 AND revoked_at IS NULL RETURNING channel_id",
+         WHERE space_id=$1 AND code=$2 AND NOT vanity AND revoked_at IS NULL RETURNING channel_id",
     )
     .bind(space_id)
     .bind(code)
@@ -308,7 +362,7 @@ async fn insert_link(
     input: &LinkInput,
 ) -> Result<InviteLink, ApiError> {
     let active: i64 = sqlx::query_scalar(&format!(
-        "SELECT count(*) FROM public.space_invite_links l WHERE l.space_id=$1 AND {LIVE}"
+        "SELECT count(*) FROM public.space_invite_links l WHERE l.space_id=$1 AND NOT l.vanity AND {LIVE}"
     ))
     .bind(space_id)
     .fetch_one(&mut **tx)
@@ -348,7 +402,7 @@ pub(super) async fn revoke_link(
     let id = owner_space(&mut tx, &space, principal.user.id).await?;
     let changed = sqlx::query(
         "UPDATE public.space_invite_links SET revoked_at=now()
-         WHERE space_id=$1 AND code=$2 AND revoked_at IS NULL",
+         WHERE space_id=$1 AND code=$2 AND NOT vanity AND revoked_at IS NULL",
     )
     .bind(id)
     .bind(code)
@@ -383,9 +437,7 @@ pub(crate) async fn preview(
     Path(code): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    if !valid_code(&code) {
-        return Err(not_found());
-    }
+    let code = link_code(&code).ok_or_else(invalid_link)?;
     let user = match crate::account_token(&headers) {
         Some(token) => match state
             .auth
@@ -458,9 +510,7 @@ pub(crate) async fn accept(
     Extension(principal): Extension<Principal>,
     Path(code): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    if !valid_code(&code) {
-        return Err(invalid_link());
-    }
+    let code = link_code(&code).ok_or_else(invalid_link)?;
     let user = principal.user.id;
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     // Space first, matching the space -> recipient lock order used by
@@ -564,4 +614,134 @@ pub(crate) async fn accept(
         "channelId": channel,
         "joined": !member,
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct VanityInput {
+    pub(super) code: String,
+}
+
+/// The owner's live vanity code, `{"code": null}` without one.
+pub(super) async fn vanity_link(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(space): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
+    let code = live_vanity(&mut tx, space_id).await?;
+    tx.commit().await.map_err(database_error)?;
+    Ok(Json(json!({ "code": code })))
+}
+
+async fn live_vanity(
+    tx: &mut Transaction<'_, Postgres>,
+    space_id: i64,
+) -> Result<Option<String>, ApiError> {
+    sqlx::query_scalar(
+        "SELECT code FROM public.space_invite_links WHERE space_id=$1 AND vanity AND revoked_at IS NULL",
+    )
+    .bind(space_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)
+}
+
+/// Claims `code` as the space's vanity link, replacing its current one. The
+/// replaced name stays reserved for this space. A name another space ever
+/// used is taken for good, so a shared link never changes spaces.
+pub(super) async fn set_vanity_link(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(space): Path<String>,
+    Json(input): Json<VanityInput>,
+) -> Result<Json<Value>, ApiError> {
+    let code = input.code.trim().to_ascii_lowercase();
+    if !valid_vanity(&code) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid vanity link",
+        ));
+    }
+    if RESERVED_VANITY.contains(&code.as_str()) {
+        return Err(conflict("vanity link is taken"));
+    }
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
+    if live_vanity(&mut tx, space_id).await?.as_deref() == Some(code.as_str()) {
+        return Ok(Json(json!({ "code": code })));
+    }
+    // Shares the owner's invitation budget, so names can't be probed or
+    // claimed in bulk.
+    invite_rate_limit(&mut *tx, principal.user.id).await?;
+    let holder: Option<(i64, bool)> =
+        sqlx::query_as("SELECT space_id,vanity FROM public.space_invite_links WHERE code=$1")
+            .bind(&code)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?;
+    match holder {
+        Some((holder, true)) if holder == space_id => {}
+        Some(_) => return Err(conflict("vanity link is taken")),
+        None => {
+            let held: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM public.space_invite_links WHERE space_id=$1 AND vanity",
+            )
+            .bind(space_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(database_error)?;
+            if held >= VANITY_NAMES_PER_SPACE {
+                return Err(conflict("vanity link limit reached"));
+            }
+        }
+    }
+    sqlx::query(
+        "UPDATE public.space_invite_links SET revoked_at=now()
+         WHERE space_id=$1 AND vanity AND revoked_at IS NULL",
+    )
+    .bind(space_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    if holder.is_some() {
+        sqlx::query("UPDATE public.space_invite_links SET revoked_at=NULL WHERE code=$1")
+            .bind(&code)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+    } else {
+        sqlx::query(
+            "INSERT INTO public.space_invite_links(code,space_id,created_by,vanity) VALUES($1,$2,$3,true)",
+        )
+        .bind(&code)
+        .bind(space_id)
+        .bind(principal.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| constraint_or_database(error, "vanity link is taken"))?;
+    }
+    tx.commit().await.map_err(database_error)?;
+    Ok(Json(json!({ "code": code })))
+}
+
+/// Turns the vanity link off. The name stays reserved for this space.
+pub(super) async fn remove_vanity_link(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(space): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
+    sqlx::query(
+        "UPDATE public.space_invite_links SET revoked_at=now()
+         WHERE space_id=$1 AND vanity AND revoked_at IS NULL",
+    )
+    .bind(space_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    tx.commit().await.map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }

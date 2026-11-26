@@ -700,17 +700,43 @@ function count(value: number) {
   return value.toLocaleString("en-US");
 }
 
-const INVITE_CODE = /^[A-Za-z0-9]{10}$/;
+/** A generated code (ten letters and digits) or a vanity name: 3 to 32 letters, digits and inner hyphens. */
+const CODE = "[A-Za-z0-9][A-Za-z0-9-]{1,30}[A-Za-z0-9]";
+const INVITE_CODE = new RegExp(`^${CODE}$`);
 
 /** The code from a pasted invite: a full or scheme-less `/invite/<code>` URL, `caper://invite/<code>`, or the bare code. */
 export function inviteCode(input: string): string | undefined {
   const value = input.trim();
   if (INVITE_CODE.test(value)) return value;
-  const app = /^caper:\/\/invite\/([A-Za-z0-9]{10})\/?(?:[?#].*)?$/i.exec(value);
+  const app = new RegExp(`^caper:\\/\\/invite\\/(${CODE})\\/?(?:[?#].*)?$`, "i").exec(value);
   if (app) return app[1];
   const path = value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/[?#].*$/, "");
-  const match = /^(?:[^/\s]+)?\/invite\/([A-Za-z0-9]{10})\/?$/.exec(path);
+  const match = new RegExp(`^(?:[^/\\s]+)?\\/invite\\/(${CODE})\\/?$`).exec(path);
   return match?.[1];
+}
+
+/** Web's check of a typed vanity name, matching the API: an error sentence, or undefined when valid. */
+export function vanityNameError(name: string) {
+  if (!/^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/.test(name))
+    return "Use 3–32 lowercase letters, numbers or hyphens, starting and ending with a letter or number.";
+  // Ten letters and digits read as a generated code.
+  if (/^[a-z0-9]{10}$/.test(name)) return "A 10-character name needs a hyphen, like atlas-chat.";
+}
+
+/** The space's vanity link name, or null without one. Owners only. */
+export function getVanityLink(spaceId: string) {
+  return request<{ code: string | null }>(`/api/spaces/${pathId(spaceId)}/vanity-link`);
+}
+
+export function setVanityLink(spaceId: string, code: string) {
+  return request<{ code: string }>(`/api/spaces/${pathId(spaceId)}/vanity-link`, {
+    method: "PUT",
+    body: JSON.stringify({ code }),
+  });
+}
+
+export function removeVanityLink(spaceId: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/vanity-link`, { method: "DELETE" });
 }
 
 export function inviteUrl(code: string, origin = window.location.origin) {

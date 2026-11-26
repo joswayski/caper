@@ -73,6 +73,23 @@ pub(super) enum Confirm {
         code: String,
         regenerate: bool,
     },
+    /// Replace the vanity link with `name`, or turn it off (`None`); `url`
+    /// is the link that stops working.
+    Vanity {
+        name: Option<String>,
+        url: String,
+    },
+}
+
+/// Manage space's vanity link (web's VanityLinkSettings): one readable link
+/// that never expires. A name the space used stays reserved for it.
+#[derive(Default)]
+struct Vanity {
+    space: Option<String>,
+    code: Option<String>,
+    loaded: bool,
+    pending: bool,
+    error: Option<String>,
 }
 
 /// The open space's invite links.
@@ -126,6 +143,7 @@ pub(super) struct Admin {
     /// Empty the member field on the next render.
     clear_member: bool,
     links: Links,
+    vanity: Vanity,
     join: Join,
     /// Advanced when lists change, so they redraw.
     revision: u64,
@@ -332,6 +350,18 @@ pub(super) struct AdminWindow {
     reset: Option<gtk::Button>,
     /// Manage space's icon, for its owner.
     icon: Option<super::picture::IconRow>,
+    vanity: Option<VanityRow>,
+}
+
+/// Manage space's vanity link: the name, Save or Change, Copy, Turn off,
+/// and the live name last put in the entry.
+struct VanityRow {
+    entry: gtk::Entry,
+    save: gtk::Button,
+    copy: gtk::Button,
+    off: gtk::Button,
+    error: gtk::Label,
+    shown: Option<Option<String>>,
 }
 
 /// "Custom links": the next link's choices.
@@ -903,6 +933,18 @@ impl App {
                 request,
             },
         );
+        state.admin.vanity = Vanity {
+            space: Some(space.clone()),
+            ..Vanity::default()
+        };
+        self.account_op(
+            state,
+            AccountOperation::VanityLink {
+                space: space.clone(),
+                request,
+                change: None,
+            },
+        );
         for operation in [
             AdminOperation::LoadMembers {
                 space: space.clone(),
@@ -1448,6 +1490,20 @@ impl App {
                     }
                 }
             }
+            AccountResult::VanityLink { space, result, .. }
+                if state.admin.vanity.space.as_deref() == Some(space.as_str()) =>
+            {
+                let vanity = &mut state.admin.vanity;
+                vanity.pending = false;
+                vanity.loaded = true;
+                match result {
+                    Ok(code) => {
+                        vanity.code = code;
+                        vanity.error = None;
+                    }
+                    Err(error) => vanity.error = Some(error),
+                }
+            }
             AccountResult::InvitePreview { request, result }
                 if request == state.admin.join.request =>
             {
@@ -1814,6 +1870,7 @@ impl App {
             save: None,
             reset: None,
             icon: None,
+            vanity: None,
         };
         let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
         match &dialog {
@@ -1849,6 +1906,8 @@ impl App {
                     widgets.submit = Some(save);
                     body.append(&separator());
                     self.build_custom_links(&state, &body, &mut widgets);
+                    body.append(&separator());
+                    self.build_vanity(&body, &mut widgets);
                     body.append(&separator());
                     let invited = gtk::Box::new(gtk::Orientation::Vertical, 6);
                     body.append(&invited);
@@ -2106,6 +2165,166 @@ impl App {
             app.open_confirm(confirm);
         });
         body.append(&delete);
+    }
+
+    fn build_vanity(self: &Rc<Self>, body: &gtk::Box, widgets: &mut AdminWindow) {
+        body.append(&heading("Vanity link"));
+        body.append(&hint(
+            "A short link that never expires. Names you use stay reserved for this space, so no other space can take them.",
+        ));
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let prefix = invites::invite_url(self.api.base(), "");
+        let prefix = prefix
+            .split_once("://")
+            .map_or(prefix.as_str(), |(_, rest)| rest);
+        row.append(&label(prefix, &["muted"]));
+        let entry: gtk::Entry = crate::app::named("GtkEntry", "Vanity link name");
+        entry.set_placeholder_text(Some("your-space"));
+        entry.set_hexpand(true);
+        entry.set_max_length(32);
+        row.append(&entry);
+        body.append(&row);
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let save = button("Save", "primary");
+        let copy = icon_button(&self.images, Icon::Copy, "#b9bcbe", "Copy", "");
+        let off = button("Turn off", "");
+        buttons.append(&save);
+        buttons.append(&copy);
+        buttons.append(&off);
+        body.append(&buttons);
+        let error = label("", &["error"]);
+        error.set_wrap(true);
+        error.set_visible(false);
+        body.append(&error);
+        let weak = Rc::downgrade(self);
+        entry.connect_changed(move |entry| {
+            let text = entry.text();
+            let kept = invites::vanity_input(&text);
+            if kept != text.as_str() {
+                entry.set_text(&kept);
+                entry.set_position(-1);
+                return;
+            }
+            if let Some(app) = weak.upgrade() {
+                if let Ok(mut state) = app.state.try_borrow_mut() {
+                    state.admin.vanity.error = None;
+                }
+                app.update_admin();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        let save_clicked = move || {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            app.save_vanity();
+        };
+        let submit = save_clicked.clone();
+        entry.connect_activate(move |_| submit());
+        save.connect_clicked(move |_| save_clicked());
+        let weak = Rc::downgrade(self);
+        copy.connect_clicked(move |copy| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let Some(code) = app.state.borrow().admin.vanity.code.clone() else {
+                return;
+            };
+            app.ui
+                .window
+                .clipboard()
+                .set_text(&invites::invite_url(app.api.base(), &code));
+            copy.set_tooltip_text(Some("Copied"));
+            copy.update_property(&[gtk::accessible::Property::Label("Copied")]);
+            let copy = copy.downgrade();
+            glib::timeout_add_local_once(Duration::from_secs(2), move || {
+                if let Some(copy) = copy.upgrade() {
+                    copy.set_tooltip_text(None);
+                    copy.update_property(&[gtk::accessible::Property::Label("Copy")]);
+                }
+            });
+        });
+        let weak = Rc::downgrade(self);
+        off.connect_clicked(move |_| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let confirm =
+                app.state
+                    .borrow()
+                    .admin
+                    .vanity
+                    .code
+                    .as_ref()
+                    .map(|code| Confirm::Vanity {
+                        name: None,
+                        url: invites::invite_url(app.api.base(), code),
+                    });
+            app.open_confirm(confirm);
+        });
+        widgets.vanity = Some(VanityRow {
+            entry,
+            save,
+            copy,
+            off,
+            error,
+            shown: None,
+        });
+    }
+
+    /// Save or Change: checked as web checks it, then saved, or confirmed
+    /// first when it replaces the live name.
+    fn save_vanity(self: &Rc<Self>) {
+        let name = self
+            .admin_window
+            .borrow()
+            .as_ref()
+            .and_then(|widgets| {
+                widgets
+                    .vanity
+                    .as_ref()
+                    .map(|row| row.entry.text().to_string())
+            })
+            .unwrap_or_default();
+        let mut state = self.state.borrow_mut();
+        let vanity = &mut state.admin.vanity;
+        if vanity.pending || name.is_empty() || vanity.code.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        if let Some(error) = invites::vanity_error(&name) {
+            vanity.error = Some(error.into());
+            drop(state);
+            self.update_admin();
+            return;
+        }
+        if let Some(code) = vanity.code.clone() {
+            drop(state);
+            self.open_confirm(Some(Confirm::Vanity {
+                name: Some(name),
+                url: invites::invite_url(self.api.base(), &code),
+            }));
+            return;
+        }
+        self.send_vanity(&mut state, Some(name));
+        drop(state);
+        self.update_admin();
+    }
+
+    fn send_vanity(&self, state: &mut State, name: Option<String>) {
+        let Some(space) = state.admin.vanity.space.clone() else {
+            return;
+        };
+        state.admin.vanity.pending = true;
+        state.admin.vanity.error = None;
+        let request = state.admin.links.request;
+        self.account_op(
+            state,
+            AccountOperation::VanityLink {
+                space,
+                request,
+                change: Some(name),
+            },
+        );
     }
 
     fn build_custom_links(
@@ -2566,6 +2785,29 @@ impl App {
         set_error(&widgets.error, admin.error.as_deref());
         if let Some(icon) = &widgets.icon {
             self.update_icon_row(icon, &state);
+        }
+        if let Some(row) = widgets.vanity.as_mut() {
+            let vanity = &admin.vanity;
+            if vanity.loaded && row.shown.as_ref() != Some(&vanity.code) {
+                row.entry
+                    .set_text(vanity.code.as_deref().unwrap_or_default());
+                row.shown = Some(vanity.code.clone());
+            }
+            let text = row.entry.text();
+            let changed = text.as_str() != vanity.code.as_deref().unwrap_or_default();
+            row.entry.set_sensitive(vanity.loaded && !vanity.pending);
+            row.save.set_label(if vanity.code.is_some() {
+                "Change"
+            } else {
+                "Save"
+            });
+            row.save
+                .set_sensitive(vanity.loaded && !vanity.pending && changed && !text.is_empty());
+            let live = vanity.code.is_some() && !changed;
+            row.copy.set_visible(live);
+            row.off.set_visible(live);
+            row.off.set_sensitive(!vanity.pending);
+            set_error(&row.error, vanity.error.as_deref());
         }
         if let Some(entry) = &widgets.name {
             entry.set_sensitive(!busy);
@@ -3151,6 +3393,12 @@ impl App {
                 "Deactivate link?"
             }
             .to_owned(),
+            Confirm::Vanity { name, .. } => if name.is_some() {
+                "Change vanity link?"
+            } else {
+                "Turn off vanity link?"
+            }
+            .to_owned(),
         };
         let (window, root, _) = self.admin_shell(&title, 440);
         if let Some(parent) = self.admin_window.borrow().as_ref() {
@@ -3227,6 +3475,20 @@ impl App {
                         "Regenerate link"
                     } else {
                         "Deactivate link"
+                    },
+                    true,
+                )
+            }
+            Confirm::Vanity { name, url } => {
+                lines.push(format!(
+                    "{url} will stop working. The name stays reserved for this space."
+                ));
+                (
+                    "Cancel",
+                    if name.is_some() {
+                        "Change link"
+                    } else {
+                        "Turn off"
                     },
                     true,
                 )
@@ -3340,6 +3602,13 @@ impl App {
                     channel,
                     member,
                 },
+                Confirm::Vanity { name, .. } => {
+                    state.admin.confirm = None;
+                    self.send_vanity(&mut state, name);
+                    drop(state);
+                    self.render_admin();
+                    return;
+                }
                 Confirm::Link { code, regenerate } => {
                     let Some(space) = state.space.clone() else {
                         return;
@@ -3403,7 +3672,7 @@ impl App {
             Confirm::LeaveSpace { .. } | Confirm::LeaveChannel { .. } => Some("Leaving…"),
             Confirm::Delete { .. } => Some("Deleting…"),
             Confirm::RemoveMember { .. } => Some("Removing…"),
-            Confirm::Link { .. } => None,
+            Confirm::Link { .. } | Confirm::Vanity { .. } => None,
         };
         match progress {
             Some(progress) if busy => widgets.button.set_label(progress),

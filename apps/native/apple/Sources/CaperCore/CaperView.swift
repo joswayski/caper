@@ -9115,6 +9115,55 @@ private struct InvitePreviewCard: View {
 
 /// Opening prepares (or reuses) a link, but never touches the clipboard.
 #if os(iOS)
+/// Web's VanityLinkSettings: one readable link that never expires.
+private struct VanityLinkSection: View {
+    @State var state: NativeVanityLink
+    @State private var confirming: Bool?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Vanity link").font(CaperTheme.font(14, weight: .bold))
+            Text("A short link that never expires. Names you use stay reserved for this space, so no other space can take them.")
+                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            HStack(spacing: 0) {
+                Text(state.prefix).foregroundStyle(CaperTheme.muted)
+                TextField("your-space", text: Binding(get: { state.name }, set: { state.setName($0) }))
+                    .textFieldStyle(.plain).autocorrectionDisabled().onSubmit(submit)
+                    .accessibilityLabel("Vanity link name").accessibilityIdentifier("vanity-link-name")
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never).keyboardType(.URL)
+                    #endif
+            }
+            .font(CaperTheme.font(12)).disabled(!state.loaded)
+            HStack {
+                Button(state.current == nil ? "Save" : "Change", action: submit)
+                    .disabled(state.pending || !state.changed || state.name.isEmpty).accessibilityIdentifier("vanity-link-save")
+                if state.current != nil, !state.changed {
+                    Button(state.copied ? "Copied" : "Copy") { state.copy() }
+                    Button("Turn off") { confirming = true }.disabled(state.pending)
+                }
+            }
+            .font(CaperTheme.font(12))
+            if let error = state.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
+        }
+        .task { await state.load() }
+        .alert(confirming == true ? "Turn off vanity link?" : "Change vanity link?", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
+            Button("Cancel", role: .cancel) { confirming = nil }
+            Button(confirming == true ? "Turn off" : "Change link", role: .destructive) {
+                let off = confirming == true; confirming = nil; state.apply(off ? nil : state.name)
+            }
+        } message: {
+            Text("\(state.currentURL) will stop working. The name stays reserved for this space.")
+        }
+    }
+    private func submit() {
+        switch state.check() {
+        case nil: state.apply(state.name)
+        case "confirm": confirming = false
+        default: break
+        }
+    }
+}
+
 private struct DefaultInviteLinkSection: View {
     @Bindable var model: AppModel
     let channelID: String?
@@ -9551,6 +9600,8 @@ private struct SpaceEditor: View {
                                 Text("Custom links").accessibilityIdentifier("space-custom-links")
                             }
                             .font(CaperTheme.font(12, weight: .medium)).tint(CaperTheme.text)
+                            Divider().overlay(CaperTheme.border)
+                            VanityLinkSection(state: NativeVanityLink(model: model)).id(model.detail?.space.id)
                         }
                         Divider().overlay(CaperTheme.border)
                         Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))

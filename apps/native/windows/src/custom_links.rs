@@ -24,6 +24,8 @@ pub const AMOUNT: u8 = 0;
 pub const USES: u8 = 1;
 /// Manage space's and Channel settings' name field.
 pub const NAME: u8 = 2;
+/// Manage space's vanity link name (`space_settings`).
+pub const VANITY: u8 = 3;
 
 const AMOUNT_W: f32 = 72.0;
 const CONTROL_H: f32 = 38.0;
@@ -112,6 +114,7 @@ impl Dialog {
         }
         match self.number_focus() {
             Some(NAME) => self.busy,
+            Some(VANITY) => self.inviting.as_ref().is_some_and(|ip| ip.vanity_pending),
             _ => self.inviting.as_ref().is_some_and(|ip| ip.pending),
         }
     }
@@ -215,6 +218,25 @@ impl Dialog {
                 f.caret_on = true;
                 continue;
             }
+            // The vanity name keeps web's lowercase letters, digits and hyphens.
+            if k as u8 == VANITY {
+                let text = String::from_utf16_lossy(&f.text);
+                let kept = gfx::wide(&invites::vanity_input(&text));
+                if kept != f.text {
+                    let before = String::from_utf16_lossy(&f.text[..f.caret.min(f.text.len())]);
+                    let caret = invites::vanity_input(&before).len().min(kept.len());
+                    f.text = kept;
+                    f.caret = caret;
+                    f.anchor = caret;
+                }
+                f.focused = focus == Some(VANITY);
+                f.caret_on = true;
+                if f.text != *seen {
+                    *seen = f.text.clone();
+                    ip.vanity_error = None;
+                }
+                continue;
+            }
             if f.text.iter().any(|c| !digit(c)) || f.text.len() > 6 {
                 let caret = f.text[..f.caret.min(f.text.len())]
                     .iter()
@@ -280,6 +302,7 @@ impl Dialog {
             Part::Custom => "Custom links".into(),
             Part::Number(AMOUNT) => "Expire after amount".into(),
             Part::Number(NAME) => self.manage_label().into(),
+            Part::Number(VANITY) => "Vanity link name".into(),
             Part::Number(_) => "Max uses".into(),
             Part::Unit(k) => EXPIRY_UNITS
                 .get(k as usize)
@@ -455,7 +478,12 @@ impl Dialog {
         let colw = ((inner - 12.0) / 2.0).floor();
         let name_w = self.name_field_w(g, inner)?;
         if let Some(ip) = self.inviting.as_deref_mut() {
-            for (k, w) in [(AMOUNT, AMOUNT_W), (USES, colw), (NAME, name_w)] {
+            for (k, w) in [
+                (AMOUNT, AMOUNT_W),
+                (USES, colw),
+                (NAME, name_w),
+                (VANITY, inner),
+            ] {
                 ip.numbers[k as usize].relayout_with(
                     g,
                     &g.formats.composer,
@@ -520,6 +548,7 @@ impl Dialog {
                     USES => Some("No limit"),
                     NAME if self.settings_channel().is_some() => Some("project-updates"),
                     NAME => Some("Gaming nights"),
+                    VANITY => Some("your-space"),
                     _ => None,
                 };
                 let hint = hint

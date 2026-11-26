@@ -4,15 +4,15 @@
 //! lists the members, and makes links only through Custom links. Channel
 //! settings hold the channel's name and privacy, saved together from the
 //! save bar, and, once it is saved private, who has access to it.
-use crate::custom_links::{NAME, number};
+use crate::custom_links::{NAME, VANITY, number};
 use crate::gfx::{Gfx, rect};
 use crate::icons::Icon;
 use crate::invite_people::{Answer, InvitePeople, NAME_ERROR};
 use crate::overlay::{Dialog, Part, Rect, Tone, height, layout, width};
 use crate::text;
 use caper_client::model::Member;
-use caper_client::names;
 use caper_client::worker::{AccountOperation, AdminOperation};
+use caper_client::{invites, names};
 use windows::Win32::Graphics::Direct2D::*;
 use windows::core::Result;
 
@@ -22,6 +22,18 @@ const ROW_H: f32 = 48.0;
 const TOGGLE_H: f32 = 26.0;
 /// The save bar under a channel's settings while they're unsaved.
 pub const FOOTER_H: f32 = 64.0;
+
+/// `Part::Vanity`s: Save (or Change), Copy and Turn off.
+pub const VANITY_SAVE: u8 = 0;
+pub const VANITY_COPY: u8 = 1;
+pub const VANITY_OFF: u8 = 2;
+/// `Part::VanityText`s: the heading, its guidance, the link's host before
+/// the name, why a change failed, and what a confirmation means.
+pub const VANITY_HEAD: u8 = 0;
+pub const VANITY_GUIDE: u8 = 1;
+pub const VANITY_PREFIX: u8 = 2;
+pub const VANITY_ERROR: u8 = 3;
+pub const VANITY_CONFIRM: u8 = 4;
 
 pub const OWNER_NOTE: &str = "Only the owner can change this space and its membership.";
 pub const UNSAVED: &str = "You have unsaved changes.";
@@ -440,6 +452,28 @@ impl Dialog {
                 (x, y, w, h),
                 Tone::Primary,
             )?,
+            Part::Vanity(k) => self.icon_button(
+                g,
+                dc,
+                part,
+                (k == VANITY_COPY).then_some(Icon::Copy),
+                self.vanity_label(k),
+                (x, y, w, h),
+                if k == VANITY_SAVE {
+                    Tone::Primary
+                } else {
+                    Tone::Secondary
+                },
+            )?,
+            Part::VanityText(k) => {
+                let (format, brush) = match k {
+                    VANITY_HEAD => (&g.formats.direct_name, &g.brushes.text),
+                    VANITY_ERROR => (&g.formats.error, &g.brushes.error),
+                    VANITY_CONFIRM => (&g.formats.dialog_note, &g.brushes.text),
+                    _ => (&g.formats.direct_note, &g.brushes.muted),
+                };
+                draw(&self.vanity_text(k), format, brush, y)?
+            }
             _ => {}
         }
         Ok(())
@@ -589,6 +623,204 @@ impl Dialog {
     }
 }
 
+/// Manage space's vanity link (web's VanityLinkSettings): one readable link
+/// that never expires. A name the space used stays reserved for it, so a
+/// shared link can't later lead to someone else's space.
+impl Dialog {
+    fn vanity_draft(&self) -> String {
+        self.inviting
+            .as_deref()
+            .map(|ip| String::from_utf16_lossy(&ip.numbers[VANITY as usize].text))
+            .unwrap_or_default()
+    }
+
+    /// The draft differs from the live name (none counts as empty).
+    fn vanity_changed(&self) -> bool {
+        let live = self.inviting.as_deref().and_then(|ip| ip.vanity.clone());
+        self.vanity_draft() != live.unwrap_or_default()
+    }
+
+    /// Copy and Turn off show while the live name is in the field.
+    fn vanity_live_shown(&self) -> bool {
+        self.inviting
+            .as_deref()
+            .is_some_and(|ip| ip.vanity.is_some())
+            && !self.vanity_changed()
+    }
+
+    pub(crate) fn vanity_enabled(&self, k: u8) -> bool {
+        let Some(ip) = self.inviting.as_deref() else {
+            return false;
+        };
+        match k {
+            VANITY_SAVE => {
+                ip.vanity_loaded
+                    && !ip.vanity_pending
+                    && self.vanity_changed()
+                    && !self.vanity_draft().is_empty()
+            }
+            VANITY_COPY => true,
+            _ => !ip.vanity_pending,
+        }
+    }
+
+    pub fn vanity_label(&self, k: u8) -> &'static str {
+        let ip = self.inviting.as_deref();
+        match k {
+            VANITY_SAVE if ip.is_some_and(|ip| ip.vanity.is_some()) => "Change",
+            VANITY_SAVE => "Save",
+            VANITY_COPY
+                if ip.is_some_and(|ip| {
+                    ip.copied.as_deref() == ip.vanity.as_deref() && ip.vanity.is_some()
+                }) =>
+            {
+                "Copied"
+            }
+            VANITY_COPY => "Copy",
+            _ => "Turn off",
+        }
+    }
+
+    pub fn vanity_text(&self, k: u8) -> String {
+        let Some(ip) = self.inviting.as_deref() else {
+            return String::new();
+        };
+        match k {
+            VANITY_HEAD => "Vanity link".into(),
+            VANITY_GUIDE => "A short link that never expires. Names you use stay reserved for this space, so no other space can take them.".into(),
+            VANITY_PREFIX => {
+                let url = ip.url("");
+                url.split_once("://").map_or(url.clone(), |(_, rest)| rest.to_owned())
+            }
+            VANITY_ERROR => ip.vanity_error.clone().unwrap_or_default(),
+            _ => format!(
+                "{} will stop working. The name stays reserved for this space.",
+                ip.vanity.as_deref().map(|c| ip.url(c)).unwrap_or_default()
+            ),
+        }
+    }
+
+    /// The heading, guidance, host, name field, its buttons and why the
+    /// last change failed, from `y`.
+    pub(crate) fn relayout_vanity(
+        &self,
+        g: &Gfx,
+        inner: f32,
+        mut y: f32,
+        parts: &mut Vec<(Part, Rect)>,
+    ) -> Result<f32> {
+        let Some(ip) = self.inviting.as_deref() else {
+            return Ok(y);
+        };
+        let mut text = |parts: &mut Vec<(Part, Rect)>, k: u8, format, y: f32| -> Result<f32> {
+            let h = height(&layout(g, &self.vanity_text(k), format, inner)?);
+            parts.push((Part::VanityText(k), (0.0, y, inner, h)));
+            Ok(h)
+        };
+        y += text(parts, VANITY_HEAD, &g.formats.direct_name, y)? + 6.0;
+        y += text(parts, VANITY_GUIDE, &g.formats.direct_note, y)? + 10.0;
+        y += text(parts, VANITY_PREFIX, &g.formats.direct_note, y)? + 4.0;
+        parts.push((Part::Number(VANITY), (0.0, y, inner, CONTROL_H)));
+        y += CONTROL_H + 8.0;
+        let mut x = 0.0;
+        let shown: &[u8] = if self.vanity_live_shown() {
+            &[VANITY_SAVE, VANITY_COPY, VANITY_OFF]
+        } else {
+            &[VANITY_SAVE]
+        };
+        for &k in shown {
+            let bw = width(&layout(g, self.vanity_label(k), &g.formats.button, 1e6)?) + 24.0;
+            parts.push((Part::Vanity(k), (x, y, bw, BUTTON_H)));
+            x += bw + 8.0;
+        }
+        y += BUTTON_H;
+        if ip.vanity_error.is_some() && ip.vanity_confirm.is_none() {
+            y += 8.0;
+            y += text(parts, VANITY_ERROR, &g.formats.error, y)?;
+        }
+        Ok(y)
+    }
+
+    /// Save checks the name as web does, then saves it, or asks first when
+    /// it replaces the live one; Copy copies; Turn off asks first.
+    pub(crate) fn vanity_activate(
+        &mut self,
+        k: u8,
+        hwnd: windows::Win32::Foundation::HWND,
+    ) -> Option<AccountOperation> {
+        let draft = self.vanity_draft();
+        let changed = self.vanity_changed();
+        let ip = self.inviting.as_deref_mut()?;
+        ip.focus = None;
+        match k {
+            VANITY_COPY => {
+                let code = ip.vanity.clone()?;
+                crate::set_clipboard(hwnd, &crate::gfx::wide(&ip.url(&code)));
+                ip.copied = Some(code);
+                unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                        Some(hwnd),
+                        crate::invite_people::TIMER_COPIED,
+                        crate::invite_people::COPIED_MS,
+                        None,
+                    );
+                }
+                None
+            }
+            VANITY_OFF => {
+                ip.vanity_confirm = Some(true);
+                self.field.focused = false;
+                None
+            }
+            _ => {
+                if !changed || draft.is_empty() || ip.vanity_pending {
+                    return None;
+                }
+                if let Some(e) = invites::vanity_error(&draft) {
+                    ip.vanity_error = Some(e.into());
+                    return None;
+                }
+                if ip.vanity.is_some() {
+                    ip.vanity_confirm = Some(false);
+                    self.field.focused = false;
+                    return None;
+                }
+                ip.vanity_pending = true;
+                ip.vanity_error = None;
+                Some(AccountOperation::VanityLink {
+                    space: ip.space.clone(),
+                    request: self.request,
+                    change: Some(Some(draft)),
+                })
+            }
+        }
+    }
+
+    pub(crate) fn vanity_confirming(&self) -> bool {
+        self.inviting
+            .as_deref()
+            .is_some_and(|ip| ip.vanity_confirm.is_some())
+    }
+
+    /// The confirmed change: the typed name, or turning it off.
+    pub(crate) fn vanity_confirmed(&mut self) -> Option<AccountOperation> {
+        let draft = self.vanity_draft();
+        let request = self.request;
+        let ip = self.inviting.as_deref_mut()?;
+        if ip.vanity_pending {
+            return None;
+        }
+        let off = ip.vanity_confirm.take()?;
+        ip.vanity_pending = true;
+        ip.vanity_error = None;
+        Some(AccountOperation::VanityLink {
+            space: ip.space.clone(),
+            request,
+            change: Some((!off).then_some(draft)),
+        })
+    }
+}
+
 fn save_name_w(g: &Gfx) -> Result<f32> {
     Ok(width(&layout(g, "Save name", &g.formats.button, 1e6)?) + 24.0)
 }
@@ -635,6 +867,11 @@ impl crate::App {
         let mut d = Dialog::manage(ip.manage_space());
         d.request += 1;
         if let Some(ip) = d.inviting.as_deref_mut() {
+            live.account(AccountOperation::VanityLink {
+                space: ip.space.clone(),
+                request: d.request,
+                change: None,
+            });
             ip.pending = true;
             live.account(AccountOperation::LoadInviteLinks {
                 space: ip.space.clone(),

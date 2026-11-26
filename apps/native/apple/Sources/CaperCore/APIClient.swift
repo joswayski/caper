@@ -72,6 +72,7 @@ private struct UsernameInput: Encodable { let username: String }
 /// nil fields are omitted, which the API reads as null: default channel,
 /// never expires, no use limit.
 private struct InviteLinkInput: Encodable { let channelId: String?; let maxAge: Int?; let maxUses: Int? }
+private struct VanityLink: Codable { let code: String? }
 /// `markUnread` moves the read position back to `seq` (Mark unread); left
 /// out, reads only ever advance.
 private struct ReadInput: Encodable {
@@ -420,6 +421,22 @@ public actor APIClient {
 
     public func revokeInviteLink(spaceID: String, code: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invite-links/\(try inviteCodePath(code))", method: "DELETE")
+    }
+
+    /// The space's vanity link name, nil without one (owner only).
+    public func vanityLink(spaceID: String) async throws -> String? {
+        let response: VanityLink = try await request("api/spaces/\(try pathID(spaceID))/vanity-link")
+        return response.code
+    }
+
+    /// Claims `code` as the vanity link, replacing the current one.
+    public func setVanityLink(spaceID: String, code: String) async throws -> String? {
+        let response: VanityLink = try await request("api/spaces/\(try pathID(spaceID))/vanity-link", method: "PUT", body: VanityLink(code: code))
+        return response.code
+    }
+
+    public func removeVanityLink(spaceID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/vanity-link", method: "DELETE")
     }
 
     public func removeSpaceMember(spaceID: String, memberID: String) async throws {

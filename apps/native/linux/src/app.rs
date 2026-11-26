@@ -2706,6 +2706,7 @@ impl App {
             | AccountResult::InviteLinks { .. }
             | AccountResult::InviteLinkCreated { .. }
             | AccountResult::InviteLinkRevoked { .. }
+            | AccountResult::VanityLink { .. }
             | AccountResult::InvitePreview { .. }
             | AccountResult::InviteJoined { .. }) => self.invite_result(state, result),
             AccountResult::Invitation {

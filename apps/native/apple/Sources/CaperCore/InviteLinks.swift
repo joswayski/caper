@@ -102,7 +102,6 @@ public struct InviteOption<Value: Hashable & Sendable>: Hashable, Sendable {
 
 /// Invite link parsing, URLs and wording, shared by the owner and join dialogs.
 public enum InviteLinks {
-    public static let codeLength = 10
     static let invalid = "This invite link is invalid or has expired."
 
     /// Custom links start with the same limits as the ready-to-copy link.
@@ -144,8 +143,12 @@ public enum InviteLinks {
         return Int(digits)
     }
 
+    /// A generated code (ten letters and digits) or a space's vanity name:
+    /// 3 to 32 ASCII letters, digits and inner hyphens.
     public static func isCode(_ value: Substring) -> Bool {
-        value.count == codeLength && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+        (3...32).contains(value.count)
+            && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+            && value.first != "-" && value.last != "-"
     }
 
     /// Web's inviteCode, through shared Rust (shared/invites/code.rs): the code
@@ -157,9 +160,25 @@ public enum InviteLinks {
         return source.withUTF8 { bytes in
             let code = caper_mobile_invite_code(bytes.baseAddress, bytes.count)
             defer { caper_mobile_ints_free(code) }
-            guard code.len == codeLength else { return nil }
+            guard code.len > 0 else { return nil }
             return String(decoding: UnsafeBufferPointer(start: code.data, count: code.len).map { UInt8(truncatingIfNeeded: $0) }, as: UTF8.self)
         }
+    }
+
+    static let invalidVanityName = "Use 3–32 lowercase letters, numbers or hyphens, starting and ending with a letter or number."
+
+    /// Web's vanityNameError: why the API would refuse `name`, or nil.
+    public static func vanityNameError(_ name: String) -> String? {
+        let allowed = name.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }
+        guard allowed, isCode(Substring(name)) else { return invalidVanityName }
+        // Ten letters and digits read as a generated code.
+        if name.count == 10, !name.contains("-") { return "A 10-character name needs a hyphen, like atlas-chat." }
+        return nil
+    }
+
+    /// Web's vanity field filter: lowercase letters, digits and hyphens, at most 32.
+    public static func vanityInput(_ text: String) -> String {
+        String(text.lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }.prefix(32))
     }
 
     /// The custom URL scheme both apps register (the web invite page's

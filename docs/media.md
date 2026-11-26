@@ -700,11 +700,28 @@ to the starter channel and is no longer named in previews. Links are kept in
 | Owner regenerates the displayed link | `POST /api/spaces/{space}/invite-links/{code}/regenerate` (no body) | 201 replacement link |
 | Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
 | Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
+| Owner reads the vanity link | `GET /api/spaces/{space}/vanity-link` | `{code}` (`null` without one) |
+| Owner sets the vanity link | `PUT /api/spaces/{space}/vanity-link` with `{code}` | `{code}`; 400 invalid, 409 taken or limit |
+| Owner turns the vanity link off | `DELETE /api/spaces/{space}/vanity-link` | 204 |
 | Anyone previews | `GET /api/invites/{code}` (optional account session) | space name, landing channel, inviter, member count, expiry, `alreadyMember` |
 | Signed-in account joins | `POST /api/invites/{code}/join` | `{space, channelId, joined}` |
 
 Creating links shares the owner's invitation attempt budget below; a space can
 have at most 100 live links. Reusing the default link does not consume budget.
+
+**Vanity link.** An owner can give a space one readable link,
+`/invite/<name>`, that never expires and has no use limit. Names are 3 to 32
+lowercase letters, digits and hyphens that start and end with a letter or
+digit; a ten-character name needs a hyphen, so it never reads as a generated
+code. Links match names in any letter case. It is a `vanity` row in
+`space_invite_links` (lands in the starter channel), at most one live per space,
+and is not listed, regenerated or revoked with the other links. Changing or
+turning it off revokes the row but keeps it: a name a space has used stays
+reserved for that space forever, so a shared vanity link can never be taken over
+by another space (Discord's recycled vanity URLs let impostors inherit them).
+The space can switch back to an earlier name. Each space can hold 5 names in
+total; a few names that would read as Caper itself are refused as taken. Setting
+a new name shares the invitation attempt budget.
 
 Joining checks the membership quota under the same space lock as invitation
 acceptance, consumes one use, joins the landing channel, and fulfils any pending
@@ -726,7 +743,7 @@ The web `/invite/<code>` page previews the link and sends signed-out visitors to
 pasted link or bare code (web: under **Create a space**), parsed by web's
 `inviteCode`; the native clients run the same rule from `shared/invites/code.rs`
 and every client replays `shared/invites/invite-cases.json`, generated from web.
-Only the ten-character code is taken from a pasted link: previews and joins always
+Only the code (generated or vanity) is taken from a pasted link: previews and joins always
 go to the client's configured API origin, never the link's host or scheme.
 Existing members see
 **You’re already a member, along with N others** and **Open space**, which uses

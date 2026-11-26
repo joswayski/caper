@@ -191,6 +191,34 @@ pub fn invite_code(input: &str) -> Option<String> {
     code::invite_code(input).map(str::to_owned)
 }
 
+pub const VANITY_NAME_ERROR: &str =
+    "Use 3–32 lowercase letters, numbers or hyphens, starting and ending with a letter or number.";
+
+/// Web's `vanityNameError`: why a typed vanity name would be refused, or `None`.
+pub fn vanity_error(name: &str) -> Option<&'static str> {
+    let lowercase = name
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    if !lowercase || !valid_code(name) {
+        Some(VANITY_NAME_ERROR)
+    } else if name.len() == 10 && !name.contains('-') {
+        // Ten letters and digits read as a generated code.
+        Some("A 10-character name needs a hyphen, like atlas-chat.")
+    } else {
+        None
+    }
+}
+
+/// Web's vanity field filter: lowercase, only letters, digits and hyphens, at
+/// most 32 characters.
+pub fn vanity_input(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+        .take(32)
+        .collect()
+}
+
 /// The shareable link on the configured API origin, so production reads
 /// `https://caper.chat/invite/<code>`.
 pub fn invite_url(base: &Url, code: &str) -> String {
@@ -300,6 +328,25 @@ mod tests {
     use super::*;
 
     /// Generated from web; every client runs them (shared/invites/invite-cases.json).
+    #[test]
+    fn vanity_names_follow_web_and_the_api() {
+        for name in ["atlasos", "my-crew", "abc", "atlas-chat"] {
+            assert_eq!(vanity_error(name), None, "{name}");
+        }
+        for name in [
+            "ab",
+            "-atlas",
+            "atlas-",
+            "AtlasOS",
+            "atlas_os",
+            "abcdefghij",
+        ] {
+            assert!(vanity_error(name).is_some(), "{name}");
+        }
+        assert_eq!(vanity_input(" Atlas_OS!"), "atlasos");
+        assert_eq!(vanity_input(&"a".repeat(40)).len(), 32);
+    }
+
     #[test]
     fn invite_codes_follow_the_shared_cases() {
         let cases: serde_json::Value =

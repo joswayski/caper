@@ -31,7 +31,11 @@ import {
   joinInvite,
   listInviteLinks,
   regenerateInviteLink,
+  removeVanityLink,
   revokeInviteLink,
+  setVanityLink,
+  getVanityLink,
+  vanityNameError,
   type Space,
   SpacesApiError,
 } from "./client";
@@ -477,6 +481,161 @@ export function InviteLinkManager({
                 }}
               >
                 {confirmation.action === "regenerate" ? "Regenerate link" : "Deactivate link"}
+              </button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+    </section>
+  );
+}
+
+/**
+ * One readable link per space that never expires. A name the space used stays
+ * reserved for it, so a shared link can't later lead to someone else's space.
+ */
+export function VanityLinkSettings({ spaceId }: { spaceId: string }) {
+  const [current, setCurrent] = useState<string | null>();
+  const [name, setName] = useState("");
+  const [pending, setPending] = useState(true);
+  const [error, setError] = useState<string>();
+  const [copied, setCopied] = useState(false);
+  const [confirming, setConfirming] = useState<"change" | "off">();
+  const id = useId();
+  useEffect(() => {
+    let live = true;
+    getVanityLink(spaceId)
+      .then(({ code }) => {
+        if (!live) return;
+        setCurrent(code);
+        setName(code ?? "");
+      })
+      .catch((reason) => live && setError(friendlyError(reason)))
+      .finally(() => live && setPending(false));
+    return () => {
+      live = false;
+    };
+  }, [spaceId]);
+  useEffect(() => {
+    if (!copied) return;
+    const timeout = setTimeout(() => setCopied(false), 2_000);
+    return () => clearTimeout(timeout);
+  }, [copied]);
+  const run = async (action: () => Promise<string | null>) => {
+    setPending(true);
+    setError(undefined);
+    try {
+      const code = await action();
+      setCurrent(code);
+      setName(code ?? "");
+    } catch (reason) {
+      setError(friendlyError(reason));
+    } finally {
+      setPending(false);
+    }
+  };
+  const save = () => run(async () => (await setVanityLink(spaceId, name)).code);
+  const turnOff = () =>
+    run(async () => {
+      await removeVanityLink(spaceId);
+      return null;
+    });
+  const changed = name !== (current ?? "");
+  return (
+    <section className="member-manager vanity-link">
+      <div className="dialog-section-heading">
+        <h3>Vanity link</h3>
+      </div>
+      <p className="channel-name-guidance">
+        A short link that never expires. Names you use stay reserved for this space, so no other space can take them.
+      </p>
+      <form
+        className="vanity-link-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (pending || !changed) return;
+          const invalid = vanityNameError(name);
+          if (invalid) return setError(invalid);
+          if (current) setConfirming("change");
+          else void save();
+        }}
+      >
+        <label htmlFor={id} className="vanity-link-field">
+          <span aria-hidden="true">{window.location.host}/invite/</span>
+          <input
+            id={id}
+            aria-label="Vanity link name"
+            value={name}
+            placeholder="your-space"
+            maxLength={32}
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            disabled={pending && current === undefined}
+            onChange={(event) => {
+              setName(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+              setError(undefined);
+            }}
+          />
+        </label>
+        <button type="submit" className="secondary" disabled={pending || !changed || !name}>
+          {current ? "Change" : "Save"}
+        </button>
+        {current && !changed && (
+          <>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                void navigator.clipboard.writeText(inviteUrl(current)).then(
+                  () => setCopied(true),
+                  () => setError("Couldn’t copy. Check clipboard permission and try again."),
+                )
+              }
+            >
+              <Copy size={14} aria-hidden="true" />
+              {copied ? "Copied" : "Copy"}
+            </button>
+            <button type="button" className="secondary" disabled={pending} onClick={() => setConfirming("off")}>
+              Turn off
+            </button>
+          </>
+        )}
+      </form>
+      {error && (
+        <p className="space-form-error" role="alert">
+          {error}
+        </p>
+      )}
+      {copied && (
+        <p className="sr-only" role="status">
+          Vanity link copied.
+        </p>
+      )}
+      {confirming && current && (
+        <Dialog
+          title={confirming === "off" ? "Turn off vanity link?" : "Change vanity link?"}
+          dismissOnBackdrop
+          onClose={() => setConfirming(undefined)}
+        >
+          <div className="delete-confirmation">
+            <p>{inviteUrl(current)} will stop working. The name stays reserved for this space.</p>
+            <div className="space-dialog-actions">
+              <button type="button" className="secondary" data-initial-focus onClick={() => setConfirming(undefined)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={pending}
+                onClick={() => {
+                  const action = confirming;
+                  setConfirming(undefined);
+                  void (action === "off" ? turnOff() : save());
+                }}
+              >
+                {confirming === "off" ? "Turn off" : "Change link"}
               </button>
             </div>
           </div>

@@ -835,3 +835,202 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         .await
         .unwrap();
 }
+
+#[test]
+fn vanity_names_never_read_as_generated_codes() {
+    use super::invite_links::{link_code, valid_vanity};
+    for name in ["atlasos", "my-crew", "abc", "a1b2c3d4e-", "atlas-os-2"] {
+        assert_eq!(valid_vanity(name), !name.ends_with('-'), "{name}");
+    }
+    // Ten letters and digits are a generated code, uppercase is normalized
+    // only at the edge, and length and hyphen placement are bounded.
+    for name in [
+        "abcdefghij",
+        "ab",
+        "-atlas",
+        "atlas_os",
+        "Atlas",
+        &"a".repeat(33),
+    ] {
+        assert!(!valid_vanity(name), "{name}");
+    }
+    assert_eq!(link_code("AtlasOS").as_deref(), Some("atlasos"));
+    assert_eq!(link_code("AbCdE12345").as_deref(), Some("AbCdE12345"));
+    assert_eq!(link_code("../x"), None);
+}
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+async fn vanity_links_stay_with_their_space() {
+    use super::invite_links::{VanityInput, remove_vanity_link, set_vanity_link, vanity_link};
+    let url = std::env::var("CHAT_TEST_DATABASE_URL")
+        .expect("CHAT_TEST_DATABASE_URL must point at disposable Postgres");
+    let options = PgConnectOptions::from_str(&url).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("vanity_links_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    crate::chat::seed(&pool).await.unwrap();
+    let mut people = Vec::new();
+    for username in ["owner", "rival", "joiner"] {
+        let external = random_id(12);
+        let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$2,$2) RETURNING id")
+            .bind(&external).bind(username).fetch_one(&pool).await.unwrap();
+        people.push(principal(id, &external, username));
+    }
+    let [owner, rival, joiner] = people.as_slice() else {
+        unreachable!()
+    };
+    let mut spaces = Vec::new();
+    for person in [owner, rival] {
+        let space = random_id(12);
+        let id: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Atlas',$2) RETURNING id")
+            .bind(&space).bind(person.user.id).fetch_one(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(id)
+            .bind(person.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO public.channels(external_id,space_id,name,private) VALUES($1,$2,'general',false)")
+            .bind(random_id(12)).bind(id).execute(&pool).await.unwrap();
+        spaces.push(space);
+    }
+    let [atlas, impostor] = spaces.as_slice() else {
+        unreachable!()
+    };
+    let state = AppState::with_database(
+        Config::test(false),
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    let set = |who: &Principal, space: &str, code: &str| {
+        let (state, who, space) = (state.clone(), who.clone(), space.to_owned());
+        let input = VanityInput {
+            code: code.to_owned(),
+        };
+        async move {
+            set_vanity_link(State(state), Extension(who), Path(space), Json(input))
+                .await
+                .map(|json| json.0["code"].clone())
+                .map_err(|error| error.status)
+        }
+    };
+    let current = |who: &Principal, space: &str| {
+        let (state, who, space) = (state.clone(), who.clone(), space.to_owned());
+        async move {
+            vanity_link(State(state), Extension(who), Path(space))
+                .await
+                .unwrap()
+                .0["code"]
+                .clone()
+        }
+    };
+    let join = |code: &str| {
+        let (state, code) = (state.clone(), code.to_owned());
+        async move {
+            accept(State(state), Extension(joiner.clone()), Path(code))
+                .await
+                .map(|json| json.0)
+                .map_err(|error| error.status)
+        }
+    };
+
+    assert_eq!(current(owner, atlas).await, Value::Null);
+    // Only the owner names a space; names are validated and normalized.
+    assert_eq!(
+        set(rival, atlas, "atlasos").await,
+        Err(StatusCode::NOT_FOUND)
+    );
+    assert_eq!(
+        set(owner, atlas, "abcdefghij").await,
+        Err(StatusCode::BAD_REQUEST)
+    );
+    assert_eq!(set(owner, atlas, "caper").await, Err(StatusCode::CONFLICT));
+    assert_eq!(set(owner, atlas, " AtlasOS ").await, Ok(json!("atlasos")));
+    assert_eq!(set(owner, atlas, "atlasos").await, Ok(json!("atlasos")));
+    assert_eq!(current(owner, atlas).await, "atlasos");
+    // Vanity links stay out of the regular link list.
+    let listed = list_links(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path(atlas.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(listed.0["links"], json!([]));
+
+    // Any letter case previews and joins, without a use limit or expiry.
+    let shown = preview(
+        State(state.clone()),
+        Path("ATLASOS".into()),
+        HeaderMap::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(shown.0["code"], "atlasos");
+    assert_eq!(shown.0["expiresAt"], Value::Null);
+    assert_eq!(
+        join("AtlasOS").await.unwrap()["space"]["id"],
+        atlas.as_str()
+    );
+
+    // Another space can't claim it, even after Atlas turns it off or renames.
+    assert_eq!(
+        set(rival, impostor, "atlasos").await,
+        Err(StatusCode::CONFLICT)
+    );
+    assert_eq!(set(owner, atlas, "atlas-os").await, Ok(json!("atlas-os")));
+    assert_eq!(join("atlasos").await, Ok(join("atlas-os").await.unwrap()));
+    let old = preview(
+        State(state.clone()),
+        Path("atlasos".into()),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(old.unwrap_err().status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        set(rival, impostor, "atlasos").await,
+        Err(StatusCode::CONFLICT)
+    );
+    assert_eq!(
+        remove_vanity_link(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(atlas.clone())
+        )
+        .await
+        .unwrap(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(current(owner, atlas).await, Value::Null);
+    assert_eq!(
+        set(rival, impostor, "atlas-os").await,
+        Err(StatusCode::CONFLICT)
+    );
+    // Atlas can switch back to a name it used, and holds at most five.
+    assert_eq!(set(owner, atlas, "atlasos").await, Ok(json!("atlasos")));
+    for name in ["atlas-3", "atlas-4", "atlas-5"] {
+        assert_eq!(set(owner, atlas, name).await, Ok(json!(name)));
+    }
+    assert_eq!(
+        set(owner, atlas, "atlas-6").await,
+        Err(StatusCode::CONFLICT)
+    );
+    assert_eq!(set(owner, atlas, "atlas-os").await, Ok(json!("atlas-os")));
+
+    drop(pool);
+    admin
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
+        .await
+        .unwrap();
+}

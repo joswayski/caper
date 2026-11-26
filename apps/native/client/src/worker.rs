@@ -502,6 +502,13 @@ pub enum AccountOperation {
         request: u64,
         code: String,
     },
+    /// An owner's vanity link: `change` `None` loads it, `Some(None)` turns it
+    /// off, and `Some(Some(name))` claims `name`.
+    VanityLink {
+        space: String,
+        request: u64,
+        change: Option<Option<String>>,
+    },
     /// The "Join with invite link" preview and join; `request` drops answers
     /// for an input the person has since changed or a dialog they closed.
     PreviewInvite {
@@ -570,6 +577,12 @@ pub enum AccountResult {
         request: u64,
         code: String,
         result: Result<(), String>,
+    },
+    /// The vanity link name after a load or change; `None` without one.
+    VanityLink {
+        space: String,
+        request: u64,
+        result: Result<Option<String>, String>,
     },
     InvitePreview {
         request: u64,
@@ -2885,6 +2898,20 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
             result: api.revoke_invite_link(token, &space, &code).map_err(text),
             space,
             code,
+            request,
+        },
+        AccountOperation::VanityLink {
+            space,
+            request,
+            change,
+        } => AccountResult::VanityLink {
+            result: match change {
+                None => api.vanity_link(token, &space),
+                Some(None) => api.remove_vanity_link(token, &space).map(|()| None),
+                Some(Some(code)) => api.set_vanity_link(token, &space, &code).map(Some),
+            }
+            .map_err(text),
+            space,
             request,
         },
         AccountOperation::PreviewInvite { request, code } => AccountResult::InvitePreview {

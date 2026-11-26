@@ -549,6 +549,13 @@ class CaperApi(
     suspend fun revokeInviteLink(token: String, space: String, code: String) {
         request<Unit>("/api/spaces/${space.pathId()}/invite-links/${code.invitePathCode()}", "DELETE", token)
     }
+    /** The space's vanity link name, null without one (owners only). */
+    suspend fun vanityLink(token: String, space: String): VanityLink = get("/api/spaces/${space.pathId()}/vanity-link", token)
+    suspend fun setVanityLink(token: String, space: String, code: String): VanityLink =
+        request("/api/spaces/${space.pathId()}/vanity-link", "PUT", token, body = buildJsonObject { put("code", code) }.toString())
+    suspend fun removeVanityLink(token: String, space: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/vanity-link", "DELETE", token)
+    }
     /** The shareable URL on this API's origin (production `https://caper.chat/invite/<code>`). */
     fun inviteUrl(code: String): String = inviteLinkUrl(baseUrl, code)
     suspend fun removeSpaceMember(token: String, space: String, member: String) {

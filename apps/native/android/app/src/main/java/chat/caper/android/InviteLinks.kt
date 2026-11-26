@@ -42,6 +42,8 @@ import chat.caper.android.data.inviteExpirySeconds
 import chat.caper.android.data.inviteLinkMeta
 import chat.caper.android.data.inviteMaxUses
 import chat.caper.android.data.inviteMembersLine
+import chat.caper.android.data.vanityInput
+import chat.caper.android.data.vanityNameError
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.InvitePreview
 import chat.caper.android.model.SpaceDetail
@@ -131,6 +133,67 @@ import kotlinx.coroutines.delay
     var settings by remember(detail.space.id) { mutableStateOf(false) }
     TextButton({ settings = !settings }, enabled = enabled, colors = neutralTextButtonColors()) { Text(if (settings) "Hide custom links" else "Custom links") }
     if (settings) InviteLinkSection(state, detail, viewModel)
+}
+
+/**
+ * Web's VanityLinkSettings: one readable link per space that never expires. A name the space
+ * used stays reserved for it, so a shared link can't later lead to someone else's space.
+ */
+@Composable internal fun VanityLinkSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel) {
+    val context = LocalContext.current
+    val clipboard = remember(context) { context.getSystemService(ClipboardManager::class.java) }
+    var current by remember(detail.space.id) { mutableStateOf<String?>(null) }
+    var loaded by remember(detail.space.id) { mutableStateOf(false) }
+    var name by remember(detail.space.id) { mutableStateOf("") }
+    var error by remember(detail.space.id) { mutableStateOf<String?>(null) }
+    var copied by remember(detail.space.id) { mutableStateOf(false) }
+    var confirming by remember(detail.space.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(detail.space.id) {
+        viewModel.loadVanityLink({ current = it; name = it.orEmpty(); loaded = true }) { error = it; loaded = true }
+    }
+    LaunchedEffect(copied) { if (copied) { delay(2_000); copied = false } }
+    fun apply(code: String?) {
+        error = null
+        viewModel.changeVanityLink(code, { current = it; name = it.orEmpty() }) { error = it }
+    }
+    val changed = name != current.orEmpty()
+    fun save() {
+        if (!changed || name.isEmpty()) return
+        vanityNameError(name)?.let { error = it; return }
+        if (current != null) confirming = "change" else apply(name)
+    }
+    confirming?.let { action ->
+        val old = current?.let(viewModel::inviteUrl).orEmpty()
+        ConfirmDialog(if (action == "off") "Turn off vanity link?" else "Change vanity link?",
+            "$old will stop working. The name stays reserved for this space.",
+            if (action == "off") "Turn off" else "Change link", false, { confirming = null }, focusCancel = true) {
+            confirming = null
+            apply(if (action == "off") null else name)
+        }
+    }
+    Text("Vanity link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    Text("A short link that never expires. Names you use stay reserved for this space, so no other space can take them.", color = TextMuted, fontSize = 11.sp)
+    OutlinedTextField(name, { name = vanityInput(it); error = null }, Modifier.fillMaxWidth(),
+        enabled = loaded && !state.busy, singleLine = true, label = { Text("Vanity link name") },
+        prefix = { Text(viewModel.inviteUrl("").substringAfter("://"), color = TextMuted) },
+        placeholder = { Text("your-space") }, isError = error != null,
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { save() }))
+    error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button({ save() }, enabled = !state.busy && changed && name.isNotEmpty(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
+            Text(if (current != null) "Change" else "Save")
+        }
+        current?.takeIf { !changed }?.let { code ->
+            TextButton({ clipboard?.setPrimaryClip(ClipData.newPlainText("Invite link", viewModel.inviteUrl(code))); copied = true },
+                Modifier.semantics { liveRegion = LiveRegionMode.Polite }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
+                Icon(painterResource(R.drawable.lucide_copy), null, Modifier.size(14.dp))
+                Spacer(Modifier.width(6.dp))
+                PendingLabel("Copy", "Copied", copied)
+            }
+            TextButton({ confirming = "off" }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Turn off") }
+        }
+    }
 }
 
 /**

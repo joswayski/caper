@@ -217,6 +217,60 @@ import Observation
     isolated deinit { copiedReset?.cancel() }
 }
 
+/// Web's VanityLinkSettings: one readable link per space that never expires.
+/// A name the space used stays reserved for it, so a shared link can't later
+/// lead to someone else's space.
+@MainActor @Observable final class NativeVanityLink {
+    let model: AppModel
+    private let spaceID: String?
+    private let epoch: Int
+    var current: String?
+    var name = ""
+    var loaded = false
+    var pending = false
+    var copied = false
+    var error: String?
+    private var copiedReset: Task<Void, Never>?
+    init(model: AppModel) { self.model = model; spaceID = model.detail?.space.id; epoch = model.accountEpoch }
+    var live: Bool { model.accountEpoch == epoch && model.detail?.space.id == spaceID && model.isOwner }
+    var changed: Bool { name != (current ?? "") }
+    /// What a confirmation shows before replacing or turning off a live name.
+    var currentURL: String { current.map(model.inviteLinkURL) ?? "" }
+    var prefix: String { model.inviteLinkURL("").replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "") }
+    func load() async {
+        guard live, !loaded else { return }
+        do { current = try await model.vanityLink(); name = current ?? "" } catch is CancellationError {} catch { if live { self.error = FriendlyError.message(for: error) } }
+        loaded = true
+    }
+    func setName(_ text: String) { name = InviteLinks.vanityInput(text); error = nil }
+    /// Nil when it is ready to save; "confirm" when it replaces a live name.
+    func check() -> String? {
+        guard changed, !name.isEmpty else { return "none" }
+        if let invalid = InviteLinks.vanityNameError(name) { error = invalid; return invalid }
+        return current == nil ? nil : "confirm"
+    }
+    func apply(_ code: String?) {
+        guard live, !pending else { return }; pending = true; error = nil
+        Task {
+            defer { pending = false }
+            do { current = try await model.vanityLink(change: .some(code)); name = current ?? "" }
+            catch is CancellationError {} catch { if live { self.error = FriendlyError.message(for: error) } }
+        }
+    }
+    func copy() {
+        guard let current else { return }
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(model.inviteLinkURL(current), forType: .string) else { error = "Copy failed; try again."; return }
+        #else
+        UIPasteboard.general.string = model.inviteLinkURL(current)
+        #endif
+        copied = true; copiedReset?.cancel()
+        copiedReset = Task { [weak self] in do { try await Task.sleep(for: .seconds(2)) } catch { return }; self?.copied = false }
+    }
+    isolated deinit { copiedReset?.cancel() }
+}
+
 #if os(macOS)
 import AppKit
 #else

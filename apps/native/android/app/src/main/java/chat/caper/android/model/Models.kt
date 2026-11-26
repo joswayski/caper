@@ -156,6 +156,7 @@ val DEFAULT_QUICK_REACTIONS = listOf("👍", "❤️", "😂")
     val createdAt: String,
 )
 @Serializable data class InviteLinkList(val links: List<InviteLink>)
+@Serializable data class VanityLink(val code: String? = null)
 @Serializable data class Member(
     val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null,
     val avatarAsset: String? = null, val avatarUrl: String? = null,

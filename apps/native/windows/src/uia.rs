@@ -1050,6 +1050,8 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Label if d.kind == Kind::InvitePeople => d.manage_label().into(),
                 DPart::Hint if d.kind == Kind::InvitePeople => d.privacy_note(),
                 DPart::SaveName => "Save name".into(),
+                DPart::Vanity(k) => d.vanity_label(k).into(),
+                DPart::VanityText(k) => d.vanity_text(k),
                 DPart::Member(k) => d.member_name(k),
                 DPart::Unsaved => crate::space_settings::UNSAVED.into(),
                 DPart::Reset => "Reset".into(),
@@ -1279,6 +1281,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::Guide
             | DPart::Heading(_)
             | DPart::Line(_)
+            | DPart::VanityText(_)
             | DPart::Link
             | DPart::Invitee(_)
             | DPart::Member(_)
@@ -1944,6 +1947,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::LinkCopy(_)
                 | DPart::LinkRevoke(_)
                 | DPart::SaveName
+                | DPart::Vanity(_)
                 | DPart::Reset
                 | DPart::SaveChanges
                 | DPart::ManageRow(_)
