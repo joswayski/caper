@@ -10,12 +10,14 @@ struct RowContext {
     let canInteract: Bool
     let reactionErrors: [String: String]
     let pinErrors: [String: String]
+    let focusedAt: Date
 
     @MainActor init(_ chat: ChatModel) {
         unreadThreads = chat.unreadThreadRoots
         canInteract = chat.canInteract
         reactionErrors = chat.reactionErrors
         pinErrors = chat.pinErrors
+        focusedAt = chat.focusedAt
     }
 }
 
@@ -73,8 +75,10 @@ struct MessageRowState: Equatable {
     /// "you" or the pinner's name, on a pinned message.
     var pinnedBy: String?
     var pinMine = false
-    /// The jump target (a link or Go to message): terracotta, like web.
-    var focused = false
+    /// When the jump to this row (a link or Go to message) started: terracotta,
+    /// like web. Each jump, to the same row too, changes it, so the row
+    /// reconfigures and its highlight restarts.
+    var jumpAt: Date?
     /// A blocked author's message the reader chose to show.
     var revealedBlocked = false
     /// The avatar and name open the author's card; guests have none.
@@ -119,7 +123,7 @@ struct MessageRowState: Equatable {
             pinMine = pin.author.id == viewerID
             pinnedBy = pinMine ? "you" : pin.author.name
         }
-        self.focused = focused && !inPins
+        jumpAt = focused && !inPins ? context?.focusedAt : nil
         self.inPins = inPins
         if !message.isDeleted {
             reactions = (message.reactions ?? []).map { reaction in
@@ -595,7 +599,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         let highlighted = row.pinnedBy == nil && (row.mentionsViewer || row.repliesToViewer)
         accent.isHidden = !(highlighted || row.revealedBlocked)
         accent.backgroundColor = highlighted ? UIKitStyle.terracotta : UIKitStyle.border
-        jumpStart = row.focused ? host?.chat.focusedAt : nil
+        jumpStart = row.jumpAt
         paintJump()
 
         if let host, row.extras != nil || row.pendingContent.map(UIKitNativeMessageExtras.shows) == true {
