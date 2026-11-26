@@ -72,6 +72,7 @@ const names = {
   search: "Search",
   send: "Send",
   settings: "Settings",
+  smartphone: "Smartphone",
   smile: "Smile",
   "smile-plus": "SmilePlus",
   speech: "Speech",

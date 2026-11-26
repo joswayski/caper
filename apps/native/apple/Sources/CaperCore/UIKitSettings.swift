@@ -67,6 +67,10 @@ import UIKit
             guard let value = self?.sendOnStop.isOn else { return }; VoiceMessageSettings.shared.sendOnStop = value
         }, for: .valueChanged)
         let sendLabel = Self.label(VoiceMessage.sendOnStopTitle, size: 14)
+        // The title wraps; the switch keeps its full size inside the page.
+        sendLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sendOnStop.setContentHuggingPriority(.required, for: .horizontal)
+        sendOnStop.setContentCompressionResistancePriority(.required, for: .horizontal)
         let sendRow = UIStackView(arrangedSubviews: [sendLabel, sendOnStop]); sendRow.spacing = 10; sendRow.alignment = .center
         sendRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         let sendDetail = Self.label(VoiceMessage.sendOnStopDetail); sendDetail.textColor = UIColor(CaperTheme.muted)

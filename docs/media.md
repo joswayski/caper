@@ -158,7 +158,11 @@ card anywhere except its controls and `⋯` menu opens that channel's chat.
   the shared session timer. Faces follow, you first and then in join order
   (speaking never reorders them), with a green speaking ring and mute/deafen
   badges, in at most two rows: up to ten faces, or nine and a "+N" tile. Then
-  Mute, Deafen and Leave (Cancel while joining). The card never changes size
+  Mute, Deafen and Leave (Cancel while joining). On iPhone a Speaker button
+  after Deafen switches the call between the loudspeaker (the remembered
+  default) and the earpiece while no headphones, Bluetooth or AirPlay route is
+  connected; Android lists Speaker and Earpiece among its outputs, and browsers
+  choose the route themselves. The card never changes size
   with speech. Right-click, long press or the accessibility action on the faces
   opens the full list ("In #channel · N people") with per-person volume and Mute
   for me, beside the sidebar on wide layouts and as a bottom sheet on phones; a

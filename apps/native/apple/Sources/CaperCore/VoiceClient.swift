@@ -138,6 +138,13 @@ public final class VoiceClient {
     public var availableOutputs: [AudioDevice] = []
     public var selectedInputID: String?
     public var selectedOutputID: String?
+    #if os(iOS)
+    /// iPhone: calls play through the loudspeaker (the default) or, when off,
+    /// the earpiece. Headphones, Bluetooth and AirPlay still take over.
+    public private(set) var speakerOutput = UserDefaults.standard.object(forKey: "caper.voice.speaker") as? Bool ?? true
+    /// The call plays on the phone's own speaker or earpiece, where Speaker applies.
+    public private(set) var builtInOutput = true
+    #endif
     public private(set) var inputGain = 100
     public private(set) var voiceProcessingStrength = 25
     /// The call's input went away and none could be reopened: muted until an
@@ -908,6 +915,8 @@ public final class VoiceClient {
         availableOutputs = audio.currentRoute.outputs.map { AudioDevice(port: $0) }
         selectedInputID = audio.currentRoute.inputs.first?.uid
         selectedOutputID = audio.currentRoute.outputs.first?.uid
+        let outputs = audio.currentRoute.outputs.map(\.portType)
+        builtInOutput = outputs.allSatisfy { $0 == .builtInSpeaker || $0 == .builtInReceiver }
         #else
         availableInputs = CaperMacAudioDevice.inputRoutes().map { AudioDevice(id: $0.uid, name: $0.name) }
         availableOutputs = CaperMacAudioDevice.outputRoutes().map { AudioDevice(id: $0.uid, name: $0.name) }
@@ -1137,12 +1146,38 @@ public final class VoiceClient {
         let audio = RTCAudioSession.sharedInstance()
         audio.lockForConfiguration()
         defer { audio.unlockForConfiguration() }
-        try audio.setCategory(.playAndRecord, with: [.allowBluetooth, .defaultToSpeaker])
+        try audio.setCategory(.playAndRecord, with: speakerOutput ? [.allowBluetooth, .defaultToSpeaker] : [.allowBluetooth])
         try audio.setMode(.voiceChat)
         try AVAudioSession.sharedInstance().setPreferredSampleRate(48_000)
         try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(0.02)
         try audio.setActive(true)
+        applySpeakerRoute(audio)
         CallAudioSession.active = true
+    }
+
+    /// Speaker on: the loudspeaker, or the earpiece when off. Applies at once
+    /// to a call or microphone test in progress and to every later one.
+    public func setSpeakerOutput(_ on: Bool) {
+        speakerOutput = on
+        UserDefaults.standard.set(on, forKey: "caper.voice.speaker")
+        guard CallAudioSession.active else { return }
+        let audio = RTCAudioSession.sharedInstance()
+        audio.lockForConfiguration()
+        // A category change only reroutes; the route observer keeps the call's unit.
+        try? audio.setCategory(.playAndRecord, with: on ? [.allowBluetooth, .defaultToSpeaker] : [.allowBluetooth])
+        try? audio.setMode(.voiceChat)
+        applySpeakerRoute(audio)
+        audio.unlockForConfiguration()
+        Task { await refreshAudioDevices() }
+    }
+
+    /// `.defaultToSpeaker` normally picks the loudspeaker; this also moves a
+    /// call that iOS left on the earpiece, and clears the override when off.
+    /// The caller holds the session's configuration lock.
+    private func applySpeakerRoute(_ audio: RTCAudioSession) {
+        guard speakerOutput else { try? audio.overrideOutputAudioPort(.none); return }
+        let earpiece = AVAudioSession.sharedInstance().currentRoute.outputs.contains { $0.portType == .builtInReceiver }
+        if earpiece { try? audio.overrideOutputAudioPort(.speaker) }
     }
 
     private func deactivateAudioSession() {

@@ -235,6 +235,10 @@ private final class NativeVoiceCard: UIView {
     private let overflow = UIKitStyle.label(size: 11, weight: .bold)
     private lazy var mute = IconButton(icon: "mic", label: "Mute microphone", side: 44) { [model] in VoicePresentation.toggleMute(model.voice) }
     private lazy var deafen = IconButton(icon: "headphones", label: "Deafen audio", side: 44) { [model] in VoicePresentation.toggleDeafen(model.voice) }
+    /// Loudspeaker or earpiece, while the call plays on the phone itself.
+    private lazy var speaker = IconButton(icon: "volume-2", label: "Speaker", side: 44) { [model] in
+        CaperHaptics.tap(); model.voice.setSpeakerOutput(!model.voice.speakerOutput)
+    }
     private lazy var leave = CaperButton("Leave", kind: .compact, size: 12) { [model] in VoicePresentation.leave(model) }
     private lazy var join = CaperButton("Join", kind: .primary, size: 12) { [weak self] in
         guard let self, let channel else { return }; ChannelVoiceAction(model: model, channel: channel).join()
@@ -249,9 +253,9 @@ private final class NativeVoiceCard: UIView {
     init(model: AppModel, channelID: String, present: @escaping (UIViewController) -> Void, open: @escaping () -> Void) {
         self.model = model; self.channelID = channelID; self.present = present; self.open = open
         super.init(frame: .zero)
-        for view in [status, clock, overflow, mute, deafen, leave, join] { view.translatesAutoresizingMaskIntoConstraints = true; addSubview(view) }
+        for view in [status, clock, overflow, mute, deafen, speaker, leave, join] { view.translatesAutoresizingMaskIntoConstraints = true; addSubview(view) }
         status.accessibilityIdentifier = "voice-call-count"; clock.accessibilityLabel = "Voice session duration"; clock.textAlignment = .right
-        mute.accessibilityIdentifier = "voice-call-mute"; deafen.accessibilityIdentifier = "voice-call-deafen"; leave.accessibilityIdentifier = "voice-call-leave"
+        mute.accessibilityIdentifier = "voice-call-mute"; deafen.accessibilityIdentifier = "voice-call-deafen"; speaker.accessibilityIdentifier = "voice-call-loudspeaker"; leave.accessibilityIdentifier = "voice-call-leave"
         join.addAction(UIAction { [weak self] _ in if let self, let channel { model.prepareVoiceJoin(channel: channel) } }, for: .touchDown)
         let tap = UITapGestureRecognizer(target: self, action: #selector(opened)); tap.delegate = self; addGestureRecognizer(tap)
         render()
@@ -275,6 +279,10 @@ private final class NativeVoiceCard: UIView {
         status.textColor = pending != nil ? UIColor(VoicePresentation.connecting) : UIKitStyle.muted
         status.accessibilityIdentifier = pending != nil ? "voice-call-status" : "voice-call-count"
         mute.isHidden = !own; deafen.isHidden = !own; leave.isHidden = !own; join.isHidden = own || channel == nil
+        speaker.isHidden = !own || !model.voice.builtInOutput
+        let loud = model.voice.speakerOutput
+        speaker.setImage(UIKitStyle.icon(loud ? "volume-2" : "smartphone")?.resized(to: 18), for: .normal)
+        speaker.accessibilityValue = loud ? "On" : "Off, earpiece"; speaker.accessibilityTraits = loud ? [.button, .selected] : .button
         mute.setImage(UIKitStyle.icon(model.voice.muted ? "mic-off" : "mic")?.resized(to: 18), for: .normal)
         mute.accessibilityLabel = model.voice.muted ? "Unmute microphone" : "Mute microphone"; mute.accessibilityValue = model.voice.muted ? "Muted" : "On"
         deafen.setImage(UIKitStyle.icon(model.voice.deafened ? "headphone-off" : "headphones")?.resized(to: 18), for: .normal)
@@ -328,7 +336,8 @@ private final class NativeVoiceCard: UIView {
         overflow.frame = CGRect(x: 8 + CGFloat(order.count) * 26, y: 34, width: 40, height: 20)
         mute.frame = CGRect(x: 8, y: bounds.height - 52, width: 44, height: 44)
         deafen.frame = CGRect(x: 54, y: bounds.height - 52, width: 44, height: 44)
-        leave.frame = CGRect(x: max(100, bounds.width - 90), y: bounds.height - 52, width: 78, height: 44)
+        speaker.frame = CGRect(x: 100, y: bounds.height - 52, width: 44, height: 44)
+        leave.frame = CGRect(x: max(146, bounds.width - 90), y: bounds.height - 52, width: 78, height: 44)
         join.frame = CGRect(x: max(90, bounds.width - 88), y: 28, width: 76, height: 44)
         let height = intrinsicContentSize.height
         if height != lastHeight { lastHeight = height; invalidateIntrinsicContentSize() }

@@ -15,7 +15,9 @@ import UIKit
         config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { value in
             var value = value; value.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Figtree-Regular", size: 12) ?? .systemFont(ofSize: 12)); return value
         }
-        configuration = config; contentHorizontalAlignment = .fill
+        // Radio and text sit together at the leading edge; the radio alone marks the choice.
+        config.background.backgroundColor = .clear
+        configuration = config; contentHorizontalAlignment = .leading
         titleLabel?.numberOfLines = 0
         heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         addAction(UIAction { _ in action() }, for: .primaryActionTriggered)

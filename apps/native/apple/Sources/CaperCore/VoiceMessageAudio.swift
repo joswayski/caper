@@ -856,9 +856,10 @@ final class VoiceMessagePlayer {
     private func beginSession() {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        // A call (or recording) keeps its own session; otherwise play like media.
-        guard session.category != .playAndRecord, session.category != .record else { return }
-        if session.category != .playback { try? session.setCategory(.playback) }
+        // A call (or recording) keeps its own session; otherwise play like media,
+        // loud on the speaker, even where a finished call left play-and-record.
+        guard !CallAudioSession.active, VoiceMessageRecorder.shared.phase == .idle, session.category != .record else { return }
+        if session.category != .playback || session.mode != .default { try? session.setCategory(.playback, mode: .default) }
         try? session.setActive(true)
         ownsSession = true
         #endif
