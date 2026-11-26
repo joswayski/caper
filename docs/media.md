@@ -1441,7 +1441,8 @@ starting at the one clicked: arrows, Left/Right or a swipe move between them (no
 wrap) with an \"n / m\" counter. Images show the preview until the original loads,
 zoom with double-click/tap, pinch or Ctrl+scroll, and pan while zoomed; animated
 GIF/WebP play. Videos autoplay with sound and pause when you move away or close;
-`animated` videos loop muted. Each viewer has Save/Download, **Copy media link**,
+`animated` videos loop muted. Inline videos on web and Windows also offer **Copy
+link** over the picture beside Open in viewer. Each viewer has Save/Download, **Copy media link**,
 Open in browser and Close (Esc, the dark area, or a swipe down on phones). The header shows the stored
 `size`; narrow screens truncate the author and time first. The client-reported
 pre-compression size (`assets.source_byte_size`) stays internal. URLs come from

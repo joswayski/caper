@@ -388,6 +388,8 @@ pub struct Playback {
     proxy: Option<MediaProxy>,
     pub video: Option<crate::video::Inline>,
     pub video_focus: Option<(crate::video::Target, crate::video::Part)>,
+    /// The video whose link was just copied (its attachment ID).
+    pub video_copied: Option<String>,
     /// A drag across a waveform: its row, attachment and how far.
     pub scrub: Option<(usize, usize, f32)>,
 }

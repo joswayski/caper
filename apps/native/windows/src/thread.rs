@@ -2469,6 +2469,7 @@ impl App {
         let (bx, by, bw, bh) = self.thread_box_rect().unwrap_or_default();
         let video = self.inline_video_view();
         let video_focus = self.video_focus_view();
+        let video_copied = self.playback.video_copied.clone();
         let width = self.thread_w();
         let narrow = self.is_narrow();
         let g = &self.g;
@@ -2482,6 +2483,7 @@ impl App {
                 voice: self.playback.view(),
                 video,
                 video_focus,
+                video_copied,
                 ..crate::files::Ctx::new(&mut l.media, &mut tex)
             });
             self.thread_p.draw(s, |dc| {

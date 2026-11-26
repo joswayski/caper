@@ -1215,7 +1215,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Forward(..) => UIA_ButtonControlTypeId,
         Id::Edited(_) | Id::File(..) | Id::Spoiler(..) | Id::BoxPart(_) => UIA_ButtonControlTypeId,
         Id::Video(c) => match c.part {
-            crate::video::Part::Seek => UIA_SliderControlTypeId,
+            crate::video::Part::Seek | crate::video::Part::Volume => UIA_SliderControlTypeId,
             crate::video::Part::Time => UIA_TextControlTypeId,
             _ => UIA_ButtonControlTypeId,
         },
@@ -1815,7 +1815,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Settings(p) if p.is_toggle() => pattern == UIA_TogglePatternId,
             Id::Settings(p) if p.is_slider() => pattern == UIA_RangeValuePatternId,
             Id::Video(c) => match c.part {
-                crate::video::Part::Seek => pattern == UIA_RangeValuePatternId,
+                crate::video::Part::Seek | crate::video::Part::Volume => {
+                    pattern == UIA_RangeValuePatternId
+                }
                 crate::video::Part::Time => false,
                 _ => pattern == UIA_InvokePatternId,
             },
@@ -2692,7 +2694,7 @@ impl IRangeValueProvider_Impl for Node_Impl {
             match id {
                 Id::Resize(p) => a.set_pane_width(p, val as f32, true),
                 Id::Settings(p) => a.set_gauge(p, val.round() as u16, true),
-                Id::Video(c) => a.video_seek(c, val as f32 / 1000.0),
+                Id::Video(c) => a.video_seek(c, (val / max.max(1.0)) as f32),
                 Id::Voice(crate::call::VPart::Volume) => a.set_call_volume(val.round() as u16),
                 _ => {}
             }

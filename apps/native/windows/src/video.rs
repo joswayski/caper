@@ -22,6 +22,18 @@ use windows::{
 };
 
 pub const TIMER_VIDEO: usize = 46;
+/// Clears Copy link's check.
+pub const TIMER_VIDEO_COPIED: usize = 54;
+
+/// The control bar under the picture.
+pub const BAR: f32 = 44.0;
+/// Room for "12:34 / 56:78" in `file_detail`.
+const TIME_W: f32 = 84.0;
+const VOLUME_W: f32 = 64.0;
+/// How long Copy link shows a check after copying, in ms.
+const COPIED_MS: u32 = 1500;
+/// The bar always sits on a dark scrim, so its ink is light in every theme.
+pub const INK: u32 = 0xF4F4F6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Part {
@@ -30,7 +42,21 @@ pub enum Part {
     Mute,
     Expand,
     Time,
+    Volume,
+    /// Copies the video's link (the signed CDN URL).
+    Link,
 }
+
+/// Keyboard and screen reader order: the overlay buttons, then the bar.
+const ORDER: [Part; 7] = [
+    Part::Expand,
+    Part::Link,
+    Part::Play,
+    Part::Time,
+    Part::Seek,
+    Part::Mute,
+    Part::Volume,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Control {
@@ -54,6 +80,8 @@ pub struct Inline {
     pub attachment: Attachment,
     pub video: Video,
     pub scrub: Option<f32>,
+    /// The volume slider is being dragged.
+    pub volume_drag: bool,
     /// Pausing a pending probe must not start sound when the probe returns.
     pub outside: bool,
 }
@@ -65,6 +93,7 @@ pub struct View {
     pub playing: bool,
     pub ready: bool,
     pub muted: bool,
+    pub volume: f32,
     pub position: u64,
     pub duration: u64,
     pub scrub: Option<f32>,
@@ -75,21 +104,35 @@ pub fn playable(a: &Attachment) -> bool {
     a.kind == AttachmentKind::Video && files::clickable(a)
 }
 
+/// One row under the picture, centred on one line, as on Linux: Play, the
+/// time, the seek bar, Mute and the volume. Narrow tiles drop the volume,
+/// then the time, so the seek bar keeps its room. Open in viewer and Copy
+/// link sit over the picture's top-left (a spoiler's Hide takes the right).
 pub fn controls(r: crate::overlay::Rect) -> Vec<(Part, crate::overlay::Rect)> {
     let (x, y, w, h) = r;
-    vec![
-        (Part::Play, (x + 4.0, y + h - 40.0, 28.0, 28.0)),
-        (
-            Part::Seek,
-            (x + 40.0, y + h - 44.0, (w - 80.0).max(1.0), 18.0),
-        ),
-        (Part::Mute, (x + w - 32.0, y + h - 40.0, 28.0, 28.0)),
-        (Part::Expand, (x + 4.0, y + 4.0, 28.0, 28.0)),
-        (
-            Part::Time,
-            (x + 40.0, y + h - 24.0, (w - 80.0).max(1.0), 18.0),
-        ),
-    ]
+    let cy = y + h - BAR / 2.0;
+    let button = |left: f32| (left, cy - 14.0, 28.0, 28.0);
+    let line = |left: f32, width: f32| (left, cy - 9.0, width.max(1.0), 18.0);
+    let mut out = vec![
+        (Part::Expand, (x + 6.0, y + 6.0, 28.0, 28.0)),
+        (Part::Link, (x + 38.0, y + 6.0, 28.0, 28.0)),
+        (Part::Play, button(x + 6.0)),
+    ];
+    let mut left = x + 6.0 + 28.0 + 8.0;
+    if w >= 220.0 {
+        out.push((Part::Time, line(left, TIME_W)));
+        left += TIME_W + 4.0;
+    }
+    let mut right = x + w - 8.0;
+    let volume = (w >= 300.0).then(|| {
+        right -= VOLUME_W;
+        (Part::Volume, line(right, VOLUME_W))
+    });
+    right -= if volume.is_some() { 30.0 } else { 28.0 };
+    out.push((Part::Seek, line(left, right - 10.0 - left)));
+    out.push((Part::Mute, button(right)));
+    out.extend(volume);
+    out
 }
 
 fn contains(r: crate::overlay::Rect, x: f32, y: f32) -> bool {
@@ -102,15 +145,19 @@ pub fn draw(
     a: &Attachment,
     view: Option<&View>,
     focus: Option<Part>,
+    copied: bool,
     r: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F,
 ) -> Result<()> {
     let v = view.filter(|v| v.id == a.id);
+    let error = v.and_then(|v| v.error.as_deref());
     let bounds = (r.left, r.top, r.right - r.left, r.bottom - r.top);
+    // The bar's own room: the picture fits above it and never under it.
+    let bar = rect(r.left, (r.bottom - BAR).max(r.top), r.right, r.bottom);
     if let Some(frame) = v.and_then(|v| v.frame.as_ref()) {
-        // Fit, rather than crop, so the controls never conceal the picture.
-        let stage = rect(r.left, r.top, r.right, (r.bottom - 48.0).max(r.top + 1.0));
+        let stage = rect(r.left, r.top, r.right, bar.top.max(r.top + 1.0));
         unsafe {
-            dc.FillRectangle(&r, &g.brushes.blackout);
+            // Letterboxing is black in every theme, like any video player.
+            dc.FillRectangle(&r, &files::alpha(dc, 0x000000, 1.0)?);
             let size = frame.GetPixelSize();
             let scale = ((stage.right - stage.left) / size.width as f32)
                 .min((stage.bottom - stage.top) / size.height as f32);
@@ -130,64 +177,62 @@ pub fn draw(
         }
     }
     let shade = files::alpha(dc, 0x090A0C, 0.88)?;
-    gfx::fill_round(
-        dc,
-        rect(r.left, r.bottom - 48.0, r.right, r.bottom),
-        0.0,
-        &shade,
-    );
+    let track = files::alpha(dc, INK, 0.28)?;
+    let ink = files::alpha(dc, INK, 1.0)?;
+    unsafe { dc.FillRectangle(&bar, &shade) };
     for (part, (x, y, w, h)) in controls(bounds) {
         let rr = rect(x, y, x + w, y + h);
         match part {
-            Part::Play | Part::Mute | Part::Expand => {
-                if part == Part::Expand {
-                    gfx::fill_round(dc, rr, 6.0, &shade);
+            Part::Play | Part::Mute | Part::Expand | Part::Link => {
+                if matches!(part, Part::Expand | Part::Link) {
+                    gfx::fill_round(dc, rr, 8.0, &shade);
                 }
                 let icon = match part {
                     Part::Play if v.is_some_and(|v| v.playing) => Icon::Pause,
                     Part::Play => Icon::Play,
-                    Part::Mute if v.is_some_and(|v| v.muted) => Icon::VolumeX,
+                    Part::Mute if v.is_some_and(|v| v.muted || v.volume == 0.0) => Icon::VolumeX,
                     Part::Mute => Icon::Volume,
-                    _ => Icon::ExternalLink,
+                    Part::Link if copied => Icon::Check,
+                    Part::Link => Icon::Link,
+                    _ => Icon::Maximize,
                 };
                 icons::draw(
                     dc,
                     icon,
                     rect(x + 6.0, y + 6.0, x + w - 6.0, y + h - 6.0),
-                    0xFFFFFF,
+                    INK,
                     1.0,
                 );
             }
-            Part::Seek => {
-                let fraction = v
-                    .map_or(0.0, |v| {
+            // An error takes the seek bar's room.
+            Part::Seek if error.is_some() => {}
+            Part::Seek | Part::Volume => {
+                let fraction = if part == Part::Volume {
+                    v.map_or(1.0, |v| if v.muted { 0.0 } else { v.volume })
+                } else {
+                    v.map_or(0.0, |v| {
                         v.scrub.unwrap_or(if v.duration > 0 {
                             v.position as f32 / v.duration as f32
                         } else {
                             0.0
                         })
                     })
-                    .clamp(0.0, 1.0);
-                gfx::fill_round(
-                    dc,
-                    rect(x, y + 7.0, x + w, y + 11.0),
-                    2.0,
-                    &g.brushes.border,
-                );
-                if fraction > 0.0 {
-                    gfx::fill_round(
-                        dc,
-                        rect(x, y + 7.0, x + w * fraction, y + 11.0),
-                        2.0,
-                        &g.brushes.text,
-                    );
                 }
+                .clamp(0.0, 1.0);
+                let cy = y + h / 2.0;
+                gfx::fill_round(dc, rect(x, cy - 2.0, x + w, cy + 2.0), 2.0, &track);
+                let at = x + w * fraction;
+                if fraction > 0.0 {
+                    gfx::fill_round(dc, rect(x, cy - 2.0, at, cy + 2.0), 2.0, &ink);
+                }
+                // The thumb shows where a drag picks up.
+                gfx::fill_round(dc, rect(at - 5.0, cy - 5.0, at + 5.0, cy + 5.0), 5.0, &ink);
             }
             Part::Time => {
-                let text = if let Some(error) = v.and_then(|v| v.error.as_deref()) {
+                let text = if let Some(error) = error {
                     error.to_owned()
                 } else if v.is_some_and(|v| !v.ready) {
-                    "Loading…".into()
+                    "Loading\u{2026}".into()
                 } else {
                     format!(
                         "{} / {}",
@@ -197,12 +242,22 @@ pub fn draw(
                         )
                     )
                 };
-                let l = g.layout(&gfx::wide(&text), &g.formats.file_detail, w)?;
-                crate::text::draw(dc, &l, x, y, &g.brushes.text);
+                // An error runs up to Mute, over the seek bar's room.
+                let room = match error {
+                    Some(_) => controls(bounds)
+                        .iter()
+                        .find(|(p, _)| *p == Part::Mute)
+                        .map_or(w, |(_, m)| (m.0 - 8.0 - x).max(w)),
+                    None => w,
+                };
+                let l = g.layout(&gfx::wide(&text), &g.formats.file_detail, room)?;
+                // Centred on the bar's line, like its buttons.
+                let th = gfx::metrics(&l).height;
+                crate::text::draw(dc, &l, x, y + (h - th) / 2.0, &ink);
             }
         }
         if focus == Some(part) {
-            gfx::stroke_round(dc, rr, 4.0, &g.brushes.terracotta);
+            gfx::stroke_round(dc, rr, 6.0, &g.brushes.terracotta);
         }
     }
     Ok(())
@@ -327,7 +382,7 @@ impl App {
                 m.attachments.len()
             };
             for file in 0..n {
-                for part in [Part::Play, Part::Seek, Part::Mute, Part::Expand, Part::Time] {
+                for part in ORDER {
                     let c = Control {
                         thread,
                         forward,
@@ -396,6 +451,7 @@ impl App {
             playing: player.is_some_and(|p| matches!(p.state(), State::Playing | State::Loading)),
             ready: player.is_some(),
             muted: player.is_some_and(|p| p.muted()),
+            volume: player.map_or(1.0, |p| p.volume()),
             position: player.map_or(0, |p| p.position_ms()),
             duration: player
                 .and_then(|p| p.duration_ms())
@@ -425,7 +481,9 @@ impl App {
                 },
                 a.name
             ),
-            Part::Mute => if v.is_some_and(|v| v.muted) {
+            Part::Link => "Copy video link".into(),
+            Part::Volume => "Volume".into(),
+            Part::Mute => if v.is_some_and(|v| v.muted || v.volume == 0.0) {
                 "Unmute video"
             } else {
                 "Mute video"
@@ -451,7 +509,8 @@ impl App {
     pub fn video_enabled(&self, c: Control) -> bool {
         self.video_attachment(c).is_some_and(|a| match c.part {
             Part::Time => false,
-            Part::Seek | Part::Mute => self.inline_video_view().is_some_and(|v| {
+            Part::Link => a.url.is_some(),
+            Part::Seek | Part::Mute | Part::Volume => self.inline_video_view().is_some_and(|v| {
                 v.id == a.id && v.ready && (c.part != Part::Seek || v.duration > 0)
             }),
             _ => true,
@@ -461,6 +520,12 @@ impl App {
     pub fn video_gauge(&self, c: Control) -> Option<(u16, u16, u16)> {
         let a = self.video_attachment(c)?;
         let v = self.inline_video_view().filter(|v| v.id == a.id)?;
+        if c.part == Part::Volume {
+            let volume = if v.muted { 0.0 } else { v.volume };
+            return v
+                .ready
+                .then_some(((volume * 100.0).round() as u16, 100, 10));
+        }
         (c.part == Part::Seek && v.ready && v.duration > 0).then(|| {
             (
                 (v.position.saturating_mul(1000) / v.duration).min(1000) as u16,
@@ -475,6 +540,15 @@ impl App {
         self.dirty.thread = true;
         self.events |= EV_ROWS;
         self.need = true;
+    }
+
+    pub fn video_copied_tick(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_VIDEO_COPIED);
+        }
+        if self.playback.video_copied.take().is_some() {
+            self.video_redraw();
+        }
     }
 
     pub fn stop_inline_video(&mut self) {
@@ -539,6 +613,19 @@ impl App {
             self.open_viewer(items, index);
             return;
         }
+        if c.part == Part::Link {
+            // The signed CDN link the app already holds, as the viewer's
+            // Copy media link; it expires with its signature.
+            if let Some(url) = self.live.as_ref().and_then(|l| l.media.resolve(&a).url) {
+                crate::set_clipboard(self.hwnd, &gfx::wide(&url));
+                self.playback.video_copied = Some(a.id.clone());
+                unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_VIDEO_COPIED, COPIED_MS, None);
+                }
+            }
+            self.focus_video(c);
+            return;
+        }
         if c.part == Part::Play {
             let target = self.video_target(c).unwrap();
             if let Some(v) = &mut self.playback.video
@@ -563,6 +650,7 @@ impl App {
                     attachment: current,
                     video,
                     scrub: None,
+                    volume_drag: false,
                     outside: false,
                 });
             }
@@ -571,7 +659,15 @@ impl App {
             && v.attachment.id == a.id
             && let VideoState::Ready(p) = &mut v.video.state
         {
-            p.toggle_mute();
+            // Unmuting a slider dragged to nothing brings the sound back.
+            if p.volume() == 0.0 {
+                p.set_volume(1.0);
+                if p.muted() {
+                    p.toggle_mute();
+                }
+            } else {
+                p.toggle_mute();
+            }
         }
         self.focus_video(c);
         self.inline_video_tick();
@@ -581,7 +677,18 @@ impl App {
         let Some(target) = self.video_target(c) else {
             return;
         };
-        if let Some(v) = &mut self.playback.video
+        if c.part == Part::Volume {
+            if let Some(v) = &mut self.playback.video
+                && v.target == target
+                && let VideoState::Ready(p) = &mut v.video.state
+            {
+                p.set_volume(fraction);
+                // Turning it up unmutes, as on Linux and the web.
+                if p.muted() && fraction > 0.0 {
+                    p.toggle_mute();
+                }
+            }
+        } else if let Some(v) = &mut self.playback.video
             && v.target == target
             && let VideoState::Ready(p) = &mut v.video.state
             && let Some(duration) = p.duration_ms()
@@ -712,6 +819,7 @@ impl App {
             && let Some(v) = &mut self.playback.video
         {
             v.scrub = None;
+            v.volume_drag = false;
         }
         if matches!(
             msg,
@@ -748,7 +856,16 @@ impl App {
                     });
             }
             if let Some(c) = hit {
-                if c.part == Part::Seek && self.video_enabled(c) {
+                if c.part == Part::Volume && self.video_enabled(c) {
+                    self.focus_video(c);
+                    if let Some(v) = &mut self.playback.video {
+                        v.volume_drag = true;
+                    }
+                    unsafe {
+                        SetCapture(self.hwnd);
+                    }
+                    self.video_scrub(c, x, false);
+                } else if c.part == Part::Seek && self.video_enabled(c) {
                     self.focus_video(c);
                     if let Some(v) = &mut self.playback.video {
                         v.scrub = Some(0.0);
@@ -768,11 +885,14 @@ impl App {
                 .playback
                 .video
                 .as_ref()
-                .is_some_and(|v| v.scrub.is_some())
+                .is_some_and(|v| v.scrub.is_some() || v.volume_drag)
             && let Some(c) = focused
         {
             self.video_scrub(c, x, msg == WM_LBUTTONUP);
             if msg == WM_LBUTTONUP {
+                if let Some(v) = &mut self.playback.video {
+                    v.volume_drag = false;
+                }
                 unsafe {
                     let _ = ReleaseCapture();
                 }
@@ -816,13 +936,17 @@ impl App {
             } else if let Some(c) = focused {
                 match key {
                     VK_RETURN | VK_SPACE => self.video_activate(c),
-                    VK_LEFT | VK_RIGHT | VK_HOME | VK_END if c.part == Part::Seek => {
-                        if let Some((value, _, _)) = self.video_gauge(c) {
+                    VK_LEFT | VK_RIGHT | VK_HOME | VK_END
+                        if matches!(c.part, Part::Seek | Part::Volume) =>
+                    {
+                        if let Some((value, max, _)) = self.video_gauge(c) {
+                            let at = f32::from(value) / f32::from(max);
+                            let step = if c.part == Part::Volume { 0.1 } else { 0.05 };
                             let fraction = match key {
                                 VK_HOME => 0.0,
                                 VK_END => 1.0,
-                                VK_LEFT => value as f32 / 1000.0 - 0.05,
-                                _ => value as f32 / 1000.0 + 0.05,
+                                VK_LEFT => at - step,
+                                _ => at + step,
                             };
                             self.video_seek(c, fraction);
                         }
@@ -847,16 +971,60 @@ impl App {
     fn video_scrub(&mut self, c: Control, x: f32, done: bool) {
         let Some((_, r)) = self
             .video_tile_rect(c)
-            .and_then(|r| controls(r).into_iter().find(|(p, _)| *p == Part::Seek))
+            .and_then(|r| controls(r).into_iter().find(|(p, _)| *p == c.part))
         else {
             return;
         };
         let fraction = ((x - r.0) / r.2).clamp(0.0, 1.0);
-        if done {
+        // Volume follows the pointer; a seek waits for the release.
+        if done || c.part == Part::Volume {
             self.video_seek(c, fraction);
         } else if let Some(v) = &mut self.playback.video {
             v.scrub = Some(fraction);
             self.video_redraw();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bar_is_one_line_that_fits_and_never_overlaps() {
+        for (width, time, volume) in [
+            (180.0, false, false),
+            (260.0, true, false),
+            (400.0, true, true),
+        ] {
+            let tile = (10.0, 20.0, width, 300.0);
+            let parts = controls(tile);
+            let bar: Vec<_> = parts
+                .iter()
+                .filter(|(_, r)| r.1 > 20.0 + 300.0 - BAR)
+                .collect();
+            assert_eq!(bar.iter().any(|(p, _)| *p == Part::Time), time, "{width}");
+            assert_eq!(
+                bar.iter().any(|(p, _)| *p == Part::Volume),
+                volume,
+                "{width}"
+            );
+            for (_, r) in &bar {
+                // Inside the tile, centred on the bar's line.
+                assert!(
+                    r.0 >= tile.0 && r.0 + r.2 <= tile.0 + width,
+                    "{width}: {r:?}"
+                );
+                assert!((r.1 + r.3 / 2.0 - (20.0 + 300.0 - BAR / 2.0)).abs() < 0.01);
+            }
+            let mut spans: Vec<_> = bar.iter().map(|(_, r)| (r.0, r.0 + r.2)).collect();
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            assert!(
+                spans.windows(2).all(|w| w[0].1 <= w[1].0),
+                "{width}: {spans:?}"
+            );
+            let seek = bar.iter().find(|(p, _)| *p == Part::Seek).unwrap().1;
+            assert!(seek.2 >= 60.0, "{width}: the seek bar keeps room");
         }
     }
 }

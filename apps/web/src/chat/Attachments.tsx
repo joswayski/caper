@@ -23,7 +23,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { EyeOff, FileText, FileWarning, Maximize2, Pencil, Play, RotateCw, X } from "lucide-react";
+import { Check, EyeOff, FileText, FileWarning, Link, Maximize2, Pencil, Play, RotateCw, X } from "lucide-react";
 import GifImage from "./GifImage.tsx";
 import MediaViewer, { type ViewAttachment, type ViewerEditing } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
@@ -212,6 +212,33 @@ function ExpandButton({ name, onClick }: { name: string; onClick: (anchor: HTMLE
       onClick={(event) => onClick(event.currentTarget)}
     >
       <Maximize2 size={16} aria-hidden="true" />
+    </button>
+  );
+}
+
+/** Copies a video's link: the signed CDN address, which expires with its
+ * signature, as the viewer's Copy media link. */
+function CopyLinkButton({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <button
+      type="button"
+      className="chat-media-expand chat-media-link"
+      aria-label={copied ? "Video link copied" : "Copy video link"}
+      title={copied ? "Copied" : "Copy link"}
+      onClick={() =>
+        void navigator.clipboard.writeText(url).then(
+          () => setCopied(true),
+          () => undefined,
+        )
+      }
+    >
+      {copied ? <Check size={16} aria-hidden="true" /> : <Link size={16} aria-hidden="true" />}
     </button>
   );
 }
@@ -434,6 +461,7 @@ export function MessageAttachments({
             aria-label={attachment.name}
             onError={() => expired(attachment)}
           />
+          {attachment.url && <CopyLinkButton url={attachment.url} />}
           {onView && (
             <ExpandButton
               name={attachment.name}

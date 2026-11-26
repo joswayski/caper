@@ -1098,7 +1098,13 @@ fn place(row: &mut Row, m: &crate::model::Message) {
             .widthIncludingTrailingWhitespace
             .min(room);
     }
-    let mut text_h = gfx::metrics(&row.text).height;
+    // A message that is only files starts them right under the author, as on
+    // web, rather than under an empty line (an edit marker still needs it).
+    let mut text_h = if row.plain16.is_empty() && row.edited.is_none() {
+        0.0
+    } else {
+        gfx::metrics(&row.text).height
+    };
     if let Some((_, w, x, y)) = &mut row.edited {
         // After the text's last character, as egui places it; on its own
         // line when the last line is full.

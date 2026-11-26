@@ -2826,6 +2826,7 @@ impl App {
                 jump::TIMER_JUMP => self.jump_tick(),
                 history::TIMER_FOCUS => self.focus_tick(),
                 video::TIMER_VIDEO => self.inline_video_tick(),
+                video::TIMER_VIDEO_COPIED => self.video_copied_tick(),
                 thread::TIMER_MEDIA => self.thread_media_tick(),
                 pins::TIMER_PINS => self.pins_tick(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
@@ -4153,6 +4154,7 @@ impl App {
         let voice = self.voice_message_view();
         let video = self.inline_video_view();
         let video_focus = self.video_focus_view();
+        let video_copied = self.playback.video_copied.clone();
         let web_player = self.web_player_spot();
         let (g, c, rows) = (&self.g, &self.c, &mut self.rows);
         let mut tex = files::D2d(g.dc.clone());
@@ -4160,6 +4162,7 @@ impl App {
             voice,
             video,
             video_focus,
+            video_copied: video_copied.clone(),
             web_player,
             ..files::Ctx::new(&mut l.media, &mut tex)
         });

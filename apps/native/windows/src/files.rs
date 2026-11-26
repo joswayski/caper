@@ -346,6 +346,8 @@ pub struct Ctx<'a> {
     pub voice: Option<crate::playback::View>,
     pub video: Option<crate::video::View>,
     pub video_focus: Option<(String, crate::video::Part)>,
+    /// The video whose link was just copied: its Copy link shows a check.
+    pub video_copied: Option<String>,
     /// The link preview player that is playing: its row, card and picture.
     pub web_player: Option<(usize, usize, usize)>,
 }
@@ -365,6 +367,7 @@ impl<'a> Ctx<'a> {
             voice: None,
             video: None,
             video_focus: None,
+            video_copied: None,
             web_player: None,
         }
     }
@@ -620,6 +623,9 @@ fn tile(
         .as_deref()
         .and_then(|c| c.video_focus.as_ref())
         .and_then(|(id, p)| (id == &a.id).then_some(*p));
+    let copied = ctx
+        .as_deref()
+        .is_some_and(|c| c.video_copied.as_deref() == Some(a.id.as_str()));
     if !removed
         && !failed
         && let Some(c) = ctx
@@ -676,7 +682,14 @@ fn tile(
             fill_round(dc, b, 6.0, &alpha(dc, 0, 190.0 / 255.0)?);
             centered(g, dc, "GIF", b, &g.brushes.text)?;
         } else {
-            let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+            // Centred on the picture, above the player's control bar; light
+            // ink on the dark disc in every theme.
+            let cy = if crate::video::playable(a) {
+                (r.top + r.bottom - crate::video::BAR) / 2.0
+            } else {
+                (r.top + r.bottom) / 2.0
+            };
+            let cx = (r.left + r.right) / 2.0;
             unsafe {
                 dc.FillEllipse(
                     &D2D1_ELLIPSE {
@@ -691,7 +704,7 @@ fn tile(
                 dc,
                 Icon::Play,
                 rect(cx - 8.5, cy - 10.0, cx + 11.5, cy + 10.0),
-                crate::theme::text(),
+                crate::video::INK,
                 1.0,
             );
         }
@@ -718,7 +731,7 @@ fn tile(
                 None,
             );
         }
-        let result = crate::video::draw(g, dc, a, playing.as_ref(), video_focus, r);
+        let result = crate::video::draw(g, dc, a, playing.as_ref(), video_focus, copied, r);
         unsafe {
             dc.PopLayer();
         }
