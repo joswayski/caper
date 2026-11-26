@@ -981,7 +981,7 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(sent[1]?["maxUses"] as? Int, 5)
 
         // A malformed code never reaches the server and reads as a dead link.
-        do { _ = try await api.invitePreview(code: "short"); XCTFail("Expected a rejected code") }
+        do { _ = try await api.invitePreview(code: "ab"); XCTFail("Expected a rejected code") }
         catch let error as APIError { XCTAssertEqual(error.status, 404) }
         XCTAssertEqual(requests.count, 6)
     }

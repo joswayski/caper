@@ -31,8 +31,8 @@ final class InviteLinksTests: XCTestCase {
             "https://staging.example.test/invite/\(code)",
             "https://www.caper.chat/invite/\(code)",
             "https://caper.chat/invites/\(code)",
-            "https://caper.chat/invite/aB3dE5gH9",
-            "caper://invite/aB3dE5gH9",
+            "https://caper.chat/invite/ab",                     // shorter than any vanity name
+            "caper://invite/atlas_os",
             "caper://settings",
             "mailto:someone@caper.chat",
             "/invite/\(code)",
