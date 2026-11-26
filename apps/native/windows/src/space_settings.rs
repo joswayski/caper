@@ -712,7 +712,7 @@ impl Dialog {
         let Some(ip) = self.inviting.as_deref() else {
             return Ok(y);
         };
-        let mut text = |parts: &mut Vec<(Part, Rect)>, k: u8, format, y: f32| -> Result<f32> {
+        let text = |parts: &mut Vec<(Part, Rect)>, k: u8, format, y: f32| -> Result<f32> {
             let h = height(&layout(g, &self.vanity_text(k), format, inner)?);
             parts.push((Part::VanityText(k), (0.0, y, inner, h)));
             Ok(h)
