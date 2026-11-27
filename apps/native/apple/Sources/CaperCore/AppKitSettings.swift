@@ -612,7 +612,8 @@ import ServiceManagement
         pauseStatus.stringValue = "\(DoNotDisturbLabels.title): \(DoNotDisturbLabels.status(model.doNotDisturb))"
         audioTest.isEnabled = model.voice.phase != .leaving
         connection.isHidden = model.voice.phase != .connected
-        diagnostics.isHidden = account?.debugEnabled != true
+        // In a call; the Audio test has its own, while it captures.
+        diagnostics.isHidden = account?.debugEnabled != true || model.voice.phase != .connected
 
         let c = controls
         status.stringValue = c.isChecking ? "Checking for updates…" : c.review != nil ? "An update is available."

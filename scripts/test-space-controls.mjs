@@ -423,7 +423,7 @@ function testModalKeyboard() {
     browser("press", "Escape");
     assert.equal(evaluate('!!document.querySelector(".profile-dialog[open]")'), false);
     browser("click", '[aria-label="User Settings"]');
-    browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
+    browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
     wait('!!document.querySelector(".audio-dialog[open]")');
     browser("press", "Escape");
     assert.equal(evaluate('!!document.querySelector(".audio-dialog[open]")'), false);
@@ -592,7 +592,7 @@ function testModalGeometry() {
     browser("click", '[aria-label="User Settings"]');
     wait('!!document.querySelector(".settings-dialog[open]")');
     testSettingRows(width, height);
-    browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
+    browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
     wait('!!document.querySelector(".audio-dialog[open]")');
     screenshot(`modal-audio-${width}-${height}`);
     stableShell(".audio-dialog[open]");
@@ -1029,21 +1029,21 @@ try {
       browser("open", `${url}?space=space1234567&channel=channel12345${enabled ? "&debug" : ""}`);
       wait('!!document.querySelector(".account-avatar")');
       browser("click", '[aria-label="User Settings"]');
+      // Diagnostics live inside the Audio test, where the microphone runs.
       assert.equal(
         evaluate('[...document.querySelectorAll("button")].some(b => b.textContent === "Audio diagnostics")'),
-        enabled,
+        false,
       );
+      browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
+      wait('!!document.querySelector(".audio-dialog[open]")');
+      assert.equal(evaluate('!!document.querySelector(".audio-dialog[open] details > summary")'), enabled);
       if (enabled) {
-        browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
-        wait('!!document.querySelector(".audio-debug")');
-        assert.match(evaluate('document.querySelector(".audio-debug").textContent'), /No microphone capture started/);
-        assert.equal(
-          evaluate('JSON.parse(document.querySelector(".audio-debug pre").textContent).captureAttempt'),
-          "not-started",
-        );
+        browser("click", ".audio-dialog[open] details > summary");
+        wait('!!document.querySelector(".audio-debug pre")');
+        assert.ok(JSON.parse(evaluate('document.querySelector(".audio-debug pre").textContent')));
       }
     }
-    console.log("PASS: debug-enabled account sees diagnostics; other accounts do not; unused capture is explicit.");
+    console.log("PASS: debug-enabled account sees diagnostics in the Audio test; other accounts do not.");
     // The public General demo and guests were retired (#223): footer status
     // now always comes from account presence (checked above).
     const accountUrl = `${url}?space=space1234567&channel=channel12345`;

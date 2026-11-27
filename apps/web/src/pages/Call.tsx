@@ -572,7 +572,7 @@ export default function Call({
   const [chatAuthor, setChatAuthor] = useState<ChatAuthor>();
   const [identityReady, setIdentityReady] = useState(!!initialAccount);
   const [availability, setAvailability] = useState<Record<string, boolean>>({});
-  const [audioPanel, setAudioPanel] = useState<"mic" | "connection" | "debug">();
+  const [audioPanel, setAudioPanel] = useState<"mic" | "connection">();
   const [audioMenu, setAudioMenu] = useState<"input" | "output" | "account">();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsDialog = useRef<HTMLDialogElement>(null);
@@ -2175,7 +2175,7 @@ export default function Call({
             )}
             <div className="call-account">
               {account ? (
-                // Your name opens Do Not Disturb and Edit profile; Settings has the rest.
+                // Your name opens Edit profile and Do Not Disturb; Settings has the rest.
                 <AudioMenu
                   label={`Account menu for ${identityName}`}
                   tooltip={doNotDisturb.on ? `Do Not Disturb · ${doNotDisturb.until}` : undefined}
@@ -2212,7 +2212,6 @@ export default function Call({
                   onOpenChange={(open) => setAudioMenu(open ? "account" : undefined)}
                   menuRef={audioMenu === "account" ? audioMenuRef : undefined}
                 >
-                  <DoNotDisturbMenu onDone={() => setAudioMenu(undefined)} />
                   <button
                     type="button"
                     onClick={() => {
@@ -2222,6 +2221,7 @@ export default function Call({
                   >
                     Edit profile
                   </button>
+                  <DoNotDisturbMenu onDone={() => setAudioMenu(undefined)} />
                 </AudioMenu>
               ) : (
                 <button
@@ -2607,15 +2607,6 @@ export default function Call({
                           Connection details
                         </button>
                       )}
-                      {account?.debugEnabled && (
-                        <button
-                          type="button"
-                          className="privacy-notification-enable"
-                          onClick={() => setAudioPanel("debug")}
-                        >
-                          Audio diagnostics
-                        </button>
-                      )}
                     </div>
                   </>
                 }
@@ -2663,13 +2654,11 @@ export default function Call({
         }}
       >
         <div className="audio-dialog-heading">
-          <h2 id="audio-dialog-title">
-            {audioPanel === "mic" ? "Audio test" : audioPanel === "debug" ? "Audio diagnostics" : "Connection details"}
-          </h2>
+          <h2 id="audio-dialog-title">{audioPanel === "mic" ? "Audio test" : "Connection details"}</h2>
           <button
             type="button"
             className="voice-icon-button"
-            aria-label={`Close ${audioPanel === "mic" ? "audio test" : audioPanel === "debug" ? "audio diagnostics" : "connection details"}`}
+            aria-label={`Close ${audioPanel === "mic" ? "audio test" : "connection details"}`}
             onClick={closeAudioPanel}
           >
             <X aria-hidden="true" />
@@ -2768,7 +2757,6 @@ export default function Call({
               )}
             </>
           )}
-          {audioPanel === "debug" && account?.debugEnabled && <AudioDiagnostics client={clientRef.current} />}
           {audioPanel === "connection" &&
             (state.diagnostics ? (
               <ConnectionDiagnostics diagnostics={state.diagnostics} />

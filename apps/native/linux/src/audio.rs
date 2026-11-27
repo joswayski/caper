@@ -252,6 +252,24 @@ impl App {
         let samples = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         samples.set_homogeneous(true);
         root.append(&samples);
+        // Debug accounts read the running test's audio diagnostics over it.
+        let debug = self
+            .state
+            .borrow()
+            .account
+            .as_ref()
+            .is_some_and(|account| account.debug_enabled);
+        if debug {
+            let diagnostics = gtk::Button::with_label("Audio diagnostics");
+            diagnostics.set_halign(gtk::Align::Start);
+            let weak = Rc::downgrade(self);
+            diagnostics.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.open_report(false);
+                }
+            });
+            root.append(&diagnostics);
+        }
 
         let weak = Rc::downgrade(self);
         let guard = syncing.clone();

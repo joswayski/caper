@@ -1,4 +1,5 @@
-//! Team feedback and local-only connection/audio diagnostics on the existing card.
+//! Team feedback and local-only connection details on the existing card,
+//! and the audio diagnostics Settings shows under the Audio test.
 use super::{Builder, Page, SPart, Settings, Style, TIMER_INBOX};
 use crate::{App, EV_FOCUS, EV_SCREEN, gfx, live::Live};
 use caper_client::{feedback::Report, voice::ConnectionReport};
@@ -19,7 +20,6 @@ pub enum Snapshot {
         rows: Vec<(String, String)>,
         json: Option<String>,
         note: String,
-        audio: bool,
     },
 }
 
@@ -58,34 +58,31 @@ pub fn snapshot(l: &Live, page: Page) -> Option<Snapshot> {
                     "Waiting for connection statistics…"
                 }
                 .into(),
-                audio: false,
-            })
-        }
-        Page::Diagnostics if l.debug_enabled => {
-            let processing = l.voice.audio_processing_report();
-            Some(Snapshot::Report {
-                rows: vec![],
-                note: if processing.is_none() { "No microphone capture started. Open Mic Test or join voice first." } else { "" }.into(),
-                json: serde_json::to_string_pretty(&serde_json::json!({"platform": std::env::consts::OS, "processing": processing})).ok(),
-                audio: true,
             })
         }
         _ => None,
     }
 }
 
+/// Local audio diagnostics for accounts with debugging on, while the
+/// microphone is captured (the Audio test's recording or a call): without a
+/// capture there is nothing to report, so nothing shows.
+pub fn audio_diagnostics(l: &Live) -> Option<String> {
+    if !l.debug_enabled {
+        return None;
+    }
+    let processing = l.voice.audio_processing_report()?;
+    serde_json::to_string_pretty(&serde_json::json!({
+        "platform": std::env::consts::OS,
+        "processing": processing,
+    }))
+    .ok()
+}
+
 impl Builder<'_> {
     pub(super) fn support(&mut self, s: &Snapshot) -> Result<()> {
         match s {
-            Snapshot::Report {
-                rows,
-                json,
-                note,
-                audio,
-            } => {
-                if *audio {
-                    self.text("Local diagnostics only. No audio, device identifiers, or credentials. Nothing is uploaded.", Style::Detail)?;
-                }
+            Snapshot::Report { rows, json, note } => {
                 if !note.is_empty() {
                     self.text(note, Style::Detail)?;
                 }
@@ -94,18 +91,8 @@ impl Builder<'_> {
                     self.text(value, Style::Label)?;
                     self.y += 8.0;
                 }
-                if let Some(json) = json {
-                    self.button(
-                        SPart::CopyReport,
-                        if *audio {
-                            "Copy diagnostics"
-                        } else {
-                            "Copy connection details"
-                        },
-                    )?;
-                    if *audio {
-                        self.text(json, Style::Code)?;
-                    }
+                if json.is_some() {
+                    self.button(SPart::CopyReport, "Copy connection details")?;
                 }
             }
             Snapshot::Feedback {
@@ -182,23 +169,9 @@ impl Builder<'_> {
 }
 
 impl App {
-    /// Do Not Disturb's menu items (`super::menu_item`): the presets, after
-    /// Turn off while it is on.
-    pub fn account_items(&self) -> Vec<usize> {
-        let presets = 0..super::MENU_TURN_OFF;
-        if self.live.as_ref().is_some_and(|l| l.paused().is_some()) {
-            std::iter::once(super::MENU_TURN_OFF)
-                .chain(presets)
-                .collect()
-        } else {
-            presets.collect()
-        }
-    }
-
     pub fn open_support(&mut self, page: Page) {
         if !self.live.as_ref().is_some_and(|l| match page {
             Page::Feedback => l.feedback_team,
-            Page::Diagnostics => l.debug_enabled,
             Page::Connection => l.voice.diagnostics.is_some(),
             _ => false,
         }) {
@@ -236,21 +209,24 @@ impl App {
 
     pub fn support_activate(&mut self, part: SPart) {
         if part == SPart::CopyReport {
-            if let Some(s) = &mut self.settings
-                && let Some(Snapshot::Report {
-                    json: Some(json),
-                    audio,
-                    ..
-                }) = &s.snap.support
-            {
+            // Connection details, or Settings' audio diagnostics.
+            if let Some(s) = &mut self.settings {
+                let (json, copied) = match (&s.snap.support, &s.snap.diagnostics) {
+                    (
+                        Some(Snapshot::Report {
+                            json: Some(json), ..
+                        }),
+                        _,
+                    ) => (json, "Copied connection details"),
+                    (None, Some(json)) => (json, "Copied diagnostics"),
+                    _ => return,
+                };
                 let text = gfx::wide(json);
                 crate::set_clipboard(self.hwnd, &text);
                 s.notice = if crate::get_clipboard(self.hwnd) != text {
                     "Copy failed; try again."
-                } else if *audio {
-                    "Copied diagnostics"
                 } else {
-                    "Copied connection details"
+                    copied
                 }
                 .into();
             }

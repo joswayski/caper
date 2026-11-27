@@ -92,7 +92,7 @@ export function DoNotDisturbMenu({ onDone }: { onDone: () => void }) {
   const { error, saving, save } = useSave(onDone);
   return (
     <div className="dnd-menu" role="group" aria-label="Do Not Disturb" aria-busy={saving}>
-      <strong>{on ? `Do Not Disturb · ${until}` : "Pause notifications"}</strong>
+      <strong>{on ? `Do Not Disturb · ${until}` : "Do Not Disturb"}</strong>
       {on && (
         <button type="button" disabled={saving} onClick={() => save(null)}>
           Turn off Do Not Disturb

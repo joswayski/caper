@@ -76,14 +76,75 @@ const INBOX_ROW_H: f32 = 30.0;
 const INBOX_PAD: f32 = 4.0;
 const MENU_W: f32 = 232.0;
 const MENU_ITEM_H: f32 = 32.0;
-/// The Do Not Disturb menu's heading row above its items.
+/// A menu's heading row above its items.
 const MENU_HEAD_H: f32 = 30.0;
-/// The Do Not Disturb menu's item after the presets (`PAUSE_PRESETS`).
+/// The line between the account menu's Edit profile and Do Not Disturb.
+const MENU_RULE_H: f32 = 9.0;
+/// The account menu's item after Do Not Disturb's presets (`PAUSE_PRESETS`).
 pub const MENU_TURN_OFF: usize = PAUSE_PRESETS.len();
+/// The account menu's first item.
+pub const MENU_EDIT_PROFILE: usize = MENU_TURN_OFF + 1;
+/// The account bar's microphone and speaker buttons and their device
+/// chevrons, between your name and the gear (web's, Linux's and macOS's).
+const FOOT_BUTTON_W: f32 = 28.0;
+const FOOT_CHEVRON_W: f32 = 16.0;
 
-/// The Do Not Disturb menu's item `k`: a preset, or Turn off.
-pub fn menu_item(k: usize) -> &'static str {
+/// The account menu's item `k`: Edit profile, a Do Not Disturb preset, or
+/// Turn off.
+fn menu_item(k: usize) -> &'static str {
+    if k == MENU_EDIT_PROFILE {
+        return "Edit profile";
+    }
     PAUSE_PRESETS.get(k).map_or("Turn off", |p| p.0)
+}
+
+/// The account bar's audio controls, left to right.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FootButton {
+    Mute,
+    InputOptions,
+    Deafen,
+    OutputOptions,
+}
+
+impl FootButton {
+    pub const ALL: [Self; 4] = [
+        Self::Mute,
+        Self::InputOptions,
+        Self::Deafen,
+        Self::OutputOptions,
+    ];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// What the account bar's menu lists: your account's choices (your name),
+/// or the microphones or speakers (a chevron).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MenuKind {
+    Account,
+    Input,
+    Output,
+}
+
+/// A line of the account bar's menu, top to bottom.
+#[derive(Clone, PartialEq, Debug)]
+enum Line {
+    Heading(String),
+    Rule,
+    Item(usize),
+}
+
+impl Line {
+    fn height(&self) -> f32 {
+        match self {
+            Self::Heading(_) => MENU_HEAD_H,
+            Self::Rule => MENU_RULE_H,
+            Self::Item(_) => MENU_ITEM_H,
+        }
+    }
 }
 
 fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
@@ -146,7 +207,6 @@ pub enum SPart {
     /// The natural (false) or enhanced sample.
     Sample(bool),
     Connection,
-    Diagnostics,
     CopyReport,
     FeedbackRefresh,
     FeedbackMore,
@@ -207,7 +267,6 @@ impl SPart {
             Self::RetryHighlights => 46,
             Self::InstalledRevision => 47,
             Self::Connection => 49,
-            Self::Diagnostics => 50,
             Self::CopyReport => 51,
             Self::FeedbackRefresh => 52,
             Self::FeedbackMore => 53,
@@ -280,7 +339,6 @@ impl SPart {
                 | Self::MicTest
                 | Self::Sample(_)
                 | Self::Connection
-                | Self::Diagnostics
                 | Self::CopyReport
                 | Self::FeedbackRefresh
                 | Self::FeedbackMore
@@ -370,7 +428,9 @@ pub struct Snapshot {
     /// Voice has statistics: Connection details can open.
     pub connection: bool,
     pub support: Option<support::Snapshot>,
-    pub debug_enabled: bool,
+    /// Audio diagnostics under the Audio test, for accounts with debugging
+    /// on, while the microphone is captured (the test or a call).
+    pub diagnostics: Option<String>,
     /// The version was just copied: it reads "Copied".
     pub version_copied: bool,
     pub theme_id: String,
@@ -421,7 +481,6 @@ pub enum Page {
     WhatsNew,
     Feedback,
     Connection,
-    Diagnostics,
 }
 
 pub struct Settings {
@@ -559,7 +618,6 @@ impl Settings {
             SPart::Close if self.page == Page::WhatsNew => "Close What’s new".into(),
             SPart::Close if self.page == Page::Feedback => "Close feedback".into(),
             SPart::Close if self.page == Page::Connection => "Close connection details".into(),
-            SPart::Close if self.page == Page::Diagnostics => "Close audio diagnostics".into(),
             SPart::Close => "Close settings".into(),
             SPart::CopyVersion if !self.snap.version_copied => {
                 caper_client::updates::InstalledVersion::current().accessible_name
@@ -673,7 +731,7 @@ impl Settings {
         if let (Page::Inbox, Some(inbox)) = (self.page, &snap.inbox) {
             b.inbox(inbox)?;
         } else if self.page == Page::Settings {
-            b.settings(&snap)?;
+            b.settings(&snap, &self.notice)?;
         } else if let (Page::WhatsNew, Some(history)) = (self.page, &snap.highlights) {
             b.highlights(history)?;
         } else if let Some(support) = &snap.support {
@@ -702,7 +760,7 @@ impl Settings {
 
 impl Builder<'_> {
     /// Settings' sections, in every client's order.
-    fn settings(&mut self, snap: &Snapshot) -> Result<()> {
+    fn settings(&mut self, snap: &Snapshot, notice: &str) -> Result<()> {
         let b = self;
         let inner = b.inner;
         if snap.account {
@@ -802,14 +860,22 @@ impl Builder<'_> {
             b.text("Audio test", Style::Label)?;
             b.audio(a)?;
         }
-        if snap.connection || snap.debug_enabled {
-            b.y += 10.0;
+        if let Some(json) = &snap.diagnostics {
+            b.y += 14.0;
+            b.text("Audio diagnostics", Style::Label)?;
+            b.text(
+                "Local diagnostics only. No audio, device identifiers, or credentials. Nothing is uploaded.",
+                Style::Detail,
+            )?;
+            b.button(SPart::CopyReport, "Copy diagnostics")?;
+            if !notice.is_empty() {
+                b.text(notice, Style::Detail)?;
+            }
+            b.text(json, Style::Code)?;
         }
         if snap.connection {
+            b.y += 10.0;
             b.button(SPart::Connection, "Connection details")?;
-        }
-        if snap.debug_enabled {
-            b.button(SPart::Diagnostics, "Audio diagnostics")?;
         }
         b.separator();
         b.text("Startup", Style::Section)?;
@@ -1135,7 +1201,6 @@ impl Settings {
                 }
                 Page::Feedback => "Feedback",
                 Page::Connection => "Connection details",
-                Page::Diagnostics => "Audio diagnostics",
             };
             let title = g.layout(&gfx::wide(heading), &g.formats.dialog_title, 1e6)?;
             text::draw(dc, &title, cx + PAD, cy + 22.0, &g.brushes.text);
@@ -1913,6 +1978,7 @@ fn inbox_band_h(n: usize) -> f32 {
 /// The gear's menu over the account footer.
 pub struct AccountMenu {
     pub hover: Option<usize>,
+    pub kind: MenuKind,
 }
 
 /// Whether Launch at login can change here: only against the production
@@ -1980,10 +2046,7 @@ impl App {
         }
         let snap = self.settings_snapshot();
         if self.settings.as_ref().is_some_and(|s| {
-            matches!(
-                s.page,
-                Page::Inbox | Page::Feedback | Page::Connection | Page::Diagnostics
-            ) && s.snap != snap
+            matches!(s.page, Page::Inbox | Page::Feedback | Page::Connection) && s.snap != snap
         }) {
             self.settings_changed();
         }
@@ -2013,7 +2076,19 @@ impl App {
     /// the composer, or, as web's dialog does, to the sidebar row that
     /// opened the page.
     fn close_settings_refocus(&mut self) {
+        let back = self
+            .settings
+            .as_ref()
+            .filter(|s| s.page == Page::Connection)
+            .and(self.settings_back);
         self.close_settings();
+        if let Some(part) = back {
+            self.open_settings();
+            if let Some(s) = &mut self.settings {
+                s.focus_part(part);
+            }
+            return;
+        }
         if self.side_focus.is_none() {
             self.set_composer_focus(true);
         }
@@ -2021,10 +2096,10 @@ impl App {
 
     pub fn close_settings(&mut self) {
         if let Some(s) = self.settings.take() {
-            if matches!(
-                s.page,
-                Page::Feedback | Page::Connection | Page::Diagnostics
-            ) {
+            if s.page == Page::Connection {
+                self.settings_back = None;
+            }
+            if matches!(s.page, Page::Feedback | Page::Connection) {
                 unsafe {
                     let _ = KillTimer(Some(self.hwnd), TIMER_INBOX);
                 }
@@ -2083,7 +2158,6 @@ impl App {
         };
         if let Some(live) = self.live.as_ref().filter(|_| self.c.is_live()) {
             live.settings_snapshot(&mut snap);
-            snap.debug_enabled = live.debug_enabled;
             snap.support = s.and_then(|s| support::snapshot(live, s.page));
             if s.is_some_and(|s| s.page == Page::Inbox) {
                 snap.inbox = Some(live.inbox_snapshot());
@@ -2091,6 +2165,7 @@ impl App {
             if s.is_some_and(|s| s.page == Page::Settings) {
                 snap.audio = Some(audio::snapshot(&live.voice));
                 snap.connection = live.voice.diagnostics.is_some();
+                snap.diagnostics = support::audio_diagnostics(live);
             }
         }
         snap
@@ -2131,8 +2206,12 @@ impl App {
             return;
         }
         match part {
-            SPart::Connection => return self.open_support(Page::Connection),
-            SPart::Diagnostics => return self.open_support(Page::Diagnostics),
+            SPart::Connection => {
+                // Closing the details comes back here.
+                self.open_support(Page::Connection);
+                self.settings_back = Some(part);
+                return;
+            }
             SPart::CopyReport
             | SPart::FeedbackRefresh
             | SPart::FeedbackMore
@@ -2439,24 +2518,188 @@ impl App {
         self.foot_shown() && contains(self.gear_rect(), x, y)
     }
 
-    /// Your avatar and name before the gear (client DIPs): Do Not
-    /// Disturb's menu.
+    /// Your avatar and name before the audio controls (client DIPs): the
+    /// account menu.
     pub fn me_rect(&self) -> Rect {
         let (x, _) = self.foot_span();
         let (gx, gy, _, gh) = self.gear_rect();
-        (x + 4.0, gy - 4.0, gx - 4.0 - (x + 4.0), gh + 8.0)
+        let right = if self.foot_buttons_shown() {
+            self.foot_button_rect(FootButton::Mute).0
+        } else {
+            gx
+        };
+        (x + 4.0, gy - 4.0, right - 4.0 - (x + 4.0), gh + 8.0)
     }
 
     pub fn on_me(&self, x: f32, y: f32) -> bool {
         self.foot_shown() && contains(self.me_rect(), x, y)
     }
 
-    /// The menu's heading, and the footer's tooltip and help text: Do Not
-    /// Disturb's end while it is on.
+    /// Mute and Deafen with their device chevrons show beside the gear, as
+    /// on web, Linux and macOS; a narrow window leaves your name the room.
+    pub fn foot_buttons_shown(&self) -> bool {
+        self.foot_shown() && !self.is_narrow()
+    }
+
+    /// Audio control `b` (client DIPs), right to left from the gear.
+    pub fn foot_button_rect(&self, b: FootButton) -> Rect {
+        let (gx, gy, _, gh) = self.gear_rect();
+        let mut x = gx - 2.0;
+        for f in FootButton::ALL.into_iter().rev() {
+            x -= match f {
+                FootButton::Mute | FootButton::Deafen => FOOT_BUTTON_W,
+                FootButton::InputOptions | FootButton::OutputOptions => FOOT_CHEVRON_W,
+            };
+            if f == b {
+                break;
+            }
+        }
+        let w = match b {
+            FootButton::Mute | FootButton::Deafen => FOOT_BUTTON_W,
+            FootButton::InputOptions | FootButton::OutputOptions => FOOT_CHEVRON_W,
+        };
+        (x, gy - 2.0, w, gh + 4.0)
+    }
+
+    pub fn foot_button_at(&self, x: f32, y: f32) -> Option<FootButton> {
+        if !self.foot_buttons_shown() {
+            return None;
+        }
+        FootButton::ALL
+            .into_iter()
+            .find(|&b| contains(self.foot_button_rect(b), x, y))
+    }
+
+    /// Clicks, Enter and UIA Invoke on the audio controls. Mute and Deafen
+    /// apply to the next call when none is under way, as on web.
+    pub fn foot_button_activate(&mut self, b: FootButton) {
+        match b {
+            FootButton::Mute => {
+                if let Some(live) = &mut self.live {
+                    live.toggle_mute();
+                }
+            }
+            FootButton::Deafen => {
+                if let Some(live) = &mut self.live {
+                    live.toggle_deafen();
+                }
+            }
+            FootButton::InputOptions => self.toggle_account_menu(MenuKind::Input),
+            FootButton::OutputOptions => self.toggle_account_menu(MenuKind::Output),
+        }
+        self.dirty.sidebar = true;
+        self.need = true;
+    }
+
+    /// Mute or Deafen's accessible name and tooltip.
+    pub fn foot_button_name(&self, b: FootButton) -> String {
+        let audio = self.live.as_ref().map(|l| &l.voice.state.audio);
+        match b {
+            FootButton::Mute if audio.is_some_and(|a| a.muted) => "Unmute microphone",
+            FootButton::Mute => "Mute microphone",
+            FootButton::Deafen if audio.is_some_and(|a| a.deafened) => "Undeafen audio",
+            FootButton::Deafen => "Deafen audio",
+            FootButton::InputOptions => "Input Options",
+            FootButton::OutputOptions => "Output Options",
+        }
+        .into()
+    }
+
+    /// Do Not Disturb's heading in the account menu, and your name's help
+    /// text: its end while it is on.
     pub fn pause_heading(&self) -> String {
         match self.live.as_ref().and_then(crate::live::Live::paused) {
             Some(until) => format!("Do Not Disturb \u{b7} {until}"),
-            None => "Pause notifications".into(),
+            None => "Do Not Disturb".into(),
+        }
+    }
+
+    /// The open menu's heading, its accessible name.
+    pub fn account_menu_name(&self) -> String {
+        match self.account_menu.as_ref().map(|m| m.kind) {
+            Some(MenuKind::Input) => "Input device".into(),
+            Some(MenuKind::Output) => "Output device".into(),
+            _ => "Account menu".into(),
+        }
+    }
+
+    /// The open menu's lines: your account's Edit profile first, then Do
+    /// Not Disturb's choices under their heading; a chevron's System default
+    /// and devices.
+    fn account_lines(&self) -> Vec<Line> {
+        let Some(m) = &self.account_menu else {
+            return Vec::new();
+        };
+        match m.kind {
+            MenuKind::Account => {
+                let mut lines = vec![
+                    Line::Item(MENU_EDIT_PROFILE),
+                    Line::Rule,
+                    Line::Heading(self.pause_heading()),
+                ];
+                if self.live.as_ref().is_some_and(|l| l.paused().is_some()) {
+                    lines.push(Line::Item(MENU_TURN_OFF));
+                }
+                lines.extend((0..MENU_TURN_OFF).map(Line::Item));
+                lines
+            }
+            MenuKind::Input | MenuKind::Output => {
+                let input = m.kind == MenuKind::Input;
+                let n = self.live.as_ref().map_or(0, |l| {
+                    if input {
+                        l.voice.inputs.len()
+                    } else {
+                        l.voice.outputs.len()
+                    }
+                });
+                std::iter::once(Line::Heading(
+                    if input {
+                        "Input device"
+                    } else {
+                        "Output device"
+                    }
+                    .into(),
+                ))
+                .chain((0..=n).map(Line::Item))
+                .collect()
+            }
+        }
+    }
+
+    /// The open menu's item `k`.
+    pub fn account_item_label(&self, k: usize) -> String {
+        let kind = self.account_menu.as_ref().map(|m| m.kind);
+        let Some(v) = self.live.as_ref().map(|l| &l.voice) else {
+            return String::new();
+        };
+        let devices = match kind {
+            Some(MenuKind::Input) => &v.inputs,
+            Some(MenuKind::Output) => &v.outputs,
+            _ => return menu_item(k).into(),
+        };
+        match k {
+            0 => "System default".into(),
+            k => devices
+                .get(k - 1)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Whether item `k` of a device menu is the chosen device.
+    pub fn account_item_checked(&self, k: usize) -> bool {
+        let (Some(m), Some(live)) = (&self.account_menu, &self.live) else {
+            return false;
+        };
+        let v = &live.voice;
+        let (saved, devices) = match m.kind {
+            MenuKind::Account => return false,
+            MenuKind::Input => (&v.preferences.input, &v.inputs),
+            MenuKind::Output => (&v.preferences.output, &v.outputs),
+        };
+        match saved {
+            None => k == 0,
+            Some(id) => k > 0 && devices.get(k - 1).is_some_and(|(guid, _)| guid == id),
         }
     }
 
@@ -2536,31 +2779,59 @@ impl App {
         }
     }
 
-    /// Do Not Disturb's menu (client DIPs), above your avatar.
+    /// The open menu (client DIPs), above your name or the chevron that
+    /// opened it, inside the sidebar.
     pub fn account_menu_rect(&self) -> Rect {
-        let h = MENU_HEAD_H + self.account_items().len() as f32 * MENU_ITEM_H + 12.0;
+        let h = self.account_lines().iter().map(Line::height).sum::<f32>() + 12.0;
         let (mx, my, _, _) = self.me_rect();
-        (mx, my - 6.0 - h, MENU_W, h)
+        let x = match self.account_menu.as_ref().map(|m| m.kind) {
+            Some(MenuKind::Input) => self.foot_button_rect(FootButton::Mute).0,
+            Some(MenuKind::Output) => self.foot_button_rect(FootButton::Deafen).0,
+            _ => mx,
+        };
+        let (left, w) = self.foot_span();
+        let x = x.min(left + w - MENU_W).max(left);
+        (x, my - 6.0 - h, MENU_W, h)
     }
 
+    /// Item `k` of the open menu (client DIPs).
     pub fn account_item_rect(&self, k: usize) -> Rect {
-        let (x, y, w, _) = self.account_menu_rect();
-        let Some(k) = self.account_items().iter().position(|i| *i == k) else {
-            return (0.0, 0.0, 0.0, 0.0);
-        };
-        (
-            x + 6.0,
-            y + 6.0 + MENU_HEAD_H + k as f32 * MENU_ITEM_H,
-            w - 12.0,
-            MENU_ITEM_H,
-        )
+        let (x, mut y, w, _) = self.account_menu_rect();
+        y += 6.0;
+        for line in self.account_lines() {
+            if line == Line::Item(k) {
+                return (x + 6.0, y, w - 12.0, MENU_ITEM_H);
+            }
+            y += line.height();
+        }
+        (0.0, 0.0, 0.0, 0.0)
     }
 
-    pub fn toggle_account_menu(&mut self) {
-        self.account_menu = match self.account_menu {
-            Some(_) => None,
-            None => Some(AccountMenu { hover: None }),
+    /// The open menu's items, top to bottom.
+    pub fn account_items(&self) -> Vec<usize> {
+        self.account_lines()
+            .into_iter()
+            .filter_map(|line| match line {
+                Line::Item(k) => Some(k),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Opens menu `kind`, or closes the open one; another kind replaces it.
+    pub fn toggle_account_menu(&mut self, kind: MenuKind) {
+        self.account_menu = match &self.account_menu {
+            Some(m) if m.kind == kind => None,
+            _ => Some(AccountMenu { hover: None, kind }),
         };
+        if kind != MenuKind::Account
+            && self.account_menu.is_some()
+            && let Some(live) = &mut self.live
+            && live.voice.inputs.is_empty()
+            && live.voice.outputs.is_empty()
+        {
+            live.voice.refresh_devices();
+        }
         self.dirty.settings = true;
         self.dirty.sidebar = true;
         self.events |= EV_SCREEN | EV_FOCUS;
@@ -2568,11 +2839,25 @@ impl App {
     }
 
     pub fn account_activate(&mut self, k: usize) {
-        self.account_menu = None;
+        let kind = self
+            .account_menu
+            .take()
+            .map_or(MenuKind::Account, |m| m.kind);
         self.dirty.settings = true;
         self.need = true;
         self.dirty.sidebar = true;
         self.events |= EV_SCREEN | EV_FOCUS;
+        match kind {
+            MenuKind::Input | MenuKind::Output => {
+                self.pick_device(kind == MenuKind::Input, k);
+                return;
+            }
+            MenuKind::Account if k == MENU_EDIT_PROFILE => {
+                self.open_profile_editor();
+                return;
+            }
+            MenuKind::Account => {}
+        }
         if let Some(live) = &mut self.live {
             live.pause((k < MENU_TURN_OFF).then_some(k));
         }
@@ -2583,7 +2868,7 @@ impl App {
         }
     }
 
-    /// Input while the gear's menu is open.
+    /// Input while the account bar's menu is open.
     pub fn account_menu_input(
         &mut self,
         msg: u32,
@@ -2598,7 +2883,13 @@ impl App {
             .copied()
             .find(|&k| contains(self.account_item_rect(k), x, y));
         let inside = contains(self.account_menu_rect(), x, y);
-        let me = self.on_me(x, y);
+        let kind = self.account_menu.as_ref()?.kind;
+        // The control that opened the menu: its own click only closes it.
+        let opener = match kind {
+            MenuKind::Account => self.on_me(x, y),
+            MenuKind::Input => self.foot_button_at(x, y) == Some(FootButton::InputOptions),
+            MenuKind::Output => self.foot_button_at(x, y) == Some(FootButton::OutputOptions),
+        };
         let m = self.account_menu.as_mut()?;
         match msg {
             WM_MOUSEMOVE => {
@@ -2617,15 +2908,14 @@ impl App {
                 if inside {
                     return done;
                 }
-                self.toggle_account_menu();
-                // Your avatar's own click only closes it.
-                if me { done } else { None }
+                self.toggle_account_menu(kind);
+                if opener { done } else { None }
             }
             WM_KEYDOWN => {
                 let n = items.len();
                 let at = m.hover.and_then(|k| items.iter().position(|i| *i == k));
                 match VIRTUAL_KEY(wp.0 as u16) {
-                    VK_ESCAPE => self.toggle_account_menu(),
+                    VK_ESCAPE => self.toggle_account_menu(kind),
                     VK_DOWN => m.hover = Some(items[at.map_or(0, |k| (k + 1) % n)]),
                     VK_UP => m.hover = Some(items[at.map_or(n - 1, |k| (k + n - 1) % n)]),
                     VK_RETURN | VK_SPACE => {
@@ -2703,8 +2993,51 @@ impl App {
             );
         }
         let card = rect(12.0, card_top, width - 12.0, top + FOOT_CARD_H);
-        fill_round(dc, card, RADIUS, &g.brushes.raised);
-        stroke_round(dc, card, RADIUS, &g.brushes.border);
+        // Web's card: its drop shadow (0 8px 24px) as stacked translucent
+        // layers inside the panel's band, a fill between raised and the
+        // sidebar, and a faint highlight along the inside of its top edge.
+        let light = crate::theme::is_light();
+        let shade = unsafe {
+            dc.CreateSolidColorBrush(
+                &gfx::color(0x000000, if light { 0.06 } else { 0.26 } / 8.0),
+                None,
+            )?
+        };
+        unsafe {
+            dc.PushAxisAlignedClip(&rect(0.0, card_top, width, h), D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+        for k in (1..=8u8).rev() {
+            let s = f32::from(k) * 2.0;
+            let r = rect(
+                card.left - s,
+                card.top + 8.0 - s,
+                card.right + s,
+                card.bottom + 8.0 + s,
+            );
+            fill_round(dc, r, RADIUS_CARD + s, &shade);
+        }
+        unsafe { dc.PopAxisAlignedClip() };
+        let fill = mix(
+            crate::theme::surface_sidebar(),
+            crate::theme::surface_raised(),
+            0.86,
+        );
+        fill_round(dc, card, RADIUS_CARD, &g.solid(fill)?);
+        if !light {
+            let shine = unsafe { dc.CreateSolidColorBrush(&gfx::color(0xFFFFFF, 0.06), None)? };
+            unsafe {
+                dc.FillRectangle(
+                    &rect(
+                        card.left + RADIUS_CARD,
+                        card.top + 1.0,
+                        card.right - RADIUS_CARD,
+                        card.top + 2.0,
+                    ),
+                    &shine,
+                );
+            }
+        }
+        stroke_round(dc, card, RADIUS_CARD, &g.brushes.border);
         if !rows.is_empty() {
             unsafe {
                 dc.FillRectangle(&rect(13.0, top - 1.0, width - 13.0, top), &g.brushes.border);
@@ -2729,8 +3062,9 @@ impl App {
                 stroke_round(dc, f, RADIUS, &g.brushes.terracotta);
             }
         }
-        // Your avatar and name open Do Not Disturb's menu.
-        if self.me_hover || self.account_menu.is_some() {
+        // Your avatar and name open the account menu.
+        let open = self.account_menu.as_ref().map(|m| m.kind);
+        if self.me_hover || open == Some(MenuKind::Account) {
             let (mx, my, mw, mh) = self.me_rect();
             fill_round(
                 dc,
@@ -2763,7 +3097,8 @@ impl App {
                 1.0,
             );
         }
-        let name_w = width - 12.0 - 8.0 - 28.0 - 8.0 - (cx + 21.0);
+        let (mx, _, mw, _) = self.me_rect();
+        let name_w = mx - dx + mw - 6.0 - (cx + 21.0);
         let name = g.layout(
             &gfx::wide(&live.account_name),
             &g.formats.direct_unread,
@@ -2790,6 +3125,51 @@ impl App {
             );
         } else {
             text::draw(dc, &name, cx + 21.0, cy - nm.height / 2.0, &g.brushes.text);
+        }
+        if self.foot_buttons_shown() {
+            let audio = &live.voice.state.audio;
+            for b in FootButton::ALL {
+                let (bx, by, bw, bh) = self.foot_button_rect(b);
+                let r = rect(bx - dx, by, bx - dx + bw, by + bh);
+                let menu = match b {
+                    FootButton::InputOptions => Some(MenuKind::Input),
+                    FootButton::OutputOptions => Some(MenuKind::Output),
+                    _ => None,
+                };
+                let lit = self.audio_hover == Some(b) || (menu.is_some() && open == menu);
+                // A muted microphone or deafened output reads terracotta, as
+                // web's.
+                let on = match b {
+                    FootButton::Mute => audio.muted,
+                    FootButton::Deafen => audio.deafened,
+                    _ => false,
+                };
+                if lit {
+                    fill_round(dc, r, 6.0, &g.brushes.hover);
+                }
+                let (icon, inset) = match b {
+                    FootButton::Mute if on => (Icon::MicOff, 5.0),
+                    FootButton::Mute => (Icon::Mic, 5.0),
+                    FootButton::Deafen if on => (Icon::VolumeX, 5.0),
+                    FootButton::Deafen => (Icon::Headphones, 5.0),
+                    _ => (Icon::ChevronDown, 2.0),
+                };
+                let side = (bw - 2.0 * inset).min(18.0);
+                let (ix, iy) = (r.left + (bw - side) / 2.0, r.top + (bh - side) / 2.0);
+                icons::draw(
+                    dc,
+                    icon,
+                    rect(ix, iy, ix + side, iy + side),
+                    if on {
+                        crate::theme::terracotta_bright()
+                    } else if lit {
+                        crate::theme::text()
+                    } else {
+                        crate::theme::text_muted()
+                    },
+                    1.0,
+                );
+            }
         }
         let (gx, gy, gw, gh) = self.gear_rect();
         let gx = gx - if self.is_narrow() { 0.0 } else { RAIL_W };
@@ -2849,45 +3229,86 @@ impl App {
             return self.settings_p.hide();
         };
         let (mx, my, mw, mh) = self.account_menu_rect();
-        let items: Vec<(usize, Rect)> = self
-            .account_items()
-            .into_iter()
-            .map(|k| {
-                let (x, y, w, h) = self.account_item_rect(k);
-                (k, (x - mx, y - my, w, h))
-            })
-            .collect();
         self.settings_p.ensure(g, px(mw), px(mh))?;
         self.settings_p.offset((mx * s).round(), (my * s).round())?;
-        let heading = self.pause_heading();
-        // Until notification settings load, the choices can't save.
-        let brush = if self.live.as_ref().is_some_and(crate::live::Live::can_pause) {
-            &g.brushes.text
-        } else {
-            &g.brushes.muted
-        };
+        let lines: Vec<(Line, String, bool)> = self
+            .account_lines()
+            .into_iter()
+            .map(|line| {
+                let (label, checked) = match line {
+                    Line::Item(k) => (self.account_item_label(k), self.account_item_checked(k)),
+                    _ => (String::new(), false),
+                };
+                (line, label, checked)
+            })
+            .collect();
+        // Until notification settings load, Do Not Disturb's choices can't save.
+        let can_pause = self.live.as_ref().is_some_and(crate::live::Live::can_pause);
         self.settings_p.draw(s, |dc| {
             unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
             let r = rect(0.5, 0.5, mw - 0.5, mh - 0.5);
             fill_round(dc, r, RADIUS, &g.brushes.surface);
             stroke_round(dc, r, RADIUS, &g.brushes.border);
-            let l = g.layout(&gfx::wide(&heading), &g.formats.direct_note, mw - 32.0)?;
-            unsafe { l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
-            let lm = gfx::metrics(&l);
-            text::draw(
-                dc,
-                &l,
-                16.0,
-                6.0 + (MENU_HEAD_H - lm.height) / 2.0,
-                &g.brushes.muted,
-            );
-            for (k, (x, y, w, h)) in &items {
-                if m.hover == Some(*k) {
-                    fill_round(dc, rect(*x, *y, x + w, y + h), 6.0, &g.brushes.hover);
+            let mut y = 6.0;
+            for (line, label, checked) in &lines {
+                let h = line.height();
+                match line {
+                    Line::Heading(heading) => {
+                        let l = g.layout(&gfx::wide(heading), &g.formats.direct_note, mw - 32.0)?;
+                        unsafe { l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
+                        let lm = gfx::metrics(&l);
+                        text::draw(dc, &l, 16.0, y + (h - lm.height) / 2.0, &g.brushes.muted);
+                    }
+                    Line::Rule => unsafe {
+                        dc.FillRectangle(
+                            &rect(12.0, y + h / 2.0 - 0.5, mw - 12.0, y + h / 2.0 + 0.5),
+                            &g.brushes.border,
+                        );
+                    },
+                    Line::Item(k) => {
+                        let (x, w) = (6.0, mw - 12.0);
+                        if m.hover == Some(*k) {
+                            fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
+                        }
+                        let dnd = m.kind == MenuKind::Account && *k != MENU_EDIT_PROFILE;
+                        let brush = if dnd && !can_pause {
+                            &g.brushes.muted
+                        } else {
+                            &g.brushes.text
+                        };
+                        let l = g.layout(&gfx::wide(label), &g.formats.dialog_note, w - 40.0)?;
+                        // A long device name ends in an ellipsis before the check.
+                        unsafe {
+                            l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                            let sign = DWRITE_TRIMMING {
+                                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                                delimiter: 0,
+                                delimiterCount: 0,
+                            };
+                            let ellipsis = g
+                                .dwrite
+                                .CreateEllipsisTrimmingSign(&g.formats.dialog_note)?;
+                            l.SetTrimming(&sign, &ellipsis)?;
+                        }
+                        let lm = gfx::metrics(&l);
+                        text::draw(dc, &l, x + 10.0, y + (h - lm.height) / 2.0, brush);
+                        if *checked {
+                            icons::draw(
+                                dc,
+                                Icon::Check,
+                                rect(
+                                    x + w - 26.0,
+                                    y + h / 2.0 - 8.0,
+                                    x + w - 10.0,
+                                    y + h / 2.0 + 8.0,
+                                ),
+                                crate::theme::text(),
+                                1.0,
+                            );
+                        }
+                    }
                 }
-                let l = g.layout(&gfx::wide(menu_item(*k)), &g.formats.dialog_note, *w)?;
-                let lm = gfx::metrics(&l);
-                text::draw(dc, &l, x + 10.0, y + (h - lm.height) / 2.0, brush);
+                y += h;
             }
             Ok(())
         })

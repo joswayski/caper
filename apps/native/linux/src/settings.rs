@@ -388,8 +388,9 @@ impl App {
         let audio_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         audio_buttons.add_css_class("settings-gap");
         let audio_test = gtk::Button::with_label("Audio test");
-        // Connection details show during a call, Audio diagnostics for
-        // debug accounts (`render_settings`).
+        // Connection details show during a call, and Audio diagnostics for
+        // debug accounts then too (`render_settings`): without a capture they
+        // have nothing to show, and the Audio test has its own.
         let connection = gtk::Button::with_label("Connection details");
         let diagnostics = gtk::Button::with_label("Audio diagnostics");
         for (button, run) in [(&audio_test, 0), (&connection, 1), (&diagnostics, 2)] {
@@ -827,7 +828,11 @@ impl App {
             state
                 .account
                 .as_ref()
-                .is_some_and(|account| account.debug_enabled),
+                .is_some_and(|account| account.debug_enabled)
+                && self
+                    .voice
+                    .try_borrow()
+                    .is_ok_and(|voice| voice.diagnostics.is_some()),
         );
         // Notifications: only enabled once loaded.
         let level = settings.notifications.account_level();

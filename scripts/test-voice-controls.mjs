@@ -2323,7 +2323,8 @@ try {
     );
 
     click("User Settings");
-    browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
+    browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
+    browser("click", "dialog[open] details > summary");
     wait(`document.querySelector('dialog[open] .audio-debug')`);
     browser("click", ".audio-debug p:first-child");
     assert.ok(

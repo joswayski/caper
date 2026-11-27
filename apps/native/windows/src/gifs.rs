@@ -1165,12 +1165,7 @@ impl App {
         let busy = media.is_some_and(|m| m.busy());
         unsafe {
             if let Some(next) = next {
-                SetTimer(
-                    Some(self.hwnd),
-                    crate::TIMER_GIF_FRAMES,
-                    next.as_millis().clamp(10, u32::MAX as u128) as u32,
-                    None,
-                );
+                crate::files::arm_frame_timer(self.hwnd, crate::TIMER_GIF_FRAMES, next);
             }
             if busy {
                 SetTimer(Some(self.hwnd), crate::TIMER_LIVE, 100, None);

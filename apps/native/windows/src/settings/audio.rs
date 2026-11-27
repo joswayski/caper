@@ -680,21 +680,14 @@ impl App {
 
     /// Clicks, Enter and UIA Invoke on the page's choices and buttons.
     pub(super) fn audio_activate(&mut self, part: SPart) {
+        match part {
+            SPart::Input(k) => return self.pick_device(true, k),
+            SPart::Output(k) => return self.pick_device(false, k),
+            _ => {}
+        }
         let Some(live) = &mut self.live else { return };
         let v = &mut live.voice;
         match part {
-            SPart::Input(0) => v.command(VoiceOperation::DefaultInput),
-            SPart::Output(0) => v.command(VoiceOperation::DefaultOutput),
-            SPart::Input(k) => {
-                if let Some((id, _)) = v.inputs.get(k - 1).cloned() {
-                    v.command(VoiceOperation::Input(id));
-                }
-            }
-            SPart::Output(k) => {
-                if let Some((id, _)) = v.outputs.get(k - 1).cloned() {
-                    v.command(VoiceOperation::Output(id));
-                }
-            }
             SPart::RefreshDevices => v.refresh_devices(),
             SPart::SpeakerTest if v.speaker_testing => v.stop_speaker_test(),
             SPart::SpeakerTest => v.start_speaker_test(),
@@ -710,10 +703,25 @@ impl App {
             },
             _ => {}
         }
-        if matches!(part, SPart::Input(_) | SPart::Output(_)) {
-            save_preferences(&live.voice.preferences);
-        }
         self.settings_changed();
+    }
+
+    /// The Audio test's or an account bar chevron's choice `k` of the
+    /// microphones (`input`) or speakers: the system default (0) or device
+    /// `k - 1`, saved at once.
+    pub(crate) fn pick_device(&mut self, input: bool, k: usize) {
+        let Some(live) = &mut self.live else { return };
+        let v = &mut live.voice;
+        let devices = if input { &v.inputs } else { &v.outputs };
+        match (k.checked_sub(1).map(|k| devices.get(k).cloned()), input) {
+            (None, true) => v.command(VoiceOperation::DefaultInput),
+            (None, false) => v.command(VoiceOperation::DefaultOutput),
+            (Some(Some((id, _))), true) => v.command(VoiceOperation::Input(id)),
+            (Some(Some((id, _))), false) => v.command(VoiceOperation::Output(id)),
+            (Some(None), _) => return,
+        }
+        save_preferences(&live.voice.preferences);
+        self.voice_changed();
     }
 }
 

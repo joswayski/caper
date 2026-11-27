@@ -4147,9 +4147,12 @@ kubectl -n default rollout status deployment/caper-api --timeout=15m
 Open tabs re-read the own-account response when visible again or when **User
 Settings** opens. Never expose `DEBUG_USERS` through web configuration or `VITE_`.
 
-Eligible accounts see **Settings → Voice & audio → Audio diagnostics** and expandable
-diagnostics inside **Mic test**: capture state (none, opening, failed, active,
-ended), processor/fallback status, capture settings, DPDFNet hop counts and
+Eligible accounts see audio diagnostics only where the microphone runs: inside
+the **Audio test** (expandable on web and Apple, a button on Linux), as
+**Settings → Voice & audio → Audio diagnostics** during a call on Linux, Apple
+and Android, and on Windows under the Audio test in **Settings → Voice & audio**
+while the test records or a call runs. They show capture state (none, opening,
+failed, active, ended), processor/fallback status, capture settings, DPDFNet hop counts and
 mean/max processing time against its 10 ms budget, raw and processed track state,
 peer/ICE states, sender attachment, roster/subscription counts, per-stream RTP
 packet counts and audio levels, and playback context state. Counters are local and

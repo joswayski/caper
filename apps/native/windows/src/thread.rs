@@ -2499,12 +2499,7 @@ impl App {
                 let _ = KillTimer(Some(self.hwnd), TIMER_MEDIA);
                 if let Some(ctx) = media {
                     if let Some(next) = ctx.next {
-                        SetTimer(
-                            Some(self.hwnd),
-                            TIMER_MEDIA,
-                            next.as_millis().clamp(10, u32::MAX as u128) as u32,
-                            None,
-                        );
+                        crate::files::arm_frame_timer(self.hwnd, TIMER_MEDIA, next);
                     }
                     if ctx.media.busy() {
                         SetTimer(Some(self.hwnd), crate::TIMER_LIVE, 100, None);

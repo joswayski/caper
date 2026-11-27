@@ -120,7 +120,8 @@ import UIKit
         sendOnStop.isOn = VoiceMessageSettings.shared.sendOnStop
         audioTest.isEnabled = model.voice.phase != .leaving
         connection.isHidden = model.voice.phase != .connected
-        diagnostics.isHidden = account?.debugEnabled != true
+        // In a call; the Audio test has its own, while it captures.
+        diagnostics.isHidden = account?.debugEnabled != true || model.voice.phase != .connected
     }
 
     private func section(_ title: String, _ rows: [UIView]) {

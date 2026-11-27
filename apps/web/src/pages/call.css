@@ -2919,11 +2919,11 @@ button.voice-strip-open {
 .call-settings-panel > .dnd-menu {
   gap: 0;
 }
-/* Edit profile follows the Do Not Disturb choices in the account menu. */
-.call-settings-panel > .dnd-menu:not(:last-child) {
-  margin-bottom: 5px;
-  padding-bottom: 5px;
-  border-bottom: 1px solid var(--border);
+/* Do Not Disturb's choices follow Edit profile in the account menu. */
+.call-settings-panel > .dnd-menu:not(:first-child) {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
 }
 .dnd-menu > strong {
   padding: 8px 8px 4px;

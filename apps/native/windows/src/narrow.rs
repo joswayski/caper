@@ -466,7 +466,7 @@ impl App {
                     if self.on_gear(at.0, at.1) {
                         self.open_settings();
                     } else if self.on_me(at.0, at.1) {
-                        self.toggle_account_menu();
+                        self.toggle_account_menu(crate::settings::MenuKind::Account);
                     } else if let Some(k) = self.inbox_at(at.0, at.1) {
                         self.open_inbox_row(k);
                     } else if self.on_update_dock(at.0, at.1) {

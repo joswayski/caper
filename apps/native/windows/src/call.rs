@@ -952,6 +952,8 @@ impl App {
         self.dirty.rail = true;
         self.dirty.narrow = true;
         self.dirty.header = true;
+        // A device chevron's menu lists the devices just found.
+        self.dirty.settings |= self.account_menu.is_some();
         self.events |= EV_ROWS;
         self.need = true;
         self.arm_call_timer();
@@ -1145,20 +1147,23 @@ impl App {
                             LEAVE
                         })?,
                     );
-                    icons::draw(
-                        dc,
-                        Icon::PhoneOff,
-                        rect(bx + 10.0, by + 8.0, bx + 26.0, by + 24.0),
-                        0xFFFFFF,
-                        1.0,
-                    );
+                    // The icon and label centred together in the button.
                     let label = if call.joining { "Cancel" } else { "Leave" };
                     let l = g.layout(&gfx::wide(label), &g.formats.direct_unread, 1e6)?;
                     let m = gfx::metrics(&l);
+                    let ix = bx + ((bw - (16.0 + 6.0 + m.width)) / 2.0).max(8.0);
+                    let iy = by + (bh - 16.0) / 2.0;
+                    icons::draw(
+                        dc,
+                        Icon::PhoneOff,
+                        rect(ix, iy, ix + 16.0, iy + 16.0),
+                        0xFFFFFF,
+                        1.0,
+                    );
                     text::draw(
                         dc,
                         &l,
-                        bx + 32.0,
+                        ix + 22.0,
                         by + (bh - m.height) / 2.0,
                         &g.solid(0xFFFFFF)?,
                     );

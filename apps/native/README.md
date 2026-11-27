@@ -73,8 +73,8 @@ against the parity fixture (`scripts/native-parity-fixture.mjs`).
   audio, Privacy & blocked accounts, About (version, What’s new) and Log out
   (desktop adds Startup after Voice & audio). Phones push it full-screen, and
   Back returns to it from its sub-pages. Do Not Disturb's quick toggle is a
-  moon button beside the gear on phones and macOS, and your avatar or name on
-  web, Windows and Linux; see [notifications](../../docs/notifications.md#do-not-disturb).
+  moon button beside the gear on phones and macOS, your avatar on Linux, and
+  your name's account menu (after Edit profile) on web and Windows; see [notifications](../../docs/notifications.md#do-not-disturb).
 - Each client reopens the last space and channel (per account and device, IDs
   only, joined channels only), falling back to the first joined channel.
 - Unsent conversation drafts and thread replies survive quitting, relaunching

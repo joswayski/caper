@@ -403,6 +403,8 @@ pub struct App {
     pub rail_action: Option<(String, directs::MenuItem)>,
     dm_menu_p: Panel,
     gear_hover: bool,
+    /// The account bar's Mute, Deafen or device chevron under the pointer.
+    audio_hover: Option<settings::FootButton>,
     /// The header's member-list toggle: the list is hidden, and the
     /// pointer is over the toggle.
     pub members_hidden: bool,
@@ -851,6 +853,7 @@ impl App {
                 rail_action: None,
                 dm_menu_p,
                 gear_hover: false,
+                audio_hover: None,
                 members_hidden: false,
                 members_thread_hid: false,
                 members_toggle_hover: false,
@@ -2474,6 +2477,12 @@ impl App {
             self.dirty.sidebar = true;
             self.need = true;
         }
+        let audio = self.pointer.and_then(|(x, y)| self.foot_button_at(x, y));
+        if audio != self.audio_hover {
+            self.audio_hover = audio;
+            self.dirty.sidebar = true;
+            self.need = true;
+        }
         let me = self.pointer.is_some_and(|(x, y)| self.on_me(x, y));
         if me != self.me_hover {
             self.me_hover = me;
@@ -2937,8 +2946,10 @@ impl App {
                     // The rest of the toast keeps the click off the rows.
                 } else if self.on_gear(x, y) {
                     self.open_settings();
+                } else if let Some(b) = self.foot_button_at(x, y) {
+                    self.foot_button_activate(b);
                 } else if self.on_me(x, y) {
-                    self.toggle_account_menu();
+                    self.toggle_account_menu(settings::MenuKind::Account);
                 } else if let Some(k) = self.inbox_at(x, y) {
                     self.pick_inbox(k);
                 } else if self.on_members_toggle(x, y) {
@@ -3157,6 +3168,7 @@ impl App {
                             || self.on_head_button(x, y)
                             || self.on_gear(x, y)
                             || self.on_me(x, y)
+                            || self.foot_button_at(x, y).is_some()
                             || self.inbox_at(x, y).is_some()
                             || self.on_members_toggle(x, y)
                             || self.on_pins_button(x, y)
@@ -5871,6 +5883,7 @@ fn main() -> Result<()> {
                     let _ = DwmFlush();
                 }
             } else {
+                files::release_fine_timers();
                 let _ = WaitMessage();
             }
         }

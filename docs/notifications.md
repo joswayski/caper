@@ -102,8 +102,9 @@ counts, badges and the inbox keep updating, and nothing is delivered later.
   and 04:59), and Until I turn it off (`forever`). Turn off sends `null`.
 - **Display:** Settings → Notifications starts with a Do Not Disturb group
   (status, the presets, Turn off). The account bar opens the same choices: a
-  moon button beside the gear on iPhone, Android and macOS, and a click on
-  your avatar or name on web, Windows and Linux. While on, a moon replaces the presence dot on your own
+  moon button beside the gear on iPhone, Android and macOS; your avatar on
+  Linux; and on web and Windows your name's account menu, under Edit profile.
+  While on, a moon replaces the presence dot on your own
   avatar and "Do Not Disturb" shows under your name, with the end as `Until 3:45
   PM`, `Until tomorrow at 8:00 AM`, `Until Thu 8:00 AM`, `Until Dec 3, 8:00 AM` or
   `Until you turn it off`. Clients redraw when a timed pause ends.

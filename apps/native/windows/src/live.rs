@@ -7146,7 +7146,7 @@ mod tests {
         live.token = Some("fixture-token".into());
         live.account_id = Some("team-member".into());
         assert!(support::snapshot(&live, Page::Feedback).is_none());
-        assert!(support::snapshot(&live, Page::Diagnostics).is_none());
+        assert!(support::audio_diagnostics(&live).is_none());
         assert!(
             !live
                 .inbox_rows()
@@ -7169,20 +7169,14 @@ mod tests {
         assert_eq!(row.count, Some(9));
         assert!(support::snapshot(&live, Page::Feedback).is_some());
         assert!(
-            support::snapshot(&live, Page::Diagnostics).is_none(),
+            support::audio_diagnostics(&live).is_none(),
             "team permission does not grant diagnostics"
         );
         live.debug_enabled = true;
-        let Some(support::Snapshot::Report {
-            json: Some(json), ..
-        }) = support::snapshot(&live, Page::Diagnostics)
-        else {
-            panic!("missing report")
-        };
-        let report: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(report.as_object().unwrap().len(), 2);
-        assert!(report["processing"].is_null());
-        assert!(!json.contains("fixture-token"));
+        assert!(
+            support::audio_diagnostics(&live).is_none(),
+            "nothing to report until the microphone is captured"
+        );
     }
 
     #[test]

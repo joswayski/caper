@@ -3525,7 +3525,7 @@ private struct AccountBar: View {
                 if voice.phase == .connected || CaperRuntime.isAudioPreview("audio-statistics") {
                     Button("Connection details") { sheet = .connection }
                 }
-                if model.account?.debugEnabled == true {
+                if model.account?.debugEnabled == true && voice.phase == .connected {
                     Button("Audio diagnostics") { sheet = .diagnostics }
                 }
                 Button("What’s new") { model.whatsNew.open() }

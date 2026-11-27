@@ -26,6 +26,42 @@ const GAP: f32 = 8.0;
 /// A covered spoiler file card's size, as in egui.
 const COVER: (f32, f32) = (180.0, 100.0);
 
+thread_local! {
+    /// When a GIF frame was last scheduled, while 1 ms timers are held.
+    static FINE_TIMERS: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Arms timer `id` for a GIF frame due in `next`. Windows' default 15.6 ms
+/// tick delivers a 20 ms frame's timer only after 31 ms, so GIFs played
+/// slower and unevenly than in a browser. While frames are scheduled the
+/// process asks for 1 ms timers, as browsers do while animating, and
+/// `release_fine_timers` gives them back once none has been for a second.
+pub fn arm_frame_timer(hwnd: windows::Win32::Foundation::HWND, id: usize, next: Duration) {
+    use windows::Win32::UI::WindowsAndMessaging::SetTimer;
+    if FINE_TIMERS.replace(Some(Instant::now())).is_none() {
+        unsafe { windows::Win32::Media::timeBeginPeriod(1) };
+    }
+    // Rounded up, so it never wakes just before the frame changes.
+    let ms = next
+        .as_micros()
+        .div_ceil(1000)
+        .clamp(1, u128::from(u32::MAX)) as u32;
+    unsafe { SetTimer(Some(hwnd), id, ms, None) };
+}
+
+/// Ends `arm_frame_timer`'s 1 ms timers once no frame was scheduled for a
+/// second (GIFs paused, scrolled away or closed). The message loop calls it
+/// before waiting.
+pub fn release_fine_timers() {
+    if FINE_TIMERS
+        .get()
+        .is_some_and(|at| at.elapsed() > Duration::from_secs(1))
+    {
+        FINE_TIMERS.set(None);
+        unsafe { windows::Win32::Media::timeEndPeriod(1) };
+    }
+}
+
 /// Direct2D bitmaps for the shared media cache.
 pub struct D2d(pub ID2D1DeviceContext);
 
@@ -901,12 +937,7 @@ impl App {
                 let due = Instant::now() + next;
                 if self.gif_due.is_none_or(|d| due < d) {
                     self.gif_due = Some(due);
-                    SetTimer(
-                        Some(self.hwnd),
-                        crate::TIMER_MEDIA,
-                        next.as_millis().clamp(10, u32::MAX as u128) as u32,
-                        None,
-                    );
+                    arm_frame_timer(self.hwnd, crate::TIMER_MEDIA, next);
                 }
             }
             if busy {
