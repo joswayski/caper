@@ -65,3 +65,45 @@
     U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
     U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
+
+@font-face {
+  font-family: "Figtree Fallback";
+  font-weight: 100 550;
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Arimo"), local("Roboto");
+  ascent-override: 93.94%;
+  descent-override: 24.72%;
+  line-gap-override: 0%;
+  size-adjust: 101.13%;
+}
+
+@font-face {
+  font-family: "Figtree Fallback";
+  font-weight: 551 1000;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("Arimo Bold"), local("Roboto Bold");
+  ascent-override: 98.73%;
+  descent-override: 25.98%;
+  line-gap-override: 0%;
+  size-adjust: 96.22%;
+}
+
+@font-face {
+  font-family: "Nunito Fallback";
+  font-weight: 100 550;
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Arimo"), local("Roboto");
+  ascent-override: 99.48%;
+  descent-override: 34.74%;
+  line-gap-override: 0%;
+  size-adjust: 101.62%;
+}
+
+@font-face {
+  font-family: "Nunito Fallback";
+  font-weight: 551 1000;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("Arimo Bold"), local("Roboto Bold");
+  ascent-override: 103.34%;
+  descent-override: 36.08%;
+  line-gap-override: 0%;
+  size-adjust: 97.83%;
+}

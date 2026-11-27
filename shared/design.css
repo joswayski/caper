@@ -96,8 +96,8 @@
   --motion-fast: 140ms;
   --motion-base: 200ms;
   --motion-slow: 260ms;
-  --font-sans: "Figtree", system-ui, "Segoe UI", sans-serif;
-  --font-display: "Nunito", "Figtree", system-ui, sans-serif;
+  --font-sans: "Figtree", "Figtree Fallback", system-ui, "Segoe UI", sans-serif;
+  --font-display: "Nunito", "Nunito Fallback", "Figtree", "Figtree Fallback", system-ui, sans-serif;
   font-family: var(--font-sans);
   color: var(--text);
   background: var(--blackout);
