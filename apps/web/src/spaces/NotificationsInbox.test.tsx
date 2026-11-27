@@ -631,10 +631,12 @@ test("neighbouring notifications about one conversation group; a group reads in 
     expect(opened?.id).toBe("r:1");
     await click(markFirst());
     expect(posts.at(-1)).toEqual(["m:9", "m:8", "m:7"]);
+    // The opened row stays, read, for the inbox to close over; marking read removes it.
     expect(rendered()).toEqual([
       "Sam |  | Body t:6",
       "Sam |  | Body t:5",
       "Sam |  | Body m:4",
+      "Sam and 2 others | Reacted 🎉 👍 to your message | Body r:3",
       "Sam | Invited you to a space | Body s:0",
     ]);
     expect(container.querySelector(".inbox-toolbar")?.textContent).toContain("(4)");
@@ -648,6 +650,73 @@ test("neighbouring notifications about one conversation group; a group reads in 
       "Sam |  | Body m:7",
       "Sam |  | Body t:6",
     ]);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  }
+});
+
+test("opening an unread notification keeps its row and navigates without waiting for the read", async () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const row: InboxItem = {
+    id: "m:7",
+    kind: "reply",
+    actorId: "actor0000001",
+    actorName: "Maya",
+    avatarId: null,
+    body: "A reply to open",
+    createdAt: "2026-11-04T12:00:00Z",
+    unread: true,
+    spaceId: "space0000001",
+    spaceName: "Studio",
+    channelId: "channel00001",
+    channelName: "ideas",
+    conversationId: null,
+    messageId: "message00000007",
+    threadRootId: "message00000001",
+    emoji: null,
+  };
+  let finishRead = (_ok: boolean) => {};
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+    if (init?.method === "POST")
+      return new Promise<Response>(
+        (resolve) =>
+          (finishRead = (ok) =>
+            resolve(ok ? Response.json({ unreadCount: 0 }) : Response.json({ error: "Offline" }, { status: 503 }))),
+      );
+    return Response.json({ items: [row], nextCursor: null, unreadCount: 1 });
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const rowsAtOpen: number[] = [];
+  const counts: number[] = [];
+  try {
+    await act(async () =>
+      root.render(
+        <NotificationsInbox
+          accountId="self00000001"
+          onClose={() => {}}
+          onCount={(count) => counts.push(count)}
+          onOpen={() => {
+            rowsAtOpen.push(container.querySelectorAll(".inbox-list li").length);
+          }}
+        />,
+      ),
+    );
+    expect(container.querySelector<HTMLInputElement>('[role="switch"]')?.checked).toBe(true);
+    await act(async () => container.querySelector<HTMLButtonElement>(".inbox-open")!.click());
+    // The open ran while the read was still on its way, with the row still listed.
+    expect(rowsAtOpen).toEqual([1]);
+    expect(container.querySelectorAll(".inbox-list li")).toHaveLength(1);
+    expect(container.querySelector(".inbox-dot")).toBeNull();
+    expect(counts.at(-1)).toBe(0);
+    // A failed read puts the row's unread state and the count back.
+    await act(async () => finishRead(false));
+    expect(container.querySelector(".inbox-dot")).not.toBeNull();
+    expect(counts.at(-1)).toBe(1);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
   } finally {
     await act(async () => root.unmount());
     container.remove();

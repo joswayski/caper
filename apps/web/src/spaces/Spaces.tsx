@@ -3689,11 +3689,14 @@ export default function Spaces({
       }
     } else {
       if (item.conversationId) {
-        const result = await listDirectConversations();
-        if (unreadAccount.current !== accountId) return;
-        if (!result.conversations.some((row) => row.id === item.conversationId))
-          throw new Error("This conversation is no longer available.");
-        setDirects(result.conversations);
+        // A conversation already listed opens at once; only an unknown one waits for the list.
+        if (!directs.some((row) => row.id === item.conversationId)) {
+          const result = await listDirectConversations();
+          if (unreadAccount.current !== accountId) return;
+          if (!result.conversations.some((row) => row.id === item.conversationId))
+            throw new Error("This conversation is no longer available.");
+          setDirects(result.conversations);
+        }
         choose(detail?.space.id || undefined, undefined, false, item.conversationId);
       } else if (item.spaceId && item.channelId) choose(item.spaceId, item.channelId);
       const channelId = item.conversationId ?? item.channelId;

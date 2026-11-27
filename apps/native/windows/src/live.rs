@@ -3813,8 +3813,8 @@ impl Live {
 
     /// Opens (`open`) or marks read the inbox's shown row `k`, as egui:
     /// the row's whole group reads at once in one request, and opening
-    /// waits for the read, then opens its oldest item. Reading never
-    /// accepts an invitation.
+    /// closes the inbox over its oldest item right away rather than after
+    /// the read. Reading never accepts an invitation.
     pub fn activity_action(&mut self, k: usize, open: bool) {
         let Some(token) = self.token.clone() else {
             return;
@@ -3822,9 +3822,6 @@ impl Live {
         let Some(group) = self.activity.visible_groups().into_iter().nth(k) else {
             return;
         };
-        if open && self.activity.opening.is_some() {
-            return;
-        }
         self.unread_revision += 1;
         // A refresh in flight could bring the row back unread; a filter's
         // page replacing dimmed rows keeps going.
@@ -3832,18 +3829,21 @@ impl Live {
             self.activity.request += 1;
             self.activity.loading = false;
         }
-        if open {
-            self.activity.opening = Some(group.id().to_owned());
-        }
         self.activity.error = None;
         self.activity.mark_read(&group.items);
-        self.worker.send(Command::ReadActivity {
-            epoch: self.account_epoch,
-            navigation: self.navigation,
-            token,
-            items: group.items,
-            open,
-        });
+        if open && let Some(oldest) = group.items.last().cloned() {
+            let mut out = vec![Update::Inbox];
+            self.open_activity_item(oldest, &mut out);
+            self.queued.append(&mut out);
+            self.host.wake();
+        }
+        if group.items.iter().any(|item| item.unread) {
+            self.worker.send(Command::ReadActivity {
+                epoch: self.account_epoch,
+                token,
+                items: group.items,
+            });
+        }
     }
 
     /// egui's `open_activity_item`: the inbox closes over the notification's
@@ -5205,7 +5205,6 @@ impl Live {
                     actor: group.names(),
                     mark: group.mark_label(),
                     unread: item.unread,
-                    opening: a.opening.as_deref() == Some(group.id()),
                     time: caper_client::feedback::relative_time(&item.created_at, now),
                     description: group.summary(),
                     body: item.body.clone(),
@@ -6648,28 +6647,14 @@ impl Live {
                 self.activity.finish(request, more, result);
                 out.push(Update::Inbox);
             }
-            // A row reads before it opens, as in egui; a failed read puts
-            // it back unread and opens nothing.
+            // A failed read puts the rows back unread.
             Event::ActivityRead {
                 epoch,
-                navigation,
-                mut items,
-                open,
+                items,
                 result,
             } if epoch == self.account_epoch => {
-                if open {
-                    self.activity.opening = None;
-                }
                 if self.activity.read_finished(&items, result) {
                     self.refresh_unread();
-                    // A group opens at its oldest, where the run starts.
-                    if open
-                        && navigation == self.navigation
-                        && self.activity.shown
-                        && let Some(oldest) = items.pop()
-                    {
-                        self.open_activity_item(oldest, out);
-                    }
                 }
                 out.push(Update::Inbox);
             }

@@ -61,7 +61,7 @@ pub(super) struct InboxWindow {
 /// What the rows show, so they redraw only when it changes.
 #[derive(PartialEq)]
 struct Shown {
-    rows: Vec<(Vec<String>, bool, bool, bool, bool, String)>,
+    rows: Vec<(Vec<String>, bool, bool, bool, String)>,
     replies: Vec<(String, bool, Option<String>, Option<String>)>,
     files: Vec<(String, u64, bool, bool, String)>,
     stale: bool,
@@ -459,7 +459,6 @@ impl App {
                         item.unread,
                         inbox.expanded.contains_key(&item.id),
                         state.inbox_writable(item),
-                        inbox.opening.as_deref() == Some(group.id()),
                         caper_client::feedback::relative_time(&item.created_at, now),
                     )
                 })
@@ -542,7 +541,6 @@ impl App {
     ) -> gtk::Box {
         let inbox = &state.inbox;
         let item = group.newest();
-        let opening = inbox.opening.as_deref() == Some(group.id());
         let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
         row.add_css_class("inbox-row");
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -558,7 +556,6 @@ impl App {
         open.add_css_class("flat");
         open.add_css_class("inbox-open");
         open.set_hexpand(true);
-        open.set_sensitive(!opening);
         top.append(&open);
         let when = label(
             &caper_client::feedback::relative_time(&item.created_at, chrono::Utc::now()),
@@ -595,7 +592,6 @@ impl App {
         body.set_child(Some(&text));
         body.add_css_class("flat");
         body.add_css_class("inbox-open");
-        body.set_sensitive(!opening);
         row.append(&body);
         for button in [&open, &body] {
             let (app, target) = (Rc::downgrade(self), group.items.clone());
@@ -963,64 +959,48 @@ impl App {
     }
 
     /// Marks a row's group (`items`, newest first) read in one request;
-    /// `open` also goes to its oldest once the read succeeds. Only one open
-    /// is in flight at a time.
+    /// `open` also closes the inbox over its oldest at once, rather than
+    /// after the read.
     fn read_inbox_item(self: &Rc<Self>, items: Vec<Item>, open: bool) {
         {
             let mut state = self.state.borrow_mut();
             let Some(token) = state.token.clone() else {
                 return;
             };
-            if open && state.inbox.opening.is_some() {
-                return;
-            }
             // A refresh already in flight could bring this row back unread;
             // a filter reload replacing stale rows keeps going.
             if !state.inbox.stale {
                 state.inbox.request += 1;
                 state.inbox.loading = false;
             }
-            let Some(newest) = items.first() else {
-                return;
-            };
-            if open {
-                state.inbox.opening = Some(newest.id.clone());
-            }
             state.inbox.error = None;
             state.inbox.mark_read(&items);
-            self.worker.send(Command::ReadActivity {
-                epoch: state.epoch,
-                navigation: state.navigation,
-                token,
-                items,
-                open,
-            });
+            if items.iter().any(|item| item.unread) {
+                self.worker.send(Command::ReadActivity {
+                    epoch: state.epoch,
+                    token,
+                    items: items.clone(),
+                });
+            }
         }
-        self.render_inbox();
+        // A group opens at its oldest, where the run starts.
+        match items.last() {
+            Some(oldest) if open => self.open_inbox_item(oldest.clone()),
+            _ => self.render_inbox(),
+        }
     }
 
-    /// `ActivityRead`: a successful open closes the inbox and goes to the
-    /// group's oldest item, where its run starts.
+    /// `ActivityRead`: a failed read puts the rows back unread.
     pub(super) fn inbox_read(
         self: &Rc<Self>,
-        navigation: u64,
         items: Vec<Item>,
-        open: bool,
         result: Result<caper_client::activity::Read, String>,
     ) {
-        let go = {
+        {
             let mut state = self.state.borrow_mut();
-            if open {
-                state.inbox.opening = None;
-            }
-            let read = state.inbox.read_finished(&items, result);
-            if read {
+            if state.inbox.read_finished(&items, result) {
                 self.refresh_unread(&mut state);
             }
-            read && open && navigation == state.navigation && state.inbox.shown
-        };
-        if go && let Some(oldest) = items.last() {
-            self.open_inbox_item(oldest.clone());
         }
         self.render_inbox();
     }

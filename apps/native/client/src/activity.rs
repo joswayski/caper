@@ -294,8 +294,6 @@ pub struct Inbox {
     pub filter: Filter,
     pub unread_only: bool,
     pub loading: bool,
-    /// The row whose open is in flight; only it is disabled, and a second open waits.
-    pub opening: Option<String>,
     /// Optimistic mark-reads in flight, with each row's original position for undo.
     pub reads: Vec<(String, Option<usize>)>,
     /// After a filter change the previous rows stay, dimmed and inert, until the new
@@ -343,7 +341,6 @@ impl Default for Inbox {
             filter: Filter::All,
             unread_only: true,
             loading: false,
-            opening: None,
             reads: Vec::new(),
             stale: false,
             error: None,
@@ -398,7 +395,6 @@ impl Inbox {
         self.shown
             && !self.loading
             && self.reads.is_empty()
-            && self.opening.is_none()
             && self.refreshed.is_none_or(|at| at.elapsed() >= FRESH)
     }
     fn key(&self) -> (Filter, bool) {
@@ -437,13 +433,12 @@ impl Inbox {
         true
     }
     /// A first page for `filter` (with the current Unread only) to load ahead,
-    /// when it has none loaded or loading and nothing is being marked read
-    /// or opened. Returns its request; its page arrives through `finish`.
+    /// when it has none loaded or loading and nothing is being marked read.
+    /// Returns its request; its page arrives through `finish`.
     pub fn prefetch(&mut self, filter: Filter) -> Option<u64> {
         let key = (filter, self.unread_only);
         if key == self.key()
             || !self.reads.is_empty()
-            || self.opening.is_some()
             || self.windows.contains_key(&key)
             || self.prefetching.values().any(|pending| *pending == key)
         {

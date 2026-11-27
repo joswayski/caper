@@ -463,8 +463,6 @@ pub struct InboxRow {
     /// The check's accessible label.
     pub mark: String,
     pub unread: bool,
-    /// Its open is in flight: only it is disabled.
-    pub opening: bool,
     pub time: String,
     /// What happened, for reactions, requests and invitations.
     pub description: Option<String>,
@@ -566,10 +564,7 @@ impl Settings {
             }
             SPart::Privacy(_) => s.privacy.is_some(),
             SPart::Unblock(_) => !s.block_busy,
-            SPart::Open(k) => {
-                inbox.is_some_and(|i| !i.stale && i.rows.get(k).is_some_and(|r| !r.opening))
-            }
-            SPart::MarkRead(_) => inbox.is_some_and(|i| !i.stale),
+            SPart::Open(_) | SPart::MarkRead(_) => inbox.is_some_and(|i| !i.stale),
             SPart::LoadMore => inbox.is_some_and(|i| !i.loading),
             SPart::RetryInbox => inbox.is_some_and(|i| i.retry),
             SPart::Input(_) | SPart::Output(_) => audio.is_some_and(|a| a.mic == Mic::Idle),
@@ -2361,6 +2356,11 @@ impl App {
                 }
                 // A read changes the sidebar's count.
                 self.dirty.sidebar = true;
+                // An opened notification closes the inbox in this same frame,
+                // over its row, rather than once its navigation drains.
+                if matches!(part, SPart::Open(_)) {
+                    self.inbox_changed();
+                }
             }
         }
         self.settings_changed();

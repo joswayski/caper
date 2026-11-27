@@ -53,7 +53,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var activityRequest = 0L
     private var activityReactionRequest = 0L
     private var activityShown = false
-    internal fun setActivityVisible(visible: Boolean) { activityShown = visible }
+    internal fun setActivityVisible(visible: Boolean) {
+        activityShown = visible
+        // Rows an open kept in place (read) leave Unread only once the inbox hides.
+        if (!visible) activityMutable.value = activityMutable.value.let { inbox ->
+            if (inbox.unreadOnly) inbox.copy(items = inbox.items.filter { it.unread }) else inbox
+        }
+    }
     private val activityTargets = mutableMapOf<String, ActivityItem>()
 
     internal fun toggleActivityReply(item: ActivityItem) {
@@ -127,7 +133,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val token = accountToken ?: return
         val current = activityMutable.value
         // Polling waits for reads in flight; a filter change does not.
-        if (poll && (current.loading || current.busy > 0) || more && (current.loading || current.cursor == null)) return
+        if (poll && (current.loading || current.busy > 0 || current.opening != null) || more && (current.loading || current.cursor == null)) return
         val epoch = accountGeneration; val request = ++activityRequest
         val reload = !more && !poll
         // A reload keeps the previous rows in place (stale) until the new page replaces them.
@@ -155,7 +161,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Marks every item in [group] read at once with one request and puts them all back if the save fails;
-     * [open] then navigates to the group's oldest item, where the run starts.
+     * [open] also navigates to the group's oldest item, where the run starts, alongside the read rather
+     * than after it. An opened row stays in place, read, for the inbox to close over instead of emptying first.
      */
     internal fun readActivity(group: ActivityGroup, open: Boolean = false, onOpened: () -> Unit = {}) {
         val token = accountToken ?: return
@@ -172,36 +179,45 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val positions = rows.map { row -> start.items.indexOfFirst { it.id == row.id } to row }
             .filter { it.first >= 0 }.sortedBy { it.first }
         val counted = minOf(unreadIds.size, start.unreadCount.coerceAtLeast(0))
+        // Unread only drops read rows, except an opened one while the inbox still shows it.
         fun ActivityInboxState.withUnread(value: Boolean) = copy(
             expanded = expanded.mapValues { (_, row) -> if (row.id in unreadIds) row.copy(unread = value) else row },
-            items = items.map { if (it.id in unreadIds) it.copy(unread = value) else it }.filter { !unreadOnly || it.unread })
+            items = items.map { if (it.id in unreadIds) it.copy(unread = value) else it }
+                .filter { !unreadOnly || it.unread || open && activityShown && it.id in unreadIds })
         activityMutable.value = (if (unread) start.withUnread(false) else start).copy(
-            unreadCount = start.unreadCount - counted, busy = start.busy + 1,
+            unreadCount = start.unreadCount - counted, busy = start.busy + if (unread) 1 else 0,
             opening = if (open) group.id else start.opening, loading = false, error = null)
-        viewModelScope.launch {
+        if (unread) viewModelScope.launch {
             try {
-                if (unread) {
-                    val result = try { api.readActivity(token, group.ids) }
-                    catch (error: CancellationException) { throw error }
-                    catch (error: Throwable) {
-                        if (epoch == accountGeneration) {
-                            val now = activityMutable.value
-                            val same = now.filter == start.filter && now.unreadOnly == start.unreadOnly
-                            val restored = if (!same) now.items else now.items.toMutableList().apply {
-                                positions.forEach { (index, row) -> if (none { it.id == row.id }) add(index.coerceAtMost(size), row) }
-                            }
-                            activityMutable.value = now.copy(items = restored, unreadCount = now.unreadCount + counted).withUnread(true)
+                val result = try { api.readActivity(token, group.ids) }
+                catch (error: CancellationException) { throw error }
+                catch (error: Throwable) {
+                    if (epoch == accountGeneration) {
+                        val now = activityMutable.value
+                        val same = now.filter == start.filter && now.unreadOnly == start.unreadOnly
+                        val restored = if (!same) now.items else now.items.toMutableList().apply {
+                            positions.forEach { (index, row) -> if (none { it.id == row.id }) add(index.coerceAtMost(size), row) }
                         }
-                        throw error
+                        activityMutable.value = now.copy(items = restored, unreadCount = now.unreadCount + counted).withUnread(true)
                     }
-                    if (epoch != accountGeneration) return@launch
-                    ++unreadRevision
-                    val now = activityMutable.value
-                    // A reload answered before this read landed must not bring the row back; with several
-                    // reads in flight, only the last reply's count includes them all.
-                    activityMutable.value = now.withUnread(false).copy(unreadCount = if (now.busy == 1) result.unreadCount else now.unreadCount)
+                    throw error
                 }
-                if (open && activityShown && navigation == generation && opening == conversationOpeningRevision) {
+                if (epoch != accountGeneration) return@launch
+                ++unreadRevision
+                val now = activityMutable.value
+                // A reload answered before this read landed must not bring the row back; with several
+                // reads in flight, only the last reply's count includes them all.
+                activityMutable.value = now.withUnread(false).copy(unreadCount = if (now.busy == 1) result.unreadCount else now.unreadCount)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (epoch == accountGeneration) activityMutable.value = activityMutable.value.copy(error = message(error))
+            } finally {
+                if (epoch == accountGeneration) activityMutable.value = activityMutable.value.let { it.copy(busy = it.busy - 1) }
+            }
+        }
+        if (open) viewModelScope.launch {
+            try {
+                if (activityShown && navigation == generation && opening == conversationOpeningRevision) {
                     val channel = item.conversationId ?: item.channelId
                     require(item.spaceId != null || item.conversationId != null) { "This notification is no longer available." }
                     if (!item.kind.endsWith("invitation") && mutable.value.selectedChannel?.id != channel) {
@@ -234,9 +250,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Throwable) {
                 if (epoch == accountGeneration) activityMutable.value = activityMutable.value.copy(error = message(error))
             } finally {
-                if (epoch == accountGeneration) activityMutable.value = activityMutable.value.let {
-                    it.copy(busy = it.busy - 1, opening = if (open) null else it.opening)
-                }
+                if (epoch == accountGeneration) activityMutable.value = activityMutable.value.copy(opening = null)
             }
         }
     }

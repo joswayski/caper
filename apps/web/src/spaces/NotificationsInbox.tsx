@@ -263,7 +263,8 @@ export default function NotificationsInbox({
   // Marking read updates the row and count at once and puts them back if the save fails,
   // so the rest of the list never waits on (or dims for) the request.
   // A group is marked read in one request; opening it lands on its oldest notification,
-  // where the run starts.
+  // where the run starts. Opening navigates alongside the read rather than after it, and
+  // the row stays in place (read) so the inbox closes over it instead of emptying first.
   async function act(group: InboxItem[], open: boolean) {
     if (open) {
       if (opening.current) return;
@@ -284,33 +285,38 @@ export default function NotificationsInbox({
       loadedItems.current = rows;
       setItems(rows);
     };
-    try {
-      if (reading.length) {
-        update(
-          unread
-            ? loadedItems.current.filter((row) => !ids.has(row.id))
-            : loadedItems.current.map((row) => (ids.has(row.id) ? { ...row, unread: false } : row)),
-        );
-        if (countRef.current !== undefined) updateCount(Math.max(0, countRef.current - reading.length));
-        try {
-          const result = await readInbox([...ids]);
-          // With several reads in flight, only the last reply's count includes them all.
-          if (mounted.current && busy.current === 1) updateCount(result.unreadCount);
-        } catch (reason) {
-          if (!mounted.current) return;
-          const rows = loadedItems.current.map((row) => (ids.has(row.id) ? { ...row, unread: true } : row));
-          // Put removed rows back where they were, in their original order.
-          for (const item of [...reading].sort((a, b) => (indexes.get(a.id) ?? 0) - (indexes.get(b.id) ?? 0))) {
-            const index = indexes.get(item.id);
-            if (index !== undefined && !rows.some((row) => row.id === item.id))
-              rows.splice(Math.min(index, rows.length), 0, item);
-          }
-          update(rows);
-          if (countRef.current !== undefined) updateCount(countRef.current + reading.length);
-          throw reason;
+    const read = async () => {
+      if (!reading.length) return;
+      update(
+        unread && !open
+          ? loadedItems.current.filter((row) => !ids.has(row.id))
+          : loadedItems.current.map((row) => (ids.has(row.id) ? { ...row, unread: false } : row)),
+      );
+      if (countRef.current !== undefined) updateCount(Math.max(0, countRef.current - reading.length));
+      try {
+        const result = await readInbox([...ids]);
+        // With several reads in flight, only the last reply's count includes them all.
+        // The badge takes it even once a successful open has closed the inbox.
+        if (busy.current === 1) updateCount(result.unreadCount);
+      } catch (reason) {
+        if (countRef.current !== undefined) updateCount(countRef.current + reading.length);
+        if (!mounted.current) throw reason;
+        const rows = loadedItems.current.map((row) => (ids.has(row.id) ? { ...row, unread: true } : row));
+        // Put removed rows back where they were, in their original order.
+        for (const item of [...reading].sort((a, b) => (indexes.get(a.id) ?? 0) - (indexes.get(b.id) ?? 0))) {
+          const index = indexes.get(item.id);
+          if (index !== undefined && !rows.some((row) => row.id === item.id))
+            rows.splice(Math.min(index, rows.length), 0, item);
         }
+        update(rows);
+        throw reason;
       }
-      if (open && mounted.current) await onOpen(group.at(-1)!);
+    };
+    try {
+      const [opened, saved] = await Promise.allSettled([(async () => open && onOpen(group.at(-1)!))(), read()]);
+      // A failed open says more than a failed read beside it.
+      if (opened.status === "rejected") throw opened.reason;
+      if (saved.status === "rejected") throw saved.reason;
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "That notification couldn’t open.");
     } finally {

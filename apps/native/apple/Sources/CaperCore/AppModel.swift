@@ -79,7 +79,9 @@ public final class AppModel {
     var activityStale = false
     /// Mark-reads in flight; automatic refreshes wait for them.
     private var activityReads = 0
-    var activityShown = false
+    /// Once the inbox hides, rows an open kept in place (read) leave Unread only,
+    /// so it never shows them again while its next refresh loads.
+    var activityShown = false { didSet { if !activityShown && activityUnreadOnly { activityItems.removeAll { !$0.unread } } } }
     private var activityRequest = 0
     private var activityReactionRequest = 0
     var activityExpanded: [String: ActivityItem] = [:]
@@ -242,11 +244,13 @@ public final class AppModel {
 
     /// Optimistic: the row and count change at once and go back if the save fails,
     /// so the rest of the inbox never waits on (or disables for) the request.
-    /// A group is marked read with one request carrying all of its IDs.
-    func readActivity(_ group: ActivityGroup) async -> Bool {
+    /// A group is marked read with one request carrying all of its IDs. An open
+    /// (`keepRows`) leaves its rows in place, read, for the inbox to close over.
+    func readActivity(_ group: ActivityGroup, keepRows: Bool = false) async -> Bool {
         guard account != nil else { return false }
         let attempt = generation
-        activityError = nil
+        // An open clears the error itself: its read may start after the open already failed.
+        if !keepRows { activityError = nil }
         activityRequest += 1; activityLoading = false; unreadRevision += 1
         activityReads += 1
         defer { if generation == attempt { activityReads -= 1 } }
@@ -259,7 +263,7 @@ public final class AppModel {
         if !reading.isEmpty {
             for index in activityItems.indices where ids.contains(activityItems[index].id) { activityItems[index].unread = false }
             for id in ids { activityExpanded[id]?.unread = false }
-            if activityUnreadOnly { activityItems.removeAll { ids.contains($0.id) } }
+            if activityUnreadOnly && (!keepRows || !activityShown) { activityItems.removeAll { ids.contains($0.id) } }
             activityUnread = max(0, activityUnread - reading.count); updateApplicationBadge(activityUnread)
         }
         do {
@@ -287,15 +291,17 @@ public final class AppModel {
     }
 
     /// Marks the whole group read and opens its oldest item, so the
-    /// conversation lands where the run starts.
+    /// conversation lands where the run starts. The read runs alongside the
+    /// open rather than before it, and the row stays put until the inbox closes.
     func openActivity(_ group: ActivityGroup) async -> Bool {
         let item = group.oldest
         guard let route = item.route else { activityError = "This notification is no longer available."; return false }
         guard activityOpening == nil else { return false }
-        let attempt = generation; let navigation = navigationGeneration
+        let attempt = generation
         activityOpening = group.id
         defer { if generation == attempt { activityOpening = nil } }
-        guard await readActivity(group), activityShown, generation == attempt, navigationGeneration == navigation else { return false }
+        activityError = nil
+        Task { _ = await readActivity(group, keepRows: true) }
         error = nil; navigationError = nil
         await open(route)
         guard generation == attempt else { return false }

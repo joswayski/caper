@@ -35,13 +35,11 @@ pub enum Command {
         through: Option<crate::activity::Item>,
         more: bool,
     },
-    /// Marks a row's group read in one request; `open` then opens its oldest.
+    /// Marks a row's group read in one request.
     ReadActivity {
         epoch: u64,
-        navigation: u64,
         token: String,
         items: Vec<crate::activity::Item>,
-        open: bool,
     },
     AvatarHistory {
         epoch: u64,
@@ -718,9 +716,7 @@ pub enum Event {
     },
     ActivityRead {
         epoch: u64,
-        navigation: u64,
         items: Vec<crate::activity::Item>,
-        open: bool,
         result: Result<crate::activity::Read, String>,
     },
     AvatarHistory {
@@ -2107,10 +2103,8 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
         },
         Command::ReadActivity {
             epoch,
-            navigation,
             token,
             items,
-            open,
         } => {
             let ids = items
                 .iter()
@@ -2121,9 +2115,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
                 .map_err(|error| error.to_string());
             Event::ActivityRead {
                 epoch,
-                navigation,
                 items,
-                open,
                 result,
             }
         }
@@ -3458,16 +3450,14 @@ mod tests {
             &api,
             super::Command::ReadActivity {
                 epoch: 4,
-                navigation: 3,
                 token: "account".into(),
                 items: vec![item, second],
-                open: false,
             },
             &sender,
             &crate::host::Quiet,
         );
         assert!(
-            matches!(receiver.recv().unwrap(), super::Event::ActivityRead { epoch: 4, navigation: 3, open: false, result: Ok(read), .. } if read.unread_count == 6)
+            matches!(receiver.recv().unwrap(), super::Event::ActivityRead { epoch: 4, result: Ok(read), .. } if read.unread_count == 6)
         );
         worker.join().unwrap();
         assert_eq!(
