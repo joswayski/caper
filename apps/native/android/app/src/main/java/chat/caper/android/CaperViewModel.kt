@@ -2290,6 +2290,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun goToMessage(channelId: String, targetId: String, root: String?, onFailed: () -> Unit = {}, onLoaded: () -> Unit) {
         val channel = mutable.value.selectedChannel?.id ?: return
         if (channelId != channel || mutable.value.loadingMessageContext || refreshingHistory) return
+        // Already in the conversation (a reply's original a few rows up): just scroll to it.
+        if (root == null && mutable.value.channelMessages.any { it.id == targetId && it.deletedAt == null }) {
+            ++threadRequest
+            mutable.value = mutable.value.copy(thread = null, messageContextError = null,
+                focusedMessageId = targetId, focusRevision = mutable.value.focusRevision + 1)
+            onLoaded()
+            return
+        }
         val request = generation; val anchor = ++historyAnchorRequest
         mutable.value = mutable.value.copy(loadingMessageContext = true, messageContextError = null, loadingOlder = false, loadingNewer = false)
         viewModelScope.launch {

@@ -4539,6 +4539,12 @@ public final class ChatModel {
 
     func goToMessage(id: String, channelID: String, threadRootID: String?) async -> Bool {
         guard !loading, !jumpingToMessage, channelID == self.channelID else { return false }
+        // Already in the conversation (a reply's original a few rows up): just scroll to it.
+        if threadRootID == nil, channelMessages.contains(where: { $0.id == id && !$0.isDeleted }) {
+            jumpError = nil; closeThread()
+            focusedMessageID = id; focusRevision += 1; focusedAt = Date()
+            return true
+        }
         let requestGeneration = generation
         historyAnchorRequest += 1
         let request = historyAnchorRequest

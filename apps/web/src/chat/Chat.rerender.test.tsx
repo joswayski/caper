@@ -54,6 +54,10 @@ vi.mock("./client.ts", async (importOriginal) => {
       this.emit({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
     }
     async prefetchThread() {}
+    async loadMessageContext() {
+      await fetch("/api/chat/channels/channel/messages?around=");
+      return true;
+    }
     closeThread() {
       this.emit({ thread: undefined });
     }
@@ -194,6 +198,26 @@ test.each([false, true])(
     expect(container.textContent).not.toContain("No messages yet.");
   },
 );
+
+test("opening a reply's loaded original highlights it in place without reloading the list", async () => {
+  await render(<Page speaking="Nobody is speaking" />);
+  const client = fixture.clients.at(-1)!;
+  const original = message(1);
+  const answer: ChatMessage = {
+    ...message(2),
+    replyTo: { id: original.id, author: original.author, text: text(1), hasAttachments: false },
+  };
+  await act(async () => client.emit({ messages: [original, answer] }));
+  const row = () => container.querySelector(`.chat-message[data-message-key="${original.clientMessageId}"]`);
+  const before = row();
+  expect(before).not.toBeNull();
+  const fetches = vi.mocked(fetch).mock.calls.length;
+
+  await act(async () => container.querySelector<HTMLButtonElement>("button.chat-reply-source")!.click());
+  expect(row()).toBe(before);
+  expect(row()?.classList).toContain("chat-message-jump-target");
+  expect(vi.mocked(fetch).mock.calls.length).toBe(fetches);
+});
 
 test("voice, presence, typing and composer updates leave unchanged message rows alone", async () => {
   await render(<Page speaking="Nobody is speaking" />);

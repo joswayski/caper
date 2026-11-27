@@ -736,10 +736,18 @@ export default function Chat({
     // Pins shows its own error; elsewhere (a reply's original, a notification) a
     // failed jump must still say so instead of doing nothing.
     const fail = showPins ? setJumpError : setActionStatus;
-    setJumping(message.id);
     setJumpError(undefined);
     setActionTarget(undefined);
     setMentionCard(undefined);
+    // A target already in the list (a reply's original a few rows up) only needs
+    // a scroll: reloading its context would remount the list and blank it.
+    if (!message.threadRootId && channelMessages.some((row) => row.id === message.id)) {
+      setShowPins(false);
+      setJumpMessage({ id: message.id, at: performance.now() });
+      setScrollTarget(message.id);
+      return true;
+    }
+    setJumping(message.id);
     try {
       if ((await client.loadMessageContext(message)) && clientRef.current === client) {
         setShowPins(false);
