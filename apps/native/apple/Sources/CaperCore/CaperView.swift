@@ -2610,8 +2610,7 @@ private struct VoiceCallCard<Heading: View>: View {
     }
 
     private var controls: some View {
-        let joining = voice.phase == .joining
-        return HStack(spacing: 6) {
+        HStack(spacing: 6) {
             CallMuteButton(voice: voice, identifier: "voice-call-mute")
             CallDeafenButton(voice: voice, identifier: "voice-call-deafen")
             Spacer(minLength: 8)
@@ -2619,14 +2618,11 @@ private struct VoiceCallCard<Heading: View>: View {
                 guard !SwipeTapGuard.swiping else { return }
                 model.leaveVoice()
             } label: {
-                HStack(spacing: 6) {
-                    CaperIcon(name: "phone-off", size: 14)
-                    Text(joining ? "Cancel" : "Leave").lineLimit(1)
-                }
+                CaperIcon(name: "phone-off", size: 14)
             }
             .buttonStyle(CallLeaveButtonStyle())
-            .help(joining ? "Cancel joining voice" : "Disconnect")
-            .accessibilityLabel(joining ? "Cancel joining voice" : "Leave voice")
+            .help("Disconnect")
+            .accessibilityLabel("Disconnect")
             .accessibilityIdentifier("voice-call-leave")
         }
     }
@@ -2758,13 +2754,13 @@ private struct CallToggleStyle: ButtonStyle {
 /// Leave (or Cancel while joining): the disconnect red on a faint red fill.
 private struct CallLeaveButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(CaperTheme.font(12, weight: .bold))
+        // Icon-only, square like Mute and Deafen.
+        configuration.label
             .foregroundStyle(LiveNowPalette.disconnect)
-            .padding(.horizontal, 12)
             #if os(iOS)
-            .frame(minHeight: 44)
+            .frame(width: 44, height: 44)
             #else
-            .frame(minHeight: 32)
+            .frame(width: 32, height: 32)
             #endif
             .background(LiveNowPalette.disconnect.opacity(configuration.isPressed ? 0.22 : 0.12), in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())

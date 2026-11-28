@@ -35,6 +35,7 @@ on:
       - shared/emoji/**
       - shared/fonts/**
       - shared/messages/**
+      - shared/sounds/**
       - scripts/generate-favicons.mjs
       - scripts/native-emoji.mjs
       - scripts/native_artifacts.py

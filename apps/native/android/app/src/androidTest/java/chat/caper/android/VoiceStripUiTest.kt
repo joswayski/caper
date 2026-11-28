@@ -118,7 +118,7 @@ class VoiceStripUiTest {
         compose.onNodeWithContentDescription("In voice in #design", substring = true).performClick()
         compose.runOnIdle { assertEquals(1, toggled); assertEquals(1, opened) }
         // The strip has no Leave or Deafen: those live on the call card and the account bar.
-        compose.onNodeWithContentDescription("Leave voice").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Disconnect").assertDoesNotExist()
         compose.onNodeWithContentDescription("Deafen audio").assertDoesNotExist()
 
         // Like the account bar's, Mute waits while the Audio test holds the microphone.

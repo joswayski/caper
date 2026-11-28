@@ -92,7 +92,7 @@ test("audio controls remain available before joining; joining is a channel row a
   const header = markup.match(/<header class="chat-heading">(.*?)<\/header>/)?.[1];
   expect(header).toBeDefined();
   expect(header).not.toContain("Join voice");
-  expect(header).not.toContain("Leave voice");
+  expect(header).not.toContain("Disconnect");
   // The channel row keeps a one-click, icon-only join.
   const shortcut = markup.match(/<button[^>]*aria-label="Join voice in #general"[^>]*>(.*?)<\/button>/)?.[1];
   expect(shortcut).toContain("<svg");
@@ -100,7 +100,7 @@ test("audio controls remain available before joining; joining is a channel row a
   // Nobody is talking yet, so no row is a live card and there is nothing to leave.
   expect(markup).not.toContain("live-card");
   expect(markup).not.toContain('aria-label="Live now"');
-  expect(markup).not.toContain('aria-label="Leave voice"');
+  expect(markup).not.toContain('aria-label="Disconnect"');
 });
 
 test.each([

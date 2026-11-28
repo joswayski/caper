@@ -116,6 +116,7 @@ android {
         assets.directories += listOf(
             "../third_party",
             rootProject.file("../../../shared/emoji").path,
+            rootProject.file("../../../shared/sounds").path,
             layout.buildDirectory.dir("generated/caper-fonts/assets").get().asFile.path,
             layout.buildDirectory.dir("native-inputs/assets").get().asFile.path
         )

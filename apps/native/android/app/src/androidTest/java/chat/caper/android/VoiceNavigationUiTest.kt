@@ -41,7 +41,7 @@ class VoiceNavigationUiTest {
         compose.onNodeWithText("0 people", useUnmergedTree = true).performClick()
         compose.runOnIdle { assertEquals(3, opened); assertEquals(0, left) }
 
-        compose.onNodeWithContentDescription("Leave voice").performClick()
+        compose.onNodeWithContentDescription("Disconnect").performClick()
         compose.runOnIdle { assertEquals(3, opened); assertEquals(1, left) }
     }
 }

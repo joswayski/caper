@@ -98,7 +98,7 @@ class VoiceRosterUiTest {
         compose.onNodeWithContentDescription("Remote Voice").assertExists()
         compose.onNodeWithContentDescription("Unmute microphone").assertExists()
         compose.onNodeWithContentDescription("Deafen audio").assertExists()
-        compose.onNodeWithContentDescription("Leave voice").assertExists()
+        compose.onNodeWithContentDescription("Disconnect").assertExists()
         compose.onNodeWithText("User volume").assertDoesNotExist()
         capture("voice-roster-connected-card.png", compose.onNodeWithTag("live-call-card"))
 
@@ -208,12 +208,11 @@ class VoiceRosterUiTest {
             }
         }
         compose.onNodeWithText("Connecting…").assertExists()
-        compose.onNodeWithText("Cancel").assertExists()
         compose.onNodeWithContentDescription("Remote Voice").performTouchInput { longClick() }
         compose.onNodeWithText("Remote Voice").assertExists()
         compose.onNodeWithContentDescription("Audio controls for Remote Voice").assertDoesNotExist()
         compose.onNodeWithText("Close").performClick()
-        compose.onNodeWithContentDescription("Cancel joining voice").performClick()
+        compose.onNodeWithContentDescription("Disconnect").performClick()
         compose.runOnIdle { assertEquals(1, left); assertEquals(0, opened) }
     }
 
@@ -240,7 +239,7 @@ class VoiceRosterUiTest {
         // The row line, then the faces, then the controls.
         val row = compose.onNodeWithText("design", useUnmergedTree = true).getUnclippedBoundsInRoot()
         val face = compose.onNodeWithContentDescription("Maya").getUnclippedBoundsInRoot()
-        val leave = compose.onNodeWithContentDescription("Leave voice").getUnclippedBoundsInRoot()
+        val leave = compose.onNodeWithContentDescription("Disconnect").getUnclippedBoundsInRoot()
         assertTrue(row.bottom <= face.top && face.bottom <= leave.top)
         compose.onNodeWithText("2 people", useUnmergedTree = true).assertExists()
 
@@ -250,7 +249,7 @@ class VoiceRosterUiTest {
         compose.runOnIdle { assertEquals(3, opened) }
         // The menu, Leave and the Mute and Deafen the Audio test holds never open the chat.
         compose.onNodeWithContentDescription("design channel menu").performClick()
-        compose.onNodeWithContentDescription("Leave voice").performClick()
+        compose.onNodeWithContentDescription("Disconnect").performClick()
         compose.onNodeWithContentDescription("Mute microphone").performClick()
         compose.onNodeWithContentDescription("Deafen audio").performClick()
         compose.runOnIdle { assertEquals(3, opened); assertEquals(1, menus); assertEquals(1, left) }

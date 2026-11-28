@@ -808,10 +808,9 @@
     font-size: 0.78rem;
   }
   .sim-demo .live-controls :is(.voice-icon-button, .voice-leave) {
-    height: 34px;
-  }
-  .sim-demo .live-controls .voice-icon-button {
     width: 34px;
+    height: 34px;
+    min-height: 34px;
   }
   .sim-demo .live-face {
     width: 36px;

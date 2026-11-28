@@ -10,9 +10,9 @@ use media::{
 };
 use serde::{Deserialize, Serialize};
 use state::{CallContext, CallState, Phase};
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -172,6 +172,70 @@ enum MicCommand {
     Prepare(u16, u8),
 }
 
+/// A voice chime (`shared/sounds`): yours as you join or leave, and others'
+/// as they come and go while you are in and not deafened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceSound {
+    Join,
+    Leave,
+}
+
+impl VoiceSound {
+    /// Plays the chime on the default speaker at the call's output volume
+    /// (percent), on its own thread.
+    pub fn play(self, volume_percent: u16) {
+        let wav: &'static [u8] = match self {
+            Self::Join => include_bytes!("../../../../shared/sounds/voice-join.wav"),
+            Self::Leave => include_bytes!("../../../../shared/sounds/voice-leave.wav"),
+        };
+        std::thread::spawn(move || {
+            let Ok(stream) = rodio::OutputStreamBuilder::open_default_stream() else {
+                return;
+            };
+            let Ok(chime) = rodio::Decoder::new(std::io::Cursor::new(wav)) else {
+                return;
+            };
+            let sink = rodio::Sink::connect_new(stream.mixer());
+            sink.set_volume(f32::from(volume_percent) / 100.0);
+            sink.append(chime);
+            sink.sleep_until_end();
+        });
+    }
+}
+
+/// What the chimes compare between updates.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct Heard {
+    joining: bool,
+    connected: bool,
+    in_call: bool,
+    self_id: String,
+    others: BTreeSet<String>,
+}
+
+/// The chime between two updates; a cancelled join and a reconnect stay quiet.
+fn voice_sound(before: &Heard, after: &Heard, deafened: bool) -> Option<VoiceSound> {
+    if before.joining && after.connected {
+        return Some(VoiceSound::Join);
+    }
+    if before.in_call && !after.in_call {
+        return Some(VoiceSound::Leave);
+    }
+    if !before.connected || !after.connected || deafened || before.self_id.is_empty() {
+        return None;
+    }
+    if before.self_id != after.self_id {
+        return None;
+    }
+    if !after.others.is_subset(&before.others) {
+        Some(VoiceSound::Join)
+    } else if !before.others.is_subset(&after.others) {
+        Some(VoiceSound::Leave)
+    } else {
+        None
+    }
+}
+
 pub struct Voice {
     pub state: CallState,
     pub participants: Vec<Participant>,
@@ -224,6 +288,8 @@ pub struct Voice {
     events: Sender<Report>,
     incoming: Receiver<Report>,
     repaint: Repaint,
+    heard: Heard,
+    sound: Option<VoiceSound>,
 }
 
 enum Operation {
@@ -318,6 +384,8 @@ impl Voice {
             incoming,
             repaint,
             active_space: None,
+            heard: Heard::default(),
+            sound: None,
         }
     }
 
@@ -346,6 +414,7 @@ impl Voice {
         };
         self.active_space = space.clone();
         let generation = self.state.join(context);
+        self.listen();
         self.session_started_at = Some(session_started_at.unwrap_or(join_started_at));
         self.error = None;
         let control = JoinControl::new();
@@ -396,6 +465,33 @@ impl Voice {
                     return;
                 }
             };
+            // Live updates open as soon as the server admits the join, alongside
+            // the microphone and transport rather than after them.
+            let (gateway_events, gateway_incoming) = mpsc::channel();
+            let opened = Arc::new(Mutex::new(None));
+            {
+                let (base, token, channel_id, opened) = (
+                    base.clone(),
+                    token.clone(),
+                    channel_id.clone(),
+                    opened.clone(),
+                );
+                let gateway_events = gateway_events.clone();
+                control.on_issued(move |media_token| {
+                    let gateway = media_gateway::spawn(
+                        &base,
+                        token,
+                        media_token.into(),
+                        channel_id,
+                        generation,
+                        gateway_events,
+                    );
+                    if let Ok(mut opened) = opened.lock() {
+                        *opened = Some(gateway);
+                    }
+                });
+            }
+            let opened = move || opened.lock().ok().and_then(|mut opened| opened.take());
             let session = runtime.block_on(NativeSession::join(
                 api,
                 &name,
@@ -408,6 +504,9 @@ impl Voice {
             let mut session = match session {
                 Ok(session) => session,
                 Err(error) => {
+                    if let Some(gateway) = opened() {
+                        gateway.stop();
+                    }
                     if !matches!(&error, VoiceError::Local(detail) if detail == "voice join cancelled")
                     {
                         report(&events, &repaint, Report::Failed(generation, error));
@@ -415,19 +514,21 @@ impl Voice {
                     return;
                 }
             };
+            let gateway = opened().unwrap_or_else(|| {
+                media_gateway::spawn(
+                    &base,
+                    token,
+                    session.media_token().into(),
+                    channel_id,
+                    generation,
+                    gateway_events,
+                )
+            });
             if control.is_cancelled() {
+                gateway.stop();
                 session.leave();
                 return;
             }
-            let (gateway_events, gateway_incoming) = mpsc::channel();
-            let gateway = media_gateway::spawn(
-                &base,
-                token,
-                session.media_token().into(),
-                channel_id,
-                generation,
-                gateway_events,
-            );
             let mut ready = false;
             let mut gateway_ready = false;
             let mut roster_ready = false;
@@ -450,7 +551,13 @@ impl Voice {
                         match event {
                             media_gateway::Event::Online { .. } => gateway_ready = true,
                             media_gateway::Event::Offline { .. } => gateway_ready = false,
-                            _ => {}
+                            // The gateway pushes the roster before confirming the
+                            // subscription, so that roster is as good as a poll.
+                            media_gateway::Event::Snapshot { .. } => {
+                                roster_ready = true;
+                                roster_at.get_or_insert_with(Instant::now);
+                            }
+                            media_gateway::Event::AccessDenied { .. } => {}
                         }
                     }
                     let denied = matches!(event, media_gateway::Event::AccessDenied { .. });
@@ -464,7 +571,9 @@ impl Voice {
                 if control.is_cancelled() {
                     break;
                 }
-                match receiver.recv_timeout(Duration::from_millis(100)) {
+                // Until the call is ready, check its readiness often.
+                let wait = Duration::from_millis(if ready { 100 } else { 10 });
+                match receiver.recv_timeout(wait) {
                     Ok(command) => {
                         let result = match command {
                             Operation::Mute(value) => runtime.block_on(session.set_muted(value)),
@@ -501,7 +610,8 @@ impl Voice {
                     );
                     break;
                 }
-                if Instant::now() >= next_snapshot {
+                // A roster the gateway already pushed needn't hold up the join.
+                if Instant::now() >= next_snapshot && (ready || !roster_ready) {
                     match runtime.block_on(session.snapshot()) {
                         Ok(snapshot) => {
                             roster_ready = true;
@@ -644,6 +754,34 @@ impl Voice {
         self.input_reopened = None;
         self.call_default_input = None;
         self.state.leave_now();
+        self.listen();
+    }
+
+    /// The chime the latest updates call for, once; clients play it.
+    pub fn take_sound(&mut self) -> Option<VoiceSound> {
+        self.sound.take()
+    }
+
+    fn listen(&mut self) {
+        let heard = Heard {
+            joining: matches!(self.state.phase, Phase::Joining(_)),
+            connected: matches!(self.state.phase, Phase::Connected(_)),
+            in_call: matches!(
+                self.state.phase,
+                Phase::Connected(_) | Phase::Reconnecting(_)
+            ),
+            self_id: self.self_id.clone(),
+            others: self
+                .participants
+                .iter()
+                .filter(|participant| participant.id != self.self_id)
+                .map(|participant| participant.id.clone())
+                .collect(),
+        };
+        if let Some(sound) = voice_sound(&self.heard, &heard, self.state.audio.deafened) {
+            self.sound = Some(sound);
+        }
+        self.heard = heard;
     }
 
     /// The input an unmuted call captures went away: it could not be opened
@@ -1190,6 +1328,11 @@ impl Voice {
     }
 
     pub fn receive(&mut self) {
+        self.receive_reports();
+        self.listen();
+    }
+
+    fn receive_reports(&mut self) {
         while let Ok(report) = self.incoming.try_recv() {
             match report {
                 Report::Connected(g, id, inputs, outputs) if self.state.connected(g) => {
@@ -1651,6 +1794,58 @@ mod tests {
             200
         );
         assert_eq!(Preferences::restore("broken"), Preferences::default());
+    }
+
+    #[test]
+    fn chimes_for_joins_and_leaves_but_not_cancels_reconnects_or_while_deafened() {
+        let mut voice = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            Repaint::new(|_| ()),
+        );
+        let mut revision = 0;
+        let mut roster = |voice: &mut Voice, ids: &[&str]| {
+            revision += 1;
+            let participants: Vec<_> = ids
+                .iter()
+                .map(|id| serde_json::json!({"id": id, "name": id, "muted": false, "deafened": false, "tracks": []}))
+                .collect();
+            let snapshot = serde_json::from_value::<Snapshot>(
+                serde_json::json!({"revision": revision, "participants": participants}),
+            )
+            .unwrap();
+            voice
+                .events
+                .send(Report::Roster(voice.state.generation, snapshot))
+                .unwrap();
+            voice.receive();
+            voice.take_sound()
+        };
+        voice.state.join(context("general"));
+        voice.receive();
+        voice.leave();
+        assert_eq!(voice.take_sound(), None, "a cancelled join is silent");
+
+        let generation = voice.state.join(context("general"));
+        assert_eq!(roster(&mut voice, &["me"]), None);
+        voice
+            .events
+            .send(Report::Connected(generation, "me".into(), vec![], vec![]))
+            .unwrap();
+        voice.receive();
+        assert_eq!(voice.take_sound(), Some(VoiceSound::Join));
+        assert_eq!(roster(&mut voice, &["me", "ana"]), Some(VoiceSound::Join));
+        assert_eq!(roster(&mut voice, &["me", "ana"]), None);
+        assert_eq!(roster(&mut voice, &["me"]), Some(VoiceSound::Leave));
+        voice.state.audio.deafened = true;
+        assert_eq!(roster(&mut voice, &["me", "ana"]), None);
+        voice.state.audio.deafened = false;
+        assert!(voice.state.reconnecting(generation));
+        voice.receive();
+        assert!(voice.state.connected(generation));
+        voice.receive();
+        assert_eq!(voice.take_sound(), None, "a reconnect is silent");
+        voice.leave();
+        assert_eq!(voice.take_sound(), Some(VoiceSound::Leave));
     }
 
     #[test]

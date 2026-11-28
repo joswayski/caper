@@ -698,7 +698,12 @@ pub struct JoinControl {
     processing_diagnostics: Arc<Mutex<Option<AudioProcessingDiagnostics>>>,
     playback: Arc<Mutex<PlaybackState>>,
     activity: Arc<Mutex<ActivityLog>>,
+    /// Runs once with the media token as soon as the server admits the join,
+    /// so the caller can open its live updates while media is still connecting.
+    issued: Arc<Mutex<Option<IssuedHook>>>,
 }
+
+type IssuedHook = Box<dyn FnOnce(&str) + Send>;
 
 #[derive(Default, Debug, PartialEq, Eq)]
 struct DeviceIntent {
@@ -853,6 +858,22 @@ impl JoinControl {
                 silenced: true,
             })),
             activity: Arc::new(Mutex::new(ActivityLog::default())),
+            issued: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Calls `hook` with the media token once the server admits this join,
+    /// before the microphone and transport are set up.
+    pub fn on_issued(&self, hook: impl FnOnce(&str) + Send + 'static) {
+        if let Ok(mut issued) = self.issued.lock() {
+            *issued = Some(Box::new(hook));
+        }
+    }
+
+    fn issue(&self, token: &str) {
+        let hook = self.issued.lock().ok().and_then(|mut issued| issued.take());
+        if let Some(hook) = hook {
+            hook(token);
         }
     }
 
@@ -1394,6 +1415,7 @@ impl NativeSession {
             )
             .await
             .map_err(VoiceError::Media)?;
+        control.issue(&joined.token);
         Self::from_join(api, joined, intent, input_guid, output_guid, control).await
     }
 

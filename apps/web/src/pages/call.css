@@ -1819,8 +1819,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Disconnect is icon-only, named by its tooltip and accessible label. */
 .voice-leave {
-  width: 84px;
+  width: 34px;
   min-height: 28px;
   height: auto;
   flex: none;
@@ -1828,14 +1829,10 @@
   align-items: center;
   margin-left: auto;
   justify-content: center;
-  gap: 4px;
-  padding: 0 6px;
+  padding: 0;
   border: 1px solid transparent;
   color: var(--text-muted);
   background: transparent;
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 500;
 }
 .voice-leave > svg {
   width: 14px;
@@ -1920,16 +1917,12 @@
 /* Disconnect reads as such by its red icon and text alone; hover and focus
    add only the neutral wash other header controls use. */
 .header-voice .voice-leave {
-  width: auto;
+  width: 34px;
   min-height: 34px;
-  gap: 6px;
-  padding: 0 12px;
   border: 0;
   border-radius: 8px;
   color: var(--voice-off);
   background: transparent;
-  font-size: 0.78rem;
-  font-weight: 700;
 }
 .header-voice .voice-leave:focus-visible {
   color: var(--voice-off);
@@ -1984,7 +1977,7 @@
     display: flex;
   }
   .header-voice-people,
-  .header-voice :is(.channel-join-label, .voice-leave > span) {
+  .header-voice .channel-join-label {
     display: none;
   }
   .chat-heading .header-voice :is(.header-voice-join, .voice-leave, .header-voice-mute) {
@@ -2093,7 +2086,7 @@
     height: 44px;
   }
   .voice-hangup.voice-leave {
-    width: 84px;
+    width: 44px;
   }
 }
 .voice-occupants {
@@ -2469,11 +2462,11 @@
 }
 .live-controls .voice-leave {
   margin-left: auto;
+  width: 34px;
   height: 34px;
+  border-radius: var(--radius);
   color: var(--error-text);
   background: rgb(var(--accent-bright-rgb) / 0.16);
-  font-size: 0.78rem;
-  font-weight: 700;
 }
 @media (hover: hover) {
   .live-controls .voice-icon-button:not([aria-disabled="true"]):hover {
@@ -2709,10 +2702,8 @@
   }
   .live-controls .voice-icon-button,
   .live-controls .voice-leave {
-    height: 44px;
-  }
-  .live-controls .voice-icon-button {
     width: 44px;
+    height: 44px;
   }
   .live-face,
   .live-more {

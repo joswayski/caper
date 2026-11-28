@@ -119,10 +119,30 @@ public struct VoiceContext: Equatable, Sendable {
 @MainActor @Observable
 public final class VoiceClient {
     public enum Phase: Equatable { case idle, joining, connected, reconnecting, leaving, failed }
-    public var phase: Phase = .idle
+    public var phase: Phase = .idle {
+        didSet {
+            // You getting in, and leaving or dropping; a cancelled join stays quiet.
+            let inCall: (Phase) -> Bool = { $0 == .connected || $0 == .reconnecting }
+            if oldValue == .joining && phase == .connected { sounds.play(.join, gain: outputGain) }
+            else if inCall(oldValue) && !inCall(phase) { sounds.play(.leave, gain: outputGain) }
+        }
+    }
     public var muted = false
     public var deafened = false
-    public var participants: [VoiceParticipant] = []
+    public var participants: [VoiceParticipant] = [] {
+        didSet {
+            // Others coming and going while you are in. A reconnect changes your
+            // id, so its first roster only sets who is already here.
+            defer { heardSelfID = selfID }
+            guard phase == .connected, !deafened, let selfID, heardSelfID == selfID else { return }
+            let others = { (people: [VoiceParticipant]) in Set(people.map(\.id).filter { $0 != selfID }) }
+            let before = others(oldValue), after = others(participants)
+            if !after.isSubset(of: before) { sounds.play(.join, gain: outputGain) }
+            else if !before.isSubset(of: after) { sounds.play(.leave, gain: outputGain) }
+        }
+    }
+    @ObservationIgnored private let sounds = VoiceSounds()
+    @ObservationIgnored private var heardSelfID: String?
     public private(set) var sessionStartedAt: Double?
     public var outputGain = UserDefaults.standard.object(forKey: "caper.voice.outputGain") == nil
         ? 100 : min(200, max(0, UserDefaults.standard.integer(forKey: "caper.voice.outputGain")))

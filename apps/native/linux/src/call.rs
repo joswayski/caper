@@ -101,6 +101,9 @@ impl App {
         let mut voice = self.voice.borrow_mut();
         let input = voice.preferences.input.clone();
         voice.receive();
+        if let Some(sound) = voice.take_sound() {
+            sound.play(voice.preferences.master_percent);
+        }
         if voice.preferences.input != input {
             self.prefs
                 .set(super::audio::PREFERENCES, &voice.preferences);
@@ -366,12 +369,15 @@ impl App {
         }
     }
 
-    /// Leave, or Cancel while joining.
+    /// Disconnect, while in voice or still joining.
     pub(super) fn leave_voice(self: &Rc<Self>) {
         {
             let mut voice = self.voice.borrow_mut();
             voice.leave();
             voice.error = None;
+            if let Some(sound) = voice.take_sound() {
+                sound.play(voice.preferences.master_percent);
+            }
         }
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.calls.pending = None;
@@ -1064,32 +1070,15 @@ impl App {
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         buttons.append(&spacer);
-        let joining = matches!(phase, Phase::Joining(_));
-        let leave: gtk::Button = crate::app::named(
-            "GtkButton",
-            if failed {
-                "Dismiss"
-            } else if joining {
-                "Cancel"
-            } else {
-                "Leave voice"
-            },
-        );
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        if !failed {
-            line.append(&self.images.icon_image(Icon::PhoneOff, "#f3f4f5", 15));
+        // Disconnect is icon-only, named by its tooltip, while joining too.
+        let leave: gtk::Button =
+            crate::app::named("GtkButton", if failed { "Dismiss" } else { "Disconnect" });
+        if failed {
+            leave.set_child(Some(&label("Dismiss", &["strong"])));
+        } else {
+            leave.set_child(Some(&self.images.icon_image(Icon::PhoneOff, "#f3f4f5", 15)));
+            leave.set_tooltip_text(Some("Disconnect"));
         }
-        line.append(&label(
-            if failed {
-                "Dismiss"
-            } else if joining {
-                "Cancel"
-            } else {
-                "Leave"
-            },
-            &["strong"],
-        ));
-        leave.set_child(Some(&line));
         leave.add_css_class(if failed { "flat" } else { "destructive-action" });
         let weak = Rc::downgrade(self);
         leave.connect_clicked(move |_| {

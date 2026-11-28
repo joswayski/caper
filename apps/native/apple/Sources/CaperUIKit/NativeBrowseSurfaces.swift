@@ -239,7 +239,13 @@ private final class NativeVoiceCard: UIView {
     private lazy var speaker = IconButton(icon: "volume-2", label: "Speaker", side: 44) { [model] in
         CaperHaptics.tap(); model.voice.setSpeakerOutput(!model.voice.speakerOutput)
     }
-    private lazy var leave = CaperButton("Leave", kind: .compact, size: 12) { [model] in VoicePresentation.leave(model) }
+    private lazy var leave: IconButton = {
+        let button = IconButton(icon: "phone-off", label: "Disconnect", size: 18, side: 44) { [model] in VoicePresentation.leave(model) }
+        button.tintColor = UIKitStyle.voiceOff
+        button.backgroundColor = UIKitStyle.voiceOff.withAlphaComponent(0.12)
+        button.layer.cornerRadius = 10
+        return button
+    }()
     private lazy var join = CaperButton("Join", kind: .primary, size: 12) { [weak self] in
         guard let self, let channel else { return }; ChannelVoiceAction(model: model, channel: channel).join()
     }
@@ -288,7 +294,6 @@ private final class NativeVoiceCard: UIView {
         deafen.setImage(UIKitStyle.icon(model.voice.deafened ? "headphone-off" : "headphones")?.resized(to: 18), for: .normal)
         deafen.accessibilityLabel = model.voice.deafened ? "Undeafen audio" : "Deafen audio"; deafen.accessibilityValue = model.voice.deafened ? "Deafened" : "On"
         mute.tintColor = model.voice.muted ? UIKitStyle.voiceOff : UIKitStyle.text; deafen.tintColor = model.voice.deafened ? UIKitStyle.voiceOff : UIKitStyle.text
-        leave.setTitle(model.voice.phase == .joining ? "Cancel" : "Leave"); leave.accessibilityLabel = model.voice.phase == .joining ? "Cancel joining voice" : "Leave voice"
         if let channel {
             let action = ChannelVoiceAction(model: model, channel: channel)
             join.setTitle(action.title); join.isEnabled = action.enabled; join.accessibilityLabel = action.description; join.accessibilityHint = action.help
@@ -337,7 +342,7 @@ private final class NativeVoiceCard: UIView {
         mute.frame = CGRect(x: 8, y: bounds.height - 52, width: 44, height: 44)
         deafen.frame = CGRect(x: 54, y: bounds.height - 52, width: 44, height: 44)
         speaker.frame = CGRect(x: 100, y: bounds.height - 52, width: 44, height: 44)
-        leave.frame = CGRect(x: max(146, bounds.width - 90), y: bounds.height - 52, width: 78, height: 44)
+        leave.frame = CGRect(x: max(146, bounds.width - 56), y: bounds.height - 52, width: 44, height: 44)
         join.frame = CGRect(x: max(90, bounds.width - 88), y: 28, width: 76, height: 44)
         let height = intrinsicContentSize.height
         if height != lastHeight { lastHeight = height; invalidateIntrinsicContentSize() }

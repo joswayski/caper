@@ -2152,8 +2152,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["voice-call-speaker"].exists, "No line says who is speaking")
         // Mute, Deafen and Leave. The dock is gone, and the card and account bar share state.
         let leave = app.buttons["voice-call-leave"]
-        XCTAssertEqual(leave.label, "Leave voice")
-        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Leave voice")).count, 1, "Leave lives only in the call card")
+        XCTAssertEqual(leave.label, "Disconnect")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Disconnect")).count, 1, "Disconnect lives only in the call card")
         XCTAssertFalse(app.descendants(matching: .any)["active-voice-context"].exists, "No bottom voice dock")
         XCTAssertTrue(app.buttons["voice-call-deafen"].exists)
         let cardMute = app.buttons["voice-call-mute"]

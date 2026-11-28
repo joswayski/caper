@@ -593,7 +593,6 @@ pub struct CallView {
     pub count: usize,
     /// The session's running time.
     pub timer: Option<String>,
-    pub joining: bool,
     pub muted: bool,
     pub deafened: bool,
 }
@@ -5177,10 +5176,13 @@ impl Live {
         }
     }
 
-    /// Leave, or Cancel while joining.
+    /// Disconnect, while in voice or still joining.
     pub fn leave_voice(&mut self) {
         self.pending_join = None;
         self.voice.leave();
+        if let Some(sound) = self.voice.take_sound() {
+            sound.play(self.voice.preferences.master_percent);
+        }
         self.queued.push(Update::Voice);
     }
 
@@ -5241,7 +5243,6 @@ impl Live {
                 .session_started_at
                 .filter(|_| matches!(self.voice.state.phase, Phase::Connected(_)))
                 .map(|started| caper_client::voice::session_duration(started, now)),
-            joining: matches!(self.voice.state.phase, Phase::Joining(_)),
             muted: self.voice.state.audio.muted,
             deafened: self.voice.state.audio.deafened,
         })
@@ -5252,6 +5253,9 @@ impl Live {
     fn receive_voice(&mut self) -> bool {
         let input = self.voice.preferences.input.clone();
         self.voice.receive();
+        if let Some(sound) = self.voice.take_sound() {
+            sound.play(self.voice.preferences.master_percent);
+        }
         // A choice forgotten because its device is gone stays forgotten.
         if self.voice.preferences.input != input {
             crate::settings::audio::save_preferences(&self.voice.preferences);

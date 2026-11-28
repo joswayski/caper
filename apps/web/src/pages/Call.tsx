@@ -64,6 +64,7 @@ import { PublicCallClient, prepareVoiceJoin } from "../media/client";
 import { hasWarmVoice, keepVoiceWarm, stopVoiceWarm } from "../media/warm";
 import { watchPresence } from "../media/presence";
 import { sessionDuration } from "../media/session-duration";
+import { playVoiceSound, voiceSoundFor, type VoiceSoundState } from "../media/voice-sounds";
 import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import MicPlayback, { SpeakerTest } from "./MicPlayback";
@@ -826,6 +827,13 @@ export default function Call({
     return () => clearTimeout(timer);
   }, [state.phase]);
   const pendingJoin = state.phase === "joining" && !joiningShown;
+  // Chime as you join or leave, and as others come and go while you are in.
+  const soundState = useRef<VoiceSoundState>(state);
+  useEffect(() => {
+    const sound = voiceSoundFor(soundState.current, state);
+    soundState.current = state;
+    if (sound) playVoiceSound(sound, output, outputVolume);
+  }, [state, output, outputVolume]);
   const Root = embedded ? "div" : "main";
 
   const presenceAccount = useRef(account?.id);
@@ -1265,15 +1273,9 @@ export default function Call({
     void act(() => clientRef.current!.leave());
   };
   const leaveControl = (
-    <Tooltip content={connected ? "Leave this voice channel" : "Cancel joining voice"}>
-      <button
-        type="button"
-        className="voice-hangup voice-leave"
-        aria-label={connected ? "Leave voice" : "Cancel joining voice"}
-        onClick={leave}
-      >
+    <Tooltip content="Disconnect">
+      <button type="button" className="voice-hangup voice-leave" aria-label="Disconnect" onClick={leave}>
         <PhoneOff aria-hidden="true" />
-        <span>{connected ? "Leave" : "Cancel"}</span>
       </button>
     </Tooltip>
   );

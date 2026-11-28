@@ -512,7 +512,7 @@ private class VoiceListRequest(val openId: String?)
 
 /**
  * In the channel list, your call's channel [row] (its status and timer at the end, see [CallStatus])
- * grown into your call card: everyone's faces (at most two rows) and Mute, Deafen and Leave (Cancel
+ * grown into your call card: everyone's faces (at most two rows) and Mute, Deafen and Disconnect (also
  * while joining). A tap anywhere but those and the row's menu opens the chat, as the row does; a
  * long press on a face or "+N" (or its accessibility action) opens the full list.
  */
@@ -542,7 +542,6 @@ private class VoiceListRequest(val openId: String?)
     heading: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
-    val connecting = voice.phase == VoiceState.Phase.CONNECTING
     val people = callFaceOrder(voice.participants, voice.selfId)
     var list by remember { mutableStateOf<VoiceListRequest?>(null) }
     var cardSize by remember { mutableStateOf(IntSize.Zero) }
@@ -566,16 +565,12 @@ private class VoiceListRequest(val openId: String?)
                         if (voice.deafened) "Undeafen audio" else "Deafen audio", voice.monitoring, "Stop mic test to change deafen",
                     ) { VoiceCallService.toggleDeafen(context) }
                     Spacer(Modifier.weight(1f))
-                    TextButton(
+                    // Icon-only, square like Mute and Deafen, while joining too.
+                    IconButton(
                         leave,
-                        Modifier.heightIn(min = 44.dp).semantics { contentDescription = if (connecting) "Cancel joining voice" else "Leave voice" },
-                        shape = MaterialTheme.shapes.small,
-                        colors = ButtonDefaults.textButtonColors(contentColor = LeaveRed),
-                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        Modifier.size(44.dp).background(LeaveRed.copy(alpha = 0.12f), MaterialTheme.shapes.small),
                     ) {
-                        Icon(painterResource(R.drawable.lucide_phone_off), null, Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (connecting) "Cancel" else "Leave", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                        Icon(painterResource(R.drawable.lucide_phone_off), "Disconnect", Modifier.size(18.dp), tint = LeaveRed)
                     }
                 }
             }

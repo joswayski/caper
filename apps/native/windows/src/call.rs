@@ -2,7 +2,7 @@
 //! (Switch, from a call elsewhere) while it is hovered, and your call's
 //! card sits at the bottom of the sidebar, above the account footer: where
 //! the call is, its state and running time, who is in it, then Mute,
-//! Deafen and Leave (Cancel while joining). A failed join or call shows its
+//! Deafen and an icon-only Disconnect. A failed join or call shows its
 //! error there instead, with a dismiss button. The shared
 //! `caper_client::voice::Voice`, kept in `Live`, runs the call.
 use crate::avatars::{self, Face};
@@ -28,7 +28,7 @@ const AUDIO_H: f32 = 104.0;
 const PAGE_H: f32 = 26.0;
 const ERROR_H: f32 = 60.0;
 const VOICE_AMBER: u32 = 0xD9AB5C;
-/// egui's Leave tone.
+/// Disconnect's red.
 const LEAVE: u32 = 0x8C2F25;
 
 fn live_card() -> u32 {
@@ -743,7 +743,7 @@ impl App {
             }
             VPart::Mute => (x + 12.0, row, 32.0, 32.0),
             VPart::Deafen => (x + 50.0, row, 32.0, 32.0),
-            VPart::Leave => (x + w - 12.0 - 92.0, row, 92.0, 32.0),
+            VPart::Leave => (x + w - 12.0 - 32.0, row, 32.0, 32.0),
             VPart::Dismiss => (x + w - 40.0, y + (h - 28.0) / 2.0, 28.0, 28.0),
             _ => return None,
         })
@@ -821,8 +821,7 @@ impl App {
             VPart::Mute => "Mute microphone".into(),
             VPart::Deafen if call.is_some_and(|c| c.deafened) => "Undeafen audio".into(),
             VPart::Deafen => "Deafen audio".into(),
-            VPart::Leave if call.is_some_and(|c| c.joining) => "Cancel joining voice".into(),
-            VPart::Leave => "Leave voice".into(),
+            VPart::Leave => "Disconnect".into(),
             VPart::Dismiss => "Dismiss voice error".into(),
             VPart::People => format!(
                 "{} call participants",
@@ -1157,25 +1156,13 @@ impl App {
                             LEAVE
                         })?,
                     );
-                    // The icon and label centred together in the button.
-                    let label = if call.joining { "Cancel" } else { "Leave" };
-                    let l = g.layout(&gfx::wide(label), &g.formats.direct_unread, 1e6)?;
-                    let m = gfx::metrics(&l);
-                    let ix = bx + ((bw - (16.0 + 6.0 + m.width)) / 2.0).max(8.0);
-                    let iy = by + (bh - 16.0) / 2.0;
+                    // Icon-only, as Mute and Deafen; its tooltip says Disconnect.
                     icons::draw(
                         dc,
                         Icon::PhoneOff,
-                        rect(ix, iy, ix + 16.0, iy + 16.0),
+                        rect(bx + 8.0, by + 8.0, bx + bw - 8.0, by + bh - 8.0),
                         0xFFFFFF,
                         1.0,
-                    );
-                    text::draw(
-                        dc,
-                        &l,
-                        ix + 22.0,
-                        by + (bh - m.height) / 2.0,
-                        &g.solid(0xFFFFFF)?,
                     );
                 }
             }

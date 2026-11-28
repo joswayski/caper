@@ -567,7 +567,6 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                               </span>
                               <span className="voice-hangup voice-leave">
                                 <PhoneOff aria-hidden="true" />
-                                <span>Leave</span>
                               </span>
                             </div>
                           </>

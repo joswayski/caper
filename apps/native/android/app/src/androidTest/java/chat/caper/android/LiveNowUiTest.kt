@@ -72,7 +72,7 @@ class LiveNowUiTest {
                 selfId = "me1", participants = people("me", 1))
         }
         compose.onNodeWithText("You’re in", substring = true).assertDoesNotExist()
-        compose.onNodeWithContentDescription("Leave voice").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Disconnect").assertDoesNotExist()
         compose.onNodeWithContentDescription("Switch voice to #design").assertDoesNotExist()
     }
 
@@ -102,7 +102,7 @@ class LiveNowUiTest {
         compose.onNodeWithContentDescription("Bea 1").performClick()
         compose.runOnIdle { assertEquals(2, opened) }
         // Its controls keep their own actions; a disabled Mute (the Audio test holds the mic) does nothing.
-        compose.onNodeWithContentDescription("Leave voice").performClick()
+        compose.onNodeWithContentDescription("Disconnect").performClick()
         compose.onNodeWithContentDescription("Mute microphone").performClick()
         compose.runOnIdle { assertEquals(2, opened); assertEquals(1, left) }
     }

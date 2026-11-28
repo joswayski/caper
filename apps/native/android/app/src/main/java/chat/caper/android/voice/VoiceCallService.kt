@@ -118,6 +118,7 @@ class VoiceCallService : Service() {
     override fun onCreate() {
         super.onCreate()
         active = this
+        if (sounds == null) sounds = runCatching { VoiceSounds(applicationContext) }.getOrNull()
         createNotificationChannel()
         audio = getSystemService(AudioManager::class.java)
         audio.registerAudioDeviceCallback(deviceCallback, null)
@@ -637,7 +638,13 @@ class VoiceCallService : Service() {
         /** Mute and deafen while no call exists; web joins unmuted by default. */
         @Volatile private var prejoin = VoiceMuteIntent(initiallyMuted = false)
         val state: StateFlow<VoiceState> = mutableState
-        private fun update(block: (VoiceState) -> VoiceState) { mutableState.update(block) }
+        /** Outlives the service, so Leave still chimes as the call's service stops. */
+        @Volatile private var sounds: VoiceSounds? = null
+        private fun update(block: (VoiceState) -> VoiceState) {
+            var change: Pair<VoiceState, VoiceState>? = null
+            mutableState.update { before -> block(before).also { change = before to it } }
+            change?.let { (before, after) -> voiceSound(before, after)?.let { sounds?.play(it, after.outputVolume) } }
+        }
         internal fun beginJoinAuthorization(): Long = controlEpoch.begin()
         internal fun joinAuthorizationCurrent(epoch: Long): Boolean = controlEpoch.isCurrent(epoch)
         internal fun navigationEpoch(): Long = controlEpoch.snapshot()

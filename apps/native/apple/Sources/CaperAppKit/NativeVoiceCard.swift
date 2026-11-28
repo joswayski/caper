@@ -34,7 +34,7 @@ import CaperCore
     private lazy var deafen = NativeButton.icon("Deafen audio", symbol: "headphones") { [weak self] in
         guard let self else { return }; VoicePresentation.toggleDeafen(self.model.voice)
     }
-    private lazy var leave = NativeButton("Leave") { [weak self] in
+    private lazy var leave = NativeButton.icon("Disconnect", symbol: "phone.down.fill") { [weak self] in
         guard let self else { return }; VoicePresentation.leave(self.model)
     }
     lazy var join = NativeButton("Join") { [weak self] in
@@ -64,7 +64,7 @@ import CaperCore
         mute.setAccessibilityIdentifier("voice-call-mute")
         deafen.setAccessibilityIdentifier("voice-call-deafen")
         leave.setAccessibilityIdentifier("voice-call-leave")
-        leave.font = NativeStyle.font(12, bold: true)
+        leave.mutesAtRest = false
         leave.contentTintColor = NSColor(VoicePresentation.disconnect)
         leave.layer?.backgroundColor = NSColor(VoicePresentation.disconnect).withAlphaComponent(0.12).cgColor
         join.font = NativeStyle.font(12, bold: true)
@@ -102,8 +102,6 @@ import CaperCore
         mute.isHidden = !own; deafen.isHidden = !own; leave.isHidden = !own
         updateToggle(mute, on: model.voice.muted, onLabel: "Unmute microphone", offLabel: "Mute microphone", onSymbol: "mic.slash", offSymbol: "mic", value: "Muted")
         updateToggle(deafen, on: model.voice.deafened, onLabel: "Undeafen audio", offLabel: "Deafen audio", onSymbol: "speaker.slash", offSymbol: "headphones", value: "Deafened")
-        leave.title = model.voice.phase == .joining ? "Cancel" : "Leave"
-        leave.setAccessibilityLabel(model.voice.phase == .joining ? "Cancel joining voice" : "Leave voice")
         if let channel {
             let action = ChannelVoiceAction(model: model, channel: channel)
             join.isHidden = own
@@ -164,7 +162,7 @@ import CaperCore
         updateFaces()
         mute.frame = NSRect(x: 0, y: body.bounds.height - 32, width: 32, height: 32)
         deafen.frame = NSRect(x: 38, y: body.bounds.height - 32, width: 32, height: 32)
-        leave.frame = NSRect(x: max(76, width - 72), y: body.bounds.height - 32, width: 72, height: 32)
+        leave.frame = NSRect(x: max(76, width - 32), y: body.bounds.height - 32, width: 32, height: 32)
         join.frame = live ? NSRect(x: bounds.width - 84, y: bounds.height - 44, width: 72, height: 32)
             : NSRect(x: bounds.width - (row == nil ? 30 : 56), y: 0, width: 28, height: 32)
         let count = faceRows(width: bounds.width)

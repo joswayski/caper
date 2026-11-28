@@ -111,6 +111,8 @@ targets:
         buildPhase: resources
       - path: ../../web/public/audio/speaker-test.wav
         buildPhase: resources
+      - path: ../../../shared/sounds
+        buildPhase: resources
     dependencies:
       - target: CaperRTCBridge
         embed: false
@@ -152,6 +154,8 @@ targets:
       - path: Sources/CaperCore/InvitationAssets
         buildPhase: resources
       - path: ../../web/public/audio/speaker-test.wav
+        buildPhase: resources
+      - path: ../../../shared/sounds
         buildPhase: resources
     dependencies:
       - target: CaperRTCBridgeIOS
