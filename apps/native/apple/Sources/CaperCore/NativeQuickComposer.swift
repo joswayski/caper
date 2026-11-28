@@ -356,15 +356,15 @@ import UIKit
     func render() {
         guard isViewLoaded else { return }
         let recording = VoiceMessageRecorder.shared.isRecording(state.voiceTarget.owner)
-        session.synchronize(); recordingBar.isHidden = !recording; editor.isHidden = recording; incoming.isHidden = !state.incoming
-        attach.isHidden = recording; emoji.isHidden = recording
-        editor.update(editable: state.editable && !recording)
+        // The bar shows under the draft, which stays editable (the keyboard stays up).
+        session.synchronize(); recordingBar.isHidden = !recording; incoming.isHidden = !state.incoming
+        editor.update(editable: state.editable)
         attach.isEnabled = state.canAttach && !recording
-        emoji.isEnabled = state.editable && !recording; send.isEnabled = state.canSend && !recording
+        emoji.isEnabled = state.editable; send.isEnabled = state.canSend && !recording
         send.configuration?.title = state.draft.pending == nil ? "Send" : "Retry send"
         status.text = state.draft.error ?? (state.draft.pending != nil && !state.draft.sending ? "Delivery isn’t confirmed. Send retries the same message." : state.draft.progress)
         status.isHidden = status.text == nil; files.isHidden = state.draft.files.isEmpty; files.render()
-        gif.isHidden = recording || state.model.chat.klipy == nil; gif.isEnabled = state.editable && !state.incoming
+        gif.isHidden = state.model.chat.klipy == nil; gif.isEnabled = state.editable && !state.incoming
         voiceRetryText.text = VoiceMessage.retryNotice(unconfirmed: state.draft.voice?.command != nil)
         voiceRetryButton.isEnabled = state.allowed && !state.draft.presentingDialog
         voiceRetry.isHidden = state.draft.voice == nil || state.draft.sending

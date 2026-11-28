@@ -866,6 +866,7 @@ export default function ThreadPanel({
                 editing={attachments.editing}
               />
             )}
+            {voice.bar}
             <form
               className="chat-thread-send-row"
               data-attach={!!attachments || undefined}
@@ -964,7 +965,6 @@ export default function ThreadPanel({
                 />
                 {voice.button}
               </div>
-              {voice.bar}
               <button
                 type="submit"
                 disabled={

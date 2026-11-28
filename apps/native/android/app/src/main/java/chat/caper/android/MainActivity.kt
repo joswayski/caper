@@ -2007,7 +2007,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                         enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage?.rejected != true && (draft.text.isNotBlank() || files.isNotEmpty()),
                                     )
                                 }
-                                if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
                             }
                         }
                         DraftCounter(draft.text)
@@ -2366,7 +2365,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                         Modifier.padding(bottom = 8.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage?.rejected != true && state.chatAuthorId != null,
                                     )
                                 }
-                                if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
                             }
                         }
                         DraftCounter(draft.text)

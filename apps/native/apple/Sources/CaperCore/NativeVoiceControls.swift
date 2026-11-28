@@ -88,10 +88,8 @@ import QuartzCore
     private func handsFree() {
         releasedHandsFree = true
         let recorder = VoiceMessageRecorder.shared
+        // The draft stays editable beside the bar, so the keyboard stays up.
         recorder.handsFree = true; recorder.holding = false; recorder.lift = 0
-        #if os(iOS)
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        #endif
     }
 }
 
@@ -110,9 +108,15 @@ import AppKit
     private var discard: AppKitKitButton!
     private var note: AppKitKitButton!
     private var stopButton: AppKitKitButton!
+    /// In the microphone's place while a dictation's words come back.
+    private let spinner = NSProgressIndicator()
     init(session: NativeVoiceSession, kind: Kind) {
         self.session = session; self.kind = kind; super.init(frame: .zero)
         orientation = kind == .notice ? .vertical : .horizontal; alignment = kind == .notice ? .leading : .centerY; spacing = 8
+        spinner.style = .spinning; spinner.controlSize = .small; spinner.isDisplayedWhenStopped = false
+        spinner.setAccessibilityLabel(VoiceMessage.transcribing)
+        spinner.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        spinner.heightAnchor.constraint(equalToConstant: 32).isActive = true
         record = AppKitKitButton("", kind: .plain) { [session] in
             if VoiceMessageRecorder.shared.isActive(session.current.owner) { session.finish() } else { session.begin(handsFree: true) }
         }
@@ -124,7 +128,7 @@ import AppKit
         discard.keyEquivalent = "\u{1b}"
         note = AppKitKitButton(VoiceMessage.asVoiceNoteLabel) { [session] in session.finish(asVoice: true) }
         stopButton = AppKitKitButton("Done", kind: .primary) { [session] in session.finish() }; stopButton.keyEquivalent = "\r"
-        if kind == .microphone { addArrangedSubview(record) }
+        if kind == .microphone { addArrangedSubview(record); addArrangedSubview(spinner) }
         if kind == .bar {
             [discard!, timer, waveform, note!, stopButton!].forEach(addArrangedSubview)
             waveform.widthAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true
@@ -160,13 +164,13 @@ import AppKit
             if let text = recorder.notice(for: target.owner) {
                 let label = AppKitKit.label(text, size: 11, color: AppKitKit.error); label.setAccessibilityIdentifier("\(target.identifier)-notice"); addArrangedSubview(label)
             }
-            if let dictation = recorder.dictation, dictation.target.owner == target.owner {
-                let text = dictation.error.map(VoiceMessage.dictationFailed) ?? VoiceMessage.transcribing
-                let label = AppKitKit.label(text, size: 11, color: dictation.error == nil ? AppKitKit.muted : AppKitKit.error)
-                label.setAccessibilityIdentifier("\(target.identifier)-\(dictation.error == nil ? "transcribing" : "dictation-failed")")
+            // While transcribing the microphone spins: the audio is already sent, so there is nothing to cancel.
+            if let dictation = recorder.dictation, dictation.target.owner == target.owner, let error = dictation.error {
+                let label = AppKitKit.label(VoiceMessage.dictationFailed(error), size: 11, color: AppKitKit.error)
+                label.setAccessibilityIdentifier("\(target.identifier)-dictation-failed")
                 addArrangedSubview(label)
                 let actions = NSStackView(); actions.spacing = 8
-                if dictation.error != nil {
+                do {
                     let retry = AppKitKitButton("Retry") { VoiceTarget.transcribe(dictation.recording, for: dictation.target) }
                     retry.setAccessibilityIdentifier("\(target.identifier)-retry"); actions.addArrangedSubview(retry)
                     if dictation.target.enabled {
@@ -176,8 +180,8 @@ import AppKit
                         keep.setAccessibilityIdentifier("\(target.identifier)-keep"); actions.addArrangedSubview(keep)
                     }
                 }
-                let cancel = AppKitKitButton(dictation.error == nil ? "Cancel" : "Discard") { VoiceTarget.dropDictation() }
-                cancel.setAccessibilityIdentifier("\(target.identifier)-\(dictation.error == nil ? "cancel-dictation" : "discard-dictation")")
+                let cancel = AppKitKitButton("Discard") { VoiceTarget.dropDictation() }
+                cancel.setAccessibilityIdentifier("\(target.identifier)-discard-dictation")
                 actions.addArrangedSubview(cancel); addArrangedSubview(actions)
             }
             isHidden = arrangedSubviews.isEmpty
@@ -186,6 +190,9 @@ import AppKit
         let label = target.dictates ? VoiceMessage.dictateLabel : VoiceMessage.recordLabel
         record.isEnabled = session.enabled; record.setAccessibilityLabel(label); record.toolTip = target.enabled ? label : target.unavailableReason
         record.setAccessibilityIdentifier("\(target.identifier)-record")
+        let busy = recorder.dictation.map { $0.target.owner == target.owner && $0.error == nil } ?? false
+        record.isHidden = busy; spinner.isHidden = !busy
+        if busy { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
         timer.stringValue = VoiceDuration.format(ms: recorder.elapsedMs)
         timer.setAccessibilityLabel(timer.stringValue)
         waveform.update(); note.isHidden = !recorder.dictating
@@ -226,12 +233,13 @@ import AppKit
 import CoreText
 import UIKit
 
-/// The phone recorder. While recording, the bar covers the field:
-/// `[trash]  ● 0:07  ⋯live⋯  [≋ Voice note]` with the microphone beside it
+/// The phone recorder. While recording, the bar rises above the field, which
+/// stays editable: `[trash]  ● 0:07  ⋯live⋯`, with the microphone in the field
 /// turned into a chalk Done (✓, dictating) or Stop (■) once the finger lifts,
-/// pulsing once a second. While held, the microphone is live green under the
-/// finger, Discard steps out and a lock rises above it. Above the composer,
-/// a dictation that is transcribing or failed is one compact card.
+/// pulsing once a second. Holding the microphone records a voice message, so
+/// the bar has no "Voice note". While held, the microphone is live green under
+/// the finger, Discard steps out and a lock rises above it. While the words
+/// come back the microphone spins; a failed dictation is one compact card.
 @MainActor final class UIKitVoiceControls: UIStackView {
     enum Kind { case microphone, bar, notice }
     private let session: NativeVoiceSession
@@ -241,7 +249,6 @@ import UIKit
     private let waveform = UIKitVoiceMeter()
     private var record: UIKitVoiceButton!
     private var discard: UIButton!
-    private var note: UIButton!
     private var active = false, generation = 0
     private var noticeKey: String?
     init(session: NativeVoiceSession, kind: Kind) {
@@ -251,7 +258,6 @@ import UIKit
         record = UIKitVoiceButton(session: session)
         record.widthAnchor.constraint(equalToConstant: 36).isActive = true; record.heightAnchor.constraint(equalToConstant: 42).isActive = true
         discard = Self.iconButton("trash-2", size: 18, tint: UIColor(CaperTheme.muted)) { VoiceMessageRecorder.shared.cancel() }
-        note = Self.pill(VoiceMessage.asVoiceNoteLabel, icon: "audio-lines", height: 30, scaled: false) { [session] in session.finish(asVoice: true) }
         if kind == .microphone { addArrangedSubview(record) }
         if kind == .bar {
             dot.backgroundColor = UIColor(CaperTheme.terracottaBright); dot.layer.cornerRadius = 4
@@ -264,12 +270,10 @@ import UIKit
             timer.textColor = UIColor(CaperTheme.text)
             timer.setContentHuggingPriority(.required, for: .horizontal)
             timer.setContentCompressionResistancePriority(.required, for: .horizontal)
-            note.setContentHuggingPriority(.required, for: .horizontal)
-            note.setContentCompressionResistancePriority(.required, for: .horizontal)
-            [discard!, dot, timer, waveform, note!].forEach(addArrangedSubview)
+            [discard!, dot, timer, waveform].forEach(addArrangedSubview)
             setCustomSpacing(2, after: discard); setCustomSpacing(7, after: dot)
             isLayoutMarginsRelativeArrangement = true
-            directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 4)
+            directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 14)
             waveform.heightAnchor.constraint(equalToConstant: 24).isActive = true
             waveform.widthAnchor.constraint(greaterThanOrEqualToConstant: 20).isActive = true
         }
@@ -306,9 +310,6 @@ import UIKit
         discard.accessibilityElementsHidden = recorder.holding
         discard.accessibilityIdentifier = "\(target.identifier)-discard"
         discard.accessibilityLabel = recorder.dictating ? VoiceMessage.discardDictationLabel : VoiceMessage.discardLabel
-        if note.isHidden == recorder.dictating { note.isHidden = !recorder.dictating }
-        note.accessibilityIdentifier = "\(target.identifier)-as-note"
-        note.accessibilityHint = VoiceMessageSettings.shared.sendOnStop ? "Stops and sends as a voice message" : "Stops and keeps it as a voice message"
         if kind == .bar { accessibilityIdentifier = "\(target.identifier)-recording"; accessibilityLabel = recorder.dictating ? "Dictating" : "Recording voice message" }
     }
 
@@ -325,23 +326,11 @@ import UIKit
         if let text = recorder.notice(for: target.owner) {
             let label = Self.text(text, size: 12, color: UIColor(CaperTheme.error)); label.accessibilityIdentifier = "\(target.identifier)-notice"; addArrangedSubview(label)
         }
-        if let dictation = recorder.dictation, dictation.target.owner == target.owner {
-            addArrangedSubview(dictation.error == nil ? transcribingCard(dictation, identifier: target.identifier)
-                : failedCard(dictation, identifier: target.identifier, recorder: recorder))
+        // While transcribing the microphone spins instead: the audio is already sent.
+        if let dictation = recorder.dictation, dictation.target.owner == target.owner, dictation.error != nil {
+            addArrangedSubview(failedCard(dictation, identifier: target.identifier, recorder: recorder))
         }
         isHidden = arrangedSubviews.isEmpty
-    }
-
-    /// `(spinner) Transcribing…   [Cancel]`
-    private func transcribingCard(_ dictation: VoiceDictation, identifier: String) -> UIView {
-        let spinner = UIActivityIndicatorView(style: .medium); spinner.color = UIColor(CaperTheme.muted); spinner.startAnimating()
-        let label = Self.text(VoiceMessage.transcribing, size: 13, color: UIColor(CaperTheme.muted))
-        label.accessibilityIdentifier = "\(identifier)-transcribing"
-        let cancel = Self.pill("Cancel", height: 32) { VoiceTarget.dropDictation() }
-        cancel.accessibilityIdentifier = "\(identifier)-cancel-dictation"
-        cancel.setContentHuggingPriority(.required, for: .horizontal)
-        let row = UIStackView(arrangedSubviews: [spinner, label, cancel]); row.spacing = 10; row.alignment = .center
-        return Self.card(row)
     }
 
     /// `(!) Couldn’t insert your words / No words heard.` over
@@ -480,6 +469,8 @@ import UIKit
     private let face = CALayer()
     private let ring = CAShapeLayer()
     private let lock = UIKitVoiceLock(frame: .zero)
+    /// In the glyph's place while a dictation's words come back.
+    private let spinner = UIActivityIndicatorView(style: .medium)
     private static let side: CGFloat = 32
     private static let microphone = UIKitVoiceControls.icon("mic", size: 18)
     private static let check = UIKitVoiceControls.icon("check", size: 17)
@@ -492,6 +483,9 @@ import UIKit
         ring.fillColor = UIColor.clear.cgColor; ring.lineWidth = 2; ring.opacity = 0
         ring.strokeColor = UIColor(CaperTheme.terracottaBright).cgColor
         layer.insertSublayer(face, at: 0); layer.insertSublayer(ring, at: 0)
+        spinner.hidesWhenStopped = true; spinner.isUserInteractionEnabled = false
+        spinner.translatesAutoresizingMaskIntoConstraints = false; addSubview(spinner)
+        NSLayoutConstraint.activate([spinner.centerXAnchor.constraint(equalTo: centerXAnchor), spinner.centerYAnchor.constraint(equalTo: centerYAnchor)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func didMoveToWindow() { super.didMoveToWindow(); if window == nil { lock.removeFromSuperview(); session.stop() } }
@@ -525,10 +519,16 @@ import UIKit
     func render() {
         let recorder = VoiceMessageRecorder.shared, target = session.current
         let recording = recorder.isActive(target.owner), stopping = recording && recorder.handsFree
+        let busy = recorder.dictation.map { $0.target.owner == target.owner && $0.error == nil } ?? false
         isEnabled = recording || session.enabled
-        alpha = isEnabled ? 1 : 0.45
-        setImage(stopping ? (recorder.dictating ? Self.check : Self.stopSquare) : Self.microphone, for: .normal)
-        tintColor = UIColor(stopping ? CaperTheme.onAction : recording ? CaperTheme.text : CaperTheme.muted)
+        alpha = isEnabled || busy ? 1 : 0.45
+        // The ink is baked into the image: a tinted template left the chalk circle blank on iPhone.
+        let ink = UIColor(stopping ? CaperTheme.onAction : recording ? CaperTheme.text : CaperTheme.muted)
+        let glyph = stopping ? (recorder.dictating ? Self.check : Self.stopSquare) : Self.microphone
+        setImage(busy ? nil : glyph?.withTintColor(ink, renderingMode: .alwaysOriginal), for: .normal)
+        setImage(busy ? nil : glyph?.withTintColor(ink, renderingMode: .alwaysOriginal), for: .disabled)
+        spinner.color = UIColor(CaperTheme.muted)
+        if busy { spinner.startAnimating() } else { spinner.stopAnimating() }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         face.backgroundColor = (stopping ? UIColor(CaperTheme.action) : recording ? UIColor(CaperTheme.terracotta) : .clear).cgColor
         CATransaction.commit()
@@ -540,7 +540,7 @@ import UIKit
             pulse.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
             ring.add(pulse, forKey: "pulse")
         } else if !pulsing { ring.removeAnimation(forKey: "pulse") }
-        accessibilityLabel = stopping ? (recorder.dictating ? VoiceMessage.doneLabel : VoiceMessage.stopLabel) : target.dictates ? VoiceMessage.dictateLabel : VoiceMessage.recordLabel
+        accessibilityLabel = busy ? VoiceMessage.transcribing : stopping ? (recorder.dictating ? VoiceMessage.doneLabel : VoiceMessage.stopLabel) : target.dictates ? VoiceMessage.dictateLabel : VoiceMessage.recordLabel
         accessibilityIdentifier = "\(target.identifier)-\(stopping ? "stop" : "record")"
         accessibilityHint = target.enabled ? VoiceMessage.dictateHint : target.unavailableReason
         if recording, recorder.holding, let window {

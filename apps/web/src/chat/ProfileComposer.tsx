@@ -634,6 +634,7 @@ export default function ProfileComposer({
         }
         editing={editing}
       />
+      {recorder.bar}
       <form
         data-attach
         data-voice
@@ -710,7 +711,6 @@ export default function ProfileComposer({
             <Send size={16} aria-hidden="true" />
           </button>
         </div>
-        {recorder.bar}
       </form>
       {status && (
         <p className="chat-profile-status" role="status">

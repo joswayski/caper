@@ -267,7 +267,9 @@ private final class WeakController {
         let recorder = VoiceMessageRecorder.shared
         return (inThread ? chat.threadAttachmentNotice : chat.attachmentNotice) != nil
             || !chat.attachmentFiles(inThread: inThread).isEmpty
-            || recorder.notice(for: owner) != nil || recorder.dictation?.target.owner == owner
+            || recorder.notice(for: owner) != nil
+            // Only a failed dictation has a card: while transcribing the microphone spins.
+            || (recorder.dictation?.target.owner == owner && recorder.dictation?.error != nil)
             || (recorder.isRecording(owner) && recorder.holding)
     }
 }
@@ -305,13 +307,13 @@ private final class WeakController {
             insert: { current() && (base.insert?($0) ?? false) }, isCurrent: current)
     }
 
-    /// While recording, the bar covers the field.
+    /// While recording, the bar sits above the field, which stays editable.
     public var isRecording: Bool { VoiceMessageRecorder.shared.isRecording(target.owner) }
 
     /// Tap to dictate, hold for a voice message, slide up to lock.
     public var button: UIView { microphone }
 
-    /// Discard, the timer, live bars and "Voice note".
+    /// Discard, the timer and live bars (hold the microphone for a voice message).
     public var bar: UIView { recordingBar }
 }
 /// What a UIKit conversation asks SwiftUI to present: message actions (the

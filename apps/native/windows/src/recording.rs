@@ -5,8 +5,9 @@
 //! /api/dictation`) and inserts the words at the caret; "Voice note" keeps
 //! it as a voice message instead, staged with the composer's files (it
 //! uploads at once, so transcription starts, and goes with the next Send).
-//! While the words come back the bar says "Transcribing…" with Cancel; a
-//! failed dictation offers Retry, Keep as voice note and Discard. Escape
+//! While the words come back the bar says "Transcribing…" (the recording is
+//! already sent, so there is nothing to cancel); a failed dictation offers
+//! Retry, Keep as voice note and Discard. Escape
 //! discards and Enter finishes; the recorder stops itself at 10:00. A
 //! recording belongs to its conversation: leaving it discards it.
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
@@ -33,8 +34,7 @@ const BUTTON_H: f32 = 28.0;
 /// The bar's controls (and its status text, for UI Automation).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RPart {
-    /// Discard while recording, Cancel while transcribing, Discard after a
-    /// failure.
+    /// Discard while recording or after a failure.
     Discard,
     Status,
     VoiceNote,
@@ -473,8 +473,6 @@ impl App {
                         push_right(&mut out, RPart::Keep, "Keep as voice note");
                     }
                     push_right(&mut out, RPart::Retry, "Retry");
-                } else {
-                    push_right(&mut out, RPart::Discard, "Cancel");
                 }
                 out.push((RPart::Status, rect(14.0, 8.0, right, BAR_H - 8.0)));
             }
@@ -515,12 +513,7 @@ impl App {
                 Some(e) => format!("Couldn\u{2019}t insert your words. {e}"),
                 None => "Transcribing\u{2026}".into(),
             },
-            (Rec::Dictation(d), RPart::Discard) => if d.error.is_some() {
-                "Discard"
-            } else {
-                "Cancel"
-            }
-            .into(),
+            (Rec::Dictation(_), RPart::Discard) => "Discard".into(),
             (_, RPart::Retry) => "Retry".into(),
             (_, RPart::Keep) => if self
                 .live

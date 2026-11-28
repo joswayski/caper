@@ -48,7 +48,11 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     private let suggestions = ComposerSuggestionsList()
     /// Escape closes them until the draft or caret moves again.
     private var dismissed = false
+    /// The recording bar, above the box while the microphone records: the draft stays editable.
     private let recordingBar = HostedView()
+    private var recordingBarHeight: NSLayoutConstraint!
+    private var recordingBarGap: NSLayoutConstraint!
+    private var showingRecording = false
     /// The draft's link card inside the box, and the length counter under it.
     private let linkPreview = HostedView()
     private let counter = UIKitStyle.label(size: 10, color: UIKitStyle.muted)
@@ -180,7 +184,11 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         counter.isHidden = true
         addSubview(counter)
         recordingBar.isHidden = true
-        field.addSubview(recordingBar)
+        recordingBar.backgroundColor = UIKitStyle.composer
+        recordingBar.layer.cornerRadius = 20
+        recordingBar.layer.cornerCurve = .continuous
+        recordingBar.clipsToBounds = true
+        addSubview(recordingBar)
         // Outside the clipped box, so the held microphone's lock hint can rise above it.
         addSubview(microphone)
 
@@ -208,7 +216,9 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             suggestions.topAnchor.constraint(equalTo: accessories.bottomAnchor),
             suggestions.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             suggestions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            field.topAnchor.constraint(equalTo: suggestions.bottomAnchor, constant: 3),
+            recordingBar.topAnchor.constraint(equalTo: suggestions.bottomAnchor, constant: 3),
+            recordingBar.leadingAnchor.constraint(equalTo: field.leadingAnchor),
+            recordingBar.trailingAnchor.constraint(equalTo: field.trailingAnchor),
             field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             send.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
             send.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
@@ -224,11 +234,6 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             microphone.bottomAnchor.constraint(equalTo: fieldRow.bottomAnchor),
             microphone.widthAnchor.constraint(equalToConstant: 36),
             microphone.heightAnchor.constraint(equalToConstant: 42),
-            // The bar covers the field beside the microphone, which stays under the finger.
-            recordingBar.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 8),
-            recordingBar.trailingAnchor.constraint(equalTo: microphone.leadingAnchor),
-            recordingBar.bottomAnchor.constraint(equalTo: fieldRow.bottomAnchor),
-            recordingBar.heightAnchor.constraint(equalToConstant: 42),
             textView.leadingAnchor.constraint(equalTo: text.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: text.trailingAnchor),
             textView.topAnchor.constraint(equalTo: text.topAnchor),
@@ -238,6 +243,9 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             placeholder.topAnchor.constraint(equalTo: textView.topAnchor, constant: 12),
             placeholder.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor),
         ])
+        recordingBarGap = field.topAnchor.constraint(equalTo: recordingBar.bottomAnchor)
+        recordingBarGap.isActive = true
+        recordingBarHeight = recordingBar.heightAnchor.constraint(equalToConstant: 42)
         fieldToBottom = field.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
         fieldToBottom.isActive = true
         fieldToCounter = [
@@ -295,15 +303,25 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         accessories.show(content)
     }
 
-    /// The microphone and, while it records, the bar over the field.
+    /// The microphone and, while it records, the bar above the box. The draft
+    /// stays editable and the keyboard stays up, so typing carries on.
     func showVoice(button: UIView?, bar: UIView, recording: Bool) {
         microphone.show(button)
         microphone.isHidden = button == nil
+        guard recording != showingRecording else { return }
+        showingRecording = recording
         recordingBar.show(recording ? bar : nil)
         recordingBar.isHidden = !recording
-        fieldRow.alpha = recording ? 0 : 1
-        fieldRow.accessibilityElementsHidden = recording
-        fieldRow.isUserInteractionEnabled = !recording
+        recordingBarHeight.isActive = recording
+        recordingBarGap.constant = recording ? 8 : 0
+        // It rises out of the box (opacity and a short lift); leaving is instant.
+        guard recording, !UIAccessibility.isReduceMotionEnabled else { return }
+        recordingBar.alpha = 0
+        recordingBar.transform = CGAffineTransform(translationX: 0, y: 10)
+        UIView.animate(withDuration: 0.2, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            self.recordingBar.alpha = 1
+            self.recordingBar.transform = .identity
+        }
     }
 
     /// The model's draft, written back only when it differs (a send clears it)

@@ -351,7 +351,6 @@ import kotlinx.coroutines.launch
                 enabled = writable && draft.canSend,
             )
         }
-        if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
     }
     draft.voice?.let { voice ->
         Row(Modifier.semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {

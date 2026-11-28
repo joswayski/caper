@@ -351,6 +351,8 @@ export default function Composer({
           editing={attachments.editing}
         />
       )}
+      {/* Above the draft, which stays editable while recording. */}
+      {voice.bar}
       <form
         data-attach={!!attachments || undefined}
         data-voice={!!attachments?.voice || undefined}
@@ -457,7 +459,6 @@ export default function Composer({
             <Send size={16} aria-hidden="true" />
           </button>
         </div>
-        {voice.bar}
         {/* Inside the input's frame, under the draft, so it reads as part of the message. */}
         {preview.embed && (
           <div className="chat-composer-preview">

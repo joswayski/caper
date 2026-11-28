@@ -382,11 +382,15 @@ pub struct Composer {
     pub line: gtk::Box,
     /// The microphone: it dictates (`app::recording`).
     pub mic: gtk::Button,
+    /// The microphone's face: its icon, or a spinner ("busy") while a
+    /// dictation's words come back.
+    pub mic_face: gtk::Stack,
+    pub mic_busy: gtk::Spinner,
     /// Insert emoji, as on desktop.
     pub emoji: gtk::Button,
     pub recording: RecordingBar,
-    /// Transcribing (Cancel), or failed (Retry, Keep as voice note,
-    /// Discard), above the input.
+    /// A failed dictation (Retry, Keep as voice note, Discard), above the
+    /// input. While transcribing the microphone spins instead.
     pub dictation: DictationRow,
     /// Voice messages sending on their own: progress with Cancel, or
     /// \"not sent\" with Retry and Discard (`app::recording`).
@@ -410,11 +414,9 @@ pub struct RecordingBar {
 
 pub struct DictationRow {
     pub root: gtk::Box,
-    pub spinner: gtk::Spinner,
     pub text: gtk::Label,
     pub retry: gtk::Button,
     pub keep: gtk::Button,
-    /// Cancel while transcribing, Discard once it failed.
     pub drop: gtk::Button,
 }
 
@@ -478,10 +480,7 @@ impl DictationRow {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         root.add_css_class("dictation-row");
         root.set_visible(false);
-        let spinner = gtk::Spinner::new();
-        spinner.set_size_request(12, 12);
-        root.append(&spinner);
-        let text = label("", &["small"]);
+        let text = label("", &["small", "error"]);
         text.set_wrap(true);
         text.set_xalign(0.0);
         root.append(&text);
@@ -494,10 +493,9 @@ impl DictationRow {
         };
         let retry = small("Retry");
         let keep = small("Keep as voice note");
-        let drop = small("Cancel");
+        let drop = small("Discard");
         Self {
             root,
-            spinner,
             text,
             retry,
             keep,
@@ -593,7 +591,12 @@ impl Composer {
         emoji.add_css_class("composer-tool");
         line.append(&emoji);
         let mic: gtk::Button = crate::app::named("GtkButton", "Dictate");
-        mic.set_child(Some(&images.icon_image(Icon::Mic, "#b9bcbe", 18)));
+        let mic_face = gtk::Stack::new();
+        mic_face.add_named(&images.icon_image(Icon::Mic, "#b9bcbe", 18), Some("mic"));
+        let mic_busy = gtk::Spinner::new();
+        mic_busy.set_size_request(16, 16);
+        mic_face.add_named(&mic_busy, Some("busy"));
+        mic.set_child(Some(&mic_face));
         mic.set_tooltip_text(Some("Dictate"));
         mic.set_valign(gtk::Align::End);
         mic.add_css_class("flat");
@@ -669,6 +672,8 @@ impl Composer {
             preview,
             line,
             mic,
+            mic_face,
+            mic_busy,
             emoji,
             recording,
             dictation,

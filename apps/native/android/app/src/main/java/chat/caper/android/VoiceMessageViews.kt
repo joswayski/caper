@@ -13,6 +13,11 @@ import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.core.EaseInOut
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -95,8 +100,6 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -863,10 +866,10 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
 
 /**
  * The composer's microphone ("Dictate"), a tool button like Emoji: a tap dictates hands-free
- * (Done in the bar inserts the words; "Voice note" keeps a voice message instead); a press and
- * hold records a voice message until release, and sliding up locks it hands-free. Once the finger lifts from a hands-free recording the keyboard closes, so nothing
- * types into the field under the bar. The first press asks for the microphone. [blocked]
- * explains why it can't record now.
+ * (Done in the bar inserts the words); a press and hold records a voice message until release,
+ * and sliding up locks it hands-free. The bar rises above the field, which stays editable with
+ * the keyboard up. While the words come back the microphone spins (there is nothing to cancel).
+ * The first press asks for the microphone. [blocked] explains why it can't record now.
  */
 @Composable internal fun VoiceRecordButton(state: VoiceRecorderState, enabled: Boolean, voiceBlocked: String?) {
     // A staged voice message only blocks another one: dictation still works.
@@ -876,13 +879,8 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
     val context = LocalContext.current
     val view = LocalView.current
     val lockDistance = with(LocalDensity.current) { VoiceMessages.LOCK_DP.dp.toPx() }
-    val keyboard = LocalSoftwareKeyboardController.current
-    val focus = LocalFocusManager.current
-    val handsFree = {
-        state.keepRecordingHandsFree()
-        keyboard?.hide()
-        focus.clearFocus()
-    }
+    // The field stays editable beside the bar, so the keyboard stays as it was.
+    val handsFree = { state.keepRecordingHandsFree() }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) { if (state.start()) handsFree() } else state.error(VoiceMessages.PERMISSION_ERROR)
     }
@@ -900,6 +898,7 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
         }
     }
     val usable = enabled && blocked == null && state.dictation == null
+    val transcribing = state.dictation?.error == null && state.dictation != null
     val tint = when { state.recording -> Terracotta; usable -> TextMuted; else -> TextMuted.copy(alpha = 0.4f) }
     Box(
         Modifier.size(48.dp)
@@ -907,6 +906,7 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
                 contentDescription = label
                 role = Role.Button
                 stateDescription = blocked ?: when {
+                    transcribing -> VoiceMessages.TRANSCRIBING
                     state.recording -> "Recording"
                     state.dictates -> "Tap to dictate, or hold to record a voice message"
                     else -> "Tap to record, or press and hold"
@@ -965,7 +965,8 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
             }),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(painterResource(R.drawable.lucide_mic), null, Modifier.size(20.dp), tint = tint)
+        if (transcribing) CircularProgressIndicator(Modifier.size(18.dp), color = TextMuted, strokeWidth = 2.dp)
+        else Icon(painterResource(R.drawable.lucide_mic), null, Modifier.size(20.dp), tint = tint)
     }
 }
 
@@ -980,9 +981,11 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
 }
 
 /**
- * Laid over the composer's row while recording: `[trash] ● 0:07 ⋯live⋯ [Voice note] [Done]`
- * while dictating, `[Stop]` for a voice message, Done or Stop in terracotta pulsing once a second. While held, a live mic takes Stop's place with the lock
- * above it and discard steps out (releasing stops), while the mic underneath keeps the gesture.
+ * Above the composer's field while recording: `[trash] ● 0:07 ⋯live⋯ [Done]` while dictating,
+ * `[Stop]` for a voice message, Done or Stop chalk pulsing once a second. A voice message is a
+ * hold of the mic, so there is no "Voice note" button. While held, a live mic takes Stop's
+ * place with the lock above it and discard steps out (releasing stops), while the mic in the
+ * field keeps the gesture.
  */
 @Composable internal fun VoiceRecordingBar(state: VoiceRecorderState, modifier: Modifier = Modifier) {
     val still = reducedMotion()
@@ -1011,19 +1014,7 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
             LockHint((-state.lift / lockDistance).coerceIn(0f, 1f), Modifier.align(Alignment.BottomCenter)
                 // Taller than the bar: drawn above it, over the conversation.
                 .wrapContentHeight(Alignment.Bottom, unbounded = true).offset(y = (-56).dp))
-        } else {
-            if (state.dictating) OutlinedButton(
-                { state.stop(asVoice = true) }, Modifier.height(36.dp), enabled = state.noteBlocked == null,
-                shape = CircleShape, border = androidx.compose.foundation.BorderStroke(1.dp, Border),
-                contentPadding = PaddingValues(start = 10.dp, end = 12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceRaised, contentColor = Text, disabledContentColor = TextMuted),
-            ) {
-                Icon(painterResource(R.drawable.lucide_audio_lines), null, Modifier.size(14.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(VoiceMessages.AS_VOICE_NOTE, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-            }
-            LiveStopButton(still, done = state.dictating) { state.stop() }
-        }
+        } else LiveStopButton(still, done = state.dictating) { state.stop() }
     }
 }
 
@@ -1129,15 +1120,17 @@ private fun mixRgb(from: Color, to: Color, t: Float, alpha: Float) = Color(
 )
 
 /**
- * Above the composer: while holding, what release does; otherwise a short hint or the
- * permission error. Hands-free recording explains itself in the bar.
+ * Above the composer's field: a failed dictation's card; while holding, what release does,
+ * otherwise a short hint or the permission error; then the recording bar, which rises in
+ * (leaving is instant) while the field under it stays editable.
  */
 @kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun VoiceRecordingNotice(state: VoiceRecorderState) {
     val sendOnStop = VoicePreferences.sendOnStop(LocalContext.current)
-    state.dictation?.let { dictation ->
+    // While transcribing the mic spins instead: the audio is already sent, so nothing to cancel.
+    state.dictation?.takeIf { it.error != null }?.let { dictation ->
         val border = androidx.compose.foundation.BorderStroke(1.dp, Border)
-        // Keeping the recording is the chalk primary; Retry and Cancel stay neutral capsules.
+        // Keeping the recording is the chalk primary; Retry stays a neutral capsule.
         @Composable fun Pill(label: String, icon: Int? = null, primary: Boolean = false, onClick: () -> Unit) =
             OutlinedButton(
                 onClick, Modifier.height(40.dp), shape = CircleShape, border = if (primary) null else border,
@@ -1153,27 +1146,21 @@ private fun mixRgb(from: Color, to: Color, t: Float, alpha: Float) = Color(
                 .semantics(mergeDescendants = false) { liveRegion = LiveRegionMode.Polite },
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (dictation.error == null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                CircularProgressIndicator(Modifier.size(16.dp), color = TextMuted, strokeWidth = 2.dp)
-                Text(VoiceMessages.TRANSCRIBING, Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
-                Pill("Cancel") { state.dropDictation() }
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Box(Modifier.size(30.dp).background(ErrorText.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
-                        Text("!", color = ErrorText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
-                        Text("Couldn’t insert your words", color = Text, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text(dictation.error, color = TextMuted, fontSize = 12.sp)
-                    }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(30.dp).background(ErrorText.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
+                    Text("!", color = ErrorText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
-                // Wraps on a narrow phone or at large text sizes instead of clipping.
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (state.noteBlocked == null) Pill(if (sendOnStop) "Send as voice note" else "Keep as voice note", R.drawable.lucide_audio_lines, primary = true) { state.keepDictationAsVoice() }
-                    Pill("Retry", R.drawable.lucide_rotate_ccw) { state.transcribe(dictation.recording) }
-                    IconButton({ state.dropDictation() }, Modifier.size(40.dp).border(1.dp, Border, CircleShape)) {
-                        Icon(painterResource(R.drawable.lucide_trash_2), "Discard", Modifier.size(16.dp), tint = TextMuted)
-                    }
+                Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
+                    Text("Couldn’t insert your words", color = Text, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(dictation.error.orEmpty(), color = TextMuted, fontSize = 12.sp)
+                }
+            }
+            // Wraps on a narrow phone or at large text sizes instead of clipping.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state.noteBlocked == null) Pill(if (sendOnStop) "Send as voice note" else "Keep as voice note", R.drawable.lucide_audio_lines, primary = true) { state.keepDictationAsVoice() }
+                Pill("Retry", R.drawable.lucide_rotate_ccw) { state.transcribe(dictation.recording) }
+                IconButton({ state.dropDictation() }, Modifier.size(40.dp).border(1.dp, Border, CircleShape)) {
+                    Icon(painterResource(R.drawable.lucide_trash_2), "Discard", Modifier.size(16.dp), tint = TextMuted)
                 }
             }
         }
@@ -1182,9 +1169,17 @@ private fun mixRgb(from: Color, to: Color, t: Float, alpha: Float) = Color(
         state.recording && state.holding -> (if (sendOnStop) "Release to send" else "Release to add") + " · Slide up to lock"
         state.recording -> null
         else -> state.notice
-    } ?: return
-    Text(
+    }
+    if (text != null) Text(
         text, Modifier.fillMaxWidth().padding(bottom = 6.dp).semantics { liveRegion = LiveRegionMode.Polite },
         color = if (!state.recording && state.noticeIsError) ErrorText else TextMuted, fontSize = 12.sp,
     )
+    val still = reducedMotion()
+    AnimatedVisibility(
+        state.recording,
+        enter = if (still) EnterTransition.None else fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 4 },
+        exit = ExitTransition.None,
+    ) {
+        VoiceRecordingBar(state, Modifier.padding(bottom = 8.dp).fillMaxWidth().height(48.dp))
+    }
 }

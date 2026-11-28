@@ -1767,16 +1767,21 @@ each attempt with task `dictate`, no job, and the transcript replaced by its
 length. Each account may dictate 120 times an hour (on `space_invite_limits`,
 429 past it); without a provider it answers 503.
 
-Every client shows the same bar while dictating: discard, timer, live levels,
-**Voice note** and a pulsing terracotta **Done** check (Enter is Done, Escape
-discards; on iPhone/iPad and Android the microphone itself becomes Done). Done
-shows "Transcribing…" with Cancel above the composer, then inserts the words
-over the selection, adding a space where they touch a word. "Voice note" keeps
-the recording as a voice message instead, so people who only tap still find
-voice messages. A failed transcription keeps the audio: "Couldn't insert your
-words." with Retry, "Keep as voice note" (or "Send as voice note" with the
-setting on) and Discard. A staged voice message only disables "Voice note" and
-holds; dictation still works. The fixture (`scripts/native-parity-fixture.mjs`)
+Every client shows the same bar while dictating: discard, timer, live levels
+and a pulsing **Done** check (Enter is Done, Escape discards; on iPhone/iPad the
+microphone itself becomes Done). Pointer layouts (web desktop, macOS, Windows,
+Linux) also show **Voice note**, which keeps the recording as a voice message
+instead, since a click can't hold; touch layouts (web mobile, iOS, Android)
+leave it out because holding the microphone records one. On web, iOS and
+Android the bar rises above the field (opacity and a short lift, instant under
+reduced motion) and the draft stays editable with the keyboard up, so typing
+carries on while recording. Once Done is pressed the recording is already on
+its way, so there is nothing to cancel: the microphone spins in place (on
+Windows the bar says "Transcribing…") until the words land over the selection,
+adding a space where they touch a word. A failed transcription keeps the audio:
+"Couldn't insert your words." with Retry, "Keep as voice note" (or "Send as
+voice note" with the setting on) and Discard. A staged voice message only
+disables "Voice note" and holds; dictation still works. The fixture (`scripts/native-parity-fixture.mjs`)
 answers dictation with "TEST FIXTURE dictated words".
 
 ### Flow
@@ -1834,15 +1839,15 @@ changing them needs only an API restart.
 ### Recording and sending
 
 A voice message comes from holding the microphone on a touch screen, or from the
-dictation bar's "Voice note". Recording starts on touch down, but a touch counts
+dictation bar's "Voice note" on pointer layouts. Recording starts on touch down, but a touch counts
 as a tap (dictation) until held for 300 ms. Held longer it becomes a voice
 message with a haptic tick (unless one is already staged), and a hint ("Release to add ·
 Slide up to lock", or "Release to send" with the setting on) appears with a lock
 pill above the microphone; releasing stops, and sliding up 72 pt/dp/px locks the
 recording hands-free with a terracotta Stop that pulses once a second. There is
 no slide-to-cancel: a released hold is staged, and
-a locked one has Discard. When a hands-free recording continues after the finger
-lifts, touch layouts close the keyboard. Recordings under a second are dropped and
+a locked one has Discard. The keyboard stays as it was when the finger lifts:
+the draft beside the bar stays editable. Recordings under a second are dropped and
 10:00 stops automatically.
 
 By default stopping does not send. The recording becomes a voice chip in the

@@ -6528,8 +6528,9 @@ a.chat-draft-preview {
     animation: none;
   }
 }
-/* Voice messages. The composer's microphone records; the recording bar takes
-   the input row's place; sent ones play inline with their transcript. */
+/* Voice messages. The composer's microphone records; the recording bar rises
+   above the draft, which stays editable; sent ones play inline with their
+   transcript. */
 .chat-voice-mic {
   position: relative;
   touch-action: none;
@@ -6539,6 +6540,11 @@ a.chat-draft-preview {
 }
 .chat-voice-mic[data-recording] {
   color: var(--terracotta-bright);
+}
+/* Transcribing: the microphone spins instead of fading out like a disabled tool. */
+.chat-voice-mic[data-busy]:disabled {
+  opacity: 1;
+  cursor: progress;
 }
 /* Above a held microphone: slide up to the lock to keep recording hands-free. */
 .chat-voice-lock {
@@ -6575,29 +6581,28 @@ a.chat-draft-preview {
 }
 .chat-voice-recorder {
   position: relative;
-  z-index: 2;
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
   min-height: 42px;
-  padding: 4px 4px 4px 4px;
+  margin: 0 0 8px;
+  padding: 4px;
   border: 1px solid var(--composer-border);
   border-radius: var(--radius-composer);
   color: var(--text);
   background: var(--surface-composer);
-  animation: caper-fade-in var(--motion-fast) var(--ease-out);
+  animation: chat-voice-bar-in var(--motion-base) var(--ease-out);
 }
-.chat-composer form > .chat-voice-recorder,
-.chat-profile-composer form > .chat-voice-recorder {
-  grid-column: 1;
-  grid-row: 1;
-  align-self: stretch;
+.chat-profile-composer > .chat-voice-recorder {
+  margin: 0;
 }
-.chat-thread-composer .chat-thread-send-row > .chat-voice-recorder {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  align-self: stretch;
+/* Rises out of the draft below it; leaving is instant. */
+@keyframes chat-voice-bar-in {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+  }
 }
 .chat-voice-recorder .chat-voice-discard,
 .chat-voice-recorder .chat-voice-stop {

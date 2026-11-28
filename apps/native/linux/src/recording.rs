@@ -691,27 +691,24 @@ impl App {
             let shown = dictation
                 .as_ref()
                 .filter(|dictation| state.shows(&dictation.origin, thread));
-            row.root.set_visible(shown.is_some());
-            if let Some(dictation) = shown {
-                let failed = dictation.error.is_some();
-                row.spinner.set_visible(!failed);
-                row.spinner.set_spinning(!failed);
-                row.text.set_label(&match &dictation.error {
-                    Some(error) => format!("Couldn’t insert your words. {error}"),
-                    None => "Transcribing…".into(),
-                });
-                if failed {
-                    row.text.add_css_class("error");
-                    row.text.remove_css_class("muted");
-                } else {
-                    row.text.add_css_class("muted");
-                    row.text.remove_css_class("error");
-                }
-                row.retry.set_visible(failed);
+            // While transcribing the microphone spins: the recording is already
+            // sent, so there is nothing to cancel. Only a failure gets a row.
+            let busy = shown.is_some_and(|dictation| dictation.error.is_none());
+            composer
+                .mic_face
+                .set_visible_child_name(if busy { "busy" } else { "mic" });
+            composer.mic_busy.set_spinning(busy);
+            if busy {
+                composer.mic.set_tooltip_text(Some("Transcribing…"));
+            }
+            let failed = shown
+                .and_then(|dictation| dictation.error.as_ref().map(|error| (dictation, error)));
+            row.root.set_visible(failed.is_some());
+            if let Some((dictation, error)) = failed {
+                row.text
+                    .set_label(&format!("Couldn’t insert your words. {error}"));
                 row.keep
-                    .set_visible(failed && state.voice_note_blocked(&dictation.origin).is_none());
-                row.drop
-                    .set_label(if failed { "Discard" } else { "Cancel" });
+                    .set_visible(state.voice_note_blocked(&dictation.origin).is_none());
                 row.keep.set_label(if send_on_stop {
                     "Send as voice note"
                 } else {
