@@ -942,6 +942,7 @@ struct Row {
     transcript_status: Option<String>,
     transcript: Option<String>,
 }
+const DRAFTED: &str = "EXISTS(SELECT 1 FROM public.message_drafts d WHERE d.user_id=owner_id AND external_id=ANY(d.attachment_ids))";
 const COLUMNS: &str = "external_id,purpose,space_id,kind,content_type,filename,byte_size,width,height,duration_ms,preview_content_type,preview_byte_size,uploaded_at,multipart_upload_id,part_bytes,voice,waveform,transcript_status,transcript";
 
 /// The attachment shape embedded in message content (without URLs).
@@ -1744,6 +1745,48 @@ async fn urls(
     Ok(Json(json!({"urls": out})))
 }
 
+/// The owner's ready, unsent attachment uploads among `ids` (in `channel`,
+/// when given), as `(id, description)` in the order asked. Files sent,
+/// removed or cleaned up since are left out. Descriptions carry no URLs.
+pub(crate) async fn staged(
+    pool: &PgPool,
+    owner: i64,
+    channel: Option<i64>,
+    ids: &[String],
+) -> Result<Vec<(String, Value)>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM public.assets
+         WHERE external_id = ANY($1) AND owner_id=$2 AND ($3::bigint IS NULL OR channel_id=$3)
+           AND purpose='attachment' AND uploaded_at IS NOT NULL AND message_id IS NULL AND deleted_at IS NULL"
+    ))
+    .bind(ids)
+    .bind(owner)
+    .bind(channel)
+    .fetch_all(pool)
+    .await?;
+    let by_id: HashMap<&str, &Row> = rows.iter().map(|r| (r.external_id.as_str(), r)).collect();
+    Ok(ids
+        .iter()
+        .filter_map(|id| {
+            by_id
+                .get(id.as_str())
+                .map(|row| (id.clone(), describe(row)))
+        })
+        .collect())
+}
+
+/// Signs attachment descriptions in place, as messages are signed.
+pub(crate) fn sign_files(files: &mut [Value], signer: Option<&CdnSigner>) {
+    let Some(signer) = signer else { return };
+    let now = Utc::now().timestamp();
+    for file in files.iter_mut().filter_map(Value::as_object_mut) {
+        sign_one(file, signer, now);
+    }
+}
+
 /// Locks and links ready, unattached uploads to a new message in one channel.
 /// Returns attachment descriptions in the requested order.
 pub(crate) async fn attach(
@@ -1759,7 +1802,7 @@ pub(crate) async fn attach(
         "SELECT {COLUMNS} FROM public.assets
          WHERE external_id = ANY($1) AND owner_id=$2 AND channel_id=$3 AND purpose='attachment'
            AND uploaded_at IS NOT NULL AND message_id IS NULL AND deleted_at IS NULL
-           AND uploaded_at > now() - interval '24 hours'
+           AND (uploaded_at > now() - interval '24 hours' OR {DRAFTED})
          FOR UPDATE"
     ))
     .bind(ids)
@@ -2316,7 +2359,9 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
         "UPDATE public.assets SET deleted_at=now()
          WHERE deleted_at IS NULL AND message_id IS NULL
            AND ((uploaded_at IS NULL AND COALESCE(upload_active_at, created_at) < now() - interval '1 hour')
-             OR (purpose='attachment' AND uploaded_at < now() - interval '24 hours'))",
+             OR (purpose='attachment' AND uploaded_at < now() - interval '24 hours'
+                 AND NOT EXISTS(SELECT 1 FROM public.message_drafts d
+                     WHERE d.user_id=owner_id AND external_id=ANY(d.attachment_ids))))",
     )
     .execute(&assets.pool)
     .await

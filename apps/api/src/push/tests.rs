@@ -5406,3 +5406,139 @@ async fn drafts_sync_between_sessions_and_follow_access(pool: PgPool) {
     let (status, _) = call(&h.app, "GET", "/api/drafts", None, None, Value::Null).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn draft_files_sync_survive_cleanup_and_still_send(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let (space_id, _) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    let random = channel(&pool, space_id, "random", false, &[&alice, &bob]).await;
+    // Ready, unsent uploads: Alice's two in #general, one in #random, Bob's one.
+    let upload = |owner: i64, channel: String, uploaded_ago: &'static str| {
+        let pool = pool.clone();
+        async move {
+            let id = random_id(12);
+            sqlx::query(&format!(
+                "INSERT INTO public.assets(external_id,owner_id,purpose,channel_id,kind,content_type,filename,byte_size,uploaded_at)
+                 SELECT $1,$2,'attachment',id,'image','image/png','shot.png',10,now()-interval '{uploaded_ago}'
+                 FROM public.channels WHERE external_id=$3"
+            ))
+            .bind(&id)
+            .bind(owner)
+            .bind(&channel)
+            .execute(&pool)
+            .await
+            .unwrap();
+            id
+        }
+    };
+    let old = upload(alice.id, general.clone(), "30 hours").await;
+    let fresh = upload(alice.id, general.clone(), "1 minute").await;
+    let elsewhere = upload(alice.id, random.clone(), "1 minute").await;
+    let bobs = upload(bob.id, general.clone(), "1 minute").await;
+    let (phone, _) = session(&pool, alice.id).await;
+    let put = |token: String, body: Value| {
+        let app = h.app.clone();
+        async move { call(&app, "PUT", "/api/drafts", Some(&token), None, body).await }
+    };
+    let ids = |draft: &Value| -> Vec<(String, bool)> {
+        draft["attachments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| (f["id"].as_str().unwrap().to_owned(), f["spoiler"] == true))
+            .collect()
+    };
+
+    // Only Alice's own files staged in #general are kept, in order, deduplicated.
+    let (status, saved) = put(
+        alice.token.clone(),
+        json!({"channelId": general, "text": "look", "attachmentIds": [fresh, bobs, elsewhere, old, fresh],
+               "spoilerAttachmentIds": [old, bobs]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(
+        ids(&saved),
+        vec![(fresh.clone(), false), (old.clone(), true)]
+    );
+    assert_eq!(saved["attachments"][0]["name"], "shot.png");
+    assert_eq!(saved["attachments"][0]["kind"], "image");
+    // The phone sees the files.
+    let (_, listed) = call(
+        &h.app,
+        "GET",
+        "/api/drafts",
+        Some(&phone),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ids(&listed["drafts"][0]), ids(&saved));
+    // A text-only save (an older client) keeps them.
+    let (_, kept) = put(
+        phone.clone(),
+        json!({"channelId": general, "text": "look at this"}),
+    )
+    .await;
+    assert_eq!(ids(&kept), ids(&saved));
+    let (status, _) = put(
+        phone.clone(),
+        json!({"channelId": general, "text": "", "attachmentIds": vec!["x"; 11]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // The cleanup of unsent uploads past 24 hours keeps a drafted file.
+    let unsent_old = upload(alice.id, general.clone(), "30 hours").await;
+    let assets = crate::assets::Assets::new(
+        pool.clone(),
+        crate::assets::R2::new(
+            "http://127.0.0.1:1".into(),
+            "test".into(),
+            "key".into(),
+            "secret".into(),
+        ),
+        1 << 30,
+    );
+    let _ = crate::assets::purge(&assets).await;
+    let deleted: Vec<String> = sqlx::query_scalar(
+        "SELECT external_id FROM public.assets WHERE deleted_at IS NOT NULL ORDER BY external_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(deleted, vec![unsent_old]);
+
+    // And it can still be sent; sending takes it out of the draft's list.
+    let (status, message) = call(
+        &h.app,
+        "POST",
+        &format!("/api/chat/channels/{general}/messages"),
+        None,
+        Some(&alice.chat),
+        json!({"clientMessageId": Uuid::new_v4(), "text": "sent", "attachmentIds": [old]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{message}");
+    let (_, listed) = call(
+        &h.app,
+        "GET",
+        "/api/drafts",
+        Some(&phone),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ids(&listed["drafts"][0]), vec![(fresh.clone(), false)]);
+    // Clearing the files releases them to the normal cleanup.
+    let (_, cleared) = put(
+        phone.clone(),
+        json!({"channelId": general, "text": "", "attachmentIds": []}),
+    )
+    .await;
+    assert!(ids(&cleared).is_empty());
+}
