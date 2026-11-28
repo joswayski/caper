@@ -1501,13 +1501,16 @@ enum PendingAction { case retry, edit, dismiss }
         let rect = messageBounds
         trackingRect = rect
         let hasTopInset = topInset > 0
+        // Moves too: the pointer can pass between this row and something
+        // covering it (see `isFrontmost`) without leaving the tracking rect.
         let options: NSTrackingArea.Options = hasTopInset
-            ? [.mouseEnteredAndExited, .activeInKeyWindow]
-            : [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow]
+            ? [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow]
+            : [.inVisibleRect, .mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow]
         let tracking = NSTrackingArea(rect: hasTopInset ? rect : .zero, options: options, owner: self, userInfo: nil)
         self.tracking = tracking; addTrackingArea(tracking)
     }
     override func mouseEntered(with event: NSEvent) { refreshHover() }
+    override func mouseMoved(with event: NSEvent) { refreshHover() }
     override func mouseExited(with event: NSEvent) {
         if let window, window.isKeyWindow {
             refreshHover()
@@ -1582,11 +1585,20 @@ enum PendingAction { case retry, edit, dismiss }
         guard message != nil else { clearHover(); return }
         // A row's visibleRect can be the whole visible history (views need
         // not clip to their bounds), so keep to the message area itself.
-        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        let inside = messageBounds.intersection(visibleRect).contains(point)
-            || (hovered && !controls.isHidden && controls.frame.contains(point))
+        let location = window.mouseLocationOutsideOfEventStream
+        let point = convert(location, from: nil)
+        let inside = (messageBounds.intersection(visibleRect).contains(point)
+            || (hovered && !controls.isHidden && controls.frame.contains(point)))
+            && isFrontmost(at: location, in: window)
         guard inside != hovered else { return }
         hovered = inside; updateControlsVisibility()
+    }
+    /// Tracking areas ignore whatever covers the row: a popover such as the
+    /// GIF picker (its own window), the formatting bar, the composer's
+    /// backdrop. As web's :hover, the row counts only where a click would reach it.
+    private func isFrontmost(at location: NSPoint, in window: NSWindow) -> Bool {
+        NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) == window.windowNumber
+            && window.contentView?.hitTest(location)?.isDescendant(of: self) == true
     }
     /// Exposed for view tests; true when hover, focus, menu or reaction picker marks this row.
     var isRowHighlighted: Bool { message != nil && (hovered || controls.hasFocus || menuOpen || actionActive) }

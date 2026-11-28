@@ -1318,6 +1318,7 @@ import CaperCore
             formatToolbar.update(text: composer.string, selection: range)
             formatToolbar.isHidden = false
             layoutFormatToolbar()
+            formatToolbar.syncHover()
         } else {
             formatToolbar.isHidden = true
         }
@@ -1706,10 +1707,19 @@ private final class AppKitTypingBackdrop: NSView {
             button.applyTheme()
         }
     }
+
+    /// Call once shown and placed: the pointer may already be over a button.
+    func syncHover() {
+        for (button, _) in buttons {
+            button.syncHover()
+            button.applyTheme()
+        }
+    }
 }
 
 @MainActor private final class AppKitFormatButton: NSButton {
     private let handler: () -> Void
+    private var tracking: NSTrackingArea?
     private var hovered = false
     var isActive = false
     override var acceptsFirstResponder: Bool { false }
@@ -1733,8 +1743,6 @@ private final class AppKitTypingBackdrop: NSView {
         setAccessibilityIdentifier("format-\(item.title.lowercased().replacingOccurrences(of: " ", with: "-"))")
         target = self
         self.action = #selector(clicked)
-        let tracking = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
-        addTrackingArea(tracking)
         applyTheme()
     }
 
@@ -1743,6 +1751,27 @@ private final class AppKitTypingBackdrop: NSView {
     @objc private func clicked() {
         guard isEnabled else { return }
         handler()
+    }
+
+    // Installed here, as NativeButton's, so AppKit renews it whenever the
+    // bar is shown or moved, rather than once in init before it has a window.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let tracking = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        self.tracking = tracking; addTrackingArea(tracking)
+        syncHover()
+        applyTheme()
+    }
+
+    /// The bar appears, hides and moves under a still pointer, which sends no
+    /// mouseEntered or mouseExited, so it reads the pointer when shown.
+    func syncHover() {
+        if let window, window.isKeyWindow, !isHiddenOrHasHiddenAncestor {
+            hovered = visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        } else {
+            hovered = false
+        }
     }
 
     override func mouseEntered(with event: NSEvent) {
