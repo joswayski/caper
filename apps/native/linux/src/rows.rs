@@ -1535,7 +1535,7 @@ fn build_widgets() -> Widgets {
             day_row.append(&day);
         }
     }
-    let reply = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let reply = gtk::Box::new(gtk::Orientation::Vertical, 2);
     reply.add_css_class("quote");
     let quote_heading = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     tooltip(&quote_heading, "View original message");

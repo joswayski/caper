@@ -148,9 +148,11 @@ pub struct Quote {
     pub height: f32,
 }
 
-const QUOTE_PAD_X: f32 = 12.0;
-const QUOTE_PAD_Y: f32 = 10.0;
-const QUOTE_HEADING: f32 = 20.0;
+/// The panel's offset from the row's top, matching the space under its message.
+const QUOTE_TOP: f32 = 9.0;
+const QUOTE_PAD_X: f32 = 10.0;
+const QUOTE_PAD_Y: f32 = 6.0;
+const QUOTE_HEADING: f32 = 18.0;
 const QUOTE_AVATAR: f32 = 16.0;
 const QUOTE_LINES: usize = 3;
 const THREAD_H: f32 = 22.0;
@@ -1151,8 +1153,8 @@ fn place(row: &mut Row, m: &crate::model::Message) {
             }
             shown
         };
-        q.height = QUOTE_PAD_Y + QUOTE_HEADING + 2.0 + shown + QUOTE_PAD_Y;
-        y = row.lead + 4.0 - top + q.height + 8.0;
+        q.height = QUOTE_PAD_Y + QUOTE_HEADING + 1.0 + shown + QUOTE_PAD_Y;
+        y = row.lead + QUOTE_TOP - top + q.height + 2.0;
     }
     if row.pin.is_some() {
         row.pin_y = y;
@@ -1376,14 +1378,14 @@ impl Rows {
             }
         }
         if let Some(q) = &row.quote {
-            let hy = row.lead + 4.0 + QUOTE_PAD_Y;
+            let hy = row.lead + QUOTE_TOP + QUOTE_PAD_Y;
             let ax = BODY_X + QUOTE_PAD_X;
             let ay = hy + (QUOTE_HEADING - QUOTE_AVATAR) / 2.0;
             let name = gfx::metrics(&q.name);
             if inside(ax, ay, QUOTE_AVATAR, QUOTE_AVATAR)
                 || inside(
                     ax + QUOTE_AVATAR + 6.0,
-                    hy + 2.0,
+                    hy + 1.0,
                     name.widthIncludingTrailingWhitespace,
                     name.height,
                 )
@@ -1467,7 +1469,7 @@ impl Rows {
     pub fn quote_panel(&self, i: usize) -> Option<Common::D2D_RECT_F> {
         let row = self.row(i)?;
         let q = row.quote.as_ref().filter(|q| q.view_w > 0.0)?;
-        let y = row.lead + 4.0;
+        let y = row.lead + QUOTE_TOP;
         Some(rect(BODY_X, y, BODY_X + row.width, y + q.height))
     }
 
@@ -1475,7 +1477,7 @@ impl Rows {
         let row = self.row(i)?;
         let q = row.quote.as_ref()?;
         let x = BODY_X + row.width - QUOTE_PAD_X - q.view_w;
-        let y = row.lead + 4.0 + QUOTE_PAD_Y + 3.0;
+        let y = row.lead + QUOTE_TOP + QUOTE_PAD_Y + 2.0;
         let h = gfx::metrics(&q.view).height;
         Some(rect(x, y, x + q.view_w, y + h))
     }
@@ -1732,7 +1734,7 @@ fn draw_content(
             crate::text::draw(dc, l, lx, cy - h / 2.0, &g.brushes.terracotta);
         }
         if let Some(q) = &row.quote {
-            let qy = y + row.lead + 4.0;
+            let qy = y + row.lead + QUOTE_TOP;
             let p = rect(BODY_X, qy, BODY_X + row.width, qy + q.height);
             // Under the pointer the panel lifts and its text brightens, as web.
             let ink = if quote_lit {
@@ -1756,10 +1758,10 @@ fn draw_content(
                 fill_round(dc, a, QUOTE_AVATAR * 0.3, &g.solid(q.color)?);
                 crate::text::draw(dc, &q.initials, a.left, a.top, &g.brushes.text);
             }
-            crate::text::draw(dc, &q.name, a.right + 6.0, hy + 2.0, &g.brushes.muted);
-            crate::text::draw(dc, &q.view, p.right - QUOTE_PAD_X - q.view_w, hy + 3.0, ink);
-            gfx::fill_quiet_mentions(g, dc, &q.text, &q.mentions, x, hy + QUOTE_HEADING + 2.0);
-            crate::text::draw(dc, &q.text, x, hy + QUOTE_HEADING + 2.0, ink);
+            crate::text::draw(dc, &q.name, a.right + 6.0, hy + 1.0, &g.brushes.muted);
+            crate::text::draw(dc, &q.view, p.right - QUOTE_PAD_X - q.view_w, hy + 2.0, ink);
+            gfx::fill_quiet_mentions(g, dc, &q.text, &q.mentions, x, hy + QUOTE_HEADING + 1.0);
+            crate::text::draw(dc, &q.text, x, hy + QUOTE_HEADING + 1.0, ink);
         }
         if let Some(l) = &row.pin {
             // egui's muted pin icon, drawn: a head and its needle.
@@ -1808,7 +1810,7 @@ fn draw_content(
         }
         // Drawn last so its sockets sit over the panel and the avatar.
         if row.quote.is_some() && row.header.is_some() {
-            let qy = y + row.lead + 4.0;
+            let qy = y + row.lead + QUOTE_TOP;
             let source = (BODY_X + QUOTE_PAD_X, qy + QUOTE_PAD_Y + QUOTE_HEADING / 2.0);
             reply_string(g, dc, source, (PAD_X, hy + AVATAR / 2.0));
         }

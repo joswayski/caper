@@ -3846,9 +3846,9 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         drawContent()
         if (hidden) return@drawWithContent
         // Each cup's mouth meets its avatar's left edge at the avatar's vertical centre: the quoted author's 16dp
-        // avatar opens the heading row, inside the card (62dp, as the text column) and its 12dp padding, below the
-        // 4dp top and 10dp padding; the replying author's 34dp avatar sits 4dp below this context, 18dp in.
-        val sourceX = 74.dp.toPx(); val sourceY = 14.dp.toPx() + (if (headingHeight > 0) headingHeight.toFloat() else 20.dp.toPx()) / 2
+        // avatar opens the heading row, inside the card (62dp, as the text column) and its 10dp padding, below the
+        // 9dp top and 6dp padding; the replying author's 34dp avatar sits 4dp below this context, 18dp in.
+        val sourceX = 72.dp.toPx(); val sourceY = 15.dp.toPx() + (if (headingHeight > 0) headingHeight.toFloat() else 18.dp.toPx()) / 2
         val targetX = 18.dp.toPx(); val bottom = size.height + 21.dp.toPx()
         val angle = displacement * 0.025f
         val dx = 12.dp.toPx() * cos(angle); val dy = 12.dp.toPx() * sin(angle)
@@ -3865,11 +3865,11 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         drawPath(path, TextMuted.copy(alpha = 0.75f), style = Stroke(1.1.dp.toPx(), cap = StrokeCap.Round))
         replySocket(Offset(sourceX, sourceY), angle * 180f / kotlin.math.PI.toFloat())
         replySocket(Offset(targetX, bottom), -angle * 180f / kotlin.math.PI.toFloat())
-    }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {
+    }.padding(start = 62.dp, end = 18.dp, top = 9.dp, bottom = 2.dp)) {
         Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border.copy(alpha = 0.7f))) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Column(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Row(Modifier.heightIn(min = 20.dp).onSizeChanged { headingHeight = it.height }, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                Column(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Row(Modifier.heightIn(min = 18.dp).onSizeChanged { headingHeight = it.height }, verticalAlignment = Alignment.CenterVertically) {
                         if (!hidden) {
                             Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId, avatarAsset = reference.author.avatarAsset, avatarUrl = reference.author.avatarUrl)
                             Spacer(Modifier.width(6.dp))

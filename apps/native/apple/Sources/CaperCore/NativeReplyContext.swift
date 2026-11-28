@@ -73,10 +73,10 @@ import SwiftUI
         CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
         let angle = displacement * 0.025, dx = 12 * cos(angle), dy = 12 * sin(angle)
         // The row's avatar is centered 22pt under the context (iOS: 5 + 17; macOS: 4 + 18).
-        let bottom = height + 22, start = CGPoint(x: avatarX - dx, y: bottom + dy), end = CGPoint(x: avatarX + 56 - dx, y: 20 - dy), span = start.y - end.y
+        let bottom = height + 22, start = CGPoint(x: avatarX - dx, y: bottom + dy), end = CGPoint(x: avatarX + 54 - dx, y: 20 - dy), span = start.y - end.y
         let path = CGMutablePath(); path.move(to: start)
         path.addCurve(to: end, control1: CGPoint(x: start.x + 8 + displacement, y: start.y - span * 0.3), control2: CGPoint(x: end.x - 30 + displacement, y: end.y + span * 0.3))
-        wire.path = path; upper.position = CGPoint(x: avatarX + 56, y: 20); lower.position = CGPoint(x: avatarX, y: bottom)
+        wire.path = path; upper.position = CGPoint(x: avatarX + 54, y: 20); lower.position = CGPoint(x: avatarX, y: bottom)
         upper.setAffineTransform(CGAffineTransform(rotationAngle: angle)); lower.setAffineTransform(CGAffineTransform(rotationAngle: -angle))
     }
 }
@@ -234,24 +234,25 @@ import AppKit
         if attachments.count > 3 { thumbnails.addArrangedSubview(AppKitKit.label("+\(attachments.count - 3)", size: 12, color: AppKitKit.muted)) }
     }
     private func metrics(_ width: CGFloat) -> (text: CGFloat, expand: Bool, height: CGFloat) {
-        let full = blocked ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.stringValue, attributes: [.font: AppKitKit.font(12)]), width: max(1, width - 68))
+        let full = blocked ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.stringValue, attributes: [.font: AppKitKit.font(12)]), width: max(1, width - 64))
         let more = !blocked && reference.deleted != true && (expanded || full > 48)
         let text = expanded ? full : min(48, full)
-        return (text, more, 20 + 20 + text + (thumbnails.arrangedSubviews.isEmpty ? 0 : 47) + (more ? 32 : 0) + 13)
+        // 5 above the card, 6 + 18 + 1 + text + 6 inside it, 7 under it, as web.
+        return (text, more, 43 + text + (thumbnails.arrangedSubviews.isEmpty ? 0 : 47) + (more ? 32 : 0))
     }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: metrics(bounds.width).height) }
     override func layout() {
-        super.layout(); let width = max(1, bounds.width - 68), m = metrics(bounds.width)
-        CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 44, y: 0, width: max(1, bounds.width - 44), height: m.height - 13); CATransaction.commit()
-        avatar.frame = CGRect(x: 56, y: 12, width: 16, height: 16)
-        let nameX: CGFloat = blocked ? 56 : 78
-        name.frame = CGRect(x: nameX, y: 10, width: max(1, bounds.width - nameX - (hint.isHidden ? 12 : 86)), height: 20)
-        hint.frame = CGRect(x: max(56, bounds.width - 86), y: 10, width: 74, height: 20)
-        excerpt.preferredMaxLayoutWidth = width; excerpt.frame = CGRect(x: 56, y: 33, width: width, height: m.text)
-        thumbnails.frame = CGRect(x: 56, y: 36 + m.text, width: width, height: 44)
-        let bottom = m.height - 13 - (m.expand ? 32 : 0)
-        open.frame = CGRect(x: 44, y: 0, width: max(1, bounds.width - 44), height: bottom)
-        expand.isHidden = !m.expand; expand.frame = CGRect(x: 56, y: bottom - 4, width: width, height: 32)
+        super.layout(); let width = max(1, bounds.width - 64), m = metrics(bounds.width)
+        CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 44, y: 5, width: max(1, bounds.width - 44), height: m.height - 12); CATransaction.commit()
+        avatar.frame = CGRect(x: 54, y: 12, width: 16, height: 16)
+        let nameX: CGFloat = blocked ? 54 : 76
+        name.frame = CGRect(x: nameX, y: 11, width: max(1, bounds.width - nameX - (hint.isHidden ? 10 : 84)), height: 18)
+        hint.frame = CGRect(x: max(54, bounds.width - 84), y: 11, width: 74, height: 18)
+        excerpt.preferredMaxLayoutWidth = width; excerpt.frame = CGRect(x: 54, y: 30, width: width, height: m.text)
+        thumbnails.frame = CGRect(x: 54, y: 33 + m.text, width: width, height: 44)
+        let bottom = m.height - 7 - (m.expand ? 32 : 0)
+        open.frame = CGRect(x: 44, y: 5, width: max(1, bounds.width - 44), height: bottom - 5)
+        expand.isHidden = !m.expand; expand.frame = CGRect(x: 54, y: bottom - 4, width: width, height: 32)
         if hoverArea?.rect != open.frame { updateTrackingAreas() }
         moveWire(); if lastHeight != m.height { lastHeight = m.height; invalidateIntrinsicContentSize(); heightChanged?() }
     }
@@ -342,23 +343,24 @@ import UIKit
         if attachments.count > 3 { thumbnails.addArrangedSubview(UIKitMessageDialog.label("+\(attachments.count - 3)", size: 12)) }
     }
     private func metrics(_ width: CGFloat) -> (text: CGFloat, expand: Bool, height: CGFloat) {
-        let full = blocked ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.text ?? "", attributes: [.font: excerpt.font!]), width: max(1, width - 24))
+        let full = blocked ? 0 : NativePresentation.textHeight(NSAttributedString(string: excerpt.text ?? "", attributes: [.font: excerpt.font!]), width: max(1, width - 20))
         let limit = ceil(excerpt.font.lineHeight * 3), more = !blocked && reference.deleted != true && (expanded || full > limit), text = expanded ? full : min(limit, full)
-        return (text, more, max(44, 40 + text + (thumbnails.arrangedSubviews.isEmpty ? 0 : 47)) + (more ? 44 : 0) + 13)
+        // 5 above the card, 6 + 18 + 1 + text + 6 inside it, 7 under it, as web.
+        return (text, more, max(44, 31 + text + (thumbnails.arrangedSubviews.isEmpty ? 0 : 47)) + (more ? 44 : 0) + 12)
     }
     public override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: metrics(fittingWidth > 0 ? fittingWidth : bounds.width).height) }
     public override func layoutSubviews() {
         super.layoutSubviews(); if bounds.width > 0 { fittingWidth = bounds.width }
-        let width = max(1, bounds.width - 24), m = metrics(bounds.width)
-        CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 0, y: 0, width: bounds.width, height: m.height - 13); CATransaction.commit()
-        avatar.frame = CGRect(x: 12, y: 12, width: 16, height: 16)
-        let nameX: CGFloat = blocked ? 12 : 34
-        name.frame = CGRect(x: nameX, y: 10, width: max(1, bounds.width - nameX - (hint.isHidden ? 12 : 86)), height: 20)
-        hint.frame = CGRect(x: max(12, bounds.width - 86), y: 10, width: 74, height: 20)
-        excerpt.frame = CGRect(x: 12, y: 33, width: width, height: m.text); thumbnails.frame = CGRect(x: 12, y: 36 + m.text, width: width, height: 44)
-        let bottom = m.height - 13 - (m.expand ? 44 : 0)
-        open.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bottom)
-        expand.isHidden = !m.expand; expand.frame = CGRect(x: 12, y: bottom - 4, width: width, height: 44)
+        let width = max(1, bounds.width - 20), m = metrics(bounds.width)
+        CATransaction.begin(); CATransaction.setDisableActions(true); panel.frame = CGRect(x: 0, y: 5, width: bounds.width, height: m.height - 12); CATransaction.commit()
+        avatar.frame = CGRect(x: 10, y: 12, width: 16, height: 16)
+        let nameX: CGFloat = blocked ? 10 : 32
+        name.frame = CGRect(x: nameX, y: 11, width: max(1, bounds.width - nameX - (hint.isHidden ? 10 : 84)), height: 18)
+        hint.frame = CGRect(x: max(10, bounds.width - 84), y: 11, width: 74, height: 18)
+        excerpt.frame = CGRect(x: 10, y: 30, width: width, height: m.text); thumbnails.frame = CGRect(x: 10, y: 33 + m.text, width: width, height: 44)
+        let bottom = m.height - 7 - (m.expand ? 44 : 0)
+        open.frame = CGRect(x: 0, y: 5, width: bounds.width, height: bottom - 5)
+        expand.isHidden = !m.expand; expand.frame = CGRect(x: 10, y: bottom - 4, width: width, height: 44)
         moveWire(); if lastHeight != m.height { lastHeight = m.height; invalidateIntrinsicContentSize() }
     }
     private func moveWire() { wire.update(y: convert(CGPoint.zero, to: nil).y, height: intrinsicContentSize.height, hidden: blocked) }

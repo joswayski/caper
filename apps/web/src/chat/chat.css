@@ -701,14 +701,18 @@
   grid-column: 1 / -1;
   width: 100%;
   min-height: 24px;
-  margin-bottom: 8px;
+  margin-bottom: 2px;
   padding-left: 44px;
+}
+/* Matches the space under the reply's text, so the tinted row reads evenly. */
+.chat-message:has(> .chat-reply-context) {
+  padding-top: 9px;
 }
 .chat-reply-body {
   position: relative;
   min-width: 0;
   width: 100%;
-  padding: 10px 12px;
+  padding: 6px 10px;
   border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   border-radius: 8px;
   background: var(--surface);
@@ -716,7 +720,7 @@
 .chat-reply-source {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 1px;
   width: 100%;
   min-height: 24px;
   padding: 0;
@@ -734,7 +738,7 @@ button.chat-reply-source {
   align-items: center;
   gap: 7px;
   width: 100%;
-  min-height: 20px;
+  min-height: 18px;
 }
 .chat-reply-attachments {
   display: flex;

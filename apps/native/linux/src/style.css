@@ -673,8 +673,8 @@ label.body {
   background: @caper_surface;
   border: 1px solid alpha(@caper_border, 0.7);
   border-radius: 8px;
-  padding: 10px 12px;
-  margin: 4px 0 8px 44px;
+  padding: 6px 10px;
+  margin: 9px 0 2px 44px;
   transition:
     background-color 140ms ease-out,
     border-color 140ms ease-out;
