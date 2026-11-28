@@ -29,6 +29,11 @@ internal data class ActivityInboxState(
     val items: List<ActivityItem> = emptyList(), val cursor: String? = null, val unreadCount: Int = 0,
     val filter: ActivityFilter = ActivityFilter.All, val unreadOnly: Boolean = true,
     val loading: Boolean = false, val error: String? = null,
+    /**
+     * The current filter and unread choice has answered at least once (a page or an error). Background polls keep
+     * it, so the sheet shows its loading bar only before the first answer and its empty state only after it.
+     */
+    val loaded: Boolean = false,
     val expanded: Map<String, ActivityItem> = emptyMap(),
     /** The row whose open is in flight; a second open waits for it. */
     val opening: String? = null,

@@ -115,7 +115,9 @@ async fn mark_read(pool: &PgPool, user: i64, target: &Target) -> Result<(), ApiE
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;
-    tx.commit().await.map_err(database_error)
+    tx.commit().await.map_err(database_error)?;
+    super::badge::request(pool, user).await;
+    Ok(())
 }
 
 async fn badge(pool: &PgPool, user: i64) -> Result<Value, ApiError> {

@@ -456,6 +456,63 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testServerDraftsReplaceCleanComposersAndLocalEditsSaveOnFlush() async throws {
+        var saves: [[String: String]] = []
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            if request.url?.path == "/api/drafts", request.httpMethod == "PUT" {
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: String])
+                saves.append(body)
+                let root: Any = body["threadRootId"].map { $0 as Any } ?? NSNull()
+                let saved: [String: Any] = ["channelId": body["channelId"] ?? "", "threadRootId": root,
+                                            "text": body["text"] ?? "", "updatedAt": "2026-11-27T18:00:0\(saves.count).000000Z"]
+                return (200, try JSONSerialization.data(withJSONObject: saved))
+            }
+            guard let url = request.url, url.path.hasSuffix("/messages"), let channel = url.pathComponents.dropLast().last else {
+                throw URLError(.badURL)
+            }
+            return (200, chatHistory(channel, sequences: [], cursor: 0, hasMore: false))
+        }
+        let suite = "DraftSync.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let chat = ChatModel(api: client())
+        chat.draftDefaults = defaults
+        chat.viewerAccountID = { "alice" }
+        await chat.open(channelID: "chan00000001", displayName: "Me")
+        XCTAssertTrue(saves.isEmpty, "restoring a conversation is not an edit")
+
+        func server(_ channel: String, _ root: String?, _ text: String, _ at: String) -> ServerDraft {
+            ServerDraft(channelId: channel, threadRootId: root, text: text, updatedAt: at)
+        }
+        chat.receiveServerDraft(server("chan00000001", nil, "from web", "2026-11-27T17:00:01.000000Z"))
+        XCTAssertEqual(chat.draft, "from web", "the open composer shows it")
+        chat.receiveServerDraft(server("chan00000001", nil, "stale", "2026-11-27T17:00:00.000000Z"))
+        XCTAssertEqual(chat.draft, "from web", "an older draft is ignored")
+        chat.receiveServerDraft(server("chan00000002", nil, "elsewhere", "2026-11-27T17:00:02.000000Z"))
+        chat.receiveServerDraft(server("chan00000001", "root00000001", "a reply", "2026-11-27T17:00:02.000000Z"))
+
+        chat.draft = "typed here"
+        chat.receiveServerDraft(server("chan00000001", nil, "from phone", "2026-11-27T17:30:00.000000Z"))
+        XCTAssertEqual(chat.draft, "typed here", "a dirty draft keeps its local edit")
+        chat.flushDraftSaves()
+        for _ in 0..<200 where saves.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(saves.first, ["channelId": "chan00000001", "text": "typed here"], "leaving or backgrounding saves at once")
+        // The save's own echo changes nothing.
+        chat.receiveServerDraft(server("chan00000001", nil, "typed here", "2026-11-27T18:00:01.000000Z"))
+        XCTAssertEqual(chat.draft, "typed here")
+
+        await chat.openThread("root00000001")
+        XCTAssertEqual(chat.threadDraft, "a reply", "a thread reply applied while closed")
+        await chat.open(channelID: "chan00000002", displayName: "Me")
+        XCTAssertEqual(chat.draft, "elsewhere")
+        XCTAssertEqual(saves.count, 1, "applied drafts are not saved back")
+        await chat.stop(discardingDrafts: true)
+    }
+
+    @MainActor
     func testDraftsAndThreadRepliesSurviveARelaunchPerAccountUntilLogout() async throws {
         MockURLProtocol.handler = { request in
             if request.url?.path == "/api/chat/session" {

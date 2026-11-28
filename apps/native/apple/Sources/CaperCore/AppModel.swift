@@ -62,11 +62,16 @@ public final class AppModel {
     public var notificationInvitation: Space?
     public var notificationChannelInvitation: ChannelInvitation?
     var activityItems: [ActivityItem] = []
-    var activityFilter: ActivityFilter = .all
-    var activityUnreadOnly = true
+    var activityFilter: ActivityFilter = .all { didSet { if activityFilter != oldValue { activityLoaded = false } } }
+    var activityUnreadOnly = true { didSet { if activityUnreadOnly != oldValue { activityLoaded = false } } }
     var activityUnread = 0
     var activityCursor: String?
     var activityLoading = false
+    /// The current filter and unread choice have answered at least once
+    /// (rows, none or an error). `activityLoading` also covers background
+    /// refreshes, so views decide between loading and empty on this instead:
+    /// keying the empty note on `activityLoading` made it blink on every poll.
+    var activityLoaded = false
     var activityError: String? { didSet { activityErrorFromLoad = false } }
     /// Whether `activityError` came from loading the list. A background refresh
     /// replaces only that one: a failed read, reaction or open stays visible
@@ -232,6 +237,7 @@ public final class AppModel {
             activityItems = ((reset ? [] : activityItems) + rows).filter { ids.insert($0.id).inserted }
             activityCursor = page.nextCursor
             activityUnread = page.unreadCount
+            activityLoaded = true
             updateApplicationBadge(page.unreadCount)
         } catch {
             guard generation == attempt && request == activityRequest else { return }
@@ -239,6 +245,7 @@ public final class AppModel {
             if reset && !poll { activityItems = []; activityCursor = nil }
             activityError = FriendlyError.message(for: error)
             activityErrorFromLoad = true
+            if filter == activityFilter && unread == activityUnreadOnly { activityLoaded = true }
         }
     }
 
@@ -1066,6 +1073,8 @@ public final class AppModel {
         case .space(let space): applySpaceUpdate(space)
         case .notificationRetracted(let messageID): retractNotification?(messageID)
         case .notificationsUpdated(let settings): applyNotificationsUpdate(settings)
+        case .draftUpdated(let draft): chat.receiveServerDraft(draft)
+        case .ready: Task { await chat.reloadServerDrafts() }
         }
     }
 
@@ -1907,7 +1916,7 @@ public final class AppModel {
 
     public func applicationActivityChanged(active: Bool) {
         foreground = active
-        if active { receiveShares() } else { refreshShareRecents() }
+        if active { receiveShares() } else { refreshShareRecents(); chat.flushDraftSaves() }
         if active, account != nil {
             chat.refreshDraftUploads()
             markSelectedDirectRead()
@@ -2000,9 +2009,10 @@ public final class AppModel {
         feedbackWaiting = snapshot.feedbackWaiting
         let previousUnread = activityUnread
         if let count = snapshot.badgeCount { updateApplicationBadge(count); activityUnread = count }
-        // A closed inbox loads ahead whenever its count changes, so opening it
-        // shows these notifications at once instead of a loading state.
-        if activityShown || activityUnread != previousUnread { await loadActivity(reset: true, poll: true) }
+        // A closed inbox loads ahead until it has answered and whenever its
+        // count changes, so opening it shows its rows (or its empty note) at
+        // once instead of a loading state.
+        if activityShown || activityUnread != previousUnread || !activityLoaded { await loadActivity(reset: true, poll: true) }
         markSelectedChannelRead()
     }
 
@@ -3375,7 +3385,7 @@ extension AppModel {
         activityRequest += 1; activityItems = []; activityCursor = nil; activityUnread = 0
         activityLoading = false; activityOpening = nil; activityStale = false; activityReads = 0; activityError = nil
         activityShown = false
-        activityFilter = .all; activityUnreadOnly = true
+        activityFilter = .all; activityUnreadOnly = true; activityLoaded = false
         voiceActivitySpaceIDs = []
         unreadSpaces = []; feedbackWaiting = 0; channelReads = [:]; unreadRevision += 1
         unreadVisitToken = UUID(); unreadVisit = nil; unreadVisitReady = false
@@ -3694,7 +3704,10 @@ public final class ChatModel {
     public var spaceName = "Caper"
     public var draft = "" {
         didSet {
-            if oldValue != draft { composerRevision += 1; saveDrafts() }
+            if oldValue != draft {
+                composerRevision += 1; saveDrafts()
+                if !syncingDraft, let draftChannelID { draftEdited(DraftKey(channelID: draftChannelID, threadRootID: nil)) }
+            }
             // A sent or cleared draft starts over: the next link gets its card again.
             if draft.isEmpty { removedPreviewLink = nil }
         }
@@ -3892,6 +3905,18 @@ public final class ChatModel {
     /// conversation whose text `draft` holds.
     @ObservationIgnored private var draftsAccountID: String?
     @ObservationIgnored private var draftChannelID: String?
+    /// Cross-device draft sync (docs/media.md, "Draft sync"): dirty drafts and
+    /// the last server `updatedAt` applied per draft, each thread draft's
+    /// conversation, and the pending one-second saves.
+    @ObservationIgnored private var draftSync = DraftSync()
+    @ObservationIgnored private var threadDraftChannels: [String: String] = [:]
+    @ObservationIgnored private var draftSaveTimers: [DraftKey: Task<Void, Never>] = [:]
+    /// Changes when the account's drafts are adopted or discarded, so a save
+    /// or load from before never lands.
+    @ObservationIgnored private var draftEpoch = 0
+    /// Set while text changes that are not edits here (restoring a draft on
+    /// opening its conversation, clearing, applying a server draft).
+    @ObservationIgnored private var syncingDraft = false
     /// A picker owns its original composer even if selection finishes after
     /// navigation. Access IDs invalidate old callbacks after sign-out/revocation.
     struct AttachmentTarget: Hashable {
@@ -3931,7 +3956,9 @@ public final class ChatModel {
                 let changed = threadDrafts[threadRootID] != newValue
                 if changed { composerRevision += 1 }
                 threadDrafts[threadRootID] = newValue
+                if changed, !syncingDraft, let draftChannelID { threadDraftChannels[threadRootID] = draftChannelID }
                 if changed { saveDrafts() }
+                if changed, !syncingDraft, let draftChannelID { draftEdited(DraftKey(channelID: draftChannelID, threadRootID: threadRootID)) }
                 // As the channel draft: a sent or cleared reply starts over.
                 if newValue.isEmpty { removedThreadPreviewLinks[threadRootID] = nil }
             }
@@ -4305,6 +4332,7 @@ public final class ChatModel {
     }
 
     private func open(channelID: String?, displayName: String, preservingPending: Bool, prepared: ChatHistory?) async {
+        flushDraftSaves()
         lastOpen = (channelID, displayName)
         isPreview = false
         let preservingTimeline = preservingPending && self.channelID == channelID
@@ -4337,7 +4365,9 @@ public final class ChatModel {
         let restoredDraft = channelID.flatMap { drafts.removeValue(forKey: $0) } ?? ""
         if let channelID { restoreStagedFiles(channelID: channelID) }
         draftChannelID = channelID
+        syncingDraft = true
         draft = preservingPending ? preservedDraft : restoredDraft
+        syncingDraft = false
         self.restoredDraft = draft.isEmpty ? nil : draft
         // Prepared history is already loaded and authorized by navigation.
         // Show it immediately; obtaining a sending capability is not a new
@@ -4528,6 +4558,7 @@ public final class ChatModel {
     }
 
     public func closeThread() {
+        flushDraftSaves()
         if composerFocusRoot != nil { composerFocusRequest = nil }
         threadRequest += 1; threadRootID = nil; threadLoading = false
     }
@@ -4599,6 +4630,7 @@ public final class ChatModel {
 
     public func openThread(_ rootID: String, around: String? = nil) async {
         guard around != nil || threadRootID != rootID else { return }
+        flushDraftSaves()
         if composerFocusRoot != rootID { composerFocusRequest = nil }
         threadRequest += 1
         threadRootID = rootID; threadError = nil
@@ -5128,7 +5160,12 @@ public final class ChatModel {
         }
         if edit {
             if let target { stagedFiles[target] = pendingDrafts }
-            if let root { threadDrafts[root] = text; threadBroadcasts[root] = broadcast; saveDrafts() } else { draft = text }
+            if let root {
+                threadDrafts[root] = text; threadBroadcasts[root] = broadcast
+                if let draftChannelID { threadDraftChannels[root] = draftChannelID }
+                saveDrafts()
+                if let draftChannelID { draftEdited(DraftKey(channelID: draftChannelID, threadRootID: root)) }
+            } else { draft = text }
             replyTargets[root ?? "channel"] = reference
         } else {
             pendingDrafts.forEach(abandon)
@@ -5208,6 +5245,7 @@ public final class ChatModel {
             if let draftsAccountID { SavedDrafts.remove(accountID: draftsAccountID, defaults: draftDefaults) }
             draftsAccountID = nil; draftChannelID = nil
             drafts = [:]; threadDrafts = [:]; threadBroadcasts = [:]
+            resetDraftSync()
             discardStagedFiles()
         }
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
@@ -5394,14 +5432,119 @@ public final class ChatModel {
         let saved = SavedDrafts.load(accountID: account, defaults: draftDefaults)
         draftsAccountID = account
         drafts = saved.conversations; threadDrafts = saved.threads
+        resetDraftSync()
+        threadDraftChannels = saved.threadChannels ?? [:]
+        draftSync.dirty = Set((saved.dirty ?? []).map { DraftKey(id: $0) }.filter { !$0.channelID.isEmpty })
     }
 
     /// Keeps every draft, the open conversation's included, on every change.
     private func saveDrafts() {
         guard let draftsAccountID else { return }
+        SavedDrafts.save(SavedDrafts(conversations: deviceConversationDrafts(), threads: threadDrafts, threadChannels: threadDraftChannels,
+                                     dirty: draftSync.dirty.map(\.id)),
+                         accountID: draftsAccountID, defaults: draftDefaults)
+    }
+
+    /// Conversation drafts as the device keeps them: the open one's is `draft`.
+    private func deviceConversationDrafts() -> [String: String] {
         var conversations = drafts
         if let draftChannelID { conversations[draftChannelID] = draft }
-        SavedDrafts.save(SavedDrafts(conversations: conversations, threads: threadDrafts), accountID: draftsAccountID, defaults: draftDefaults)
+        return conversations
+    }
+
+    private func resetDraftSync() {
+        draftSaveTimers.values.forEach { $0.cancel() }
+        draftSaveTimers = [:]; draftSync = DraftSync(); threadDraftChannels = [:]
+        draftEpoch += 1
+    }
+
+    /// This device's copy of a draft.
+    private func draftText(_ key: DraftKey) -> String {
+        if let root = key.threadRootID { return threadDrafts[root] ?? "" }
+        return key.channelID == draftChannelID ? draft : drafts[key.channelID] ?? ""
+    }
+
+    /// Rule 1: an edit here marks the draft dirty and saves it a second after
+    /// typing stops; clearing it (a send, or deleting everything) saves at once.
+    private func draftEdited(_ key: DraftKey) {
+        guard draftsAccountID != nil else { return }
+        if draftSync.dirty.insert(key).inserted { saveDrafts() }
+        draftSaveTimers.removeValue(forKey: key)?.cancel()
+        if draftText(key).isEmpty { saveDraft(key); return }
+        draftSaveTimers[key] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.saveDraft(key)
+        }
+    }
+
+    /// Saves every draft still waiting out its second: leaving a conversation
+    /// or thread, and going to the background.
+    public func flushDraftSaves() {
+        for key in Array(draftSaveTimers.keys) { saveDraft(key) }
+    }
+
+    /// One save per draft at a time, in order. A failed save stays dirty and
+    /// goes again with the next edit or reload (reconnect).
+    private func saveDraft(_ key: DraftKey) {
+        draftSaveTimers.removeValue(forKey: key)?.cancel()
+        guard draftsAccountID != nil, draftSync.dirty.contains(key) else { return }
+        if draftSync.saving.contains(key) { draftSync.again.insert(key); return }
+        draftSync.saving.insert(key); draftSync.again.remove(key)
+        let text = draftText(key), epoch = draftEpoch, api = self.api
+        Task { [weak self] in
+            let saved = try? await api.saveDraft(channelID: key.channelID, threadRootID: key.threadRootID, text: text)
+            guard let self, self.draftEpoch == epoch else { return }
+            self.draftSync.saving.remove(key)
+            let unchanged = self.draftText(key) == text
+            if let saved {
+                self.draftSync.saved(saved, unchanged: unchanged)
+                if unchanged { self.saveDrafts() }
+            } else if unchanged {
+                self.draftSync.again.remove(key)
+            }
+            if self.draftSync.again.contains(key) { self.saveDraft(key) }
+        }
+    }
+
+    /// Rule 2: a server draft (`draft.updated` or `GET`) replaces this
+    /// device's copy unless it is dirty or not newer than the last one applied.
+    /// On screen, the composer shows it without a typing indicator.
+    public func receiveServerDraft(_ server: ServerDraft) {
+        adoptSavedDrafts()
+        guard draftsAccountID != nil, draftSync.accept(server) else { return }
+        let key = server.key, text = server.text
+        guard draftText(key) != text else { return }
+        syncingDraft = true
+        defer { syncingDraft = false }
+        if let root = key.threadRootID {
+            threadDraftChannels[root] = key.channelID
+            if root == threadRootID { threadDraft = text }
+            else { threadDrafts[root] = text.isEmpty ? nil : text; saveDrafts() }
+        } else if key.channelID == draftChannelID {
+            // SwiftUI's composer reports every change to `draftChanged`; this one is no edit.
+            restoredDraft = text.isEmpty ? nil : text
+            draft = text
+        } else {
+            drafts[key.channelID] = text.isEmpty ? nil : text; saveDrafts()
+        }
+    }
+
+    /// `GET /api/drafts` once the profiles feed is live (startup and every
+    /// reconnect): applies what changed elsewhere (rule 2), then saves device
+    /// drafts the server lacks (rule 3) and any still dirty.
+    public func reloadServerDrafts() async {
+        adoptSavedDrafts()
+        guard draftsAccountID != nil else { return }
+        let epoch = draftEpoch
+        guard let server = try? await api.drafts(), draftEpoch == epoch else { return }
+        server.forEach { receiveServerDraft($0) }
+        var device: [DraftKey: String] = [:]
+        for (channel, text) in deviceConversationDrafts() { device[DraftKey(channelID: channel, threadRootID: nil)] = text }
+        for (root, text) in threadDrafts { if let channel = threadDraftChannels[root] { device[DraftKey(channelID: channel, threadRootID: root)] = text } }
+        let missing = DraftSync.deviceOnly(device, server: server)
+        if !missing.isSubset(of: draftSync.dirty) { draftSync.dirty.formUnion(missing); saveDrafts() }
+        for key in draftSync.dirty { saveDraft(key) }
     }
 
     /// Returns a reopened conversation's staged files, renewing any that
@@ -5496,7 +5639,9 @@ public final class ChatModel {
         replyTargets = [:]
         composerFocusRequest = nil; composerFocusRoot = nil
         isPreview = false
+        syncingDraft = true
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
+        syncingDraft = false
         hasNewer = false; loadingNewer = false; windowStart = nil; windowEnd = nil
         focusedMessageID = nil; jumpingToMessage = false; jumpError = nil; historyAnchorRequest += 1
         channelName = "general"; spaceName = "Caper"; error = nil

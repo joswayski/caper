@@ -324,7 +324,11 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
             .await
             .ok();
     }
-    Attempt::Sent(workers.push.send(platform, &claimed.address, &alert).await)
+    let outcome = workers.push.send(platform, &claimed.address, &alert).await;
+    if outcome == Outcome::Delivered {
+        super::badge::given(&workers.pool, claimed.device_id, alert.badge_count).await;
+    }
+    Attempt::Sent(outcome)
 }
 
 async fn record(workers: &Workers, claimed: &Claimed, result: Attempt) {

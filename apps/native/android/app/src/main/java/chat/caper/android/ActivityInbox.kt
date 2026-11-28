@@ -64,9 +64,9 @@ import kotlinx.coroutines.delay
         onDispose { viewModel.setActivityVisible(false) }
     }
     LaunchedEffect(Unit) {
-        // Rows loaded ahead (or a load on its way) show at once and refresh in place.
+        // Rows (or "all caught up") loaded ahead, or a load on its way, show at once and refresh in place.
         val loaded = viewModel.activityInbox.value
-        viewModel.loadActivity(poll = loaded.loading || loaded.items.isNotEmpty())
+        viewModel.loadActivity(poll = loaded.loading || loaded.loaded || loaded.items.isNotEmpty())
         while (true) { delay(15_000); if (!viewModel.activityInbox.value.loading) viewModel.loadActivity(poll = true) }
     }
     val closable = picking.isEmpty() && reacting == null
@@ -98,8 +98,9 @@ import kotlinx.coroutines.delay
                     TextButton({ viewModel.loadActivity(poll = true) }, enabled = !inbox.loading) { Text("Retry") }
                 }
             }
-            if (inbox.loading && inbox.visibleItems.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (!inbox.loading && inbox.visibleItems.isEmpty() && inbox.error == null && inbox.cursor == null) Column(
+            // Background polls keep what is shown: the bar only before this view's first answer, the empty state only after it.
+            if (!inbox.loaded && inbox.visibleItems.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (inbox.loaded && inbox.visibleItems.isEmpty() && inbox.error == null && inbox.cursor == null) Column(
                 Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Icon(painterResource(R.drawable.lucide_bell), null, tint = TextMuted)

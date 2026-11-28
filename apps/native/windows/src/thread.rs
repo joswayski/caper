@@ -1476,6 +1476,9 @@ impl App {
         };
         let (Some(t), Some(view)) = (live.thread.as_ref(), live.thread_view()) else {
             if self.thread.take().is_some() {
+                // Leaving the thread saves its reply's draft now.
+                self.drafts.flush();
+                live.save_drafts(&mut self.drafts);
                 self.thread_members(false);
                 self.thread_layout_changed();
                 // Its reply went with it, and so does that reply's link card.
@@ -1487,6 +1490,9 @@ impl App {
         let state = (t.loading, t.has_more, t.error.is_some());
         let opened = self.thread.as_ref().is_none_or(|p| p.root != root);
         if opened {
+            // A thread left for another saves its reply's draft now.
+            self.drafts.flush();
+            live.save_drafts(&mut self.drafts);
             // The thread's own unsent reply, from before a restart too.
             let reply = self
                 .drafts
@@ -1832,13 +1838,16 @@ impl App {
     /// After an edit or caret move in the reply box.
     pub fn thread_composer_changed(&mut self) {
         // Kept on every change, so closing the thread, quitting or updating
-        // never loses it.
-        if let Some(t) = &self.thread {
-            self.drafts.set(
-                &caper_client::saved_drafts::thread_key(&t.root),
+        // never loses it, and saved to the server (with the open
+        // conversation it belongs to) once typing pauses.
+        if let (Some(t), Some(channel)) = (&self.thread, &self.ids.open) {
+            self.drafts.set_thread(
+                channel,
+                &t.root,
                 &String::from_utf16_lossy(&t.composer.text),
             );
         }
+        self.sync_drafts();
         if let Some(t) = &mut self.thread
             && t.send_waiting
                 .as_ref()
@@ -1923,6 +1932,8 @@ impl App {
         t.at_end = true;
         self.cancel_thread_reply();
         self.thread_composer_changed();
+        // The sent reply's draft clears on the account's other devices at once.
+        self.flush_drafts();
     }
 
     pub fn thread_activate(&mut self, part: Part) {

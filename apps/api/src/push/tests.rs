@@ -5128,3 +5128,281 @@ async fn message_links_resolve_only_for_readers_of_the_original(pool: PgPool) {
     let (status, _) = resolve(&private, &secret, Some(alice.token.clone())).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+// ---- Badge sync and draft sync ----------------------------------------------
+
+async fn sync_badges(h: &Harness, pool: &PgPool) {
+    // Skip the two-second burst window.
+    sqlx::query("UPDATE public.notification_badge_syncs SET available_at=now() WHERE pending")
+        .execute(pool)
+        .await
+        .unwrap();
+    while badge::sync_pending(&h.workers).await.unwrap() {}
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn reads_elsewhere_refresh_phone_badges_once_per_change(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let (space_id, space_external) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    // Bob: an iPhone, an Android phone, and a desktop that does the reading.
+    register(&h, &bob, &bob.token, "apns", APNS_TOKEN).await;
+    let (android, _) = session(&pool, bob.id).await;
+    register(&h, &bob, &android, "fcm", "fcm:bob").await;
+    let (desktop, _) = session(&pool, bob.id).await;
+    sqlx::query("INSERT INTO public.notification_settings(user_id,mobile) VALUES($1,'always')")
+        .bind(bob.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let first = send(&h, &alice, &general, "one", None).await;
+    expand(&h).await;
+    deliver(&h).await;
+    assert_eq!(h.apns.take()[0].body["aps"]["badge"], 1);
+    assert_eq!(h.fcm.take().len(), 1);
+    let seq: String =
+        sqlx::query_scalar("SELECT channel_seq::text FROM public.messages WHERE external_id=$1")
+            .bind(&first)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // Read on the desktop: both phones hear the new count, without an alert.
+    let read = |seq: String| {
+        let app = h.app.clone();
+        let (desktop, space, channel) = (desktop.clone(), space_external.clone(), general.clone());
+        async move {
+            let (status, body) = call(
+                &app,
+                "POST",
+                &format!("/api/spaces/{space}/channels/{channel}/read"),
+                Some(&desktop),
+                None,
+                json!({"seq": seq}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        }
+    };
+    read(seq.clone()).await;
+    sync_badges(&h, &pool).await;
+    let apns = h.apns.take();
+    assert_eq!(apns.len(), 1);
+    assert_eq!(apns[0].path, format!("/3/device/{APNS_TOKEN}"));
+    assert_eq!(
+        apns[0].body,
+        json!({"aps": {"badge": 0}, "kind": "badge.sync"})
+    );
+    assert_eq!(apns[0].headers["apns-priority"], "5");
+    assert_eq!(apns[0].headers["apns-collapse-id"], "badge");
+    assert_eq!(apns[0].headers["apns-push-type"], "alert");
+    let fcm = h.fcm.take();
+    assert_eq!(fcm.len(), 1);
+    assert_eq!(
+        fcm[0].body["message"]["data"],
+        json!({"kind": "badge.sync", "badgeCount": "0"})
+    );
+    assert_eq!(fcm[0].body["message"]["token"], "fcm:bob");
+    assert_eq!(fcm[0].body["message"]["android"]["collapse_key"], "badge");
+    assert_eq!(fcm[0].body["message"]["android"]["priority"], "NORMAL");
+
+    // Reading again changes nothing: phones already show 0.
+    read(seq).await;
+    sync_badges(&h, &pool).await;
+    assert!(h.apns.take().is_empty());
+    assert!(h.fcm.take().is_empty());
+
+    // A new message, not delivered yet. The iPhone fetches its own count;
+    // only the Android phone, last given 0, needs the refresh.
+    send(&h, &alice, &general, "two", None).await;
+    let (status, unread) = call(
+        &h.app,
+        "GET",
+        "/api/spaces/unread",
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (status, unread["badgeCount"].clone()),
+        (StatusCode::OK, json!(1))
+    );
+    badge::request(&pool, bob.id).await;
+    sync_badges(&h, &pool).await;
+    assert!(h.apns.take().is_empty());
+    assert_eq!(h.fcm.take()[0].body["message"]["data"]["badgeCount"], "1");
+
+    // A failed send retries; a logged-out phone is never refreshed.
+    h.fcm.reply(503, json!({}), None);
+    sqlx::query("UPDATE public.notification_devices SET revoked_at=now() WHERE transport='apns'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE public.notification_badge_syncs SET badge_count=7")
+        .execute(&pool)
+        .await
+        .unwrap();
+    badge::request(&pool, bob.id).await;
+    sync_badges(&h, &pool).await;
+    assert_eq!(h.fcm.take().len(), 1);
+    let pending: Vec<(String, bool, i16)> = sqlx::query_as(
+        "SELECT d.transport, b.pending, b.attempts FROM public.notification_badge_syncs b
+         JOIN public.notification_devices d ON d.id=b.device_id ORDER BY d.transport",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        pending,
+        vec![("apns".into(), false, 0), ("fcm".into(), true, 1)]
+    );
+    sync_badges(&h, &pool).await;
+    assert_eq!(h.fcm.take()[0].body["message"]["data"]["badgeCount"], "1");
+    assert!(h.apns.take().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn drafts_sync_between_sessions_and_follow_access(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let carol = person(&pool, "carol").await;
+    let (space_id, _) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    let secret = channel(&pool, space_id, "secret", true, &[&alice]).await;
+    let dm = direct(&h, &alice, "bob").await;
+    let root = send(&h, &alice, &general, "thread root", None).await;
+    let (phone, _) = session(&pool, alice.id).await;
+    let put = |token: String, body: Value| {
+        let app = h.app.clone();
+        async move { call(&app, "PUT", "/api/drafts", Some(&token), None, body).await }
+    };
+    let list = |token: String| {
+        let app = h.app.clone();
+        async move {
+            let (status, body) =
+                call(&app, "GET", "/api/drafts", Some(&token), None, Value::Null).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["drafts"].as_array().unwrap().clone()
+        }
+    };
+
+    let mut feed = redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap())
+        .unwrap()
+        .get_async_pubsub()
+        .await
+        .unwrap();
+    feed.subscribe(crate::chat::PROFILE_TOPIC).await.unwrap();
+    let (status, saved) = put(
+        alice.token.clone(),
+        json!({"channelId": general, "text": "half a thought"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["threadRootId"], Value::Null);
+    let at = saved["updatedAt"].as_str().unwrap().to_owned();
+    assert_eq!(at.len(), "2026-11-27T18:04:05.123456Z".len(), "{at}");
+    let published: Value = loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), feed.on_message().next())
+            .await
+            .unwrap()
+            .unwrap();
+        let update: Value =
+            serde_json::from_str(&message.get_payload::<String>().unwrap()).unwrap();
+        if update["event"]["type"] == "draft.updated" && update["audience"] == json!([alice.id]) {
+            break update;
+        }
+    };
+    assert_eq!(published["event"]["draft"], saved);
+    drop(feed);
+
+    // The phone (another session) sees it; Bob does not.
+    assert_eq!(list(phone.clone()).await, vec![saved.clone()]);
+    assert!(list(bob.token.clone()).await.is_empty());
+
+    // Thread replies and DMs are separate drafts of the same conversation key space.
+    let (status, reply) = put(
+        phone.clone(),
+        json!({"channelId": general, "threadRootId": root, "text": "reply"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (status, _) = put(phone.clone(), json!({"channelId": dm, "text": "dm draft"})).await;
+    assert_eq!(status, StatusCode::OK);
+    // Updating replaces in place and moves the time forward; clearing keeps an empty row.
+    let (_, cleared) = put(
+        alice.token.clone(),
+        json!({"channelId": general, "text": ""}),
+    )
+    .await;
+    assert!(cleared["updatedAt"].as_str().unwrap() > at.as_str());
+    let drafts = list(alice.token.clone()).await;
+    let texts: Vec<(&str, &str)> = drafts
+        .iter()
+        .map(|d| {
+            (
+                d["threadRootId"].as_str().unwrap_or("-"),
+                d["text"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec![("-", ""), ("-", "dm draft"), (root.as_str(), "reply")]
+    );
+
+    // Access: unreadable channels, unknown roots and over-long text are refused.
+    let (status, body) = put(bob.token.clone(), json!({"channelId": secret, "text": "x"})).await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::NOT_FOUND, json!("conversation not found"))
+    );
+    let (status, _) = put(carol.token.clone(), json!({"channelId": dm, "text": "x"})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = put(
+        alice.token.clone(),
+        json!({"channelId": general, "threadRootId": "nosuchroot0000", "text": "x"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = put(
+        alice.token.clone(),
+        json!({"channelId": general, "text": "a".repeat(16_001)}),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (
+            StatusCode::BAD_REQUEST,
+            json!("draft must be at most 16000 characters")
+        )
+    );
+    let (status, _) = put(
+        alice.token.clone(),
+        json!({"channelId": general, "text": "a".repeat(16_000)}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Bob's draft in general disappears from his list once he leaves the space.
+    put(
+        bob.token.clone(),
+        json!({"channelId": general, "text": "bob's"}),
+    )
+    .await;
+    assert_eq!(list(bob.token.clone()).await.len(), 1);
+    sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE user_id=$1")
+        .bind(bob.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(list(bob.token.clone()).await.is_empty());
+    let (status, _) = call(&h.app, "GET", "/api/drafts", None, None, Value::Null).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

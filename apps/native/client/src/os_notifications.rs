@@ -376,6 +376,11 @@ pub fn watch(
                                 None => {}
                             }
                         }
+                        // Live from here, on every socket: what was missed
+                        // meanwhile (drafts) loads again.
+                        Some("subscribed") if frame["id"] == crate::gateway::PROFILES => {
+                            profiles(crate::gateway::ProfileEvent::Ready);
+                        }
                         // An older gateway without `profiles`: live updates are
                         // unavailable on this socket; notifications carry on.
                         Some("error") if frame["id"] == crate::gateway::PROFILES => {}
@@ -1230,6 +1235,13 @@ mod tests {
                 alerts.send(alert).unwrap();
             },
             move |event| profiles.send(event).unwrap(),
+        );
+        assert_eq!(
+            received_profiles
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap(),
+            crate::gateway::ProfileEvent::Ready,
+            "the subscription's readiness comes first, so drafts reload"
         );
         let person = received_profiles
             .recv_timeout(Duration::from_secs(5))

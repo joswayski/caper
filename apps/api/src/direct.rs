@@ -636,7 +636,9 @@ async fn mark_read(
             .await
             .map_err(|_| chat::unavailable())?;
     }
-    tx.commit().await.map_err(|_| chat::unavailable())
+    tx.commit().await.map_err(|_| chat::unavailable())?;
+    crate::push::badge::request(pool, user).await;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@ pub(crate) const DEFAULT_TOPIC: &str = "chat.caper.ios";
 const TOKEN_LIFETIME: Duration = Duration::from_secs(40 * 60);
 const TIMEOUT: Duration = Duration::from_secs(10);
 const EXPIRATION_SECONDS: i64 = 24 * 60 * 60;
+/// A badge refresh is stale once newer reads have happened.
+const BADGE_EXPIRATION_SECONDS: i64 = 60 * 60;
 
 pub(crate) struct Apns {
     client: reqwest::Client,
@@ -81,6 +83,42 @@ impl Apns {
     }
 
     pub(crate) async fn send(&self, token: &str, alert: &Alert) -> Outcome {
+        let expiration = if alert.kind == "voice.started" {
+            300
+        } else {
+            EXPIRATION_SECONDS
+        };
+        self.post(
+            token,
+            &payload(alert),
+            "10",
+            expiration,
+            alert.collapse_id(),
+        )
+        .await
+    }
+
+    /// A badge-only push: iOS sets the app-icon count without a banner,
+    /// sound or app launch. Newer refreshes replace older ones.
+    pub(crate) async fn send_badge(&self, token: &str, count: i64) -> Outcome {
+        self.post(
+            token,
+            &json!({"aps": {"badge": count}, "kind": "badge.sync"}),
+            "5",
+            BADGE_EXPIRATION_SECONDS,
+            Some("badge"),
+        )
+        .await
+    }
+
+    async fn post(
+        &self,
+        token: &str,
+        payload: &Value,
+        priority: &str,
+        expiration: i64,
+        collapse_id: Option<&str>,
+    ) -> Outcome {
         let Ok(bearer) = self.bearer() else {
             return Outcome::Abandon("apns signing failed".into());
         };
@@ -90,19 +128,13 @@ impl Apns {
             .header("authorization", format!("bearer {bearer}"))
             .header("apns-topic", &self.topic)
             .header("apns-push-type", "alert")
-            .header("apns-priority", "10")
+            .header("apns-priority", priority)
             .header(
                 "apns-expiration",
-                (chrono::Utc::now().timestamp()
-                    + if alert.kind == "voice.started" {
-                        300
-                    } else {
-                        EXPIRATION_SECONDS
-                    })
-                .to_string(),
+                (chrono::Utc::now().timestamp() + expiration).to_string(),
             )
-            .json(&payload(alert));
-        if let Some(id) = alert.collapse_id() {
+            .json(payload);
+        if let Some(id) = collapse_id {
             request = request.header("apns-collapse-id", id);
         }
         let response = request.send().await;

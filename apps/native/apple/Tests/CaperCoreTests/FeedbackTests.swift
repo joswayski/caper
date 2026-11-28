@@ -444,6 +444,10 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(NotificationRoute(userInfo: ["kind": "mention.user", "messageId": replyID, "threadRootId": rootID,
                                                     "spaceId": "Space0000001", "channelId": channelID]),
                        .channel(spaceID: "Space0000001", channelID: channelID), "other kinds keep their routes")
+        let badgeSync: [AnyHashable: Any] = ["aps": ["badge": 3] as [String: Any], "kind": "badge.sync"]
+        XCTAssertTrue(NotificationRoute.isBadgeSync(badgeSync))
+        XCTAssertNil(NotificationRoute(userInfo: badgeSync), "a badge sync never opens anything")
+        XCTAssertFalse(NotificationRoute.isBadgeSync(channel))
 
         let route = NotificationRoute.feedback(FeedbackTarget(channelID: channelID, spaceID: "Space0000001", messageID: replyID, threadRootID: rootID))
         XCTAssertTrue(route.isOpen(spaceID: "Space0000001", channelID: nil, directMessageID: nil, visitChannelID: channelID))

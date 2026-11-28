@@ -73,8 +73,8 @@ internal data class PushPayload(
         fun parse(data: Map<String, String>): PushPayload? {
             fun value(key: String) = data[key]?.trim()?.takeIf { it.isNotEmpty() }
             val kind = value("kind").orEmpty()
-            // A retraction is never shown, whatever else it carries ([PushRetraction]).
-            if (kind == PushRetraction.KIND) return null
+            // A retraction or badge sync is never shown, whatever else it carries ([PushRetraction], [PushBadgeSync]).
+            if (kind == PushRetraction.KIND || kind == PushBadgeSync.KIND) return null
             val invitation = kind == "space.invitation" || kind == "channel.invitation"
             val request = kind == "direct.request"
             val voice = kind == "voice.started"
@@ -150,6 +150,24 @@ internal data class PushRetraction(val messageId: String, val conversationId: St
                 if (!externalId.matches(conversationId) || spaceId != null || channelId != null) return null
             } else if (spaceId == null || channelId == null || !externalId.matches(spaceId) || !externalId.matches(channelId)) return null
             return PushRetraction(messageId, conversationId, spaceId, channelId)
+        }
+    }
+}
+
+/**
+ * A `badge.sync` data message (docs/notifications.md "Badge sync"): reads on another device changed the
+ * account's badge. Never shown; the app reloads unread state and clears notifications read elsewhere.
+ * [badgeCount] is the server's total, null when missing or malformed; Android's launcher badge follows
+ * its notifications instead.
+ */
+internal data class PushBadgeSync(val badgeCount: Int?) {
+    companion object {
+        const val KIND = "badge.sync"
+
+        /** Null for anything but a badge sync. */
+        fun parse(data: Map<String, String>): PushBadgeSync? {
+            if (data["kind"]?.trim() != KIND) return null
+            return PushBadgeSync(data["badgeCount"]?.trim()?.toIntOrNull()?.takeIf { it >= 0 })
         }
     }
 }

@@ -6,7 +6,7 @@ import SwiftUI
     Task {
         // Rows loaded ahead (or a load already on its way) show at once and
         // refresh in place, rather than dimming behind a reload.
-        await model.loadActivity(reset: true, poll: model.activityLoading || !model.activityItems.isEmpty)
+        await model.loadActivity(reset: true, poll: model.activityLoading || model.activityLoaded || !model.activityItems.isEmpty)
         while !Task.isCancelled {
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
             if !model.activityLoading { await model.loadActivity(reset: true, poll: true) }
@@ -68,7 +68,8 @@ import AppKit
         unread.setAccessibilityLabel("Unread only"); unread.setAccessibilityIdentifier("activity-unread-only")
         let toggle = NSStackView(views: [unread, unreadLabel]); toggle.orientation = .horizontal; toggle.spacing = 8
         retry = AppKitKitButton("Retry") { [model] in
-            model.activityError = nil
+            // Waiting on the retry, not caught up.
+            model.activityError = nil; model.activityLoaded = false
             Task { await model.loadActivity(reset: true, poll: true) }
         }
         let failures = NSStackView(views: [error, retry]); failures.orientation = .horizontal; failures.spacing = 12
@@ -119,7 +120,7 @@ import AppKit
         error.stringValue = model.activityError ?? ""; error.isHidden = model.activityError == nil
         retry.isHidden = model.activityError == nil; retry.isEnabled = !model.activityLoading
         let groups = model.activityVisibleGroups
-        status.stringValue = groups.isEmpty ? model.activityLoading ? "Loading notifications…"
+        status.stringValue = groups.isEmpty ? !model.activityLoaded ? "Loading notifications…"
             : model.activityError == nil ? "No notifications match these filters." : "" : ""
         status.isHidden = status.stringValue.isEmpty
         let ids = Set(groups.map(\.id))
@@ -414,7 +415,8 @@ import Observation
         let toggle = UIStackView(arrangedSubviews: [unreadLabel, UIView(), unread]); toggle.spacing = 8; toggle.alignment = .center
         unreadLabel.isAccessibilityElement = false
         retry = UIKitInboxStyle.action("Retry", symbol: "arrow.clockwise") { [model] in
-            model.activityError = nil
+            // Waiting on the retry, not caught up.
+            model.activityError = nil; model.activityLoaded = false
             Task { await model.loadActivity(reset: true, poll: true) }
         }
         failures = UIStackView(arrangedSubviews: [error, retry]); failures.spacing = 12; failures.alignment = .center
@@ -500,8 +502,9 @@ import Observation
         retry.isEnabled = !model.activityLoading
         let groups = model.activityVisibleGroups
         // A first load with nothing to show yet stays blank instead of spinning;
-        // rows loaded ahead are already here.
-        empty.isHidden = !groups.isEmpty || model.activityLoading || model.activityError != nil
+        // rows loaded ahead are already here. Background refreshes leave the
+        // empty note alone: it waits only for the first answer.
+        empty.isHidden = !groups.isEmpty || !model.activityLoaded || model.activityError != nil
         emptyTitle.text = model.activityUnreadOnly && model.activityFilter == .all ? "You’re all caught up" : "Nothing here"
         emptyDetail.text = "No notifications match these filters."
         let ids = Set(groups.map(\.id))

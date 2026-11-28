@@ -2,6 +2,7 @@ package chat.caper.android.data
 
 import chat.caper.android.model.ProfileEvent
 import chat.caper.android.model.ProfilePerson
+import chat.caper.android.model.ServerDraft
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
@@ -37,6 +38,17 @@ class ProfilesGatewayTest {
         assertNull(profileEvent(event("""{"type":"profile.updated","person":"maya"}""")))
         assertNull(profileEvent(event("""{"type":"space.updated","space":{"id":"space0000001"}}""")))
         assertNull(profileEvent(event("""{"type":{"nested":true}}""")))
+    }
+
+    @Test fun `draft updates carry the saved draft, and malformed ones are dropped`() {
+        val thread = profileEvent(event("""{"type":"draft.updated","draft":{"channelId":"channel00001","threadRootId":"message00000001",
+            "text":"half a reply","updatedAt":"2026-11-27T18:04:05.123456Z","future":1}}"""))
+        assertEquals(ProfileEvent.DraftUpdated(ServerDraft("channel00001", "message00000001", "half a reply", "2026-11-27T18:04:05.123456Z")), thread)
+        val cleared = profileEvent(event("""{"type":"draft.updated","draft":{"channelId":"direct000001","threadRootId":null,"text":"","updatedAt":"2026-11-27T18:04:06.000000Z"}}"""))
+        assertEquals(ServerDraft("direct000001", null, "", "2026-11-27T18:04:06.000000Z"), (cleared as ProfileEvent.DraftUpdated).draft)
+        assertNull(profileEvent(event("""{"type":"draft.updated"}""")))
+        assertNull(profileEvent(event("""{"type":"draft.updated","draft":{"channelId":"channel00001","text":"x"}}""")))
+        assertNull(profileEvent(event("""{"type":"draft.updated","draft":{"channelId":"","text":"x","updatedAt":"2026-11-27T18:04:06.000000Z"}}""")))
     }
 
     @Test(timeout = 10000) fun `signed in, the socket subscribes to profiles, delivers live events, and survives an older gateway's refusal`() {

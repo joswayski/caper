@@ -117,7 +117,11 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Result<Outcome, &'stat
             .await
             .ok();
     }
-    Ok(workers.push.send(platform, &claimed.address, &alert).await)
+    let outcome = workers.push.send(platform, &claimed.address, &alert).await;
+    if outcome == Outcome::Delivered {
+        super::badge::given(&workers.pool, claimed.device_id, alert.badge_count).await;
+    }
+    Ok(outcome)
 }
 
 async fn record(workers: &Workers, claimed: &Claimed, result: Result<Outcome, &'static str>) {

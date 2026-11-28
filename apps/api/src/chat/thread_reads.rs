@@ -123,5 +123,6 @@ async fn read(
             .map_err(database_error)?;
     }
     tx.commit().await.map_err(database_error)?;
+    crate::push::badge::request(pool, user).await;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -18,7 +18,14 @@ import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
 import { COUNTER_START, counterColor } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
-import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
+import {
+  editThreadDraft,
+  flushDraftSync,
+  readThreadDrafts,
+  saveThreadDrafts,
+  watchServerDrafts,
+  type ThreadDraft,
+} from "./drafts.ts";
 import { useArrivalTap, type Arrivals } from "./arrivals.ts";
 import { DraftEmbed } from "./Embeds.tsx";
 import type { ChatEmbed } from "./embeds.ts";
@@ -263,10 +270,43 @@ export default function ThreadPanel({
     observer.observe(input);
     return () => observer.disconnect();
   }, [draft.text, rootId, readOnly, state.thread?.hasNewer]);
+  const channelId = state.channelId;
   const update = (change: Partial<typeof draft>) => {
-    if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
+    if (rootId) {
+      const next = { ...draft, ...change, ...(channelId ? { channelId } : {}) };
+      setDrafts((current) => ({ ...current, [rootId]: next }));
+      // The text syncs to the account's other devices; "also send to channel" stays here.
+      if (change.text !== undefined && channelId) editThreadDraft(accountId, channelId, rootId, next);
+    }
     setValidation(undefined);
   };
+  // Replies typed on another device: every root is kept current (this map is
+  // saved whole), and the open one shows it with the cursor at the end.
+  const cursorToEnd = useRef(false);
+  const openRoot = useRef(rootId);
+  openRoot.current = rootId;
+  useEffect(() => {
+    if (!accountId) return;
+    return watchServerDrafts((applied) => {
+      const root = applied.threadRootId;
+      if (applied.accountId !== accountId || !root) return;
+      setDrafts((current) => {
+        if ((current[root]?.text ?? "") === applied.text) return current;
+        if (root === openRoot.current) cursorToEnd.current = true;
+        return {
+          ...current,
+          [root]: { text: applied.text, broadcast: current[root]?.broadcast ?? false, channelId: applied.channelId },
+        };
+      });
+    });
+  }, [accountId]);
+  useLayoutEffect(() => {
+    if (!cursorToEnd.current) return;
+    cursorToEnd.current = false;
+    composer.current?.setSelectionRange(draft.text.length, draft.text.length);
+  }, [draft.text]);
+  // Leaving a thread saves what is still waiting for typing to stop.
+  useEffect(() => () => flushDraftSync(), [rootId]);
   const chooseEmoji = (emoji: string) => {
     const input = composer.current;
     const start = input?.selectionStart ?? draft.text.length;
@@ -356,12 +396,15 @@ export default function ThreadPanel({
   // both the pending row and the box.
   useLayoutEffect(() => {
     if (!pending) return;
+    const root = pending.threadRootId!;
+    // "Also send to channel" applies to one reply, so it resets with the draft.
+    const cleared = { text: "", broadcast: false };
+    // Sending clears the synced reply too, at once.
+    if (drafts[root]?.text && drafts[root].text === pending.text && channelId)
+      editThreadDraft(accountId, channelId, root, cleared);
     setDrafts((current) => {
-      const old = current[pending.threadRootId!] ?? { text: "", broadcast: false };
-      // "Also send to channel" applies to one reply, so it resets with the draft.
-      return old.text === pending.text
-        ? { ...current, [pending.threadRootId!]: { text: "", broadcast: false } }
-        : current;
+      const old = current[root] ?? cleared;
+      return old.text === pending.text ? { ...current, [root]: cleared } : current;
     });
   }, [pending?.clientMessageId]);
   useEffect(() => {
@@ -875,6 +918,8 @@ export default function ThreadPanel({
                 // Typing can start while history loads; submit still waits for it.
                 disabled={state.phase !== "ready"}
                 onValueChange={(value, input) => {
+                  // Echo of a value set from outside (another thread or device): not an edit.
+                  if (value === draft.text) return;
                   update({ text: value });
                   queued.cancel();
                   suggestions.change(input);

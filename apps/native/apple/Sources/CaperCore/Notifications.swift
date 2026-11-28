@@ -519,10 +519,19 @@ public enum NotificationRoute: Equatable, Sendable {
 
     /// The notification kind that opens a feedback visit.
     public static let feedbackKind = "feedback"
+    /// The server's badge-only push after reads on another device
+    /// (`{"aps":{"badge":N},"kind":"badge.sync"}`). iOS sets the badge itself;
+    /// it is never a message, never shown and never opened.
+    public static let badgeSyncKind = "badge.sync"
+
+    public static func isBadgeSync(_ userInfo: [AnyHashable: Any]) -> Bool {
+        userInfo["kind"] as? String == badgeSyncKind
+    }
 
     /// DMs carry `conversationId`; channels carry `spaceId` and `channelId`.
     /// Kind `feedback` also needs `messageId`; `threadRootId` is optional.
     public init?(userInfo: [AnyHashable: Any]) {
+        if Self.isBadgeSync(userInfo) { return nil }
         func value(_ key: String) -> String? {
             guard let string = userInfo[key] as? String, !string.isEmpty else { return nil }
             return string

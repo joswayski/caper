@@ -12,7 +12,7 @@ use crate::ui::{Ui, label};
 use crate::uploads::{ChipAction, DraftFile};
 use caper_client::Host;
 use caper_client::api::Api;
-use caper_client::gateway::GatewayEvent;
+use caper_client::gateway::{GatewayEvent, ProfileEvent};
 use caper_client::mentions;
 use caper_client::model::{
     Account, Apply, ChatSession, DirectConversation, DirectStatus, Message, MessageReply, Space,
@@ -717,6 +717,8 @@ pub struct App {
     activity: Cell<Instant>,
     /// The typing timer runs only while someone types.
     ticking: Cell<bool>,
+    /// The timer sending draft saves runs only while one waits on a pause.
+    draft_timer: Cell<bool>,
     /// The timer releasing removed files runs only while some are parked.
     parked_ticking: Cell<bool>,
     /// The sign-in countdown's pending redraw.
@@ -986,6 +988,7 @@ pub fn start(
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
+        draft_timer: Cell::new(false),
         parked_ticking: Cell::new(false),
         countdown: Cell::new(false),
         suggestions: RefCell::default(),
@@ -1768,6 +1771,8 @@ impl App {
         }
         {
             let mut state = self.state.borrow_mut();
+            // Edited drafts stay on the server for the next sign-in.
+            self.flush_drafts(&mut state);
             let token = state.token.take();
             for reply in state.replies.values() {
                 if let Some(cancel) = &reply.cancel {
@@ -1975,6 +1980,8 @@ impl App {
                 state.drafts.set(&pending.outgoing.channel, &pending.text);
             }
         }
+        // Leaving the conversation (and its thread) saves their drafts now.
+        self.flush_drafts(state);
         state.compose = None;
         state.thread = None;
         state.focused = None;
@@ -3438,20 +3445,151 @@ impl App {
     /// Keeps a composer's text as its conversation's (or thread's) draft on
     /// every change, so quitting or updating never loses it. A message being
     /// edited is not a draft.
-    fn save_draft(&self, thread: bool, buffer: &gtk::TextBuffer) {
+    fn save_draft(self: &Rc<Self>, thread: bool, buffer: &gtk::TextBuffer) {
+        // A draft being put back (switching conversations, or another
+        // device's) is not an edit: `set_text` passes through an empty
+        // buffer, which would otherwise mark it dirty and save it again.
+        if self.restoring.get() {
+            return;
+        }
         let Ok(mut state) = self.state.try_borrow_mut() else {
             return;
         };
-        let key = if thread {
-            state.thread.as_ref().map(|thread| thread_key(&thread.root))
-        } else if matches!(state.compose, Some(Compose::Edit { .. })) {
-            None
-        } else {
-            state.channel.clone()
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+        let state = &mut *state;
+        if thread {
+            if let (Some(thread), Some(channel)) = (&state.thread, &state.channel) {
+                state.drafts.set_thread(channel, &thread.root, &text);
+            }
+        } else if !matches!(state.compose, Some(Compose::Edit { .. }))
+            && let Some(channel) = &state.channel
+        {
+            state.drafts.set(channel, &text);
+        }
+        // The server copy follows a second after typing stops.
+        self.sync_drafts(state);
+    }
+
+    /// Sends the draft saves that are due (`SavedDrafts::due`): after a
+    /// pause in typing, or at once after a flush.
+    fn send_drafts(&self, state: &mut State) {
+        let Some(token) = state.token.clone() else {
+            return;
         };
-        if let Some(key) = key {
-            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-            state.drafts.set(&key, &text);
+        for save in state.drafts.due(Instant::now()) {
+            self.worker.send(Command::SaveDraft {
+                epoch: state.epoch,
+                token: token.clone(),
+                save,
+            });
+        }
+    }
+
+    /// Leaving a conversation or thread, closing, quitting and sending save
+    /// every edited draft now.
+    fn flush_drafts(&self, state: &mut State) {
+        state.drafts.flush();
+        self.send_drafts(state);
+    }
+
+    /// Sends the saves due now and keeps one timer for the next.
+    fn sync_drafts(self: &Rc<Self>, state: &mut State) {
+        self.send_drafts(state);
+        let Some(delay) = state.drafts.next_save(Instant::now()) else {
+            return;
+        };
+        if self.draft_timer.replace(true) {
+            return;
+        }
+        let app = Rc::downgrade(self);
+        glib::timeout_add_local_once(delay, move || {
+            let Some(app) = app.upgrade() else { return };
+            app.draft_timer.set(false);
+            match app.state.try_borrow_mut() {
+                Ok(mut state) => app.sync_drafts(&mut state),
+                // Busy right now: the timer comes back for it.
+                Err(_) => {
+                    let app = app.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Ok(mut state) = app.state.try_borrow_mut() {
+                            app.sync_drafts(&mut state);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    /// Draft sync: the profiles subscription became ready (startup and every
+    /// reconnect), a server draft arrived, or a save answered.
+    fn draft_event(self: &Rc<Self>, event: Event) {
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            let current = state.epoch;
+            let changed = match event {
+                Event::Profiles {
+                    epoch,
+                    event: ProfileEvent::Ready,
+                } if epoch == current => {
+                    state.drafts.reconnected();
+                    if let Some(token) = state.token.clone() {
+                        self.worker.send(Command::LoadDrafts { epoch, token });
+                    }
+                    Vec::new()
+                }
+                Event::Profiles {
+                    epoch,
+                    event: ProfileEvent::Draft(draft),
+                } if epoch == current => state.drafts.apply(draft).into_iter().collect(),
+                Event::DraftsLoaded {
+                    epoch,
+                    result: Ok(drafts),
+                } if epoch == current => state.drafts.loaded(drafts),
+                Event::DraftSaved {
+                    epoch,
+                    save,
+                    result,
+                } if epoch == current => {
+                    state.drafts.saved(&save, result);
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
+            self.sync_drafts(&mut state);
+            changed
+        };
+        for (key, text) in changed {
+            self.show_draft(&key, &text);
+        }
+    }
+
+    /// Another device's draft replaced `key`'s device copy: a composer on
+    /// screen showing that draft takes its text, cursor at the end, without
+    /// a typing indicator. A message being edited keeps its text.
+    fn show_draft(&self, key: &str, text: &str) {
+        let (conversation, thread) = {
+            let state = self.state.borrow();
+            (
+                state.channel.as_deref() == Some(key)
+                    && !matches!(state.compose, Some(Compose::Edit { .. })),
+                state
+                    .thread
+                    .as_ref()
+                    .is_some_and(|thread| thread_key(&thread.root) == key),
+            )
+        };
+        for (shown, composer) in [
+            (conversation, &self.ui.composer),
+            (thread, &self.ui.thread_composer),
+        ] {
+            let buffer = composer.view.buffer();
+            if !shown || buffer.text(&buffer.start_iter(), &buffer.end_iter(), true) == text {
+                continue;
+            }
+            self.restoring.set(true);
+            buffer.set_text(text);
+            buffer.place_cursor(&buffer.end_iter());
+            self.restoring.set(false);
         }
     }
 
@@ -3611,6 +3749,8 @@ impl App {
         }
         composer.broadcast.set_active(false);
         composer.view.buffer().set_text("");
+        // The sent draft clears on the account's other devices at once.
+        self.flush_drafts(&mut self.state.borrow_mut());
         self.render();
     }
 
@@ -3619,6 +3759,7 @@ impl App {
     fn close_thread(self: &Rc<Self>) {
         {
             let mut state = self.state.borrow_mut();
+            self.flush_drafts(&mut state);
             state.thread = None;
             state.focused = None;
         }
@@ -3865,6 +4006,8 @@ impl App {
             };
             state.request += 1;
             let message = state.message(&root).cloned();
+            // A thread left for another saves its reply now.
+            self.flush_drafts(&mut state);
             reply = state.drafts.get(&thread_key(&root)).to_owned();
             state.thread = Some(Thread {
                 root: root.clone(),
@@ -4468,7 +4611,13 @@ impl App {
                     | Event::OpenNotification { .. }
                     | Event::ActivityRead { .. }
                     | Event::SwitcherSpace { .. }
-                    | Event::Dictated { .. }) => deferred.push(event),
+                    | Event::Dictated { .. }
+                    | Event::DraftsLoaded { .. }
+                    | Event::DraftSaved { .. }
+                    | Event::Profiles {
+                        event: ProfileEvent::Ready | ProfileEvent::Draft(_),
+                        ..
+                    }) => deferred.push(event),
                     event => self.handle(&mut state, event),
                 }
             }
@@ -4518,6 +4667,9 @@ impl App {
                     items,
                     result,
                 } if epoch == self.state.borrow().epoch => self.inbox_read(items, result),
+                event @ (Event::DraftsLoaded { .. }
+                | Event::DraftSaved { .. }
+                | Event::Profiles { .. }) => self.draft_event(event),
                 _ => {}
             }
         }

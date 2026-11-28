@@ -294,6 +294,11 @@ pub struct Inbox {
     pub filter: Filter,
     pub unread_only: bool,
     pub loading: bool,
+    /// The current filter and Unread only choice has answered at least once
+    /// (rows, none, or an error). Until then the list says it is loading;
+    /// afterwards polls refresh it in place, so an empty inbox keeps saying
+    /// so instead of blinking back to loading.
+    pub loaded: bool,
     /// Optimistic mark-reads in flight, with each row's original position for undo.
     pub reads: Vec<(String, Option<usize>)>,
     /// After a filter change the previous rows stay, dimmed and inert, until the new
@@ -341,6 +346,7 @@ impl Default for Inbox {
             filter: Filter::All,
             unread_only: true,
             loading: false,
+            loaded: false,
             reads: Vec::new(),
             stale: false,
             error: None,
@@ -374,10 +380,43 @@ impl Inbox {
     pub fn visible_groups(&self) -> Vec<Group> {
         group(self.visible_items())
     }
-    /// Whether rows are loaded or on their way: opening the inbox then
-    /// refreshes them in place instead of reloading behind them.
+    /// Whether the current filter has answered or is loading: opening the
+    /// inbox then refreshes it in place (as a poll) instead of reloading
+    /// behind it.
     pub fn ready(&self) -> bool {
-        self.loading || !self.items.is_empty()
+        self.loading || self.loaded
+    }
+    /// Starts loading the first page (`more`: the next older one; `poll`: a
+    /// refresh that keeps the shown rows, or the empty state, in place).
+    /// Returns whether to send it, as `request`.
+    pub fn begin(&mut self, more: bool, poll: bool) -> bool {
+        if poll && (self.loading || !self.reads.is_empty())
+            || more && (self.loading || self.cursor.is_none())
+        {
+            return false;
+        }
+        self.request += 1;
+        self.loading = true;
+        self.error = None;
+        self.refreshed = Some(Instant::now());
+        if !more && !poll {
+            self.stale = !self.items.is_empty();
+        }
+        true
+    }
+    /// What the list shows in place of rows: loading until the current
+    /// filter has answered once, then (without an error) that nothing
+    /// matches. A poll keeps whichever shows.
+    pub fn placeholder(&self) -> Option<&'static str> {
+        if !self.items.is_empty() || !self.expanded.is_empty() {
+            None
+        } else if !self.loaded {
+            Some("Loading notifications\u{2026}")
+        } else if self.error.is_none() {
+            Some("No notifications match these filters.")
+        } else {
+            None
+        }
     }
     /// Unread notifications, as the inbox and its badge show them.
     pub fn unread_count(&self) -> u64 {
@@ -416,9 +455,12 @@ impl Inbox {
             self.unread_count = window.unread_count;
             self.refreshed = Some(window.at);
             self.loading = false;
+            self.loaded = true;
             self.stale = false;
             return false;
         }
+        // This choice hasn't answered yet: the list says it is loading.
+        self.loaded = false;
         if let Some((&request, _)) = self
             .prefetching
             .iter()
@@ -561,6 +603,7 @@ impl Inbox {
             return;
         }
         self.loading = false;
+        self.loaded = true;
         let stale = std::mem::take(&mut self.stale);
         match result {
             Ok(page) => {
@@ -731,14 +774,55 @@ mod tests {
                 unread_count: 9,
             }),
         );
-        assert!(inbox.loading && inbox.stale);
+        assert!(inbox.loading && inbox.stale && !inbox.loaded);
         assert_eq!(inbox.items[0].id, "previous");
         assert_eq!(inbox.cursor.as_deref(), Some("previous"));
         assert_eq!(inbox.unread_count, 0);
         inbox.finish(2, false, Err("offline".into()));
         assert!(!inbox.loading && !inbox.stale);
+        assert!(inbox.loaded, "an error answers the filter too");
         assert!(inbox.items.is_empty() && inbox.cursor.is_none());
         assert_eq!(inbox.error.as_deref(), Some("offline"));
+        assert_eq!(inbox.placeholder(), None, "the error shows instead");
+    }
+
+    const LOADING: &str = "Loading notifications\u{2026}";
+    const EMPTY: &str = "No notifications match these filters.";
+
+    #[test]
+    fn polling_an_empty_inbox_keeps_its_empty_state() {
+        let mut inbox = Inbox {
+            shown: true,
+            ..Default::default()
+        };
+        assert!(!inbox.ready(), "the first open loads");
+        assert!(inbox.begin(false, false));
+        assert_eq!(inbox.placeholder(), Some(LOADING));
+        inbox.finish(inbox.request, false, page(&[], 0));
+        assert_eq!(inbox.placeholder(), Some(EMPTY));
+
+        // The 15-second poll refreshes in place: still empty, never loading.
+        assert!(inbox.begin(false, true));
+        assert!(inbox.loading);
+        assert_eq!(inbox.placeholder(), Some(EMPTY));
+        inbox.finish(inbox.request, false, page(&[], 0));
+        assert!(!inbox.loading);
+        assert_eq!(inbox.placeholder(), Some(EMPTY));
+
+        // Closing and opening it again refreshes as a poll too.
+        inbox.close();
+        inbox.shown = true;
+        assert!(inbox.ready());
+        assert!(inbox.begin(false, true));
+        assert_eq!(inbox.placeholder(), Some(EMPTY));
+
+        // Another filter hasn't answered: it says loading until it does.
+        inbox.filter = Filter::Dms;
+        assert!(inbox.switched());
+        assert!(inbox.begin(false, false));
+        assert_eq!(inbox.placeholder(), Some(LOADING));
+        inbox.finish(inbox.request, false, page(&[], 0));
+        assert_eq!(inbox.placeholder(), Some(EMPTY));
     }
 
     fn page(ids: &[&str], unread: u64) -> Result<Page, String> {
@@ -761,16 +845,18 @@ mod tests {
         };
         inbox.request = 1;
         inbox.finish(1, false, page(&["all"], 4));
+        assert!(inbox.loaded);
         // Mentions has nothing loaded: the client loads it (rows stay dimmed).
         inbox.filter = Filter::Mentions;
         assert!(inbox.switched());
+        assert!(!inbox.loaded);
         inbox.request += 1;
         let abandoned = inbox.request;
         // Back to All before Mentions answers: shown at once, not reloaded,
         // and the late Mentions page doesn't replace it.
         inbox.filter = Filter::All;
         assert!(!inbox.switched());
-        assert!(!inbox.loading && !inbox.stale && !inbox.due());
+        assert!(!inbox.loading && !inbox.stale && !inbox.due() && inbox.loaded);
         inbox.finish(abandoned, false, page(&["mention"], 9));
         assert_eq!(ids(&inbox), ["all"]);
         assert_eq!(inbox.unread_count, 4);
@@ -784,14 +870,15 @@ mod tests {
         inbox.filter = Filter::Dms;
         assert!(!inbox.switched());
         assert_eq!(ids(&inbox), ["dm"]);
+        assert!(inbox.loaded);
 
         // Choosing a tab whose prefetch is still loading waits for it.
         let threads = inbox.prefetch(Filter::Threads).unwrap();
         inbox.filter = Filter::Threads;
         assert!(!inbox.switched());
-        assert!(inbox.loading && inbox.stale);
+        assert!(inbox.loading && inbox.stale && !inbox.loaded);
         inbox.finish(threads, false, page(&["thread"], 4));
-        assert!(!inbox.loading && !inbox.stale);
+        assert!(!inbox.loading && !inbox.stale && inbox.loaded);
         assert_eq!(ids(&inbox), ["thread"]);
 
         // A read changes every filter: windows are dropped, so All loads again.
@@ -799,6 +886,7 @@ mod tests {
         inbox.mark_read(&[thread]);
         inbox.filter = Filter::All;
         assert!(inbox.switched());
+        assert!(!inbox.loaded);
     }
 
     #[test]
@@ -812,7 +900,9 @@ mod tests {
         assert!(inbox.count_changed(2));
         assert_eq!(inbox.unread_count, 2);
         assert!(!inbox.count_changed(2));
-        inbox.finish(0, false, page(&["a", "b"], 2));
+        assert!(inbox.begin(false, true), "loading ahead is a refresh");
+        assert!(inbox.ready(), "rows on their way open in place");
+        inbox.finish(inbox.request, false, page(&["a", "b"], 2));
         assert!(inbox.ready(), "loaded rows open in place");
         inbox.shown = true;
         assert!(

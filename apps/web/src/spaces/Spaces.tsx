@@ -2470,6 +2470,7 @@ export default function Spaces({
   // live; people are applied where they render (see `profiles` above).
   useEffect(() => {
     if (!account?.id) return;
+    const accountId = account.id;
     return watchLiveUpdates((update: SpaceUpdate) => {
       setSpaces((current) => withSpaceUpdates(current, update));
       setInvitations((current) => withSpaceUpdates(current, update));
@@ -2499,7 +2500,7 @@ export default function Spaces({
         navigation.current.remember(updated);
         return updated;
       });
-    });
+    }, accountId);
   }, [account?.id]);
   // The shown detail as the server sent it, for the poll below whose effect
   // tracks only the space id. Not `detail`: applying the saved account and live

@@ -29,6 +29,10 @@ impl App {
             let Some(app) = weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
+            // Closing or quitting: edited drafts reach the server now.
+            if let Ok(mut state) = app.state.try_borrow_mut() {
+                app.flush_drafts(&mut state);
+            }
             if app.quitting.get()
                 || !app.keep_running()
                 || (app.closed_away.get() && !window.is_active())

@@ -11,6 +11,7 @@ import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
 import java.security.MessageDigest
@@ -96,6 +97,13 @@ class CaperMessagingService : FirebaseMessagingService() {
         // session that turned notifications on shows them. The server already skips
         // requests, blocks, mutes and levels, so no per-push API call is needed.
         if (!PushRegistration.enabled(this)) return
+        // Reads on another device: clear their notifications here (the app may be closed) and refresh an open app.
+        // FCM calls this off the main thread and allows it about ten seconds, so it waits here, bounded.
+        if (PushBadgeSync.parse(message.data) != null) {
+            PushActivity.received.tryEmit(Unit)
+            runBlocking { withTimeoutOrNull(8_000) { CaperNotifications.reconcileRead(applicationContext) } }
+            return
+        }
         // A deleted message takes its notification line back; the open app refreshes unread state.
         PushRetraction.parse(message.data)?.let { retraction ->
             CaperNotifications.retract(this, retraction)

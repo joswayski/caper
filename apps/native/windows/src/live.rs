@@ -96,6 +96,19 @@ impl Host for WinHost {
 pub const RESEND_NOTE: &str = "Your message will be sent again when the connection returns.";
 
 pub enum Update {
+    /// Draft sync (`caper_client::saved_drafts`, kept by the window): the
+    /// profiles subscription is ready (startup and every reconnect), so
+    /// failed saves go again and the server's drafts reload.
+    DraftsReady,
+    /// Another device's (or this one's echoed) draft, from `draft.updated`.
+    Draft(caper_client::saved_drafts::ServerDraft),
+    /// `GET /api/drafts`.
+    Drafts(Vec<caper_client::saved_drafts::ServerDraft>),
+    /// A draft save answered.
+    DraftSaved(
+        caper_client::saved_drafts::DraftSave,
+        Result<caper_client::saved_drafts::ServerDraft, caper_client::saved_drafts::SaveFailure>,
+    ),
     /// No stored session (or restoring it failed, with the reason): sign in.
     SignedOut(Option<String>),
     /// A sign-in code was emailed (the challenge), or why not.
@@ -3713,7 +3726,33 @@ impl Live {
     }
 
     pub fn close_activity(&mut self) {
-        self.activity.shown = false;
+        // Filters' loaded windows are forgotten, as on Linux and web.
+        self.activity.close();
+    }
+
+    /// Sends `drafts`' saves that are due (`SavedDrafts::due`); signed out,
+    /// they wait.
+    pub fn save_drafts(&self, drafts: &mut caper_client::saved_drafts::SavedDrafts) {
+        let Some(token) = &self.token else {
+            return;
+        };
+        for save in drafts.due(Instant::now()) {
+            self.worker.send(Command::SaveDraft {
+                epoch: self.account_epoch,
+                token: token.clone(),
+                save,
+            });
+        }
+    }
+
+    /// The account's synced drafts (`Update::Drafts`).
+    pub fn load_drafts(&self) {
+        if let Some(token) = self.token.clone() {
+            self.worker.send(Command::LoadDrafts {
+                epoch: self.account_epoch,
+                token,
+            });
+        }
     }
 
     pub fn load_feedback(&mut self, more: bool) {
@@ -3770,15 +3809,8 @@ impl Live {
             return;
         };
         let a = &mut self.activity;
-        if poll && (a.loading || !a.reads.is_empty()) || more && (a.loading || a.cursor.is_none()) {
+        if !a.begin(more, poll) {
             return;
-        }
-        a.request += 1;
-        a.loading = true;
-        a.error = None;
-        a.refreshed = Some(Instant::now());
-        if !more && !poll {
-            a.stale = !a.items.is_empty();
         }
         self.worker.send(Command::LoadActivity {
             epoch: self.account_epoch,
@@ -3802,13 +3834,19 @@ impl Live {
     pub fn set_activity_filter(&mut self, filter: caper_client::activity::Filter) {
         if self.activity.filter != filter {
             self.activity.filter = filter;
-            self.load_activity(false, false);
+            // A window loaded while the inbox is open shows at once (and
+            // refreshes when due); otherwise it loads, saying so.
+            if self.activity.switched() {
+                self.load_activity(false, false);
+            }
         }
     }
 
     pub fn toggle_unread_only(&mut self) {
         self.activity.unread_only = !self.activity.unread_only;
-        self.load_activity(false, false);
+        if self.activity.switched() {
+            self.load_activity(false, false);
+        }
     }
 
     /// Opens (`open`) or marks read the inbox's shown row `k`, as egui:
@@ -5212,6 +5250,7 @@ impl Live {
                 })
                 .collect(),
             loading: a.loading,
+            placeholder: a.placeholder(),
             stale: a.stale,
             error: a.error.clone(),
             more: a.cursor.is_some(),
@@ -6667,6 +6706,23 @@ impl Live {
                 self.notifications.apply_account(settings);
                 out.push(Update::Settings);
             }
+            Event::Profiles {
+                epoch,
+                event: gateway::ProfileEvent::Ready,
+            } if epoch == self.account_epoch => out.push(Update::DraftsReady),
+            Event::Profiles {
+                epoch,
+                event: gateway::ProfileEvent::Draft(draft),
+            } if epoch == self.account_epoch => out.push(Update::Draft(draft)),
+            Event::DraftsLoaded {
+                epoch,
+                result: Ok(drafts),
+            } if epoch == self.account_epoch => out.push(Update::Drafts(drafts)),
+            Event::DraftSaved {
+                epoch,
+                save,
+                result,
+            } if epoch == self.account_epoch => out.push(Update::DraftSaved(save, result)),
             // Everything else (reactions, edits, threads, voice...) is not
             // shown by this client yet.
             _ => {}

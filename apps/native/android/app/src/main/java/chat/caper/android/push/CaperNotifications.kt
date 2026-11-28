@@ -33,6 +33,8 @@ import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -305,6 +307,26 @@ internal object CaperNotifications {
             .build()
         post(manager, retraction.tag, notification)
         cleanup(context, files)
+    }
+
+    /**
+     * A badge sync ([PushBadgeSync]), while the app is closed too: reloads unread channels and DMs with
+     * the saved session and clears notifications of conversations read elsewhere, as the foreground poll does.
+     */
+    suspend fun reconcileRead(context: Context) {
+        val token = TokenStore(context).read() ?: return
+        if (!PushRegistration.enabled(context)) return
+        val api = CaperApi()
+        val snapshotStartedAt = System.currentTimeMillis()
+        val (unread, directs) = coroutineScope {
+            val unread = async { runCatching { api.unreadSpaces(token) }.getOrNull() }
+            val directs = async { runCatching { api.directConversations(token) }.getOrNull() }
+            unread.await() to directs.await()
+        }
+        // Signed out or switched accounts meanwhile: the answers describe another session.
+        if (TokenStore(context).read() != token || !PushRegistration.enabled(context)) return
+        unread?.let { reconcileReadChannels(context, it.spaces.flatMap { space -> space.channels.map { channel -> channel.id } }.toSet(), snapshotStartedAt) }
+        directs?.conversations?.filter { it.readSeq == it.lastSeq }?.forEach { reconcileReadDirect(context, it.id, snapshotStartedAt) }
     }
 
     /** Reconciles top-level channels from the foreground unread poll, without inventing alerts. */

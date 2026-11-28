@@ -145,6 +145,12 @@ pub enum ProfileEvent {
     /// device (or this one): level, voice starts and Do Not Disturb, with no
     /// overrides.
     NotificationSettings(crate::model::NotificationSettings),
+    /// `draft.updated`: one of this account's drafts was saved, on any of
+    /// its devices (this one too). `saved_drafts` decides whether it applies.
+    Draft(crate::saved_drafts::ServerDraft),
+    /// The subscription is ready, at startup and after every reconnect.
+    /// Nothing is replayed, so clients reload what it carries (drafts).
+    Ready,
 }
 
 /// A `profiles` event frame, or `None` for other frames, unknown event types
@@ -173,6 +179,12 @@ pub fn profiles_event(frame: &Value) -> Option<ProfileEvent> {
             serde_json::from_value::<crate::model::NotificationSettings>(event["settings"].clone())
                 .ok()
                 .map(ProfileEvent::NotificationSettings)
+        }
+        "draft.updated" => {
+            serde_json::from_value::<crate::saved_drafts::ServerDraft>(event["draft"].clone())
+                .ok()
+                .filter(|draft| !draft.channel_id.is_empty() && !draft.updated_at.is_empty())
+                .map(ProfileEvent::Draft)
         }
         _ => None,
     }
@@ -1047,7 +1059,21 @@ mod tests {
             (settings.paused_until.as_deref(), settings.voice_started),
             (Some("forever"), false)
         );
+        let Some(ProfileEvent::Draft(draft)) = profiles_event(&frame(json!({
+            "type":"draft.updated",
+            "draft":{"channelId":"chan00000001","threadRootId":"msg000000000001",
+                "text":"half a reply","updatedAt":"2026-11-27T18:04:05.123456Z"}
+        }))) else {
+            panic!("draft.updated parses")
+        };
+        assert_eq!(draft.key(), "thread:msg000000000001");
+        assert_eq!(
+            (draft.text.as_str(), draft.updated_at.as_str()),
+            ("half a reply", "2026-11-27T18:04:05.123456Z")
+        );
         for ignored in [
+            frame(json!({"type":"draft.updated","draft":{"channelId":"c","text":"x"}})),
+            frame(json!({"type":"draft.updated","draft":{"channelId":"","updatedAt":"t"}})),
             frame(json!({"type":"notifications.updated","settings":{"pausedUntil":null}})),
             frame(json!({"type":"notification.retracted"})),
             frame(json!({"type":"notification.retracted","messageId":""})),

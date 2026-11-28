@@ -316,8 +316,13 @@ public actor Gateway {
             if stream === active { if candidate == nil { open(replacement: true) } }
             else { await failed(stream) }
         case "subscribed":
-            guard let id = frame["id"] as? String, subscriptions[id] != nil, var value = stream.subscriptions[id] else { return }
-            value.subscribed = true; stream.subscriptions[id] = value; await maybePromote(stream)
+            guard let id = frame["id"] as? String, let logical = subscriptions[id], var value = stream.subscriptions[id] else { return }
+            value.subscribed = true; stream.subscriptions[id] = value
+            // The profiles feed has no `ready` or replay of its own: its handler
+            // hears `ready` once the active stream has it, to reload what it
+            // may have missed. A seamless handoff's candidate needs no reload.
+            if stream === active, logical.frame["kind"] as? String == "profiles" { await logical.handler(["type": "ready"]) }
+            await maybePromote(stream)
         case "event":
             guard let id = frame["id"] as? String, let event = frame["event"] as? [String: Any] else { throw URLError(.cannotParseResponse) }
             try await receiveEvent(event, id: id, from: stream)

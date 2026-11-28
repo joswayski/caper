@@ -5,6 +5,7 @@ import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.Space
 import chat.caper.android.model.SpaceList
 import chat.caper.android.model.SpaceDetail
+import chat.caper.android.model.ServerDraft
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -275,6 +276,24 @@ class CaperApiTest {
             "PUT /api/feedback/archive", "PUT /api/feedback/archive", "PUT /api/feedback/archive"), requests.map { "${it.method} ${it.path}" })
         assertEquals("""{"channelId":"channel00001","threadRootId":"message00000001","archived":true}""", requests[2].body.readUtf8())
         assertEquals("""{"channelId":"direct000001","threadRootId":"message00000002","archived":false}""", requests[3].body.readUtf8())
+        assertTrue(requests.all { it.headers["Authorization"] == "Bearer account-secret" })
+    }
+
+    @Test fun `drafts are an authenticated list and a PUT per conversation or thread`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"drafts":[{"channelId":"channel00001","threadRootId":null,"text":"hi","updatedAt":"2026-11-27T18:04:05.123456Z"}]}"""))
+        server.enqueue(MockResponse().setBody("""{"channelId":"channel00001","threadRootId":"message00000001","text":"a reply","updatedAt":"2026-11-27T18:04:06.000000Z"}"""))
+        server.enqueue(MockResponse().setBody("""{"channelId":"direct000001","threadRootId":null,"text":"","updatedAt":"2026-11-27T18:04:07.000000Z"}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        assertEquals(listOf(ServerDraft("channel00001", null, "hi", "2026-11-27T18:04:05.123456Z")), api.drafts("account-secret").drafts)
+        assertEquals("2026-11-27T18:04:06.000000Z", api.saveDraft("account-secret", "channel00001", "message00000001", "a reply").updatedAt)
+        assertEquals("", api.saveDraft("account-secret", "direct000001", null, "").text)
+        assertTrue(runCatching { api.saveDraft("account-secret", "channel00001", "../x", "x") }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { api.saveDraft("account-secret", "bad", null, "x") }.exceptionOrNull() is IllegalArgumentException)
+
+        val requests = (1..3).map { server.takeRequest() }
+        assertEquals(listOf("GET /api/drafts", "PUT /api/drafts", "PUT /api/drafts"), requests.map { "${it.method} ${it.path}" })
+        assertEquals("""{"channelId":"channel00001","threadRootId":"message00000001","text":"a reply"}""", requests[1].body.readUtf8())
+        assertEquals("""{"channelId":"direct000001","text":""}""", requests[2].body.readUtf8())
         assertTrue(requests.all { it.headers["Authorization"] == "Bearer account-secret" })
     }
 

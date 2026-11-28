@@ -212,6 +212,11 @@ async fn persist_forward(
             .bind(destination.id).bind(user).bind(seq).execute(&mut *tx).await.map_err(database_error)?;
     }
     tx.commit().await.map_err(database_error)?;
+    if let Some(user) = user
+        && destination.space_id.is_none()
+    {
+        crate::push::badge::request(pool, user).await;
+    }
     Ok(payload)
 }
 

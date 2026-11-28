@@ -154,6 +154,7 @@ async fn read(
     .execute(pool)
     .await
     .map_err(database_error)?;
+    super::badge::request(pool, principal.user.id).await;
     Ok(Json(
         json!({"unreadCount":count(pool,principal.user.id).await.map_err(database_error)?}),
     ))

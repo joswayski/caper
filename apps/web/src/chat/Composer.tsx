@@ -13,7 +13,7 @@ import AttachmentPicker from "./AttachmentPicker.tsx";
 import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterColor } from "./counter.ts";
-import { readDraft, saveDraft } from "./drafts.ts";
+import { editDraft, flushDraftSync, readDraft, saveDraft, watchServerDrafts } from "./drafts.ts";
 import { DraftEmbed } from "./Embeds.tsx";
 import { fetchPreview, previewLink, type ChatEmbed } from "./embeds.ts";
 import EmojiButton from "./EmojiButton.tsx";
@@ -207,6 +207,34 @@ export default function Composer({
   useEffect(() => {
     if (draftKey) saveDraft(draftKey, draft);
   }, [draftKey, draft]);
+  // Typed here: kept on the device and synced to the account's other devices.
+  const edit = (text: string) => {
+    setDraft(text);
+    if (draftKey) editDraft(draftKey, text);
+  };
+  // Typed on another device: shown with the cursor at the end, without a typing indicator.
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
+  const cursorToEnd = useRef(false);
+  useEffect(() => {
+    if (!draftKey) return;
+    const stop = watchServerDrafts((applied) => {
+      if (applied.threadRootId || `${applied.accountId}:${applied.channelId}` !== draftKey) return;
+      if (applied.text === latestDraft.current) return;
+      cursorToEnd.current = true;
+      setDraft(applied.text);
+    });
+    // Leaving the conversation saves what is still waiting for typing to stop.
+    return () => {
+      stop();
+      flushDraftSync();
+    };
+  }, [draftKey]);
+  useLayoutEffect(() => {
+    if (!cursorToEnd.current) return;
+    cursorToEnd.current = false;
+    composerRef.current?.setSelectionRange(draft.length, draft.length);
+  }, [draft]);
   const hasDraft = draft !== "";
   useEffect(() => {
     onDraftPresence(hasDraft);
@@ -215,10 +243,8 @@ export default function Composer({
   const pendingId = pendingSend && !pendingSend.threadRootId ? pendingSend.clientMessageId : undefined;
   const previousPending = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
-    if (pendingId && pendingSend && !previousPending.current) {
-      const sent = pendingSend.text;
-      setDraft((current) => (current === sent ? "" : current));
-    }
+    // Sending clears the synced draft too, at once.
+    if (pendingId && pendingSend && !previousPending.current && draft && draft === pendingSend.text) edit("");
     // Renewing a pending upload changes its wire UUID, not the user's next draft.
     previousPending.current = pendingId;
   }, [pendingId]);
@@ -282,7 +308,7 @@ export default function Composer({
       composerRef.current?.focus();
     },
     restore(text: string) {
-      setDraft(text);
+      edit(text);
       composerRef.current?.focus();
     },
     submit() {
@@ -364,7 +390,10 @@ export default function Composer({
           {...suggestions.textarea}
           placeholder={`Message ${direct ? "" : "#"}${channelName}`}
           onValueChange={(value, input) => {
-            setDraft(value);
+            // Echo of a value set from outside (a restore or a draft from another
+            // device): not an edit, so no save and no typing indicator.
+            if (value === draft) return;
+            edit(value);
             queued.cancel();
             suggestions.change(input);
             setValidationError(undefined);

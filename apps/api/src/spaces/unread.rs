@@ -81,6 +81,7 @@ pub(super) async fn list(
     let badge_count = crate::push::badge::count(pool(&state)?, principal.user.id)
         .await
         .map_err(database_error)?;
+    crate::push::badge::seen(pool(&state)?, &principal.token_hash, badge_count).await;
     Ok(Json(
         json!({"spaces":spaces.into_iter().map(|(id,channels)|json!({"id":id,"channels":channels})).collect::<Vec<_>>(),
             "feedbackWaiting": feedback_waiting, "badgeCount": badge_count}),
@@ -149,5 +150,6 @@ pub(super) async fn read(
         .map_err(database_error)?;
     }
     tx.commit().await.map_err(database_error)?;
+    crate::push::badge::request(pool(&state)?, principal.user.id).await;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -486,10 +486,49 @@ web in `localStorage` (`caper:draft:<account>:<conversation>`,
 Android in one file per account under `noBackupFilesDir/drafts`, and Rust desktop
 in one file per account (`%APPDATA%\Caper\windows\drafts`,
 `$XDG_DATA_HOME/caper/drafts`). Staged files and reply targets stay in memory only.
-Signing out deletes the account's saved drafts, so another account on the device
-never sees them. Drafts are never sent to the API, logged, or synced between
-devices. Signed-in startup obtains a fresh capability from the current account
-session.
+Signing out deletes the account's saved drafts from the device, so another
+account on it never sees them; they stay on the server for the next sign-in.
+Signed-in startup obtains a fresh capability from the current account session.
+
+### Draft sync
+
+The text of each conversation draft and thread reply also syncs between the
+account's signed-in devices (Slack-style): type in a channel on the web, open it
+on the phone, and the unsent text is there. Staged files, reply targets, the
+thread "also send to channel" choice, inline replies in the notifications inbox
+and message edits stay on the device.
+
+- `GET /api/drafts` → `{"drafts":[{"channelId","threadRootId","text","updatedAt"}]}`:
+  the 500 most recently changed drafts in conversations the account can still
+  read, newest first. `channelId` is the space channel's ID or the DM's
+  conversation ID; `threadRootId` is the thread root's message ID or `null`.
+  Cleared drafts are included with empty `text`. `updatedAt` is fixed-width
+  UTC with microseconds (`2026-11-27T18:04:05.123456Z`), so two compare as strings.
+- `PUT /api/drafts` `{"channelId","threadRootId"?,"text"}` → the saved draft.
+  Empty text clears it. 400 `draft must be at most 16000 characters`; no read
+  access (or a deleted thread root) → 404 `conversation not found`.
+- Each save publishes `{"type":"draft.updated","draft":{...}}` (the same object)
+  to the account's own `profiles` subscriptions, including the device that saved
+  it. There is no replay: clients reload `GET /api/drafts` after their profiles
+  subscription is ready (startup and every reconnect).
+- One row per account, conversation and thread root (`message_drafts`), updated
+  in place; no draft history is kept and draft text is never logged.
+
+Every client follows the same rules:
+
+1. The device copy above stays the instant, offline source. Each local edit
+   marks that draft *dirty* and saves it about a second after typing stops,
+   immediately when leaving the conversation or thread, when the app goes to the
+   background, and on send (which saves empty text). Saves for one draft go one
+   at a time, in order; a save that fails stays dirty and retries with the next
+   edit or reconnect. A save's response counts as applied (rule 2), so its own
+   `draft.updated` echo changes nothing.
+2. A server draft (from `GET` or `draft.updated`) applies unless the draft is
+   dirty, or it is not newer than the last `updatedAt` applied for that draft.
+   Applying writes the device copy and, when that composer is on screen, replaces
+   its text (cursor at the end) without sending a typing indicator.
+3. After `GET`, a non-empty device draft with no server entry is saved, so drafts
+   typed before sync (or offline) reach the other devices.
 
 History opens at the latest 50 messages. Scrolling to the oldest loaded rows
 requests the next 50; the history button stays as a keyboard-accessible fallback

@@ -67,6 +67,7 @@ mod chat;
 mod db;
 mod dictation;
 mod direct;
+mod drafts;
 mod email;
 mod embeds;
 mod environment;
@@ -1162,6 +1163,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .merge(assets::routes())
         .merge(pictures::routes())
         .merge(direct::routes())
+        .merge(drafts::routes())
         .merge(feedback::routes())
         .merge(embeds::routes())
         .merge(push::routes())

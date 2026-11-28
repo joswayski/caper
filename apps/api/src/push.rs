@@ -535,6 +535,26 @@ impl Push {
             None => Outcome::Abandon("platform unavailable".into()),
         }
     }
+
+    /// A badge refresh (see [`badge`]).
+    pub(crate) async fn send_badge(&self, platform: Platform, token: &str, count: i64) -> Outcome {
+        let providers = self.providers.as_deref();
+        let unavailable = || Outcome::Abandon("platform unavailable".into());
+        match platform {
+            Platform::Apns => match providers.and_then(|p| p.apns.as_ref()) {
+                Some(apns) => apns.send_badge(token, count).await,
+                None => unavailable(),
+            },
+            Platform::ApnsSandbox => match providers.and_then(|p| p.apns_sandbox.as_ref()) {
+                Some(apns) => apns.send_badge(token, count).await,
+                None => unavailable(),
+            },
+            Platform::Fcm => match providers.and_then(|p| p.fcm.as_ref()) {
+                Some(fcm) => fcm.send_badge(token, count).await,
+                None => unavailable(),
+            },
+        }
+    }
 }
 
 /// Production and sandbox keys are separate; they share the team and topic.
@@ -659,6 +679,24 @@ pub(crate) fn start(
         loop {
             delivery::prune(&pruning).await;
             tokio::time::sleep(Duration::from_secs(600)).await;
+        }
+    });
+    let badges = workers.clone();
+    tokio::spawn(async move {
+        loop {
+            match if badges.push.enabled() {
+                badge::sync_pending(&badges).await
+            } else {
+                Ok(false)
+            } {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(()) => tracing::warn!(
+                    event_name = "badge_sync_retry",
+                    "badge sync batch will retry"
+                ),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
     let retractions = workers.clone();

@@ -204,14 +204,14 @@ struct ActivityInboxView: View {
             if let error = model.activityError {
                 HStack {
                     Text(error).foregroundStyle(CaperTheme.terracotta)
-                    Button("Retry") { model.activityError = nil; Task { await model.loadActivity(reset: true, poll: true) } }
+                    Button("Retry") { model.activityError = nil; model.activityLoaded = false; Task { await model.loadActivity(reset: true, poll: true) } }
                         .disabled(model.activityLoading)
                 }
             }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if model.activityLoading && model.activityVisibleItems.isEmpty { ProgressView("Loading notifications…") }
-                    if !model.activityLoading && model.activityVisibleItems.isEmpty && model.activityError == nil {
+                    if !model.activityLoaded && model.activityVisibleItems.isEmpty { ProgressView("Loading notifications…") }
+                    if model.activityLoaded && model.activityVisibleItems.isEmpty && model.activityError == nil {
                         Text("No notifications match these filters.").foregroundStyle(CaperTheme.muted).padding(.vertical, 24)
                     }
                     ForEach(model.activityVisibleGroups) { group in
@@ -295,7 +295,7 @@ struct ActivityInboxView: View {
             .accessibilityIdentifier("activity-inbox-dialog")
             .task {
                 // Rows loaded ahead show at once and refresh in place.
-                await model.loadActivity(reset: true, poll: model.activityLoading || !model.activityItems.isEmpty)
+                await model.loadActivity(reset: true, poll: model.activityLoading || model.activityLoaded || !model.activityItems.isEmpty)
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(15)) } catch { return }
                     if !model.activityLoading { await model.loadActivity(reset: true, poll: true) }

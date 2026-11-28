@@ -1,4 +1,5 @@
 import type { PersonPicture, SpaceIcon } from "../account/pictures.ts";
+import { serverDraft, type DraftRef, type ServerDraft } from "../chat/draft-sync.ts";
 import { observeProfiles, profileRevision } from "../account/profiles.ts";
 import { unreadChanged, unreadChanges } from "../account/app-badge";
 import { directMessageErrors } from "./direct-errors.ts";
@@ -384,6 +385,25 @@ export async function updateNotificationSettings(change: {
   return notificationSettings(
     await request<NotificationSettings>("/api/notifications/settings", { method: "PUT", body: JSON.stringify(change) }),
   );
+}
+
+/** The account's synced drafts, newest first, cleared ones included. Malformed rows are skipped. */
+export async function listServerDrafts(): Promise<ServerDraft[]> {
+  const body = await request<{ drafts?: unknown }>("/api/drafts", { signal: AbortSignal.timeout(10_000) });
+  return Array.isArray(body.drafts) ? body.drafts.flatMap((value) => serverDraft(value) ?? []) : [];
+}
+
+/** Saves a draft's text (empty clears it) and returns the saved draft. */
+export async function putServerDraft({ channelId, threadRootId, text }: DraftRef & { text: string }) {
+  const saved = serverDraft(
+    await request<unknown>("/api/drafts", {
+      method: "PUT",
+      body: JSON.stringify({ channelId, ...(threadRootId ? { threadRootId } : {}), text }),
+      signal: AbortSignal.timeout(10_000),
+    }),
+  );
+  if (!saved) throw new Error("The saved draft was not understood.");
+  return saved;
 }
 
 export async function setSpaceNotifications(spaceId: string, change: NotificationChange) {

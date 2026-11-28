@@ -64,3 +64,53 @@ test("drafts and thread replies survive a reload per account, and logout erases 
   expect(next.readThreadDrafts("bob")).toEqual({ root1: { text: "bob's reply", broadcast: false } });
   expect([...items.keys()].some((key) => key.includes("alice"))).toBe(false);
 });
+
+test("server drafts reach the device copy and open composers; thread replies keep their broadcast choice", async () => {
+  stubStorage();
+  const drafts = await reload();
+  drafts.saveDraft("alice:chan00000001", "local");
+  drafts.saveThreadDrafts("alice", {
+    root00000000001: { text: "my reply", broadcast: true, channelId: "chan00000001" },
+  });
+  const save = vi.fn(async (draft: { channelId: string; threadRootId: string | null; text: string }) => ({
+    ...draft,
+    updatedAt: "2026-11-27T18:04:05.000001Z",
+  }));
+  const applied = vi.fn();
+  const stop = drafts.watchServerDrafts(applied);
+  const { disconnect } = drafts.connectDraftSync("alice", { save });
+  drafts.receiveServerDraft({
+    channelId: "chan00000001",
+    threadRootId: "root00000000001",
+    text: "from the phone",
+    updatedAt: "2026-11-27T18:04:06.000000Z",
+  });
+  drafts.receiveServerDraft({ channelId: 7, text: "malformed" });
+  expect(drafts.readThreadDrafts("alice").root00000000001).toEqual({
+    text: "from the phone",
+    broadcast: true,
+    channelId: "chan00000001",
+  });
+  expect(drafts.readDraft("alice:chan00000001")).toBe("local");
+  expect(applied).toHaveBeenCalledWith({
+    accountId: "alice",
+    channelId: "chan00000001",
+    threadRootId: "root00000000001",
+    text: "from the phone",
+  });
+  stop();
+  disconnect();
+  expect(save).not.toHaveBeenCalled();
+});
+
+test("the signed-out simulation neither keeps nor syncs a thread reply", async () => {
+  const items = stubStorage();
+  const drafts = await reload();
+  const save = vi.fn();
+  const { disconnect } = drafts.connectDraftSync("alice", { save });
+  drafts.editThreadDraft(undefined, "chan00000001", "root00000000001", { text: "hi", broadcast: false });
+  drafts.flushDraftSync();
+  expect(save).not.toHaveBeenCalled();
+  expect(items.size).toBe(0);
+  disconnect();
+});

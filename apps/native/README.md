@@ -78,8 +78,9 @@ against the parity fixture (`scripts/native-parity-fixture.mjs`).
 - Each client reopens the last space and channel (per account and device, IDs
   only, joined channels only), falling back to the first joined channel.
 - Unsent conversation drafts and thread replies survive quitting, relaunching
-  and updates, kept on the device per account and deleted at logout. See
-  [docs/media.md](../../docs/media.md#scope-and-architecture).
+  and updates, kept on the device per account and deleted from it at logout.
+  Their text also syncs between the account's devices; see
+  [draft sync](../../docs/media.md#draft-sync).
 - Native channel voice in default builds. There are no incoming direct calls,
   so no CallKit/Telecom/push ringing.
 

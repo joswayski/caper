@@ -21,6 +21,8 @@ import okhttp3.*
 class ProfileFeedClient(
     private val baseUrl: String, private val token: String, private val onProfile: (ProfileEvent) -> Unit,
     private val onNotification: () -> Unit = {}, private val onNotificationsLive: (Boolean) -> Unit = {},
+    /** Each time a socket's profiles subscription is ready (first connect, reconnects, handoffs): reload what has no replay. */
+    private val onProfilesReady: () -> Unit = {},
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val client: OkHttpClient = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS)
         .followRedirects(false).followSslRedirects(false).build(),
@@ -85,6 +87,7 @@ class ProfileFeedClient(
                     s.subscribed = true; attempts = 0
                     if (s === candidate) { val old = active; active = s; candidate = null; old?.let { dispose(it, "migration complete", graceful = true) } }
                     publishLive()
+                    onProfilesReady()
                 }
                 NOTIFICATIONS_SUBSCRIPTION -> { s.notifications = true; publishLive() }
             }

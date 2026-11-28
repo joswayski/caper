@@ -290,6 +290,19 @@ public actor APIClient {
         return try await request("api/notifications/inbox/read", method: "POST", body: Input(ids: ids))
     }
 
+    /// The account's synced drafts, most recently changed first; cleared ones
+    /// have empty text (docs/media.md, "Draft sync").
+    func drafts() async throws -> [ServerDraft] {
+        let response: ServerDrafts = try await request("api/drafts")
+        return response.drafts
+    }
+
+    /// Saves one draft for the account's other devices; empty text clears it.
+    func saveDraft(channelID: String, threadRootID: String?, text: String) async throws -> ServerDraft {
+        struct Input: Encodable { let channelId: String; let threadRootId: String?; let text: String }
+        return try await request("api/drafts", method: "PUT", body: Input(channelId: channelID, threadRootId: threadRootID, text: text))
+    }
+
     /// The feedback team's inbox (or its archived threads), newest first; 404
     /// for everyone else.
     public func feedbackReports(before: String? = nil, archived: Bool = false) async throws -> FeedbackReportsPage {

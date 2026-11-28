@@ -445,6 +445,9 @@ pub struct InboxSnap {
     pub unread_count: u64,
     pub rows: Vec<InboxRow>,
     pub loading: bool,
+    /// Said in place of rows: loading until the filter first answers, then
+    /// that none match (a poll keeps it).
+    pub placeholder: Option<&'static str>,
     /// The rows are the previous filter's, dimmed and inert until its page
     /// answers.
     pub stale: bool,
@@ -1100,12 +1103,8 @@ impl Builder<'_> {
             self.button(SPart::RetryInbox, "Retry")?;
             self.y += 6.0;
         }
-        if s.rows.is_empty() {
-            if s.loading {
-                self.text("Loading notifications\u{2026}", Style::Detail)?;
-            } else if s.error.is_none() {
-                self.text("No notifications match these filters.", Style::Detail)?;
-            }
+        if let Some(placeholder) = s.placeholder {
+            self.text(placeholder, Style::Detail)?;
         }
         for (k, row) in s.rows.iter().enumerate() {
             let top = self.y;
@@ -2950,6 +2949,8 @@ impl App {
         self.close_gifs(false);
         self.cancel_reply();
         self.close_thread();
+        // Edited drafts stay on the server for the next sign-in.
+        self.flush_drafts();
         if let Some(live) = self.live.take() {
             self.live = Some(live.logout());
         }

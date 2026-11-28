@@ -41,6 +41,18 @@ pub enum Command {
         token: String,
         items: Vec<crate::activity::Item>,
     },
+    /// The account's synced drafts (`GET /api/drafts`), after the profiles
+    /// subscription is ready.
+    LoadDrafts {
+        epoch: u64,
+        token: String,
+    },
+    /// One draft's save (`saved_drafts::SavedDrafts::due`).
+    SaveDraft {
+        epoch: u64,
+        token: String,
+        save: crate::saved_drafts::DraftSave,
+    },
     AvatarHistory {
         epoch: u64,
         request: Instant,
@@ -728,6 +740,15 @@ pub enum Event {
     Profiles {
         epoch: u64,
         event: gateway::ProfileEvent,
+    },
+    DraftsLoaded {
+        epoch: u64,
+        result: Result<Vec<crate::saved_drafts::ServerDraft>, String>,
+    },
+    DraftSaved {
+        epoch: u64,
+        save: crate::saved_drafts::DraftSave,
+        result: Result<crate::saved_drafts::ServerDraft, crate::saved_drafts::SaveFailure>,
     },
     Picture {
         epoch: u64,
@@ -2119,6 +2140,19 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
                 result,
             }
         }
+        Command::LoadDrafts { epoch, token } => Event::DraftsLoaded {
+            epoch,
+            result: api.drafts(&token).map_err(|error| error.to_string()),
+        },
+        Command::SaveDraft { epoch, token, save } => Event::DraftSaved {
+            epoch,
+            result: api.save_draft(&token, &save).map_err(|error| {
+                crate::saved_drafts::SaveFailure::from_status(
+                    error.status.map(|status| status.as_u16()),
+                )
+            }),
+            save,
+        },
         Command::LoadFeedback {
             epoch,
             request,

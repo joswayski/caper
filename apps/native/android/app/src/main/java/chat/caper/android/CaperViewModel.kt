@@ -33,7 +33,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -125,7 +127,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     internal fun filterActivity(filter: ActivityFilter, unreadOnly: Boolean) {
-        activityMutable.value = activityMutable.value.copy(filter = filter, unreadOnly = unreadOnly)
+        val current = activityMutable.value
+        // A different list has not answered yet; the same one keeps its answer while it reloads.
+        activityMutable.value = current.copy(filter = filter, unreadOnly = unreadOnly,
+            loaded = current.loaded && filter == current.filter && unreadOnly == current.unreadOnly)
         loadActivity()
     }
 
@@ -146,14 +151,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (epoch != accountGeneration || request != activityRequest) return@launch
                 val items = (if (more) activityMutable.value.items else emptyList()) + page.items
                 activityMutable.value = activityMutable.value.copy(items = items.distinctBy { it.id },
-                    cursor = page.nextCursor, unreadCount = page.unreadCount, loading = false, stale = false)
+                    cursor = page.nextCursor, unreadCount = page.unreadCount, loading = false, stale = false, loaded = true)
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
                 if (epoch == accountGeneration && request == activityRequest) {
                     val failed = activityMutable.value
                     // Rows kept from the previous filter must not stand in for this one.
-                    activityMutable.value = if (reload) failed.copy(items = emptyList(), cursor = null, loading = false, stale = false, error = message(error))
-                        else failed.copy(loading = false, stale = false, error = message(error))
+                    activityMutable.value = if (reload) failed.copy(items = emptyList(), cursor = null, loading = false, stale = false, loaded = true, error = message(error))
+                        else failed.copy(loading = false, stale = false, loaded = true, error = message(error))
                 }
             }
         }
@@ -284,8 +289,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var accountGeneration = 0L
     private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
-    // Saved off the main thread, in order.
-    internal val drafts = ConversationDrafts(java.util.concurrent.Executors.newSingleThreadExecutor())
+    // Saved off the main thread, in order; edits also save for the account's other devices (docs/media.md "Draft sync").
+    internal val drafts = ConversationDrafts(java.util.concurrent.Executors.newSingleThreadExecutor()).also {
+        it.edited = { key, now -> if (now) flushDraft(key) else scheduleDraftSave(key) }
+    }
+    private val draftSaveTimers = mutableMapOf<String, Job>()
+    private val draftSaves = mutableMapOf<String, Job>()
+    private val draftsAppliedMutable = MutableSharedFlow<String>(extraBufferCapacity = 64)
+    /** Keys of drafts another device changed; the composer showing one takes its new text. */
+    internal val draftsApplied: SharedFlow<String> = draftsAppliedMutable
     internal val profileDrafts = ProfileMessageDrafts(api)
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
@@ -646,6 +658,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(voiceActivitySpaceIds = emptySet())
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
+        draftSaveTimers.values.forEach { it.cancel() }; draftSaveTimers.clear()
+        draftSaves.values.forEach { it.cancel() }; draftSaves.clear()
         drafts.clear()
         profileDrafts.clear().forEach { draft ->
             draft.attachment?.id?.let { id -> if (token != null) viewModelScope.launch(NonCancellable) { api.cancelAsset(token, id) } }
@@ -1769,9 +1783,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = mutable.value.copy(unreadSpaces = it.spaces, feedbackWaiting = it.feedbackWaiting)
                     val previousUnread = activityMutable.value.unreadCount
                     it.badgeCount?.let { count -> activityMutable.value = activityMutable.value.copy(unreadCount = count) }
-                    // A closed inbox loads ahead whenever its count changes, so opening it
-                    // shows these notifications at once instead of a loading state.
-                    if (activityShown || activityMutable.value.unreadCount != previousUnread) loadActivity(poll = true)
+                    // A closed inbox loads ahead until it has answered and whenever its count changes,
+                    // so opening it shows these notifications (or "all caught up") at once instead of a loading state.
+                    if (activityShown || !activityMutable.value.loaded || activityMutable.value.unreadCount != previousUnread) loadActivity(poll = true)
                     CaperNotifications.reconcileReadChannels(getApplication(), it.spaces.flatMap { space -> space.channels.map { channel -> channel.id } }.toSet(), snapshotStartedAt)
                     if (!mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { id -> markConversationRead(id, durableReplayCursor) }
                 }
@@ -2081,7 +2095,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         foreground = active
         publishForegroundConversation()
         syncProfileFeed()
-        if (!active) { refreshShareShortcuts(); return }
+        if (!active) { refreshShareShortcuts(); drafts.dirtyKeys().forEach(::flushDraft); return }
         refreshDirectConversations()
         refreshExpiringUrls()
         mutable.value.selectedChannel?.id?.let { renewDraftUploads(it) }
@@ -2466,8 +2480,54 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (!live) notificationsDropped = true
                 notificationsLive.value = live
             } },
+            onProfilesReady = { viewModelScope.launch { if (profileFeed === feed && request == accountGeneration) reloadDrafts() } },
         )
         profileFeed = feed.also { it.start() }
+    }
+
+    /** `draft.updated` has no replay: once the profiles subscription is ready, the server's drafts fill in what it missed. */
+    private fun reloadDrafts() {
+        val token = accountToken ?: return
+        val account = accountGeneration
+        viewModelScope.launch {
+            val list = try { api.drafts(token) } catch (error: CancellationException) { throw error } catch (_: Throwable) { return@launch }
+            if (account != accountGeneration) return@launch
+            val merge = drafts.merge(list.drafts)
+            merge.applied.forEach { draftsAppliedMutable.tryEmit(it) }
+            merge.saves.forEach(::flushDraft)
+        }
+    }
+
+    /** About a second after typing stops, an edited draft saves for the account's other devices. */
+    private fun scheduleDraftSave(key: String) {
+        draftSaveTimers.remove(key)?.cancel()
+        if (accountToken == null) return
+        draftSaveTimers[key] = viewModelScope.launch { delay(DRAFT_SAVE_DELAY_MS); draftSaveTimers.remove(key); flushDraft(key) }
+    }
+
+    /**
+     * Saves [key]'s unsaved edits now (also on leaving its conversation or thread, going to the background and
+     * sending). Saves for one draft go one at a time, in order: one in flight saves the newest text when it lands.
+     * A failed save stays dirty for the next edit or reconnect.
+     */
+    internal fun flushDraft(key: String) {
+        draftSaveTimers.remove(key)?.cancel()
+        val token = accountToken ?: return
+        if (draftSaves[key]?.isActive == true) return
+        val account = accountGeneration
+        draftSaves[key] = viewModelScope.launch {
+            while (account == accountGeneration) {
+                val save = drafts.pendingSave(key) ?: break
+                val result = try { api.saveDraft(token, save.channelId, save.threadRootId, save.text) }
+                catch (error: CancellationException) { throw error }
+                catch (error: Throwable) {
+                    // Refused for good (no access, too long, not a server conversation): it stays on this device.
+                    if (account == accountGeneration && (error is IllegalArgumentException || error is ApiException && error.status in setOf(400, 404))) drafts.abandon(save)
+                    break
+                }
+                if (account == accountGeneration) drafts.saved(save, result)
+            }
+        }
     }
 
     /** Web: a start goes out at most every [TYPING_INTERVAL_MS], and that long without typing sends the stop. */
@@ -4361,6 +4421,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 edits.loaded(edits.confirmed.copy(level = next.level, mobile = next.mobile, voiceStarted = next.voiceStarted, pausedUntil = next.pausedUntil))
                 mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSettingsError = null)
             }
+            // Saved on another device (this device's own echo changes nothing): a composer showing it takes the text.
+            is ProfileEvent.DraftUpdated -> if (drafts.apply(event.draft)) draftsAppliedMutable.tryEmit(ConversationDrafts.key(event.draft))
         }
     }
     fun deleteCurrentSpace(done: () -> Unit = {}) = launchAction { request ->
@@ -4868,6 +4930,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val TYPING_INTERVAL_MS = 500L
+        /** An edited draft saves this long after typing stops (docs/media.md "Draft sync"). */
+        const val DRAFT_SAVE_DELAY_MS = 1_000L
     }
 }
 

@@ -142,6 +142,8 @@ const TIMER_AVATARS: usize = 55;
 const TIMER_TYPING: usize = 19;
 /// Hides the zoom notice.
 const TIMER_ZOOM: usize = 22;
+/// Saves an edited draft to the server once typing pauses.
+const TIMER_DRAFT_SYNC: usize = 55;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
 pub(crate) const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -1080,6 +1082,30 @@ impl App {
         self.tint_due |= !updates.is_empty();
         for u in updates {
             match u {
+                // Draft sync, with the rules in `caper_client::saved_drafts`.
+                live::Update::DraftsReady => {
+                    self.open_saved_drafts();
+                    self.drafts.reconnected();
+                    if let Some(live) = &self.live {
+                        live.load_drafts();
+                    }
+                    self.sync_drafts();
+                }
+                live::Update::Draft(draft) => {
+                    self.open_saved_drafts();
+                    let changed = self.drafts.apply(draft).into_iter().collect();
+                    self.show_drafts(changed);
+                }
+                live::Update::Drafts(drafts) => {
+                    self.open_saved_drafts();
+                    let changed = self.drafts.loaded(drafts);
+                    self.show_drafts(changed);
+                    self.sync_drafts();
+                }
+                live::Update::DraftSaved(save, result) => {
+                    self.drafts.saved(&save, result);
+                    self.sync_drafts();
+                }
                 live::Update::SignedOut(warning) => {
                     avatars::clear();
                     self.close_viewer();
@@ -1119,6 +1145,8 @@ impl App {
                     if let Some(old) = self.ids.open.clone() {
                         let text = std::mem::take(&mut self.composer.text);
                         self.drafts.set(&old, &String::from_utf16_lossy(&text));
+                        // Leaving it saves its draft to the server now.
+                        self.flush_drafts();
                     }
                     // The account's saved drafts, from before a restart or update too.
                     if let Some(account) = self.live.as_ref().and_then(|l| l.account_id.as_deref())
@@ -1661,13 +1689,70 @@ impl App {
 
     // ---- state changes ----
 
+    /// Sends the draft saves that are due (`SavedDrafts::due`) and arms the
+    /// timer for the next: a second after typing stops.
+    pub fn sync_drafts(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_DRAFT_SYNC);
+        }
+        if let Some(live) = &self.live {
+            live.save_drafts(&mut self.drafts);
+        }
+        if let Some(delay) = self.drafts.next_save(Instant::now()) {
+            let ms = delay.as_millis().clamp(1, u32::MAX as u128) as u32;
+            unsafe { SetTimer(Some(self.hwnd), TIMER_DRAFT_SYNC, ms, None) };
+        }
+    }
+
+    /// The signed-in account's saved drafts, which sync may reach before
+    /// its first conversation loads.
+    fn open_saved_drafts(&mut self) {
+        if let Some(account) = self.live.as_ref().and_then(|l| l.account_id.as_deref()) {
+            self.drafts.open_for(drafts_dir().as_deref(), account);
+        }
+    }
+
+    /// Leaving a conversation or thread, closing, quitting and sending save
+    /// every edited draft now.
+    pub fn flush_drafts(&mut self) {
+        self.drafts.flush();
+        self.sync_drafts();
+    }
+
+    /// Another device's drafts replaced these device copies: the composer or
+    /// thread reply box showing one takes its text, caret at the end,
+    /// without a typing indicator.
+    fn show_drafts(&mut self, changed: Vec<(String, String)>) {
+        for (key, text) in changed {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            if self.ids.open.as_deref() == Some(key.as_str()) {
+                if self.composer.text != units {
+                    if let Some(live) = &mut self.live {
+                        live.typing.adopt(&text);
+                    }
+                    self.composer.set_text(units);
+                    self.composer_changed();
+                    self.member_search_follow();
+                    self.bar_changed();
+                }
+            } else if let Some(t) = self.thread.as_mut().filter(|t| {
+                caper_client::saved_drafts::thread_key(&t.root) == key && t.composer.text != units
+            }) {
+                t.composer.set_text(units);
+                self.thread_composer_changed();
+            }
+        }
+    }
+
     pub fn composer_changed(&mut self) {
         self.composer.caret_on = true;
-        // Kept on every change, so quitting or updating never loses it.
+        // Kept on every change, so quitting or updating never loses it, and
+        // saved to the server once typing pauses.
         if let Some(open) = &self.ids.open {
             self.drafts
                 .set(open, &String::from_utf16_lossy(&self.composer.text));
         }
+        self.sync_drafts();
         self.preview_tick();
         if let Some(live) = &mut self.live {
             live.typed(&String::from_utf16_lossy(&self.composer.text));
@@ -2587,6 +2672,8 @@ impl App {
         }
         self.composer.set_text(Vec::new());
         self.composer_changed();
+        // The sent draft clears on the account's other devices at once.
+        self.flush_drafts();
         Ok(())
     }
 
@@ -2879,6 +2966,7 @@ impl App {
                     self.need = true;
                 }
                 TIMER_TYPING => self.typing_tick(),
+                TIMER_DRAFT_SYNC => self.sync_drafts(),
                 settings::audio::TIMER_AUDIO => self.audio_tick(),
                 playback::TIMER_PLAYBACK => self.playback_tick(),
                 recording::TIMER_RECORDING => self.recording_tick(),
@@ -5460,6 +5548,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // Before the window hides, while its placement is still current.
             WM_CLOSE => {
                 with_app(App::save_placement);
+                // Closing (to the tray too): edited drafts reach the server now.
+                with_app(App::flush_drafts);
                 // Caper keeps running in the tray unless that is turned off.
                 if with_app(App::close_to_tray) == Some(true) {
                     return LRESULT(0);
@@ -5474,6 +5564,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             WM_ENDSESSION if wp.0 != 0 => {
                 with_app(App::save_placement);
+                with_app(App::flush_drafts);
                 return LRESULT(0);
             }
             WM_DESTROY => {
@@ -5936,6 +6027,7 @@ fn main() -> Result<()> {
             }
             if quit {
                 with_app(App::save_placement);
+                with_app(App::flush_drafts);
                 let _ = DestroyWindow(hwnd);
                 continue;
             }

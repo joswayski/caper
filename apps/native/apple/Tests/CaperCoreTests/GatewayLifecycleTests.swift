@@ -403,7 +403,7 @@ final class GatewayLifecycleTests: XCTestCase {
         XCTAssertEqual(first.frames(type: "subscribe").count, 1)
         first.push(["type": "subscribed", "id": "profiles"])
         first.push(["type": "event", "id": "profiles", "event": ["type": "profile.updated", "person": ["id": "a", "username": "a", "displayName": "A"]]])
-        await eventually { updates == ["profile.updated"] }
+        await eventually { updates == ["ready", "profile.updated"] }
         first.fail()
         await eventually { factory.socket(1) != nil }; let second = factory.socket(1)!; second.push(["type": "hello"])
         let resent = await subscribeID(second, kind: "profiles")
@@ -413,7 +413,9 @@ final class GatewayLifecycleTests: XCTestCase {
         _ = await subscribeID(candidate, kind: "profiles"); candidate.push(["type": "subscribed", "id": "profiles"])
         await eventually("a subscribed profiles feed needs no catch-up") { second.cancelled }
         candidate.push(["type": "event", "id": "profiles", "event": ["type": "space.updated", "space": ["id": "s", "name": "S", "ownerId": "o"]]])
-        await eventually { updates == ["profile.updated", "space.updated"] }
+        await eventually("a reconnect reloads once; the handoff's candidate does not") {
+            updates == ["ready", "profile.updated", "ready", "space.updated"]
+        }
         await subject.stop()
     }
 

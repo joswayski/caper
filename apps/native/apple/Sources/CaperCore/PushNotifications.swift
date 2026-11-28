@@ -140,6 +140,14 @@ public final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNot
         }
     }
 
+    /// iOS hands the running app each push as it arrives. A badge sync (reads
+    /// on another device) catches the in-app unread state up with the badge
+    /// iOS just set; it never presents or opens anything.
+    public func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        if NotificationRoute.isBadgeSync(userInfo) { model?.scheduleUnreadRefresh() }
+        return .noData
+    }
+
     /// A tap opens the push's channel (`spaceId` + `channelId`) or DM (`conversationId`);
     /// kind `feedback` opens a feedback visit at `messageId`, in its thread.
     /// Reply and Mark as read run without opening the app: iOS launches it in
@@ -163,6 +171,11 @@ public final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNot
     /// A deleted message's retraction removes its original and shows nothing
     /// (no banner, sound or list entry) while the app is open.
     public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        // A badge sync only carries the badge, which iOS has already set.
+        if NotificationRoute.isBadgeSync(notification.request.content.userInfo) {
+            model?.scheduleUnreadRefresh()
+            return []
+        }
         guard let model, model.account != nil, model.pushEnabled else { return [] }
         model.scheduleUnreadRefresh()
         if let deleted = NotificationRetraction.deletedMessageID(notification.request.content.userInfo) {

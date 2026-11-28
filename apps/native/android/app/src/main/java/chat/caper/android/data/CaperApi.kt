@@ -143,6 +143,15 @@ class CaperApi(
             put("channelId", channel.pathId()); put("threadRootId", threadRoot); put("archived", archived)
         }.toString())
     }
+    /** The account's 500 most recently changed drafts, newest first; cleared ones have empty text (docs/media.md "Draft sync"). */
+    suspend fun drafts(token: String): ServerDraftList = get("/api/drafts", token)
+    /** Saves a conversation's or thread's draft text for the account's other devices; empty text clears it. */
+    suspend fun saveDraft(token: String, channel: String, threadRoot: String?, text: String): ServerDraft {
+        if (threadRoot != null) require(messageId.matches(threadRoot)) { "Invalid message ID." }
+        return request<ServerDraft>("/api/drafts", "PUT", token, buildJsonObject {
+            put("channelId", channel.pathId()); threadRoot?.let { put("threadRootId", it) }; put("text", text)
+        }.toString())
+    }
     suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
     /** KLIPY's client key and this account's customer id; 404 while GIFs are off. */
     suspend fun klipyConfig(token: String): KlipyConfig =

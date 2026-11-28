@@ -204,6 +204,23 @@ class PushPayloadTest {
         )) assertNull(bad.toString(), PushRetraction.parse(bad))
     }
 
+    @Test fun `a badge sync carries the count and is never a message or retraction to show`() {
+        val sync = mapOf("kind" to "badge.sync", "badgeCount" to "7")
+        assertEquals(PushBadgeSync(7), PushBadgeSync.parse(sync))
+        assertEquals(PushBadgeSync(0), PushBadgeSync.parse(sync + ("badgeCount" to "0")))
+        // A missing or malformed count is still a sync: the app reloads unread state either way.
+        assertEquals(PushBadgeSync(null), PushBadgeSync.parse(sync - "badgeCount"))
+        assertEquals(PushBadgeSync(null), PushBadgeSync.parse(sync + ("badgeCount" to "-1")))
+        assertEquals(PushBadgeSync(null), PushBadgeSync.parse(sync + ("badgeCount" to "many")))
+        // Even with a message's fields, a badge sync never posts a notification.
+        assertNull(PushPayload.parse(sync))
+        assertNull(PushPayload.parse(direct + sync))
+        assertNull(PushPayload.parse(channel + sync))
+        assertNull(PushRetraction.parse(sync))
+        assertNull(PushBadgeSync.parse(direct))
+        assertNull(PushBadgeSync.parse(mapOf("kind" to "message.deleted", "badgeCount" to "3")))
+    }
+
     @Test fun `a retraction removes exactly the line that shows its message`() {
         // Lines posted by this version carry their message ID.
         assertEquals(1, retractedLine(listOf("message00000001", "message00000002"), listOf("message00000001", "message00000002"), "message00000002"))

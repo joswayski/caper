@@ -1858,7 +1858,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         viewModel.drafts[draftKey].let { mutableStateOf(TextFieldValue(it, TextRange(it.length))) }
     }
     // Kept with the account's drafts on every change, so closing the thread, quitting or updating never loses it.
-    LaunchedEffect(draftKey) { snapshotFlow { draft.text }.collect { viewModel.drafts[draftKey] = it } }
+    LaunchedEffect(draftKey) { snapshotFlow { draft.text }.collect { viewModel.drafts[channel.id, thread.rootId] = it } }
+    // Changed on another device while not edited here: the reply box takes it, cursor at the end, with no typing indicator.
+    LaunchedEffect(draftKey) { viewModel.draftsApplied.collect { key -> if (key == draftKey) viewModel.drafts[key].let { draft = TextFieldValue(it, TextRange(it.length)) } } }
+    // Leaving the thread saves its edits for the other devices at once.
+    DisposableEffect(draftKey) { onDispose { viewModel.flushDraft(draftKey) } }
     var broadcast by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf(false) }
     val pending = state.pendingMessage?.takeIf { it.threadRootId == thread.rootId }
     // DMs are named after the other person, without a channel `#`.
@@ -2060,6 +2064,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
     // Kept per conversation, so switching channels or DMs and coming back restores it.
     fun updateDraft(value: TextFieldValue) { draft = value; viewModel.drafts[channel.id] = value.text }
+    // Changed on another device while not edited here: the composer takes it, cursor at the end, with no typing indicator.
+    LaunchedEffect(channel.id) { viewModel.draftsApplied.collect { key -> if (key == channel.id) viewModel.drafts[key].let { draft = TextFieldValue(it, TextRange(it.length)) } } }
+    // Leaving the conversation saves its edits for the other devices at once.
+    DisposableEffect(channel.id) { onDispose { viewModel.flushDraft(channel.id) } }
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     // Closing Pins, however it closes, returns focus to the composer (a reply from it already has).

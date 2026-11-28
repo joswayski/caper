@@ -38,6 +38,8 @@ sealed interface ProfileEvent {
      * voice starts, Do Not Disturb) were saved, here or on another device. [settings] has no overrides.
      */
     data class NotificationsChanged(val settings: NotificationSettings) : ProfileEvent
+    /** `draft.updated`: one of your drafts was saved, on another device or (an echo) this one. */
+    data class DraftUpdated(val draft: ServerDraft) : ProfileEvent
 }
 
 fun Account.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)

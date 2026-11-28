@@ -385,6 +385,9 @@ function initialState(formatted = 0) {
     pushRequests: [],
     notificationSettings: new Map(),
     notificationOverrides: new Map(),
+    // Synced composer drafts per account (apps/api/src/drafts.rs): user ID →
+    // Map of "<channel> <root>" → { channelId, threadRootId, text, updatedAt }.
+    drafts: new Map(),
     // The owner's notifications inbox (GET /api/notifications/inbox), newest first.
     inbox: [
       {
@@ -2131,6 +2134,58 @@ export async function startFixture({
                 client.send({ type: "event", id, event: { type: "notifications.updated", settings } });
         }
         return json(response, 200, settingsDTO(user));
+      }
+      if (path === "/api/drafts" && (method === "GET" || method === "PUT")) {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const saved = state.drafts.get(user.id) ?? new Map();
+        const rootOf = (channelId, rootId) =>
+          state.messages.get(channelId)?.find((message) => message.id === rootId && !message.threadRootId);
+        if (method === "GET") {
+          const drafts = [...saved.values()]
+            .filter(
+              (draft) =>
+                draft.channelId !== ids.demo &&
+                canRead(channelFor(draft.channelId), user, false) &&
+                (!draft.threadRootId || !rootOf(draft.channelId, draft.threadRootId)?.deletedAt),
+            )
+            .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+            .slice(0, 500);
+          return json(response, 200, { drafts });
+        }
+        if (
+          !body ||
+          typeof body !== "object" ||
+          Array.isArray(body) ||
+          Object.keys(body).some((key) => !["channelId", "threadRootId", "text"].includes(key)) ||
+          typeof body.channelId !== "string" ||
+          (body.threadRootId != null && typeof body.threadRootId !== "string") ||
+          typeof body.text !== "string"
+        )
+          return reject(response, 422, "invalid draft");
+        if (Array.from(body.text).length > 16000)
+          return reject(response, 400, "draft must be at most 16000 characters");
+        const threadRootId = body.threadRootId ?? null;
+        const channel = channelFor(body.channelId);
+        if (
+          !channel ||
+          channel.id === ids.demo ||
+          !canRead(channel, user, false) ||
+          (threadRootId && (!rootOf(channel.id, threadRootId) || rootOf(channel.id, threadRootId).deletedAt))
+        )
+          return reject(response, 404, "conversation not found");
+        // Fixed-width microseconds that never repeat, so clients compare them as strings.
+        const micros = Math.max(Date.now() * 1000, (state.draftClock ?? 0) + 1);
+        state.draftClock = micros;
+        const updatedAt = `${new Date(Math.floor(micros / 1000)).toISOString().slice(0, 23)}${String(micros % 1000).padStart(3, "0")}Z`;
+        const draft = { channelId: channel.id, threadRootId, text: body.text, updatedAt };
+        saved.set(`${channel.id} ${threadRootId ?? ""}`, draft);
+        state.drafts.set(user.id, saved);
+        // Every session of the account hears it, the saving one included.
+        for (const client of sockets)
+          for (const [id, sub] of client.subscriptions)
+            if (sub.kind === "profiles" && client.userId === user.id)
+              client.send({ type: "event", id, event: { type: "draft.updated", draft } });
+        return json(response, 200, draft);
       }
       if (path === "/api/notifications/inbox" && method === "GET") {
         if (!user) return reject(response, 401, "Sign in required.");

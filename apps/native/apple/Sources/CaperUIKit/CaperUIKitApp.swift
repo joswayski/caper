@@ -18,6 +18,10 @@ final class CaperUIKitAppDelegate: UIResponder, UIApplicationDelegate {
         Self.push.application(application, didRegisterForRemoteNotificationsWithDeviceToken: deviceToken)
     }
 
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        await Self.push.application(application, didReceiveRemoteNotification: userInfo)
+    }
+
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let configuration = UISceneConfiguration(name: nil, sessionRole: session.role)

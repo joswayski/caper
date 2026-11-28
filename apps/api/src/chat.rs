@@ -1397,6 +1397,12 @@ pub(crate) async fn send_message_with_gif(
         .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     tracing::info!(event_name = "chat_committed", "message committed");
+    // Sending in a DM read it up to here: the sender's phones follow.
+    if let Some(user) = user_id
+        && space_id.is_none()
+    {
+        crate::push::badge::request(pool, user).await;
+    }
     Ok(payload)
 }
 

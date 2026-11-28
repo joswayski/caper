@@ -17,7 +17,7 @@ use caper_client::worker::Command;
 use gtk::{gdk, glib, prelude::*};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// An inline reply's send, by the row's draft key.
 #[derive(Default)]
@@ -106,17 +106,8 @@ impl App {
             return;
         };
         let inbox = &mut state.inbox;
-        if poll && (inbox.loading || !inbox.reads.is_empty())
-            || more && (inbox.loading || inbox.cursor.is_none())
-        {
+        if !inbox.begin(more, poll) {
             return;
-        }
-        inbox.request += 1;
-        inbox.loading = true;
-        inbox.error = None;
-        inbox.refreshed = Some(Instant::now());
-        if !more && !poll {
-            inbox.stale = !inbox.items.is_empty();
         }
         self.worker.send(Command::LoadActivity {
             epoch: state.epoch,
@@ -437,13 +428,8 @@ impl App {
             .set_sensitive(!inbox.loading && inbox.reads.is_empty());
         // One row per group of neighbouring notifications.
         let visible = inbox.visible_groups();
-        let status = if inbox.loading && visible.is_empty() {
-            "Loading notifications…"
-        } else if !inbox.loading && visible.is_empty() && inbox.error.is_none() {
-            "No notifications match these filters."
-        } else {
-            ""
-        };
+        // Loading until this filter first answers; a poll keeps the empty state.
+        let status = inbox.placeholder().unwrap_or_default();
         open.status.set_label(status);
         open.status.set_visible(!status.is_empty());
         open.more.set_visible(inbox.cursor.is_some());

@@ -99,6 +99,13 @@ val DEFAULT_QUICK_REACTIONS = listOf("👍", "❤️", "😂")
 @Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
 /**
+ * One synced composer draft (docs/media.md "Draft sync"): a conversation's ([channelId], a space channel or DM)
+ * or a thread's ([threadRootId]). Cleared drafts have empty [text]. [updatedAt] is fixed-width UTC, so two
+ * compare as strings.
+ */
+@Serializable data class ServerDraft(val channelId: String, val threadRootId: String? = null, val text: String = "", val updatedAt: String)
+@Serializable data class ServerDraftList(val drafts: List<ServerDraft>)
+/**
  * `GET /api/notifications/settings`: the account [level] (`all`, `mentions` or `nothing`),
  * [mobile] (`whenInactive` or `always`), Do Not Disturb's [pausedUntil] (null when off,
  * `forever`, or a whole-second RFC 3339 UTC time) and the overrides that still set something.

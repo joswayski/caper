@@ -3,7 +3,8 @@ import Foundation
 // Live profile and space updates (the gateway's `profiles` subscription):
 // `profile.updated` and `space.updated` events, and the pure functions that
 // apply them over every retained copy of a person or space. The same feed
-// carries `notification.retracted` for deleted messages.
+// carries `notification.retracted` for deleted messages and `draft.updated`
+// for the account's synced drafts.
 
 /// One event from the `profiles` subscription.
 public enum ProfileFeedEvent: Equatable, Sendable {
@@ -17,6 +18,11 @@ public enum ProfileFeedEvent: Equatable, Sendable {
     /// Your account's notification settings changed (on any of your devices):
     /// level, mobile, voiceStarted and Do Not Disturb, without overrides.
     case notificationsUpdated(NotificationSettings)
+    /// One of your drafts changed (on any of your devices, this one included).
+    case draftUpdated(ServerDraft)
+    /// The feed is live (startup and every reconnect). It has no replay, so
+    /// what it may have missed (drafts) loads again.
+    case ready
 
     /// The event, or nil for other or malformed frames (newer servers may add types).
     public static func parse(_ event: [String: Any]) -> ProfileFeedEvent? {
@@ -34,6 +40,11 @@ public enum ProfileFeedEvent: Equatable, Sendable {
             guard let settings = event["settings"] as? [String: Any], settings["level"] is String,
                   let value: NotificationSettings = decode(settings) else { return nil }
             return .notificationsUpdated(value)
+        case "draft.updated":
+            guard let draft: ServerDraft = decode(event["draft"]), !draft.channelId.isEmpty else { return nil }
+            return .draftUpdated(draft)
+        case "ready":
+            return .ready
         default:
             return nil
         }

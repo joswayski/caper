@@ -229,6 +229,11 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         ),
         // Mark unread revokes acknowledgements in place; they are never deleted.
         format!("GRANT SELECT, INSERT, UPDATE ON public.notification_inbox_reads TO {role}"),
+        // Drafts are updated in place (sending stores empty text); badge
+        // refreshes reuse one row per phone.
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON public.message_drafts, public.notification_badge_syncs TO {role}"
+        ),
         format!("GRANT SELECT ON public.notification_invitation_sources TO {role}"),
         format!("GRANT SELECT ON public.notification_request_sources TO {role}"),
         format!("GRANT SELECT ON public.notification_voice_sources TO {role}"),

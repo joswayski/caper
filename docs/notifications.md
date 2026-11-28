@@ -317,6 +317,9 @@ Rows offer inline Reply (the compact composer, with account-scoped drafts;
 thread replies stay in the thread, others quote the original) and React; neither
 creates a DM, accepts a request or acknowledges the row. The open inbox refreshes
 on activity signals and every 15 s, revalidating through the oldest loaded row.
+Refreshes happen in place: only a filter that has not answered yet shows the
+loading state, so the rows or the empty note ("You’re all caught up") never
+blink while the inbox opens or polls.
 
 - `GET /api/notifications/inbox?filter=all&unread=true&cursor=…` →
   `{items,nextCursor,unreadCount}`. Filters: `all`, `dms`, `mentions`, `threads`,
@@ -394,11 +397,33 @@ Counts are snapshots, never per-push increments. Opening the app does not mark
 everything read. Reads refresh the count; logout and expired sessions clear it;
 transient fetch failures keep it.
 
+### Badge sync
+
+Reading on one device updates the badge on the account's phones, even while
+their app is closed. Every read that can change the count (channel, DM and
+thread read positions, including Mark unread; inbox acknowledgements; Mark as
+read and Reply from a notification; sending in a DM) asks each of the
+account's live phone registrations for a refresh (`notification_badge_syncs`,
+one reused row per device). The worker waits two seconds so a burst of reads
+sends once, computes the count at send time, and skips the send when the phone
+was last given that count: by an alert or deletion replacement, an earlier
+refresh, or the app's own `GET /api/spaces/unread`. Failures retry with the
+delivery backoff for up to an hour, then wait for the next read.
+
+- **APNs**: `{"aps":{"badge":N},"kind":"badge.sync"}` with `apns-push-type:
+  alert`, `apns-priority: 5`, `apns-collapse-id: badge` and a one-hour expiry.
+  iOS sets the badge itself; no banner, sound or app launch.
+- **FCM**: data `{"kind":"badge.sync","badgeCount":"N"}`, `android.priority:
+  NORMAL`, `collapse_key: "badge"`, one-hour TTL. The app reloads unread
+  spaces and DMs with the saved session and clears notifications of
+  conversations read elsewhere (the same reconcile as its foreground poll).
+  Older releases ignore it.
+
 | Client | Behavior |
 | --- | --- |
-| iPhone/iPad | APNs alerts and deletion replacements carry `aps.badge`, computed at send time; the open app reconciles with `setBadgeCount`. Needs Badges permission. Reads elsewhere while suspended reconcile on the next push or foreground (no silent-push sync). |
+| iPhone/iPad | APNs alerts and deletion replacements carry `aps.badge`, computed at send time; badge sync updates it after reads elsewhere; the open app reconciles with `setBadgeCount`. Needs Badges permission. Notification Center entries read elsewhere stay until the app opens. |
 | macOS | Dock badge from the unread poll while running. |
-| Android | Notification-backed launcher dots/counts per conversation (up to 1,000 retained message identities). Reading, dismissing or retracting reduces it; foreground polling clears conversations read elsewhere. The launcher decides number vs dot; not the server-wide total. Voice notifications don't badge. |
+| Android | Notification-backed launcher dots/counts per conversation (up to 1,000 retained message identities). Reading, dismissing or retracting reduces it; badge sync and foreground polling clear conversations read elsewhere. The launcher decides number vs dot; not the server-wide total. Voice notifications don't badge. |
 | Web | `(N) Caper` title and feature-detected `setAppBadge`/`clearAppBadge` for installed apps. Background tabs poll, subject to throttling. |
 | Rust desktop | Background polling, including minimized. Linux emits Unity LauncherEntry counts for `caper.desktop`; Windows attempts WinRT badges with the app identity (unpackaged/pinned-taskbar support uncertain). `(N) Caper` title fallback. |
 

@@ -130,6 +130,23 @@ impl Fcm {
     }
 
     pub(crate) async fn send(&self, token: &str, alert: &Alert) -> Outcome {
+        self.post(&message(token, alert)).await
+    }
+
+    /// Asks the Android app to clear notifications of conversations read
+    /// elsewhere. Newer refreshes replace older ones.
+    pub(crate) async fn send_badge(&self, token: &str, count: i64) -> Outcome {
+        self.post(&json!({
+            "message": {
+                "token": token,
+                "data": {"kind": "badge.sync", "badgeCount": count.to_string()},
+                "android": {"priority": "NORMAL", "ttl": "3600s", "collapse_key": "badge"},
+            }
+        }))
+        .await
+    }
+
+    async fn post(&self, message: &Value) -> Outcome {
         let access_token = match self.access_token().await {
             Ok(access_token) => access_token,
             Err(outcome) => return outcome,
@@ -138,7 +155,7 @@ impl Fcm {
             .client
             .post(&self.send_url)
             .bearer_auth(access_token)
-            .json(&message(token, alert))
+            .json(message)
             .send()
             .await;
         let response = match response {

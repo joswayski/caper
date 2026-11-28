@@ -255,6 +255,33 @@ impl Api {
         self.request(Method::GET, "api/dms", Some(token), None, None)
     }
 
+    /// The account's synced drafts, newest first (cleared ones too).
+    pub fn drafts(&self, token: &str) -> Result<Vec<crate::saved_drafts::ServerDraft>, ApiError> {
+        self.request::<crate::saved_drafts::DraftList>(
+            Method::GET,
+            "api/drafts",
+            Some(token),
+            None,
+            None,
+        )
+        .map(|list| list.drafts)
+    }
+
+    /// Saves one draft's text (empty clears it); the answer is the saved draft.
+    pub fn save_draft(
+        &self,
+        token: &str,
+        save: &crate::saved_drafts::DraftSave,
+    ) -> Result<crate::saved_drafts::ServerDraft, ApiError> {
+        self.request(
+            Method::PUT,
+            "api/drafts",
+            Some(token),
+            None,
+            Some(save.body()),
+        )
+    }
+
     pub fn activity(
         &self,
         token: &str,
