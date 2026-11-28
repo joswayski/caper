@@ -648,31 +648,18 @@ impl Dialog {
                     let bounds = rect(x, y, x + w, y + h);
                     let enabled = self.forward_enabled(p);
                     if let Part::Forward(Control::Format(style)) = p {
-                        fill_round(
+                        fill_round(dc, bounds, RADIUS, &g.brushes.raised);
+                        crate::composer::format_button(
+                            g,
                             dc,
-                            bounds,
-                            RADIUS,
-                            if f.note.pressed(style) {
-                                &g.brushes.border
-                            } else {
-                                &g.brushes.raised
-                            },
-                        );
+                            r,
+                            style,
+                            f.note.pressed(style),
+                            self.hover == Some(p),
+                        )?;
                         if f.focus == p {
                             stroke_round(dc, bounds, RADIUS, &g.brushes.terracotta);
                         }
-                        crate::icons::draw(
-                            dc,
-                            style.icon(),
-                            rect(
-                                x + (w - 17.0) / 2.0,
-                                y + 9.5,
-                                x + (w + 17.0) / 2.0,
-                                y + 26.5,
-                            ),
-                            crate::theme::text(),
-                            1.0,
-                        );
                         return Ok(());
                     }
                     if field(p) {

@@ -2502,9 +2502,59 @@ impl App {
             // Rows under the backdrop's fade take the pointer, down to
             // the typing row.
             && y < self.typing_rect().1
+            && !self.covered(x, y)
+    }
+
+    /// Whether a floating panel (the GIF or emoji picker, a menu, the
+    /// composer's suggestions, a profile card) is at (x, y). They let
+    /// pointer moves through to the window, but what they cover is not
+    /// hovered or clicked there, as web's :hover and AppKit's rows
+    /// (`MessageRow.isFrontmost`).
+    pub(crate) fn covered(&self, x: f32, y: f32) -> bool {
+        [
+            self.gifs.as_ref().map(gifs::Picker::rect),
+            self.picker.as_ref().map(actions::Picker::rect),
+            self.menu.as_ref().map(overlay::Menu::rect),
+            self.dm_menu.is_some().then(|| self.dm_menu_rect()),
+            self.account_menu
+                .is_some()
+                .then(|| self.account_menu_rect()),
+            self.suggest_rects().map(|(popup, _)| popup),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|(l, t, w, h)| x >= l && x < l + w && y >= t && y < t + h)
+            || self.on_profile_card(x, y)
+    }
+
+    /// The pointer moved to (x, y): every hover follows it. Panels that
+    /// keep a move to themselves call this too, so what they cover unlights.
+    pub(crate) fn track_pointer(&mut self, x: f32, y: f32) {
+        self.track_leave();
+        self.pointer = Some((x, y));
+        self.update_hover();
+        if self.history_hover() != self.hover_row {
+            self.need = true;
+        }
+        self.track_tool_hover();
+        self.track_reply_hover();
+        self.track_quote_hover();
+        self.track_head_hover();
+        self.track_foot_hover();
+        self.track_jump_hover();
+        self.track_card();
     }
 
     fn update_hover(&mut self) {
+        // What a floating panel covers is not hovered (`covered`): every
+        // hover below reads the pointer as gone while it is over one.
+        let pointer = self.pointer;
+        self.pointer = pointer.filter(|&(x, y)| !self.covered(x, y));
+        self.update_uncovered_hover();
+        self.pointer = pointer;
+    }
+
+    fn update_uncovered_hover(&mut self) {
         let inside = |(l, t, w, h): (f32, f32, f32, f32), x: f32, y: f32| {
             x >= l && x < l + w && y >= t && y < t + h
         };
@@ -2639,8 +2689,15 @@ impl App {
 
     fn history_hover(&self) -> Option<usize> {
         let (x, y) = self.pointer?;
-        // Settings covers the history, and the toast floats over it.
-        if !self.in_history(x, y) || self.settings.is_some() || self.jump_at(x, y) {
+        // Settings, dialogs, the viewer and the attachment editor cover the
+        // history, and the toast floats over it.
+        if !self.in_history(x, y)
+            || self.settings.is_some()
+            || self.dialog.is_some()
+            || self.viewer.is_some()
+            || self.attachment_editor.is_some()
+            || self.jump_at(x, y)
+        {
             return None;
         }
         // The toolbar reaches above its row: it keeps that row hovered.
@@ -3013,19 +3070,7 @@ impl App {
                 _ => {}
             },
             WM_MOUSEMOVE => {
-                self.track_leave();
-                self.pointer = Some((x, y));
-                self.update_hover();
-                if self.history_hover() != self.hover_row {
-                    self.need = true;
-                }
-                self.track_tool_hover();
-                self.track_reply_hover();
-                self.track_quote_hover();
-                self.track_head_hover();
-                self.track_foot_hover();
-                self.track_jump_hover();
-                self.track_card();
+                self.track_pointer(x, y);
                 if self.playback.scrub.is_some() {
                     self.voice_message_scrub(x, false);
                 } else if self.composer_drag {
@@ -5278,7 +5323,11 @@ impl App {
                 if rec {
                     return self.draw_rec(g, dc, bw);
                 }
-                comp.draw(g, dc, bw, bh, &placeholder)?;
+                let format = match box_hover {
+                    Some(uploads::Part::Format(style)) => Some(style),
+                    _ => None,
+                };
+                comp.draw(g, dc, bw, bh, &placeholder, format)?;
                 if let Some(live) = live {
                     uploads::draw(
                         g,

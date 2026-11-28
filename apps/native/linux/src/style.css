@@ -3001,8 +3001,8 @@ button.history-button {
 }
 
 /* The formatting toolbar over a composer's selection (`composing`), as
-   web's: muted Lucide icons, a gap before Quote, pressed styles on the
-   border colour. */
+   web's: muted Lucide icons, a gap before Quote, hover on the border
+   colour and pressed on the accent (brighter hovered). */
 popover.format-bar > contents {
   background: @caper_surface;
   border: 1px solid @caper_border;
@@ -3025,9 +3025,16 @@ popover.format-bar button:last-child {
   border-radius: 0 8px 8px 0;
 }
 
-popover.format-bar button:hover,
-popover.format-bar button:checked {
+popover.format-bar button:hover {
   background: @caper_border;
+}
+
+popover.format-bar button:checked {
+  background: alpha(@caper_terracotta, 0.28);
+}
+
+popover.format-bar button:checked:hover {
+  background: alpha(@caper_terracotta, 0.38);
 }
 
 popover.format-bar button:disabled {

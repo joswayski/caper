@@ -377,7 +377,7 @@ impl App {
             // The characters those keys type.
             WM_CHAR if matches!(wp.0 as u16, 0x09 | 0x0D | 0x1B) && !ctrl => done,
             WM_MOUSEMOVE if inside(popup) => {
-                self.pointer = Some((x, y));
+                self.track_pointer(x, y);
                 if let (Some(k), Some(s)) = (row, self.suggest.as_mut())
                     && s.selected != k
                 {

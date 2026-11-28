@@ -702,6 +702,9 @@ impl App {
 
     /// The shown toolbar's control under (x, y): its row and index.
     pub fn tool_at(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        if self.covered(x, y) {
+            return None;
+        }
         let (i, _) = self.toolbar_rect()?;
         (0..self.tools(i).len())
             .find(|&k| contains(self.tool_rect(i, k), x, y))
@@ -1197,6 +1200,7 @@ impl App {
     pub fn track_reply_hover(&mut self) {
         let hover = self
             .pointer
+            .filter(|&(x, y)| !self.covered(x, y))
             .zip(self.reply_cancel_rect())
             .is_some_and(|((x, y), r)| contains(r, x, y));
         if let Some(r) = &mut self.reply

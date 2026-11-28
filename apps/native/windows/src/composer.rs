@@ -142,6 +142,52 @@ impl Style {
     }
 }
 
+/// A formatting toolbar button, as web's `.chat-format-toolbar` and
+/// AppKit's: muted until hovered or pressed; pressed is the accent at 28%
+/// (38% hovered), hovered alone the border colour.
+pub fn format_button(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    (x, y, w, h): (f32, f32, f32, f32),
+    style: Style,
+    pressed: bool,
+    hovered: bool,
+) -> Result<()> {
+    unsafe {
+        let bounds = rect(x, y, x + w, y + h);
+        if pressed {
+            let wash = dc.CreateSolidColorBrush(
+                &gfx::color(
+                    crate::theme::terracotta(),
+                    if hovered { 0.38 } else { 0.28 },
+                ),
+                None,
+            )?;
+            fill_round(dc, bounds, crate::theme::RADIUS, &wash);
+        } else if hovered {
+            fill_round(dc, bounds, crate::theme::RADIUS, &g.brushes.border);
+        }
+        let inset = (w - 17.0) / 2.0;
+        icons::draw(
+            dc,
+            style.icon(),
+            rect(
+                x + inset,
+                y + (h - 17.0) / 2.0,
+                x + w - inset,
+                y + (h + 17.0) / 2.0,
+            ),
+            if pressed || hovered {
+                crate::theme::text()
+            } else {
+                crate::theme::text_muted()
+            },
+            1.0,
+        );
+    }
+    Ok(())
+}
+
 /// The toolbar's buttons, and the empty gap before Quote (as Discord's).
 const FORMAT_BUTTON: f32 = 36.0;
 const FORMAT_DIVIDER: f32 = 12.0;
@@ -1125,7 +1171,8 @@ impl Composer {
         }
     }
 
-    /// Draws the whole composer box (DIPs, origin at the box's top-left).
+    /// Draws the whole composer box (DIPs, origin at the box's top-left);
+    /// `hover` is the formatting button under the pointer.
     pub fn draw(
         &self,
         g: &Gfx,
@@ -1133,6 +1180,7 @@ impl Composer {
         w: f32,
         h: f32,
         placeholder: &str,
+        hover: Option<Style>,
     ) -> Result<()> {
         unsafe {
             // The box floats on the conversation's backdrop: its fill alone,
@@ -1144,7 +1192,8 @@ impl Composer {
             fill_round(dc, inner_r, inner_radius, &g.brushes.composer);
             // The selection's toolbar, as web's: one group of buttons with a
             // gap before Quote; a pressed button (the selection has
-            // its style) is lit.
+            // its style) is washed with the accent, and the hovered one
+            // lifts (`format_button`).
             if let (Some((x0, y0, _, h)), Some((x1, _, w1, _))) = (
                 self.format_rect(Style::Bold),
                 self.format_rect(Style::Spoiler),
@@ -1157,28 +1206,8 @@ impl Composer {
                 );
             }
             for style in Style::ALL {
-                if let Some((x, y, w, h)) = self.format_rect(style) {
-                    let pressed = self.pressed(style);
-                    if pressed {
-                        fill_round(
-                            dc,
-                            rect(x, y, x + w, y + h),
-                            crate::theme::RADIUS,
-                            &g.brushes.border,
-                        );
-                    }
-                    let inset = (w - 17.0) / 2.0;
-                    icons::draw(
-                        dc,
-                        style.icon(),
-                        rect(x + inset, y + inset, x + w - inset, y + h - inset),
-                        if pressed {
-                            crate::theme::text()
-                        } else {
-                            crate::theme::text_muted()
-                        },
-                        1.0,
-                    );
+                if let Some(r) = self.format_rect(style) {
+                    format_button(g, dc, r, style, self.pressed(style), hover == Some(style))?;
                 }
             }
             let (left, top) = self.inset;

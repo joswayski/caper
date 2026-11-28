@@ -225,7 +225,7 @@ impl App {
 
     /// Whether (x, y) is on its button.
     pub fn jump_button_at(&self, x: f32, y: f32) -> bool {
-        self.jump_button_rect().is_some_and(|r| contains(r, x, y))
+        !self.covered(x, y) && self.jump_button_rect().is_some_and(|r| contains(r, x, y))
     }
 
     /// After the history moved or changed: `below`, the messages wholly

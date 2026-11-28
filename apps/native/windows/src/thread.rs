@@ -865,6 +865,7 @@ impl App {
     fn track_thread_row(&mut self, x: f32, y: f32) {
         let row = self
             .thread_bar_row()
+            .filter(|_| !self.covered(x, y))
             .filter(|&i| self.thread_bar_rect(i).is_some_and(|r| contains(r, x, y)))
             .or_else(|| self.thread_row_at(x, y));
         if let Some(t) = &mut self.thread
@@ -1439,6 +1440,7 @@ impl App {
             && x >= self.thread_x()
             && x < self.thread_x() + self.thread_w()
             && y < self.h
+            && !self.covered(x, y)
     }
 
     pub fn thread_file_rect(&self, i: usize, k: usize) -> Option<crate::overlay::Rect> {
@@ -2100,12 +2102,19 @@ impl App {
         if let Some(t) = &mut self.thread
             && t.hover != hover
         {
-            // Send a GIF, Insert emoji, the link card's Remove and the files'
-            // controls are drawn in the box's own surface.
+            // Send a GIF, Insert emoji, the link card's Remove, the files'
+            // controls and the formatting toolbar are drawn in the box's own
+            // surface.
             let gif = [t.hover, hover].iter().any(|h| {
                 matches!(
                     h,
-                    Some(Part::Gif | Part::Emoji | Part::RemovePreview | Part::Upload(_))
+                    Some(
+                        Part::Gif
+                            | Part::Emoji
+                            | Part::RemovePreview
+                            | Part::Upload(_)
+                            | Part::Format(_)
+                    )
                 )
             });
             t.hover = hover;
@@ -2540,8 +2549,12 @@ impl App {
                 Some(Part::Upload(p)) => Some(p),
                 _ => None,
             };
+            let format = match t.hover {
+                Some(Part::Format(style)) => Some(style),
+                _ => None,
+            };
             self.thread_box_p.draw(s, |dc| {
-                t.composer.draw(g, dc, bw, bh, placeholder)?;
+                t.composer.draw(g, dc, bw, bh, placeholder, format)?;
                 for (k, (draft, tile)) in drafts.iter().zip(&tiles).enumerate() {
                     crate::uploads::tile(g, dc, draft, *tile, k, upload_hover)?;
                 }

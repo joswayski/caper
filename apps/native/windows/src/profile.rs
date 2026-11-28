@@ -462,6 +462,15 @@ impl App {
         Some(self.profile_geometry(&v)?.card)
     }
 
+    /// Whether the open card or its More menu is at (`x`, `y`).
+    pub fn on_profile_card(&self, x: f32, y: f32) -> bool {
+        self.profile_view()
+            .and_then(|v| self.profile_geometry(&v))
+            .is_some_and(|geo| {
+                contains(geo.card, x, y) || geo.menu.is_some_and(|m| contains(m, x, y))
+            })
+    }
+
     /// The part under (`x`, `y`): the More menu first, then the card.
     fn profile_hit(&self, x: f32, y: f32) -> Option<PPart> {
         let parts = self.profile_parts();
@@ -930,7 +939,12 @@ impl App {
         let (ox, oy) = self.profile_text_origin();
         match msg {
             WM_MOUSEMOVE => {
-                self.pointer = Some((x, y));
+                // The card keeps moves over it: what it covers unlights here.
+                if on_card {
+                    self.track_pointer(x, y);
+                } else {
+                    self.pointer = Some((x, y));
+                }
                 let card = self.profile.as_mut()?;
                 if card.dragging {
                     let p = card.field.hit(x - ox, y - oy);
