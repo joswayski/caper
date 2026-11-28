@@ -5177,7 +5177,7 @@ public final class ChatModel {
             } else { draft = text }
             replyTargets[root ?? "channel"] = reference
         } else {
-            pendingDrafts.forEach(abandon)
+            pendingDrafts.forEach { abandon($0) }
         }
         releasePendingUploads(keepingDrafts: edit)
         error = nil
