@@ -3,7 +3,7 @@
 use crate::images::{AvatarView, Icon, Images};
 use crate::rows;
 use gtk::{gdk, gio, glib, pango, prelude::*};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
@@ -116,6 +116,68 @@ pub fn hands(native: &impl IsA<gtk::Widget>) {
     motion.connect_enter(point);
     motion.connect_motion(point);
     native.add_controller(motion);
+}
+
+/// Marks `popover`'s control under the pointer `.hovered`, which its CSS
+/// styles as `:hover`. A popover that keeps the pointer free (no autohide:
+/// the format bar and the composer's suggestions) shares the window's pointer
+/// focus, and on X11 the window's own leave clears `:hover` from the control
+/// a moment after it lit, so the control never showed it. A leave while the
+/// pointer is still over the popover is that one and keeps the mark.
+pub fn track_hover(popover: &gtk::Popover, controls: fn(&gtk::Widget) -> bool) {
+    let lit: Rc<RefCell<Option<gtk::Widget>>> = Rc::default();
+    let set = {
+        let lit = lit.clone();
+        move |next: Option<gtk::Widget>| {
+            let mut lit = lit.borrow_mut();
+            if *lit != next {
+                if let Some(old) = lit.take() {
+                    old.remove_css_class("hovered");
+                }
+                if let Some(next) = &next {
+                    next.add_css_class("hovered");
+                }
+                *lit = next;
+            }
+        }
+    };
+    let under = move |popover: &gtk::Popover, x: f64, y: f64| {
+        std::iter::successors(
+            popover.pick(x, y, gtk::PickFlags::DEFAULT),
+            gtk::Widget::parent,
+        )
+        .take_while(|widget| widget != popover.upcast_ref::<gtk::Widget>())
+        .find(controls)
+    };
+    let motion = gtk::EventControllerMotion::new();
+    let point = {
+        let set = set.clone();
+        move |motion: &gtk::EventControllerMotion, x: f64, y: f64| {
+            if let Some(popover) = motion.widget().and_downcast::<gtk::Popover>() {
+                set(under(&popover, x, y));
+            }
+        }
+    };
+    motion.connect_enter(point.clone());
+    motion.connect_motion(point);
+    {
+        let set = set.clone();
+        motion.connect_leave(move |motion| {
+            let still = motion
+                .widget()
+                .and_downcast::<gtk::Popover>()
+                .and_then(|popover| {
+                    let surface = popover.surface()?;
+                    let pointer = popover.display().default_seat()?.pointer()?;
+                    let (sx, sy, _) = surface.device_position(&pointer)?;
+                    let (dx, dy) = popover.surface_transform();
+                    under(&popover, sx - dx, sy - dy)
+                });
+            set(still);
+        });
+    }
+    popover.connect_unmap(move |_| set(None));
+    popover.add_controller(motion);
 }
 
 fn clickable(widget: &gtk::Widget) -> bool {

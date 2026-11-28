@@ -1721,12 +1721,14 @@ popover.suggestions > contents {
   padding: 0 8px;
 }
 
-.suggestion:hover {
+.suggestion:hover,
+.suggestion.hovered {
   background: @caper_surface_hover;
 }
 
+/* The accent at 18%, as web's. */
 .suggestion.selected {
-  background: #43241e;
+  background: alpha(@caper_terracotta, 0.18);
 }
 
 .dialog-body {
@@ -3025,7 +3027,9 @@ popover.format-bar button:last-child {
   border-radius: 0 8px 8px 0;
 }
 
-popover.format-bar button:hover {
+/* `.hovered` is `ui::track_hover`'s :hover, which X11 clears here. */
+popover.format-bar button:hover,
+popover.format-bar button.hovered {
   background: @caper_border;
 }
 
@@ -3033,7 +3037,8 @@ popover.format-bar button:checked {
   background: alpha(@caper_terracotta, 0.28);
 }
 
-popover.format-bar button:checked:hover {
+popover.format-bar button:checked:hover,
+popover.format-bar button:checked.hovered {
   background: alpha(@caper_terracotta, 0.38);
 }
 

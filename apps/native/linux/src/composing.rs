@@ -258,6 +258,7 @@ pub fn attach(view: &gtk::TextView, anchor: &gtk::Box) -> Rc<Rich> {
     bar.set_position(gtk::PositionType::Top);
     bar.add_css_class("format-bar");
     bar.set_parent(anchor);
+    crate::ui::track_hover(&bar, |widget| widget.is::<gtk::ToggleButton>());
     let rich = Rc::new_cyclic(|me| Rich {
         me: me.clone(),
         view: view.downgrade(),

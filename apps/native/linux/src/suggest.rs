@@ -86,6 +86,7 @@ impl Popup {
         popover.set_can_focus(false);
         popover.set_position(gtk::PositionType::Top);
         popover.add_css_class("suggestions");
+        crate::ui::track_hover(&popover, |widget| widget.has_css_class("suggestion"));
         let list = role_box("list-box", "Suggestions");
         list.set_orientation(gtk::Orientation::Vertical);
         popover.set_child(Some(&list));
