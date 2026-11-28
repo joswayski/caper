@@ -1618,6 +1618,12 @@ npx wrangler secret put ASSET_CDN_SIGNING_SECRET --env staging
 npx wrangler deploy --env staging
 ```
 
+GIFs are served set to loop forever: the Worker adds or rewrites the
+`NETSCAPE2.0` loop count in the GIF's head as it streams it (a weak ETag,
+`x-caper-gif-loop`, and Range requests answered whole), leaving the stored
+object as uploaded. Browsers honor a GIF's loop count; native clients always
+loop.
+
 `npm run test:cdn` runs the Worker tests.
 
 ### Platform status

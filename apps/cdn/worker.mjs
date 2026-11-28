@@ -69,6 +69,97 @@ async function verified(secret, key, expires, signature) {
   return crypto.subtle.verify("HMAC", await signingKey(secret), bytes, encoder.encode(`${key}\n${expires}`));
 }
 
+// GIFs carry their own loop count (NETSCAPE2.0), or none, which plays once.
+// Browsers and some players honor it; Caper's GIFs always loop, as the
+// native clients play them. Only this extension changes; every other byte,
+// and the stored object, stay as uploaded.
+const NETSCAPE = [...encoder.encode("NETSCAPE2.0")];
+const LOOP_FOREVER = new Uint8Array([0x21, 0xff, 11, ...NETSCAPE, 3, 1, 0, 0, 0]);
+// The loop extension sits before the first frame; give up past this much header.
+const GIF_HEAD_LIMIT = 256 * 1024;
+
+/** The patched head of a GIF that loops forever, or null to leave it alone (not a GIF, or cut short). */
+export function loopingGifHead(head) {
+  const text = String.fromCharCode(...head.subarray(0, 6));
+  if (head.length < 13 || (text !== "GIF87a" && text !== "GIF89a")) return null;
+  const table = head[10] & 0x80 ? 3 << ((head[10] & 7) + 1) : 0;
+  let at = 13 + table;
+  while (at < head.length) {
+    if (head[at] === 0x2c || head[at] === 0x3b) {
+      // The first frame (or the end) with no loop extension: add one after the colour table.
+      const patched = new Uint8Array(head.length + LOOP_FOREVER.length);
+      patched.set(head.subarray(0, 13 + table));
+      patched.set(LOOP_FOREVER, 13 + table);
+      patched.set(head.subarray(13 + table), 13 + table + LOOP_FOREVER.length);
+      // GIF87a has no extensions.
+      patched.set(encoder.encode("GIF89a"));
+      return patched;
+    }
+    if (head[at] !== 0x21 || at + 2 >= head.length) return null;
+    if (
+      head[at + 1] === 0xff &&
+      head[at + 2] === 11 &&
+      NETSCAPE.every((byte, i) => head[at + 3 + i] === byte) &&
+      head[at + 14] === 3 &&
+      head[at + 15] === 1 &&
+      at + 17 < head.length
+    ) {
+      const patched = head.slice();
+      patched[at + 16] = 0;
+      patched[at + 17] = 0;
+      return patched;
+    }
+    // Skip the extension's sub-blocks.
+    at += 2;
+    while (at < head.length && head[at] !== 0) at += head[at] + 1;
+    at += 1;
+  }
+  return null;
+}
+
+/** `body` (a GIF of `size` bytes) set to loop forever: its new body and size. */
+async function loopingGif(body, size) {
+  const reader = new Response(body).body.getReader();
+  const chunks = [];
+  let read = 0;
+  let head = new Uint8Array();
+  let patched = null;
+  let done = false;
+  while (!done && read < GIF_HEAD_LIMIT) {
+    const next = await reader.read();
+    done = next.done;
+    if (next.value) {
+      chunks.push(next.value);
+      read += next.value.length;
+    }
+    head = new Uint8Array(read);
+    let offset = 0;
+    for (const chunk of chunks) head.set(chunk, (offset += chunk.length) - chunk.length);
+    patched = loopingGifHead(head);
+    if (patched) break;
+  }
+  const first = patched ?? head;
+  const length = size + first.length - head.length;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(first);
+    },
+    async pull(controller) {
+      const next = await reader.read();
+      if (next.done) controller.close();
+      else controller.enqueue(next.value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  if (typeof FixedLengthStream === "undefined") return { body: stream, size: length };
+  // Workers keep the Content-Length of a stream only through a FixedLengthStream.
+  const fixed = new FixedLengthStream(length);
+  stream.pipeTo(fixed.writable).catch(() => {});
+  return { body: fixed.readable, size: length };
+}
+
 function deny(status) {
   return new Response(null, { status, headers: { "cache-control": "no-store" } });
 }
@@ -120,7 +211,8 @@ export default {
     const cache = globalThis.caches?.default;
     if (!ranged && request.method === "GET" && cache) {
       const hit = await cache.match(cacheKey);
-      if (hit) {
+      // A GIF cached before it was set to loop is fetched again.
+      if (hit && (hit.headers.get("content-type") !== "image/gif" || hit.headers.has("x-caper-gif-loop"))) {
         const response = new Response(hit.body, hit);
         response.headers.set("cache-control", browserCache(expires, now));
         response.headers.set("access-control-allow-origin", "*");
@@ -147,12 +239,30 @@ export default {
     }
     if (!object) return deny(404);
     const headers = headersFor(object, browserCache(expires, now));
+    const gif = headers.get("content-type") === "image/gif";
+    if (gif) {
+      // The served bytes differ from the stored object's, so their tag does too.
+      headers.set("etag", `W/${object.httpEtag}`);
+      headers.set("x-caper-gif-loop", "1");
+    }
     if (!("body" in object) || object.body == null) {
       // HEAD, or a conditional request that matched (If-None-Match).
-      headers.set("content-length", String(object.size));
+      // A GIF's served size is known only once its head is read.
+      if (!gif) headers.set("content-length", String(object.size));
       return new Response(null, { status: request.method === "HEAD" ? 200 : 304, headers });
     }
-    if (ranged && object.range) {
+    let body = object.body;
+    let size = object.size;
+    if (gif) {
+      // Whole, even when a range was asked for (servers may ignore Range):
+      // offsets into the stored GIF don't match the served one.
+      if (object.range) {
+        await object.body.cancel?.();
+        body = (await env.MEDIA.get(key))?.body;
+      }
+      if (!body) return deny(404);
+      ({ body, size } = await loopingGif(body, object.size));
+    } else if (ranged && object.range) {
       // R2Range is {offset, length?}, {offset?, length} or a suffix (`bytes=-N`).
       const { suffix } = object.range;
       const offset = object.range.offset ?? (suffix === undefined ? 0 : object.size - Math.min(suffix, object.size));
@@ -161,8 +271,8 @@ export default {
       headers.set("content-length", String(length));
       return new Response(object.body, { status: 206, headers });
     }
-    headers.set("content-length", String(object.size));
-    const response = new Response(object.body, { status: 200, headers });
+    headers.set("content-length", String(size));
+    const response = new Response(body, { status: 200, headers });
     if (cache && request.method === "GET") {
       const cached = response.clone();
       const shared = new Response(cached.body, cached);

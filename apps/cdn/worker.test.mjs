@@ -43,6 +43,46 @@ function bucket(objects) {
   };
 }
 
+// A 1 × 1 GIF89a with a two-colour table and one frame, after `extensions`.
+function gif(extensions = []) {
+  return new Uint8Array([
+    ...new TextEncoder().encode("GIF89a"),
+    // Logical screen, then the colour table.
+    1,
+    0,
+    1,
+    0,
+    0x80,
+    0,
+    0,
+    0,
+    0,
+    0,
+    255,
+    255,
+    255,
+    ...extensions,
+    // The frame and the trailer.
+    0x2c,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    1,
+    0,
+    0,
+    2,
+    2,
+    0x44,
+    0x01,
+    0,
+    0x3b,
+  ]);
+}
+const netscape = (count) => [0x21, 0xff, 11, ...new TextEncoder().encode("NETSCAPE2.0"), 3, 1, count, 0, 0];
+
 const env = {
   ASSET_CDN_SIGNING_SECRET: SECRET,
   MEDIA: bucket({
@@ -62,6 +102,8 @@ const env = {
       body: new TextEncoder().encode("<html>"),
       headers: { "content-type": "text/html", "content-disposition": 'attachment; filename="page.html"' },
     },
+    "original/once": { body: gif(), headers: { "content-type": "image/gif" } },
+    "original/five": { body: gif(netscape(5)), headers: { "content-type": "image/gif" } },
     "original/pdf": {
       body: new TextEncoder().encode("%PDF-1.7"),
       headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="notes.pdf"' },
@@ -183,4 +225,26 @@ test("HEAD reports size without a body", async () => {
   const response = await worker.fetch(new Request(await signed("original/abc"), { method: "HEAD" }), env);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-length"), "10");
+});
+
+test("GIFs are served looping forever, whatever loop count they were uploaded with", async () => {
+  // No loop extension (plays once in browsers): one is added after the colour table.
+  const once = await worker.fetch(new Request(await signed("original/once")), env);
+  const added = new Uint8Array(await once.arrayBuffer());
+  assert.deepEqual([...added], [...gif(netscape(0))]);
+  assert.equal(once.headers.get("content-length"), String(added.length));
+  assert.equal(once.headers.get("etag"), 'W/"original/once"');
+  // A finite count becomes 0 (forever); nothing else changes.
+  const five = await worker.fetch(new Request(await signed("original/five")), env);
+  assert.deepEqual([...new Uint8Array(await five.arrayBuffer())], [...gif(netscape(0))]);
+  // A range is ignored: offsets into the stored GIF don't match the served one.
+  const ranged = await worker.fetch(
+    new Request(await signed("original/once"), { headers: { range: "bytes=0-3" } }),
+    env,
+  );
+  assert.equal(ranged.status, 200);
+  assert.deepEqual([...new Uint8Array(await ranged.arrayBuffer())], [...gif(netscape(0))]);
+  // Other types are untouched.
+  const png = await worker.fetch(new Request(await signed("original/abc")), env);
+  assert.equal(await png.text(), "0123456789");
 });
