@@ -326,7 +326,7 @@ import XCTest
             XCTAssertEqual(app.buttons.matching(identifier: "Done").count, 1)
             XCTAssertEqual(settings.sheets.count, 1)
             XCTAssertEqual(app.sheets.count, 1, "There must be one owner, not two concurrent sheets")
-            ownedClose.hover(); settings.buttons["Done"].hover()
+            ownedClose.hover(); settings.buttons["close-settings"].hover()
             capture("Settings owns What's new main \(Int(width))", window: settings)
             // The shared sheet can extend beyond the fixed-size Settings window.
             capture("Settings-owned What's new sheet main \(Int(width))", window: settings.sheets.firstMatch)

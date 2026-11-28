@@ -32,6 +32,7 @@ import ServiceManagement
     private let updater: AppUpdater?
     private let title: String
     private var window: NSWindow?
+    private var outsideClick: Any?
     private weak var previousWindow: NSWindow?
     private weak var previousResponder: NSResponder?
     private var previousContext: String?
@@ -94,6 +95,15 @@ import ServiceManagement
                 parent.beginSheet(window) { [weak self] _ in
                     self?.handleDismissed()
                 }
+                // A click on the window behind closes Settings like Escape, as
+                // web and Windows close it on a click outside. A release sheet
+                // over Settings closes first, through its own monitor.
+                outsideClick = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self, weak window] event in
+                    guard let self, let window, let parent = window.sheetParent, event.window === parent,
+                          self.windowShouldClose(window) else { return event }
+                    self.cancel()
+                    return nil
+                }
             }
         } else {
             window.makeKeyAndOrderFront(nil)
@@ -138,6 +148,7 @@ import ServiceManagement
 
     private func handleDismissed() {
         let restore = window?.isKeyWindow == true || window?.sheetParent != nil
+        if let outsideClick { NSEvent.removeMonitor(outsideClick); self.outsideClick = nil }
         model.whatsNew.settingsOpen = false
         (window?.contentViewController as? AppKitSettingsController)?.closePage()
         let context = previousContext
@@ -347,8 +358,9 @@ import ServiceManagement
 
 /// Every client's Settings sections in order: Profile, Appearance,
 /// Notifications, Voice & audio, Startup, Privacy & blocked accounts, About
-/// and Log out. Edit profile, Notifications, Privacy and the audio dialogs
-/// open as pages in this window; their close (or Escape) returns here.
+/// and Log out, under a header that stays put while they scroll. Edit profile,
+/// Notifications, Privacy and the audio dialogs open as pages in this window;
+/// their close (or Escape) returns here.
 @MainActor private final class AppKitSettingsController: NSViewController {
     private let model: AppModel
     private let whatsNew: WhatsNewModel
@@ -360,7 +372,7 @@ import ServiceManagement
     private let themeStore = CaperThemeStore.shared
     private let observation = AppKitObservation()
 
-    private lazy var closeButton = AppKitKitButton("Done", kind: .secondary) { [weak self] in self?.onClose() }
+    private lazy var header = AppKitDialogHeader(title: "Settings", closeLabel: "Close settings") { [weak self] in self?.onClose() }
     private lazy var obsidianCard = AppKitThemePresetCard(preset: .obsidian) { [weak self] in
         self?.themeStore.selectPreset("obsidian")
     }
@@ -432,16 +444,13 @@ import ServiceManagement
         root.layer?.backgroundColor = AppKitKit.surface.cgColor
         check.setAccessibilityIdentifier("check-for-updates")
         notes.setAccessibilityIdentifier("open-whats-new")
-        closeButton.setAccessibilityIdentifier("close-settings")
+        header.close.setAccessibilityIdentifier("close-settings")
         version.orientation = .horizontal; version.spacing = 4
         // Built once, so its "Copied" feedback and keyboard focus survive renders.
         version.addArrangedSubview(appKitVersionControl())
         func section(_ title: String, _ rows: [NSView]) -> NSStackView {
             AppKitKit.stack([AppKitKit.label(title, size: 12, weight: .bold, color: AppKitKit.muted)] + rows, spacing: 12)
         }
-
-        let header = NSStackView(views: [AppKitKit.label("Settings", size: 20, weight: .bold, wraps: false), NSView(), closeButton])
-        header.orientation = .horizontal; header.alignment = .centerY; header.translatesAutoresizingMaskIntoConstraints = false
 
         let appearanceNote = AppKitKit.label("Choose between Obsidian Dark and Paper Light.", size: 12, color: AppKitKit.muted)
         let themeCards = NSStackView(views: [obsidianCard, paperCard])
@@ -474,7 +483,6 @@ import ServiceManagement
         let dividers = (0..<7).map { _ in AppKitKit.divider() }
         accountViews = [profile, dividers[0], notifications, dividers[2], privacySection, dividers[5], dividers[6], logOut]
         let content = AppKitKit.stack([
-            header,
             profile, dividers[0],
             appearance, dividers[1],
             notifications, dividers[2],
@@ -492,13 +500,15 @@ import ServiceManagement
         for row in [themeCards, launch, keepRunning, sendOnStop] as [NSView] {
             if let stack = row.superview as? NSStackView { AppKitKit.fillWidth(row, of: stack) }
         }
-        let scroll = appKitKitScroll(content, insets: NSEdgeInsets(top: 22, left: 24, bottom: 24, right: 24))
+        let scroll = appKitKitScroll(content, insets: NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22))
         self.scroll = scroll
         scroll.setAccessibilityIdentifier("desktop-settings")
-        root.addSubview(scroll)
+        root.addSubview(header); root.addSubview(scroll)
         NSLayoutConstraint.activate([
+            header.leadingAnchor.constraint(equalTo: root.leadingAnchor), header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            header.topAnchor.constraint(equalTo: root.topAnchor),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: root.topAnchor), scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            scroll.topAnchor.constraint(equalTo: header.bottomAnchor), scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
         view = root
     }
@@ -525,7 +535,7 @@ import ServiceManagement
         closePage()
         page = next
         next.translatesAutoresizingMaskIntoConstraints = false
-        scroll.isHidden = true
+        scroll.isHidden = true; header.isHidden = true
         view.addSubview(next)
         NSLayoutConstraint.activate([
             next.leadingAnchor.constraint(equalTo: view.leadingAnchor), next.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -547,7 +557,7 @@ import ServiceManagement
         self.page = nil
         if let profile { profile.stop(); profile.removeFromParent(); self.profile = nil }
         page.removeFromSuperview()
-        scroll.isHidden = false
+        scroll.isHidden = false; header.isHidden = false
     }
 
     /// Escape: true when a page was open. The profile editor asks before
