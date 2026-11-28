@@ -5339,6 +5339,7 @@ private struct MessageRow: View {
             HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
                 if grouped { groupedGutter } else {
                     authorProfile("avatar") { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId, picture: message.author.avatarPicture) }
+                        .pictureMenu(message.author.avatarPicture)
                 }
                 VStack(alignment: .leading, spacing: 4) {
                 if !grouped {
@@ -10701,3 +10702,24 @@ private struct SystemAudioRoutePicker: UIViewRepresentable {
     func updateUIView(_ view: MPVolumeView, context: Context) {}
 }
 #endif
+
+extension View {
+    /// macOS: a right click on an uploaded picture offers it as the image it
+    /// is (copy it, copy its link, open it), as browsers do on web. iOS keeps
+    /// press and hold for the message's own actions.
+    @ViewBuilder func pictureMenu(_ picture: CaperPicture?) -> some View {
+        #if os(macOS)
+        if let picture {
+            contextMenu {
+                Button("Copy image") { Task { _ = try? await copyMediaImage(picture.url) } }
+                Button("Copy image link") {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(picture.url.absoluteString, forType: .string)
+                }
+                Button("Open in browser") { NSWorkspace.shared.open(picture.url) }
+            }
+        } else { self }
+        #else
+        self
+        #endif
+    }
+}

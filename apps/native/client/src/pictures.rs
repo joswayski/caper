@@ -750,7 +750,8 @@ fn decode_animation(bytes: &[u8]) -> Option<Frames> {
     let mut frames = Vec::new();
     let mut total = 0;
     for frame in decoded {
-        let frame = frame.ok()?;
+        // A damaged frame ends the loop, as browsers play the frames before it.
+        let Ok(frame) = frame else { break };
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         let delay = Duration::from_millis(u64::from(numerator / denominator.max(1)));
         // Browsers play tiny delays at 100 ms.

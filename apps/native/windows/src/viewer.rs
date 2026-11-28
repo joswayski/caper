@@ -678,10 +678,8 @@ impl Viewer {
         match (a.width, a.height) {
             (Some(w), Some(h)) if w > 0 && h > 0 => (w as f32, h as f32),
             _ if a.kind == AttachmentKind::Video => (16.0, 9.0),
-            _ => (
-                self.stage.right - self.stage.left,
-                self.stage.bottom - self.stage.top,
-            ),
+            // No stated size (profile pictures): a modest square until it loads.
+            _ => (320.0, 320.0),
         }
     }
 
@@ -782,18 +780,21 @@ impl Viewer {
                         crate::theme::text()
                     };
                     let cy = (r.top + r.bottom) / 2.0;
-                    icons::draw(
-                        dc,
-                        icon,
-                        rect(r.left + 12.0, cy - 8.0, r.left + 28.0, cy + 8.0),
-                        color,
-                        if self.enabled(*p) { 1.0 } else { 0.5 },
-                    );
                     let text = self.label(*p);
                     let l = line(g, &text, &g.formats.button, r.right - r.left - 40.0)?;
                     no_wrap(&l)?;
                     let m = gfx::metrics(&l);
-                    crate::text::draw(dc, &l, r.left + 34.0, cy - m.height / 2.0, label_brush);
+                    // The icon and label centred together, so every button
+                    // has even padding whatever its label's length.
+                    let left = r.left + ((r.right - r.left - (22.0 + m.width)) / 2.0).max(12.0);
+                    icons::draw(
+                        dc,
+                        icon,
+                        rect(left, cy - 8.0, left + 16.0, cy + 8.0),
+                        color,
+                        if self.enabled(*p) { 1.0 } else { 0.5 },
+                    );
+                    crate::text::draw(dc, &l, left + 22.0, cy - m.height / 2.0, label_brush);
                 }
                 Part::Close | Part::Previous | Part::Next | Part::Play | Part::Mute => {
                     let enabled = self.enabled(*p);
@@ -1545,11 +1546,15 @@ impl App {
     /// The current image's decoded size, once its original arrived.
     fn viewer_decoded(&self) -> Option<(f32, f32)> {
         let v = self.viewer.as_ref()?;
-        let b = self
-            .live
-            .as_ref()?
-            .media
-            .texture(&full_key(&v.current().id))?;
+        let current = v.current();
+        let media = &self.live.as_ref()?.media;
+        // Without a stated size (a profile picture), the stand-in's shape
+        // until the original arrives, rather than the whole stage.
+        let b = media.texture(&full_key(&current.id)).or_else(|| {
+            (current.width.is_none() || current.height.is_none())
+                .then(|| media.texture(&current.id))
+                .flatten()
+        })?;
         let s = unsafe { b.GetPixelSize() };
         (s.width > 1 || s.height > 1).then_some((s.width as f32, s.height as f32))
     }

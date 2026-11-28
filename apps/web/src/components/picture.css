@@ -23,6 +23,11 @@
 .caper-picture[data-state="loading"] {
   opacity: 0;
 }
+/* Then the picture replaces it: a transparent GIF or PNG shows a plain backing,
+   never the mascot through its clear pixels (native clients draw one or the other). */
+.caper-picture:not([data-state="loading"]) {
+  background-color: var(--surface-composer);
+}
 /* The actual image receives right-clicks for the browser's Copy/Open image menu.
    Clicks still bubble to the surrounding profile button. */
 .caper-picture:not([data-state="loading"]) > img {

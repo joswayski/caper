@@ -704,6 +704,37 @@ impl App {
         self.person_of(&self.c.messages[i].id, self.rows.row(i)?, who)
     }
 
+    /// The uploaded profile picture under the pointer, as the image menu
+    /// takes it: a message author's avatar, or a member row's.
+    pub fn picture_at(&self, x: f32, y: f32) -> Option<core::Attachment> {
+        let (avatar, name) = if self.in_history(x, y) {
+            let ay = self.scroll_top + (y - self.history_y()) as f64;
+            let i = self.rows.row_at(ay)?;
+            let m = self.c.messages.get(i)?;
+            let (rx, ry) = (x - self.list_x(), (ay - self.rows.top[i]) as f32);
+            if !self.rows.on_avatar(i, m.grouped, rx, ry) {
+                return None;
+            }
+            let author = self.live.as_ref()?.message(&m.id)?.author;
+            let avatar = Avatar::new(author.avatar_id, &author.avatar_asset, &author.avatar_url);
+            (avatar, author.name)
+        } else {
+            let i = self.hover_member?;
+            // The row's avatar spans 16–46 DIPs from the list's left edge.
+            if !(16.0..46.0).contains(&(x - self.members_x())) {
+                return None;
+            }
+            let m = self.c.members.get(i)?;
+            (m.avatar.clone(), m.name.clone())
+        };
+        let (asset, url) = avatar.picture?;
+        let source = caper_client::pictures::Source {
+            asset: &asset,
+            url: url.as_deref(),
+        };
+        caper_client::attachments::profile_picture(source, &name)
+    }
+
     /// Resolves what `Rows::who_at` found on message `id`'s row.
     pub fn person_of(
         &self,

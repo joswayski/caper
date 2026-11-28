@@ -11,11 +11,14 @@ use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A profile picture as a viewer image, keyed by its stable asset.
+/// A profile picture as a viewer image, keyed by its stable asset. Its type
+/// and size are unknown until it loads (a re-encoded WebP, or a GIF, animated
+/// WebP or APNG uploaded unchanged); as WebP it loads as an animation, and
+/// [`decode_animation_at`] plays any of them and shows anything else still.
 pub fn profile_picture(source: crate::pictures::Source<'_>, name: &str) -> Option<Attachment> {
     Some(Attachment {
         id: format!("profile-picture:{}", source.asset),
-        name: format!("{name} profile picture"),
+        name: format!("{name}\u{2019}s profile picture"),
         kind: AttachmentKind::Image,
         content_type: "image/webp".into(),
         url: Some(source.url?.to_owned()),
@@ -250,7 +253,12 @@ pub fn decode_animation_at(
             }
             (decoder.dimensions(), decoder.into_frames())
         }
-        _ => return None,
+        image::ImageFormat::Png if crate::compress::png_is_animated(bytes) => {
+            let decoder = image::codecs::png::PngDecoder::with_limits(cursor(), limits).ok()?;
+            (decoder.dimensions(), decoder.apng().ok()?.into_frames())
+        }
+        // A still (a PNG or JPEG profile picture shown as an animation).
+        _ => return decode_image(bytes, edge).map(|image| vec![(image, Duration::ZERO)]),
     };
     let denominator = width.max(height).max(edge);
     let mut width = (width * edge / denominator).max(1);
@@ -258,7 +266,9 @@ pub fn decode_animation_at(
     let mut frames: Vec<(image::RgbaImage, Duration)> = Vec::new();
     let mut total = 0;
     for frame in decoded {
-        let frame = frame.ok()?;
+        // A damaged frame ends the animation, as browsers play the frames
+        // before it; nothing decoded at all is a failure.
+        let Ok(frame) = frame else { break };
         if frames.len() >= 600 {
             // Keep the decode-work ceiling; never loop a truncated prefix.
             frames.truncate(1);

@@ -3187,6 +3187,10 @@ impl App {
                     if let Some((i, _)) = self.kb_control() {
                         self.open_menu(i);
                     }
+                } else if let Some(picture) = self.picture_at(x, y) {
+                    // A profile picture is an image: Copy image, Copy image
+                    // link and Open image, as on the profile card.
+                    self.open_image_menu(picture, x, y);
                 } else if self.in_history(x, y)
                     && let Some(i) = self
                         .rows
@@ -5317,6 +5321,12 @@ impl App {
         self.avatar_panels.rail |= panels.rail;
         self.avatar_panels.sidebar |= panels.sidebar;
         self.avatar_panels.members |= panels.members;
+        self.avatar_panels.overlay |= panels.overlay;
+        self.avatar_panels.pins |= panels.pins;
+        self.avatar_panels.settings |= panels.settings;
+        self.avatar_panels.card |= panels.card;
+        self.avatar_panels.profile |= panels.profile;
+        self.avatar_panels.suggest |= panels.suggest;
         let due = Instant::now() + next;
         if self.avatar_due.is_none_or(|d| due < d) {
             self.avatar_due = Some(due);
@@ -5338,6 +5348,12 @@ impl App {
         self.dirty.rail |= panels.rail;
         self.dirty.sidebar |= panels.sidebar;
         self.dirty.members |= panels.members;
+        self.dirty.overlay |= panels.overlay;
+        self.dirty.pins |= panels.pins;
+        self.dirty.settings |= panels.settings;
+        self.dirty.card |= panels.card;
+        self.dirty.profile |= panels.profile;
+        self.dirty.suggest |= panels.suggest;
         self.need = true;
     }
 
@@ -5388,16 +5404,36 @@ impl App {
         self.draw_actions()?;
         self.draw_gifs()?;
         self.draw_empty()?;
+        // Dialogs, cards and menus showing an animated avatar (the profile
+        // card, profile editor, who reacted, suggestions…) redraw on the
+        // avatar timer too, so their pictures play rather than freeze.
+        let mut animated = Dirty::default();
+        let mut avatar_next: Option<Duration> = None;
+        let mut avatars_drawn = |panel: &mut bool| {
+            if let Some(n) = avatars::take_due() {
+                *panel = true;
+                avatar_next = Some(avatar_next.map_or(n, |d| d.min(n)));
+            }
+        };
+        avatars::take_due();
         self.draw_overlays()?;
+        avatars_drawn(&mut animated.overlay);
         self.draw_pins()?;
+        avatars_drawn(&mut animated.pins);
         self.draw_settings()?;
+        avatars_drawn(&mut animated.settings);
         self.draw_dm_menu()?;
         self.sync_thread_jump();
         self.draw_thread()?;
         self.track_card();
+        avatars::take_due();
         self.draw_card()?;
+        avatars_drawn(&mut animated.card);
         self.draw_profile()?;
+        avatars_drawn(&mut animated.profile);
         self.draw_suggest()?;
+        avatars_drawn(&mut animated.suggest);
+        self.avatars_animated(animated, avatar_next);
         self.draw_tip()?;
         self.dirty.narrow |= self.dirty.sidebar;
         self.draw_narrow()?;

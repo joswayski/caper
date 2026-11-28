@@ -1361,6 +1361,16 @@ impl Rows {
         ))
     }
 
+    /// Whether a point on row `i`, in row-local DIPs, is on its author's
+    /// avatar.
+    pub fn on_avatar(&self, i: usize, grouped: bool, x: f32, y: f32) -> bool {
+        let Some(row) = self.row(i) else { return false };
+        let hy = content_top(grouped) + row.header_y;
+        row.header.is_some()
+            && (PAD_X..PAD_X + AVATAR).contains(&x)
+            && (hy..hy + AVATAR).contains(&y)
+    }
+
     /// Row `i`'s "View original" in its quote, relative to the row's
     /// top-left.
     /// Who a point on row `i` names, in row-local DIPs (from the row's left

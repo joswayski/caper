@@ -1176,6 +1176,31 @@ mod tests {
         let full = decode_animation_at(&bytes, FULL_EDGE, FULL_ANIMATION_BYTES).unwrap();
         assert_eq!(full.len(), 2);
         assert_eq!(full[1].0.size, [1600, 10]);
+        // A damaged last frame still plays the frames before it.
+        let cut = decode_animation_at(&bytes[..bytes.len() - 40], FULL_EDGE, FULL_ANIMATION_BYTES);
+        assert_eq!(cut.map(|frames| frames.len()), Some(1));
+    }
+
+    #[test]
+    fn profile_pictures_of_every_uploaded_kind_open_in_the_viewer() {
+        // The viewer loads every profile picture as an animation, not knowing its type.
+        let apng = include_bytes!("../../../../shared/pictures/two-frames.png");
+        let frames = decode_animation_at(apng, FULL_EDGE, FULL_ANIMATION_BYTES).unwrap();
+        assert_eq!(frames.len(), 2, "an APNG plays");
+        assert_eq!(frames[0].0.size, [40, 30]);
+        assert_eq!(frames[1].1, Duration::from_millis(120));
+        let still = image::RgbaImage::from_pixel(30, 20, image::Rgba(RED));
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(still.clone())
+                .to_rgb8()
+                .write_to(&mut bytes, format)
+                .unwrap();
+            let frames = decode_animation_at(bytes.get_ref(), FULL_EDGE, FULL_ANIMATION_BYTES)
+                .unwrap_or_else(|| panic!("{format:?} shows"));
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].0.size, [30, 20]);
+        }
     }
 
     #[test]

@@ -109,6 +109,9 @@ private final class NonInteractiveLabel: NSTextField {
         picture = AppKitPictureButton { [weak self] in self?.showPictureMenu() }
         picture.setAccessibilityLabel("Change profile picture"); picture.toolTip = "Change profile picture"
         picture.setAccessibilityIdentifier("change-profile-picture")
+        // A right click treats the saved picture as the image it is, as a
+        // browser does on web: copy it, copy its link or open it.
+        picture.contextMenu = { [weak self] in self?.imageMenu() }
         badge.wantsLayer = true; badge.layer?.cornerRadius = 8; badge.layer?.borderWidth = 3
         badge.translatesAutoresizingMaskIntoConstraints = false; pencil.translatesAutoresizingMaskIntoConstraints = false
         badge.addSubview(pencil); picture.addSubview(art); picture.addSubview(badge)
@@ -198,6 +201,29 @@ private final class NonInteractiveLabel: NSTextField {
         }
         CaperMenu.show(menu, below: picture)
     }
+    /// The saved picture's image actions; none for the mascot or an unsaved new picture.
+    private func imageMenu() -> NSMenu? {
+        guard let draft = state.draft, draft.preparedPicture == nil, draft.avatarPicture != nil else { return nil }
+        let menu = NSMenu()
+        for (title, selector) in [("Copy image", #selector(copyImage)), ("Copy image link", #selector(copyImageLink)), ("Open in browser", #selector(openImage))] {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self; menu.addItem(item)
+        }
+        return menu
+    }
+    @objc private func openImage() { if let url = state.draft?.avatarPicture?.url { NSWorkspace.shared.open(url) } }
+    @objc private func copyImageLink() {
+        guard let url = state.draft?.avatarPicture?.url else { return }
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string)
+    }
+    @objc private func copyImage() {
+        guard let url = state.draft?.avatarPicture?.url else { return }
+        Task { [weak self] in
+            if (try? await copyMediaImage(url)) != true, let window = self?.window {
+                let alert = NSAlert(); alert.messageText = "Couldn’t copy image. Try opening it and saving it instead."
+                alert.addButton(withTitle: "OK"); alert.beginSheetModal(for: window, completionHandler: nil)
+            }
+        }
+    }
     @objc private func pick() { choose() }
     @objc private func edit() { state.editCurrent() }
     @objc private func history() { state.openHistory() }
@@ -213,6 +239,8 @@ private final class NonInteractiveLabel: NSTextField {
 /// opens the picture menu on click, Space or Return, and VoiceOver's press.
 @MainActor final class AppKitPictureButton: NSControl {
     private let handler: () -> Void
+    /// A right click's menu: the saved picture's image actions, if any.
+    var contextMenu: (() -> NSMenu?)?
     init(action: @escaping () -> Void) {
         handler = action
         super.init(frame: .zero)
@@ -238,6 +266,7 @@ private final class NonInteractiveLabel: NSTextField {
     override func mouseUp(with event: NSEvent) {
         if bounds.contains(convert(event.locationInWindow, from: nil)) { fire() }
     }
+    override func menu(for event: NSEvent) -> NSMenu? { contextMenu?() }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 48 { KeyboardTabOrder.step(in: window, forward: !event.modifierFlags.contains(.shift), from: self) }
         else if [" ", "\r"].contains(event.charactersIgnoringModifiers) { fire() } else { super.keyDown(with: event) }

@@ -1958,7 +1958,29 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
             return;
         };
         let root = widgets.root.upcast_ref::<gtk::Widget>();
-        if let Some(target) = root.pick(x, y, gtk::PickFlags::DEFAULT)
+        let target = root.pick(x, y, gtk::PickFlags::DEFAULT);
+        // The author's uploaded picture is an image: its own menu (Copy
+        // image, Copy image link, Open image in browser), as on the card.
+        let avatar = widgets.avatar.root.upcast_ref::<gtk::Widget>();
+        if target
+            .as_ref()
+            .is_some_and(|target| target == avatar || target.is_ancestor(avatar))
+            && let Some(picture) = widgets.row.borrow().as_ref().and_then(|row| {
+                let person = &row.person;
+                caper_client::pictures::Source::new(&person.avatar_asset, &person.avatar_url)
+                    .and_then(|source| {
+                        caper_client::attachments::profile_picture(source, &person.name)
+                    })
+            })
+        {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            menu_handler(Action::ImageMenu {
+                attachment: picture,
+                anchor: avatar.clone(),
+            });
+            return;
+        }
+        if let Some(target) = target
             && std::iter::successors(Some(target), gtk::Widget::parent)
                 .take_while(|widget| widget != root)
                 .any(|widget| owns_menu(&widget))
