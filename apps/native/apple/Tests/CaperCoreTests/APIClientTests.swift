@@ -513,6 +513,55 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testSyncedFilesShowAsTilesAndRemovingOneSavesWithoutCancellingIt() async throws {
+        var saves: [[String: Any]] = []
+        var cancels: [String] = []
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            if let path = request.url?.path, path.hasSuffix("/cancel") { cancels.append(path); return (204, Data()) }
+            if request.url?.path == "/api/drafts", request.httpMethod == "PUT" {
+                saves.append(try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: Any]))
+                let saved: [String: Any] = ["channelId": "chan00000001", "threadRootId": NSNull(), "text": "", "attachments": [Any](),
+                                            "updatedAt": "2026-11-27T19:00:00.000000Z"]
+                return (200, try JSONSerialization.data(withJSONObject: saved))
+            }
+            guard let url = request.url, url.path.hasSuffix("/messages"), let channel = url.pathComponents.dropLast().last else {
+                throw URLError(.badURL)
+            }
+            return (200, chatHistory(channel, sequences: [], cursor: 0, hasMore: false))
+        }
+        let suite = "DraftSync.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let chat = ChatModel(api: client())
+        chat.draftDefaults = defaults
+        chat.viewerAccountID = { "alice" }
+        await chat.open(channelID: "chan00000001", displayName: "Me")
+
+        let photo = ChatAttachment(id: "Asset0000001", kind: .image, contentType: "image/webp", name: "photo.webp", size: 10,
+                                   url: "https://cdn.caper.invalid/photo?exp=2", spoiler: true)
+        var listed = ServerDraft(channelId: "chan00000001", threadRootId: nil, text: "", updatedAt: "2026-11-27T18:00:00.000000Z")
+        listed.attachments = [photo]
+        chat.receiveServerDraft(listed)
+        let tile = try XCTUnwrap(chat.attachmentDrafts.first, "a server draft's file shows in the open composer")
+        XCTAssertTrue(tile.synced)
+        XCTAssertEqual(tile.attachment?.id, "Asset0000001")
+        XCTAssertTrue(tile.spoiler)
+        XCTAssertTrue(chat.canSubmit, "it sends by its ID, with no upload")
+        XCTAssertTrue(saves.isEmpty, "applying a server draft is not an edit")
+
+        chat.removeAttachmentDraft(id: tile.id)
+        XCTAssertTrue(chat.attachmentDrafts.isEmpty)
+        for _ in 0..<200 where saves.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(saves.first?["attachmentIds"] as? [String], [], "removing it saves the draft without it")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(cancels.isEmpty, "a file another device picked is never cancelled here")
+        await chat.stop(discardingDrafts: true)
+    }
+
+    @MainActor
     func testDraftsAndThreadRepliesSurviveARelaunchPerAccountUntilLogout() async throws {
         MockURLProtocol.handler = { request in
             if request.url?.path == "/api/chat/session" {

@@ -145,12 +145,51 @@ class CaperApi(
     }
     /** The account's 500 most recently changed drafts, newest first; cleared ones have empty text (docs/media.md "Draft sync"). */
     suspend fun drafts(token: String): ServerDraftList = get("/api/drafts", token)
-    /** Saves a conversation's or thread's draft text for the account's other devices; empty text clears it. */
-    suspend fun saveDraft(token: String, channel: String, threadRoot: String?, text: String): ServerDraft {
+    /**
+     * Saves a conversation's or thread's draft for the account's other devices; empty text and no files clears it.
+     * [attachmentIds] (uploaded staged files, tile order) replaces its files; null leaves the server's files as they are.
+     */
+    suspend fun saveDraft(
+        token: String, channel: String, threadRoot: String?, text: String,
+        attachmentIds: List<String>? = null, spoilerAttachmentIds: List<String> = emptyList(),
+    ): ServerDraft {
         if (threadRoot != null) require(messageId.matches(threadRoot)) { "Invalid message ID." }
         return request<ServerDraft>("/api/drafts", "PUT", token, buildJsonObject {
             put("channelId", channel.pathId()); threadRoot?.let { put("threadRootId", it) }; put("text", text)
+            if (attachmentIds != null) {
+                putJsonArray("attachmentIds") { attachmentIds.forEach { add(it.assetPathId()) } }
+                putJsonArray("spoilerAttachmentIds") { spoilerAttachmentIds.filter { it in attachmentIds }.forEach { add(it) } }
+            }
         }.toString())
+    }
+
+    /**
+     * Downloads a signed file URL (a synced draft's file, to edit it) into [target], with no Caper credentials.
+     * Fails rather than keep more than [maxBytes] or an empty file.
+     */
+    suspend fun download(url: String, target: java.io.File, maxBytes: Long) {
+        // Plain HTTP only beside a loopback (fixture) API, which serves its files the same way.
+        require(url.startsWith("https://") || baseUrl.startsWith("http://") && url.startsWith("http://")) { "Invalid file URL." }
+        val call = client.newBuilder().callTimeout(java.time.Duration.ZERO).readTimeout(java.time.Duration.ofSeconds(30)).build()
+            .newCall(Request.Builder().url(url).build())
+        call.awaitDecoded { response ->
+            if (!response.isSuccessful) throw ApiException(response.code, "Download failed (${response.code}).")
+            target.parentFile?.mkdirs()
+            var written = 0L
+            response.body.byteStream().use { input ->
+                java.io.FileOutputStream(target).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        written += read
+                        if (written > maxBytes) throw IOException("The file is larger than expected.")
+                        output.write(buffer, 0, read)
+                    }
+                }
+            }
+            if (written < 1) throw IOException("The file is empty.")
+        }
     }
     suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
     /** KLIPY's client key and this account's customer id; 404 while GIFs are off. */

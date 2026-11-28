@@ -81,6 +81,11 @@ export class AttachmentUpload {
   private completedAt?: number;
   private pending?: Promise<ChatAttachment>;
   private controller = new AbortController();
+  /** A file another device staged in a synced draft: this device never picked
+   * it, so never cancels it, and the server keeps it while the draft lists it. */
+  private foreign?: string;
+  /** Send found the foreign file gone (expired or removed). */
+  private gone = false;
 
   constructor(
     private channelId: string,
@@ -110,15 +115,54 @@ export class AttachmentUpload {
     return upload;
   }
 
-  get stale() {
-    return (
-      !!this.state.attachment &&
-      (this.completedAt === undefined || this.now() - this.completedAt >= 23 * 60 * 60 * 1_000)
+  /** A file staged on another device and synced with the draft: already
+   * uploaded, with no original here until `adopt` downloads one to edit. */
+  static synced(channelId: string, attachment: ChatAttachment, changed: (state: UploadState) => void = () => {}) {
+    const upload = new AttachmentUpload(
+      channelId,
+      new File([], attachment.name, { type: attachment.contentType }),
+      DEFAULT_COMPRESSION,
+      changed,
     );
+    upload.file = undefined;
+    upload.foreign = attachment.id;
+    upload.state = {
+      name: attachment.name,
+      sourceSize: attachment.size,
+      storedSize: attachment.size,
+      progress: 1,
+      attachment,
+    };
+    return upload;
+  }
+
+  /** Whether this is (still) another device's file, which has no original here. */
+  get synced() {
+    return !!this.foreign && this.state.attachment?.id === this.foreign;
+  }
+
+  /** Keeps a downloaded copy of a synced file, so the editor can open it. */
+  adopt(file: File) {
+    if (!this.file) this.file = file;
+  }
+
+  get stale() {
+    const attachment = this.state.attachment;
+    if (!attachment) return false;
+    // The server keeps a synced draft's files; only a refused Send renews one.
+    if (attachment.id === this.foreign) return this.gone;
+    return this.completedAt === undefined || this.now() - this.completedAt >= 23 * 60 * 60 * 1_000;
   }
 
   invalidate() {
     this.completedAt = undefined;
+    if (this.synced) this.gone = true;
+  }
+
+  /** Cancels this device's own upload; never another device's file. */
+  private cancel() {
+    const attachment = this.state.attachment;
+    if (attachment && attachment.id !== this.foreign) void cancelUpload(attachment.id, this.transport.fetch);
   }
 
   /** The original file, for the editor; unset once released. */
@@ -136,7 +180,7 @@ export class AttachmentUpload {
     if (!this.file) return Promise.reject(new UploadError("This file is no longer available."));
     this.controller.abort();
     this.controller = new AbortController();
-    if (this.state.attachment) void cancelUpload(this.state.attachment.id, this.transport.fetch);
+    this.cancel();
     this.edits = edit;
     this.prepared = undefined;
     this.completedAt = undefined;
@@ -155,6 +199,7 @@ export class AttachmentUpload {
   ensure(): Promise<ChatAttachment> {
     if (this.pending) return this.pending;
     if (this.state.attachment && !this.stale) return Promise.resolve(this.state.attachment);
+    if (!this.file) return Promise.reject(new UploadError("This file is no longer available."));
     const pending = this.upload().finally(() => {
       // An edit may have started a newer upload meanwhile.
       if (this.pending === pending) this.pending = undefined;
@@ -165,7 +210,7 @@ export class AttachmentUpload {
 
   release(cancel = false) {
     this.controller.abort();
-    if (cancel && this.state.attachment) void cancelUpload(this.state.attachment.id, this.transport.fetch);
+    if (cancel) this.cancel();
     this.file = undefined;
     this.prepared = undefined;
   }
@@ -178,7 +223,7 @@ export class AttachmentUpload {
   private async upload(): Promise<ChatAttachment> {
     const signal = this.controller.signal;
     signal.throwIfAborted();
-    if (this.state.attachment) void cancelUpload(this.state.attachment.id, this.transport.fetch);
+    this.cancel();
     this.update({ attachment: undefined, error: undefined, progress: 0 });
     try {
       const prepared =

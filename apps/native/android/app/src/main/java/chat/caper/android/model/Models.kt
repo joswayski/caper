@@ -100,10 +100,13 @@ val DEFAULT_QUICK_REACTIONS = listOf("👍", "❤️", "😂")
 @Serializable data class PushConfig(val platforms: List<String>)
 /**
  * One synced composer draft (docs/media.md "Draft sync"): a conversation's ([channelId], a space channel or DM)
- * or a thread's ([threadRootId]). Cleared drafts have empty [text]. [updatedAt] is fixed-width UTC, so two
- * compare as strings.
+ * or a thread's ([threadRootId]). Cleared drafts have empty [text] and no files. [attachments] are its still-staged
+ * files in tile order, with signed URLs and `spoiler` marks. [updatedAt] is fixed-width UTC, so two compare as strings.
  */
-@Serializable data class ServerDraft(val channelId: String, val threadRootId: String? = null, val text: String = "", val updatedAt: String)
+@Serializable data class ServerDraft(
+    val channelId: String, val threadRootId: String? = null, val text: String = "",
+    val attachments: List<ChatAttachment> = emptyList(), val updatedAt: String,
+)
 @Serializable data class ServerDraftList(val drafts: List<ServerDraft>)
 /**
  * `GET /api/notifications/settings`: the account [level] (`all`, `mentions` or `nothing`),
@@ -899,6 +902,11 @@ data class DraftAttachmentUi(
     val durationMs: Long? = null,
     /** Its base64 waveform, for the chip. */
     val waveform: String? = null,
+    /**
+     * Staged by another device (a synced draft): ready from its signed URLs, with no local original until Edit
+     * downloads one. Never cancelled or silently uploaded again from here.
+     */
+    val synced: Boolean = false,
 )
 
 /** The [AppUiState.pictureSaves] key for your own profile picture (space icons use the space ID). */

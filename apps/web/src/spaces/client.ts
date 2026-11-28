@@ -1,5 +1,5 @@
 import type { PersonPicture, SpaceIcon } from "../account/pictures.ts";
-import { serverDraft, type DraftRef, type ServerDraft } from "../chat/draft-sync.ts";
+import { serverDraft, type DraftSave, type ServerDraft } from "../chat/draft-sync.ts";
 import { observeProfiles, profileRevision } from "../account/profiles.ts";
 import { unreadChanged, unreadChanges } from "../account/app-badge";
 import { directMessageErrors } from "./direct-errors.ts";
@@ -393,12 +393,13 @@ export async function listServerDrafts(): Promise<ServerDraft[]> {
   return Array.isArray(body.drafts) ? body.drafts.flatMap((value) => serverDraft(value) ?? []) : [];
 }
 
-/** Saves a draft's text (empty clears it) and returns the saved draft. */
-export async function putServerDraft({ channelId, threadRootId, text }: DraftRef & { text: string }) {
+/** Saves a draft's text and, when given, its files (empty text and no files
+ * clears it) and returns the saved draft. */
+export async function putServerDraft({ threadRootId, ...draft }: DraftSave) {
   const saved = serverDraft(
     await request<unknown>("/api/drafts", {
       method: "PUT",
-      body: JSON.stringify({ channelId, ...(threadRootId ? { threadRootId } : {}), text }),
+      body: JSON.stringify({ ...draft, ...(threadRootId ? { threadRootId } : {}) }),
       signal: AbortSignal.timeout(10_000),
     }),
   );

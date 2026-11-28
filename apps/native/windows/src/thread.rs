@@ -1477,6 +1477,7 @@ impl App {
         let (Some(t), Some(view)) = (live.thread.as_ref(), live.thread_view()) else {
             if self.thread.take().is_some() {
                 // Leaving the thread saves its reply's draft now.
+                self.drafts.note_files(&live.drafts);
                 self.drafts.flush();
                 live.save_drafts(&mut self.drafts);
                 self.thread_members(false);
@@ -1491,6 +1492,7 @@ impl App {
         let opened = self.thread.as_ref().is_none_or(|p| p.root != root);
         if opened {
             // A thread left for another saves its reply's draft now.
+            self.drafts.note_files(&live.drafts);
             self.drafts.flush();
             live.save_drafts(&mut self.drafts);
             // The thread's own unsent reply, from before a restart too.

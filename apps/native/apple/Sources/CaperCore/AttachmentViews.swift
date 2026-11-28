@@ -1471,13 +1471,19 @@ struct AttachmentDraftsView: View {
     /// Files the editor can open show in it, viewing with no tool picked,
     /// with Spoiler and Remove beside its tools (the pencil opens it too);
     /// QuickLook shows the rest.
+    /// A synced file (picked on another device) is downloaded first.
     private func preview(_ draft: AttachmentDraft) {
+        if draft.synced && draft.original == nil {
+            let chat = chat
+            Task { @MainActor in if let local = await chat.prepareSyncedFile(id: draft.id) { preview(local) } }
+            return
+        }
         guard let editor, canEdit(draft), let request = editRequest(draft) else { previewID = draft.id; return }
         editor(request)
     }
 
     /// Files the editor can open, below an `AttachmentEditorHost`.
-    private func canEdit(_ draft: AttachmentDraft) -> Bool { editor != nil && draft.editable && draft.original != nil }
+    private func canEdit(_ draft: AttachmentDraft) -> Bool { editor != nil && draft.editable && (draft.original != nil || draft.synced) }
 
     private func editRequest(_ draft: AttachmentDraft) -> AttachmentEditRequest? {
         guard canEdit(draft), let original = draft.original else { return nil }

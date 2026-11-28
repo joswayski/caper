@@ -43,9 +43,9 @@ class ProfilesGatewayTest {
     @Test fun `draft updates carry the saved draft, and malformed ones are dropped`() {
         val thread = profileEvent(event("""{"type":"draft.updated","draft":{"channelId":"channel00001","threadRootId":"message00000001",
             "text":"half a reply","updatedAt":"2026-11-27T18:04:05.123456Z","future":1}}"""))
-        assertEquals(ProfileEvent.DraftUpdated(ServerDraft("channel00001", "message00000001", "half a reply", "2026-11-27T18:04:05.123456Z")), thread)
+        assertEquals(ProfileEvent.DraftUpdated(ServerDraft("channel00001", "message00000001", "half a reply", updatedAt = "2026-11-27T18:04:05.123456Z")), thread)
         val cleared = profileEvent(event("""{"type":"draft.updated","draft":{"channelId":"direct000001","threadRootId":null,"text":"","updatedAt":"2026-11-27T18:04:06.000000Z"}}"""))
-        assertEquals(ServerDraft("direct000001", null, "", "2026-11-27T18:04:06.000000Z"), (cleared as ProfileEvent.DraftUpdated).draft)
+        assertEquals(ServerDraft("direct000001", null, "", updatedAt = "2026-11-27T18:04:06.000000Z"), (cleared as ProfileEvent.DraftUpdated).draft)
         assertNull(profileEvent(event("""{"type":"draft.updated"}""")))
         assertNull(profileEvent(event("""{"type":"draft.updated","draft":{"channelId":"channel00001","text":"x"}}""")))
         assertNull(profileEvent(event("""{"type":"draft.updated","draft":{"channelId":"","text":"x","updatedAt":"2026-11-27T18:04:06.000000Z"}}""")))

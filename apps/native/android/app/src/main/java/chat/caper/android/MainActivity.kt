@@ -1941,7 +1941,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         // Signed in, the reply's first link shows its card inside the field, like the channel composer's.
                         val preview = rememberLinkPreview(if (state.account != null) draft.text else "", thread.rootId, viewModel::linkPreview)
                         val sendReply = { send(preview) }
-                        DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
+                        DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler, download = viewModel::downloadDraft)
                         // A voice reply goes on its own; the draft text stays, "Also send to" applies to it and resets.
                         // Stopping stages the recording with the reply's files; with "send as soon as I stop" it goes on its own.
                         val recorder = rememberVoiceRecorder(target, rememberVoiceStop(
@@ -2276,7 +2276,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         if (state.uploadSendTarget == AttachmentDraftTarget(channel.id)) UploadWaitNotice()
                         // Signed in, the draft's first link shows the card it will get inside the field, with × to send it without one.
                         val preview = rememberLinkPreview(if (state.account != null) draft.text else "", channel.id, viewModel::linkPreview)
-                        DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
+                        DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler, download = viewModel::downloadDraft)
                         // A voice message goes on its own: the draft text and files stay in the composer.
                         // Stopping stages the recording with the draft's files; with "send as soon as I stop" it goes on its own.
                         val recorder = rememberVoiceRecorder(target, rememberVoiceStop(

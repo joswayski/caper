@@ -3,17 +3,24 @@
 // restart or a new version restores them. Logout erases the account's drafts.
 // Staged files are kept only while the page is open: switching channels or
 // DMs and coming back restores them, a reload does not. The text of each
-// draft also syncs between the account's devices (see draft-sync.ts).
+// draft, and its files once uploaded, also sync between the account's devices
+// (see draft-sync.ts).
 import type { DraftAttachment } from "./Attachments.tsx";
 import {
   createDraftSync,
+  draftId,
+  filesOf,
   type DeviceDrafts,
+  type DraftFiles,
   type DraftRef,
   type DraftSync,
   type DraftSyncApi,
+  type LocalDraft,
+  type ServerDraft,
   serverDraft,
 } from "./draft-sync.ts";
-import type { AttachmentUpload } from "./uploads.ts";
+import type { ChatAttachment } from "./types.ts";
+import { AttachmentUpload } from "./uploads.ts";
 
 const DRAFT_PREFIX = "caper:draft:";
 const THREAD_PREFIX = "caper:thread-drafts:";
@@ -63,6 +70,7 @@ export function forgetDrafts(accountId: string) {
   threadDrafts.delete(accountId);
   store(THREAD_PREFIX + accountId, undefined);
   store(DIRTY_PREFIX + accountId, undefined);
+  for (const key of fileRecords.keys()) if (key.startsWith(`${accountId} `)) fileRecords.delete(key);
   const local = storage();
   if (!local) return;
   try {
@@ -112,9 +120,155 @@ export function showStagedFiles(update: typeof visible) {
 /** Upload progress (or what the editor can open) for a file in either the open
  * conversation or a stashed one. */
 export function stagedFileChanged(key: string, change: Partial<DraftAttachment>) {
-  for (const files of staged.values())
+  for (const [conversation, files] of staged) {
+    if (!files.drafts.some((draft) => draft.key === key)) continue;
     files.drafts = files.drafts.map((draft) => (draft.key === key ? { ...draft, ...change } : draft));
+    // An upload finishing in a conversation that is not open is still an edit.
+    reportStagedFiles(conversation, files.drafts);
+  }
   visible?.(key, change);
+}
+
+/** A file staged on another device, shown as a ready tile from its signed URLs. */
+function syncedTile(file: ChatAttachment, threadRootId: string | undefined): DraftAttachment {
+  return {
+    key: crypto.randomUUID(),
+    threadRootId,
+    name: file.name,
+    sourceSize: file.size,
+    storedSize: file.size,
+    progress: 1,
+    attachment: file,
+    spoiler: file.spoiler || undefined,
+    ...(file.voice
+      ? { voice: { durationMs: file.durationMs ?? 0, waveform: file.waveform } }
+      : // Confirmed from the downloaded file before the editor opens.
+        !file.animated && (file.kind === "image" || file.kind === "video")
+        ? { editable: file.kind }
+        : {}),
+  };
+}
+
+/** Applies a server draft's files to one composer of a conversation's staged
+ * files: they become ready tiles (matched to this device's own uploads by ID,
+ * else synced tiles with no local original), files still preparing or
+ * uploading here stay, and uploaded tiles the draft no longer lists are taken
+ * out of `uploads` and returned in `dropped` for the caller to release
+ * without cancelling: another device may be sending that very file. Tile
+ * order is applied by `arrange`, which works on the latest tiles, since
+ * progress may have changed them since `drafts` was read. */
+export function applyServerFiles(
+  drafts: DraftAttachment[],
+  uploads: Map<string, AttachmentUpload>,
+  server: ServerDraft,
+) {
+  const root = server.threadRootId ?? undefined;
+  const mine = drafts.filter((draft) => draft.threadRootId === root);
+  const local = new Map<string, string>();
+  for (const draft of mine) {
+    const id = uploads.get(draft.key)?.state.attachment?.id;
+    if (id) local.set(id, draft.key);
+  }
+  const listed = new Set(server.attachments.map((file) => file.id));
+  const dropped = [...local]
+    .filter(([id]) => !listed.has(id))
+    .map(([, key]) => ({ draft: mine.find((draft) => draft.key === key)!, upload: uploads.get(key) }));
+  for (const { draft } of dropped) uploads.delete(draft.key);
+  const added = new Map<string, DraftAttachment>();
+  const order = server.attachments.map((file) => {
+    const key = local.get(file.id);
+    if (key) return { key, spoiler: !!file.spoiler };
+    const tile = syncedTile(file, root);
+    uploads.set(
+      tile.key,
+      AttachmentUpload.synced(server.channelId, file, (next) => stagedFileChanged(tile.key, next)),
+    );
+    added.set(tile.key, tile);
+    return { key: tile.key, spoiler: !!file.spoiler };
+  });
+  const gone = new Set(dropped.map(({ draft }) => draft.key));
+  const placed = new Set(order.map(({ key }) => key));
+  const arrange = (current: DraftAttachment[]) => {
+    const tiles = new Map(current.map((draft) => [draft.key, draft]));
+    const ready = order.flatMap(({ key, spoiler }) => {
+      const tile = tiles.get(key) ?? added.get(key);
+      return tile ? [{ ...tile, spoiler: spoiler || undefined }] : [];
+    });
+    return [
+      ...current.filter((draft) => draft.threadRootId !== root),
+      ...ready,
+      ...current.filter((draft) => draft.threadRootId === root && !placed.has(draft.key) && !gone.has(draft.key)),
+    ];
+  };
+  return { dropped, arrange };
+}
+
+/** The open conversation (`<account>:<conversation>`), which applies server files to its own tiles. */
+let shownFiles: { key: string; apply: (draft: ServerDraft) => void } | undefined;
+
+export function showDraftFiles(key: string, apply: (draft: ServerDraft) => void) {
+  const current = { key, apply };
+  shownFiles = current;
+  return () => {
+    if (shownFiles === current) shownFiles = undefined;
+  };
+}
+
+/** Server files for a conversation that is not open go to its stash, so opening it shows them. */
+function stashServerFiles(key: string, server: ServerDraft) {
+  const files = staged.get(key) ?? { drafts: [], uploads: new Map<string, AttachmentUpload>() };
+  if (!files.drafts.length && !server.attachments.length) return;
+  const { dropped, arrange } = applyServerFiles(files.drafts, files.uploads, server);
+  for (const { draft, upload } of dropped) {
+    upload?.release();
+    for (const url of [draft.localUrl, draft.thumbnailUrl]) if (url) URL.revokeObjectURL(url);
+  }
+  stashStagedFiles(key, { drafts: arrange(files.drafts), uploads: files.uploads });
+}
+
+/** Each draft's uploaded files as last saved or applied here, by `<account> <draftId>`.
+ * Missing means unknown (nothing staged or applied since the page loaded). */
+const fileRecords = new Map<string, DraftFiles>();
+const recordKey = (accountId: string, ref: DraftRef) => `${accountId} ${draftId(ref)}`;
+
+const sameFiles = (a: DraftFiles | undefined, b: DraftFiles) =>
+  !!a &&
+  a.ids.length === b.ids.length &&
+  a.ids.every((id, index) => id === b.ids[index]) &&
+  a.spoilers.length === b.spoilers.length &&
+  a.spoilers.every((id) => b.spoilers.includes(id));
+
+/** A conversation's staged tiles (`key` is `<account>:<conversation>`) changed:
+ * a composer whose uploaded files (their order or spoiler marks) differ from
+ * the last ones saved or applied has been edited. */
+export function reportStagedFiles(key: string, tiles: DraftAttachment[]) {
+  const current = active;
+  if (!current || !key.startsWith(`${current.accountId}:`)) return;
+  const { accountId, sync } = current;
+  const channelId = key.slice(accountId.length + 1);
+  const composers = new Map<string | null, DraftFiles>();
+  for (const tile of tiles) {
+    if (!tile.attachment) continue;
+    const root = tile.threadRootId ?? null;
+    const files = composers.get(root) ?? { ids: [], spoilers: [] };
+    files.ids.push(tile.attachment.id);
+    if (tile.spoiler) files.spoilers.push(tile.attachment.id);
+    composers.set(root, files);
+  }
+  // Composers that had files and have none now.
+  const prefix = `${accountId} ${channelId}`;
+  for (const record of fileRecords.keys())
+    if (record === prefix || record.startsWith(`${prefix} `)) {
+      const root = record.slice(prefix.length + 1) || null;
+      if (!composers.has(root)) composers.set(root, { ids: [], spoilers: [] });
+    }
+  for (const [threadRootId, files] of composers) {
+    const ref = { channelId, threadRootId };
+    const before = fileRecords.get(recordKey(accountId, ref));
+    if (sameFiles(before, files) || (!before && !files.ids.length)) continue;
+    fileRecords.set(recordKey(accountId, ref), files);
+    sync.edited(ref);
+  }
 }
 
 /** Unsent thread replies by root message ID, kept like conversation drafts. */
@@ -185,16 +339,27 @@ function deviceDrafts(accountId: string): DeviceDrafts {
       return [];
     }
   };
+  const text = ({ channelId, threadRootId }: DraftRef) =>
+    threadRootId ? (readThreadDrafts(accountId)[threadRootId]?.text ?? "") : readDraft(conversationKey(channelId));
   return {
-    read: ({ channelId, threadRootId }) =>
-      threadRootId ? (readThreadDrafts(accountId)[threadRootId]?.text ?? "") : readDraft(conversationKey(channelId)),
-    write({ channelId, threadRootId }, text) {
-      if (!threadRootId) return saveDraft(conversationKey(channelId), text);
-      const replies = readThreadDrafts(accountId);
-      saveThreadDrafts(accountId, {
-        ...replies,
-        [threadRootId]: { text, broadcast: replies[threadRootId]?.broadcast ?? false, channelId },
-      });
+    read: (ref): LocalDraft => ({ text: text(ref), files: fileRecords.get(recordKey(accountId, ref)) }),
+    write(server) {
+      const { channelId, threadRootId } = server;
+      if (text(server) !== server.text) {
+        if (!threadRootId) saveDraft(conversationKey(channelId), server.text);
+        else {
+          const replies = readThreadDrafts(accountId);
+          saveThreadDrafts(accountId, {
+            ...replies,
+            [threadRootId]: { text: server.text, broadcast: replies[threadRootId]?.broadcast ?? false, channelId },
+          });
+        }
+      }
+      // Recorded first, so the tiles this produces are not an edit of their own.
+      fileRecords.set(recordKey(accountId, server), filesOf(server.attachments));
+      const key = conversationKey(channelId);
+      if (shownFiles?.key === key) shownFiles.apply(server);
+      else stashServerFiles(key, server);
     },
     list() {
       const prefix = `${accountId}:`;
@@ -216,7 +381,20 @@ function deviceDrafts(accountId: string): DeviceDrafts {
       const replies = Object.entries(readThreadDrafts(accountId)).flatMap(([threadRootId, draft]) =>
         draft.channelId ? [{ channelId: draft.channelId, threadRootId, text: draft.text }] : [],
       );
-      return [...conversations, ...replies].filter((draft) => draft.channelId && draft.text);
+      const local = new Map(
+        [...conversations, ...replies]
+          .filter((draft) => draft.channelId)
+          .map((draft) => [draftId(draft), { ...draft, files: fileRecords.get(recordKey(accountId, draft)) }]),
+      );
+      // Drafts with files and no text.
+      const owner = `${accountId} `;
+      for (const [record, files] of fileRecords) {
+        const id = record.slice(owner.length);
+        if (!record.startsWith(owner) || local.has(id)) continue;
+        const [channelId, threadRootId] = id.split(" ");
+        local.set(id, { channelId, threadRootId: threadRootId || null, text: "", files });
+      }
+      return [...local.values()].filter((draft) => draft.text || draft.files?.ids.length);
     },
     dirtyIds: dirty,
     setDirty(id, value) {

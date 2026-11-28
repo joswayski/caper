@@ -492,21 +492,32 @@ Signed-in startup obtains a fresh capability from the current account session.
 
 ### Draft sync
 
-The text of each conversation draft and thread reply also syncs between the
-account's signed-in devices (Slack-style): type in a channel on the web, open it
-on the phone, and the unsent text is there. Staged files, reply targets, the
-thread "also send to channel" choice, inline replies in the notifications inbox
-and message edits stay on the device.
+Each conversation draft and thread reply also syncs between the account's
+signed-in devices (Slack-style): type in a channel on the web, open it on the
+phone, and the unsent text is there, with its staged files once they have
+finished uploading (and their spoiler marks). A file still preparing or
+uploading joins the synced draft when its upload completes; an edited file
+syncs as its edited result. Reply targets, the thread "also send to channel"
+choice, inline replies in the notifications inbox and message edits stay on the
+device.
 
-- `GET /api/drafts` → `{"drafts":[{"channelId","threadRootId","text","updatedAt"}]}`:
+- `GET /api/drafts` → `{"drafts":[{"channelId","threadRootId","text","attachments","updatedAt"}]}`:
   the 500 most recently changed drafts in conversations the account can still
   read, newest first. `channelId` is the space channel's ID or the DM's
   conversation ID; `threadRootId` is the thread root's message ID or `null`.
-  Cleared drafts are included with empty `text`. `updatedAt` is fixed-width
-  UTC with microseconds (`2026-11-27T18:04:05.123456Z`), so two compare as strings.
-- `PUT /api/drafts` `{"channelId","threadRootId"?,"text"}` → the saved draft.
-  Empty text clears it. 400 `draft must be at most 16000 characters`; no read
-  access (or a deleted thread root) → 404 `conversation not found`.
+  Cleared drafts are included with empty `text` and no files. `attachments`
+  lists the draft's files that are still staged, in order, in the message
+  attachment shape with signed `url`/`previewUrl` and `spoiler: true` when
+  marked; files sent, removed or cleaned up since are left out. `updatedAt` is
+  fixed-width UTC with microseconds (`2026-11-27T18:04:05.123456Z`), so two
+  compare as strings.
+- `PUT /api/drafts` `{"channelId","threadRootId"?,"text","attachmentIds"?,"spoilerAttachmentIds"?}`
+  → the saved draft. `attachmentIds` replaces the draft's files (at most 10);
+  omitting it keeps them, so a client without file sync never drops another
+  device's files. Only the account's own ready, unsent uploads in that
+  conversation are kept. Empty text and no files clears the draft. 400
+  `draft must be at most 16000 characters` or `a draft holds at most 10 files`;
+  no read access (or a deleted thread root) → 404 `conversation not found`.
 - Each save publishes `{"type":"draft.updated","draft":{...}}` (the same object)
   to the account's own `profiles` subscriptions, including the device that saved
   it. There is no replay: clients reload `GET /api/drafts` after their profiles
@@ -529,6 +540,17 @@ Every client follows the same rules:
    its text (cursor at the end) without sending a typing indicator.
 3. After `GET`, a non-empty device draft with no server entry is saved, so drafts
    typed before sync (or offline) reach the other devices.
+4. Files: a save sends the IDs of the staged files whose upload has completed,
+   in tile order, with their spoiler marks; a file that finishes uploading (or
+   is removed, re-ordered or re-marked) is an edit like typing. Applying a
+   server draft shows its files as ready tiles from their signed URLs (no
+   upload, no local original), keeps this device's own files that are still
+   preparing or uploading, and drops local tiles the server draft no longer
+   lists without cancelling their uploads (the device that dropped them may
+   still be sending them; unsent files expire). A synced tile sends by its ID
+   like any other, and Remove on it does not cancel the upload either.
+   Editing a synced tile downloads its file and edits that (the original stays
+   on the device that picked it).
 
 History opens at the latest 50 messages. Scrolling to the oldest loaded rows
 requests the next 50; the history button stays as a keyboard-accessible fallback
@@ -1541,7 +1563,9 @@ An API loop (about every minute, idempotent across replicas):
   not permanent absence. Monitor `asset_delete_retry`, `asset_purge_retry`,
   `asset_sweep_retry` and R2 request volume as history grows.
 
-An open draft does not extend the server's 24-hour lifetime. Clients keep the
+A synced draft that lists a file keeps it past the 24-hour cleanup, and Send
+accepts it, until the draft stops listing it; otherwise an open draft does not
+extend the server's 24-hour lifetime. Clients keep the
 local prepared file and preview until removal or delivery confirmation. On
 focus/foreground or Send, uploads at least 23 hours old are silently uploaded
 again. Desktop keeps an owned copy rather than re-reading a picked path.

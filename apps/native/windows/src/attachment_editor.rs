@@ -724,7 +724,16 @@ impl App {
             return false;
         }
         let Some(path) = u.local_path.clone() else {
-            return false;
+            // Another device's file: download it, then open
+            // (`Update::SyncedFileReady`); a failure shows on its tile.
+            let synced = u.synced
+                && u.attachment
+                    .as_ref()
+                    .is_some_and(|a| caper_client::drafts::synced_editable(a).is_some());
+            if synced && let Some(live) = &self.live {
+                live.download_draft(key);
+            }
+            return synced;
         };
         let editor = Editor::new(self.hwnd, key, u.source_name.clone(), path, u.edit.clone());
         self.set_composer_focus(false);

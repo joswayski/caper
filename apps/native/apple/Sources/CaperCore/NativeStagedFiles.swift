@@ -37,9 +37,14 @@ import QuartzCore
                 status: file.statusLabel, failed: file.error != nil,
                 busy: file.attachment == nil && file.error == nil ? (file.preparing ? "Preparing…" : "Uploading…") : nil,
                 progress: !file.preparing ? file.progress : nil, removable: true, spoiler: file.spoiler,
-                editable: file.editable && file.original != nil,
+                // A synced file opens the editor once Edit has downloaded it.
+                editable: file.editable && (file.original != nil || file.synced),
                 voice: file.voiceDurationMs.map { note(file.id, url: file.localURL, duration: $0, waveform: file.voiceWaveform) },
-                preview: { if let current = chat.attachmentFiles(inThread: inThread).first(where: { $0.id == file.id }) { preview(current) } },
+                preview: {
+                    guard let current = chat.attachmentFiles(inThread: inThread).first(where: { $0.id == file.id }) else { return }
+                    guard current.synced, current.original == nil else { preview(current); return }
+                    Task { @MainActor in if let local = await chat.prepareSyncedFile(id: current.id) { preview(local) } }
+                },
                 remove: { chat.removeAttachmentDraft(id: file.id) },
                 retry: file.error == nil ? nil : { chat.retryAttachmentDraft(id: file.id) },
                 toggleSpoiler: { chat.toggleAttachmentSpoiler(id: file.id) })

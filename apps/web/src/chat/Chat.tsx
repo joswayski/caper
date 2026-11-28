@@ -102,7 +102,16 @@ import Avatar, { type AvatarPerson } from "../components/Avatar";
 import DailyCaper from "../components/DailyCaper";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
 import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
-import { showStagedFiles, stagedFileChanged, stagedUrls, stashStagedFiles, takeStagedFiles } from "./drafts.ts";
+import {
+  applyServerFiles,
+  reportStagedFiles,
+  showDraftFiles,
+  showStagedFiles,
+  stagedFileChanged,
+  stagedUrls,
+  stashStagedFiles,
+  takeStagedFiles,
+} from "./drafts.ts";
 import { mentionCardPerson, type MentionCandidate } from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedAuthor, blockedRuns, type BlockedRun } from "./blocked.ts";
@@ -1120,6 +1129,8 @@ export default function Chat({
   latestDrafts.current = drafts;
   useEffect(() => {
     const saved = draftKey ? takeStagedFiles(draftKey) : undefined;
+    // The previous conversation's files were stashed by the cleanup below.
+    if (!saved) latestDrafts.current = [];
     if (saved) {
       uploads.current = saved.uploads;
       // Also the ref: a cleanup before the next render must stash these again.
@@ -1132,7 +1143,22 @@ export default function Chat({
       for (const upload of saved.uploads.values())
         if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
     }
+    // Files synced from the account's other devices (docs/media.md, "Draft sync" rule 4).
+    const hideFiles = draftKey
+      ? showDraftFiles(draftKey, (server) => {
+          const { dropped, arrange } = applyServerFiles(latestDrafts.current, uploads.current, server);
+          // Not cancelled: the device that dropped it may be sending it.
+          for (const { draft, upload } of dropped) {
+            upload?.release();
+            forgetLocalUrl(draft.localUrl);
+            forgetLocalUrl(draft.thumbnailUrl);
+          }
+          latestDrafts.current = arrange(latestDrafts.current);
+          setDrafts(arrange);
+        })
+      : undefined;
     return () => {
+      hideFiles?.();
       // Removed files waiting out their grace period belong to this view only.
       for (const entry of parked.current.values()) {
         clearTimeout(entry.timer);
@@ -1145,6 +1171,10 @@ export default function Chat({
       setDrafts([]);
     };
   }, [draftKey, abandonUpload]);
+  // An upload finishing, a removal or a spoiler mark is an edit of the synced draft.
+  useEffect(() => {
+    if (draftKey) reportStagedFiles(draftKey, latestDrafts.current);
+  }, [draftKey, drafts]);
   useEffect(
     () => () => {
       const kept = stagedUrls();
@@ -1154,10 +1184,10 @@ export default function Chat({
   );
 
   const retryUpload = (key: string) => {
-    void uploads.current
-      .get(key)
-      ?.ensure()
-      .catch(() => {});
+    const upload = uploads.current.get(key);
+    // A synced file that failed to download for editing is still ready to send.
+    if (upload?.synced) updateDraft(key, { error: undefined });
+    void upload?.ensure().catch(() => {});
   };
   useEffect(() => {
     const refresh = () => {
@@ -1362,6 +1392,35 @@ export default function Chat({
   // Saving an edit uploads the original again with it; the tile shows the result.
   const draftEditing: DraftEditing = {
     source: (key) => uploads.current.get(key)?.source,
+    // A file staged on another device: edit a downloaded copy of it.
+    remote: (key) => !!uploads.current.get(key)?.synced,
+    download: async (key) => {
+      const upload = uploads.current.get(key);
+      const attachment = upload?.state.attachment;
+      if (!upload?.synced || !attachment?.url) return false;
+      let file: File;
+      try {
+        const response = await fetch(attachment.url);
+        if (!response.ok) throw new Error("Download failed");
+        file = new File([await response.blob()], attachment.name, { type: attachment.contentType });
+      } catch {
+        if (uploads.current.get(key) === upload)
+          updateDraft(key, { error: "This file couldn’t be downloaded to edit." });
+        return false;
+      }
+      if (uploads.current.get(key) !== upload) return false;
+      const editable = await editableKind(file);
+      if (uploads.current.get(key) !== upload) return false;
+      if (!editable) {
+        updateDraft(key, { editable: undefined });
+        return false;
+      }
+      upload.adopt(file);
+      const localUrl = URL.createObjectURL(file);
+      objectUrls.current.add(localUrl);
+      updateDraft(key, { editable, localUrl, localKind: editable, error: undefined });
+      return true;
+    },
     save: (key, edit, preview) => {
       const upload = uploads.current.get(key);
       const draft = latestDrafts.current.find((item) => item.key === key);

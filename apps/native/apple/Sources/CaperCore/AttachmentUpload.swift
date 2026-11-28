@@ -64,6 +64,26 @@ public enum AttachmentStaging {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    /// A synced draft's file (picked on another device), for editing here:
+    /// downloaded from its signed URL without the account's credentials or
+    /// cookies, and staged like a picked file.
+    static func download(_ url: URL, name: String, contentType: String) async throws -> LocalAttachmentFile {
+        let (temporary, response) = try await downloadSession.download(from: url)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+        try Task.checkCancellation()
+        let staged = try stage(copying: temporary, filename: name)
+        return LocalAttachmentFile(url: staged.url, name: staged.name, contentType: contentType, size: staged.size)
+    }
+
+    private static let downloadSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
+        return URLSession(configuration: configuration)
+    }()
+
     static func sanitized(_ name: String) -> String {
         let cleaned = name.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
             .trimmingCharacters(in: .whitespacesAndNewlines)

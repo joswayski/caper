@@ -587,6 +587,10 @@ export interface DraftAttachment extends UploadState {
 export interface DraftEditing {
   /** The original file, unless it is no longer available. */
   source: (key: string) => Blob | undefined;
+  /** A file staged on another device, whose original is not here until downloaded. */
+  remote?: (key: string) => boolean;
+  /** Downloads a remote file so the editor can open it; false when that failed. */
+  download?: (key: string) => Promise<boolean>;
   /** `edit` is undefined when the file goes back to its original. */
   save: (key: string, edit: AttachmentEdit | undefined, preview?: Blob) => void;
 }
@@ -862,14 +866,23 @@ export function DraftAttachments({
   const closeEditor = useCallback(() => setEditingKey(undefined), []);
   const edited = editingKey && drafts.find((draft) => draft.key === editingKey.key);
   const editedSource = edited?.editable && editing?.source(edited.key);
+  const hasSource = (key: string) => !!editing && (!!editing.source(key) || !!editing.remote?.(key));
+  // A synced file's editor opens once its download has arrived.
+  const startEditing = (key: string, anchor: HTMLElement, tool?: EditTool | null) => {
+    if (editing?.source(key) || !editing?.download) setEditingKey({ key, anchor, tool });
+    else
+      void editing.download(key).then((ready) => {
+        if (ready && anchor.isConnected) setEditingKey({ key, anchor, tool });
+      });
+  };
   // The viewer holds a staged file's tools: Spoiler, the editor's, and Remove.
   const viewerEditing: ViewerEditing | undefined = onRemove
     ? {
-        editable: (key) => !!editing && !!drafts.find((draft) => draft.key === key)?.editable && !!editing.source(key),
+        editable: (key) => !!drafts.find((draft) => draft.key === key)?.editable && hasSource(key),
         open: (key, tool) => {
           if (!viewing) return;
           setViewing(undefined);
-          setEditingKey({ key, anchor: viewing.anchor, tool });
+          startEditing(key, viewing.anchor, tool);
         },
         spoiler: (key) => !!drafts.find((draft) => draft.key === key)?.spoiler,
         toggleSpoiler: onToggleSpoiler,
@@ -878,10 +891,9 @@ export function DraftAttachments({
     : undefined;
   // Files the editor can open go straight to it, opened for viewing with every
   // tool in one place; the viewer shows other pictures and videos.
-  const opensEditor = (draft: DraftAttachment) =>
-    !!onRemove && !!editing && !!draft.editable && !!editing.source(draft.key);
+  const opensEditor = (draft: DraftAttachment) => !!onRemove && !!draft.editable && hasSource(draft.key);
   const open = (draft: DraftAttachment, anchor: HTMLElement) => {
-    if (opensEditor(draft)) setEditingKey({ key: draft.key, anchor, tool: null });
+    if (opensEditor(draft)) startEditing(draft.key, anchor, null);
     else setViewing({ key: draft.key, anchor });
   };
   const media: ChatAttachment[] = drafts.flatMap((draft) => {

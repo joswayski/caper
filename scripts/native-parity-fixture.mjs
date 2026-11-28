@@ -2140,6 +2140,39 @@ export async function startFixture({
         const saved = state.drafts.get(user.id) ?? new Map();
         const rootOf = (channelId, rootId) =>
           state.messages.get(channelId)?.find((message) => message.id === rootId && !message.threadRootId);
+        // Like assets::staged: the account's own ready, unsent uploads in that conversation.
+        const staged = (channelId, id) => {
+          const asset = state.assets.get(id);
+          return (
+            asset?.purpose === "attachment" &&
+            asset.ownerId === user.id &&
+            asset.channelId === channelId &&
+            !!asset.attachment &&
+            !asset.deleted &&
+            ![...state.messages.values()].some((messages) =>
+              messages.some((message) => message.content?.attachments?.some((file) => file.id === id)),
+            )
+          );
+        };
+        // Described and signed like a message's files; ones sent or removed since are left out.
+        const describe = ({ attachmentIds, spoilerIds, ...draft }) => ({
+          ...draft,
+          attachments: attachmentIds
+            .filter((id) => staged(draft.channelId, id))
+            .map((id) => {
+              const asset = state.assets.get(id);
+              return {
+                ...asset.attachment,
+                ...(asset.mediaKind
+                  ? {
+                      url: asset.url,
+                      ...(asset.preview ? { previewUrl: asset.url.replace(/fixture-file$/, "fixture-preview") } : {}),
+                    }
+                  : {}),
+                ...(spoilerIds.includes(id) ? { spoiler: true } : {}),
+              };
+            }),
+        });
         if (method === "GET") {
           const drafts = [...saved.values()]
             .filter(
@@ -2149,21 +2182,32 @@ export async function startFixture({
                 (!draft.threadRootId || !rootOf(draft.channelId, draft.threadRootId)?.deletedAt),
             )
             .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
-            .slice(0, 500);
+            .slice(0, 500)
+            .map(describe);
           return json(response, 200, { drafts });
         }
         if (
           !body ||
           typeof body !== "object" ||
           Array.isArray(body) ||
-          Object.keys(body).some((key) => !["channelId", "threadRootId", "text"].includes(key)) ||
+          Object.keys(body).some(
+            (key) => !["channelId", "threadRootId", "text", "attachmentIds", "spoilerAttachmentIds"].includes(key),
+          ) ||
           typeof body.channelId !== "string" ||
           (body.threadRootId != null && typeof body.threadRootId !== "string") ||
-          typeof body.text !== "string"
+          typeof body.text !== "string" ||
+          [body.attachmentIds, body.spoilerAttachmentIds].some(
+            (ids) => ids != null && (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")),
+          )
         )
           return reject(response, 422, "invalid draft");
         if (Array.from(body.text).length > 16000)
           return reject(response, 400, "draft must be at most 16000 characters");
+        if (
+          body.attachmentIds != null &&
+          (body.attachmentIds.length > 10 || body.attachmentIds.some((id) => id.length > 64))
+        )
+          return reject(response, 400, "a draft holds at most 10 files");
         const threadRootId = body.threadRootId ?? null;
         const channel = channelFor(body.channelId);
         if (
@@ -2177,9 +2221,26 @@ export async function startFixture({
         const micros = Math.max(Date.now() * 1000, (state.draftClock ?? 0) + 1);
         state.draftClock = micros;
         const updatedAt = `${new Date(Math.floor(micros / 1000)).toISOString().slice(0, 23)}${String(micros % 1000).padStart(3, "0")}Z`;
-        const draft = { channelId: channel.id, threadRootId, text: body.text, updatedAt };
-        saved.set(`${channel.id} ${threadRootId ?? ""}`, draft);
+        const previous = saved.get(`${channel.id} ${threadRootId ?? ""}`);
+        // attachmentIds replaces the files (only staged ones kept, in order); omitted keeps them.
+        const attachmentIds =
+          body.attachmentIds == null
+            ? (previous?.attachmentIds ?? [])
+            : [...new Set(body.attachmentIds)].filter((id) => staged(channel.id, id));
+        const spoilerIds =
+          body.attachmentIds == null
+            ? (previous?.spoilerIds ?? [])
+            : attachmentIds.filter((id) => (body.spoilerAttachmentIds ?? []).includes(id));
+        saved.set(`${channel.id} ${threadRootId ?? ""}`, {
+          channelId: channel.id,
+          threadRootId,
+          text: body.text,
+          attachmentIds,
+          spoilerIds,
+          updatedAt,
+        });
         state.drafts.set(user.id, saved);
+        const draft = describe(saved.get(`${channel.id} ${threadRootId ?? ""}`));
         // Every session of the account hears it, the saving one included.
         for (const client of sockets)
           for (const [id, sub] of client.subscriptions)

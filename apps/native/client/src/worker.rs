@@ -53,6 +53,21 @@ pub enum Command {
         token: String,
         save: crate::saved_drafts::DraftSave,
     },
+    /// A synced draft file's tile picture (`Upload::thumbnail_url`), which
+    /// arrives as that tile's `UploadUpdate::Thumbnail`.
+    DraftThumbnail {
+        key: u64,
+        token: String,
+        url: String,
+    },
+    /// A synced draft file downloaded (signed URL, no credentials) into a
+    /// private scratch file, so Edit can open it.
+    DownloadDraftFile {
+        epoch: u64,
+        key: u64,
+        url: String,
+        name: String,
+    },
     AvatarHistory {
         epoch: u64,
         request: Instant,
@@ -749,6 +764,12 @@ pub enum Event {
         epoch: u64,
         save: crate::saved_drafts::DraftSave,
         result: Result<crate::saved_drafts::ServerDraft, crate::saved_drafts::SaveFailure>,
+    },
+    /// `Command::DownloadDraftFile`'s copy, or that it failed.
+    DraftFileDownloaded {
+        epoch: u64,
+        key: u64,
+        result: Result<Arc<crate::uploads::Scratch>, ()>,
     },
     Picture {
         epoch: u64,
@@ -2153,6 +2174,42 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
             }),
             save,
         },
+        Command::DraftThumbnail { key, token, url } => {
+            let Some(image) = api
+                .fetch_media(&url)
+                .ok()
+                .and_then(|bytes| crate::attachments::decode_thumbnail(&bytes))
+            else {
+                return;
+            };
+            Event::Upload {
+                key,
+                token,
+                update: UploadUpdate::Thumbnail(image),
+            }
+        }
+        Command::DownloadDraftFile {
+            epoch,
+            key,
+            url,
+            name,
+        } => {
+            let extension = std::path::Path::new(&name)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .filter(|extension| extension.bytes().all(|b| b.is_ascii_alphanumeric()))
+                .unwrap_or("bin")
+                .to_owned();
+            let scratch = crate::uploads::Scratch::new(&extension);
+            Event::DraftFileDownloaded {
+                epoch,
+                key,
+                result: api
+                    .download_media(&url, scratch.path())
+                    .map(|()| Arc::new(scratch))
+                    .map_err(|_| ()),
+            }
+        }
         Command::LoadFeedback {
             epoch,
             request,

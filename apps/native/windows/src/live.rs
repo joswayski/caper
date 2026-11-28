@@ -104,6 +104,9 @@ pub enum Update {
     Draft(caper_client::saved_drafts::ServerDraft),
     /// `GET /api/drafts`.
     ServerDrafts(Vec<caper_client::saved_drafts::ServerDraft>),
+    /// Edit's download of a synced draft file (this key) finished: the
+    /// editor opens on it.
+    SyncedFileReady(u64),
     /// A draft save answered.
     DraftSaved(
         caper_client::saved_drafts::DraftSave,
@@ -2509,10 +2512,12 @@ impl Live {
         }
     }
 
-    /// Stops a removed file's upload and gives up the server's copy.
+    /// Stops a removed file's upload and gives up the server's copy. Another
+    /// device's file (a synced draft's) is only dropped, never cancelled.
     fn release_draft(&self, draft: crate::uploads::Draft) {
         draft.upload.abandon();
-        if !draft.auto_send.as_ref().is_some_and(|s| s.attempted)
+        if !draft.upload.synced
+            && !draft.auto_send.as_ref().is_some_and(|s| s.attempted)
             && let Some(file) = draft.upload.attachment
         {
             self.cancel_assets(vec![file.id]);
@@ -3736,11 +3741,74 @@ impl Live {
         let Some(token) = &self.token else {
             return;
         };
+        // Files that finished, were removed or re-marked are edits too.
+        drafts.note_files(&self.drafts);
         for save in drafts.due(Instant::now()) {
             self.worker.send(Command::SaveDraft {
                 epoch: self.account_epoch,
                 token: token.clone(),
                 save,
+            });
+        }
+    }
+
+    /// A synced draft's files (rule 4): its composer shows them as ready
+    /// tiles, keeps this device's files still uploading, and releases the
+    /// ones the draft no longer lists without cancelling them: the device
+    /// that sent or removed a file may still be sending it, and unsent
+    /// files expire anyway.
+    pub fn adopt_draft_files(
+        &mut self,
+        applied: &caper_client::saved_drafts::Applied,
+        files: &[core::Attachment],
+    ) {
+        let mut added = Vec::new();
+        let keys = &mut self.draft_keys;
+        let dropped = caper_client::drafts::adopt(
+            &mut self.drafts,
+            &applied.channel_id,
+            applied.thread_root_id.as_deref(),
+            files,
+            |attachment| {
+                *keys += 1;
+                added.push(*keys);
+                crate::uploads::Draft::new(caper_client::drafts::Upload::synced(
+                    *keys,
+                    applied.channel_id.clone(),
+                    applied.thread_root_id.clone(),
+                    attachment.clone(),
+                ))
+            },
+        );
+        for draft in dropped {
+            self.cancel_draft_edit(draft.upload.key);
+            draft.upload.abandon();
+        }
+        let Some(token) = &self.token else {
+            return;
+        };
+        for d in self.drafts.iter().filter(|d| added.contains(&d.upload.key)) {
+            if let Some(url) = d.upload.thumbnail_url() {
+                self.worker.send(Command::DraftThumbnail {
+                    key: d.upload.key,
+                    token: token.clone(),
+                    url: url.to_owned(),
+                });
+            }
+        }
+    }
+
+    /// Edit on a synced draft file: downloads it (`Update::SyncedFileReady`).
+    pub fn download_draft(&self, key: u64) {
+        let Some(d) = self.drafts.iter().find(|d| d.upload.key == key) else {
+            return;
+        };
+        if let Some(url) = d.upload.attachment.as_ref().and_then(|a| a.url.clone()) {
+            self.worker.send(Command::DownloadDraftFile {
+                epoch: self.account_epoch,
+                key,
+                url,
+                name: d.upload.name.clone(),
             });
         }
     }
@@ -6558,7 +6626,10 @@ impl Live {
                                 replacement.upload.spoiler = self.drafts[i].upload.spoiler;
                                 let old = std::mem::replace(&mut self.drafts[i], replacement);
                                 old.upload.abandon();
-                                if let Some(file) = old.upload.attachment {
+                                // Another device's original is never cancelled.
+                                if let Some(file) =
+                                    old.upload.attachment.filter(|_| !old.upload.synced)
+                                {
                                     self.cancel_assets(vec![file.id]);
                                 }
                                 let d = &self.drafts[i];
@@ -6723,6 +6794,19 @@ impl Live {
                 save,
                 result,
             } if epoch == self.account_epoch => out.push(Update::DraftSaved(save, result)),
+            Event::DraftFileDownloaded { epoch, key, result } if epoch == self.account_epoch => {
+                if let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) {
+                    match result {
+                        Ok(scratch) => {
+                            d.upload.local_path = Some(scratch.path().to_owned());
+                            d.upload.source_scratch = Some(scratch);
+                            out.push(Update::SyncedFileReady(key));
+                        }
+                        Err(()) => d.upload.error = Some("Failed to download.".into()),
+                    }
+                    out.push(Update::Drafts);
+                }
+            }
             // Everything else (reactions, edits, threads, voice...) is not
             // shown by this client yet.
             _ => {}

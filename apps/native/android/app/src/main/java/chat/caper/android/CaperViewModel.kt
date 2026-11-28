@@ -2493,9 +2493,36 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val list = try { api.drafts(token) } catch (error: CancellationException) { throw error } catch (_: Throwable) { return@launch }
             if (account != accountGeneration) return@launch
             val merge = drafts.merge(list.drafts)
-            merge.applied.forEach { draftsAppliedMutable.tryEmit(it) }
+            val applied = merge.applied.map { it.key }.toSet()
+            merge.applied.forEach(::showServerDraft)
+            list.drafts.filter { ConversationDrafts.key(it) !in applied }.forEach(::refreshSyncedUrls)
             merge.saves.forEach(::flushDraft)
         }
+    }
+
+    /** A server draft applied: the composer showing it takes its text, and its files become the composer's tiles. */
+    private fun showServerDraft(applied: DraftApplied) {
+        if (applied.textChanged) draftsAppliedMutable.tryEmit(applied.key)
+        val local = mutable.value.attachmentDrafts[applied.target].orEmpty()
+        val merge = reconcileDraftTiles(local, applied.attachments) { UUID.randomUUID().toString() }
+        // Files another device removed or sent leave this composer without cancelling the upload: that
+        // device may still be sending it, and unsent files expire on the server anyway.
+        merge.dropped.forEach { discardDraftFiles(it.key) }
+        if (merge.tiles != local) setAttachmentDrafts(applied.target, merge.tiles, mutable.value.attachmentErrors[applied.target])
+    }
+
+    /** Fresh signatures for the synced tiles of a server draft that didn't apply; the tiles themselves stay. */
+    private fun refreshSyncedUrls(draft: ServerDraft) {
+        val target = AttachmentDraftTarget(draft.channelId, draft.threadRootId)
+        val local = mutable.value.attachmentDrafts[target] ?: return
+        val fresh = refreshSyncedTiles(local, draft.attachments.filter { it.isValid() })
+        if (fresh != local) setAttachmentDrafts(target, fresh, mutable.value.attachmentErrors[target])
+    }
+
+    /** [target]'s uploaded files as its draft saves them; a change is an edit like typing (docs/media.md "Draft sync" rule 4). */
+    private fun syncDraftFiles(target: AttachmentDraftTarget) {
+        if (accountToken == null) return
+        drafts.setFiles(target, DraftFiles.of(mutable.value.attachmentDrafts[target].orEmpty()))
     }
 
     /** About a second after typing stops, an edited draft saves for the account's other devices. */
@@ -2518,14 +2545,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         draftSaves[key] = viewModelScope.launch {
             while (account == accountGeneration) {
                 val save = drafts.pendingSave(key) ?: break
-                val result = try { api.saveDraft(token, save.channelId, save.threadRootId, save.text) }
+                val result = try { api.saveDraft(token, save.channelId, save.threadRootId, save.text, save.files?.ids, save.files?.spoilers.orEmpty()) }
                 catch (error: CancellationException) { throw error }
                 catch (error: Throwable) {
                     // Refused for good (no access, too long, not a server conversation): it stays on this device.
                     if (account == accountGeneration && (error is IllegalArgumentException || error is ApiException && error.status in setOf(400, 404))) drafts.abandon(save)
                     break
                 }
-                if (account == accountGeneration) drafts.saved(save, result)
+                if (account == accountGeneration) drafts.saved(save, result)?.let(::showServerDraft)
             }
         }
     }
@@ -2948,8 +2975,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (drafts.any { it.attachment == null }) {
                 return false
             }
-            // Pending messages show the local compressed copies until the server's message arrives.
-            drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail, spoiler = draft.spoiler) }
+            // Pending messages show the local compressed copies until the server's message arrives (synced tiles, their signed URLs).
+            drafts.mapNotNull { draft -> draft.attachment?.let { it.copy(status = "ready", url = draft.localUrl ?: it.url, previewUrl = draft.thumbnail ?: it.previewUrl, spoiler = draft.spoiler) } }
         }
         if (retry == null && text.isBlank() && files.isEmpty() && gif == null) return false
         val replyTo = if (queued != null) queued.ui.replyTo else mutable.value.replyTargets[threadRootId ?: "channel"]
@@ -2967,6 +2994,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             // (the working copies are deleted once the send is confirmed; the picked URI is not).
             val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.takeIf { draft.edit == null }?.let { id to it } } }
             setAttachmentDrafts(target, emptyList())
+            // Sending saves at once, so other devices drop the files; with text, clearing the composer saves it.
+            if (text.isBlank()) flushDraft(ConversationDrafts.key(target))
             mutable.value = mutable.value.copy(
                 localAttachmentPreviews = (mutable.value.localAttachmentPreviews + local).entries.toList().takeLast(64).associate { it.key to it.value },
             )
@@ -3468,7 +3497,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun renewDraftUploads(channelId: String) {
         // Renew anything that failed or expired while the conversation was closed.
-        val files = mutable.value.attachmentDrafts.filterKeys { it.channelId == channelId }.values.flatten()
+        // A synced tile's failure is its download for editing, retried only from its tile.
+        val files = mutable.value.attachmentDrafts.filterKeys { it.channelId == channelId }.values.flatten().filter { !it.synced }
         files.filter { it.error != null || uploadStale(it) }.forEach { retryDraft(it.key) }
     }
 
@@ -3477,6 +3507,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             attachmentDrafts = if (files.isEmpty()) mutable.value.attachmentDrafts - target else mutable.value.attachmentDrafts + (target to files),
             attachmentErrors = if (error == null) mutable.value.attachmentErrors - target else mutable.value.attachmentErrors + (target to error),
         )
+        syncDraftFiles(target)
     }
 
     /** Gives up a conversation's regular and thread files when it can no longer be used. */
@@ -3492,12 +3523,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Open, sending, stashed and parked drafts: an upload continues while its file is in any of them. */
     private fun knownDrafts() = mutable.value.attachmentDrafts.values.flatten() + pendingDrafts + queuedSends.flatMap { it.drafts } + parkedDrafts.drafts()
 
-    private fun uploadStale(draft: DraftAttachmentUi) = draft.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
+    /** Uploads at least 23 hours old go up again silently; a synced tile has no local original to upload (its draft keeps it alive). */
+    private fun uploadStale(draft: DraftAttachmentUi) = !draft.synced && draft.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
 
     fun retryDraft(key: String) {
         val target = mutable.value.attachmentDrafts.entries.find { it.value.any { draft -> draft.key == key } }?.key ?: return
         val token = accountToken ?: return
         if (uploadJobs[key]?.isActive == true) return
+        if (mutable.value.attachmentDrafts.getValue(target).find { it.key == key }?.synced == true) return downloadDraft(key)
         uploadJobs[key] = viewModelScope.launch {
             try { uploadDraft(key, token, target.channelId) }
             catch (cancelled: CancellationException) { throw cancelled }
@@ -3511,17 +3544,52 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Edit on a synced tile: downloads its file (signed URL, no credentials) into the tile's folder in the app cache,
+     * where the editor opens it like a picked original; the edit then uploads as a new file in that tile. A failed
+     * download shows the tile's failure state, and Retry downloads again. The tile still sends by its ID meanwhile.
+     */
+    internal fun downloadDraft(key: String) {
+        val draft = mutable.value.attachmentDrafts.values.flatten().find { it.key == key } ?: return
+        val file = draft.attachment ?: return
+        if (!draft.synced || draft.original != null || uploadJobs[key]?.isActive == true) return
+        val request = accountGeneration
+        updateDraft(key) { it.copy(error = null) }
+        uploadJobs[key] = viewModelScope.launch {
+            try {
+                val directory = draftDirectories.getOrPut(key) { File(uploadSession, key) }
+                val source = File(directory, "source")
+                api.download(requireNotNull(file.url) { "No file URL." }, source, file.size.takeIf { it > 0 } ?: Long.MAX_VALUE)
+                val picked = PickedFile(source, file.name, file.contentType)
+                val editKind = preparer.editableKind(picked)
+                if (request != accountGeneration || knownDrafts().none { it.key == key }) throw CancellationException()
+                pickedDrafts[key] = picked
+                updateDraft(key) { it.copy(original = Uri.fromFile(source).toString(), editKind = editKind, error = null) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                if (request == accountGeneration) updateDraft(key) { it.copy(error = "Failed to download.") }
+            } finally {
+                if (uploadJobs[key] === coroutineContext[Job]) uploadJobs.remove(key)
+            }
+        }
+    }
+
     private suspend fun uploadDraft(key: String, token: String, channel: String): ChatAttachment {
         val draft = knownDrafts().find { it.key == key } ?: throw CancellationException()
         if (draft.attachment != null && !uploadStale(draft)) return draft.attachment
         updateDraft(key) { it.copy(attachment = null, error = null, progress = 0f) }
         draft.attachment?.let { api.cancelAsset(token, it.id) }
         val prepared = preparedDrafts[key] ?: run {
-            val uri = Uri.parse(draft.pickedUri ?: throw UploadException("Failed to upload."))
+            // Copied once from the picked file, or downloaded to edit a synced tile (which has no picked URI).
+            val copied = pickedDrafts[key]
+            val uri = if (copied == null) Uri.parse(draft.pickedUri ?: throw UploadException("Failed to upload.")) else null
             val directory = draftDirectories[key] ?: throw CancellationException()
-            val picked = pickedDrafts[key] ?: preparer.copy(uri, directory).also { copy ->
-                if (knownDrafts().none { it.key == key }) throw CancellationException()
-                recordPicked(key, null, uri, copy)
+            val picked = copied ?: requireNotNull(uri).let { source ->
+                preparer.copy(source, directory).also { copy ->
+                    if (knownDrafts().none { it.key == key }) throw CancellationException()
+                    recordPicked(key, null, source, copy)
+                }
             }
             val edit = knownDrafts().find { it.key == key }?.edit
             preparer.prepare(picked, compression, draftOutput(key, directory), progressReporter(key), edit).also {
@@ -3550,15 +3618,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun editDraft(key: String, edit: AttachmentEdit?, preview: Bitmap? = null) {
         val draft = mutable.value.attachmentDrafts.values.flatten().find { it.key == key }
         if (draft == null || draft.editKind == null || AttachmentEdits.same(draft.edit, edit)) { preview?.recycle(); return }
+        // A synced tile edits its downloaded copy (see [downloadDraft]); its file stays with the device that picked it.
+        if (draft.synced && draft.original == null) { preview?.recycle(); return }
         val next = edit?.takeIf { AttachmentEdits.isEdited(it) }
         val token = accountToken
-        val id = draft.attachment?.id
+        val id = draft.attachment?.id?.takeUnless { draft.synced }
         if (token != null && id != null) viewModelScope.launch(NonCancellable) { api.cancelAsset(token, id) }
         restartDraft(key, null, preview)
+        // The edit uploads as this device's own new file in the same tile.
         updateDraft(key) {
             it.copy(
                 edit = next, attachment = null, uploadedAt = null, localUrl = null, storedSize = null, compressing = true, progress = 0f, error = null,
-                thumbnail = if (next == null && it.kind == "image") it.original else null,
+                thumbnail = if (next == null && it.kind == "image") it.original else null, synced = false,
             )
         }
         retryDraft(key)
@@ -3631,10 +3702,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeDraft(key: String) {
         val entry = mutable.value.attachmentDrafts.entries.find { it.value.any { draft -> draft.key == key } } ?: return
-        entry.value.find { it.key == key }?.let { draft ->
-            if (parkedDrafts.park(entry.key, draft)) releaseLater(key, parkedDrafts::release) else abandonDraft(draft)
-        }
+        entry.value.find { it.key == key }?.let { releaseDraft(entry.key, it) }
         setAttachmentDrafts(entry.key, entry.value.filter { it.key != key })
+    }
+
+    /** What Remove does with a file leaving [target]'s composer: parked for a moment, else released. */
+    private fun releaseDraft(target: AttachmentDraftTarget, draft: DraftAttachmentUi) {
+        if (!draft.synced && parkedDrafts.park(target, draft)) releaseLater(draft.key, parkedDrafts::release) else abandonDraft(draft)
     }
 
     /** Releases parked [key] (taken out by [take]) once [REMOVAL_GRACE_MS] passes without the same file being added back. */
@@ -3649,7 +3723,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun abandonDraft(draft: DraftAttachmentUi) {
         val token = accountToken
-        val id = draft.attachment?.id
+        // Another device picked a synced file: only its tile (and any copy downloaded to edit) goes from here.
+        val id = draft.attachment?.id?.takeUnless { draft.synced }
         if (token != null && id != null) viewModelScope.launch(NonCancellable) { api.cancelAsset(token, id) }
         discardDraftFiles(draft.key)
     }
@@ -3677,6 +3752,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             files.map { if (it.key == key) change(it) else it }
         })
         pendingDrafts = pendingDrafts.map { if (it.key == key) change(it) else it }
+        // A finished upload or a spoiler mark changes what the draft saves.
+        mutable.value.attachmentDrafts.filterValues { files -> files.any { it.key == key } }.keys.forEach(::syncDraftFiles)
     }
 
     /** Compression/upload progress arrives off the main thread; post at most every 1%. */
@@ -4422,7 +4499,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSettingsError = null)
             }
             // Saved on another device (this device's own echo changes nothing): a composer showing it takes the text.
-            is ProfileEvent.DraftUpdated -> if (drafts.apply(event.draft)) draftsAppliedMutable.tryEmit(ConversationDrafts.key(event.draft))
+            is ProfileEvent.DraftUpdated -> drafts.apply(event.draft)?.let(::showServerDraft) ?: refreshSyncedUrls(event.draft)
         }
     }
     fun deleteCurrentSpace(done: () -> Unit = {}) = launchAction { request ->

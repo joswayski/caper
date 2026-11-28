@@ -96,7 +96,31 @@ impl std::ops::DerefMut for DraftFile {
     }
 }
 
+impl caper_client::drafts::Staged for DraftFile {
+    fn upload(&self) -> &Upload {
+        &self.upload
+    }
+    fn upload_mut(&mut self) -> &mut Upload {
+        &mut self.upload
+    }
+}
+
 impl DraftFile {
+    /// Another device's file from a synced draft: ready, its picture loads
+    /// from its URL (`Command::DraftThumbnail`), and Edit downloads it.
+    pub fn synced(
+        key: u64,
+        channel: String,
+        root: Option<String>,
+        attachment: caper_client::model::Attachment,
+    ) -> Self {
+        Self {
+            editable: caper_client::drafts::synced_editable(&attachment),
+            upload: Upload::synced(key, channel, root, attachment),
+            thumbnail: None,
+        }
+    }
+
     pub fn new(
         key: u64,
         channel: String,

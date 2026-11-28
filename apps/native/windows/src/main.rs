@@ -1096,6 +1096,10 @@ impl App {
                     let changed = self.drafts.apply(draft).into_iter().collect();
                     self.show_drafts(changed);
                 }
+                // Edit on a synced file: its downloaded copy opens.
+                live::Update::SyncedFileReady(key) => {
+                    self.open_attachment_editor(key);
+                }
                 live::Update::ServerDrafts(drafts) => {
                     self.open_saved_drafts();
                     let changed = self.drafts.loaded(drafts);
@@ -1103,7 +1107,8 @@ impl App {
                     self.sync_drafts();
                 }
                 live::Update::DraftSaved(save, result) => {
-                    self.drafts.saved(&save, result);
+                    let changed = self.drafts.saved(&save, result).into_iter().collect();
+                    self.show_drafts(changed);
                     self.sync_drafts();
                 }
                 live::Update::SignedOut(warning) => {
@@ -1715,15 +1720,32 @@ impl App {
     /// Leaving a conversation or thread, closing, quitting and sending save
     /// every edited draft now.
     pub fn flush_drafts(&mut self) {
+        if let Some(live) = &self.live {
+            self.drafts.note_files(&live.drafts);
+        }
         self.drafts.flush();
         self.sync_drafts();
     }
 
-    /// Another device's drafts replaced these device copies: the composer or
-    /// thread reply box showing one takes its text, caret at the end,
-    /// without a typing indicator.
-    fn show_drafts(&mut self, changed: Vec<(String, String)>) {
-        for (key, text) in changed {
+    /// Another device's drafts replaced these device copies: their files
+    /// become the composers' tiles (`Live::adopt_draft_files`), and the
+    /// composer or thread reply box showing one takes its text, caret at
+    /// the end, without a typing indicator.
+    fn show_drafts(&mut self, changed: Vec<caper_client::saved_drafts::Applied>) {
+        let mut files = false;
+        for applied in &changed {
+            if let (Some(live), Some(attachments)) = (&mut self.live, &applied.files) {
+                live.adopt_draft_files(applied, attachments);
+                files = true;
+            }
+        }
+        if files {
+            self.drafts_changed();
+        }
+        for (key, text) in changed
+            .into_iter()
+            .filter_map(|applied| Some((applied.key, applied.text?)))
+        {
             let units: Vec<u16> = text.encode_utf16().collect();
             if self.ids.open.as_deref() == Some(key.as_str()) {
                 if self.composer.text != units {

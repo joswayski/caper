@@ -774,8 +774,16 @@ public struct AttachmentDraft: Identifiable, Equatable, Sendable {
     /// waveform for the chip. Uploaded as recorded, never compressed or edited.
     public var voiceDurationMs: Int?
     public var voiceWaveform: [UInt8]?
+    /// Shown from a synced draft (docs/media.md, "Draft sync"): another device
+    /// picked and uploaded it, so it has no local original (until Edit
+    /// downloads one), is never uploaded again and never cancelled here.
+    public var synced = false
     public var isVoice: Bool { voiceDurationMs != nil }
-    public var needsUpload: Bool { attachment == nil || uploadedAt.map { Date().timeIntervalSince($0) >= 23 * 60 * 60 } == true }
+    /// A synced file's upload belongs to the device that picked it: the
+    /// 23-hour renewal skips it (the synced draft keeps it on the server).
+    public var needsUpload: Bool {
+        attachment == nil || (!synced && uploadedAt.map { Date().timeIntervalSince($0) >= 23 * 60 * 60 } == true)
+    }
 
     public init(id: String, name: String, kind: AttachmentKind, localURL: URL, sourceSize: Int) {
         self.id = id; self.name = name; self.kind = kind; self.localURL = localURL; self.sourceSize = sourceSize

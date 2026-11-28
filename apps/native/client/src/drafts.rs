@@ -140,6 +140,9 @@ pub struct Upload {
     pub uploading: bool,
     pub prepared: Option<Arc<Prepared>>,
     pub cancel: Arc<AtomicBool>,
+    /// Another device's file, from a synced draft (`saved_drafts`): it shows
+    /// from its URLs, sends by its ID, and removing it never cancels it.
+    pub synced: bool,
 }
 
 /// What a staged file's busy ring shows.
@@ -183,7 +186,38 @@ impl Upload {
             uploading: true,
             prepared: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            synced: false,
         }
+    }
+
+    /// A file from a synced draft: ready, shown and sent by its ID, with no
+    /// local copy until Edit downloads one.
+    pub fn synced(
+        key: u64,
+        channel: String,
+        thread_root_id: Option<String>,
+        attachment: Attachment,
+    ) -> Self {
+        let mut upload = Self::uploaded(key, channel, thread_root_id, attachment);
+        upload.synced = true;
+        upload
+    }
+
+    /// Whether this device holds the file itself (picked, pasted, recorded
+    /// or downloaded), so it can be prepared and uploaded again.
+    pub fn has_source(&self) -> bool {
+        self.local_path.is_some() || self.prepared.is_some() || self.source_scratch.is_some()
+    }
+
+    /// Where a synced file's tile picture loads from: its preview, or an
+    /// image's own URL.
+    pub fn thumbnail_url(&self) -> Option<&str> {
+        let attachment = self.attachment.as_ref()?;
+        attachment.preview_url.as_deref().or_else(|| {
+            (attachment.kind == AttachmentKind::Image && !attachment.animated)
+                .then_some(attachment.url.as_deref())
+                .flatten()
+        })
     }
 
     /// A recording staged in a composer as a voice message: already
@@ -246,10 +280,13 @@ impl Upload {
         })
     }
 
+    /// A file that never uploaded, or one of this device's that has (nearly)
+    /// expired. A file with no local copy (another device's) is never
+    /// uploaded again.
     pub fn needs_upload(&self) -> bool {
         self.attachment.is_none()
-            || self.upload_expired
-            || self.uploaded_at.is_some_and(|at| at.elapsed() >= FRESH)
+            || self.has_source()
+                && (self.upload_expired || self.uploaded_at.is_some_and(|at| at.elapsed() >= FRESH))
     }
 
     /// Gives up the upload: its worker stops at the next chance.
@@ -277,6 +314,12 @@ impl Upload {
     /// Starts this file again, returning the upload it replaces, which the
     /// caller cancels on the server. None when it is uploading or still fresh.
     pub fn restart(&mut self) -> Option<Option<Attachment>> {
+        // A synced file whose download for editing failed: Retry clears the
+        // failure; it still sends by its ID.
+        if self.attachment.is_some() && !self.has_source() {
+            self.error = None;
+            return None;
+        }
         if self.uploading || !self.needs_upload() {
             return None;
         }
@@ -357,6 +400,97 @@ impl Upload {
                 },
             )
         }
+    }
+}
+
+/// A composer's file as the clients keep it, around the shared upload.
+pub trait Staged {
+    fn upload(&self) -> &Upload;
+    fn upload_mut(&mut self) -> &mut Upload;
+    /// Whether it sits in a composer (and so in its draft), rather than
+    /// sending on its own.
+    fn in_composer(&self) -> bool {
+        true
+    }
+}
+
+impl Staged for Upload {
+    fn upload(&self) -> &Upload {
+        self
+    }
+    fn upload_mut(&mut self) -> &mut Upload {
+        self
+    }
+}
+
+/// Applies a synced draft's files (`saved_drafts::Applied::files`) to the
+/// tiles of its composer (`channel`, `root`): the server's files, in its
+/// order and with its spoiler marks, reusing tiles that already hold them
+/// and making the rest with `synced` (`Upload::synced`); then this device's
+/// files still preparing, uploading or failed. Returns the tiles the server
+/// no longer lists, for the caller to release as Remove does (a synced one
+/// is only dropped). Other composers' tiles are left as they are.
+pub fn adopt<T: Staged>(
+    tiles: &mut Vec<T>,
+    channel: &str,
+    root: Option<&str>,
+    server: &[Attachment],
+    mut synced: impl FnMut(&Attachment) -> T,
+) -> Vec<T> {
+    let (mine, others): (Vec<T>, Vec<T>) = std::mem::take(tiles).into_iter().partition(|tile| {
+        let upload = tile.upload();
+        tile.in_composer() && upload.channel == channel && upload.thread_root_id.as_deref() == root
+    });
+    let mut mine: Vec<Option<T>> = mine.into_iter().map(Some).collect();
+    *tiles = others;
+    for attachment in server {
+        let held = mine.iter_mut().find(|tile| {
+            tile.as_ref().is_some_and(|tile| {
+                tile.upload()
+                    .attachment
+                    .as_ref()
+                    .is_some_and(|file| file.id == attachment.id)
+            })
+        });
+        match held.and_then(Option::take) {
+            Some(mut tile) => {
+                tile.upload_mut().spoiler = attachment.spoiler;
+                tiles.push(tile);
+            }
+            None => tiles.push(synced(attachment)),
+        }
+    }
+    let mut dropped = Vec::new();
+    for tile in mine.into_iter().flatten() {
+        if tile.upload().attachment.is_none() {
+            tiles.push(tile);
+        } else {
+            dropped.push(tile);
+        }
+    }
+    dropped
+}
+
+/// Whether the attachment editor can open a synced file once downloaded:
+/// still images it decodes, and videos with FFmpeg present.
+pub fn synced_editable(attachment: &Attachment) -> Option<crate::attachment_edit::Kind> {
+    use crate::attachment_edit::Kind;
+    match attachment.kind {
+        AttachmentKind::Image if !attachment.animated => match attachment.content_type.as_str() {
+            "image/jpeg" | "image/png" | "image/webp" | "image/bmp" | "image/tiff" => {
+                Some(Kind::Image)
+            }
+            "image/heic" | "image/heif" | "image/avif" if crate::ffmpeg::binary().is_some() => {
+                Some(Kind::Image)
+            }
+            _ => None,
+        },
+        AttachmentKind::Video
+            if !attachment.animated && !attachment.voice && crate::ffmpeg::binary().is_some() =>
+        {
+            Some(Kind::Video)
+        }
+        _ => None,
     }
 }
 
@@ -457,7 +591,13 @@ mod tests {
 
     #[test]
     fn restart_only_retries_failed_or_expired_files_and_hands_back_the_old_upload() {
-        let mut file = Upload::picked(1, "c".into(), None, "photo.png".into(), None);
+        let mut file = Upload::picked(
+            1,
+            "c".into(),
+            None,
+            "photo.png".into(),
+            Some("photo.png".into()),
+        );
         // Still uploading: nothing to restart.
         assert!(file.restart().is_none());
         file.apply(UploadUpdate::Finished(Ok(attachment("a1"))));

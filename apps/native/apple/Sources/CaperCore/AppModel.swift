@@ -3911,6 +3911,8 @@ public final class ChatModel {
     @ObservationIgnored private var draftSync = DraftSync()
     @ObservationIgnored private var threadDraftChannels: [String: String] = [:]
     @ObservationIgnored private var draftSaveTimers: [DraftKey: Task<Void, Never>] = [:]
+    /// Synced tiles downloading for Edit; removing the tile cancels its download.
+    @ObservationIgnored private var syncedDownloads: [String: Task<LocalAttachmentFile, Error>] = [:]
     /// Changes when the account's drafts are adopted or discarded, so a save
     /// or load from before never lands.
     @ObservationIgnored private var draftEpoch = 0
@@ -4760,12 +4762,16 @@ public final class ChatModel {
             pendingDrafts = files
             pendingNeedsUpload = files.contains { $0.needsUpload }
             // Pending and processing rows retain originals from either composer.
-            for item in files { if let id = item.attachment?.id { localAttachmentCopies[id] = item.localURL } }
+            for item in files where item.localURL.isFileURL { if let id = item.attachment?.id { localAttachmentCopies[id] = item.localURL } }
             if gif != nil {
                 // The draft and its files stay for the next message.
                 if inThread { threadBroadcast = false }
             } else {
-                if let target { stagedFiles[target] = nil; attachmentNotices[target] = nil }
+                if let target {
+                    stagedFiles[target] = nil; attachmentNotices[target] = nil
+                    // Before the text clears, so clearing both is one save.
+                    if !files.isEmpty { filesEdited(target) }
+                }
                 // "Also send to channel" applies to one reply, so it resets with the draft.
                 if inThread { threadDraft = ""; threadBroadcast = false } else {
                     draft = ""
@@ -4803,7 +4809,7 @@ public final class ChatModel {
                     }
                     guard self.channelID == channelID,
                           let refreshed = delivery.replaceAttachments(id: command.id, attachments: attachments) else { return }
-                    for file in pendingDrafts {
+                    for file in pendingDrafts where file.localURL.isFileURL {
                         if let id = file.attachment?.id { localAttachmentCopies[id] = file.localURL }
                     }
                     command = refreshed; pendingNeedsUpload = false
@@ -5159,7 +5165,10 @@ public final class ChatModel {
             localAttachmentCopies[id] = nil
         }
         if edit {
-            if let target { stagedFiles[target] = pendingDrafts }
+            if let target {
+                stagedFiles[target] = pendingDrafts
+                if !pendingDrafts.isEmpty { filesEdited(target) }
+            }
             if let root {
                 threadDrafts[root] = text; threadBroadcasts[root] = broadcast
                 if let draftChannelID { threadDraftChannels[root] = draftChannelID }
@@ -5246,7 +5255,7 @@ public final class ChatModel {
             draftsAccountID = nil; draftChannelID = nil
             drafts = [:]; threadDrafts = [:]; threadBroadcasts = [:]
             resetDraftSync()
-            discardStagedFiles()
+            discardStagedFiles(keepingUploads: true)
         }
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
     }
@@ -5491,14 +5500,16 @@ public final class ChatModel {
         guard draftsAccountID != nil, draftSync.dirty.contains(key) else { return }
         if draftSync.saving.contains(key) { draftSync.again.insert(key); return }
         draftSync.saving.insert(key); draftSync.again.remove(key)
-        let text = draftText(key), epoch = draftEpoch, api = self.api
+        let content = draftContent(key), epoch = draftEpoch, api = self.api
         Task { [weak self] in
-            let saved = try? await api.saveDraft(channelID: key.channelID, threadRootID: key.threadRootID, text: text)
+            let saved = try? await api.saveDraft(channelID: key.channelID, threadRootID: key.threadRootID, text: content.text,
+                                                 attachmentIDs: content.attachmentIDs, spoilerAttachmentIDs: content.spoilerAttachmentIDs)
             guard let self, self.draftEpoch == epoch else { return }
             self.draftSync.saving.remove(key)
-            let unchanged = self.draftText(key) == text
+            let unchanged = self.draftContent(key) == content
             if let saved {
-                self.draftSync.saved(saved, unchanged: unchanged)
+                // A save that left files out learns them from its response.
+                if self.draftSync.saved(saved, unchanged: unchanged), let files = saved.attachments { self.applyServerFiles(files, to: key) }
                 if unchanged { self.saveDrafts() }
             } else if unchanged {
                 self.draftSync.again.remove(key)
@@ -5514,9 +5525,10 @@ public final class ChatModel {
         adoptSavedDrafts()
         guard draftsAccountID != nil, draftSync.accept(server) else { return }
         let key = server.key, text = server.text
-        guard draftText(key) != text else { return }
         syncingDraft = true
         defer { syncingDraft = false }
+        if let attachments = server.attachments { applyServerFiles(attachments, to: key) }
+        guard draftText(key) != text else { return }
         if let root = key.threadRootID {
             threadDraftChannels[root] = key.channelID
             if root == threadRootID { threadDraft = text }
@@ -5545,6 +5557,81 @@ public final class ChatModel {
         let missing = DraftSync.deviceOnly(device, server: server)
         if !missing.isSubset(of: draftSync.dirty) { draftSync.dirty.formUnion(missing); saveDrafts() }
         for key in draftSync.dirty { saveDraft(key) }
+    }
+
+    private func draftContent(_ key: DraftKey) -> DraftContent {
+        guard draftSync.filesKnown.contains(key) else { return DraftContent(text: draftText(key), attachmentIDs: nil, spoilerAttachmentIDs: nil) }
+        let files = DraftSync.fileIDs(syncedFiles(key))
+        return DraftContent(text: draftText(key), attachmentIDs: files.ids, spoilerAttachmentIDs: files.spoilers)
+    }
+
+    /// A draft's staged files, open or not.
+    private func syncedFiles(_ key: DraftKey) -> [AttachmentDraft] {
+        guard let access = attachmentAccessIDs[key.channelID] else { return [] }
+        return stagedFiles[AttachmentTarget(channelID: key.channelID, threadRootID: key.threadRootID, accessID: access)] ?? []
+    }
+
+    private func stagedTarget(_ id: String) -> AttachmentTarget? {
+        stagedFiles.first(where: { $0.value.contains(where: { $0.id == id }) })?.key
+    }
+
+    /// Rule 4: a server draft's files replace a composer's (open or not) as
+    /// `DraftSync.mergeFiles` says; tiles it no longer lists go as Remove does.
+    private func applyServerFiles(_ attachments: [ChatAttachment], to key: DraftKey) {
+        let local = syncedFiles(key)
+        guard !(local.isEmpty && attachments.isEmpty) else { return }
+        let access = attachmentAccessIDs[key.channelID] ?? UUID()
+        attachmentAccessIDs[key.channelID] = access
+        let target = AttachmentTarget(channelID: key.channelID, threadRootID: key.threadRootID, accessID: access)
+        let merged = DraftSync.mergeFiles(local: local, server: attachments)
+        guard merged.files != local else { return }
+        stagedFiles[target] = merged.files.isEmpty ? nil : merged.files
+        composerRevision += 1
+        // Not cancelled: the device that sent or removed it may still be
+        // sending it, and unsent files expire on the server anyway.
+        for file in merged.dropped { abandon(file, keepingUpload: true) }
+    }
+
+    /// Rule 4: a file finishing its upload, removed, re-marked or edited
+    /// changes the synced draft like typing.
+    private func filesEdited(_ target: AttachmentTarget) {
+        guard !syncingDraft else { return }
+        let key = DraftKey(channelID: target.channelID, threadRootID: target.threadRootID)
+        draftSync.filesKnown.insert(key)
+        if let root = target.threadRootID { threadDraftChannels[root] = target.channelID }
+        draftEdited(key)
+    }
+
+    /// Edit (or a preview) on a synced tile: downloads its file from the
+    /// signed URL first, so the editor opens a local copy as for a file picked
+    /// here. Returns the tile once it has one; a failed download shows the
+    /// tile's failure state, whose Retry downloads again.
+    public func prepareSyncedFile(id: String) async -> AttachmentDraft? {
+        guard let draft = stagedDraft(id) else { return nil }
+        guard draft.synced, draft.original == nil else { return draft }
+        guard syncedDownloads[id] == nil, let attachment = draft.attachment,
+              let url = attachment.url.flatMap({ URL(string: $0) }) else { return nil }
+        updateDraft(id) { $0.error = nil }
+        let expected = uploadGeneration, name = attachment.name, contentType = attachment.contentType
+        let download = Task { try await AttachmentStaging.download(url, name: name, contentType: contentType) }
+        syncedDownloads[id] = download
+        let result = await download.result
+        syncedDownloads[id] = nil
+        func current() -> AttachmentDraft? {
+            guard uploadGeneration == expected, let latest = stagedDraft(id), latest.synced, latest.original == nil else { return nil }
+            return latest
+        }
+        switch result {
+        case .failure:
+            if current() != nil, !download.isCancelled { updateDraft(id) { $0.error = "Couldn’t download this file. Try again." } }
+            return nil
+        case .success(let file):
+            var editable = false
+            if current()?.editable == true { editable = await AttachmentPreparer.canEdit(file) }
+            guard current() != nil else { AttachmentStaging.remove(file.url); return nil }
+            updateDraft(id) { $0.original = file; $0.localURL = file.url; $0.editable = editable; $0.error = nil }
+            return stagedDraft(id)
+        }
     }
 
     /// Returns a reopened conversation's staged files, renewing any that
@@ -5586,23 +5673,29 @@ public final class ChatModel {
     }
 
     /// Gives up staged files that can no longer be sent: on sign-out, or for a
-    /// conversation whose access ended.
-    private func discardStagedFiles(channelID: String? = nil) {
+    /// conversation whose access ended. Sign-out keeps ready uploads on the
+    /// server, where the synced draft may list them for the next sign-in.
+    private func discardStagedFiles(channelID: String? = nil, keepingUploads: Bool = false) {
         let targets = stagedFiles.keys.filter { channelID == nil || $0.channelID == channelID }
         for target in targets {
-            for draft in stagedFiles.removeValue(forKey: target) ?? [] { abandon(draft) }
+            for var draft in stagedFiles.removeValue(forKey: target) ?? [] {
+                if keepingUploads, draft.attachment != nil { draft.synced = true }
+                abandon(draft)
+            }
         }
         releaseParked { channelID == nil || $0.target.channelID == channelID }
         attachmentNotices = attachmentNotices.filter { channelID != nil && $0.key.channelID != channelID }
         if let channelID { attachmentAccessIDs[channelID] = nil } else { attachmentAccessIDs = [:]; uploadGeneration += 1 }
     }
 
-    private func abandon(_ draft: AttachmentDraft) {
+    private func abandon(_ draft: AttachmentDraft, keepingUpload: Bool = false) {
         uploadTasks[draft.id]?.cancel()
         uploadTasks[draft.id] = nil
+        syncedDownloads.removeValue(forKey: draft.id)?.cancel()
         preparedUploads[draft.id] = nil
         draftChannels[draft.id] = nil
-        if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
+        // Never a file another device picked: its draft may still list it.
+        if !draft.synced, !keepingUpload, let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
         AttachmentStaging.remove(draft.localURL)
         if let original = draft.original { AttachmentStaging.remove(original.url) }
         if let preview = draft.editPreviewURL { AttachmentStaging.remove(preview) }
@@ -5934,6 +6027,7 @@ public final class ChatModel {
                 var draft = parked.draft
                 draft.spoiler = false
                 stagedFiles[target, default: []].append(draft)
+                if draft.attachment != nil { filesEdited(target) }
                 continue
             }
             let id = UUID().uuidString
@@ -6007,10 +6101,13 @@ public final class ChatModel {
         uploadTasks[id]?.cancel()
         uploadTasks[id] = nil
         preparedUploads[id] = nil
-        if let asset = draft.attachment?.id {
+        let target = stagedTarget(id)
+        // A synced file stays on the device that picked it; the edit uploads as this device's own.
+        if let asset = draft.attachment?.id, !draft.synced {
             localAttachmentCopies[asset] = nil
             Task { await api.cancelAsset(id: asset) }
         }
+        if draft.synced, let target { draftChannels[id] = target.channelID }
         if draft.localURL != original.url { AttachmentStaging.remove(draft.localURL) }
         if let old = draft.editPreviewURL { AttachmentStaging.remove(old) }
         // Back to the original: the chip shows it again.
@@ -6027,7 +6124,10 @@ public final class ChatModel {
             $0.error = nil
             $0.attachment = nil
             $0.uploadedAt = nil
+            $0.synced = false
         }
+        // Until its result uploads, it leaves the synced draft.
+        if draft.attachment != nil, let target { filesEdited(target) }
         let expected = uploadGeneration
         uploadTasks[id] = Task { [weak self] in
             guard let self else { return }
@@ -6048,12 +6148,15 @@ public final class ChatModel {
             stagedFiles[target]?.removeAll { $0.id == id }
             attachmentNotices[target] = nil
             park(draft, target: target)
+            if draft.attachment != nil { filesEdited(target) }
             return
         }
     }
 
     public func toggleAttachmentSpoiler(id: String) {
         updateDraft(id) { $0.spoiler.toggle() }
+        // A file still uploading syncs its mark when it is ready.
+        if let target = stagedTarget(id), stagedDraft(id)?.attachment != nil { filesEdited(target) }
     }
 
     private func updateDraft(_ id: String, _ change: (inout AttachmentDraft) -> Void) {
@@ -6077,6 +6180,11 @@ public final class ChatModel {
     public func retryAttachmentDraft(id: String) {
         networkFailedUploads.remove(id)
         guard uploadTasks[id] == nil, let draft = stagedDraft(id) else { return }
+        // A synced file is never uploaded here; only a failed download for Edit retries.
+        if draft.synced {
+            if draft.original == nil, draft.error != nil { Task { [weak self] in _ = await self?.prepareSyncedFile(id: id) } }
+            return
+        }
         guard preparedUploads[id] != nil else {
             // Edits that couldn't be applied are tried again, from the original.
             guard draft.error != nil, let original = draft.original else { return }
@@ -6101,10 +6209,10 @@ public final class ChatModel {
 
     private func uploadAttachmentDraft(id: String) async throws -> ChatAttachment {
         let staged = stagedFiles.values.flatMap { $0 }
-        guard let channelID = draftChannels[id] ?? channelID,
-              let file = (pendingDrafts + staged).first(where: { $0.id == id }) ?? parkedDraft(id),
-              let prepared = preparedUploads[id] else { throw CancellationError() }
+        guard let file = (pendingDrafts + staged).first(where: { $0.id == id }) ?? parkedDraft(id) else { throw CancellationError() }
+        // A ready file (a synced one has no prepared upload) sends as it is.
         if !file.needsUpload, let attachment = file.attachment { return attachment }
+        guard let channelID = draftChannels[id] ?? channelID, let prepared = preparedUploads[id] else { throw CancellationError() }
         let expected = uploadGeneration
         updateDraft(id) { $0.attachment = nil; $0.error = nil; $0.progress = 0 }
         if let old = file.attachment?.id {
@@ -6123,6 +6231,7 @@ public final class ChatModel {
             throw CancellationError()
         }
         updateDraft(id) { $0.attachment = attachment; $0.uploadedAt = Date(); $0.progress = 1; $0.error = nil }
+        if let target = stagedTarget(id) { filesEdited(target) }
         return attachment
     }
 

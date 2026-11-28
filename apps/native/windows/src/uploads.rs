@@ -85,6 +85,19 @@ pub struct Draft {
     cover: Option<ID2D1Bitmap1>,
 }
 
+impl caper_client::drafts::Staged for Draft {
+    fn upload(&self) -> &Upload {
+        &self.upload
+    }
+    fn upload_mut(&mut self) -> &mut Upload {
+        &mut self.upload
+    }
+    /// A voice message sending on its own is not part of the draft.
+    fn in_composer(&self) -> bool {
+        self.auto_send.is_none()
+    }
+}
+
 impl Draft {
     pub fn new(upload: Upload) -> Self {
         Self {

@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDraftSync, draftId, type DeviceDrafts, type DraftRef } from "./draft-sync.ts";
+import {
+  createDraftSync,
+  draftId,
+  filesOf,
+  type DeviceDrafts,
+  type DraftFiles,
+  type DraftRef,
+  type DraftSave,
+} from "./draft-sync.ts";
 import { showStagedFiles, stagedFileChanged, stagedUrls, stashStagedFiles, takeStagedFiles } from "./drafts.ts";
 import type { AttachmentUpload } from "./uploads.ts";
 
@@ -45,22 +53,45 @@ describe("draft sync", () => {
   const channel = { channelId: "chan00000001", threadRootId: null };
   const stamp = (n: number) => `2026-11-27T18:04:05.${String(n).padStart(6, "0")}Z`;
 
+  const file = (id: string, spoiler = false) => ({
+    id,
+    kind: "image" as const,
+    contentType: "image/png",
+    name: `${id}.png`,
+    size: 4,
+    url: `https://cdn.example/${id}`,
+    ...(spoiler ? { spoiler } : {}),
+  });
+
   function setup(initial: Record<string, string> = {}) {
     const copy = new Map(Object.entries(initial));
+    /** Uploaded files per draft; a missing entry is "unknown here". */
+    const files = new Map<string, DraftFiles>();
     const dirty = new Set<string>();
     const device: DeviceDrafts = {
-      read: (ref) => copy.get(draftId(ref)) ?? "",
-      write: (ref, text) => void copy.set(draftId(ref), text),
+      read: (ref) => ({ text: copy.get(draftId(ref)) ?? "", files: files.get(draftId(ref)) }),
+      write: (draft) => {
+        copy.set(draftId(draft), draft.text);
+        files.set(draftId(draft), filesOf(draft.attachments));
+      },
       list: () =>
-        [...copy].flatMap(([id, text]) => {
+        [...new Set([...copy.keys(), ...files.keys()])].flatMap((id) => {
           const [channelId, threadRootId] = id.split(" ");
-          return text ? [{ channelId, threadRootId: threadRootId ?? null, text }] : [];
+          const local = { text: copy.get(id) ?? "", files: files.get(id) };
+          return local.text || local.files?.ids.length
+            ? [{ channelId, threadRootId: threadRootId ?? null, ...local }]
+            : [];
         }),
       dirtyIds: () => [...dirty],
       setDirty: (id, value) => void (value ? dirty.add(id) : dirty.delete(id)),
     };
     let clock = 10;
-    const save = vi.fn(async (draft: DraftRef & { text: string }) => ({ ...draft, updatedAt: stamp(++clock) }));
+    // Like the API: the saved draft lists the files it was given.
+    const save = vi.fn(async ({ attachmentIds, spoilerAttachmentIds, ...draft }: DraftSave) => ({
+      ...draft,
+      attachments: (attachmentIds ?? []).map((id) => file(id, !!spoilerAttachmentIds?.includes(id))),
+      updatedAt: stamp(++clock),
+    }));
     const onApplied = vi.fn();
     const sync = createDraftSync({ api: { save }, device, onApplied });
     /** A local edit, as a composer makes it: device copy first, then the sync. */
@@ -68,7 +99,12 @@ describe("draft sync", () => {
       copy.set(draftId(ref), text);
       sync.edited(ref);
     };
-    return { copy, dirty, save, onApplied, sync, type };
+    /** A staged file finished uploading, was removed or re-marked here. */
+    const stage = (next: DraftFiles, ref: DraftRef = channel) => {
+      files.set(draftId(ref), next);
+      sync.edited(ref);
+    };
+    return { copy, files, dirty, save, onApplied, sync, type, stage };
   }
 
   beforeEach(() => vi.useFakeTimers());
@@ -98,7 +134,7 @@ describe("draft sync", () => {
     const { save, sync, type } = setup();
     let finish!: () => void;
     save.mockImplementationOnce(
-      (draft) => new Promise((resolve) => (finish = () => resolve({ ...draft, updatedAt: stamp(1) }))),
+      (draft) => new Promise((resolve) => (finish = () => resolve({ ...draft, attachments: [], updatedAt: stamp(1) }))),
     );
     type("a");
     sync.flush();
@@ -115,16 +151,16 @@ describe("draft sync", () => {
     const { copy, dirty, save, onApplied, sync, type } = setup();
     save.mockRejectedValueOnce(new Error("offline"));
     type("mine");
-    sync.received({ ...channel, text: "theirs", updatedAt: stamp(50) });
+    sync.received({ ...channel, text: "theirs", attachments: [], updatedAt: stamp(50) });
     expect(copy.get(channel.channelId)).toBe("mine");
     sync.flush();
     await vi.advanceTimersByTimeAsync(0);
     expect(dirty.has(channel.channelId)).toBe(true);
-    sync.received({ ...channel, text: "theirs", updatedAt: stamp(51) });
+    sync.received({ ...channel, text: "theirs", attachments: [], updatedAt: stamp(51) });
     expect(copy.get(channel.channelId)).toBe("mine");
     expect(onApplied).not.toHaveBeenCalled();
     // A reconnect's GET retries it.
-    sync.loaded([{ ...channel, text: "theirs", updatedAt: stamp(51) }]);
+    sync.loaded([{ ...channel, text: "theirs", attachments: [], updatedAt: stamp(51) }]);
     await vi.advanceTimersByTimeAsync(0);
     expect(save).toHaveBeenLastCalledWith({ ...channel, text: "mine" });
     expect(dirty.size).toBe(0);
@@ -132,13 +168,13 @@ describe("draft sync", () => {
 
   it("applies newer server drafts and ignores ones not newer than the last applied", () => {
     const { copy, onApplied, sync } = setup({ [channel.channelId]: "old" });
-    sync.received({ ...channel, text: "second", updatedAt: stamp(2) });
-    sync.received({ ...channel, text: "first", updatedAt: stamp(1) });
-    sync.received({ ...channel, text: "again", updatedAt: stamp(2) });
+    sync.received({ ...channel, text: "second", attachments: [], updatedAt: stamp(2) });
+    sync.received({ ...channel, text: "first", attachments: [], updatedAt: stamp(1) });
+    sync.received({ ...channel, text: "again", attachments: [], updatedAt: stamp(2) });
     expect(copy.get(channel.channelId)).toBe("second");
     expect(onApplied).toHaveBeenCalledExactlyOnceWith(channel, "second");
     // Cleared on another device clears it here.
-    sync.received({ ...channel, text: "", updatedAt: stamp(3) });
+    sync.received({ ...channel, text: "", attachments: [], updatedAt: stamp(3) });
     expect(copy.get(channel.channelId)).toBe("");
   });
 
@@ -149,7 +185,7 @@ describe("draft sync", () => {
     const saved = await save.mock.results[0].value;
     sync.received(saved);
     // An echo of an earlier save, delivered late, is older still.
-    sync.received({ ...channel, text: "hel", updatedAt: stamp(5) });
+    sync.received({ ...channel, text: "hel", attachments: [], updatedAt: stamp(5) });
     expect(copy.get(channel.channelId)).toBe("hello");
     expect(onApplied).not.toHaveBeenCalled();
   });
@@ -161,11 +197,61 @@ describe("draft sync", () => {
       [draftId(thread)]: "a reply",
       chan00000003: "already synced",
     });
-    sync.loaded([{ channelId: "chan00000003", threadRootId: null, text: "already synced", updatedAt: stamp(1) }]);
+    sync.loaded([
+      { channelId: "chan00000003", threadRootId: null, text: "already synced", attachments: [], updatedAt: stamp(1) },
+    ]);
     await vi.advanceTimersByTimeAsync(0);
     expect(save.mock.calls.map(([draft]) => draft)).toEqual([
       { ...channel, text: "typed offline" },
       { ...thread, text: "a reply" },
     ]);
+  });
+
+  it("saves uploaded files by ID in tile order with their spoiler marks, as an edit like typing", async () => {
+    const { save, stage, type } = setup();
+    stage({ ids: ["file0000001", "file0000002"], spoilers: ["file0000002"] });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(save).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(save).toHaveBeenCalledExactlyOnceWith({
+      ...channel,
+      text: "",
+      attachmentIds: ["file0000001", "file0000002"],
+      spoilerAttachmentIds: ["file0000002"],
+    });
+    // Removing the last file (and no text) clears the draft at once.
+    stage({ ids: [], spoilers: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(save).toHaveBeenLastCalledWith({ ...channel, text: "", attachmentIds: [], spoilerAttachmentIds: [] });
+    // Text typed where this device knows nothing about files leaves the server's alone.
+    const other = { channelId: "chan00000009", threadRootId: null };
+    type("just text", other);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(save).toHaveBeenLastCalledWith({ ...other, text: "just text" });
+  });
+
+  it("applies a server draft's files to the device copy, and its own echo with files changes nothing", async () => {
+    const { files, onApplied, save, sync, stage } = setup();
+    sync.received({ ...channel, text: "look", attachments: [file("file0000001", true)], updatedAt: stamp(1) });
+    expect(files.get(channel.channelId)).toEqual({ ids: ["file0000001"], spoilers: ["file0000001"] });
+    expect(onApplied).toHaveBeenCalledTimes(1);
+    stage({ ids: ["file0000001", "file0000002"], spoilers: [] });
+    await vi.advanceTimersByTimeAsync(1000);
+    sync.received(await save.mock.results[0].value);
+    expect(files.get(channel.channelId)).toEqual({ ids: ["file0000001", "file0000002"], spoilers: [] });
+    expect(onApplied).toHaveBeenCalledTimes(1);
+  });
+
+  it("uploads a device-only draft that has files but no text after GET", async () => {
+    const { files, save, sync } = setup();
+    files.set(channel.channelId, { ids: ["file0000001"], spoilers: [] });
+    sync.loaded([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(save).toHaveBeenCalledExactlyOnceWith({
+      ...channel,
+      text: "",
+      attachmentIds: ["file0000001"],
+      spoilerAttachmentIds: [],
+    });
   });
 });

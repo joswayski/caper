@@ -297,10 +297,17 @@ public actor APIClient {
         return response.drafts
     }
 
-    /// Saves one draft for the account's other devices; empty text clears it.
-    func saveDraft(channelID: String, threadRootID: String?, text: String) async throws -> ServerDraft {
-        struct Input: Encodable { let channelId: String; let threadRootId: String?; let text: String }
-        return try await request("api/drafts", method: "PUT", body: Input(channelId: channelID, threadRootId: threadRootID, text: text))
+    /// Saves one draft for the account's other devices; empty text and no files
+    /// clear it. `attachmentIds` (ready staged files, in order) replaces its
+    /// files; nil leaves them as they are.
+    func saveDraft(channelID: String, threadRootID: String?, text: String,
+                   attachmentIDs: [String]? = nil, spoilerAttachmentIDs: [String]? = nil) async throws -> ServerDraft {
+        struct Input: Encodable {
+            let channelId: String; let threadRootId: String?; let text: String
+            let attachmentIds: [String]?; let spoilerAttachmentIds: [String]?
+        }
+        return try await request("api/drafts", method: "PUT", body: Input(channelId: channelID, threadRootId: threadRootID, text: text,
+                                                                          attachmentIds: attachmentIDs, spoilerAttachmentIds: spoilerAttachmentIDs))
     }
 
     /// The feedback team's inbox (or its archived threads), newest first; 404

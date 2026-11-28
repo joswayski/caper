@@ -1202,7 +1202,10 @@ impl App {
                 return;
             }
             file.stop();
-            let old = file.attachment.take();
+            // Another device's file is never cancelled; the edit uploads
+            // as this device's own file in its tile.
+            let old = file.attachment.take().filter(|_| !file.synced);
+            file.synced = false;
             file.key = next;
             file.cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
             file.edit = edit;
@@ -1231,6 +1234,29 @@ impl App {
 
     /// Opens a composer file in the editor, viewing it as it will be sent.
     pub(super) fn view_draft(self: &Rc<Self>, key: u64) {
+        // A synced file has no copy here: Edit downloads one first, then
+        // opens (`Event::DraftFileDownloaded`).
+        {
+            let state = self.state.borrow();
+            if let Some(file) = state
+                .files
+                .iter()
+                .find(|file| file.key == key && file.synced && file.local_path.is_none())
+            {
+                if let Some(url) = file.attachment.as_ref().and_then(|a| a.url.clone())
+                    && file.editable.is_some()
+                {
+                    self.worker
+                        .send(caper_client::worker::Command::DownloadDraftFile {
+                            epoch: state.epoch,
+                            key,
+                            url,
+                            name: file.name.clone(),
+                        });
+                }
+                return;
+            }
+        }
         let opened = {
             let state = self.state.borrow();
             state

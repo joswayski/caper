@@ -1785,10 +1785,13 @@ impl App {
                 }
             }
             let parked = state.parked.take_all();
-            let uploaded: Vec<String> = state
-                .files
+            // Staged files stop uploading, but those that finished stay: the
+            // synced draft keeps them on the server for the next sign-in.
+            for file in &state.files {
+                file.stop();
+            }
+            let uploaded: Vec<String> = parked
                 .iter()
-                .chain(&parked)
                 .chain(state.voice_sends.iter().map(|send| &send.file))
                 .inspect(|file| file.stop())
                 .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
@@ -3169,14 +3172,19 @@ impl App {
                 ChipAction::Edit(_) => {}
             }
             state.files_revision += 1;
+            // A removed or re-marked file changes the synced draft.
+            self.sync_drafts(&mut state);
         }
         self.render();
     }
 
-    /// Stops a removed file's upload and gives its reservation back.
+    /// Stops a removed file's upload and gives its reservation back. Another
+    /// device's file (a synced draft's) is only dropped, never cancelled.
     fn release_file(&self, state: &State, file: DraftFile) {
         file.stop();
-        if let (Some(token), Some(attachment)) = (state.token.clone(), &file.attachment) {
+        if let (Some(token), Some(attachment), false) =
+            (state.token.clone(), &file.attachment, file.synced)
+        {
             self.worker.send(Command::CancelAssets {
                 token,
                 ids: vec![attachment.id.clone()],
@@ -3476,6 +3484,8 @@ impl App {
         let Some(token) = state.token.clone() else {
             return;
         };
+        // Files that finished, were removed or re-marked are edits too.
+        state.drafts.note_files(&state.files);
         for save in state.drafts.due(Instant::now()) {
             self.worker.send(Command::SaveDraft {
                 epoch: state.epoch,
@@ -3488,6 +3498,7 @@ impl App {
     /// Leaving a conversation or thread, closing, quitting and sending save
     /// every edited draft now.
     fn flush_drafts(&self, state: &mut State) {
+        state.drafts.note_files(&state.files);
         state.drafts.flush();
         self.send_drafts(state);
     }
@@ -3526,7 +3537,7 @@ impl App {
         let changed = {
             let mut state = self.state.borrow_mut();
             let current = state.epoch;
-            let changed = match event {
+            let changed: Vec<caper_client::saved_drafts::Applied> = match event {
                 Event::Profiles {
                     epoch,
                     event: ProfileEvent::Ready,
@@ -3549,18 +3560,84 @@ impl App {
                     epoch,
                     save,
                     result,
-                } if epoch == current => {
-                    state.drafts.saved(&save, result);
+                } if epoch == current => state.drafts.saved(&save, result).into_iter().collect(),
+                // Edit on a synced file: its copy arrived, so the editor opens.
+                Event::DraftFileDownloaded { epoch, key, result } if epoch == current => {
+                    if let Some(file) = state.files.iter_mut().find(|file| file.key == key) {
+                        match result {
+                            Ok(scratch) => {
+                                file.local_path = Some(scratch.path().to_owned());
+                                file.source_scratch = Some(scratch);
+                                let app = self.clone();
+                                glib::idle_add_local_once(move || app.view_draft(key));
+                            }
+                            Err(()) => file.error = Some("Failed to download.".into()),
+                        }
+                        state.files_revision += 1;
+                    }
                     Vec::new()
                 }
                 _ => Vec::new(),
             };
+            for applied in &changed {
+                if let Some(files) = &applied.files {
+                    self.adopt_files(&mut state, applied, files);
+                }
+            }
             self.sync_drafts(&mut state);
             changed
         };
-        for (key, text) in changed {
-            self.show_draft(&key, &text);
+        for applied in changed {
+            if let Some(text) = &applied.text {
+                self.show_draft(&applied.key, text);
+            }
         }
+    }
+
+    /// A synced draft's files (rule 4): its composer shows them as ready
+    /// tiles, keeps this device's files still uploading, and releases the
+    /// ones the draft no longer lists, as Remove does.
+    fn adopt_files(
+        &self,
+        state: &mut State,
+        applied: &caper_client::saved_drafts::Applied,
+        files: &[caper_client::model::Attachment],
+    ) {
+        let state = &mut *state;
+        let mut added = Vec::new();
+        let dropped = caper_client::drafts::adopt(
+            &mut state.files,
+            &applied.channel_id,
+            applied.thread_root_id.as_deref(),
+            files,
+            |attachment| {
+                state.file_keys += 1;
+                added.push(state.file_keys);
+                DraftFile::synced(
+                    state.file_keys,
+                    applied.channel_id.clone(),
+                    applied.thread_root_id.clone(),
+                    attachment.clone(),
+                )
+            },
+        );
+        // Dropped without cancelling: the device that sent or removed the
+        // file may still be sending it, and unsent files expire anyway.
+        for file in dropped {
+            file.stop();
+        }
+        if let Some(token) = state.token.clone() {
+            for file in state.files.iter().filter(|file| added.contains(&file.key)) {
+                if let Some(url) = file.thumbnail_url() {
+                    self.worker.send(Command::DraftThumbnail {
+                        key: file.key,
+                        token: token.clone(),
+                        url: url.to_owned(),
+                    });
+                }
+            }
+        }
+        state.files_revision += 1;
     }
 
     /// Another device's draft replaced `key`'s device copy: a composer on
@@ -4614,6 +4691,7 @@ impl App {
                     | Event::Dictated { .. }
                     | Event::DraftsLoaded { .. }
                     | Event::DraftSaved { .. }
+                    | Event::DraftFileDownloaded { .. }
                     | Event::Profiles {
                         event: ProfileEvent::Ready | ProfileEvent::Draft(_),
                         ..
@@ -4669,6 +4747,7 @@ impl App {
                 } if epoch == self.state.borrow().epoch => self.inbox_read(items, result),
                 event @ (Event::DraftsLoaded { .. }
                 | Event::DraftSaved { .. }
+                | Event::DraftFileDownloaded { .. }
                 | Event::Profiles { .. }) => self.draft_event(event),
                 _ => {}
             }
@@ -4721,6 +4800,8 @@ impl App {
         self.start_membership_refresh();
         self.render_admin();
         self.receive_voice();
+        // A file that finished uploading joins its synced draft.
+        self.sync_drafts(&mut self.state.borrow_mut());
         self.render();
     }
 

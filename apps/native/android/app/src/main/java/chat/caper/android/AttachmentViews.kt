@@ -595,14 +595,20 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     enabled: Boolean = true, uploadOnSend: Boolean = false, sending: Boolean = false,
     edit: ((String, AttachmentEdit?, Bitmap?) -> Unit)? = null,
     toggleSpoiler: ((String) -> Unit)? = null,
+    /** Fetches a synced tile's file (another device picked it) so the editor can open it. */
+    download: ((String) -> Unit)? = null,
 ) {
     var editing by remember { mutableStateOf<OpenEditor?>(null) }
     editing?.let { open ->
         val draft = drafts.find { it.key == open.key }
         val source = draft?.original ?: draft?.pickedUri
         val kind = draft?.editKind
+        // A synced tile's file downloads first; the editor opens once it arrives, and a failure closes it (the tile shows Failed).
+        if (draft != null && draft.synced && source == null && draft.error == null && kind != null && edit != null && download != null) {
+            LaunchedEffect(open.key) { download(open.key) }
+        }
         // One screen for viewing and editing; the spoiler reads live from the draft, so the toggle shows at once.
-        if (draft != null && source != null && kind != null && edit != null) {
+        else if (draft != null && source != null && kind != null && edit != null) {
             val cover = draftSpoilerSource(draft)
             AttachmentEditor(
                 source, kind, draft.name, draft.edit, cancel = { editing = null },
@@ -699,6 +705,9 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                             }
                             // Preparing and uploading dim the tile under a centred ring, shown even while locked for sending.
                             if (busy) DraftProgressOverlay(draftRingProgress(draft), Modifier.matchParentSize())
+                            // A synced file downloading for the editor spins until it opens.
+                            else if (editing?.key == draft.key && draft.synced && draft.original == null && draft.error == null)
+                                DraftProgressOverlay(null, Modifier.matchParentSize())
                             if (enabled) {
                                 // Editing works on the local original, so Edit is offered as soon as the file is known
                                 // editable; a file with no preview has it only while it can be marked as a spoiler.

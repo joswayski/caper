@@ -284,7 +284,7 @@ class CaperApiTest {
         server.enqueue(MockResponse().setBody("""{"channelId":"channel00001","threadRootId":"message00000001","text":"a reply","updatedAt":"2026-11-27T18:04:06.000000Z"}"""))
         server.enqueue(MockResponse().setBody("""{"channelId":"direct000001","threadRootId":null,"text":"","updatedAt":"2026-11-27T18:04:07.000000Z"}"""))
         val api = CaperApi(baseUrl = server.url("/").toString())
-        assertEquals(listOf(ServerDraft("channel00001", null, "hi", "2026-11-27T18:04:05.123456Z")), api.drafts("account-secret").drafts)
+        assertEquals(listOf(ServerDraft("channel00001", null, "hi", updatedAt = "2026-11-27T18:04:05.123456Z")), api.drafts("account-secret").drafts)
         assertEquals("2026-11-27T18:04:06.000000Z", api.saveDraft("account-secret", "channel00001", "message00000001", "a reply").updatedAt)
         assertEquals("", api.saveDraft("account-secret", "direct000001", null, "").text)
         assertTrue(runCatching { api.saveDraft("account-secret", "channel00001", "../x", "x") }.exceptionOrNull() is IllegalArgumentException)
@@ -295,6 +295,44 @@ class CaperApiTest {
         assertEquals("""{"channelId":"channel00001","threadRootId":"message00000001","text":"a reply"}""", requests[1].body.readUtf8())
         assertEquals("""{"channelId":"direct000001","text":""}""", requests[2].body.readUtf8())
         assertTrue(requests.all { it.headers["Authorization"] == "Bearer account-secret" })
+    }
+
+    @Test fun `draft files come signed in tile order and save as IDs with their spoiler marks`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"drafts":[{"channelId":"channel00001","threadRootId":null,"text":"","updatedAt":"2026-11-27T18:04:05.123456Z",
+            "attachments":[{"id":"file000000000001","kind":"image","contentType":"image/avif","name":"a.avif","size":12,"width":4,"height":3,"preview":{},
+            "url":"https://cdn.caper.chat/assets/file000000000001?sig=s","previewUrl":"https://cdn.caper.chat/preview/file000000000001?sig=s","spoiler":true},
+            {"id":"file000000000002","kind":"file","contentType":"application/pdf","name":"b.pdf","size":34,"url":"https://cdn.caper.chat/assets/file000000000002?sig=s"}]}]}"""))
+        server.enqueue(MockResponse().setBody("""{"channelId":"channel00001","threadRootId":"message00000001","text":"x","attachments":[],"updatedAt":"2026-11-27T18:04:06.000000Z"}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        val files = api.drafts("account-secret").drafts.single().attachments
+        assertEquals(listOf("file000000000001", "file000000000002"), files.map { it.id })
+        assertEquals(listOf(true, false), files.map { it.spoiler })
+        assertEquals("https://cdn.caper.chat/preview/file000000000001?sig=s", files[0].previewUrl)
+        api.saveDraft("account-secret", "channel00001", "message00000001", "x", listOf("file000000000002", "file000000000001"), listOf("file000000000001", "file000000000009"))
+        assertTrue(runCatching { api.saveDraft("account-secret", "channel00001", null, "x", listOf("../escape")) }.exceptionOrNull() is IllegalArgumentException)
+        server.takeRequest()
+        assertEquals("""{"channelId":"channel00001","threadRootId":"message00000001","text":"x","attachmentIds":["file000000000002","file000000000001"],"spoilerAttachmentIds":["file000000000001"]}""",
+            server.takeRequest().body.readUtf8())
+    }
+
+    @Test fun `a synced file downloads without credentials and within its size`() = runTest {
+        val folder = java.nio.file.Files.createTempDirectory("download").toFile()
+        try {
+            server.enqueue(MockResponse().setBody("picture bytes"))
+            server.enqueue(MockResponse().setBody("much more than declared"))
+            server.enqueue(MockResponse().setResponseCode(403))
+            val api = CaperApi(baseUrl = server.url("/").toString())
+            val target = java.io.File(folder, "edit/source")
+            api.download(server.url("/assets/file000000000001?sig=s").toString(), target, 13)
+            assertEquals("picture bytes", target.readText())
+            val request = server.takeRequest()
+            assertEquals("/assets/file000000000001?sig=s", request.path)
+            assertNull(request.headers["Authorization"])
+            assertTrue(runCatching { api.download(server.url("/assets/x").toString(), java.io.File(folder, "big"), 13) }.isFailure)
+            assertEquals(403, (runCatching { api.download(server.url("/assets/y").toString(), java.io.File(folder, "denied"), 13) }.exceptionOrNull() as ApiException).status)
+            // Signed CDN URLs are HTTPS beside a real API.
+            assertTrue(runCatching { CaperApi(baseUrl = "https://caper.chat").download("http://cdn.example/assets/x", java.io.File(folder, "plain"), 13) }.exceptionOrNull() is IllegalArgumentException)
+        } finally { folder.deleteRecursively() }
     }
 
     @Test fun `request, block and privacy routes`() = runTest {

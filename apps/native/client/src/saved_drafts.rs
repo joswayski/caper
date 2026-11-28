@@ -5,14 +5,18 @@
 //! thread's "also send to channel" choice stay in memory. Drafts are never
 //! logged.
 //!
-//! The text also syncs between the account's devices (`docs/media.md`,
-//! "Draft sync"): each local edit marks its draft dirty and saves it
-//! (`PUT /api/drafts`) a second after typing stops, or at once when flushed;
-//! a server draft (`GET /api/drafts`, `draft.updated`) applies unless the
-//! draft is dirty or it is not newer than the last one applied; and after
-//! `GET`, device drafts the server lacks are saved. Windows and Linux share
-//! these rules; they only send the saves and show what changed.
+//! The text and the staged files that finished uploading also sync between
+//! the account's devices (`docs/media.md`, "Draft sync"): each local edit
+//! (typing, or a file finishing, removed or re-marked) marks its draft dirty
+//! and saves it (`PUT /api/drafts`) a second after it stops, or at once when
+//! flushed; a server draft (`GET /api/drafts`, `draft.updated`) applies
+//! unless the draft is dirty or it is not newer than the last one applied;
+//! and after `GET`, device drafts the server lacks are saved. Windows and
+//! Linux share these rules (and `drafts::adopt` for the tiles); they only
+//! send the saves and show what changed.
 
+use crate::drafts::Staged;
+use crate::model::Attachment;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -32,7 +36,21 @@ pub struct ServerDraft {
     pub thread_root_id: Option<String>,
     #[serde(default)]
     pub text: String,
+    /// Its staged files, in order, with signed URLs and spoiler marks.
+    #[serde(default, deserialize_with = "attachments")]
+    pub attachments: Vec<Attachment>,
     pub updated_at: String,
+}
+
+/// Files shaped differently by a newer server are skipped, not fatal.
+fn attachments<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Attachment>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_array()
+        .map(|items| items.iter().filter_map(Attachment::parse).collect())
+        .unwrap_or_default())
 }
 
 impl ServerDraft {
@@ -46,6 +64,16 @@ impl ServerDraft {
             Some(root) => thread_key(root),
             None => self.channel_id.clone(),
         }
+    }
+
+    fn files(&self) -> Vec<File> {
+        self.attachments
+            .iter()
+            .map(|attachment| File {
+                id: attachment.id.clone(),
+                spoiler: attachment.spoiler,
+            })
+            .collect()
     }
 }
 
@@ -62,17 +90,26 @@ pub struct DraftSave {
     pub key: String,
     pub channel_id: String,
     pub thread_root_id: Option<String>,
-    /// Empty clears it.
+    /// Empty (with no files) clears it.
     pub text: String,
+    /// The staged files that finished uploading, in tile order. None leaves
+    /// the server's files as they are: this device has not seen them yet.
+    pub attachment_ids: Option<Vec<String>>,
+    pub spoiler_attachment_ids: Vec<String>,
 }
 
 impl DraftSave {
     pub fn body(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut body = serde_json::json!({
             "channelId": self.channel_id,
             "threadRootId": self.thread_root_id,
             "text": self.text,
-        })
+        });
+        if let Some(ids) = &self.attachment_ids {
+            body["attachmentIds"] = serde_json::json!(ids);
+            body["spoilerAttachmentIds"] = serde_json::json!(self.spoiler_attachment_ids);
+        }
+        body
     }
 }
 
@@ -96,6 +133,21 @@ impl SaveFailure {
     }
 }
 
+/// A server draft that changed this device's copy: show it where its
+/// composer is on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Applied {
+    pub key: String,
+    pub channel_id: String,
+    pub thread_root_id: Option<String>,
+    /// The new text, when it changed: replaces the composer's (cursor at the
+    /// end, no typing indicator).
+    pub text: Option<String>,
+    /// The draft's files, when they changed: `drafts::adopt` them into the
+    /// composer's tiles.
+    pub files: Option<Vec<Attachment>>,
+}
+
 /// Conversation drafts by channel or DM ID, and thread replies by
 /// [`thread_key`]. Without a directory or account it keeps them in memory.
 #[derive(Default)]
@@ -104,6 +156,13 @@ pub struct SavedDrafts {
     path: Option<PathBuf>,
     texts: BTreeMap<String, String>,
     sync: BTreeMap<String, Sync>,
+}
+
+/// A synced draft's file: its ID and the composer's spoiler mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct File {
+    id: String,
+    spoiler: bool,
 }
 
 /// A draft's sync state. The first three fields are kept in the file.
@@ -124,13 +183,26 @@ struct Sync {
     /// Flushed: saves without waiting.
     #[serde(skip)]
     now: bool,
-    /// The text of the save in flight; one at a time per draft.
+    /// The text and files of the save in flight; one at a time per draft.
     #[serde(skip)]
-    sending: Option<String>,
+    sending: Option<(String, Option<Vec<File>>)>,
     /// A save failed (or the dirty draft is from before a restart): it
     /// waits for the next edit or reconnect.
     #[serde(skip)]
     waiting: bool,
+    /// Its finished files as this device's composer holds them. None until
+    /// this run has seen them (tiles are not kept across restarts), so a
+    /// save then leaves the server's files alone.
+    #[serde(skip)]
+    files: Option<Vec<File>>,
+}
+
+impl Sync {
+    fn edit(&mut self) {
+        self.dirty = true;
+        self.edited = Some(Instant::now());
+        self.waiting = false;
+    }
 }
 
 /// The file: the drafts' text and their sync state. Files from before sync
@@ -152,6 +224,10 @@ enum OnDisk {
 /// A thread reply's key: root message IDs never collide with channel IDs.
 pub fn thread_key(root: &str) -> String {
     format!("thread:{root}")
+}
+
+fn draft_key(channel: &str, root: Option<&str>) -> String {
+    root.map_or_else(|| channel.to_owned(), thread_key)
 }
 
 impl SavedDrafts {
@@ -200,10 +276,7 @@ impl SavedDrafts {
     /// A change is an edit: the draft is dirty and saves after `SAVE_DELAY`.
     pub fn set(&mut self, key: &str, text: &str) {
         if self.store(key, text) {
-            let state = self.sync.entry(key.to_owned()).or_default();
-            state.dirty = true;
-            state.edited = Some(Instant::now());
-            state.waiting = false;
+            self.sync.entry(key.to_owned()).or_default().edit();
             self.save();
         }
     }
@@ -219,6 +292,56 @@ impl SavedDrafts {
             }
         }
         self.set(&key, text);
+    }
+
+    /// Notes every composer's finished files from `tiles` (all of them, in
+    /// tile order, across conversations and threads): a file that finished
+    /// uploading, was removed (or sent) or re-marked is an edit like typing.
+    pub fn note_files<T: Staged>(&mut self, tiles: &[T]) {
+        let mut composers: BTreeMap<(String, Option<String>), Vec<File>> = BTreeMap::new();
+        for tile in tiles.iter().filter(|tile| tile.in_composer()) {
+            let upload = tile.upload();
+            let files = composers
+                .entry((upload.channel.clone(), upload.thread_root_id.clone()))
+                .or_default();
+            if let Some(attachment) = &upload.attachment {
+                files.push(File {
+                    id: attachment.id.clone(),
+                    spoiler: upload.spoiler,
+                });
+            }
+        }
+        // Drafts that had files and have no tile left were emptied.
+        let emptied = self
+            .sync
+            .iter()
+            .filter(|(_, state)| state.files.as_ref().is_some_and(|files| !files.is_empty()))
+            .filter_map(|(key, _)| self.target(key))
+            .filter(|target| !composers.contains_key(target))
+            .collect::<Vec<_>>();
+        for target in emptied {
+            composers.insert(target, Vec::new());
+        }
+        for ((channel, root), files) in composers {
+            self.set_files(&channel, root.as_deref(), files);
+        }
+    }
+
+    fn set_files(&mut self, channel: &str, root: Option<&str>, files: Vec<File>) {
+        let state = self.sync.entry(draft_key(channel, root)).or_default();
+        if root.is_some() && state.channel.as_deref() != Some(channel) {
+            state.channel = Some(channel.to_owned());
+        }
+        if state.files.as_ref() == Some(&files) {
+            return;
+        }
+        // No finished file yet, and the server's unseen: nothing to say.
+        if state.files.is_none() && files.is_empty() {
+            return;
+        }
+        state.files = Some(files);
+        state.edit();
+        self.save();
     }
 
     /// Writes the device copy; returns whether it changed.
@@ -290,12 +413,20 @@ impl SavedDrafts {
                 state.dirty = false;
                 continue;
             };
-            state.sending = Some(text.clone());
+            let files = state.files.clone();
+            state.sending = Some((text.clone(), files.clone()));
             saves.push(DraftSave {
                 key,
                 channel_id,
                 thread_root_id,
                 text,
+                spoiler_attachment_ids: files
+                    .iter()
+                    .flatten()
+                    .filter(|file| file.spoiler)
+                    .map(|file| file.id.clone())
+                    .collect(),
+                attachment_ids: files.map(|files| files.into_iter().map(|file| file.id).collect()),
             });
         }
         saves
@@ -317,64 +448,104 @@ impl SavedDrafts {
     }
 
     /// A save's answer. Its `updatedAt` counts as applied, so the save's own
-    /// `draft.updated` echo changes nothing; text typed since stays dirty.
-    pub fn saved(&mut self, save: &DraftSave, result: Result<ServerDraft, SaveFailure>) {
-        let unchanged = self.get(&save.key) == save.text.as_str();
-        let Some(state) = self.sync.get_mut(&save.key) else {
-            return;
-        };
-        if state.sending.as_deref() != Some(save.text.as_str()) {
-            return;
+    /// `draft.updated` echo changes nothing; edits since stay dirty. A save
+    /// that left the server's files alone (this run had not seen them)
+    /// returns them, to show.
+    pub fn saved(
+        &mut self,
+        save: &DraftSave,
+        result: Result<ServerDraft, SaveFailure>,
+    ) -> Option<Applied> {
+        let text = self.get(&save.key).to_owned();
+        let state = self.sync.get_mut(&save.key)?;
+        let (sent_text, sent_files) = state.sending.clone()?;
+        let ids = sent_files
+            .as_ref()
+            .map(|files| files.iter().map(|file| file.id.clone()).collect::<Vec<_>>());
+        if sent_text != save.text || ids != save.attachment_ids {
+            return None;
         }
         state.sending = None;
+        let unchanged = text == sent_text && state.files == sent_files;
+        let mut applied = None;
         match result {
             Ok(draft) => {
                 if draft.updated_at > state.applied {
-                    state.applied = draft.updated_at;
+                    state.applied.clone_from(&draft.updated_at);
                 }
                 state.dirty &= !unchanged;
+                if state.files.is_none() {
+                    state.files = Some(draft.files());
+                    applied = (!draft.attachments.is_empty()).then(|| Applied {
+                        key: save.key.clone(),
+                        channel_id: draft.channel_id,
+                        thread_root_id: draft.thread_root_id,
+                        text: None,
+                        files: Some(draft.attachments),
+                    });
+                }
             }
-            // Text typed since then is the next edit, which saves as usual.
+            // Edits since then are the next edit, which saves as usual.
             Err(SaveFailure::Retry) => state.waiting = unchanged,
             Err(SaveFailure::Refused) => state.dirty &= !unchanged,
         }
         self.save();
+        applied
     }
 
     /// A server draft (`draft.updated`, or one of `GET`'s): it applies
     /// unless the draft is dirty or it is not newer than the last applied.
-    /// Returns its key and text when the device copy changed, for an
-    /// on-screen composer to show (without a typing indicator).
-    pub fn apply(&mut self, draft: ServerDraft) -> Option<(String, String)> {
+    /// Returns what changed on this device, for an on-screen composer to
+    /// show (without a typing indicator).
+    pub fn apply(&mut self, draft: ServerDraft) -> Option<Applied> {
         let key = draft.key();
         let state = self.sync.entry(key.clone()).or_default();
         if state.dirty || draft.updated_at <= state.applied {
             return None;
         }
-        state.applied = draft.updated_at;
+        state.applied.clone_from(&draft.updated_at);
         if draft.thread_root_id.is_some() {
-            state.channel = Some(draft.channel_id);
+            state.channel = Some(draft.channel_id.clone());
         }
-        let changed = self.store(&key, &draft.text);
+        let files = draft.files();
+        let files_changed = match &state.files {
+            Some(known) => *known != files,
+            None => !files.is_empty(),
+        };
+        state.files = Some(files);
+        let text_changed = self.store(&key, &draft.text);
         self.save();
-        changed.then_some((key, draft.text))
+        (text_changed || files_changed).then(|| Applied {
+            key,
+            text: text_changed.then_some(draft.text),
+            files: files_changed.then_some(draft.attachments),
+            channel_id: draft.channel_id,
+            thread_root_id: draft.thread_root_id,
+        })
     }
 
     /// `GET /api/drafts`: each applies as [`apply`](Self::apply) does, then a
-    /// non-empty device draft the server has no entry for saves now, so text
-    /// typed before sync or offline reaches the other devices.
-    pub fn loaded(&mut self, drafts: Vec<ServerDraft>) -> Vec<(String, String)> {
+    /// device draft with text or finished files that the server has no entry
+    /// for saves now, so what was written before sync or offline reaches the
+    /// other devices.
+    pub fn loaded(&mut self, drafts: Vec<ServerDraft>) -> Vec<Applied> {
         let known = drafts.iter().map(ServerDraft::key).collect::<BTreeSet<_>>();
         let changed = drafts
             .into_iter()
             .filter_map(|draft| self.apply(draft))
             .collect();
+        let with_files = self
+            .sync
+            .iter()
+            .filter(|(_, state)| state.files.as_ref().is_some_and(|files| !files.is_empty()))
+            .map(|(key, _)| key);
         let device_only = self
             .texts
             .keys()
+            .chain(with_files)
             .filter(|key| !known.contains(*key) && self.target(key).is_some())
             .cloned()
-            .collect::<Vec<_>>();
+            .collect::<BTreeSet<_>>();
         for key in device_only {
             let state = self.sync.entry(key).or_default();
             state.dirty = true;
@@ -430,6 +601,9 @@ impl SavedDrafts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drafts::{Upload, adopt};
+    use crate::model::{AttachmentKind, AttachmentStatus};
+    use crate::worker::UploadUpdate;
 
     fn dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("caper-drafts-{name}-{}", std::process::id()));
@@ -490,8 +664,14 @@ mod tests {
             channel_id,
             thread_root_id,
             text: text.into(),
+            attachments: Vec::new(),
             updated_at: format!("2026-11-27T18:04:{at}.000000Z"),
         }
+    }
+
+    /// Only what text an applied draft changed, by key.
+    fn text(applied: Option<Applied>) -> Option<(String, String)> {
+        applied.and_then(|applied| Some((applied.key, applied.text?)))
     }
 
     fn later() -> Instant {
@@ -523,11 +703,14 @@ mod tests {
                 channel_id: "general".into(),
                 thread_root_id: None,
                 text: "hel".into(),
+                attachment_ids: None,
+                spoiler_attachment_ids: Vec::new(),
             }]
         );
         assert_eq!(
             saves[0].body(),
-            serde_json::json!({"channelId": "general", "threadRootId": null, "text": "hel"})
+            serde_json::json!({"channelId": "general", "threadRootId": null, "text": "hel"}),
+            "files this run has not seen are left alone"
         );
         // Typed while it saves: the next save waits for this one.
         drafts.set("general", "hello");
@@ -561,7 +744,7 @@ mod tests {
         assert_eq!(drafts.get("general"), "mine");
         drafts.saved(&saves[0], Ok(server("general", "mine", "07")));
         assert_eq!(
-            drafts.apply(server("general", "newer", "08")),
+            text(drafts.apply(server("general", "newer", "08"))),
             Some(("general".into(), "newer".into()))
         );
     }
@@ -570,7 +753,7 @@ mod tests {
     fn older_or_repeated_server_drafts_are_ignored() {
         let mut drafts = SavedDrafts::default();
         assert_eq!(
-            drafts.apply(server("general", "second", "02")),
+            text(drafts.apply(server("general", "second", "02"))),
             Some(("general".into(), "second".into()))
         );
         assert_eq!(drafts.apply(server("general", "first", "01")), None);
@@ -578,12 +761,12 @@ mod tests {
         assert_eq!(drafts.get("general"), "second");
         // A cleared draft clears the device copy; a thread reply finds its key.
         assert_eq!(
-            drafts.apply(server("general", "", "03")),
+            text(drafts.apply(server("general", "", "03"))),
             Some(("general".into(), String::new()))
         );
         assert_eq!(drafts.get("general"), "");
         assert_eq!(
-            drafts.apply(server("general/root1", "reply", "04")),
+            text(drafts.apply(server("general/root1", "reply", "04"))),
             Some((thread_key("root1"), "reply".into()))
         );
         assert!(drafts.due(later()).is_empty(), "applying is not an edit");
@@ -612,7 +795,14 @@ mod tests {
         sync(&mut drafts, "01");
         // Gone from the server (another device's view of it is older).
         let changed = drafts.loaded(vec![server("design", "from the phone", "02")]);
-        assert_eq!(changed, [("design".into(), "from the phone".into())]);
+        assert_eq!(
+            changed
+                .into_iter()
+                .map(Some)
+                .filter_map(text)
+                .collect::<Vec<_>>(),
+            [("design".into(), "from the phone".into())]
+        );
         let mut saves = drafts.due(Instant::now());
         saves.sort_by(|a, b| a.key.cmp(&b.key));
         assert_eq!(
@@ -672,5 +862,207 @@ mod tests {
             ["general"]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Files (rule 4) ----
+
+    fn file(id: &str) -> Attachment {
+        Attachment {
+            spoiler: false,
+            id: id.into(),
+            kind: AttachmentKind::Image,
+            content_type: "image/png".into(),
+            name: format!("{id}.png"),
+            size: 2048,
+            width: None,
+            height: None,
+            duration_ms: None,
+            preview: true,
+            url: Some(format!("https://cdn.example/{id}")),
+            preview_url: Some(format!("https://cdn.example/{id}/preview")),
+            unavailable: false,
+            status: AttachmentStatus::Ready,
+            animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
+        }
+    }
+
+    fn with_files(mut draft: ServerDraft, files: &[Attachment]) -> ServerDraft {
+        draft.attachments = files.to_vec();
+        draft
+    }
+
+    /// A file picked on this device for `general`, still uploading.
+    fn picked(key: u64) -> Upload {
+        Upload::picked(
+            key,
+            "general".into(),
+            None,
+            "photo.png".into(),
+            Some("photo.png".into()),
+        )
+    }
+
+    fn ids(tiles: &[Upload]) -> Vec<Option<&str>> {
+        tiles
+            .iter()
+            .map(|tile| tile.attachment.as_ref().map(|file| file.id.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn server_files_parse_with_their_spoiler_marks() {
+        let draft: ServerDraft = serde_json::from_value(serde_json::json!({
+            "channelId": "chan00000001", "threadRootId": null, "text": "",
+            "attachments": [
+                {"id": "a1", "kind": "image", "contentType": "image/png", "name": "a.png",
+                 "size": 5, "url": "https://cdn.example/a1", "spoiler": true},
+                {"unexpected": "shape"}
+            ],
+            "updatedAt": "2026-11-27T18:04:05.123456Z"
+        }))
+        .unwrap();
+        assert_eq!(draft.attachments.len(), 1, "a malformed file is skipped");
+        assert!(draft.attachments[0].spoiler);
+    }
+
+    #[test]
+    fn a_finished_upload_saves_its_id_and_an_uploading_one_waits() {
+        let mut drafts = SavedDrafts::default();
+        let mut tiles = vec![picked(1), picked(2)];
+        drafts.note_files(&tiles);
+        assert!(drafts.due(later()).is_empty(), "nothing finished yet");
+
+        tiles[1].apply(UploadUpdate::Finished(Ok(file("a2"))));
+        tiles[1].spoiler = true;
+        drafts.note_files(&tiles);
+        let saves = drafts.due(later());
+        assert_eq!(saves[0].attachment_ids, Some(vec!["a2".to_owned()]));
+        assert_eq!(saves[0].spoiler_attachment_ids, ["a2"]);
+        assert_eq!(
+            saves[0].body()["attachmentIds"],
+            serde_json::json!(["a2"]),
+            "the uploading file is not sent"
+        );
+        let mut answer = with_files(server("general", "", "01"), &[file("a2")]);
+        answer.attachments[0].spoiler = true;
+        drafts.saved(&saves[0], Ok(answer));
+
+        // Noting the same tiles again is no edit; finishing the other is.
+        drafts.note_files(&tiles);
+        assert!(drafts.due(later()).is_empty());
+        tiles[0].apply(UploadUpdate::Finished(Ok(file("a1"))));
+        drafts.note_files(&tiles);
+        assert_eq!(
+            drafts.due(later())[0].attachment_ids,
+            Some(vec!["a1".to_owned(), "a2".to_owned()]),
+            "in tile order"
+        );
+    }
+
+    #[test]
+    fn server_files_become_ready_tiles_beside_uploads_and_dropped_ones_go() {
+        let mut drafts = SavedDrafts::default();
+        // This device: one file sent up already (a1), one still uploading.
+        let mut done = picked(1);
+        done.apply(UploadUpdate::Finished(Ok(file("a1"))));
+        let mut tiles = vec![done, picked(2)];
+        let mut other = Upload::synced(9, "design".into(), None, file("d1"));
+        other.spoiler = true;
+        tiles.push(other);
+        drafts.note_files(&tiles);
+        sync(&mut drafts, "01");
+
+        // Another device removed a1 and added b1 and b2 (b2 marked).
+        let mut b2 = file("b2");
+        b2.spoiler = true;
+        let applied = drafts
+            .apply(with_files(
+                server("general", "", "02"),
+                &[file("b1"), b2.clone()],
+            ))
+            .unwrap();
+        assert_eq!(applied.text, None, "the text did not change");
+        let server_files = applied.files.unwrap();
+        let mut key = 10;
+        let dropped = adopt(&mut tiles, "general", None, &server_files, |attachment| {
+            key += 1;
+            Upload::synced(key, "general".into(), None, attachment.clone())
+        });
+        assert_eq!(ids(&dropped), [Some("a1")]);
+        let general = tiles
+            .iter()
+            .filter(|tile| tile.channel == "general")
+            .map(|tile| tile.attachment.as_ref().map(|file| file.id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(general, [Some("b1"), Some("b2"), None]);
+        let b2_tile = tiles.iter().find(|tile| tile.key == 12).unwrap();
+        assert!(b2_tile.synced && b2_tile.spoiler && !b2_tile.uploading);
+        assert!(!b2_tile.needs_upload(), "no upload, no local original");
+        assert_eq!(
+            b2_tile.thumbnail_url(),
+            Some("https://cdn.example/b2/preview")
+        );
+        assert!(
+            tiles.iter().any(|tile| tile.channel == "design"),
+            "another composer's tiles stay"
+        );
+        // Showing them is no edit; the uploading file joins once it finishes.
+        drafts.note_files(&tiles);
+        assert!(drafts.due(later()).is_empty());
+        let uploading = tiles.iter_mut().find(|tile| tile.key == 2).unwrap();
+        uploading.apply(UploadUpdate::Finished(Ok(file("a2"))));
+        drafts.note_files(&tiles);
+        let saves = drafts.due(later());
+        assert_eq!(
+            saves[0].attachment_ids,
+            Some(vec!["b1".into(), "b2".into(), "a2".into()])
+        );
+        assert_eq!(saves[0].spoiler_attachment_ids, ["b2"]);
+    }
+
+    #[test]
+    fn removing_every_file_saves_none_and_own_file_echo_changes_nothing() {
+        let mut drafts = SavedDrafts::default();
+        let mut done = picked(1);
+        done.apply(UploadUpdate::Finished(Ok(file("a1"))));
+        let mut tiles = vec![done];
+        drafts.note_files(&tiles);
+        let saves = drafts.due(later());
+        let echo = with_files(server("general", "", "01"), &[file("a1")]);
+        assert_eq!(drafts.apply(echo.clone()), None, "dirty while saving");
+        drafts.saved(&saves[0], Ok(echo.clone()));
+        assert_eq!(drafts.apply(echo), None, "its own echo");
+
+        tiles.clear();
+        drafts.note_files(&tiles);
+        let saves = drafts.due(later());
+        assert_eq!(saves[0].attachment_ids, Some(Vec::new()));
+        assert_eq!(saves[0].body()["attachmentIds"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_save_that_left_unseen_files_alone_shows_them() {
+        let mut drafts = SavedDrafts::default();
+        drafts.set("general", "typed before the server's files arrived");
+        let saves = drafts.due(later());
+        assert_eq!(saves[0].attachment_ids, None);
+        let answer = with_files(server("general", &saves[0].text, "01"), &[file("x1")]);
+        let applied = drafts.saved(&saves[0], Ok(answer)).unwrap();
+        assert_eq!(applied.text, None);
+        assert_eq!(applied.files.unwrap()[0].id, "x1");
+    }
+
+    #[test]
+    fn a_synced_tile_never_uploads_again_and_retry_clears_its_failure() {
+        let mut tile = Upload::synced(1, "general".into(), None, file("s1"));
+        tile.error = Some("Failed to download.".into());
+        tile.upload_expired = true;
+        assert!(!tile.needs_upload());
+        assert_eq!(tile.restart(), None);
+        assert_eq!(tile.error, None);
+        assert_eq!(tile.attachment.as_ref().unwrap().id, "s1");
     }
 }
