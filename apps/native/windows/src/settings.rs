@@ -3128,6 +3128,25 @@ impl App {
         }
         if self.foot_buttons_shown() {
             let audio = &live.voice.state.audio;
+            // A muted microphone or deafened output turns its button and
+            // chevron red over one red wash, as on web, macOS and Discord.
+            let wash = unsafe {
+                dc.CreateSolidColorBrush(&gfx::color(crate::theme::voice_off(), 0.16), None)?
+            };
+            for (button, chevron, off) in [
+                (FootButton::Mute, FootButton::InputOptions, audio.muted),
+                (
+                    FootButton::Deafen,
+                    FootButton::OutputOptions,
+                    audio.deafened,
+                ),
+            ] {
+                if off {
+                    let (bx, by, _, bh) = self.foot_button_rect(button);
+                    let (cx, _, cw, _) = self.foot_button_rect(chevron);
+                    fill_round(dc, rect(bx - dx, by, cx - dx + cw, by + bh), 6.0, &wash);
+                }
+            }
             for b in FootButton::ALL {
                 let (bx, by, bw, bh) = self.foot_button_rect(b);
                 let r = rect(bx - dx, by, bx - dx + bw, by + bh);
@@ -3137,15 +3156,13 @@ impl App {
                     _ => None,
                 };
                 let lit = self.audio_hover == Some(b) || (menu.is_some() && open == menu);
-                // A muted microphone or deafened output reads terracotta, as
-                // web's.
                 let on = match b {
-                    FootButton::Mute => audio.muted,
-                    FootButton::Deafen => audio.deafened,
-                    _ => false,
+                    FootButton::Mute | FootButton::InputOptions => audio.muted,
+                    FootButton::Deafen | FootButton::OutputOptions => audio.deafened,
                 };
                 if lit {
-                    fill_round(dc, r, 6.0, &g.brushes.hover);
+                    // Over the wash, hover deepens the red instead of greying it.
+                    fill_round(dc, r, 6.0, if on { &wash } else { &g.brushes.hover });
                 }
                 let (icon, inset) = match b {
                     FootButton::Mute if on => (Icon::MicOff, 5.0),
@@ -3161,7 +3178,7 @@ impl App {
                     icon,
                     rect(ix, iy, ix + side, iy + side),
                     if on {
-                        crate::theme::terracotta_bright()
+                        crate::theme::voice_off()
                     } else if lit {
                         crate::theme::text()
                     } else {

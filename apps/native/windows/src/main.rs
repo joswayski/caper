@@ -85,7 +85,7 @@ use list::Rows;
 use model::Conversation;
 use std::cell::RefCell;
 use std::ops::Range;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use theme::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -135,6 +135,8 @@ pub(crate) const TIMER_GIFS: usize = 8;
 pub(crate) const TIMER_GIF_FRAMES: usize = 9;
 /// Redraws the DM rows when the earliest timed mute ends, as egui does.
 const TIMER_MUTE: usize = 10;
+/// The next frame of an animated avatar in the rail, sidebar or member list.
+const TIMER_AVATARS: usize = 55;
 /// Who is typing: their dots' bounce, their entries' expiry and the end of
 /// your own typing.
 const TIMER_TYPING: usize = 19;
@@ -451,6 +453,10 @@ pub struct App {
     gif_rows: Vec<usize>,
     /// When the first of their frames is due, while the timer waits.
     gif_due: Option<Instant>,
+    /// The rail, sidebar and member list when they show an animated
+    /// avatar, and when its next frame is due (`TIMER_AVATARS`).
+    avatar_panels: Dirty,
+    avatar_due: Option<Instant>,
     /// The voice message playing or paused.
     playback: playback::Playback,
     dirty: Dirty,
@@ -884,6 +890,8 @@ impl App {
                 redraw: Vec::new(),
                 gif_rows: Vec::new(),
                 gif_due: None,
+                avatar_panels: Dirty::default(),
+                avatar_due: None,
                 playback: playback::Playback::default(),
                 dirty: Dirty::all(),
                 need: true,
@@ -2829,6 +2837,7 @@ impl App {
                 }
                 invite_people::TIMER_COPIED => self.copied_tick(),
                 TIMER_MEDIA => self.next_gif_frame(),
+                TIMER_AVATARS => self.next_avatar_frame(),
                 drop_overlay::TIMER_DROP => self.need = true,
                 autoscroll::TIMER_AUTOSCROLL => self.autoscroll_tick(),
                 motion::TIMER_ARRIVAL => self.arrivals_tick(),
@@ -3083,6 +3092,13 @@ impl App {
                     // Right-click, or press and hold on a touch screen: the
                     // space name's menu, out from the tile.
                     self.toggle_rail_menu(i);
+                }
+            }
+            // The window takes double-clicks (CS_DBLCLKS), so a quick second
+            // click on Mute, Deafen or a chevron arrives as one; it toggles back.
+            WM_LBUTTONDBLCLK if self.foot_button_at(x, y).is_some() => {
+                if let Some(b) = self.foot_button_at(x, y) {
+                    self.foot_button_activate(b);
                 }
             }
             WM_LBUTTONDBLCLK if self.in_history(x, y) => {
@@ -4489,7 +4505,17 @@ impl App {
             .invite_spots()
             .contains(&invites::Spot::NewChannel)
             .then(|| self.invite_enabled(invites::Spot::NewChannel));
+        // Panels showing an animated avatar, and its soonest next frame.
+        let mut animated = Dirty::default();
+        let mut avatar_next: Option<Duration> = None;
+        let mut avatars_drawn = |panel: &mut bool| {
+            if let Some(n) = avatars::take_due() {
+                *panel = true;
+                avatar_next = Some(avatar_next.map_or(n, |d| d.min(n)));
+            }
+        };
         if d.rail {
+            avatars::take_due();
             let hover = self.hover_space;
             self.rail.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(theme::blackout(), 1.0)));
@@ -4643,8 +4669,10 @@ impl App {
                 }
                 Ok(())
             })?;
+            avatars_drawn(&mut animated.rail);
         }
         if d.sidebar {
+            avatars::take_due();
             let sw = self.sidebar_w();
             let (hover, layouts) = (self.hover_channel, &self.channel_layouts);
             let (drows, dtop, dhover) = (self.direct_rows(), self.directs_top(), self.hover_direct);
@@ -4878,6 +4906,7 @@ impl App {
                 }
                 Ok(())
             })?;
+            avatars_drawn(&mut animated.sidebar);
         }
         if d.header {
             let (name, hashed) = (c.title(), c.has_conversation() && c.direct.is_none());
@@ -4963,6 +4992,7 @@ impl App {
             })?;
         }
         if d.members {
+            avatars::take_due();
             let mw = self.member_width();
             let (hover, layouts) = (self.hover_member, &self.member_layouts);
             let (shown, top0, searching) = (
@@ -5080,6 +5110,7 @@ impl App {
                 }
                 Ok(())
             })?;
+            avatars_drawn(&mut animated.members);
         }
         if d.typing {
             let names = self.live.as_ref().map_or_else(Vec::new, |l| {
@@ -5163,7 +5194,41 @@ impl App {
                 Ok(())
             })?;
         }
+        self.avatars_animated(animated, avatar_next);
         Ok(())
+    }
+
+    /// After drawing panels: the ones showing an animated avatar redraw
+    /// when its next frame is due, like message rows on the GIF timer.
+    fn avatars_animated(&mut self, panels: Dirty, next: Option<Duration>) {
+        let Some(next) = next else {
+            return;
+        };
+        self.avatar_panels.rail |= panels.rail;
+        self.avatar_panels.sidebar |= panels.sidebar;
+        self.avatar_panels.members |= panels.members;
+        let due = Instant::now() + next;
+        if self.avatar_due.is_none_or(|d| due < d) {
+            self.avatar_due = Some(due);
+            files::arm_frame_timer(self.hwnd, TIMER_AVATARS, next);
+        }
+    }
+
+    /// `TIMER_AVATARS`: the panels with animated avatars redraw, unless
+    /// nobody watches; `resume_gifs` redraws them when someone does.
+    fn next_avatar_frame(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_AVATARS);
+        }
+        self.avatar_due = None;
+        if self.pause_gifs() {
+            return;
+        }
+        let panels = std::mem::take(&mut self.avatar_panels);
+        self.dirty.rail |= panels.rail;
+        self.dirty.sidebar |= panels.sidebar;
+        self.dirty.members |= panels.members;
+        self.need = true;
     }
 
     fn frame(&mut self) -> Result<()> {

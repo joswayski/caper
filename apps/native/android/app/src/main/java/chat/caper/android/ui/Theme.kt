@@ -66,6 +66,8 @@ val Idle = Color(0xFFD8A64F)
 val Danger = Color(0xFFCF4254)
 val ErrorText = Color(0xFFFF9685)
 // END GENERATED THEME TOKENS
+/** A muted microphone or deafened output (shared themes' status.voiceOff), as web and Discord show it. */
+val VoiceOff = Color(0xFFFF6E7F)
 private val ControlShape = RoundedCornerShape(10.dp)
 val PillShape = RoundedCornerShape(999.dp)
 private val Figtree = FontFamily(

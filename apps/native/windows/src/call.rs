@@ -242,6 +242,16 @@ impl App {
                     }
                 }
             }
+            // The window takes double-clicks (CS_DBLCLKS), so a quick second
+            // click on a toggle arrives as one; it toggles back.
+            WM_LBUTTONDBLCLK if self.on_call(x, y) => {
+                if let Some(p @ (VPart::Mute | VPart::Deafen | VPart::LocalMute)) =
+                    self.voice_at(x, y)
+                {
+                    self.focus_voice(p);
+                    self.voice_activate(p);
+                }
+            }
             WM_MOUSEMOVE if self.call_ui.dragging => self.call_scrub(x),
             WM_LBUTTONUP if self.call_ui.dragging => {
                 self.call_scrub(x);

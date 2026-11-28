@@ -2137,6 +2137,11 @@ popover.menu check:checked {
   padding: 0;
 }
 
+/* Muted or deafened: the button and its chevron share a red wash. */
+.dock button.flat.voice-off {
+  background: alpha(@caper_voice_off, 0.16);
+}
+
 .voice-roster .voice-timer {
   color: #4aa86b;
   font-feature-settings: "tnum";

@@ -787,9 +787,28 @@ impl App {
         let audio = voice.state.audio;
         let toggles = (audio.muted, audio.deafened);
         if self.rendered_toggles.replace(Some(toggles)) != Some(toggles) {
+            // A muted microphone or deafened output turns its button and
+            // chevron red over a red wash, as on web, macOS and Discord.
+            let tint = |off: bool| if off { "#ff6e7f" } else { "#b9bcbe" };
+            for (button, chevron, off) in [
+                (&ui.mic, &ui.input_options, audio.muted),
+                (&ui.deafen, &ui.output_options, audio.deafened),
+            ] {
+                for b in [button, chevron] {
+                    if off {
+                        b.add_css_class("voice-off");
+                    } else {
+                        b.remove_css_class("voice-off");
+                    }
+                }
+                let image = self.images.icon_image(Icon::ChevronDown, tint(off), 12);
+                image.set_halign(gtk::Align::Center);
+                image.set_valign(gtk::Align::Center);
+                chevron.set_child(Some(&image));
+            }
             ui.mic.set_child(Some(&self.images.icon_image(
                 if audio.muted { Icon::MicOff } else { Icon::Mic },
-                if audio.muted { "#e5735a" } else { "#b9bcbe" },
+                tint(audio.muted),
                 18,
             )));
             ui.mic
@@ -800,7 +819,7 @@ impl App {
                 } else {
                     Icon::Headphones
                 },
-                if audio.deafened { "#e5735a" } else { "#b9bcbe" },
+                tint(audio.deafened),
                 18,
             )));
             ui.deafen

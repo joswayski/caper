@@ -58,6 +58,8 @@ pub struct Palette {
     pub on_action: u32,
     pub caper: u32,
     pub voice_green: u32,
+    /// A muted microphone or deafened output: its icon, and at 16% its wash.
+    pub voice_off: u32,
     pub hover: (u32, f32),
     pub scrim: (u32, f32),
 }
@@ -85,6 +87,7 @@ impl Palette {
         on_action: BLACKOUT,
         caper: CAPER,
         voice_green: VOICE_GREEN,
+        voice_off: 0xFF6E7F,
         hover: HOVER,
         scrim: (0x090A0C, 0.6),
     };
@@ -115,6 +118,7 @@ impl Palette {
             on_action: hex(&doc.action.on_primary, d.on_action),
             caper: hex(&doc.brand.caper, d.caper),
             voice_green: hex(&doc.status.voice, d.voice_green),
+            voice_off: hex(&doc.status.voice_off, d.voice_off),
             hover: (
                 if light { 0x0F172A } else { 0xFFFFFF },
                 doc.surfaces.hover_alpha,
@@ -225,6 +229,10 @@ pub fn caper() -> u32 {
 
 pub fn voice_green() -> u32 {
     palette().voice_green
+}
+
+pub fn voice_off() -> u32 {
+    palette().voice_off
 }
 
 pub fn scrim() -> (u32, f32) {

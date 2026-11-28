@@ -597,6 +597,10 @@ pub struct Dialog {
     pub update: Option<Box<caper_client::updates::Available>>,
     pub in_call: bool,
     pub update_shown: Vec<(crate::updates::Line, String)>,
+    /// The review's selected text, from anchor to focus as (line, UTF-16
+    /// offset), and whether a drag is extending it.
+    pub notes_sel: Option<((u8, u32), (u8, u32))>,
+    pub notes_drag: bool,
     pub profile_edit: Option<Box<crate::profile::editor::Editor>>,
     pub reactors: Option<Box<crate::reactors::View>>,
     pub forwarding: Option<Box<crate::forward::Forward>>,
@@ -685,6 +689,8 @@ impl Dialog {
             update: None,
             in_call: false,
             update_shown: Vec::new(),
+            notes_sel: None,
+            notes_drag: false,
             profile_edit: None,
             reactors: None,
             forwarding: None,
@@ -1439,6 +1445,19 @@ impl Dialog {
                     Part::Line(k) if self.kind == Kind::Update => {
                         if let Some((line, s)) = self.update_shown.get(*k as usize) {
                             let l = layout(g, s, crate::updates::line_format(g, *line), pw)?;
+                            if let Some((a, b)) = self.notes_line_range(*k) {
+                                for m in gfx::range_rects(&l, a, b - a) {
+                                    dc.FillRectangle(
+                                        &rect(
+                                            x + m.left,
+                                            y + m.top,
+                                            x + m.left + m.width,
+                                            y + m.top + m.height,
+                                        ),
+                                        &g.brushes.selection,
+                                    );
+                                }
+                            }
                             crate::text::draw(dc, &l, x, y, crate::updates::line_brush(g, *line));
                         }
                     }
@@ -2645,7 +2664,14 @@ impl App {
         match msg {
             WM_MOUSEMOVE => {
                 self.pointer = Some((x, y));
-                if d.pressed == Some(Part::Field) {
+                if d.notes_drag {
+                    // Dragging over the update's notes selects them.
+                    if let (Some(p), Some((a, _))) = (d.notes_point(&self.g, x, y), d.notes_sel) {
+                        d.notes_sel = Some((a, p));
+                        self.dirty.overlay = true;
+                        self.need = true;
+                    }
+                } else if d.pressed == Some(Part::Field) {
                     let p = d.field_hit(x, y);
                     if p != d.field.caret {
                         d.field.move_to(p, true);
@@ -2678,6 +2704,20 @@ impl App {
                     self.dialog_changed();
                     return done;
                 }
+                if part.is_none() && d.on_notes(x, y) {
+                    let p = d.notes_point(&self.g, x, y);
+                    d.notes_sel = p.map(|p| match d.notes_sel {
+                        Some((a, _)) if shift => (a, p),
+                        _ => (p, p),
+                    });
+                    d.notes_drag = true;
+                    self.dirty.overlay = true;
+                    self.need = true;
+                    return done;
+                }
+                if d.notes_sel.take().is_some() {
+                    self.dirty.overlay = true;
+                }
                 d.pressed = part;
                 if part == Some(Part::Field) && !d.busy {
                     let p = d.field_hit(x, y);
@@ -2697,6 +2737,7 @@ impl App {
                 unsafe {
                     let _ = ReleaseCapture();
                 }
+                d.notes_drag = false;
                 let pressed = d.pressed.take();
                 let released = d.hit(x, y);
                 self.dirty.overlay = true;
@@ -2717,11 +2758,20 @@ impl App {
                 self.dialog_changed();
                 done
             }
+            // Double-clicking the update's notes selects a word.
+            WM_LBUTTONDBLCLK if d.hit(x, y).is_none() && d.on_notes(x, y) => {
+                d.notes_sel = d.notes_word(&self.g, x, y);
+                self.dirty.overlay = true;
+                self.need = true;
+                done
+            }
             WM_LBUTTONDBLCLK | WM_MOUSEWHEEL => done,
             WM_SETCURSOR => {
-                let cursor = match self.pointer.and_then(|(x, y)| d.hit(x, y)) {
+                let at = self.pointer;
+                let cursor = match at.and_then(|(x, y)| d.hit(x, y)) {
                     Some(Part::Field | Part::Number(_)) => IDC_IBEAM,
                     Some(p) if d.enabled(p) => IDC_HAND,
+                    None if at.is_some_and(|(x, y)| d.on_notes(x, y)) => IDC_IBEAM,
                     _ => IDC_ARROW,
                 };
                 unsafe {
@@ -2850,9 +2900,17 @@ impl App {
                     _ if d.kind == Kind::InvitePeople && d.number_key(hwnd, vk, ctrl, shift) => {
                         self.dialog_changed();
                     }
+                    _ if ctrl && vk == VIRTUAL_KEY('A' as u16) && d.kind == Kind::Update => {
+                        d.notes_select_all();
+                        self.dirty.overlay = true;
+                        self.need = true;
+                    }
                     _ if ctrl && vk == VIRTUAL_KEY('C' as u16) => {
+                        let notes = d.notes_selected();
                         let (a, b) = d.field.selection();
-                        if b > a {
+                        if !notes.is_empty() {
+                            crate::set_clipboard(hwnd, &notes);
+                        } else if b > a {
                             crate::set_clipboard(hwnd, &d.field.text[a..b]);
                         }
                     }

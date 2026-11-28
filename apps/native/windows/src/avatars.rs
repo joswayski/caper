@@ -117,6 +117,16 @@ thread_local! {
     static CACHE: RefCell<Cache> = RefCell::default();
     /// Every animated avatar shares one clock, so the same picture plays in step everywhere.
     static EPOCH: Instant = Instant::now();
+    /// The soonest next frame of the animated pictures drawn since `take_due`.
+    static DUE: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// When the soonest next frame of an animated picture drawn since the last
+/// call is due, and starts over. Panels other than message rows (the rail,
+/// the sidebar's DMs and account bar, the member list) call it around their
+/// draw and redraw on the avatar timer, so their pictures play at full speed.
+pub fn take_due() -> Option<Duration> {
+    DUE.take()
 }
 
 /// Pictures load through `api` and wake `hwnd` when they arrive.
@@ -264,6 +274,17 @@ pub fn next_frame(dc: &ID2D1DeviceContext, avatar: &Avatar) -> Option<Duration> 
 }
 
 fn frame(
+    dc: &ID2D1DeviceContext,
+    avatar: &Avatar,
+) -> Option<(ID2D1Bitmap1, bool, Option<Duration>)> {
+    let shown = picture_frame(dc, avatar);
+    if let Some((_, _, Some(next))) = &shown {
+        DUE.set(Some(DUE.get().map_or(*next, |d| d.min(*next))));
+    }
+    shown
+}
+
+fn picture_frame(
     dc: &ID2D1DeviceContext,
     avatar: &Avatar,
 ) -> Option<(ID2D1Bitmap1, bool, Option<Duration>)> {

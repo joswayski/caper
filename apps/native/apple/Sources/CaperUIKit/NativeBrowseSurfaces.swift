@@ -287,7 +287,7 @@ private final class NativeVoiceCard: UIView {
         mute.accessibilityLabel = model.voice.muted ? "Unmute microphone" : "Mute microphone"; mute.accessibilityValue = model.voice.muted ? "Muted" : "On"
         deafen.setImage(UIKitStyle.icon(model.voice.deafened ? "headphone-off" : "headphones")?.resized(to: 18), for: .normal)
         deafen.accessibilityLabel = model.voice.deafened ? "Undeafen audio" : "Deafen audio"; deafen.accessibilityValue = model.voice.deafened ? "Deafened" : "On"
-        mute.tintColor = model.voice.muted ? UIKitStyle.error : UIKitStyle.text; deafen.tintColor = model.voice.deafened ? UIKitStyle.error : UIKitStyle.text
+        mute.tintColor = model.voice.muted ? UIKitStyle.voiceOff : UIKitStyle.text; deafen.tintColor = model.voice.deafened ? UIKitStyle.voiceOff : UIKitStyle.text
         leave.setTitle(model.voice.phase == .joining ? "Cancel" : "Leave"); leave.accessibilityLabel = model.voice.phase == .joining ? "Cancel joining voice" : "Leave voice"
         if let channel {
             let action = ChannelVoiceAction(model: model, channel: channel)

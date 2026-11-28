@@ -975,6 +975,11 @@ impl App {
         self.redraw.extend(std::mem::take(&mut self.gif_rows));
         self.dirty.thread |= self.thread.is_some();
         self.dirty.gifs |= self.gifs.is_some();
+        // Animated avatars in the rail, sidebar and member list, likewise.
+        let panels = std::mem::take(&mut self.avatar_panels);
+        self.dirty.rail |= panels.rail;
+        self.dirty.sidebar |= panels.sidebar;
+        self.dirty.members |= panels.members;
         self.need = true;
     }
 

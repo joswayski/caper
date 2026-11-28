@@ -148,6 +148,100 @@ pub fn line_brush(g: &Gfx, line: Line) -> &ID2D1SolidColorBrush {
 }
 
 impl Dialog {
+    /// Whether (x, y) is on the review's notes, which select like text.
+    pub(crate) fn on_notes(&self, x: f32, y: f32) -> bool {
+        self.kind == Kind::Update
+            && self.parts.iter().any(|(p, (lx, ly, lw, lh))| {
+                matches!(p, Part::Line(_)) && x >= *lx && x < lx + lw && y >= *ly && y < ly + lh
+            })
+    }
+
+    /// The notes' position nearest (x, y): a line's start above it, its
+    /// end below the last.
+    pub(crate) fn notes_point(&self, g: &Gfx, x: f32, y: f32) -> Option<(u8, u32)> {
+        let mut last = None;
+        for (p, (lx, ly, lw, lh)) in &self.parts {
+            let Part::Line(k) = *p else { continue };
+            let Some((line, s)) = self.update_shown.get(k as usize) else {
+                continue;
+            };
+            if y < *ly {
+                return Some((k, 0));
+            }
+            let len = s.encode_utf16().count() as u32;
+            if y < ly + lh {
+                let l = crate::overlay::layout(g, s, line_format(g, *line), *lw).ok()?;
+                return Some((k, crate::gfx::hit_point(&l, x - lx, y - ly).min(len)));
+            }
+            last = Some((k, len));
+        }
+        last
+    }
+
+    /// The word around (x, y) on the notes, for a double-click.
+    pub(crate) fn notes_word(&self, g: &Gfx, x: f32, y: f32) -> Option<((u8, u32), (u8, u32))> {
+        let (k, p) = self.notes_point(g, x, y)?;
+        let text: Vec<u16> = self
+            .update_shown
+            .get(k as usize)?
+            .1
+            .encode_utf16()
+            .collect();
+        let word = |c: u16| char::from_u32(u32::from(c)).is_some_and(char::is_alphanumeric);
+        let (mut s, mut e) = (p as usize, p as usize);
+        while s > 0 && word(text[s - 1]) {
+            s -= 1;
+        }
+        while e < text.len() && word(text[e]) {
+            e += 1;
+        }
+        Some(((k, s as u32), (k, e as u32)))
+    }
+
+    /// Selects every line of the notes.
+    pub(crate) fn notes_select_all(&mut self) {
+        if let Some((k, (_, s))) = self.update_shown.iter().enumerate().next_back() {
+            self.notes_sel = Some(((0, 0), (k as u8, s.encode_utf16().count() as u32)));
+        }
+    }
+
+    fn notes_ordered(&self) -> Option<((u8, u32), (u8, u32))> {
+        let (a, b) = self.notes_sel?;
+        Some(if a <= b { (a, b) } else { (b, a) })
+    }
+
+    /// Line `k`'s selected UTF-16 range, when the selection covers some of it.
+    pub(crate) fn notes_line_range(&self, k: u8) -> Option<(u32, u32)> {
+        let (a, b) = self.notes_ordered()?;
+        if k < a.0 || k > b.0 {
+            return None;
+        }
+        let len = self.update_shown.get(k as usize)?.1.encode_utf16().count() as u32;
+        let start = if k == a.0 { a.1.min(len) } else { 0 };
+        let end = if k == b.0 { b.1.min(len) } else { len };
+        (end > start).then_some((start, end))
+    }
+
+    /// The selected notes, one line per body line, for Ctrl+C.
+    pub(crate) fn notes_selected(&self) -> Vec<u16> {
+        let Some((a, b)) = self.notes_ordered() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for k in a.0..=b.0 {
+            if k > a.0 {
+                out.extend_from_slice(&[u16::from(b'\r'), u16::from(b'\n')]);
+            }
+            if let (Some((s, e)), Some((_, text))) =
+                (self.notes_line_range(k), self.update_shown.get(k as usize))
+            {
+                let w: Vec<u16> = text.encode_utf16().collect();
+                out.extend_from_slice(&w[s as usize..e as usize]);
+            }
+        }
+        out
+    }
+
     pub fn update(available: Available, error: Option<String>, in_call: bool) -> Self {
         let mut d = Self::new(Kind::Update, None, crate::composer::Composer::default());
         d.error = error.or_else(|| available.last_error.clone());

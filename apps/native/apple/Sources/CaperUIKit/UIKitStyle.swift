@@ -59,6 +59,7 @@ enum UIKitStyle {
     /// Ink on a primary (chalk) fill.
     static let onAction = CaperTheme.UI.onAction
     static let error = CaperTheme.UI.error
+    static let voiceOff = CaperTheme.UI.voiceOff
     static let green = CaperTheme.UI.green
 
     enum Weight { case regular, medium, bold, black }
