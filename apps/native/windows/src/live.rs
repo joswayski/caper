@@ -103,7 +103,7 @@ pub enum Update {
     /// Another device's (or this one's echoed) draft, from `draft.updated`.
     Draft(caper_client::saved_drafts::ServerDraft),
     /// `GET /api/drafts`.
-    Drafts(Vec<caper_client::saved_drafts::ServerDraft>),
+    ServerDrafts(Vec<caper_client::saved_drafts::ServerDraft>),
     /// A draft save answered.
     DraftSaved(
         caper_client::saved_drafts::DraftSave,
@@ -3745,7 +3745,7 @@ impl Live {
         }
     }
 
-    /// The account's synced drafts (`Update::Drafts`).
+    /// The account's synced drafts (`Update::ServerDrafts`).
     pub fn load_drafts(&self) {
         if let Some(token) = self.token.clone() {
             self.worker.send(Command::LoadDrafts {
@@ -6717,7 +6717,7 @@ impl Live {
             Event::DraftsLoaded {
                 epoch,
                 result: Ok(drafts),
-            } if epoch == self.account_epoch => out.push(Update::Drafts(drafts)),
+            } if epoch == self.account_epoch => out.push(Update::ServerDrafts(drafts)),
             Event::DraftSaved {
                 epoch,
                 save,

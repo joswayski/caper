@@ -143,7 +143,7 @@ const TIMER_TYPING: usize = 19;
 /// Hides the zoom notice.
 const TIMER_ZOOM: usize = 22;
 /// Saves an edited draft to the server once typing pauses.
-const TIMER_DRAFT_SYNC: usize = 55;
+const TIMER_DRAFT_SYNC: usize = 56;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
 pub(crate) const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -1096,7 +1096,7 @@ impl App {
                     let changed = self.drafts.apply(draft).into_iter().collect();
                     self.show_drafts(changed);
                 }
-                live::Update::Drafts(drafts) => {
+                live::Update::ServerDrafts(drafts) => {
                     self.open_saved_drafts();
                     let changed = self.drafts.loaded(drafts);
                     self.show_drafts(changed);
